@@ -1,0 +1,12 @@
+node_modules
+dist
+coverage
+.git
+.omo
+.github
+docs
+test
+spike
+*.log
+.env
+.env.*

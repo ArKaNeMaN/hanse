@@ -1,5 +1,5 @@
 import { PACKAGE_NAME, VERSION } from "../version.js";
-import { defaultContext, initCommand, statusCommand } from "./commands.js";
+import { defaultContext, initCommand, serveCommand, statusCommand } from "./commands.js";
 import { parseArgs } from "./parse.js";
 
 /** Output sinks, injectable for testing. */
@@ -29,11 +29,15 @@ function buildUsage(): string[] {
     "Commands:",
     "  init [dir]      Scaffold a project (.hanse/project.yaml)",
     "  status [dir]    Discover and register a project, print its status",
+    "  serve           Serve the web dashboard and HTTP API",
     "",
     "Options:",
     "  -h, --help            Show this help and exit",
     "  -v, --version         Show the version and exit",
     "      --state-home <p>  Override the coordinator state directory",
+    "      --workspace <p>   Workspace of projects (serve; default: cwd)",
+    "      --hostname <h>    Bind host (serve; default: 127.0.0.1)",
+    "      --port <n>        Bind port (serve; default: 8787)",
   ];
 }
 
@@ -66,6 +70,15 @@ export async function runCli(argv: readonly string[], io: CliIo = defaultIo): Pr
     case "status":
       return statusCommand(
         args.positionals[0] ?? ".",
+        defaultContext(process.cwd(), io, args.flags),
+      );
+    case "serve":
+      return serveCommand(
+        {
+          workspace: typeof args.flags.workspace === "string" ? args.flags.workspace : ".",
+          hostname: typeof args.flags.hostname === "string" ? args.flags.hostname : "127.0.0.1",
+          port: typeof args.flags.port === "string" ? Number(args.flags.port) : 8787,
+        },
         defaultContext(process.cwd(), io, args.flags),
       );
     default:

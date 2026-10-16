@@ -50,6 +50,26 @@ export function createPrincipal(
   return { principal: { id, kind: input.kind, name: input.name, createdAt }, token };
 }
 
+export function upsertPrincipalWithToken(
+  db: SqliteDatabase,
+  input: { kind: PrincipalKind; name: string; token: string },
+): Principal {
+  const hashed = hashToken(input.token);
+  const existing = db
+    .prepare("SELECT * FROM principals WHERE name = ? AND kind = ?")
+    .get(input.name, input.kind) as PrincipalRow | undefined;
+  if (existing !== undefined) {
+    db.prepare("UPDATE principals SET secret_hash = ? WHERE id = ?").run(hashed, existing.id);
+    return rowToPrincipal({ ...existing, secret_hash: hashed });
+  }
+  const id = randomUUID();
+  const createdAt = new Date().toISOString();
+  db.prepare(
+    "INSERT INTO principals (id, kind, name, secret_hash, created_at) VALUES (?, ?, ?, ?, ?)",
+  ).run(id, input.kind, input.name, hashed, createdAt);
+  return { id, kind: input.kind, name: input.name, createdAt };
+}
+
 export function getPrincipal(db: SqliteDatabase, id: string): Principal | undefined {
   const row = db.prepare("SELECT * FROM principals WHERE id = ?").get(id) as
     | PrincipalRow

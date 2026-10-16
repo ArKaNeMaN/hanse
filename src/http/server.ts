@@ -19,10 +19,16 @@ export function createHttpServer(deps: HttpDeps): Server {
         const result = handleRequest(deps, {
           method: request.method ?? "GET",
           path: (request.url ?? "/").split("?")[0] ?? "/",
-          headers: { authorization: request.headers.authorization },
+          headers: {
+            authorization: request.headers.authorization,
+            cookie: request.headers.cookie,
+          },
           body,
         });
-        response.writeHead(result.status, { "content-type": result.contentType });
+        response.writeHead(result.status, {
+          "content-type": result.contentType,
+          ...(result.headers ?? {}),
+        });
         response.end(result.body);
       })
       .catch((error: unknown) => {
