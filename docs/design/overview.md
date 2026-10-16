@@ -126,6 +126,7 @@ Each stage runs the feature pipeline and ends in one commit.
 
 ## 9. Open questions
 
-- Exact opencode v1 HTTP endpoints for injecting a prompt into an existing session and an event
-  stream (settle in Stage 0.5).
+- Resolved (Stage 0.5): inject into an existing session via `POST /session/{id}/message`; event stream
+  via `/event`. `opencode serve` is unsecured unless `OPENCODE_SERVER_PASSWORD` is set (per-instance
+  auth required).
 - Web UI auth mechanism (Stage 6/7); pre-alpha assumes a trusted network (VPN/reverse proxy).

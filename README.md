@@ -29,11 +29,13 @@ See [`docs/architecture.md`](docs/architecture.md) and [`docs/conventions.md`](d
 
 ## Status
 
-Pre-alpha. Nothing is runnable yet. This repository currently contains:
+**0.1.0 (pre-alpha).** The coordinator core is implemented (stages 0-7): manifest schemas, SQLite
+state store, project/application registry, per-application launcher, durable handoff state machine
+and writer lock, principals/authn + approvals, coordinator MCP tools, HTTP API + dashboard, and an
+encrypted secret store. See [`docs/releases/0.1.0.md`](docs/releases/0.1.0.md).
 
-- the `.hanse/` manifest schemas (typed with zod);
-- a typed skeleton for the coordinator, per-instance environment, and the CLI;
-- the design documents and decision records.
+Not yet wired into the CLI entrypoint: the HTTP server and the MCP server. The live `opencode`
+delivery spike is still pending.
 
 ## Development
 

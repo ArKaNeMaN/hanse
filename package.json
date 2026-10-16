@@ -1,6 +1,6 @@
 {
   "name": "hanse",
-  "version": "0.0.0-pre",
+  "version": "0.1.0",
   "description": "Self-hosted coordinator/workbench for projects of isolated opencode agent applications.",
   "type": "module",
   "license": "SEE LICENSE IN LICENSE",
