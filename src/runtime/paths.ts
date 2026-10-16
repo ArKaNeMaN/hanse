@@ -20,3 +20,8 @@ export function coordinatorDbPath(stateHome: string): string {
 export function projectRuntimeRoot(stateHome: string, projectId: string): string {
   return path.join(coordinatorStateDir(stateHome), "projects", projectId);
 }
+
+/** Path to the secret-store key file (kept outside the ciphertext). */
+export function secretKeyPath(stateHome: string): string {
+  return path.join(coordinatorStateDir(stateHome), "secret.key");
+}

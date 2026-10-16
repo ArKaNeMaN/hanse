@@ -108,4 +108,17 @@ CREATE TABLE events (
 );
 `,
   },
+  {
+    version: 2,
+    name: "secrets",
+    sql: `
+CREATE TABLE secrets (
+  host TEXT PRIMARY KEY,
+  username TEXT NOT NULL,
+  cipher TEXT NOT NULL,
+  nonce TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+`,
+  },
 ];
