@@ -32,6 +32,16 @@ All four gates must pass before a change is considered done.
 
 ## Docs
 
+- [`docs/process.md`](docs/process.md) - the delivery pipeline (bindings, reviewers, paths, gates).
+- [`docs/design/`](docs/design/) - design docs (index: `docs/design/README.md`).
 - [`docs/architecture.md`](docs/architecture.md) - the coordinator architecture.
 - [`docs/conventions.md`](docs/conventions.md) - on-disk `.hanse/` conventions.
 - [`docs/decisions/`](docs/decisions/) - architecture decision records.
+- [`docs/plans/`](docs/plans/) - per-stage implementation plans.
+- [`docs/journal/`](docs/journal/) - stage records and decision log.
+
+## Delivery pipeline
+
+Multi-phase work follows the `feature-delivery` pipeline: design -> design review -> owner questions
+-> plan -> plan review -> execute -> record -> commit. Bindings live in
+[`docs/process.md`](docs/process.md). Do not start implementation before the gate is cleared.
