@@ -5,4 +5,5 @@ coverage/
 .env
 .env.*
 .hanse-runtime/
+.omo/
 .DS_Store
