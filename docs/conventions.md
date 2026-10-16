@@ -1,0 +1,53 @@
+# Conventions
+
+## `.hanse/` marker directory
+
+A `.hanse/` directory marks both projects and applications. The file inside distinguishes them:
+
+- **Project root**: `.hanse/project.yaml`
+- **Application root**: `.hanse/app.yaml`
+
+`opencode` uses `.opencode/`; `.hanse/` is coordinator metadata and is never read by `opencode`.
+
+## `.hanse/project.yaml`
+
+```yaml
+id: 3f1c9b7a-1c2d-4e5f-8a9b-0c1d2e3f4a5b   # stable uuid, keys runtime state
+name: demo-project
+base_branch: main                            # default: main
+shared:                                      # optional shared docs
+  - shared/AGENTS.md
+apps:
+  - path: apps/web                           # relative to the project root
+    remote: git@github.com:example/web.git   # optional
+    kind: web                                # optional
+```
+
+## `.hanse/app.yaml`
+
+```yaml
+name: web            # application key (portable string name)
+kind: web            # optional
+contract: AGENTS.md  # path to the interface/contract doc (default: AGENTS.md)
+ports:               # optional named ports
+  http: 3000
+setup: npm install   # optional setup command
+```
+
+## Naming and portability
+
+- Use **relative paths** everywhere (manifests, shared docs) so the tree can be moved.
+- The application key (`name`) is a **string name**, not a unique id. The coordinator assigns a
+  per-clone instance identity in its own state, so the same application can be cloned into more than
+  one project with separate clones.
+- Keep coordinator-specific files inside `.hanse/` so repository roots stay clean.
+
+## Runtime layout (outside repositories)
+
+```
+$XDG_STATE_HOME/hanse/<project-id>/
+├── apps/<app>/data  state  config  cache
+└── <coordinator state: queue, locks, handoffs>
+```
+
+`.hanse-runtime/` (gitignored) may be used as a local override during development.

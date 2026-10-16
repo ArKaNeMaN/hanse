@@ -1,0 +1,12 @@
+id: 3f1c9b7a-1c2d-4e5f-8a9b-0c1d2e3f4a5b
+name: demo-project
+base_branch: main
+shared:
+  - shared/AGENTS.md
+  - docs/
+apps:
+  - path: apps/web
+    remote: git@github.com:example/web.git
+    kind: web
+  - path: apps/api
+    kind: service

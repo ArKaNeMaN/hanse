@@ -1,0 +1,5 @@
+name: web
+kind: web
+contract: AGENTS.md
+ports:
+  http: 3000
