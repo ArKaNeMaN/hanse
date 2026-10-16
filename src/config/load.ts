@@ -67,8 +67,19 @@ async function loadYamlFile(filePath: string): Promise<unknown> {
   }
 }
 
+export interface LoadedProject {
+  project: Project;
+  filePath: string;
+  rootPath: string;
+}
+
+/** Locate `.hanse/project.yaml` by walking up from {@link startDir}. */
+export function locateProjectConfig(startDir: string): string | undefined {
+  return findConfigFile(startDir, PROJECT_CONFIG_FILENAME);
+}
+
 /** Load and validate `.hanse/project.yaml`, searching upward from {@link startDir}. */
-export async function loadProjectConfig(startDir: string): Promise<Project> {
+export async function loadProject(startDir: string): Promise<LoadedProject> {
   const filePath = findConfigFile(startDir, PROJECT_CONFIG_FILENAME);
   if (filePath === undefined) {
     throw new ConfigError(
@@ -84,7 +95,12 @@ export async function loadProjectConfig(startDir: string): Promise<Project> {
       issues: result.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`),
     });
   }
-  return result.data;
+  return { project: result.data, filePath, rootPath: path.dirname(path.dirname(filePath)) };
+}
+
+/** Load and validate `.hanse/project.yaml`, returning only the project. */
+export async function loadProjectConfig(startDir: string): Promise<Project> {
+  return (await loadProject(startDir)).project;
 }
 
 /** Load and validate `.hanse/app.yaml`, searching upward from {@link startDir}. */

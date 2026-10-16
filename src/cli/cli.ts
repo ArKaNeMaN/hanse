@@ -1,4 +1,5 @@
 import { PACKAGE_NAME, VERSION } from "../version.js";
+import { defaultContext, initCommand, statusCommand } from "./commands.js";
 import { parseArgs } from "./parse.js";
 
 /** Output sinks, injectable for testing. */
@@ -23,13 +24,16 @@ function buildUsage(): string[] {
     "Coordinator/workbench for projects of isolated opencode agent applications.",
     "",
     "Usage:",
-    `  ${PACKAGE_NAME} [command] [options]`,
+    `  ${PACKAGE_NAME} <command> [options]`,
+    "",
+    "Commands:",
+    "  init [dir]      Scaffold a project (.hanse/project.yaml)",
+    "  status [dir]    Discover and register a project, print its status",
     "",
     "Options:",
-    "  -h, --help       Show this help and exit",
-    "  -v, --version    Show the version and exit",
-    "",
-    "Commands are not implemented yet (pre-alpha). See docs/architecture.md.",
+    "  -h, --help            Show this help and exit",
+    "  -v, --version         Show the version and exit",
+    "      --state-home <p>  Override the coordinator state directory",
   ];
 }
 
@@ -56,7 +60,17 @@ export async function runCli(argv: readonly string[], io: CliIo = defaultIo): Pr
     return 0;
   }
 
-  io.stderr(`Unknown command: ${args.command}`);
-  io.stderr(`Run \`${PACKAGE_NAME} --help\` for usage.`);
-  return 2;
+  switch (args.command) {
+    case "init":
+      return initCommand(args.positionals[0] ?? ".", defaultContext(process.cwd(), io, args.flags));
+    case "status":
+      return statusCommand(
+        args.positionals[0] ?? ".",
+        defaultContext(process.cwd(), io, args.flags),
+      );
+    default:
+      io.stderr(`Unknown command: ${args.command}`);
+      io.stderr(`Run \`${PACKAGE_NAME} --help\` for usage.`);
+      return 2;
+  }
 }

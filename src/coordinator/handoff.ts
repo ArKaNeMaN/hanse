@@ -1,5 +1,5 @@
+import type { RegisteredApp } from "../registry/index.js";
 import type { HandoffMessage, HandoffQueue, HandoffState } from "./queue.js";
-import type { RegisteredApp } from "./registry.js";
 
 /** A request from one application to a sibling application. */
 export interface SiblingChangeRequest {
