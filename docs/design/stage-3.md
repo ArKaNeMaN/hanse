@@ -1,6 +1,9 @@
 # Stage 3 - Chat workspace
 
-Status: complete. Stage 4 (final integration) is not part of this record.
+Status: complete. Stage 4 (final integration) is not part of this record. The session lifecycle described
+here (auto-create when the list is empty, create-on-click) was superseded by
+[`docs/journal/0004-session-lifecycle.md`](../journal/0004-session-lifecycle.md); the layout contract
+still applies.
 
 ## Scope
 

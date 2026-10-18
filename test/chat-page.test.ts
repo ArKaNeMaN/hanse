@@ -1,4 +1,6 @@
 import { mkdtempSync, rmSync } from "node:fs";
+import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -7,12 +9,22 @@ import { GitService } from "../src/git/service.js";
 import { handleChat } from "../src/http/chat.js";
 import { type HttpDeps, type HttpRequest, handleRequest } from "../src/http/handler.js";
 import { createPrincipal } from "../src/identity/principals.js";
+import type { InstanceManager } from "../src/opencode/manager.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
 
 const dirs: string[] = [];
 const databases: SqliteDatabase[] = [];
+const servers: Server[] = [];
 
-afterEach(() => {
+afterEach(async () => {
+  await Promise.all(
+    servers.splice(0).map(
+      (server) =>
+        new Promise<void>((resolve) => {
+          server.close(() => resolve());
+        }),
+    ),
+  );
   for (const db of databases) {
     try {
       db.close();
@@ -89,6 +101,42 @@ function auth(token: string): Record<string, string> {
 
 function request(overrides: Partial<HttpRequest>): HttpRequest {
   return { method: "GET", path: "/chat", headers: {}, query: {}, ...overrides };
+}
+
+interface UpstreamCall {
+  method: string;
+  url: string;
+  body: string;
+}
+
+async function fakeOpencode(
+  status = 200,
+  responseBody = "true",
+): Promise<{ endpoint: string; calls: UpstreamCall[] }> {
+  const calls: UpstreamCall[] = [];
+  const server = createServer((incoming, outgoing) => {
+    const chunks: Buffer[] = [];
+    incoming.on("data", (chunk: Buffer) => chunks.push(chunk));
+    incoming.on("end", () => {
+      calls.push({
+        method: incoming.method ?? "",
+        url: incoming.url ?? "",
+        body: Buffer.concat(chunks).toString("utf8"),
+      });
+      outgoing.writeHead(status, { "content-type": "application/json" });
+      outgoing.end(responseBody);
+    });
+  });
+  servers.push(server);
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address() as AddressInfo;
+  return { endpoint: `http://127.0.0.1:${address.port}`, calls };
+}
+
+function useUpstream(deps: HttpDeps, endpoint: string): void {
+  deps.manager = {
+    ensure: async () => endpoint,
+  } as unknown as InstanceManager;
 }
 
 describe("chat page", () => {
@@ -206,5 +254,71 @@ describe("chat page", () => {
     expect(response.status).toBe(200);
     expect(response.contentType).toContain("text/javascript");
     expect(response.body).toContain('getElementById("chat-shell")');
+  });
+
+  it("deletes a session through opencode for a human principal", async () => {
+    const f = fixture();
+    const upstream = await fakeOpencode();
+    useUpstream(f.deps, upstream.endpoint);
+
+    const response = await handleChat(
+      f.deps,
+      request({
+        method: "DELETE",
+        path: "/api/apps/storefront/sessions/ses_1",
+        query: { project: "p1" },
+        headers: auth(f.token),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(JSON.parse(response.body)).toEqual({ deleted: true });
+    expect(upstream.calls).toEqual([{ method: "DELETE", url: "/session/ses_1", body: "" }]);
+  });
+
+  it("forbids an agent principal from deleting a session", async () => {
+    const f = fixture();
+    const upstream = await fakeOpencode();
+    let started = false;
+    f.deps.manager = {
+      ensure: async () => {
+        started = true;
+        return upstream.endpoint;
+      },
+    } as unknown as InstanceManager;
+    const { token } = createPrincipal(f.db, { kind: "agent", name: "bot" });
+
+    const response = await handleChat(
+      f.deps,
+      request({
+        method: "DELETE",
+        path: "/api/apps/storefront/sessions/ses_1",
+        query: { project: "p1" },
+        headers: auth(token),
+      }),
+    );
+
+    expect(response.status).toBe(403);
+    expect(started).toBe(false);
+    expect(upstream.calls).toEqual([]);
+  });
+
+  it("reports an opencode deletion failure as 502", async () => {
+    const f = fixture();
+    const upstream = await fakeOpencode(500, '{"error":"boom"}');
+    useUpstream(f.deps, upstream.endpoint);
+
+    const response = await handleChat(
+      f.deps,
+      request({
+        method: "DELETE",
+        path: "/api/apps/storefront/sessions/ses_1",
+        query: { project: "p1" },
+        headers: auth(f.token),
+      }),
+    );
+
+    expect(response.status).toBe(502);
+    expect(JSON.parse(response.body).error).toContain("opencode DELETE /session/ses_1");
   });
 });

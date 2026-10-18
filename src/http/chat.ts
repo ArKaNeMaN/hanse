@@ -1,7 +1,13 @@
 import type { ServerResponse } from "node:http";
 import type { Handoff } from "../coordinator/handoff.js";
 import type { Principal } from "../identity/principals.js";
-import { createSession, listMessages, listSessions, sendPrompt } from "../opencode/client.js";
+import {
+  createSession,
+  deleteSession,
+  listMessages,
+  listSessions,
+  sendPrompt,
+} from "../opencode/client.js";
 import type { RegisteredApp } from "../registry/index.js";
 import { appDir, findApp } from "./apps.js";
 import { humanFrom, principalFrom } from "./auth.js";
@@ -186,6 +192,7 @@ function renderChatPage(
       <label class="sr-only" for="session-search">Search sessions</label>
       <input class="input" id="session-search" type="search" placeholder="Filter sessions" autocomplete="off" />
     </div>
+    <p class="field-error chat-sessions__error" id="session-error" role="alert" hidden></p>
     <div class="chat-sessions__list" id="session-list" aria-live="polite">
       <div class="skeleton-stack chat-sessions__skeleton" aria-hidden="true">
         <span class="skeleton skeleton--title"></span>
@@ -394,8 +401,9 @@ export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<
   }
 
   const sessionsMatch = /^\/api\/apps\/([^/]+)\/sessions$/.exec(request.path);
+  const sessionMatch = /^\/api\/apps\/([^/]+)\/sessions\/([^/]+)$/.exec(request.path);
   const messagesMatch = /^\/api\/apps\/([^/]+)\/sessions\/([^/]+)\/messages$/.exec(request.path);
-  if (sessionsMatch === null && messagesMatch === null) {
+  if (sessionsMatch === null && sessionMatch === null && messagesMatch === null) {
     return json(404, { error: "not found" });
   }
   const principal = principalFrom(deps, request);
@@ -405,8 +413,11 @@ export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<
   if (deps.manager === undefined) {
     return json(503, { error: "agent runtime is not configured" });
   }
+  if (sessionMatch !== null && request.method === "DELETE" && principal.kind !== "human") {
+    return json(403, { error: "only a human principal may delete a session" });
+  }
 
-  const appKey = safeDecode((sessionsMatch ?? messagesMatch)?.[1] ?? "");
+  const appKey = safeDecode((sessionsMatch ?? sessionMatch ?? messagesMatch)?.[1] ?? "");
   const found = findApp(deps, projectId, appKey);
   if (found === undefined) {
     return json(404, { error: `unknown application: ${appKey}` });
@@ -433,6 +444,10 @@ export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<
       if (request.method === "POST") {
         return json(200, await createSession(endpoint));
       }
+    }
+    if (sessionMatch !== null && request.method === "DELETE") {
+      await deleteSession(endpoint, safeDecode(sessionMatch[2] ?? ""));
+      return json(200, { deleted: true });
     }
     if (messagesMatch !== null && request.method === "GET") {
       const sessionId = safeDecode(messagesMatch[2] ?? "");

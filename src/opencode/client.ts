@@ -38,6 +38,15 @@ export function createSession(endpoint: string, title?: string): Promise<Opencod
   });
 }
 
+export async function deleteSession(endpoint: string, sessionId: string): Promise<void> {
+  const path = `/session/${encodeURIComponent(sessionId)}`;
+  const response = await fetch(`${endpoint}${path}`, { method: "DELETE" });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`opencode DELETE ${path} -> ${response.status}: ${text.slice(0, 300)}`);
+  }
+}
+
 export function listMessages(endpoint: string, sessionId: string): Promise<OpencodeMessage[]> {
   return call<OpencodeMessage[]>(endpoint, `/session/${sessionId}/message`);
 }

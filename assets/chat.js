@@ -10,6 +10,7 @@
   const operatorInitials = shell.dataset.operatorInitials || "OP";
   const sessionsList = document.getElementById("session-list");
   const sessionSearch = document.getElementById("session-search");
+  const sessionError = document.getElementById("session-error");
   const messagesEl = document.getElementById("chat-messages");
   const scrollEl = document.getElementById("chat-scroll");
   const composer = document.getElementById("chat-composer");
@@ -43,6 +44,7 @@
   let failures = 0;
   let sending = false;
   let creatingSession = false;
+  const deletingSessions = new Set();
   let stickToBottom = true;
   let loadSequence = 0;
   let renderSequence = 0;
@@ -79,6 +81,10 @@
 
   function sessionsUrl() {
     return withProject(`${apiBase()}/sessions`);
+  }
+
+  function sessionUrl(id) {
+    return withProject(`${apiBase()}/sessions/${encodeURIComponent(id)}`);
   }
 
   function messagesUrl(id) {
@@ -238,8 +244,14 @@
   function showSessionsEmpty() {
     if (sessionsList === null) return;
     sessionsList.replaceChildren(
-      element("p", "chat-empty", "No sessions yet. Start a new session."),
+      element("p", "chat-empty", "No sessions yet. Send a message to start one."),
     );
+  }
+
+  function showSessionError(message) {
+    if (sessionError === null) return;
+    sessionError.hidden = message === null;
+    sessionError.textContent = message === null ? "" : message;
   }
 
   function renderSessions() {
@@ -264,9 +276,11 @@
     }
     const list = document.createDocumentFragment();
     for (const session of visible) {
+      const id = String(session.id);
+      const row = element("div", "session-row");
       const button = element("button", "session-item");
       button.type = "button";
-      button.dataset.sessionId = String(session.id);
+      button.dataset.sessionId = id;
       const active = session.id === sessionId;
       if (active) {
         button.classList.add("is-active");
@@ -276,14 +290,27 @@
       top.append(element("span", "session-item__title", sessionLabel(session)));
       if (active) top.append(iconNode("check", "icon--sm"));
       const meta = element("span", "session-item__meta");
-      meta.append(element("span", "mono", String(session.id).slice(0, 8)));
+      meta.append(element("span", "mono", id.slice(0, 8)));
       const stamp = relativeTime(sessionTimestamp(session));
       if (stamp.length > 0) meta.append(element("span", "", stamp));
       button.append(top, meta);
       button.addEventListener("click", () => {
-        selectSession(String(session.id), { focus: true });
+        selectSession(id, { focus: true });
       });
-      list.append(button);
+
+      const remove = element("button", "session-delete");
+      remove.type = "button";
+      remove.dataset.sessionDelete = id;
+      remove.title = "Delete session";
+      remove.setAttribute("aria-label", `Delete ${sessionLabel(session)}`);
+      remove.append(iconNode("trash", "icon--sm"));
+      remove.disabled = deletingSessions.has(id) || sending;
+      remove.addEventListener("click", () => {
+        removeSession(id);
+      });
+
+      row.append(button, remove);
+      list.append(row);
     }
     sessionsList.replaceChildren(list);
   }
@@ -743,7 +770,8 @@
       const data = await api(sessionsUrl());
       sessions = Array.isArray(data.sessions) ? data.sessions : [];
       if (sessions.length === 0) {
-        showSessionsEmpty();
+        if (sessionId !== null) startDraft({ focus: false });
+        else showSessionsEmpty();
         return;
       }
       if (sessionId === null || !sessions.some((session) => session.id === sessionId)) {
@@ -790,8 +818,39 @@
     }
   }
 
-  async function createSession() {
-    if (creatingSession) return;
+  function startDraft(options) {
+    const settings = options || {};
+    closeStream();
+    loadSequence += 1;
+    sessionId = null;
+    messages = [];
+    showSessionError(null);
+    if (sessionTitleEl !== null) sessionTitleEl.textContent = "New session";
+    if (sessionIdEl !== null) {
+      sessionIdEl.textContent = "-";
+      sessionIdEl.removeAttribute("title");
+    }
+    updateUrl();
+    renderSessions();
+    renderMessages({
+      initial: true,
+      atBottom: true,
+      previousScroll: 0,
+      previousCount: 0,
+    });
+    setLive("Ready", "idle");
+    setWorking(false);
+    setRuntime("running");
+    closeSessions(false);
+    closeContext(false);
+    if (settings.focus === true && promptEl instanceof HTMLTextAreaElement) {
+      promptEl.focus();
+    }
+  }
+
+  async function ensureSession() {
+    if (sessionId !== null) return sessionId;
+    if (creatingSession) throw new Error("A session is already starting.");
     creatingSession = true;
     setNewSessionBusy(true);
     try {
@@ -800,18 +859,59 @@
         headers: { "content-type": "application/json" },
         body: "{}",
       });
-      if (created && created.id !== undefined) {
-        if (sessionSearch !== null) sessionSearch.value = "";
-        sessions = [created, ...sessions.filter((session) => session.id !== created.id)];
-        renderSessions();
-        await selectSession(String(created.id), { focus: true });
+      if (!created || created.id === undefined) {
+        throw new Error("Session could not be created.");
       }
-    } catch (error) {
-      showSessionsError(error, () => createSession());
-      showThreadError(error, () => createSession());
+      const id = String(created.id);
+      sessions = [created, ...sessions.filter((session) => String(session.id) !== id)];
+      if (sessionSearch !== null) sessionSearch.value = "";
+      sessionId = id;
+      if (sessionTitleEl !== null) sessionTitleEl.textContent = sessionLabel(created);
+      if (sessionIdEl !== null) {
+        sessionIdEl.textContent = id.slice(0, 8);
+        sessionIdEl.title = id;
+      }
+      updateUrl();
+      renderSessions();
+      closeSessions(false);
+      showSessionError(null);
+      setLive("Starting agent...", "starting");
+      subscribe();
+      return id;
     } finally {
       creatingSession = false;
-      setNewSessionBusy(false);
+      setNewSessionBusy(sending);
+    }
+  }
+
+  async function removeSession(id) {
+    if (sending || deletingSessions.has(id)) return;
+    const session = sessions.find((candidate) => String(candidate.id) === id);
+    const label = session === undefined ? `Session ${id.slice(0, 8)}` : sessionLabel(session);
+    if (!window.confirm(`Delete session "${label}"? This cannot be undone.`)) {
+      return;
+    }
+    deletingSessions.add(id);
+    showSessionError(null);
+    renderSessions();
+    try {
+      await api(sessionUrl(id), { method: "DELETE" });
+      const wasActive = sessionId === id;
+      sessions = sessions.filter((candidate) => String(candidate.id) !== id);
+      deletingSessions.delete(id);
+      if (wasActive) {
+        if (sessions.length > 0) {
+          await selectSession(String(sessions[0].id), { focus: false });
+        } else {
+          startDraft({ focus: false });
+        }
+      } else {
+        renderSessions();
+      }
+    } catch (error) {
+      deletingSessions.delete(id);
+      showSessionError(error.message || String(error));
+      renderSessions();
     }
   }
 
@@ -819,20 +919,13 @@
     setLive("Starting agent...", "starting");
     showSessionsLoading();
     showMessagesLoading();
+    showSessionError(null);
     try {
-      let data = await api(sessionsUrl());
+      const data = await api(sessionsUrl());
       sessions = Array.isArray(data.sessions) ? data.sessions : [];
+      renderSessions();
       if (sessions.length === 0) {
-        const created = await api(sessionsUrl(), {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: "{}",
-        });
-        if (created && created.id !== undefined) sessions = [created];
-      }
-      if (sessions.length === 0) {
-        showSessionsEmpty();
-        showThreadError(new Error("No session could be created."), bootSessions);
+        startDraft({ focus: false });
         return;
       }
       const requested = new URLSearchParams(window.location.search).get("session");
@@ -842,8 +935,6 @@
           : sessionId !== null && sessions.some((session) => session.id === sessionId)
             ? sessionId
             : String(sessions[0].id);
-      sessions = sessions;
-      renderSessions();
       await selectSession(wanted, { focus: false });
     } catch (error) {
       showSessionsError(error, bootSessions);
@@ -877,10 +968,6 @@
 
   async function sendPrompt() {
     if (sending || !(promptEl instanceof HTMLTextAreaElement)) return;
-    if (sessionId === null) {
-      showSendError("Session is still starting. Try again in a moment.");
-      return;
-    }
     const text = promptEl.value.trim();
     if (text.length === 0) {
       promptEl.focus();
@@ -889,12 +976,16 @@
     sending = true;
     setWorking(true);
     setBusy(sendButton, true);
+    setNewSessionBusy(true);
     showSendError(null);
+    showSessionError(null);
+    renderSessions();
     const draft = promptEl.value;
     promptEl.value = "";
     resizePrompt();
     try {
-      await api(messagesUrl(), {
+      const id = await ensureSession();
+      await api(messagesUrl(id), {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ text }),
@@ -915,6 +1006,8 @@
       sending = false;
       setWorking(false);
       setBusy(sendButton, false);
+      setNewSessionBusy(false);
+      renderSessions();
     }
   }
 
@@ -1020,7 +1113,9 @@
     sessionSearch.addEventListener("input", renderSessions);
   }
   for (const button of newSessionButtons()) {
-    button.addEventListener("click", () => createSession());
+    button.addEventListener("click", () => {
+      if (!sending) startDraft({ focus: true });
+    });
   }
   if (appSelect instanceof HTMLSelectElement) {
     appSelect.addEventListener("change", () => {

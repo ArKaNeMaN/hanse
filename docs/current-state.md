@@ -1,6 +1,6 @@
 # Hanse - Current State (read this first)
 
-> Last updated: 2026-10-18. This is the canonical description of what is **implemented right now**.
+> Last updated: 2026-10-19. This is the canonical description of what is **implemented right now**.
 > If this document and the code disagree, the code wins - update this document.
 > History and rationale: `docs/design/overview.md`, `docs/plans/0001-core.md`,
 > `docs/journal/0001-core.md`. Deployment: `docs/deployment.md`.
@@ -92,8 +92,13 @@ Both containers use the same image (`hanse:0.1.0`, built from `Dockerfile`).
 - Our chat UI (`/chat?app=<appKey>&project=<projectId>`) lists/filters sessions, renders text with a
   safe markdown subset, tool calls (output/error), reasoning, and patches, and sends prompts. The
   optional `project` query is additive and disambiguates duplicate app keys. API:
-  `GET/POST /api/apps/:app/sessions`, `GET/POST /api/apps/:app/sessions/:sid/messages`, SSE
+  `GET/POST /api/apps/:app/sessions`, `DELETE /api/apps/:app/sessions/:sid`,
+  `GET/POST /api/apps/:app/sessions/:sid/messages`, SSE
   `GET /api/apps/:app/sessions/:sid/events`; all accept `?project=<projectId>`.
+- Sessions are created lazily: opening a chat or pressing "New session" only starts a draft, and the
+  first message creates the upstream session. Deletion is human-only (`403` for agent principals),
+  proxies opencode `DELETE /session/:id`, and the UI selects the next session or returns to the draft
+  when the active one is removed.
 
 ## Handoffs (agent-to-agent requests)
 
@@ -159,7 +164,7 @@ The IDE container keeps its extensions at `/opt/hanse-ext` and settings at
 
 ## Verification
 
-`npm run lint && npm run typecheck && npm test && npm run build` (all green; 150 tests).
+`npm run lint && npm run typecheck && npm test && npm run build` (all green; 153 tests).
 
 ## Known limitations and residual risks
 
