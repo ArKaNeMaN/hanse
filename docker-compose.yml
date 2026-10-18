@@ -4,15 +4,17 @@ services:
     image: hanse:0.1.0
     container_name: hanse
     restart: unless-stopped
+    user: "1000:1000"
     environment:
       HANSE_OPERATOR_TOKEN: ${HANSE_OPERATOR_TOKEN:?set HANSE_OPERATOR_TOKEN in .env}
       HANSE_STATE_HOME: /data/state
       HANSE_AUTH_FILE: /run/hanse/auth.json
+      HANSE_IDE_URL: http://<LAN_HOST>:8444
     ports:
       - "<LAN_HOST>:8787:8787"
     volumes:
       - ./workspace:/data/workspace
-      - hanse-state:/data/state
+      - ./state:/data/state
       - ${HOME}/.local/share/opencode/auth.json:/run/hanse/auth.json:ro
 
   ide:
@@ -26,5 +28,3 @@ services:
     volumes:
       - ./workspace:/home/coder/workspace
 
-volumes:
-  hanse-state:

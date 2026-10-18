@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { handleChat } from "./chat.js";
+import { handleChat, streamSessionEvents } from "./chat.js";
 import type { HttpDeps } from "./handler.js";
 import { handleRequest } from "./handler.js";
 
@@ -28,6 +28,11 @@ export function createHttpServer(deps: HttpDeps): Server {
           },
           body,
         };
+        const isEvents = /^\/api\/apps\/[^/]+\/sessions\/[^/]+\/events$/.test(url.pathname);
+        if (isEvents && (request.method ?? "GET") === "GET") {
+          await streamSessionEvents(deps, httpRequest, response);
+          return;
+        }
         const isChat = url.pathname === "/chat" || url.pathname.startsWith("/api/apps/");
         const result = isChat
           ? await handleChat(deps, httpRequest)

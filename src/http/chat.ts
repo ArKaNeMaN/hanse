@@ -1,3 +1,4 @@
+import type { ServerResponse } from "node:http";
 import { authenticate } from "../identity/auth.js";
 import type { Principal } from "../identity/principals.js";
 import { createSession, listMessages, listSessions, sendPrompt } from "../opencode/client.js";
@@ -100,11 +101,12 @@ async function loadSessions() {
     const b = document.createElement('button');
     b.className = 'btn btn-xs btn-ghost w-full justify-start' + (s.id === sessionId ? ' btn-active' : '');
     b.textContent = s.title || s.id.slice(0, 10);
-    b.onclick = () => { sessionId = s.id; loadMessages(); loadSessions(); };
+    b.onclick = () => { sessionId = s.id; subscribe(); loadMessages(); loadSessions(); };
     list.appendChild(b);
   }
   if (!sessionId && data.sessions.length > 0) sessionId = data.sessions[0].id;
   if (data.sessions.length === 0) { await newSession(); return; }
+  subscribe();
   await loadMessages();
 }
 async function loadMessages() {
@@ -113,16 +115,46 @@ async function loadMessages() {
   const box = $('messages'); box.innerHTML = '';
   for (const m of data.messages) {
     const role = m.info.role;
-    const text = (m.parts || []).filter(p => p.type === 'text' && p.text).map(p => p.text).join('\\n');
-    if (!text) continue;
     const wrap = document.createElement('div');
     wrap.className = 'chat ' + (role === 'user' ? 'chat-end' : 'chat-start');
-    const bubble = document.createElement('div');
-    bubble.className = 'chat-bubble text-sm' + (role === 'user' ? ' chat-bubble-primary' : '');
-    bubble.textContent = text;
-    wrap.appendChild(bubble); box.appendChild(wrap);
+    for (const p of (m.parts || [])) {
+      if (p.type === 'text' && p.text) {
+        const b = document.createElement('div');
+        b.className = 'chat-bubble text-sm' + (role === 'user' ? ' chat-bubble-primary' : '');
+        b.textContent = p.text; wrap.appendChild(b);
+      } else if (p.type === 'tool') {
+        const d = document.createElement('details');
+        d.className = 'chat-bubble text-xs opacity-80';
+        const s = document.createElement('summary');
+        s.textContent = 'tool: ' + (p.tool || 'tool') + ' · ' + ((p.state && p.state.status) || '');
+        d.appendChild(s);
+        const pre = document.createElement('pre');
+        pre.className = 'whitespace-pre-wrap';
+        const out = p.state && typeof p.state.output === 'string' ? p.state.output : (typeof p.output === 'string' ? p.output : '');
+        pre.textContent = out; d.appendChild(pre); wrap.appendChild(d);
+      } else if (p.type === 'patch' || p.type === 'reasoning') {
+        const d = document.createElement('details');
+        d.className = 'chat-bubble text-xs opacity-80';
+        const s = document.createElement('summary');
+        s.textContent = p.type;
+        d.appendChild(s);
+        const pre = document.createElement('pre');
+        pre.className = 'whitespace-pre-wrap';
+        const body = typeof p.text === 'string' ? p.text : (typeof p.patch === 'string' ? p.patch : '');
+        pre.textContent = body; d.appendChild(pre); wrap.appendChild(d);
+      }
+    }
+    if (wrap.childNodes.length > 0) box.appendChild(wrap);
   }
   box.scrollTop = box.scrollHeight;
+}
+let es = null;
+function subscribe() {
+  if (es) { es.close(); es = null; }
+  if (!APP || !sessionId) return;
+  es = new EventSource('/api/apps/' + encodeURIComponent(APP) + '/sessions/' + encodeURIComponent(sessionId) + '/events');
+  let t = null;
+  es.onmessage = () => { if (t) clearTimeout(t); t = setTimeout(function() { loadMessages().catch(function(){}); }, 300); };
 }
 async function send() {
   if (!APP || !sessionId) return;
@@ -147,6 +179,70 @@ loadSessions().then(loadHandoffs).catch(showError);
 setInterval(() => { loadHandoffs().catch(() => {}); }, 5000);
 </script>
 </body></html>`;
+}
+
+export async function streamSessionEvents(
+  deps: HttpDeps,
+  request: HttpRequest,
+  response: ServerResponse,
+): Promise<void> {
+  const principal = principalFrom(deps, request);
+  if (principal === undefined) {
+    response.writeHead(401);
+    response.end();
+    return;
+  }
+  const match = /^\/api\/apps\/([^/]+)\/sessions\/([^/]+)\/events$/.exec(request.path);
+  const found = findApp(deps, decodeURIComponent(match?.[1] ?? ""));
+  if (found === undefined || deps.manager === undefined) {
+    response.writeHead(404);
+    response.end();
+    return;
+  }
+  const controller = new AbortController();
+  response.on("close", () => controller.abort());
+  let endpoint: string;
+  try {
+    endpoint = await deps.manager.ensure({
+      id: found.app.id,
+      projectId: found.project.id,
+      appKey: found.app.appKey,
+      appDir: found.app.path.startsWith("/")
+        ? found.app.path
+        : `${found.project.rootPath}/${found.app.path}`,
+    });
+  } catch {
+    response.writeHead(502);
+    response.end();
+    return;
+  }
+  const upstream = await fetch(`${endpoint}/event`, {
+    headers: { accept: "text/event-stream" },
+    signal: controller.signal,
+  }).catch(() => undefined);
+  if (upstream === undefined || !upstream.ok || upstream.body === null) {
+    response.writeHead(502);
+    response.end();
+    return;
+  }
+  response.writeHead(200, {
+    "content-type": "text/event-stream",
+    "cache-control": "no-cache",
+    connection: "keep-alive",
+  });
+  const reader = upstream.body.getReader();
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      response.write(Buffer.from(value));
+    }
+  } catch {
+    controller.abort();
+  }
+  response.end();
 }
 
 export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<HttpResponse> {

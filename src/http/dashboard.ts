@@ -39,7 +39,12 @@ function navbar(authenticated: boolean): string {
   const right = authenticated
     ? '<span class="text-xs opacity-60">operator</span>'
     : '<a class="btn btn-xs btn-ghost" href="/login">sign in</a>';
-  return `<div class="navbar min-h-12 border-b border-base-300 bg-base-200 px-4"><div class="flex-1"><span class="text-lg font-semibold tracking-tight">hanse</span></div><div class="flex-none flex items-center gap-2">${right}</div></div>`;
+  const ideUrl = process.env.HANSE_IDE_URL;
+  const ide =
+    ideUrl !== undefined && ideUrl.length > 0
+      ? `<a class="btn btn-xs btn-ghost" href="${escapeHtml(ideUrl)}" target="_blank" rel="noreferrer">IDE</a>`
+      : "";
+  return `<div class="navbar min-h-12 border-b border-base-300 bg-base-200 px-4"><div class="flex-1"><span class="text-lg font-semibold tracking-tight">hanse</span></div><div class="flex-none flex items-center gap-2">${ide}${right}</div></div>`;
 }
 
 export function renderLogin(): string {
