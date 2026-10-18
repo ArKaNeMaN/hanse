@@ -3,18 +3,21 @@ import { listHandoffs } from "../coordinator/handoff.js";
 import type { CoordinatorService } from "../coordinator/service.js";
 import { authenticate } from "../identity/auth.js";
 import type { Principal } from "../identity/principals.js";
+import type { InstanceManager } from "../opencode/manager.js";
 import type { SqliteDatabase } from "../store/index.js";
 import { type ProjectView, renderDashboard, renderLogin } from "./dashboard.js";
 
 export interface ProjectContext {
   id: string;
   name: string;
+  rootPath: string;
   service: CoordinatorService;
 }
 
 export interface HttpDeps {
   db: SqliteDatabase;
   projects: ProjectContext[];
+  manager?: InstanceManager;
 }
 
 export interface HttpRequest {
@@ -22,6 +25,7 @@ export interface HttpRequest {
   path: string;
   headers: Record<string, string | undefined>;
   body?: string;
+  query?: Record<string, string>;
 }
 
 export interface HttpResponse {

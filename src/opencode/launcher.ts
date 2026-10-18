@@ -1,5 +1,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { copyFileSync, mkdirSync } from "node:fs";
+import path from "node:path";
 import type { SqliteDatabase } from "../store/index.js";
 import { buildConfigOverlay, type InstanceIdentity, resolveInstanceEnv } from "./instance.js";
 
@@ -13,6 +15,7 @@ export interface LaunchInput {
   instructions?: string[];
   command?: string[];
   baseEnv?: NodeJS.ProcessEnv;
+  authSource?: string;
 }
 
 export interface RunningInstance {
@@ -93,9 +96,15 @@ export function launchInstance(db: SqliteDatabase, input: LaunchInput): RunningI
 
   const id = randomUUID();
   const bootId = randomUUID();
+  const env = buildInstanceEnv(input);
+  if (input.authSource !== undefined) {
+    const dataDir = path.join(String(env.XDG_DATA_HOME), "opencode");
+    mkdirSync(dataDir, { recursive: true });
+    copyFileSync(input.authSource, path.join(dataDir, "auth.json"));
+  }
   const child = spawn(bin, args, {
     cwd: input.appDir,
-    env: buildInstanceEnv(input),
+    env,
     stdio: "ignore",
   });
   const pid = child.pid ?? null;

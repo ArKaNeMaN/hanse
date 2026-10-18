@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { handleChat } from "./chat.js";
 import type { HttpDeps } from "./handler.js";
 import { handleRequest } from "./handler.js";
 
@@ -15,16 +16,22 @@ function readBody(request: IncomingMessage): Promise<string> {
 export function createHttpServer(deps: HttpDeps): Server {
   return createServer((request: IncomingMessage, response: ServerResponse) => {
     void readBody(request)
-      .then((body) => {
-        const result = handleRequest(deps, {
+      .then(async (body) => {
+        const url = new URL(request.url ?? "/", "http://localhost");
+        const httpRequest = {
           method: request.method ?? "GET",
-          path: (request.url ?? "/").split("?")[0] ?? "/",
+          path: url.pathname,
+          query: Object.fromEntries(url.searchParams),
           headers: {
             authorization: request.headers.authorization,
             cookie: request.headers.cookie,
           },
           body,
-        });
+        };
+        const isChat = url.pathname === "/chat" || url.pathname.startsWith("/api/apps/");
+        const result = isChat
+          ? await handleChat(deps, httpRequest)
+          : handleRequest(deps, httpRequest);
         response.writeHead(result.status, {
           "content-type": result.contentType,
           ...(result.headers ?? {}),

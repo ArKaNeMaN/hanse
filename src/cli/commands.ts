@@ -7,8 +7,9 @@ import { CoordinatorService } from "../coordinator/service.js";
 import type { ProjectContext } from "../http/handler.js";
 import { createHttpServer } from "../http/server.js";
 import { upsertPrincipalWithToken } from "../identity/principals.js";
+import { InstanceManager } from "../opencode/manager.js";
 import { discoverProject, registerProject } from "../registry/index.js";
-import { coordinatorDbPath, defaultStateHome } from "../runtime/index.js";
+import { coordinatorDbPath, coordinatorStateDir, defaultStateHome } from "../runtime/index.js";
 import { openDatabase, runMigrations } from "../store/index.js";
 import type { CliIo } from "./cli.js";
 
@@ -131,11 +132,13 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
     projects.push({
       id: registered.id,
       name: registered.name,
+      rootPath: registered.rootPath,
       service: new CoordinatorService(db, registered.id),
     });
   }
 
-  const server = createHttpServer({ db, projects });
+  const manager = new InstanceManager(db, coordinatorStateDir(ctx.stateHome));
+  const server = createHttpServer({ db, projects, manager });
   await new Promise<void>((resolve) => {
     server.listen(options.port, options.hostname, resolve);
   });
@@ -145,6 +148,7 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
 
   return await new Promise<number>((resolve) => {
     const shutdown = (): void => {
+      manager.stopAll();
       server.close(() => {
         db.close();
         resolve(0);

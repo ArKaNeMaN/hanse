@@ -7,11 +7,13 @@ services:
     environment:
       HANSE_OPERATOR_TOKEN: ${HANSE_OPERATOR_TOKEN:?set HANSE_OPERATOR_TOKEN in .env}
       HANSE_STATE_HOME: /data/state
+      HANSE_AUTH_FILE: /run/hanse/auth.json
     ports:
       - "<LAN_HOST>:8787:8787"
     volumes:
       - ./workspace:/data/workspace
       - hanse-state:/data/state
+      - ${HOME}/.local/share/opencode/auth.json:/run/hanse/auth.json:ro
 
   ide:
     image: codercom/code-server:latest

@@ -43,7 +43,7 @@ export function renderLogin(): string {
   );
 }
 
-function renderHandoffRow(projectId: string, handoff: Handoff, authenticated: boolean): string {
+function renderHandoffRow(handoff: Handoff, authenticated: boolean): string {
   const pending = handoff.state === "awaiting_approval";
   const actions = pending
     ? authenticated
@@ -93,14 +93,14 @@ export function renderDashboard(projects: ProjectView[], authenticated: boolean)
     const appRows = project.apps
       .map(
         (app) =>
-          `<tr><td>${escapeHtml(app.appKey)}</td><td>${escapeHtml(app.path)}</td><td>${escapeHtml(app.kind ?? "-")}</td></tr>`,
+          `<tr><td>${escapeHtml(app.appKey)}</td><td>${escapeHtml(app.path)}</td><td>${escapeHtml(app.kind ?? "-")}</td><td><a href="/chat?app=${encodeURIComponent(app.appKey)}">chat</a></td></tr>`,
       )
       .join("");
     parts.push(
-      `<table><thead><tr><th>app</th><th>path</th><th>kind</th></tr></thead><tbody>${appRows || '<tr><td colspan="3" class="muted">(no applications)</td></tr>'}</tbody></table>`,
+      `<table><thead><tr><th>app</th><th>path</th><th>kind</th><th></th></tr></thead><tbody>${appRows || '<tr><td colspan="4" class="muted">(no applications)</td></tr>'}</tbody></table>`,
     );
     const handoffRows = project.handoffs
-      .map((handoff) => renderHandoffRow(project.id, handoff, authenticated))
+      .map((handoff) => renderHandoffRow(handoff, authenticated))
       .join("");
     parts.push(
       `<table><thead><tr><th>id</th><th>state</th><th>from</th><th>to</th><th>summary</th><th></th></tr></thead><tbody>${handoffRows || '<tr><td colspan="6" class="muted">(no handoffs)</td></tr>'}</tbody></table>`,
