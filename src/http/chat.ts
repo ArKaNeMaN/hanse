@@ -73,24 +73,24 @@ function renderChatPage(deps: HttpDeps, appKey: string | undefined): string {
     )
     .join("");
   const selected = appKey ? JSON.stringify(appKey) : "null";
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>hanse chat</title>
+  return `<!doctype html><html lang="en" data-theme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>hanse chat</title>
+<link rel="stylesheet" href="/assets/pico.min.css">
 <style>
-body{font-family:ui-monospace,monospace;margin:0;background:#fafafa;color:#111}
-header{padding:.6rem 1rem;border-bottom:1px solid #ddd;display:flex;gap:1rem;align-items:center}
-main{display:grid;grid-template-columns:220px 1fr 300px;height:calc(100vh - 48px)}
-aside,section{overflow:auto;border-right:1px solid #ddd;padding:.5rem}
+body{margin:0;padding:0}
+header{padding:.6rem 1rem;border-bottom:1px solid var(--pico-muted-border-color);display:flex;gap:1rem;align-items:center;margin:0}
+main{display:grid;grid-template-columns:220px 1fr 300px;height:calc(100vh - 49px);margin:0;max-width:none;padding:0}
+aside,section{overflow:auto;border-right:1px solid var(--pico-muted-border-color);padding:.5rem}
 #messages{flex:1;overflow:auto;padding:.5rem}
-#messages .msg{margin:.4rem 0;padding:.4rem;border-radius:4px;white-space:pre-wrap}
-#messages .user{background:#e8f0fe}
-#messages .assistant{background:#fff;border:1px solid #eee}
-#prompt{width:calc(100% - 80px);height:60px}
-a{color:#0645ad}
-.h{font-weight:bold;margin:.4rem 0}
-.handoff{font-size:.8rem;margin:.2rem 0;padding:.2rem;border-left:3px solid #888}
+#messages .msg{margin:.4rem 0;padding:.5rem;border-radius:6px;white-space:pre-wrap}
+#messages .user{background:rgba(80,130,200,.22)}
+#messages .assistant{background:rgba(255,255,255,.06);border:1px solid var(--pico-muted-border-color)}
+#prompt{width:calc(100% - 90px);height:60px;margin:0}
+.h{font-weight:bold;margin:.4rem 0;opacity:.8}
+.handoff{font-size:.8rem;margin:.2rem 0;padding:.2rem;border-left:3px solid var(--pico-muted-border-color)}
 </style></head><body>
 <header><b>hanse</b> <a href="/">dashboard</a>
 <select id="app" onchange="location.href='/chat?app='+encodeURIComponent(this.value)">${options || '<option value="">(no apps)</option>'}</select>
-<span id="err" style="color:#b00020"></span></header>
+<span id="err" style="color:#ff6b6b"></span></header>
 <main>
 <aside><div class="h">Sessions</div><div id="sessions"></div><button onclick="newSession()">+ new</button></aside>
 <section style="display:flex;flex-direction:column"><div id="messages"></div><div><textarea id="prompt" placeholder="message..."></textarea><button id="send" onclick="send()">send</button></div></section>

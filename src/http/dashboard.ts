@@ -17,19 +17,14 @@ export function escapeHtml(value: string): string {
 }
 
 const STYLE = [
-  "body{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;margin:2rem;color:#111;background:#fafafa}",
-  "h1{font-size:1.4rem}h2{font-size:1.1rem;margin-top:1.5rem}",
-  "table{border-collapse:collapse;width:100%;margin:.5rem 0;background:#fff}",
-  "th,td{border:1px solid #ddd;padding:.35rem .5rem;text-align:left;font-size:.85rem}",
-  "th{background:#f0f0f0}form{display:inline}",
-  "button{cursor:pointer;padding:.15rem .5rem;margin-right:.25rem}",
-  "input,textarea{font-family:inherit;padding:.25rem;margin:.15rem 0;width:100%}",
-  "fieldset{border:1px solid #ddd;margin:.6rem 0;padding:.6rem}",
-  ".muted{color:#666;font-size:.8rem}",
+  ".muted{opacity:.7;font-size:.85rem}",
+  "td form{display:inline-block;margin:0}",
+  "td form button{margin:0 .2rem}",
+  "table{font-size:.85rem}",
 ].join("");
 
 function page(title: string, body: string): string {
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title><style>${STYLE}</style></head><body>${body}</body></html>`;
+  return `<!doctype html><html lang="en" data-theme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title><link rel="stylesheet" href="/assets/pico.min.css"><style>${STYLE}</style></head><body><main class="container">${body}</main></body></html>`;
 }
 
 export function renderLogin(): string {

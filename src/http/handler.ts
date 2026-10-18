@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { decideApproval } from "../coordinator/approval.js";
 import { listHandoffs } from "../coordinator/handoff.js";
@@ -157,6 +157,19 @@ export function handleRequest(deps: HttpDeps, request: HttpRequest): HttpRespons
     return json(200, {
       handoffs: deps.getProjects().flatMap((project) => listHandoffs(deps.db, project.id)),
     });
+  }
+
+  if (request.method === "GET" && request.path === "/assets/pico.min.css") {
+    try {
+      const assetsRoot = process.env.HANSE_ASSETS ?? path.join(process.cwd(), "assets");
+      return {
+        status: 200,
+        contentType: "text/css; charset=utf-8",
+        body: readFileSync(path.join(assetsRoot, "pico.min.css"), "utf8"),
+      };
+    } catch {
+      return json(404, { error: "not found" });
+    }
   }
 
   const decision = decisionFor(request.method, request.path);
