@@ -50,7 +50,11 @@ function fixture(): Fixture {
 }
 
 function deps(db: SqliteDatabase, service: CoordinatorService) {
-  return { db, projects: [{ id: "p", name: "P", service }] };
+  return {
+    db,
+    workspaceRoot: "/tmp",
+    getProjects: () => [{ id: "p", name: "P", rootPath: "/x", service }],
+  };
 }
 
 describe("http handler", () => {

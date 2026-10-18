@@ -51,7 +51,7 @@ function escapeHtml(value: string): string {
 }
 
 function findApp(deps: HttpDeps, appKey: string) {
-  for (const project of deps.projects) {
+  for (const project of deps.getProjects()) {
     const app = project.service.listApps().find((candidate) => candidate.appKey === appKey);
     if (app !== undefined) {
       return { project, app };
@@ -61,9 +61,11 @@ function findApp(deps: HttpDeps, appKey: string) {
 }
 
 function renderChatPage(deps: HttpDeps, appKey: string | undefined): string {
-  const apps = deps.projects.flatMap((project) =>
-    project.service.listApps().map((app) => ({ key: app.appKey, project: project.name })),
-  );
+  const apps = deps
+    .getProjects()
+    .flatMap((project) =>
+      project.service.listApps().map((app) => ({ key: app.appKey, project: project.name })),
+    );
   const options = apps
     .map(
       (app) =>

@@ -81,6 +81,11 @@ export function renderDashboard(projects: ProjectView[], authenticated: boolean)
       ? '<p class="muted">signed in as operator</p>'
       : '<p class="muted">read-only - <a href="/login">sign in</a></p>',
   );
+  parts.push(
+    authenticated
+      ? '<fieldset><legend>New project</legend><form method="post" action="/api/projects"><input name="name" placeholder="project name"><button type="submit">Create</button></form></fieldset>'
+      : "",
+  );
   if (projects.length === 0) {
     parts.push(
       '<p class="muted">No projects registered. Mount a project with <code>.hanse/project.yaml</code>.</p>',

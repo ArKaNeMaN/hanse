@@ -1,3 +1,6 @@
+import { randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import path from "node:path";
 import { decideApproval } from "../coordinator/approval.js";
 import { listHandoffs } from "../coordinator/handoff.js";
 import type { CoordinatorService } from "../coordinator/service.js";
@@ -16,7 +19,8 @@ export interface ProjectContext {
 
 export interface HttpDeps {
   db: SqliteDatabase;
-  projects: ProjectContext[];
+  workspaceRoot: string;
+  getProjects: () => ProjectContext[];
   manager?: InstanceManager;
 }
 
@@ -109,7 +113,7 @@ function pendingApprovalId(db: SqliteDatabase, handoffId: string): string | unde
 }
 
 function projectViews(deps: HttpDeps): ProjectView[] {
-  return deps.projects.map((project) => ({
+  return deps.getProjects().map((project) => ({
     id: project.id,
     name: project.name,
     apps: project.service.listApps(),
@@ -151,7 +155,7 @@ export function handleRequest(deps: HttpDeps, request: HttpRequest): HttpRespons
   }
   if (request.method === "GET" && request.path === "/api/handoffs") {
     return json(200, {
-      handoffs: deps.projects.flatMap((project) => listHandoffs(deps.db, project.id)),
+      handoffs: deps.getProjects().flatMap((project) => listHandoffs(deps.db, project.id)),
     });
   }
 
@@ -176,8 +180,9 @@ export function handleRequest(deps: HttpDeps, request: HttpRequest): HttpRespons
       return json(401, { error: "sign in required" });
     }
     const fields = parseForm(request.body);
+    const candidates = deps.getProjects();
     const project =
-      deps.projects.find((candidate) => candidate.id === fields.project) ?? deps.projects[0];
+      candidates.find((candidate) => candidate.id === fields.project) ?? candidates[0];
     if (project === undefined) {
       return json(400, { error: "no project" });
     }
@@ -192,6 +197,36 @@ export function handleRequest(deps: HttpDeps, request: HttpRequest): HttpRespons
     } catch (error) {
       return json(400, { error: error instanceof Error ? error.message : String(error) });
     }
+    return redirect("/");
+  }
+
+  if (request.method === "POST" && request.path === "/api/projects") {
+    if (principal === undefined) {
+      return json(401, { error: "sign in required" });
+    }
+    const name = (parseForm(request.body).name ?? "").trim();
+    if (name.length === 0) {
+      return json(400, { error: "project name is required" });
+    }
+    const slug =
+      name
+        .toLowerCase()
+        .replace(/[^a-z0-9._-]+/g, "-")
+        .replace(/^-+|-+$/g, "") || `project-${Date.now()}`;
+    const dir = path.join(deps.workspaceRoot, slug);
+    const configPath = path.join(dir, ".hanse", "project.yaml");
+    if (existsSync(configPath)) {
+      return json(409, { error: "project already exists" });
+    }
+    const id = randomUUID();
+    mkdirSync(path.dirname(configPath), { recursive: true });
+    writeFileSync(configPath, `id: ${id}\nname: ${name}\nbase_branch: main\napps: []\n`, "utf8");
+    const now = new Date().toISOString();
+    deps.db
+      .prepare(
+        "INSERT INTO projects (id, name, base_branch, root_path, created_at, updated_at) VALUES (?, ?, 'main', ?, ?, ?)",
+      )
+      .run(id, name, dir, now, now);
     return redirect("/");
   }
 

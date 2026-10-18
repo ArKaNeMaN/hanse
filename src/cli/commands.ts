@@ -126,16 +126,9 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
     upsertPrincipalWithToken(db, { kind: "human", name: "operator", token });
   }
 
-  const projects: ProjectContext[] = [];
   for (const dir of await discoverProjectDirs(workspace)) {
     const { project, rootPath } = await discoverProject(dir);
-    const registered = registerProject(db, project, rootPath);
-    projects.push({
-      id: registered.id,
-      name: registered.name,
-      rootPath: registered.rootPath,
-      service: new CoordinatorService(db, registered.id),
-    });
+    registerProject(db, project, rootPath);
   }
 
   const manager = new InstanceManager(
@@ -143,12 +136,25 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
     coordinatorDbPath(ctx.stateHome),
     coordinatorStateDir(ctx.stateHome),
   );
-  const server = createHttpServer({ db, projects, manager });
+  const getProjects = (): ProjectContext[] => {
+    const rows = db.prepare("SELECT id, name, root_path FROM projects").all() as {
+      id: string;
+      name: string;
+      root_path: string;
+    }[];
+    return rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      rootPath: row.root_path,
+      service: new CoordinatorService(db, row.id),
+    }));
+  };
+  const server = createHttpServer({ db, workspaceRoot: workspace, getProjects, manager });
   await new Promise<void>((resolve) => {
     server.listen(options.port, options.hostname, resolve);
   });
   ctx.io.stdout(
-    `hanse serving ${projects.length} project(s) at http://${options.hostname}:${options.port}`,
+    `hanse serving ${getProjects().length} project(s) at http://${options.hostname}:${options.port}`,
   );
 
   return await new Promise<number>((resolve) => {
