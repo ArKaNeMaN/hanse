@@ -39,6 +39,7 @@ export function buildInstanceEnv(input: LaunchInput): NodeJS.ProcessEnv {
     instructions: input.instructions,
   });
   return {
+    ...process.env,
     ...input.baseEnv,
     ...isolated,
     OPENCODE_CONFIG_CONTENT: JSON.stringify(overlay),
