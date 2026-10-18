@@ -36,3 +36,13 @@
 - OS-level isolation per application (users/containers).
 - Replace the local file lock with a fenced, kernel-backed lock if moving to multi-process coordination.
 - Add a managed key store (OS keyring) for the secret key.
+
+## Current deployment (stages 8-19)
+
+- Single operator login (operator token -> `hanse_token` cookie); no separate IDE password.
+- The IDE runs in a separate `ide` container mounting only the workspace, so `/data/state` (DB,
+  `secret.key`) is not present there. `/ide/?folder=` is confined to the workspace root at the proxy.
+- The terminal's `HOME` is the opened folder (`shell/hanse-shell`).
+- **Residual risk:** the `opencode` agents run in the `hanse` container as the same uid as the
+  coordinator and can read `/data/state` (DB, `secret.key`). Untrusted applications remain out of scope.
+- No TLS; LAN-only.

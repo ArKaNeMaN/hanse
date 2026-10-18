@@ -1,41 +1,33 @@
 # hanse
 
-> **Status: pre-alpha.** This repository is the initial foundation: schemas, documentation, and a
-> skeleton. The coordinator and web UI are not implemented yet.
+> **Status: pre-alpha, functional core.** A self-hosted coordinator/workbench for projects of
+> isolated `opencode` agent applications, with a web UI, integrated agent chat, cross-application
+> handoffs, and an embedded web IDE.
 
-`hanse` is a self-hosted **coordinator/workbench** for running multiple **projects**, each made of
-multiple **applications**. Every application runs as an isolated
-[`opencode`](https://opencode.ai) agent instance, and applications can hand structured requests
-(specs and requirements) to each other **through the coordinator** - like two independent teams
-exchanging tickets.
+`hanse` hosts **projects**, each containing **applications**. Every application runs as an isolated
+[`opencode`](https://opencode.ai) agent instance, and applications can hand structured requests (specs
+and requirements) to each other through the coordinator - like independent teams exchanging tickets.
 
-## Why
+## Features
 
-Long-lived AI coding agents work best when they are isolated per application. But applications in a
-project occasionally need each other: a feature in one app requires a change in a sibling app.
-`hanse` keeps every application isolated while giving them a single, structured way to exchange
-requests without sharing a working tree, a session, or a context window.
+- Project/application registry, and creating projects and adding applications from the UI (by path or
+  `git clone`).
+- One isolated `opencode` instance per application (own XDG state and DB; model auth copied in).
+- Integrated chat with agents: sessions, messages, SSE updates, tool-call/diff rendering.
+- Agent-driven handoffs via MCP tools (`request_sibling_change`, `list_apps`, `handoff_status`,
+  `deliver_handoff`) with human approval in the dashboard.
+- A single operator login for the UI and the web IDE (no separate IDE password).
+- Embedded web IDE (code-server) at `/ide/`: opened in the selected project/application, GitHub Dark
+  Dimmed theme, a bundled "Hanse Agent" chat extension with tabs per app, and a terminal rooted in the
+  opened folder.
+- Docker Compose deployment, intended for a trusted LAN.
 
-## Core ideas
+## Read first
 
-- **Projects and applications** are described on disk by portable `.hanse/` manifests.
-- **One isolated opencode instance per application** (separate state, working tree, and context).
-- **Cross-application handoff through the coordinator**, exposed to agents as thin MCP tools, not as
-  raw MCP transport.
-- **Concurrency control**: one writer lane per application; read-only fan-out allowed.
-- **Runtime state lives outside the managed repositories.**
-
-See [`docs/architecture.md`](docs/architecture.md) and [`docs/conventions.md`](docs/conventions.md).
-
-## Status
-
-**0.1.0 (pre-alpha).** The coordinator core is implemented (stages 0-7): manifest schemas, SQLite
-state store, project/application registry, per-application launcher, durable handoff state machine
-and writer lock, principals/authn + approvals, coordinator MCP tools, HTTP API + dashboard, and an
-encrypted secret store. See [`docs/releases/0.1.0.md`](docs/releases/0.1.0.md).
-
-Not yet wired into the CLI entrypoint: the HTTP server and the MCP server. The live `opencode`
-delivery spike is still pending.
+- [`docs/current-state.md`](docs/current-state.md) - the canonical description of what is implemented now.
+- [`docs/deployment.md`](docs/deployment.md) - how to run and operate it.
+- [`docs/conventions.md`](docs/conventions.md) - the `.hanse/` project/application manifests.
+- [`docs/journal/0001-core.md`](docs/journal/0001-core.md) - the stage-by-stage history and decisions.
 
 ## Development
 
@@ -46,7 +38,7 @@ npm install
 npm run typecheck
 npm test
 npm run lint
-npm run build
+npm run build        # tsc + Tailwind CSS -> dist/ and assets/app.css
 node dist/index.js --help
 ```
 

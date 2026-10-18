@@ -1,7 +1,8 @@
 # Web UI - cohesive workbench
 
-> Status: proposed design. This is a large, security-sensitive expansion (model credentials + agent
-> execution + embedding third-party UIs). Build proceeds only after the owner accepts the risk.
+> Status: **implemented** (see `docs/current-state.md`). The implementation uses a path-based `/ide`
+> reverse proxy to a separate code-server container (workspace-only mount) with a single operator cookie,
+> rather than subdomains/Caddy. This file is kept as the design rationale.
 
 ## Goal
 
