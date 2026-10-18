@@ -4,3 +4,5 @@ Stage records and decision log. One entry per completed stage; link artifacts by
 them.
 
 - `0001-core.md` - stages 0 and 1 of the core coordinator (stage 1 done; spike deferred).
+- `0002-web-redesign.md` - the from-scratch web UI redesign (The Chart Room), stages 2-3 and final QA.
+- `0003-git-workbench.md` - the Application page, human-only git API, client panel, verification, and accepted debt.

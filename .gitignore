@@ -9,3 +9,4 @@ coverage/
 assets/app.css
 .omo/
 .DS_Store
+docs/deploy/

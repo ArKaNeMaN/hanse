@@ -1,0 +1,2150 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="hanse design system primitive showcase: tokens, components, states, and the Chart Room app shell."
+    />
+    <title>hanse - primitive showcase</title>
+    <script>
+      (function () {
+        var params = new URLSearchParams(window.location.search);
+        var theme = params.get("theme");
+        if (!theme) {
+          try {
+            theme = localStorage.getItem("hanse-theme");
+          } catch {}
+        }
+        if (theme === "light" || theme === "dark") {
+          document.documentElement.dataset.theme = theme;
+        }
+        if (params.get("capture") === "1") {
+          document.documentElement.dataset.capture = "full";
+        }
+      })();
+    </script>
+    <link rel="stylesheet" href="../../assets/app.css" />
+  </head>
+  <body class="app-body">
+    <svg class="sr-only" aria-hidden="true" focusable="false">
+      <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16" /></symbol>
+      <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12" /></symbol>
+      <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5" /></symbol>
+      <symbol id="i-chevron-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6" /></symbol>
+      <symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6" /></symbol>
+      <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></symbol>
+      <symbol id="i-search" viewBox="0 0 24 24">
+        <circle cx="11" cy="11" r="8" /><path d="m21 21-4.3-4.3" />
+      </symbol>
+      <symbol id="i-folder" viewBox="0 0 24 24">
+        <path
+          d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"
+        />
+      </symbol>
+      <symbol id="i-dashboard" viewBox="0 0 24 24">
+        <rect width="7" height="9" x="3" y="3" rx="1" />
+        <rect width="7" height="5" x="14" y="3" rx="1" />
+        <rect width="7" height="9" x="14" y="12" rx="1" />
+        <rect width="7" height="5" x="3" y="16" rx="1" />
+      </symbol>
+      <symbol id="i-branch" viewBox="0 0 24 24">
+        <line x1="6" x2="6" y1="3" y2="15" />
+        <circle cx="18" cy="6" r="3" />
+        <circle cx="6" cy="18" r="3" />
+        <path d="M18 9a9 9 0 0 1-9 9" />
+      </symbol>
+      <symbol id="i-message" viewBox="0 0 24 24">
+        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+      </symbol>
+      <symbol id="i-swatch" viewBox="0 0 24 24">
+        <circle cx="13.5" cy="6.5" r="0.5" fill="currentColor" />
+        <circle cx="17.5" cy="10.5" r="0.5" fill="currentColor" />
+        <circle cx="8.5" cy="7.5" r="0.5" fill="currentColor" />
+        <circle cx="6.5" cy="12.5" r="0.5" fill="currentColor" />
+        <path
+          d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z"
+        />
+      </symbol>
+      <symbol id="i-settings" viewBox="0 0 24 24">
+        <path
+          d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"
+        />
+        <circle cx="12" cy="12" r="3" />
+      </symbol>
+      <symbol id="i-sun" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="4" />
+        <path
+          d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"
+        />
+      </symbol>
+      <symbol id="i-moon" viewBox="0 0 24 24">
+        <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" />
+      </symbol>
+      <symbol id="i-external" viewBox="0 0 24 24">
+        <path d="M15 3h6v6" /><path d="M10 14 21 3" />
+        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+      </symbol>
+      <symbol id="i-clock" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" />
+      </symbol>
+      <symbol id="i-stamp" viewBox="0 0 24 24">
+        <path d="M5 22h14" />
+        <path
+          d="M19.27 13.73A2.5 2.5 0 0 0 17.5 13h-11A2.5 2.5 0 0 0 4 15.5V17a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-1.5c0-.66-.26-1.3-.73-1.77Z"
+        />
+        <path d="M14 13V8.5C14 7 15 7 15 5a3 3 0 0 0-6 0c0 2 1 2 1 3.5V13" />
+      </symbol>
+      <symbol id="i-send" viewBox="0 0 24 24">
+        <path d="m22 2-7 20-4-9-9-4Z" /><path d="M22 2 11 13" />
+      </symbol>
+      <symbol id="i-activity" viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2" /></symbol>
+      <symbol id="i-hourglass" viewBox="0 0 24 24">
+        <path d="M5 22h14M5 2h14" />
+        <path
+          d="M17 22v-4.172a2 2 0 0 0-.586-1.414L12 12l-4.414 4.414A2 2 0 0 0 7 17.828V22"
+        />
+        <path d="M7 2v4.172a2 2 0 0 0 .586 1.414L12 12l4.414-4.414A2 2 0 0 0 17 6.172V2" />
+      </symbol>
+      <symbol id="i-alert-triangle" viewBox="0 0 24 24">
+        <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" />
+        <path d="M12 9v4M12 17h.01" />
+      </symbol>
+      <symbol id="i-alert-circle" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="10" /><line x1="12" x2="12" y1="8" y2="12" />
+        <line x1="12" x2="12.01" y1="16" y2="16" />
+      </symbol>
+      <symbol id="i-slash" viewBox="0 0 24 24"><path d="M22 2 2 22" /></symbol>
+      <symbol id="i-inbox" viewBox="0 0 24 24">
+        <polyline points="22 12 16 12 14 15 10 15 8 12 2 12" />
+        <path
+          d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"
+        />
+      </symbol>
+      <symbol id="i-copy" viewBox="0 0 24 24">
+        <rect width="14" height="14" x="8" y="8" rx="2" />
+        <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
+      </symbol>
+      <symbol id="i-terminal" viewBox="0 0 24 24">
+        <polyline points="4 17 10 11 4 5" /><line x1="12" x2="20" y1="19" y2="19" />
+      </symbol>
+      <symbol id="i-code" viewBox="0 0 24 24">
+        <polyline points="16 18 22 12 16 6" /><polyline points="8 6 2 12 8 18" />
+      </symbol>
+      <symbol id="i-arrow-right" viewBox="0 0 24 24">
+        <path d="M5 12h14" /><path d="m12 5 7 7-7 7" />
+      </symbol>
+      <symbol id="i-refresh" viewBox="0 0 24 24">
+        <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" />
+        <path d="M21 3v5h-5" />
+        <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" />
+        <path d="M8 16H3v5" />
+      </symbol>
+      <symbol id="i-lock" viewBox="0 0 24 24">
+        <rect width="18" height="11" x="3" y="11" rx="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" />
+      </symbol>
+      <symbol id="i-input" viewBox="0 0 24 24">
+        <path d="M5 4h1a3 3 0 0 1 3 3 3 3 0 0 1 3-3h1" />
+        <path d="M13 20h-1a3 3 0 0 1-3-3 3 3 0 0 1-3 3H5" />
+        <path d="M5 16H4a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2h1" />
+        <path d="M13 8h7a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-7" />
+        <path d="M9 7v10" />
+      </symbol>
+      <symbol id="i-type" viewBox="0 0 24 24">
+        <polyline points="4 7 4 4 20 4 20 7" />
+        <line x1="9" x2="15" y1="20" y2="20" />
+        <line x1="12" x2="12" y1="4" y2="20" />
+      </symbol>
+      <symbol id="i-layers" viewBox="0 0 24 24">
+        <path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z" />
+        <path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65" />
+        <path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65" />
+      </symbol>
+    </svg>
+
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <div class="app-shell" data-nav="closed" id="shell">
+      <aside class="sidebar" id="app-sidebar" aria-label="Showcase sections">
+        <div class="sidebar__head">
+          <a class="wordmark" href="#cover">hanse</a>
+          <span class="sidebar__kicker">coordinator</span>
+          <button
+            class="btn btn-ghost btn-icon btn-sm sidebar__close"
+            type="button"
+            data-nav-close
+            aria-label="Close navigation"
+          >
+            <svg class="icon" aria-hidden="true"><use href="#i-x" /></svg>
+          </button>
+        </div>
+        <nav class="sidebar__nav" aria-label="Design system sections">
+          <p class="nav-label">System</p>
+          <a class="nav-item is-active" href="#cover" aria-current="page">
+            <svg class="icon" aria-hidden="true"><use href="#i-dashboard" /></svg>
+            Direction
+            <span class="nav-item__mark">
+              <svg class="icon icon--sm" aria-hidden="true"><use href="#i-check" /></svg>
+            </span>
+          </a>
+          <a class="nav-item" href="#color">
+            <svg class="icon" aria-hidden="true"><use href="#i-swatch" /></svg>
+            Color
+          </a>
+          <a class="nav-item" href="#type">
+            <svg class="icon" aria-hidden="true"><use href="#i-type" /></svg>
+            Typography
+          </a>
+          <a class="nav-item" href="#space">
+            <svg class="icon" aria-hidden="true"><use href="#i-activity" /></svg>
+            Space and motion
+          </a>
+          <a class="nav-item" href="#shell-anatomy">
+            <svg class="icon" aria-hidden="true"><use href="#i-terminal" /></svg>
+            Shell
+          </a>
+
+          <p class="nav-label">Primitives</p>
+          <a class="nav-item" href="#buttons">
+            <svg class="icon" aria-hidden="true"><use href="#i-check" /></svg>
+            Buttons
+          </a>
+          <a class="nav-item" href="#fields">
+            <svg class="icon" aria-hidden="true"><use href="#i-input" /></svg>
+            Fields
+          </a>
+          <a class="nav-item" href="#status">
+            <svg class="icon" aria-hidden="true"><use href="#i-stamp" /></svg>
+            Status
+          </a>
+          <a class="nav-item" href="#handoffs">
+            <svg class="icon" aria-hidden="true"><use href="#i-branch" /></svg>
+            Handoffs
+            <span class="nav-item__count">3</span>
+          </a>
+          <a class="nav-item" href="#data">
+            <svg class="icon" aria-hidden="true"><use href="#i-folder" /></svg>
+            Ledgers
+          </a>
+          <a class="nav-item" href="#overlays">
+            <svg class="icon" aria-hidden="true"><use href="#i-layers" /></svg>
+            Overlays
+          </a>
+          <a class="nav-item" href="#feedback">
+            <svg class="icon" aria-hidden="true"><use href="#i-inbox" /></svg>
+            Feedback
+          </a>
+          <a class="nav-item" href="#chat">
+            <svg class="icon" aria-hidden="true"><use href="#i-message" /></svg>
+            Chat
+          </a>
+        </nav>
+        <div class="sidebar__foot">
+          <span class="avatar avatar--sm">OP</span>
+          <span class="sidebar__operator">operator</span>
+          <button class="btn btn-ghost btn-icon btn-sm" type="button" aria-label="Settings">
+            <svg class="icon" aria-hidden="true"><use href="#i-settings" /></svg>
+          </button>
+        </div>
+      </aside>
+
+      <div class="shell-main">
+        <header class="topbar">
+          <button
+            class="btn btn-ghost btn-icon nav-toggle"
+            type="button"
+            data-nav-toggle
+            aria-expanded="false"
+            aria-controls="app-sidebar"
+            aria-label="Open navigation"
+          >
+            <svg class="icon" aria-hidden="true"><use href="#i-menu" /></svg>
+          </button>
+          <a class="topbar__brand" href="#cover">hanse</a>
+          <nav class="breadcrumb" aria-label="Breadcrumb">
+            <a href="#cover">Design system</a>
+            <svg class="icon" aria-hidden="true"><use href="#i-chevron-right" /></svg>
+            <span aria-current="page">Primitive showcase</span>
+          </nav>
+          <div class="topbar__actions">
+            <a class="btn btn-secondary btn-sm hidden sm:inline-flex" href="../../DESIGN.md">
+              <svg class="icon" aria-hidden="true"><use href="#i-code" /></svg>
+              DESIGN.md
+            </a>
+            <button class="btn btn-ghost btn-sm" type="button" data-theme-toggle>
+              <svg class="icon" aria-hidden="true" data-theme-icon="dark"><use href="#i-sun" /></svg>
+              <svg
+                class="icon hidden"
+                aria-hidden="true"
+                data-theme-icon="light"
+              ><use href="#i-moon" /></svg>
+              <span data-theme-label>Light</span>
+            </button>
+          </div>
+        </header>
+
+        <main class="page" id="main" tabindex="-1">
+          <header class="page-header">
+            <div class="page-header__main">
+              <p class="overline">Design system, stage 1</p>
+              <h1 class="page-title">Primitive showcase</h1>
+              <p class="page-description">
+                Every primitive and required state, rendered from the real built stylesheet. Use the
+                sidebar to move between the contract and the specimens.
+              </p>
+              <div class="page-meta">
+                <span class="mono">chart room / dark default</span>
+                <span>390 / 768 / 1440</span>
+                <span>no external assets</span>
+              </div>
+            </div>
+            <div class="page-header__actions">
+              <button class="btn btn-secondary btn-sm" type="button" data-copy-command>
+                <svg class="icon" aria-hidden="true"><use href="#i-copy" /></svg>
+                Copy serve command
+              </button>
+              <button class="btn btn-primary btn-sm" type="button" data-toast="success">
+                <svg class="icon" aria-hidden="true"><use href="#i-check" /></svg>
+                Show success toast
+              </button>
+            </div>
+          </header>
+
+          <div class="page__body">
+            <!-- Direction --------------------------------------------------------- -->
+            <section class="section" id="cover" aria-labelledby="cover-title">
+              <div class="grid items-start gap-6 xl:grid-cols-[minmax(0,1.45fr)_minmax(0,1fr)]">
+                <div class="stack">
+                  <p class="overline">Direction</p>
+                  <h2 class="display" id="cover-title">The Chart Room</h2>
+                  <hr class="rule rule--double" />
+                  <p class="body-lg">
+                    A night watch room for a working fleet. Deep ink-blue surfaces, a single brass
+                    signal, and ruled rows that read like a ship's ledger. Calm at the edges, dense
+                    where the work is.
+                  </p>
+                  <div class="cluster">
+                    <span class="badge">ink surfaces</span>
+                    <span class="badge">brass signal</span>
+                    <span class="badge">serif display</span>
+                    <span class="badge">mono machine data</span>
+                  </div>
+                  <p class="small">
+                    The signature object is the handoff route: a hairline between two applications
+                    with a stamped state seal. It is static, exact, and readable at a glance.
+                  </p>
+                </div>
+                <div class="route-card" data-state="awaiting_approval">
+                  <div class="route-card__head">
+                    <span class="mono">HS-8F2A-1C</span>
+                    <span class="status" data-state="awaiting_approval">
+                      <svg class="icon" aria-hidden="true"><use href="#i-stamp" /></svg>
+                      Awaiting approval
+                    </span>
+                  </div>
+                  <div class="route">
+                    <span class="route__end">
+                      <span class="route__app">gateway</span>
+                      <span class="route__meta">origin</span>
+                    </span>
+                    <span class="route__track" aria-hidden="true">
+                      <span class="route__node"></span>
+                      <span class="route__seal">
+                        <svg class="icon" aria-hidden="true"><use href="#i-stamp" /></svg>
+                      </span>
+                      <span class="route__node"></span>
+                    </span>
+                    <span class="route__end route__end--to">
+                      <span class="route__app">ledger</span>
+                      <span class="route__meta">target</span>
+                    </span>
+                  </div>
+                  <p class="route-card__summary">
+                    Add an idempotency key to invoice sync and publish the revised contract.
+                  </p>
+                  <div class="route-card__foot">
+                    <span class="mono">12 min ago</span>
+                    <span class="cluster">
+                      <button class="btn btn-ghost btn-sm" type="button">Reject</button>
+                      <button class="btn btn-primary btn-sm" type="button" data-dialog-open>
+                        Review handoff
+                      </button>
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <!-- Color ------------------------------------------------------------- -->
+            <section class="section" id="color" aria-labelledby="color-title">
+              <div class="section__head">
+                <h2 class="section__title" id="color-title">Color</h2>
+                <p class="section__note">Ink, steel, brass. Status is semantic.</p>
+              </div>
+
+              <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                <div class="card">
+                  <div class="h-16" style="background: var(--canvas)"></div>
+                  <div class="card__body">
+                    <div class="cluster justify-between">
+                      <span class="mono">--canvas</span>
+                      <span class="caption font-mono">#070B11 / #E9EDEA</span>
+                    </div>
+                    <p class="caption mt-1">Page ground</p>
+                  </div>
+                </div>
+                <div class="card">
+                  <div class="h-16" style="background: var(--surface-1)"></div>
+                  <div class="card__body">
+                    <div class="cluster justify-between">
+                      <span class="mono">--surface-1</span>
+                      <span class="caption font-mono">#0B1119 / #F4F6F3</span>
+                    </div>
+                    <p class="caption mt-1">Sidebar, top bar, panels</p>
+                  </div>
+                </div>
+                <div class="card">
+                  <div class="h-16" style="background: var(--surface-2)"></div>
+                  <div class="card__body">
+                    <div class="cluster justify-between">
+                      <span class="mono">--surface-2</span>
+                      <span class="caption font-mono">#0F1721 / #FBFCFA</span>
+                    </div>
+                    <p class="caption mt-1">Cards, table headers</p>
+                  </div>
+                </div>
+                <div class="card">
+                  <div class="h-16" style="background: var(--surface-3)"></div>
+                  <div class="card__body">
+                    <div class="cluster justify-between">
+                      <span class="mono">--surface-3</span>
+                      <span class="caption font-mono">#15202B / #FFFFFF</span>
+                    </div>
+                    <p class="caption mt-1">Dialogs, popovers</p>
+                  </div>
+                </div>
+                <div class="card">
+                  <div class="h-16" style="background: var(--brass)"></div>
+                  <div class="card__body">
+                    <div class="cluster justify-between">
+                      <span class="mono">--brass</span>
+                      <span class="caption font-mono">#D2AC5F / #7A5B18</span>
+                    </div>
+                    <p class="caption mt-1">The single signal accent</p>
+                  </div>
+                </div>
+                <div class="card">
+                  <div class="h-16" style="background: var(--inset)"></div>
+                  <div class="card__body">
+                    <div class="cluster justify-between">
+                      <span class="mono">--inset</span>
+                      <span class="caption font-mono">#05080D / #E1E6E2</span>
+                    </div>
+                    <p class="caption mt-1">Inputs, code, wells</p>
+                  </div>
+                </div>
+                <div class="card">
+                  <div class="h-16" style="background: var(--text-1)"></div>
+                  <div class="card__body">
+                    <div class="cluster justify-between">
+                      <span class="mono">--text-1</span>
+                      <span class="caption font-mono">#E9EEF1 / #12202A</span>
+                    </div>
+                    <p class="caption mt-1">Primary text</p>
+                  </div>
+                </div>
+                <div class="card">
+                  <div class="h-16" style="background: var(--text-2)"></div>
+                  <div class="card__body">
+                    <div class="cluster justify-between">
+                      <span class="mono">--text-2</span>
+                      <span class="caption font-mono">#A9B7C2 / #455A66</span>
+                    </div>
+                    <p class="caption mt-1">Secondary text</p>
+                  </div>
+                </div>
+                <div class="card">
+                  <div class="h-16" style="background: var(--text-3)"></div>
+                  <div class="card__body">
+                    <div class="cluster justify-between">
+                      <span class="mono">--text-3</span>
+                      <span class="caption font-mono">#7C8B97 / #556872</span>
+                    </div>
+                    <p class="caption mt-1">Metadata, hints</p>
+                  </div>
+                </div>
+              </div>
+
+              <div class="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)]">
+                <div class="card">
+                  <div class="card__head">
+                    <h3 class="card__title">Handoff states</h3>
+                    <span class="mono">9 states</span>
+                  </div>
+                  <div class="card__body">
+                    <div class="cluster">
+                      <span class="status" data-state="queued">
+                        <svg class="icon" aria-hidden="true"><use href="#i-clock" /></svg>
+                        Queued
+                      </span>
+                      <span class="status" data-state="awaiting_approval">
+                        <svg class="icon" aria-hidden="true"><use href="#i-stamp" /></svg>
+                        Awaiting approval
+                      </span>
+                      <span class="status" data-state="dispatching">
+                        <svg class="icon" aria-hidden="true"><use href="#i-send" /></svg>
+                        Dispatching
+                      </span>
+                      <span class="status" data-state="in_progress">
+                        <svg class="icon" aria-hidden="true"><use href="#i-activity" /></svg>
+                        In progress
+                      </span>
+                      <span class="status" data-state="delivered">
+                        <svg class="icon" aria-hidden="true"><use href="#i-check" /></svg>
+                        Delivered
+                      </span>
+                      <span class="status" data-state="rejected">
+                        <svg class="icon" aria-hidden="true"><use href="#i-x" /></svg>
+                        Rejected
+                      </span>
+                      <span class="status" data-state="failed">
+                        <svg class="icon" aria-hidden="true"><use href="#i-alert-triangle" /></svg>
+                        Failed
+                      </span>
+                      <span class="status" data-state="expired">
+                        <svg class="icon" aria-hidden="true"><use href="#i-hourglass" /></svg>
+                        Expired
+                      </span>
+                      <span class="status" data-state="cancelled">
+                        <svg class="icon" aria-hidden="true"><use href="#i-slash" /></svg>
+                        Cancelled
+                      </span>
+                    </div>
+                    <p class="hint mt-4">
+                      Each state pairs ink with a glyph and a word. The tint is derived from the
+                      status ink at 10 percent over the local surface.
+                    </p>
+                  </div>
+                </div>
+                <div class="card">
+                  <div class="card__head">
+                    <h3 class="card__title">Contrast floor</h3>
+                    <span class="badge">WCAG AA</span>
+                  </div>
+                  <div class="card__body">
+                    <div class="stack gap-2">
+                      <div class="cluster justify-between">
+                        <span class="small">Body on surface 1</span>
+                        <span class="mono">16.2:1 dark / 15.3:1 light</span>
+                      </div>
+                      <div class="cluster justify-between">
+                        <span class="small">Secondary text</span>
+                        <span class="mono">9.2:1 dark / 6.7:1 light</span>
+                      </div>
+                      <div class="cluster justify-between">
+                        <span class="small">Tertiary text</span>
+                        <span class="mono">5.4:1 dark / 5.2:1 light</span>
+                      </div>
+                      <div class="cluster justify-between">
+                        <span class="small">Brass on surface 1</span>
+                        <span class="mono">8.9:1 dark / 5.8:1 light</span>
+                      </div>
+                    </div>
+                    <hr class="rule" />
+                    <p class="small">
+                      Status text meets 4.5:1 or better in both themes. Brass is never decorative,
+                      never a glow, and never a side stripe.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <!-- Typography -------------------------------------------------------- -->
+            <section class="section" id="type" aria-labelledby="type-title">
+              <div class="section__head">
+                <h2 class="section__title" id="type-title">Typography</h2>
+                <p class="section__note">Serif identity, humanist sans UI, mono machine data.</p>
+              </div>
+              <div class="grid gap-4 lg:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)]">
+                <div class="card">
+                  <div class="card__head">
+                    <h3 class="card__title">Specimen</h3>
+                    <span class="mono">system stacks</span>
+                  </div>
+                  <div class="card__body stack gap-5">
+                    <div>
+                      <p class="mono">--text-display / 600 serif</p>
+                      <p class="display">Hanseatic ledger</p>
+                    </div>
+                    <div>
+                      <p class="mono">--text-h1 / 600 serif</p>
+                      <p class="h1">Handoffs waiting on you</p>
+                    </div>
+                    <div>
+                      <p class="mono">--text-h2 / 600 serif</p>
+                      <p class="h2">Project ledger</p>
+                    </div>
+                    <div>
+                      <p class="mono">--text-h3 / 600 sans</p>
+                      <p class="h3">Agent runtime</p>
+                    </div>
+                    <div>
+                      <p class="mono">--text-body / 400 sans</p>
+                      <p class="body">
+                        gateway is running against the northbank workspace. The invoice sync task
+                        is holding the writer lane.
+                      </p>
+                    </div>
+                    <div>
+                      <p class="mono">--text-caption / 500 sans</p>
+                      <p class="caption">Updated 12 min ago by operator</p>
+                    </div>
+                    <div>
+                      <p class="mono">--text-overline / 600 sans</p>
+                      <p class="overline">Workbench</p>
+                    </div>
+                    <div>
+                      <p class="mono">--text-mono / 400 mono</p>
+                      <p class="mono">northbank/apps/gateway / 2026-10-18T21:42:07Z</p>
+                    </div>
+                  </div>
+                </div>
+                <div class="stack gap-4">
+                  <div class="card">
+                    <div class="card__head">
+                      <h3 class="card__title">Families</h3>
+                    </div>
+                    <div class="card__body stack gap-4">
+                      <div>
+                        <p class="overline">Display</p>
+                        <p class="h2" style="font-family: var(--font-display)">Chart room</p>
+                        <p class="caption">Iowan Old Style, Palatino, DejaVu Serif, Georgia</p>
+                      </div>
+                      <hr class="rule" />
+                      <div>
+                        <p class="overline">Interface</p>
+                        <p class="h3" style="font-family: var(--font-sans)">Chart room</p>
+                        <p class="caption">Ubuntu, Avenir Next, Segoe UI, Helvetica Neue</p>
+                      </div>
+                      <hr class="rule" />
+                      <div>
+                        <p class="overline">Machine</p>
+                        <p class="h3" style="font-family: var(--font-mono)">HS-8F2A-1C</p>
+                        <p class="caption">Ubuntu Mono, SF Mono, Cascadia Mono, DejaVu Sans Mono</p>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="card">
+                    <div class="card__body">
+                      <p class="small">
+                        Serif is reserved for identity, page titles, and state headlines. It never
+                        sets body copy or buttons. Mono is reserved for ids, paths, timestamps,
+                        counts, and tool output.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <!-- Space and motion -------------------------------------------------- -->
+            <section class="section" id="space" aria-labelledby="space-title">
+              <div class="section__head">
+                <h2 class="section__title" id="space-title">Space and motion</h2>
+                <p class="section__note">4px base. Motion is feedback only.</p>
+              </div>
+              <div class="grid gap-4 lg:grid-cols-2">
+                <div class="card">
+                  <div class="card__head">
+                    <h3 class="card__title">Spacing scale</h3>
+                    <span class="mono">base 4px</span>
+                  </div>
+                  <div class="card__body stack gap-2">
+                    <div class="grid grid-cols-[4.5rem_minmax(0,1fr)_3rem] items-center gap-3">
+                      <span class="mono">--space-1</span>
+                      <span class="h-2" style="inline-size: var(--space-1); background: var(--line-strong)"></span>
+                      <span class="caption font-mono">4</span>
+                    </div>
+                    <div class="grid grid-cols-[4.5rem_minmax(0,1fr)_3rem] items-center gap-3">
+                      <span class="mono">--space-2</span>
+                      <span class="h-2" style="inline-size: var(--space-2); background: var(--line-strong)"></span>
+                      <span class="caption font-mono">8</span>
+                    </div>
+                    <div class="grid grid-cols-[4.5rem_minmax(0,1fr)_3rem] items-center gap-3">
+                      <span class="mono">--space-3</span>
+                      <span class="h-2" style="inline-size: var(--space-3); background: var(--line-strong)"></span>
+                      <span class="caption font-mono">12</span>
+                    </div>
+                    <div class="grid grid-cols-[4.5rem_minmax(0,1fr)_3rem] items-center gap-3">
+                      <span class="mono">--space-4</span>
+                      <span class="h-2" style="inline-size: var(--space-4); background: var(--line-strong)"></span>
+                      <span class="caption font-mono">16</span>
+                    </div>
+                    <div class="grid grid-cols-[4.5rem_minmax(0,1fr)_3rem] items-center gap-3">
+                      <span class="mono">--space-6</span>
+                      <span class="h-2" style="inline-size: var(--space-6); background: var(--line-strong)"></span>
+                      <span class="caption font-mono">24</span>
+                    </div>
+                    <div class="grid grid-cols-[4.5rem_minmax(0,1fr)_3rem] items-center gap-3">
+                      <span class="mono">--space-8</span>
+                      <span class="h-2" style="inline-size: var(--space-8); background: var(--line-strong)"></span>
+                      <span class="caption font-mono">32</span>
+                    </div>
+                    <div class="grid grid-cols-[4.5rem_minmax(0,1fr)_3rem] items-center gap-3">
+                      <span class="mono">--space-12</span>
+                      <span class="h-2" style="inline-size: var(--space-12); background: var(--line-strong)"></span>
+                      <span class="caption font-mono">48</span>
+                    </div>
+                  </div>
+                </div>
+                <div class="stack gap-4">
+                  <div class="card">
+                    <div class="card__head">
+                      <h3 class="card__title">Radius</h3>
+                    </div>
+                    <div class="card__body">
+                      <div class="cluster gap-4">
+                        <div class="stack items-center gap-2">
+                          <span
+                            class="h-10 w-12 border"
+                            style="border-radius: var(--radius-xs); border-color: var(--line-strong); background: var(--surface-2)"
+                          ></span>
+                          <span class="caption font-mono">2px</span>
+                        </div>
+                        <div class="stack items-center gap-2">
+                          <span
+                            class="h-10 w-12 border"
+                            style="border-radius: var(--radius-sm); border-color: var(--line-strong); background: var(--surface-2)"
+                          ></span>
+                          <span class="caption font-mono">4px</span>
+                        </div>
+                        <div class="stack items-center gap-2">
+                          <span
+                            class="h-10 w-12 border"
+                            style="border-radius: var(--radius-md); border-color: var(--line-strong); background: var(--surface-2)"
+                          ></span>
+                          <span class="caption font-mono">6px</span>
+                        </div>
+                        <div class="stack items-center gap-2">
+                          <span
+                            class="h-10 w-12 border"
+                            style="border-radius: var(--radius-lg); border-color: var(--line-strong); background: var(--surface-2)"
+                          ></span>
+                          <span class="caption font-mono">8px</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="card">
+                    <div class="card__head">
+                      <h3 class="card__title">Motion tokens</h3>
+                    </div>
+                    <div class="card__body stack gap-2">
+                      <div class="cluster justify-between">
+                        <span class="small">Micro feedback</span>
+                        <span class="mono">110ms / ease-out</span>
+                      </div>
+                      <div class="cluster justify-between">
+                        <span class="small">Overlay and drawer</span>
+                        <span class="mono">180ms / ease-standard</span>
+                      </div>
+                      <div class="cluster justify-between">
+                        <span class="small">Reduced motion</span>
+                        <span class="mono">cross-fade, no travel</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <!-- Shell ------------------------------------------------------------- -->
+            <section class="section" id="shell-anatomy" aria-labelledby="shell-title">
+              <div class="section__head">
+                <h2 class="section__title" id="shell-title">App shell</h2>
+                <p class="section__note">Fixed rail, one scroll owner, mobile drawer.</p>
+              </div>
+              <div class="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]">
+                <div class="card">
+                  <div class="card__head">
+                    <h3 class="card__title">Navigation item states</h3>
+                    <span class="mono">32px / 44px</span>
+                  </div>
+                  <div class="card__body stack gap-2">
+                    <p class="nav-label">Default</p>
+                    <a class="nav-item" href="#shell-anatomy">
+                      <svg class="icon" aria-hidden="true"><use href="#i-folder" /></svg>
+                      Projects
+                    </a>
+                    <p class="nav-label">Active, wash plus glyph</p>
+                    <a class="nav-item is-active" href="#shell-anatomy" aria-current="page">
+                      <svg class="icon" aria-hidden="true"><use href="#i-dashboard" /></svg>
+                      Overview
+                      <span class="nav-item__mark">
+                        <svg class="icon icon--sm" aria-hidden="true"><use href="#i-check" /></svg>
+                      </span>
+                    </a>
+                    <p class="nav-label">With count</p>
+                    <a class="nav-item" href="#shell-anatomy">
+                      <svg class="icon" aria-hidden="true"><use href="#i-branch" /></svg>
+                      Handoffs
+                      <span class="nav-item__count">3</span>
+                    </a>
+                    <p class="hint mt-2">
+                      Hover and pressed states use ink-alpha washes. Active state adds a brass check
+                      glyph. There is no accent side border.
+                    </p>
+                  </div>
+                </div>
+                <div class="stack gap-4">
+                  <div class="card">
+                    <div class="card__head">
+                      <h3 class="card__title">Top bar and breadcrumb</h3>
+                      <span class="mono">56px desktop</span>
+                    </div>
+                    <div class="card__body">
+                      <div class="card" style="background: var(--surface-1)">
+                        <div class="topbar topbar--demo">
+                          <nav class="breadcrumb" aria-label="Breadcrumb example">
+                            <a href="#shell-anatomy">Projects</a>
+                            <svg class="icon" aria-hidden="true"><use href="#i-chevron-right" /></svg>
+                            <a href="#shell-anatomy">northbank</a>
+                            <svg class="icon" aria-hidden="true"><use href="#i-chevron-right" /></svg>
+                            <span aria-current="page">gateway</span>
+                          </nav>
+                          <div class="topbar__actions">
+                            <span class="badge badge--mono">api</span>
+                            <button class="btn btn-secondary btn-sm" type="button">
+                              <svg class="icon" aria-hidden="true"><use href="#i-external" /></svg>
+                              Open IDE
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                      <p class="hint mt-3">
+                        The top bar stays fixed while the page scrolls. Breadcrumbs truncate
+                        ancestors first; the current page never truncates. At phone width the
+                        production top bar hides the breadcrumb; this demo keeps both for anatomy.
+                      </p>
+                    </div>
+                  </div>
+                  <div class="card">
+                    <div class="card__head">
+                      <h3 class="card__title">Breakpoint behavior</h3>
+                    </div>
+                    <div class="card__body stack gap-2">
+                      <div class="cluster justify-between">
+                        <span class="small">1200 and up</span>
+                        <span class="mono">232px rail / 32px gutters</span>
+                      </div>
+                      <div class="cluster justify-between">
+                        <span class="small">1024 to 1199</span>
+                        <span class="mono">212px rail / 24px gutters</span>
+                      </div>
+                      <div class="cluster justify-between">
+                        <span class="small">768 to 1023</span>
+                        <span class="mono">off-canvas drawer</span>
+                      </div>
+                      <div class="cluster justify-between">
+                        <span class="small">Below 768</span>
+                        <span class="mono">one column / stacked tables</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <!-- Buttons ----------------------------------------------------------- -->
+            <section class="section" id="buttons" aria-labelledby="buttons-title">
+              <div class="section__head">
+                <h2 class="section__title" id="buttons-title">Buttons</h2>
+                <p class="section__note">Outcome verbs, one primary per view.</p>
+              </div>
+              <div class="grid gap-4 lg:grid-cols-3">
+                <div class="card">
+                  <div class="card__head"><h3 class="card__title">Variants</h3></div>
+                  <div class="card__body">
+                    <div class="cluster">
+                      <button class="btn btn-primary" type="button">
+                        <svg class="icon" aria-hidden="true"><use href="#i-check" /></svg>
+                        Approve handoff
+                      </button>
+                      <button class="btn btn-secondary" type="button">Open IDE</button>
+                      <button class="btn btn-ghost" type="button">Cancel</button>
+                      <button class="btn btn-danger" type="button">Reject</button>
+                      <button class="btn btn-ghost btn-icon" type="button" aria-label="Copy id">
+                        <svg class="icon" aria-hidden="true"><use href="#i-copy" /></svg>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                <div class="card">
+                  <div class="card__head"><h3 class="card__title">Sizes</h3></div>
+                  <div class="card__body">
+                    <div class="cluster">
+                      <button class="btn btn-primary btn-lg" type="button">Sign in</button>
+                      <button class="btn btn-primary" type="button">Approve</button>
+                      <button class="btn btn-primary btn-sm" type="button">Approve</button>
+                      <button class="btn btn-primary btn-xs" type="button">Approve</button>
+                    </div>
+                  </div>
+                </div>
+                <div class="card">
+                  <div class="card__head"><h3 class="card__title">States</h3></div>
+                  <div class="card__body">
+                    <div class="cluster">
+                      <button class="btn btn-secondary" type="button" disabled>Disabled</button>
+                      <button class="btn btn-primary" type="button" aria-busy="true" disabled>
+                        <span class="spinner" aria-hidden="true"></span>
+                        <span class="btn__label">Signing in</span>
+                      </button>
+                      <button class="btn btn-secondary" type="button" aria-busy="true">
+                        <span class="spinner" aria-hidden="true"></span>
+                        <span class="btn__label">Loading</span>
+                      </button>
+                    </div>
+                    <p class="hint mt-3">
+                      Press Tab to inspect focus rings. Loading keeps the label and reserves the
+                      spinner inline.
+                    </p>
+                  </div>
+                </div>
+              </div>
+              <div class="card mt-4">
+                <div class="card__head">
+                  <h3 class="card__title">Action composition</h3>
+                  <span class="mono">one primary</span>
+                </div>
+                <div class="card__body cluster justify-between">
+                  <div class="cluster">
+                    <button class="btn btn-ghost btn-sm" type="button">
+                      <svg class="icon" aria-hidden="true"><use href="#i-refresh" /></svg>
+                      Refresh
+                    </button>
+                    <span class="mono">updated 14s ago</span>
+                  </div>
+                  <div class="cluster">
+                    <button class="btn btn-danger btn-sm" type="button">Reject</button>
+                    <button class="btn btn-primary btn-sm" type="button">Approve handoff</button>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <!-- Fields ------------------------------------------------------------ -->
+            <section class="section" id="fields" aria-labelledby="fields-title">
+              <div class="section__head">
+                <h2 class="section__title" id="fields-title">Fields</h2>
+                <p class="section__note">Label above, hint below, error next to the field.</p>
+              </div>
+              <div class="grid gap-4 md:grid-cols-2">
+                <div class="card">
+                  <div class="card__head"><h3 class="card__title">Text input</h3></div>
+                  <div class="card__body">
+                    <div class="field">
+                      <label class="label" for="field-name">Project name</label>
+                      <input
+                        class="input"
+                        id="field-name"
+                        name="project"
+                        placeholder="northbank"
+                        autocomplete="off"
+                        aria-describedby="field-name-hint"
+                      />
+                      <p class="hint" id="field-name-hint">
+                        Lowercase. Used in paths and URLs.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+                <div class="card">
+                  <div class="card__head"><h3 class="card__title">Invalid</h3></div>
+                  <div class="card__body">
+                    <div class="field" data-invalid="true">
+                      <label class="label" for="field-token">Operator token</label>
+                      <input
+                        class="input"
+                        id="field-token"
+                        name="token"
+                        type="password"
+                        value="not-the-token"
+                        aria-invalid="true"
+                        aria-describedby="field-token-error"
+                      />
+                      <p class="field-error" id="field-token-error">
+                        <svg class="icon" aria-hidden="true"><use href="#i-alert-circle" /></svg>
+                        Token rejected. Check the value and try again.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+                <div class="card">
+                  <div class="card__head"><h3 class="card__title">Select</h3></div>
+                  <div class="card__body">
+                    <div class="field">
+                      <label class="label" for="field-app">Application</label>
+                      <div class="select-wrap">
+                        <select class="select" id="field-app" aria-describedby="field-app-hint">
+                          <option>gateway</option>
+                          <option>ledger</option>
+                          <option>charts</option>
+                        </select>
+                        <svg class="icon" aria-hidden="true"><use href="#i-chevron-down" /></svg>
+                      </div>
+                      <p class="hint" id="field-app-hint">Only applications in the current project.</p>
+                    </div>
+                  </div>
+                </div>
+                <div class="card">
+                  <div class="card__head"><h3 class="card__title">Textarea</h3></div>
+                  <div class="card__body">
+                    <div class="field">
+                      <label class="label" for="field-spec">Handoff summary</label>
+                      <textarea
+                        class="textarea"
+                        id="field-spec"
+                        placeholder="Describe the change in one or two sentences"
+                        aria-describedby="field-spec-hint"
+                      ></textarea>
+                      <p class="hint" id="field-spec-hint">The receiving agent sees this first.</p>
+                    </div>
+                  </div>
+                </div>
+                <div class="card">
+                  <div class="card__head"><h3 class="card__title">Checkbox</h3></div>
+                  <div class="card__body stack gap-3">
+                    <label class="check">
+                      <input class="checkbox" type="checkbox" checked />
+                      <span>Wake the target agent after approval</span>
+                    </label>
+                    <label class="check">
+                      <input class="checkbox" type="checkbox" />
+                      <span>Require a second operator review</span>
+                    </label>
+                    <label class="check">
+                      <input class="checkbox" type="checkbox" disabled />
+                      <span>Notify the project channel</span>
+                    </label>
+                  </div>
+                </div>
+                <div class="card">
+                  <div class="card__head"><h3 class="card__title">Disabled</h3></div>
+                  <div class="card__body">
+                    <div class="field">
+                      <label class="label" for="field-disabled">Runtime endpoint</label>
+                      <input
+                        class="input"
+                        id="field-disabled"
+                        value="127.0.0.1:4107"
+                        disabled
+                        aria-describedby="field-disabled-hint"
+                      />
+                      <p class="hint" id="field-disabled-hint">Managed by the coordinator.</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <!-- Status ------------------------------------------------------------ -->
+            <section class="section" id="status" aria-labelledby="status-title">
+              <div class="section__head">
+                <h2 class="section__title" id="status-title">Status, badges, small parts</h2>
+                <p class="section__note">Color is never the only carrier.</p>
+              </div>
+              <div class="grid gap-4 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]">
+                <div class="card">
+                  <div class="card__head">
+                    <h3 class="card__title">State pills</h3>
+                    <span class="mono">22px</span>
+                  </div>
+                  <div class="card__body">
+                    <div class="cluster">
+                      <span class="status" data-state="queued">
+                        <svg class="icon" aria-hidden="true"><use href="#i-clock" /></svg>
+                        Queued
+                      </span>
+                      <span class="status" data-state="awaiting_approval">
+                        <svg class="icon" aria-hidden="true"><use href="#i-stamp" /></svg>
+                        Awaiting approval
+                      </span>
+                      <span class="status" data-state="dispatching">
+                        <svg class="icon" aria-hidden="true"><use href="#i-send" /></svg>
+                        Dispatching
+                      </span>
+                      <span class="status" data-state="in_progress">
+                        <svg class="icon" aria-hidden="true"><use href="#i-activity" /></svg>
+                        In progress
+                      </span>
+                      <span class="status" data-state="delivered">
+                        <svg class="icon" aria-hidden="true"><use href="#i-check" /></svg>
+                        Delivered
+                      </span>
+                      <span class="status" data-state="rejected">
+                        <svg class="icon" aria-hidden="true"><use href="#i-x" /></svg>
+                        Rejected
+                      </span>
+                      <span class="status" data-state="failed">
+                        <svg class="icon" aria-hidden="true"><use href="#i-alert-triangle" /></svg>
+                        Failed
+                      </span>
+                      <span class="status" data-state="expired">
+                        <svg class="icon" aria-hidden="true"><use href="#i-hourglass" /></svg>
+                        Expired
+                      </span>
+                      <span class="status" data-state="cancelled">
+                        <svg class="icon" aria-hidden="true"><use href="#i-slash" /></svg>
+                        Cancelled
+                      </span>
+                    </div>
+                    <hr class="rule" />
+                    <div class="cluster">
+                      <span class="badge">app</span>
+                      <span class="badge badge--mono">gateway</span>
+                      <span class="badge badge--mono">api</span>
+                      <span class="kbd">K</span>
+                      <span class="kbd">Esc</span>
+                      <span class="avatar">OP</span>
+                      <span class="avatar avatar--sm">GW</span>
+                      <span class="avatar avatar--lg">LG</span>
+                    </div>
+                  </div>
+                </div>
+                <div class="card">
+                  <div class="card__head">
+                    <h3 class="card__title">Tooltip and copy</h3>
+                  </div>
+                  <div class="card__body stack gap-4">
+                    <div class="cluster">
+                      <span class="tooltip-wrap">
+                        <button
+                          class="btn btn-ghost btn-icon"
+                          type="button"
+                          aria-label="Copy handoff id"
+                          aria-describedby="tip-copy"
+                          data-copy-id="HS-8F2A-1C"
+                        >
+                          <svg class="icon" aria-hidden="true"><use href="#i-copy" /></svg>
+                        </button>
+                        <span class="tooltip" role="tooltip" id="tip-copy">Copy handoff id</span>
+                      </span>
+                      <span class="mono">HS-8F2A-1C</span>
+                    </div>
+                    <p class="hint">
+                      Hover or focus the copy button. Tooltips enhance icon-only controls and never
+                      replace the accessible label.
+                    </p>
+                  </div>
+                </div>
+              </div>
+              <div class="card mt-4">
+                <div class="card__head">
+                  <h3 class="card__title">Segmented control</h3>
+                  <span class="mono">filter</span>
+                </div>
+                <div class="card__body stack gap-3">
+                  <div class="segmented" role="group" aria-label="Handoff filter">
+                    <button class="segmented__item" type="button" aria-pressed="true">Waiting</button>
+                    <button class="segmented__item" type="button" aria-pressed="false">
+                      Active
+                    </button>
+                    <button class="segmented__item" type="button" aria-pressed="false">
+                      Closed
+                    </button>
+                  </div>
+                  <p class="hint">
+                    Active state is a wash plus a brass diamond glyph. No accent bottom border.
+                  </p>
+                </div>
+              </div>
+            </section>
+
+            <!-- Handoffs ---------------------------------------------------------- -->
+            <section class="section" id="handoffs" aria-labelledby="handoffs-title">
+              <div class="section__head">
+                <h2 class="section__title" id="handoffs-title">Handoffs</h2>
+                <p class="section__note">The plotted route is the signature object.</p>
+              </div>
+              <div class="grid gap-4 xl:grid-cols-2">
+                <div class="route-card" data-state="awaiting_approval">
+                  <div class="route-card__head">
+                    <span class="mono">HS-8F2A-1C</span>
+                    <span class="status" data-state="awaiting_approval">
+                      <svg class="icon" aria-hidden="true"><use href="#i-stamp" /></svg>
+                      Awaiting approval
+                    </span>
+                  </div>
+                  <div class="route">
+                    <span class="route__end">
+                      <span class="route__app">gateway</span>
+                      <span class="route__meta">origin</span>
+                    </span>
+                    <span class="route__track" aria-hidden="true">
+                      <span class="route__node"></span>
+                      <span class="route__seal">
+                        <svg class="icon" aria-hidden="true"><use href="#i-stamp" /></svg>
+                      </span>
+                      <span class="route__node"></span>
+                    </span>
+                    <span class="route__end route__end--to">
+                      <span class="route__app">ledger</span>
+                      <span class="route__meta">target</span>
+                    </span>
+                  </div>
+                  <p class="route-card__summary">
+                    Add an idempotency key to invoice sync and publish the revised contract.
+                  </p>
+                  <div class="route-card__foot">
+                    <span class="mono">12 min ago</span>
+                    <span class="cluster">
+                      <button class="btn btn-ghost btn-sm" type="button">Reject</button>
+                      <button class="btn btn-primary btn-sm" type="button" data-dialog-open>
+                        Review handoff
+                      </button>
+                    </span>
+                  </div>
+                </div>
+
+                <div class="route-card" data-state="delivered">
+                  <div class="route-card__head">
+                    <span class="mono table__nowrap">HS-7B14-90</span>
+                    <span class="status" data-state="delivered">
+                      <svg class="icon" aria-hidden="true"><use href="#i-check" /></svg>
+                      Delivered
+                    </span>
+                  </div>
+                  <div class="route">
+                    <span class="route__end">
+                      <span class="route__app">charts</span>
+                      <span class="route__meta">origin</span>
+                    </span>
+                    <span class="route__track" aria-hidden="true">
+                      <span class="route__node"></span>
+                      <span class="route__seal">
+                        <svg class="icon" aria-hidden="true"><use href="#i-check" /></svg>
+                      </span>
+                      <span class="route__node"></span>
+                    </span>
+                    <span class="route__end route__end--to">
+                      <span class="route__app">gateway</span>
+                      <span class="route__meta">target</span>
+                    </span>
+                  </div>
+                  <p class="route-card__summary">
+                    Expose vessel ETA on the manifest endpoint and document the response shape.
+                  </p>
+                  <div class="route-card__foot">
+                    <span class="mono">2 hours ago</span>
+                    <span class="cluster">
+                      <a class="btn btn-ghost btn-sm" href="#handoffs">
+                        Open result
+                        <svg class="icon" aria-hidden="true"><use href="#i-arrow-right" /></svg>
+                      </a>
+                    </span>
+                  </div>
+                </div>
+
+                <div class="route-card" data-state="failed">
+                  <div class="route-card__head">
+                    <span class="mono">HS-51C9-4E</span>
+                    <span class="status" data-state="failed">
+                      <svg class="icon" aria-hidden="true"><use href="#i-alert-triangle" /></svg>
+                      Failed
+                    </span>
+                  </div>
+                  <div class="route">
+                    <span class="route__end">
+                      <span class="route__app">ledger</span>
+                      <span class="route__meta">origin</span>
+                    </span>
+                    <span class="route__track" aria-hidden="true">
+                      <span class="route__node"></span>
+                      <span class="route__seal">
+                        <svg class="icon" aria-hidden="true"><use href="#i-alert-triangle" /></svg>
+                      </span>
+                      <span class="route__node"></span>
+                    </span>
+                    <span class="route__end route__end--to">
+                      <span class="route__app">dispatch</span>
+                      <span class="route__meta">target</span>
+                    </span>
+                  </div>
+                  <p class="route-card__summary">
+                    Migration 0042 could not acquire the writer lane before the lease expired.
+                  </p>
+                  <div class="route-card__foot">
+                    <span class="mono">yesterday</span>
+                    <span class="cluster">
+                      <button class="btn btn-secondary btn-sm" type="button">
+                        <svg class="icon" aria-hidden="true"><use href="#i-refresh" /></svg>
+                        Retry
+                      </button>
+                    </span>
+                  </div>
+                </div>
+
+                <div class="card">
+                  <div class="card__head">
+                    <h3 class="card__title">Handoff ledger</h3>
+                    <span class="mono">compact rows</span>
+                  </div>
+                  <div class="card__body" style="padding: 0">
+                    <div class="table-wrap">
+                      <table class="table table--stack table--handoffs">
+                        <thead>
+                          <tr>
+                            <th scope="col">Id</th>
+                            <th scope="col">Route</th>
+                            <th scope="col">State</th>
+                            <th scope="col">Summary</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr>
+                            <td data-label="Id"><span class="mono table__nowrap">HS-8F2A-1C</span></td>
+                            <td data-label="Route">
+                              <span class="mono table__nowrap">gateway / ledger</span>
+                            </td>
+                            <td data-label="State">
+                              <span class="status" data-state="awaiting_approval">
+                                <svg class="icon" aria-hidden="true"><use href="#i-stamp" /></svg>
+                                Awaiting
+                              </span>
+                            </td>
+                            <td data-label="Summary">Add an idempotency key to invoice sync.</td>
+                          </tr>
+                          <tr aria-selected="true">
+                            <td data-label="Id">
+                              <span class="table__check">
+                                <svg class="icon icon--sm" aria-hidden="true"><use href="#i-check" /></svg>
+                              </span>
+                              <span class="mono table__nowrap">HS-7B14-90</span>
+                            </td>
+                            <td data-label="Route">
+                              <span class="mono table__nowrap">charts / gateway</span>
+                            </td>
+                            <td data-label="State">
+                              <span class="status" data-state="delivered">
+                                <svg class="icon" aria-hidden="true"><use href="#i-check" /></svg>
+                                Delivered
+                              </span>
+                            </td>
+                            <td data-label="Summary">
+                              <span class="table__primary">Expose vessel ETA on the manifest endpoint.</span>
+                            </td>
+                          </tr>
+                          <tr>
+                            <td data-label="Id"><span class="mono table__nowrap">HS-51C9-4E</span></td>
+                            <td data-label="Route">
+                              <span class="mono table__nowrap">ledger / dispatch</span>
+                            </td>
+                            <td data-label="State">
+                              <span class="status" data-state="failed">
+                                <svg class="icon" aria-hidden="true"><use href="#i-alert-triangle" /></svg>
+                                Failed
+                              </span>
+                            </td>
+                            <td data-label="Summary">Writer lane lease expired during migration.</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <!-- Data -------------------------------------------------------------- -->
+            <section class="section" id="data" aria-labelledby="data-title">
+              <div class="section__head">
+                <h2 class="section__title" id="data-title">Ledgers</h2>
+                <p class="section__note">Metrics breathe in plain layout. Tables carry the density.</p>
+              </div>
+
+              <div class="watch-strip">
+                <div class="watch">
+                  <p class="watch__value">3</p>
+                  <p class="watch__label">Projects</p>
+                </div>
+                <div class="watch">
+                  <p class="watch__value">8</p>
+                  <p class="watch__label">Applications</p>
+                </div>
+                <div class="watch">
+                  <p class="watch__value">3</p>
+                  <p class="watch__label">Handoffs waiting</p>
+                </div>
+              </div>
+
+              <div class="card mt-4">
+                <div class="card__head">
+                  <h3 class="card__title">Applications, northbank</h3>
+                  <div class="cluster">
+                    <span class="badge">3 apps</span>
+                    <button class="btn btn-ghost btn-sm" type="button">
+                      <svg class="icon" aria-hidden="true"><use href="#i-plus" /></svg>
+                      Add app
+                    </button>
+                  </div>
+                </div>
+                <div class="card__body" style="padding: 0">
+                  <div class="table-wrap">
+                    <table class="table table--stack">
+                      <thead>
+                        <tr>
+                          <th scope="col">Application</th>
+                          <th scope="col">Kind</th>
+                          <th scope="col">Path</th>
+                          <th scope="col">Runtime</th>
+                          <th scope="col"></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr aria-selected="true">
+                          <td data-label="Application">
+                            <span class="table__check">
+                              <svg class="icon icon--sm" aria-hidden="true"><use href="#i-check" /></svg>
+                            </span>
+                            <strong class="table__primary">gateway</strong>
+                          </td>
+                          <td data-label="Kind"><span class="badge badge--mono">api</span></td>
+                          <td data-label="Path"><span class="mono">apps/gateway</span></td>
+                          <td data-label="Runtime">
+                            <span class="status" data-state="in_progress">
+                              <svg class="icon" aria-hidden="true"><use href="#i-activity" /></svg>
+                              Running
+                            </span>
+                          </td>
+                          <td data-label="Actions" class="table__actions">
+                            <a class="btn btn-ghost btn-sm" href="#chat">Open chat</a>
+                          </td>
+                        </tr>
+                        <tr>
+                          <td data-label="Application">
+                            <strong class="table__primary">ledger</strong>
+                          </td>
+                          <td data-label="Kind"><span class="badge badge--mono">worker</span></td>
+                          <td data-label="Path"><span class="mono">apps/ledger</span></td>
+                          <td data-label="Runtime">
+                            <span class="status" data-state="queued">
+                              <svg class="icon" aria-hidden="true"><use href="#i-clock" /></svg>
+                              Idle
+                            </span>
+                          </td>
+                          <td data-label="Actions" class="table__actions">
+                            <a class="btn btn-ghost btn-sm" href="#chat">Open chat</a>
+                          </td>
+                        </tr>
+                        <tr>
+                          <td data-label="Application">
+                            <strong class="table__primary">charts</strong>
+                          </td>
+                          <td data-label="Kind"><span class="badge badge--mono">web</span></td>
+                          <td data-label="Path"><span class="mono">apps/charts</span></td>
+                          <td data-label="Runtime">
+                            <span class="status" data-state="queued">
+                              <svg class="icon" aria-hidden="true"><use href="#i-clock" /></svg>
+                              Idle
+                            </span>
+                          </td>
+                          <td data-label="Actions" class="table__actions">
+                            <a class="btn btn-ghost btn-sm" href="#chat">Open chat</a>
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+
+              <div class="mt-4 grid gap-4 md:grid-cols-2">
+                <div class="card">
+                  <div class="card__head">
+                    <h3 class="card__title">Agent runtime</h3>
+                    <span class="mono">127.0.0.1:4107</span>
+                  </div>
+                  <div class="card__body stack gap-3">
+                    <div class="cluster justify-between">
+                      <span class="small">Writer lane</span>
+                      <span class="status" data-state="in_progress">
+                        <svg class="icon" aria-hidden="true"><use href="#i-activity" /></svg>
+                        Held by gateway
+                      </span>
+                    </div>
+                    <div class="cluster justify-between">
+                      <span class="small">Last heartbeat</span>
+                      <span class="mono">14s ago</span>
+                    </div>
+                    <div class="cluster justify-between">
+                      <span class="small">Session</span>
+                      <span class="mono">ses_9c2f</span>
+                    </div>
+                  </div>
+                  <div class="card__foot">
+                    <button class="btn btn-ghost btn-sm" type="button">View log</button>
+                    <button class="btn btn-secondary btn-sm" type="button">Restart</button>
+                  </div>
+                </div>
+                <div class="card">
+                  <div class="card__head">
+                    <h3 class="card__title">Workspace</h3>
+                    <span class="badge badge--mono">project</span>
+                  </div>
+                  <div class="card__body stack gap-3">
+                    <div class="stack gap-1">
+                      <span class="overline">Root path</span>
+                      <span class="mono">/data/workspace/northbank</span>
+                    </div>
+                    <div class="stack gap-1">
+                      <span class="overline">Manifest</span>
+                      <span class="mono">.hanse/project.yaml</span>
+                    </div>
+                    <p class="small">
+                      A project is a folder with a manifest. Applications are git repositories with
+                      their own isolated agent state.
+                    </p>
+                  </div>
+                  <div class="card__foot">
+                    <a class="btn btn-ghost btn-sm" href="#data">
+                      <svg class="icon" aria-hidden="true"><use href="#i-external" /></svg>
+                      Open IDE
+                    </a>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <!-- Overlays ---------------------------------------------------------- -->
+            <section class="section" id="overlays" aria-labelledby="overlays-title">
+              <div class="section__head">
+                <h2 class="section__title" id="overlays-title">Overlays</h2>
+                <p class="section__note">One dialog at a time. Outcome verbs, never OK.</p>
+              </div>
+              <div class="grid gap-4 md:grid-cols-2">
+                <div class="card">
+                  <div class="card__head"><h3 class="card__title">Dialog</h3></div>
+                  <div class="card__body stack gap-3">
+                    <p class="small">
+                      Native dialog, trapped focus, Escape closes, Cancel is always visible and
+                      never the default.
+                    </p>
+                    <div class="cluster">
+                      <button class="btn btn-primary" type="button" data-dialog-open>
+                        Review handoff
+                      </button>
+                      <span class="mono">HS-8F2A-1C</span>
+                    </div>
+                  </div>
+                </div>
+                <div class="card">
+                  <div class="card__head"><h3 class="card__title">Toast</h3></div>
+                  <div class="card__body stack gap-3">
+                    <p class="small">
+                      Only for outcomes not visible in place. Success dismisses after six seconds;
+                      errors stay until dismissed.
+                    </p>
+                    <div class="cluster">
+                      <button class="btn btn-secondary btn-sm" type="button" data-toast="success">
+                        Success toast
+                      </button>
+                      <button class="btn btn-secondary btn-sm" type="button" data-toast="error">
+                        Error toast
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <!-- Feedback ---------------------------------------------------------- -->
+            <section class="section" id="feedback" aria-labelledby="feedback-title">
+              <div class="section__head">
+                <h2 class="section__title" id="feedback-title">Feedback</h2>
+                <p class="section__note">Empty teaches, loading holds shape, error states the cause.</p>
+              </div>
+              <div class="grid gap-4 lg:grid-cols-3">
+                <div class="empty-state">
+                  <span class="empty-state__mark">
+                    <svg class="icon icon--lg" aria-hidden="true"><use href="#i-inbox" /></svg>
+                  </span>
+                  <h3 class="empty-state__title">No handoffs waiting</h3>
+                  <p class="empty-state__body">
+                    Requests from sibling agents arrive here for review. Start a chat and ask an
+                    agent to request a change.
+                  </p>
+                  <a class="btn btn-secondary btn-sm" href="#chat">Open chat</a>
+                </div>
+                <div class="card">
+                  <div class="card__head">
+                    <h3 class="card__title">Loading</h3>
+                    <span class="spinner" aria-hidden="true"></span>
+                  </div>
+                  <div class="card__body stack gap-4">
+                    <div class="skeleton-stack" aria-hidden="true">
+                      <span class="skeleton skeleton--title"></span>
+                      <span class="skeleton"></span>
+                      <span class="skeleton skeleton--short"></span>
+                      <span class="skeleton"></span>
+                    </div>
+                    <p class="hint">Skeletons match the final geometry. No layout shift on arrival.</p>
+                  </div>
+                </div>
+                <div class="error-state" role="alert">
+                  <span class="error-state__mark">
+                    <svg class="icon icon--lg" aria-hidden="true"><use href="#i-alert-triangle" /></svg>
+                  </span>
+                  <div>
+                    <h3 class="error-state__title">Agent runtime unavailable</h3>
+                    <p class="error-state__body">
+                      The gateway instance did not start. Retry, or inspect the runtime log for the
+                      exit reason.
+                    </p>
+                    <span class="mono">ref 7c1e-4a90</span>
+                    <div class="cluster">
+                      <button class="btn btn-secondary btn-sm" type="button">
+                        <svg class="icon" aria-hidden="true"><use href="#i-refresh" /></svg>
+                        Retry
+                      </button>
+                      <button class="btn btn-ghost btn-sm" type="button">View log</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <!-- Chat -------------------------------------------------------------- -->
+            <section class="section" id="chat" aria-labelledby="chat-title">
+              <div class="section__head">
+                <h2 class="section__title" id="chat-title">Chat</h2>
+                <p class="section__note">Three panes at 1360 and wider. The thread owns the scroll; the composer stays put.</p>
+              </div>
+              <div class="card mb-4 overflow-hidden">
+                <div class="card__head">
+                  <h3 class="card__title">Chat panes</h3>
+                  <span class="mono">256 / 1fr / 320</span>
+                </div>
+                <div class="chat-shell h-[26rem]">
+                  <aside class="chat-sessions" aria-label="Sessions">
+                    <div class="chat-pane-head">
+                      <span class="overline">Sessions</span>
+                      <button class="btn btn-ghost btn-icon btn-sm" type="button" aria-label="New session">
+                        <svg class="icon" aria-hidden="true"><use href="#i-plus" /></svg>
+                      </button>
+                    </div>
+                    <div class="stack gap-1 p-2">
+                      <a class="nav-item is-active" href="#chat" aria-current="page">
+                        <svg class="icon" aria-hidden="true"><use href="#i-message" /></svg>
+                        Idempotency key
+                        <span class="nav-item__mark">
+                          <svg class="icon icon--sm" aria-hidden="true"><use href="#i-check" /></svg>
+                        </span>
+                      </a>
+                      <a class="nav-item" href="#chat">
+                        <svg class="icon" aria-hidden="true"><use href="#i-message" /></svg>
+                        Vessel ETA contract
+                      </a>
+                      <a class="nav-item" href="#chat">
+                        <svg class="icon" aria-hidden="true"><use href="#i-message" /></svg>
+                        Writer lane audit
+                      </a>
+                    </div>
+                  </aside>
+                  <div class="chat-thread">
+                    <div class="chat-thread__scroll">
+                      <div class="chat-thread__inner">
+                        <div class="message message--user">
+                          <div class="message__meta">
+                            <span class="avatar avatar--sm">OP</span>
+                            operator
+                            <span>21:42</span>
+                          </div>
+                          <p class="message__body">
+                            Add an idempotency key to invoice sync and tell ledger when the
+                            contract changes.
+                          </p>
+                        </div>
+                        <div class="message">
+                          <div class="message__meta">
+                            <span class="avatar avatar--sm">GW</span>
+                            gateway
+                            <span>21:42</span>
+                          </div>
+                          <p class="message__body">
+                            I found the sync loop in apps/gateway/src/invoice/sync.ts. I will add a
+                            deterministic key on the outbound mutation and request a contract update
+                            from ledger.
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="composer">
+                      <div class="composer__row">
+                        <label class="sr-only" for="chat-panes-prompt">Message gateway agent</label>
+                        <textarea
+                          class="textarea"
+                          id="chat-panes-prompt"
+                          placeholder="Message gateway agent"
+                          rows="1"
+                          aria-describedby="chat-panes-hint"
+                        ></textarea>
+                        <button class="btn btn-primary" type="button">
+                          <svg class="icon" aria-hidden="true"><use href="#i-send" /></svg>
+                          Send
+                        </button>
+                      </div>
+                      <div class="composer__hint" id="chat-panes-hint">
+                        <span>Enter to send / Shift+Enter for a new line</span>
+                        <span>3 handoffs in context</span>
+                      </div>
+                    </div>
+                  </div>
+                  <aside class="chat-context" aria-label="Handoff context">
+                    <div class="chat-pane-head">
+                      <span class="overline">Context</span>
+                      <span class="mono">3</span>
+                    </div>
+                    <div class="stack gap-2 p-3">
+                      <div class="route-card" data-state="awaiting_approval">
+                        <div class="route-card__head">
+                          <span class="mono">HS-8F2A-1C</span>
+                          <span class="status" data-state="awaiting_approval">
+                            <svg class="icon" aria-hidden="true"><use href="#i-stamp" /></svg>
+                            Awaiting
+                          </span>
+                        </div>
+                        <p class="route-card__summary">
+                          Add an idempotency key to invoice sync.
+                        </p>
+                        <span class="mono">gateway / ledger</span>
+                      </div>
+                      <p class="hint">
+                        The context pane stays beside the thread at 1360 and wider. Below that it is
+                        hidden until stage 2 adds the top-bar toggle.
+                      </p>
+                    </div>
+                  </aside>
+                </div>
+              </div>
+
+              <div class="grid items-start gap-4 xl:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]">
+                <div class="card">
+                  <div class="card__head">
+                    <h3 class="card__title">gateway / session 9c2f</h3>
+                    <div class="cluster">
+                      <span class="status" data-state="in_progress">
+                        <svg class="icon" aria-hidden="true"><use href="#i-activity" /></svg>
+                        Running
+                      </span>
+                      <button class="btn btn-ghost btn-icon btn-sm" type="button" aria-label="Session actions">
+                        <svg class="icon" aria-hidden="true"><use href="#i-settings" /></svg>
+                      </button>
+                    </div>
+                  </div>
+                  <div class="chat-thread h-[30rem]">
+                    <div class="chat-thread__scroll">
+                      <div class="chat-thread__inner">
+                        <div class="message message--user">
+                          <div class="message__meta">
+                            <span class="avatar avatar--sm">OP</span>
+                            operator
+                            <span>21:42</span>
+                          </div>
+                          <p class="message__body">
+                            Add an idempotency key to the invoice sync endpoint and tell ledger when
+                            the contract changes.
+                          </p>
+                        </div>
+                        <div class="message">
+                          <div class="message__meta">
+                            <span class="avatar avatar--sm">GW</span>
+                            gateway
+                            <span>21:42</span>
+                          </div>
+                          <p class="message__body">
+                            I found the sync loop in apps/gateway/src/invoice/sync.ts. I will add a
+                            deterministic key on the outbound mutation and request a contract update
+                            from ledger.
+                          </p>
+                          <details class="tool-call" open>
+                            <summary>
+                              <svg class="icon" aria-hidden="true"><use href="#i-terminal" /></svg>
+                              <span class="mono">read</span>
+                              <span class="tool-call__path">apps/gateway/src/invoice/sync.ts</span>
+                              <span class="badge badge--mono" style="margin-inline-start: auto">ok</span>
+                            </summary>
+                            <pre>export async function syncInvoice(invoice: Invoice) {
+  const key = invoice.id;
+  await client.mutate({ idempotencyKey: key, body: invoice });
+}</pre>
+                          </details>
+                        </div>
+                        <div class="message">
+                          <div class="message__meta">
+                            <span class="avatar avatar--sm">GW</span>
+                            gateway
+                            <span>21:43</span>
+                          </div>
+                          <p class="message__body">
+                            The contract change is ready for review. I opened handoff HS-8F2A-1C to
+                            ledger and left the writer lane free.
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="composer">
+                      <div class="composer__row">
+                        <label class="sr-only" for="chat-prompt">Message gateway agent</label>
+                        <textarea
+                          class="textarea"
+                          id="chat-prompt"
+                          placeholder="Message gateway agent"
+                          rows="1"
+                          aria-describedby="chat-prompt-hint"
+                        ></textarea>
+                        <button class="btn btn-primary" type="button">
+                          <svg class="icon" aria-hidden="true"><use href="#i-send" /></svg>
+                          Send
+                        </button>
+                      </div>
+                      <div class="composer__hint" id="chat-prompt-hint">
+                        <span>Enter to send / Shift+Enter for a new line</span>
+                        <span>3 handoffs in context</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="stack gap-4">
+                  <div class="card">
+                    <div class="card__head">
+                      <h3 class="card__title">Handoff context</h3>
+                      <span class="mono">3</span>
+                    </div>
+                    <div class="card__body stack gap-3">
+                      <div class="route-card" data-state="awaiting_approval">
+                        <div class="route-card__head">
+                          <span class="mono">HS-8F2A-1C</span>
+                          <span class="status" data-state="awaiting_approval">
+                            <svg class="icon" aria-hidden="true"><use href="#i-stamp" /></svg>
+                            Awaiting
+                          </span>
+                        </div>
+                        <p class="route-card__summary">
+                          Add an idempotency key to invoice sync.
+                        </p>
+                        <div class="cluster">
+                          <span class="mono">gateway / ledger</span>
+                        </div>
+                      </div>
+                      <div class="route-card" data-state="delivered">
+                        <div class="route-card__head">
+                          <span class="mono table__nowrap">HS-7B14-90</span>
+                          <span class="status" data-state="delivered">
+                            <svg class="icon" aria-hidden="true"><use href="#i-check" /></svg>
+                            Delivered
+                          </span>
+                        </div>
+                        <p class="route-card__summary">
+                          Expose vessel ETA on the manifest endpoint.
+                        </p>
+                        <div class="cluster">
+                          <span class="mono">charts / gateway</span>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="card__foot">
+                      <button class="btn btn-ghost btn-sm" type="button">Open inbox</button>
+                    </div>
+                  </div>
+                  <div class="card">
+                    <div class="card__head">
+                      <h3 class="card__title">Composer rules</h3>
+                    </div>
+                    <div class="card__body stack gap-2">
+                      <div class="cluster justify-between">
+                        <span class="small">Send</span>
+                        <span class="kbd">Enter</span>
+                      </div>
+                      <div class="cluster justify-between">
+                        <span class="small">New line</span>
+                        <span class="cluster"><span class="kbd">Shift</span><span class="kbd">Enter</span></span>
+                      </div>
+                      <div class="cluster justify-between">
+                        <span class="small">Close overlay</span>
+                        <span class="kbd">Esc</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </section>
+          </div>
+        </main>
+      </div>
+
+      <div class="scrim" data-nav-close></div>
+    </div>
+
+    <dialog class="dialog" id="review-dialog" aria-labelledby="review-title">
+      <div class="dialog__frame">
+        <header class="dialog__head">
+          <h2 class="dialog__title" id="review-title">Approve handoff</h2>
+          <p class="dialog__meta">HS-8F2A-1C / gateway to ledger</p>
+        </header>
+        <div class="dialog__body">
+          <p>
+            The gateway agent asks ledger to accept the revised invoice contract. Approval wakes the
+            target agent and releases the writer lane after dispatch.
+          </p>
+          <div class="route-card mt-3" data-state="awaiting_approval">
+            <div class="route-card__head">
+              <span class="mono">HS-8F2A-1C</span>
+              <span class="status" data-state="awaiting_approval">
+                <svg class="icon" aria-hidden="true"><use href="#i-stamp" /></svg>
+                Awaiting approval
+              </span>
+            </div>
+            <p class="route-card__summary">
+              Add an idempotency key to invoice sync and publish the revised contract.
+            </p>
+          </div>
+          <div class="field mt-4">
+            <label class="label" for="review-reason">Reason, optional</label>
+            <textarea
+              class="textarea"
+              id="review-reason"
+              placeholder="Record why this request is approved"
+              aria-describedby="review-reason-hint"
+            ></textarea>
+            <p class="hint" id="review-reason-hint">The reason is written to the handoff audit trail.</p>
+          </div>
+        </div>
+        <footer class="dialog__foot">
+          <button class="btn btn-ghost" type="button" data-dialog-close>Cancel</button>
+          <button class="btn btn-primary" type="button" data-dialog-approve>
+            Approve handoff
+          </button>
+        </footer>
+      </div>
+    </dialog>
+
+    <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="false"></div>
+
+    <script>
+      (function () {
+        var root = document.documentElement;
+        var shell = document.getElementById("shell");
+        var navToggle = document.querySelector("[data-nav-toggle]");
+
+        function setNav(open) {
+          shell.dataset.nav = open ? "open" : "closed";
+          navToggle.setAttribute("aria-expanded", open ? "true" : "false");
+          navToggle.setAttribute("aria-label", open ? "Close navigation" : "Open navigation");
+          document.body.style.overflow = open ? "hidden" : "";
+          if (open) {
+            const first = document.querySelector("#app-sidebar .nav-item");
+            if (first) first.focus();
+          }
+        }
+
+        if (navToggle) {
+          navToggle.addEventListener("click", function () {
+            setNav(shell.dataset.nav !== "open");
+          });
+        }
+        document.querySelectorAll("[data-nav-close]").forEach(function (control) {
+          control.addEventListener("click", function () {
+            setNav(false);
+            navToggle.focus();
+          });
+        });
+        document.addEventListener("keydown", function (event) {
+          if (event.key === "Escape" && shell.dataset.nav === "open") {
+            setNav(false);
+            navToggle.focus();
+          }
+        });
+
+        document.querySelectorAll("#app-sidebar a[href^='#']").forEach(function (link) {
+          link.addEventListener("click", function () {
+            if (window.matchMedia("(max-width: 1023px)").matches) {
+              setNav(false);
+              const target = document.querySelector(link.getAttribute("href"));
+              if (target) {
+                target.setAttribute("tabindex", "-1");
+                target.focus({ preventScroll: true });
+              }
+            }
+          });
+        });
+
+        var themeToggle = document.querySelector("[data-theme-toggle]");
+        var themeLabel = document.querySelector("[data-theme-label]");
+        function syncTheme(theme) {
+          root.dataset.theme = theme;
+          if (themeLabel) themeLabel.textContent = theme === "light" ? "Dark" : "Light";
+          document.querySelectorAll("[data-theme-icon]").forEach(function (icon) {
+            icon.classList.toggle("hidden", icon.getAttribute("data-theme-icon") !== theme);
+          });
+        }
+        syncTheme(root.dataset.theme === "light" ? "light" : "dark");
+        if (themeToggle) {
+          themeToggle.addEventListener("click", function () {
+            var next = root.dataset.theme === "light" ? "dark" : "light";
+            syncTheme(next);
+            try {
+              localStorage.setItem("hanse-theme", next);
+            } catch {}
+          });
+        }
+
+        var dialog = document.getElementById("review-dialog");
+        document.querySelectorAll("[data-dialog-open]").forEach(function (button) {
+          button.addEventListener("click", function () {
+            if (dialog && typeof dialog.showModal === "function") dialog.showModal();
+          });
+        });
+        document.querySelectorAll("[data-dialog-close]").forEach(function (button) {
+          button.addEventListener("click", function () {
+            if (dialog) dialog.close();
+          });
+        });
+        var approve = document.querySelector("[data-dialog-approve]");
+        if (approve) {
+          approve.addEventListener("click", function () {
+            if (dialog) dialog.close();
+            showToast("success", "Handoff approved", "HS-8F2A-1C is dispatching.");
+          });
+        }
+        if (dialog) {
+          dialog.addEventListener("click", function (event) {
+            if (event.target === dialog) dialog.close();
+          });
+        }
+
+        var region = document.getElementById("toast-region");
+        function showToast(tone, title, body) {
+          if (!region) return;
+          var toast = document.createElement("div");
+          toast.className = "toast";
+          toast.dataset.tone = tone;
+          toast.setAttribute("role", tone === "error" ? "alert" : "status");
+          toast.innerHTML =
+            '<span class="toast__icon">' +
+            '<svg class="icon" aria-hidden="true"><use href="#i-' +
+            (tone === "error" ? "alert-triangle" : "check") +
+            '"></use></svg></span>' +
+            '<div class="toast__copy"><strong></strong><span></span></div>' +
+            '<button class="btn btn-ghost btn-icon btn-sm" type="button" aria-label="Dismiss">' +
+            '<svg class="icon" aria-hidden="true"><use href="#i-x"></use></svg></button>';
+          toast.querySelector("strong").textContent = title;
+          toast.querySelector(".toast__copy span").textContent = body;
+          var close = toast.querySelector("button");
+          function dismiss() {
+            toast.remove();
+          }
+          close.addEventListener("click", dismiss);
+          region.appendChild(toast);
+          if (tone === "success") {
+            window.setTimeout(dismiss, 6000);
+          }
+        }
+
+        document.querySelectorAll("[data-toast]").forEach(function (button) {
+          button.addEventListener("click", function () {
+            var tone = button.getAttribute("data-toast");
+            if (tone === "success") {
+              showToast("success", "Handoff approved", "HS-8F2A-1C is dispatching.");
+            } else {
+              showToast("error", "Approval failed", "The runtime did not acknowledge the request.");
+            }
+          });
+        });
+
+        var copyCommand = document.querySelector("[data-copy-command]");
+        if (copyCommand) {
+          copyCommand.addEventListener("click", function () {
+            var command = "python3 -m http.server 4173";
+            function done() {
+              showToast("success", "Command copied", command);
+            }
+            function fail() {
+              showToast("error", "Copy failed", command);
+            }
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+              navigator.clipboard.writeText(command).then(done).catch(fail);
+            } else {
+              fail();
+            }
+          });
+        }
+
+        document.querySelectorAll("[data-copy-id]").forEach(function (button) {
+          button.addEventListener("click", function () {
+            var value = button.getAttribute("data-copy-id") || "";
+            function done() {
+              showToast("success", "Handoff id copied", value);
+            }
+            function fail() {
+              showToast("error", "Copy failed", value);
+            }
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+              navigator.clipboard.writeText(value).then(done).catch(fail);
+            } else {
+              fail();
+            }
+          });
+        });
+
+        document.querySelectorAll(".segmented").forEach(function (group) {
+          group.querySelectorAll(".segmented__item").forEach(function (item) {
+            item.addEventListener("click", function () {
+              group.querySelectorAll(".segmented__item").forEach(function (peer) {
+                peer.setAttribute("aria-pressed", peer === item ? "true" : "false");
+              });
+            });
+          });
+        });
+
+        var params = new URLSearchParams(window.location.search);
+        if (params.get("focus") === "1") {
+          window.setTimeout(function () {
+            var target = document.getElementById("field-name");
+            if (target) target.focus();
+          }, 120);
+        }
+
+        if ("IntersectionObserver" in window) {
+          const links = Array.from(document.querySelectorAll("#app-sidebar a[href^='#']"));
+          const byId = {};
+          links.forEach(function (link) {
+            byId[link.getAttribute("href").slice(1)] = link;
+          });
+          const observer = new IntersectionObserver(
+            function (entries) {
+              entries.forEach(function (entry) {
+                if (!entry.isIntersecting) return;
+                links.forEach(function (link) {
+                  link.classList.remove("is-active");
+                  link.removeAttribute("aria-current");
+                });
+                var active = byId[entry.target.id];
+                if (active) {
+                  active.classList.add("is-active");
+                  active.setAttribute("aria-current", "page");
+                }
+              });
+            },
+            { rootMargin: "-20% 0px -70% 0px", threshold: 0 },
+          );
+          document.querySelectorAll(".page__body section[id]").forEach(function (section) {
+            observer.observe(section);
+          });
+        }
+      })();
+    </script>
+  </body>
+</html>

@@ -17,6 +17,8 @@
     "dev": "tsx src/index.ts",
     "build": "tsc && npm run build:css",
     "build:css": "npx @tailwindcss/cli -i src/http/styles.css -o assets/app.css --minify",
+    "design:showcase": "python3 -m http.server 4173",
+    "design:capture": "node docs/design/capture.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "lint": "biome check .",

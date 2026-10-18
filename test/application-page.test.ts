@@ -1,0 +1,142 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { CoordinatorService } from "../src/coordinator/service.js";
+import { GitService } from "../src/git/service.js";
+import { type HttpDeps, type HttpRequest, handleRequest } from "../src/http/handler.js";
+import { createPrincipal } from "../src/identity/principals.js";
+import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
+
+const dirs: string[] = [];
+const databases: SqliteDatabase[] = [];
+
+afterEach(() => {
+  for (const db of databases) {
+    try {
+      db.close();
+    } catch {
+      // already closed
+    }
+  }
+  databases.length = 0;
+  for (const dir of dirs) {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  dirs.length = 0;
+});
+
+interface Fixture {
+  db: SqliteDatabase;
+  deps: HttpDeps;
+  token: string;
+}
+
+function fixture(): Fixture {
+  const dir = mkdtempSync(path.join(tmpdir(), "hanse-application-"));
+  dirs.push(dir);
+  const db = openDatabase(path.join(dir, "coordinator.db"));
+  databases.push(db);
+  runMigrations(db);
+  const now = new Date().toISOString();
+  db.prepare(
+    "INSERT INTO projects (id,name,base_branch,root_path,created_at,updated_at) VALUES ('p1','Alpha','main','/tmp/p1',?,?)",
+  ).run(now, now);
+  db.prepare(
+    "INSERT INTO apps (id,project_id,app_key,path,kind,contract,created_at) VALUES ('p1:storefront','p1','storefront','apps/storefront','service','AGENTS.md',?)",
+  ).run(now);
+  const token = createPrincipal(db, { kind: "human", name: "operator" }).token;
+  const deps: HttpDeps = {
+    db,
+    workspaceRoot: "/tmp",
+    git: new GitService({ workspaceRoot: "/tmp" }),
+    getProjects: () => [
+      {
+        id: "p1",
+        name: "Alpha",
+        rootPath: "/tmp/p1",
+        service: new CoordinatorService(db, "p1"),
+      },
+    ],
+  };
+  return { db, deps, token };
+}
+
+function auth(token: string): Record<string, string> {
+  return { authorization: `Bearer ${token}` };
+}
+
+function get(pathname: string, headers: Record<string, string> = {}): HttpRequest {
+  return { method: "GET", path: pathname, headers };
+}
+
+describe("application page", () => {
+  it("renders the page shell, git panel contract, and navigation", () => {
+    const f = fixture();
+    const response = handleRequest(f.deps, get("/projects/p1/apps/storefront", auth(f.token)));
+
+    expect(response.status).toBe(200);
+    expect(response.contentType).toContain("text/html");
+    expect(response.body).toContain('class="app-shell"');
+    expect(response.body).toContain('id="git-panel"');
+    expect(response.body).toContain('data-project-id="p1"');
+    expect(response.body).toContain('data-app-key="storefront"');
+    expect(response.body).toContain('data-api-base="/api/projects/p1/apps/storefront/git"');
+    expect(response.body).toContain(
+      'id="git-live" class="sr-only" role="status" aria-live="polite" aria-atomic="true"',
+    );
+    expect(response.body).toContain('id="repository-card"');
+    expect(response.body).toContain('id="repository-title"');
+    expect(response.body).toContain('id="git-refreshed"');
+    expect(response.body).toContain('id="git-refresh"');
+    expect(response.body).toContain('id="git-repository-body"');
+    expect(response.body).toContain('id="changes-card"');
+    expect(response.body).toContain('id="changes-title"');
+    expect(response.body).toContain('id="git-change-counts"');
+    expect(response.body).toContain('id="git-changes-body"');
+    expect(response.body).toContain('id="git-remotes-body"');
+    expect(response.body).toContain('id="git-last-commit-body"');
+    expect(response.body).toContain('aria-busy="true"');
+    expect(response.body).toContain("Loading repository status.");
+    expect(response.body).toContain("/assets/git.js");
+    expect(response.body).toContain(
+      "Git actions need JavaScript. Use the IDE for repository operations.",
+    );
+    expect(response.body).toContain(">Application</h2>");
+    expect(response.body).toContain("service");
+    expect(response.body).toContain("apps/storefront");
+    expect(response.body).toContain('href="/projects/p1"');
+    expect(response.body).toContain('href="/chat?app=storefront&amp;project=p1"');
+    expect(response.body).toContain("/ide/?folder=");
+    expect(response.body).toContain('aria-current="page">storefront</span>');
+  });
+
+  it("returns a styled 404 for an unknown project or application", () => {
+    const f = fixture();
+    for (const pathname of ["/projects/nope/apps/storefront", "/projects/p1/apps/nope"]) {
+      const response = handleRequest(f.deps, get(pathname, auth(f.token)));
+      expect(response.status).toBe(404);
+      expect(response.contentType).toContain("text/html");
+      expect(response.body).toContain("Page not found");
+    }
+  });
+
+  it("redirects unauthenticated and agent principals to login", () => {
+    const f = fixture();
+    const unauthenticated = handleRequest(f.deps, get("/projects/p1/apps/storefront"));
+    expect(unauthenticated.status).toBe(303);
+    expect(unauthenticated.headers?.location).toBe(
+      "/login?next=%2Fprojects%2Fp1%2Fapps%2Fstorefront",
+    );
+
+    const agent = createPrincipal(f.db, { kind: "agent", name: "agent" });
+    const agentResponse = handleRequest(
+      f.deps,
+      get("/projects/p1/apps/storefront", auth(agent.token)),
+    );
+    expect(agentResponse.status).toBe(303);
+    expect(agentResponse.headers?.location).toBe(
+      "/login?next=%2Fprojects%2Fp1%2Fapps%2Fstorefront",
+    );
+  });
+});

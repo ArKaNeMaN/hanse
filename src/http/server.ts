@@ -8,42 +8,59 @@ import net from "node:net";
 import path from "node:path";
 import type { Duplex } from "node:stream";
 import { authenticate } from "../identity/auth.js";
+import { cookieToken } from "./auth.js";
 import { handleChat, streamSessionEvents } from "./chat.js";
+import { handleGit } from "./git.js";
 import { type HttpDeps, handleRequest } from "./handler.js";
 
 const IDE_PORT = Number(process.env.HANSE_IDE_PORT ?? 8080);
 const IDE_HOST = process.env.HANSE_IDE_HOST ?? "127.0.0.1";
+const MAX_BODY_BYTES = 64 * 1024;
+
+class PayloadTooLargeError extends Error {
+  constructor() {
+    super("request body too large");
+    this.name = "PayloadTooLargeError";
+  }
+}
 
 function readBody(request: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
-    request.on("data", (chunk: Buffer) => chunks.push(chunk));
-    request.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-    request.on("error", reject);
+    let size = 0;
+    let rejected = false;
+    request.on("data", (chunk: Buffer) => {
+      if (rejected) {
+        return;
+      }
+      size += chunk.length;
+      if (size > MAX_BODY_BYTES) {
+        rejected = true;
+        reject(new PayloadTooLargeError());
+        return;
+      }
+      chunks.push(chunk);
+    });
+    request.on("end", () => {
+      if (!rejected) {
+        resolve(Buffer.concat(chunks).toString("utf8"));
+      }
+    });
+    request.on("error", (error) => {
+      if (!rejected) {
+        reject(error);
+      }
+    });
   });
 }
 
-function cookieToken(header: string | undefined): string | undefined {
-  if (header === undefined) {
-    return undefined;
-  }
-  for (const part of header.split(";")) {
-    const [key, value] = part.trim().split("=");
-    if (key === "hanse_token" && value !== undefined) {
-      return value;
-    }
-  }
-  return undefined;
-}
-
-function isAuthed(deps: HttpDeps, request: IncomingMessage): boolean {
+function isHumanAuthed(deps: HttpDeps, request: IncomingMessage): boolean {
   const token = cookieToken(request.headers.cookie);
   if (token === undefined || token.length === 0) {
     return false;
   }
   try {
-    authenticate(deps.db, `Bearer ${token}`);
-    return true;
+    return authenticate(deps.db, `Bearer ${token}`).kind === "human";
   } catch {
     return false;
   }
@@ -93,8 +110,9 @@ export function createHttpServer(deps: HttpDeps): Server {
     const url = new URL(request.url ?? "/", "http://localhost");
 
     if (url.pathname === "/ide" || url.pathname.startsWith("/ide/")) {
-      if (!isAuthed(deps, request)) {
-        response.writeHead(302, { location: "/login" });
+      if (!isHumanAuthed(deps, request)) {
+        const next = encodeURIComponent(`${url.pathname}${url.search}`);
+        response.writeHead(302, { location: `/login?next=${next}` });
         response.end();
         return;
       }
@@ -111,6 +129,8 @@ export function createHttpServer(deps: HttpDeps): Server {
           headers: {
             authorization: request.headers.authorization,
             cookie: request.headers.cookie,
+            accept: request.headers.accept,
+            "content-type": request.headers["content-type"],
           },
           body,
         };
@@ -119,10 +139,13 @@ export function createHttpServer(deps: HttpDeps): Server {
           await streamSessionEvents(deps, httpRequest, response);
           return;
         }
+        const isGit = /^\/api\/projects\/[^/]+\/apps\/[^/]+\/git(?:\/|$)/.test(url.pathname);
         const isChat = url.pathname === "/chat" || url.pathname.startsWith("/api/apps/");
-        const result = isChat
-          ? await handleChat(deps, httpRequest)
-          : handleRequest(deps, httpRequest);
+        const result = isGit
+          ? await handleGit(deps, httpRequest)
+          : isChat
+            ? await handleChat(deps, httpRequest)
+            : handleRequest(deps, httpRequest);
         response.writeHead(result.status, {
           "content-type": result.contentType,
           ...(result.headers ?? {}),
@@ -130,6 +153,16 @@ export function createHttpServer(deps: HttpDeps): Server {
         response.end(result.body);
       })
       .catch((error: unknown) => {
+        if (error instanceof PayloadTooLargeError) {
+          response.writeHead(413, { "content-type": "application/json; charset=utf-8" });
+          response.end(
+            JSON.stringify({
+              error: "request body too large",
+              code: "payload_too_large",
+            }),
+          );
+          return;
+        }
         response.writeHead(500, { "content-type": "application/json" });
         response.end(
           JSON.stringify({ error: error instanceof Error ? error.message : String(error) }),
@@ -139,7 +172,7 @@ export function createHttpServer(deps: HttpDeps): Server {
 
   server.on("upgrade", (request: IncomingMessage, socket: Duplex, head: Buffer) => {
     const url = request.url ?? "";
-    if (!url.startsWith("/ide") || !isAuthed(deps, request)) {
+    if (!url.startsWith("/ide") || !isHumanAuthed(deps, request)) {
       socket.destroy();
       return;
     }

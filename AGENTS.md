@@ -31,7 +31,7 @@ npm run build       # tsc + Tailwind CSS -> dist/ and assets/app.css
 ```
 
 All gates must pass before a change is considered done. The CSS is built by
-`npm run build:css` (Tailwind + daisyUI) into `assets/app.css`.
+`npm run build:css` (Tailwind CSS) into `assets/app.css`.
 
 ## Conventions
 

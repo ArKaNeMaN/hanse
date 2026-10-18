@@ -5,6 +5,7 @@ import { mkdir, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { ConfigError } from "../config/load.js";
 import { CoordinatorService } from "../coordinator/service.js";
+import { GitService } from "../git/service.js";
 import type { ProjectContext } from "../http/handler.js";
 import { createHttpServer } from "../http/server.js";
 import { upsertPrincipalWithToken } from "../identity/principals.js";
@@ -213,7 +214,8 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
       service: new CoordinatorService(db, row.id),
     }));
   };
-  const server = createHttpServer({ db, workspaceRoot: workspace, getProjects, manager });
+  const git = new GitService({ workspaceRoot: workspace });
+  const server = createHttpServer({ db, workspaceRoot: workspace, getProjects, git, manager });
 
   let ide: ChildProcess | null = null;
   const ideBin = process.env.HANSE_IDE_BIN ?? "/usr/lib/code-server/bin/code-server";

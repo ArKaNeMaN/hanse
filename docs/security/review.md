@@ -19,6 +19,12 @@
 - **Approvals**: cross-application writes can be gated; only a **human** principal may decide an
   approval (agents are rejected).
 - **API authn**: mutating HTTP endpoints require a bearer token; a non-human principal receives 403.
+- **Git workbench**: the application page and `/api/projects/:id/apps/:key/git/*` are human-only;
+  agent principals receive 403. Mutations are JSON-only (plus `SameSite=Strict`) and request bodies
+  are capped at 64 KiB. Git runs with argument arrays, no shell, timeouts, bounded output, and
+  per-repository serialization. The application directory must resolve, via `realpath`, to the
+  repository toplevel inside the workspace; symlink/nested-repository escapes are rejected. Remote
+  URLs and command output are redacted for URL userinfo before leaving the server.
 - **Secrets at rest**: git credentials are encrypted with AES-256-GCM; the key file lives outside the
   ciphertext (mode `0600`); tokens are never written into managed repositories.
 - **SQL**: all statements use bound parameters.
@@ -45,4 +51,9 @@
 - The terminal's `HOME` is the opened folder (`shell/hanse-shell`).
 - **Residual risk:** the `opencode` agents run in the `hanse` container as the same uid as the
   coordinator and can read `/data/state` (DB, `secret.key`). Untrusted applications remain out of scope.
+- **Git workbench risks:** repository hooks execute as the coordinator; `git fetch --all --prune`
+  contacts every configured remote with ambient credentials; the in-memory mutation lock does not
+  cover agents/IDE writing to the same repository; `realpath`-then-exec is TOCTOU in a writable
+  workspace; "Commit all" can include untracked files. These are accepted under the trusted-repository
+  model. Push/fetch credentials are ambient and are not managed by this stage.
 - No TLS; LAN-only.

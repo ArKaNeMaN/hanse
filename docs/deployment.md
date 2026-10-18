@@ -77,6 +77,21 @@ ssh deployment-host 'cd <INSTALL_DIR> && sed -i "s/^HANSE_OPERATOR_TOKEN=.*/HANS
 
 Restarting re-upserts the operator principal with the new token.
 
+## Git workbench credentials
+
+The application page can fetch, update, commit, and push with the `hanse` container's ambient git
+configuration. This stage does not wire the coordinator's encrypted credential store into git.
+
+- **Commit identity**: configure `user.name`/`user.email` in each repository or in the container's
+  git config, or inject `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME`, and
+  `GIT_COMMITTER_EMAIL` into the `hanse` service environment. Without an identity the Commit action
+  is disabled with an explanatory hint.
+- **Push/fetch credentials**: mount an SSH key (and `known_hosts`) into the container, or inject
+  `GIT_ASKPASS` / `GIT_SSH_COMMAND`. Git runs with `GIT_TERMINAL_PROMPT=0`, so a missing credential
+  fails fast instead of prompting.
+- **Trusted remotes only**: `git fetch --all --prune` contacts every remote configured in the
+  application repository. Repository hooks run as the coordinator uid on commit/update.
+
 ## Troubleshooting
 
 - **Container restart loop**: `docker logs hanse --tail 50`. A common cause is a permissions error
@@ -87,4 +102,10 @@ Restarting re-upserts the operator principal with the new token.
   and opencode logs.
 - **`git clone` fails on add-app**: the image installs `git` + `ca-certificates`; a TLS error means the
   CA bundle is missing.
+- **Git push/fetch fails in the application page**: check the container's ambient SSH/HTTPS
+  credentials and host-key trust; `GIT_TERMINAL_PROMPT=0` means git will not prompt. Check commit
+  identity with `git -C /data/workspace/<project>/<app> var GIT_AUTHOR_IDENT`.
+- **Application page shows "Not a repository root"**: the application directory is inside a larger
+  git repository. Move the repository root to the application directory or use the IDE for that
+  repository.
 - **Old containers**: `docker compose up -d --remove-orphans` removes the retired `ide` service variant.
