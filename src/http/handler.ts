@@ -1,6 +1,8 @@
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { decideApproval } from "../coordinator/approval.js";
 import { listHandoffs } from "../coordinator/handoff.js";
 import type { CoordinatorService } from "../coordinator/service.js";
@@ -240,6 +242,71 @@ export function handleRequest(deps: HttpDeps, request: HttpRequest): HttpRespons
         "INSERT INTO projects (id, name, base_branch, root_path, created_at, updated_at) VALUES (?, ?, 'main', ?, ?, ?)",
       )
       .run(id, name, dir, now, now);
+    return redirect("/");
+  }
+
+  const addAppMatch = /^\/api\/projects\/([^/]+)\/apps$/.exec(request.path);
+  if (request.method === "POST" && addAppMatch !== null) {
+    if (principal === undefined) {
+      return json(401, { error: "sign in required" });
+    }
+    const project = deps
+      .getProjects()
+      .find((candidate) => candidate.id === decodeURIComponent(addAppMatch[1] ?? ""));
+    if (project === undefined) {
+      return json(404, { error: "project not found" });
+    }
+    const fields = parseForm(request.body);
+    const name = (fields.name ?? "").trim();
+    if (name.length === 0) {
+      return json(400, { error: "app name is required" });
+    }
+    const slug =
+      name
+        .toLowerCase()
+        .replace(/[^a-z0-9._-]+/g, "-")
+        .replace(/^-+|-+$/g, "") || `app-${Date.now()}`;
+    const appPath = (fields.path ?? "").trim() || `apps/${slug}`;
+    const dir = path.resolve(project.rootPath, appPath);
+    const remote = (fields.remote ?? "").trim();
+    try {
+      if (remote.length > 0) {
+        mkdirSync(path.dirname(dir), { recursive: true });
+        execFileSync("git", ["clone", "--depth", "1", remote, dir], { stdio: "ignore" });
+      } else {
+        mkdirSync(dir, { recursive: true });
+      }
+      mkdirSync(path.join(dir, ".hanse"), { recursive: true });
+      const appYaml = path.join(dir, ".hanse", "app.yaml");
+      if (!existsSync(appYaml)) {
+        writeFileSync(appYaml, `name: ${name}\nkind: app\ncontract: AGENTS.md\n`, "utf8");
+      }
+    } catch (error) {
+      return json(502, {
+        error: `failed to add application: ${error instanceof Error ? error.message : String(error)}`,
+      });
+    }
+    try {
+      const manifestPath = path.join(project.rootPath, ".hanse", "project.yaml");
+      const manifest = parseYaml(readFileSync(manifestPath, "utf8")) as {
+        apps?: Array<Record<string, unknown>>;
+      } & Record<string, unknown>;
+      manifest.apps = Array.isArray(manifest.apps) ? manifest.apps : [];
+      if (!manifest.apps.some((entry) => entry?.["path"] === appPath)) {
+        manifest.apps.push({ path: appPath, ...(remote.length > 0 ? { remote } : {}) });
+      }
+      writeFileSync(manifestPath, stringifyYaml(manifest), "utf8");
+    } catch (error) {
+      return json(500, {
+        error: `failed to update manifest: ${error instanceof Error ? error.message : String(error)}`,
+      });
+    }
+    const appKey = path.basename(appPath);
+    deps.db
+      .prepare(
+        "INSERT INTO apps (id, project_id, app_key, path, kind, contract, created_at) VALUES (?, ?, ?, ?, 'app', 'AGENTS.md', ?) ON CONFLICT(id) DO UPDATE SET path = excluded.path, kind = excluded.kind",
+      )
+      .run(`${project.id}:${appKey}`, project.id, appKey, appPath, new Date().toISOString());
     return redirect("/");
   }
 
