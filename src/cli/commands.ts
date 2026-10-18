@@ -7,6 +7,7 @@ import { CoordinatorService } from "../coordinator/service.js";
 import type { ProjectContext } from "../http/handler.js";
 import { createHttpServer } from "../http/server.js";
 import { upsertPrincipalWithToken } from "../identity/principals.js";
+import { runMcpServer } from "../mcp/server.js";
 import { InstanceManager } from "../opencode/manager.js";
 import { discoverProject, registerProject } from "../registry/index.js";
 import { coordinatorDbPath, coordinatorStateDir, defaultStateHome } from "../runtime/index.js";
@@ -137,7 +138,11 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
     });
   }
 
-  const manager = new InstanceManager(db, coordinatorStateDir(ctx.stateHome));
+  const manager = new InstanceManager(
+    db,
+    coordinatorDbPath(ctx.stateHome),
+    coordinatorStateDir(ctx.stateHome),
+  );
   const server = createHttpServer({ db, projects, manager });
   await new Promise<void>((resolve) => {
     server.listen(options.port, options.hostname, resolve);
@@ -157,4 +162,19 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
     process.on("SIGINT", shutdown);
     process.on("SIGTERM", shutdown);
   });
+}
+
+/** Run the coordinator MCP server (stdio) bound to one application. */
+export async function mcpCommand(ctx: CommandContext): Promise<number> {
+  const projectId = process.env.HANSE_PROJECT_ID;
+  const appKey = process.env.HANSE_APP_KEY;
+  if (projectId === undefined || appKey === undefined) {
+    ctx.io.stderr("mcp: HANSE_PROJECT_ID and HANSE_APP_KEY are required");
+    return 2;
+  }
+  const db = openDatabase(process.env.HANSE_DB ?? coordinatorDbPath(ctx.stateHome));
+  runMigrations(db);
+  await runMcpServer(new CoordinatorService(db, projectId), appKey);
+  db.close();
+  return 0;
 }

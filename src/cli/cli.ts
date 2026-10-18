@@ -1,5 +1,11 @@
 import { PACKAGE_NAME, VERSION } from "../version.js";
-import { defaultContext, initCommand, serveCommand, statusCommand } from "./commands.js";
+import {
+  defaultContext,
+  initCommand,
+  mcpCommand,
+  serveCommand,
+  statusCommand,
+} from "./commands.js";
 import { parseArgs } from "./parse.js";
 
 /** Output sinks, injectable for testing. */
@@ -30,6 +36,7 @@ function buildUsage(): string[] {
     "  init [dir]      Scaffold a project (.hanse/project.yaml)",
     "  status [dir]    Discover and register a project, print its status",
     "  serve           Serve the web dashboard and HTTP API",
+    "  mcp             Run the coordinator MCP server (stdio)",
     "",
     "Options:",
     "  -h, --help            Show this help and exit",
@@ -81,6 +88,8 @@ export async function runCli(argv: readonly string[], io: CliIo = defaultIo): Pr
         },
         defaultContext(process.cwd(), io, args.flags),
       );
+    case "mcp":
+      return mcpCommand(defaultContext(process.cwd(), io, args.flags));
     default:
       io.stderr(`Unknown command: ${args.command}`);
       io.stderr(`Run \`${PACKAGE_NAME} --help\` for usage.`);

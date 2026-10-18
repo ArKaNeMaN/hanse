@@ -51,12 +51,14 @@ function waitForPort(port: number, timeoutMs: number): Promise<void> {
 
 export class InstanceManager {
   readonly #db: SqliteDatabase;
+  readonly #dbPath: string;
   readonly #runtimeRoot: string;
   readonly #running = new Map<string, Entry>();
   #nextPort = PORT_BASE;
 
-  constructor(db: SqliteDatabase, runtimeRoot: string) {
+  constructor(db: SqliteDatabase, dbPath: string, runtimeRoot: string) {
     this.#db = db;
+    this.#dbPath = dbPath;
     this.#runtimeRoot = runtimeRoot;
   }
 
@@ -72,7 +74,12 @@ export class InstanceManager {
       appDir: app.appDir,
       runtimeRoot: path.join(this.#runtimeRoot, "projects", app.projectId),
       port,
-      coordinatorCommand: [],
+      coordinatorCommand: [process.execPath, process.argv[1] ?? "", "mcp"],
+      coordinatorEnvironment: {
+        HANSE_DB: this.#dbPath,
+        HANSE_PROJECT_ID: app.projectId,
+        HANSE_APP_KEY: app.appKey,
+      },
       authSource: process.env.HANSE_AUTH_FILE,
     });
     this.#running.set(app.id, { run, endpoint: run.endpoint });

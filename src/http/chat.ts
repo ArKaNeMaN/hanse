@@ -151,6 +151,7 @@ async function loadHandoffs() {
   }
 }
 loadSessions().then(loadHandoffs).catch(showError);
+setInterval(() => { loadHandoffs().catch(() => {}); }, 5000);
 </script></body></html>`;
 }
 

@@ -62,14 +62,22 @@ function asString(value: unknown, field: string): string {
   return value;
 }
 
-function callTool(service: CoordinatorService, params: Record<string, unknown>): unknown {
+function callTool(
+  service: CoordinatorService,
+  params: Record<string, unknown>,
+  boundFrom?: string,
+): unknown {
   const name = typeof params.name === "string" ? params.name : "";
   const args = (params.arguments ?? {}) as Record<string, unknown>;
   let result: unknown;
   switch (name) {
-    case "request_sibling_change":
+    case "request_sibling_change": {
+      const from = boundFrom ?? (typeof args.from === "string" ? args.from : undefined);
+      if (from === undefined) {
+        throw new Error('"from" is required when the server is not bound to an application');
+      }
       result = service.requestSiblingChange({
-        fromAppKey: asString(args.from, "from"),
+        fromAppKey: from,
         toAppKey: asString(args.to, "to"),
         summary: asString(args.summary, "summary"),
         spec: asString(args.spec, "spec"),
@@ -77,6 +85,7 @@ function callTool(service: CoordinatorService, params: Record<string, unknown>):
         idempotencyKey: typeof args.idempotency_key === "string" ? args.idempotency_key : undefined,
       });
       break;
+    }
     case "list_apps":
       result = { apps: service.listApps() };
       break;
@@ -98,6 +107,7 @@ function callTool(service: CoordinatorService, params: Record<string, unknown>):
 export function handleRpc(
   service: CoordinatorService,
   request: RpcRequest,
+  options?: { fromAppKey?: string },
 ): RpcResponse | undefined {
   if (request.id === undefined) {
     return undefined;
@@ -118,7 +128,11 @@ export function handleRpc(
       case "tools/list":
         return { jsonrpc: "2.0", id, result: { tools: TOOLS } };
       case "tools/call":
-        return { jsonrpc: "2.0", id, result: callTool(service, request.params ?? {}) };
+        return {
+          jsonrpc: "2.0",
+          id,
+          result: callTool(service, request.params ?? {}, options?.fromAppKey),
+        };
       default:
         return {
           jsonrpc: "2.0",
