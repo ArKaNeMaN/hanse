@@ -72,7 +72,7 @@ export class InstanceManager {
       appDir: app.appDir,
       runtimeRoot: path.join(this.#runtimeRoot, "projects", app.projectId),
       port,
-      coordinatorCommand: ["hanse", "mcp"],
+      coordinatorCommand: [],
       authSource: process.env.HANSE_AUTH_FILE,
     });
     this.#running.set(app.id, { run, endpoint: run.endpoint });

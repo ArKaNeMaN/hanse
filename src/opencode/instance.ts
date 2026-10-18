@@ -75,16 +75,17 @@ export function resolveInstanceEnv(runtimeRoot: string, identity: InstanceIdenti
  * config directory. Adding a NEW MCP server name is safe; leaving the app's own servers untouched.
  */
 export function buildConfigOverlay(options: BuildOverlayOptions): OpencodeOverlay {
-  const overlay: OpencodeOverlay = {
-    mcp: {
+  const overlay: OpencodeOverlay = {};
+  if (options.coordinatorCommand.length > 0) {
+    overlay.mcp = {
       [COORDINATOR_MCP_NAME]: {
         type: "local",
         command: options.coordinatorCommand,
         enabled: true,
         ...(options.environment === undefined ? {} : { environment: options.environment }),
       },
-    },
-  };
+    };
+  }
   if (options.instructions !== undefined && options.instructions.length > 0) {
     overlay.instructions = options.instructions;
   }
