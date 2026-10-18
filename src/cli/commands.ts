@@ -139,6 +139,10 @@ function prepareIde(stateHome: string): { extDir: string; userDataDir: string } 
   }
   settings["workbench.colorTheme"] = "GitHub Dark Dimmed";
   settings["workbench.startupEditor"] = "none";
+  settings["terminal.integrated.profiles.linux"] = {
+    hanse: { path: "/usr/local/bin/hanse-shell" },
+  };
+  settings["terminal.integrated.defaultProfile.linux"] = "hanse";
   writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
   return { extDir, userDataDir };
 }

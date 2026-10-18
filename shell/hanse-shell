@@ -1,0 +1,4 @@
+#!/bin/sh
+cd "$(pwd -P)" 2>/dev/null || true
+export HOME="$PWD"
+exec /bin/bash "$@"

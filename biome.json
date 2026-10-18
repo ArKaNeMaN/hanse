@@ -6,7 +6,7 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": ["**", "!assets/**", "!src/http/styles.css", "!extensions/**"]
+    "includes": ["**", "!assets", "!src/http/styles.css", "!extensions"]
   },
   "formatter": {
     "indentStyle": "space",
