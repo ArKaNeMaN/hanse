@@ -103,6 +103,7 @@ export function launchInstance(db: SqliteDatabase, input: LaunchInput): RunningI
     mkdirSync(dataDir, { recursive: true });
     copyFileSync(input.authSource, path.join(dataDir, "auth.json"));
   }
+  mkdirSync(input.appDir, { recursive: true });
   const child = spawn(bin, args, {
     cwd: input.appDir,
     env,
