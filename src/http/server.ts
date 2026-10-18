@@ -5,6 +5,7 @@ import http, {
   type ServerResponse,
 } from "node:http";
 import net from "node:net";
+import path from "node:path";
 import type { Duplex } from "node:stream";
 import { authenticate } from "../identity/auth.js";
 import { handleChat, streamSessionEvents } from "./chat.js";
@@ -47,8 +48,23 @@ function isAuthed(deps: HttpDeps, request: IncomingMessage): boolean {
   }
 }
 
-function proxyHttp(request: IncomingMessage, response: ServerResponse): void {
-  const target = (request.url ?? "/").replace(/^\/ide/, "") || "/";
+function proxyHttp(
+  request: IncomingMessage,
+  response: ServerResponse,
+  workspaceRoot: string,
+): void {
+  const parsed = new URL(request.url ?? "/", "http://localhost");
+  const folder = parsed.searchParams.get("folder");
+  if (folder !== null) {
+    const resolved = path.resolve(folder);
+    const root = path.resolve(workspaceRoot);
+    if (resolved !== root && !resolved.startsWith(`${root}${path.sep}`)) {
+      parsed.searchParams.set("folder", root);
+      process.stderr.write("hanse: ide folder outside workspace rejected\n");
+    }
+  }
+  const stripped = parsed.pathname.replace(/^\/ide/, "");
+  const target = `${stripped || "/"}${parsed.search}`;
   const upstream = http.request(
     {
       host: "127.0.0.1",
@@ -81,7 +97,7 @@ export function createHttpServer(deps: HttpDeps): Server {
         response.end();
         return;
       }
-      proxyHttp(request, response);
+      proxyHttp(request, response, deps.workspaceRoot);
       return;
     }
 

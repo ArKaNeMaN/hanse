@@ -1,14 +1,6 @@
-import { type ChildProcess, spawn } from "node:child_process";
+import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import {
-  cpSync,
-  existsSync,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdir, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { ConfigError } from "../config/load.js";
