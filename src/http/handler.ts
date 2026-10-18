@@ -118,6 +118,7 @@ function projectViews(deps: HttpDeps): ProjectView[] {
   return deps.getProjects().map((project) => ({
     id: project.id,
     name: project.name,
+    rootPath: project.rootPath,
     apps: project.service.listApps(),
     handoffs: listHandoffs(deps.db, project.id),
   }));

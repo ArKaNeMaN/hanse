@@ -4,6 +4,7 @@ import type { RegisteredApp } from "../registry/index.js";
 export interface ProjectView {
   id: string;
   name: string;
+  rootPath: string;
   apps: RegisteredApp[];
   handoffs: Handoff[];
 }
@@ -56,10 +57,10 @@ export function renderLogin(): string {
 
 function renderProject(project: ProjectView, authenticated: boolean): string {
   const appRows = project.apps
-    .map(
-      (app) =>
-        `<tr><td class="font-medium">${escapeHtml(app.appKey)}</td><td class="font-mono text-xs opacity-60">${escapeHtml(app.path)}</td><td>${app.kind ? `<span class="badge badge-ghost badge-sm">${escapeHtml(app.kind)}</span>` : ""}</td><td class="text-right"><a class="btn btn-xs btn-primary" href="/chat?app=${encodeURIComponent(app.appKey)}">chat</a></td></tr>`,
-    )
+    .map((app) => {
+      const folder = app.path.startsWith("/") ? app.path : `${project.rootPath}/${app.path}`;
+      return `<tr><td class="font-medium">${escapeHtml(app.appKey)}</td><td class="font-mono text-xs opacity-60">${escapeHtml(app.path)}</td><td>${app.kind ? `<span class="badge badge-ghost badge-sm">${escapeHtml(app.kind)}</span>` : ""}</td><td class="text-right"><a class="btn btn-xs btn-primary" href="/chat?app=${encodeURIComponent(app.appKey)}">chat</a> <a class="btn btn-xs btn-ghost" href="/ide/?folder=${encodeURIComponent(folder)}" target="_blank" rel="noreferrer">ide</a></td></tr>`;
+    })
     .join("");
   const handoffRows = project.handoffs
     .map((handoff) => {
@@ -73,7 +74,7 @@ function renderProject(project: ProjectView, authenticated: boolean): string {
   const addApp = authenticated
     ? `<form method="post" action="/api/projects/${escapeHtml(project.id)}/apps" class="mt-2 flex flex-wrap items-center gap-2"><input name="name" class="input input-bordered input-xs w-40" placeholder="app name" required><input name="path" class="input input-bordered input-xs w-44" placeholder="path (optional)"><input name="remote" class="input input-bordered input-xs w-64" placeholder="git remote (optional)"><button class="btn btn-xs btn-primary">add app</button></form>`
     : "";
-  return `<section class="card border border-base-300 bg-base-200"><div class="card-body gap-3 p-4"><h2 class="card-title text-base">${escapeHtml(project.name)} <span class="font-mono text-xs font-normal opacity-40">${escapeHtml(project.id.slice(0, 8))}</span></h2><div class="overflow-x-auto"><table class="table table-sm"><thead><tr><th>app</th><th>path</th><th>kind</th><th></th></tr></thead><tbody>${appRows || '<tr><td colspan="4" class="text-sm opacity-50">(no applications)</td></tr>'}</tbody></table></div>${addApp}<div class="divider my-1"></div><h3 class="text-sm font-semibold">Handoffs</h3><div class="overflow-x-auto"><table class="table table-sm"><thead><tr><th>id</th><th>state</th><th>from</th><th>to</th><th>summary</th><th></th></tr></thead><tbody>${handoffRows || '<tr><td colspan="6" class="text-sm opacity-50">(no handoffs)</td></tr>'}</tbody></table></div></div></section>`;
+  return `<section class="card border border-base-300 bg-base-200"><div class="card-body gap-3 p-4"><h2 class="card-title text-base">${escapeHtml(project.name)} <span class="font-mono text-xs font-normal opacity-40">${escapeHtml(project.id.slice(0, 8))}</span> <a class="btn btn-xs btn-ghost" href="/ide/?folder=${encodeURIComponent(project.rootPath)}" target="_blank" rel="noreferrer">open IDE</a></h2><div class="overflow-x-auto"><table class="table table-sm"><thead><tr><th>app</th><th>path</th><th>kind</th><th></th></tr></thead><tbody>${appRows || '<tr><td colspan="4" class="text-sm opacity-50">(no applications)</td></tr>'}</tbody></table></div>${addApp}<div class="divider my-1"></div><h3 class="text-sm font-semibold">Handoffs</h3><div class="overflow-x-auto"><table class="table table-sm"><thead><tr><th>id</th><th>state</th><th>from</th><th>to</th><th>summary</th><th></th></tr></thead><tbody>${handoffRows || '<tr><td colspan="6" class="text-sm opacity-50">(no handoffs)</td></tr>'}</tbody></table></div></div></section>`;
 }
 
 export function renderDashboard(projects: ProjectView[], authenticated: boolean): string {

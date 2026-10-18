@@ -1,0 +1,43 @@
+{
+  "name": "hanse-agent",
+  "displayName": "Hanse Agent",
+  "description": "Chat with the hanse agent for each application.",
+  "publisher": "hanse",
+  "version": "0.1.0",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "hanse",
+          "title": "Hanse Agent",
+          "icon": "icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "hanse": [
+        {
+          "id": "hanse.chat",
+          "name": "Agent Chat",
+          "type": "webview"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "hanse.open",
+        "title": "Hanse: Open Agent Chat"
+      }
+    ]
+  }
+}

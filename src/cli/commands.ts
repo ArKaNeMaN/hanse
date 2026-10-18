@@ -1,6 +1,14 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { mkdir, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { ConfigError } from "../config/load.js";
@@ -98,6 +106,43 @@ export interface ServeOptions {
   port: number;
 }
 
+function prepareIde(stateHome: string): { extDir: string; userDataDir: string } {
+  const base = path.join(coordinatorStateDir(stateHome), "code-server");
+  const extDir = path.join(base, "extensions");
+  const userDataDir = path.join(base, "data");
+  mkdirSync(extDir, { recursive: true });
+  mkdirSync(path.join(userDataDir, "User"), { recursive: true });
+
+  const ownExtension = "/app/extensions/hanse-agent";
+  if (existsSync(ownExtension)) {
+    const target = path.join(extDir, "hanse.hanse-agent-0.1.0");
+    rmSync(target, { recursive: true, force: true });
+    cpSync(ownExtension, target, { recursive: true });
+  }
+  const bakedExtensions = "/opt/hanse-ext";
+  if (existsSync(bakedExtensions)) {
+    for (const entry of readdirSync(bakedExtensions)) {
+      const target = path.join(extDir, entry);
+      if (!existsSync(target)) {
+        cpSync(path.join(bakedExtensions, entry), target, { recursive: true });
+      }
+    }
+  }
+  const settingsPath = path.join(userDataDir, "User", "settings.json");
+  let settings: Record<string, unknown> = {};
+  if (existsSync(settingsPath)) {
+    try {
+      settings = JSON.parse(readFileSync(settingsPath, "utf8")) as Record<string, unknown>;
+    } catch {
+      settings = {};
+    }
+  }
+  settings["workbench.colorTheme"] = "GitHub Dark Dimmed";
+  settings["workbench.startupEditor"] = "none";
+  writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+  return { extDir, userDataDir };
+}
+
 async function discoverProjectDirs(workspace: string): Promise<string[]> {
   const dirs: string[] = [];
   if (existsSync(path.join(workspace, ".hanse", "project.yaml"))) {
@@ -155,6 +200,7 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
   let ide: ChildProcess | null = null;
   const ideBin = process.env.HANSE_IDE_BIN ?? "/usr/lib/code-server/bin/code-server";
   if (process.env.HANSE_IDE !== "0" && existsSync(ideBin)) {
+    const ideDirs = prepareIde(ctx.stateHome);
     ide = spawn(
       ideBin,
       [
@@ -167,9 +213,9 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
         "--disable-telemetry",
         "--disable-update-check",
         "--user-data-dir",
-        path.join(coordinatorStateDir(ctx.stateHome), "code-server", "data"),
+        ideDirs.userDataDir,
         "--extensions-dir",
-        path.join(coordinatorStateDir(ctx.stateHome), "code-server", "extensions"),
+        ideDirs.extDir,
         workspace,
       ],
       { stdio: "inherit" },
