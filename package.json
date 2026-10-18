@@ -15,7 +15,8 @@
   ],
   "scripts": {
     "dev": "tsx src/index.ts",
-    "build": "tsc",
+    "build": "tsc && npm run build:css",
+    "build:css": "npx @tailwindcss/cli -i src/http/styles.css -o assets/app.css --minify",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "lint": "biome check .",
@@ -29,8 +30,11 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.0.0",
+    "@tailwindcss/cli": "^4.3.3",
     "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^22.0.0",
+    "daisyui": "^5.7.50",
+    "tailwindcss": "^4.3.3",
     "tsx": "^4.19.0",
     "typescript": "^5.4.0",
     "vitest": "^3.0.0"

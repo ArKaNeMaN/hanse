@@ -159,13 +159,13 @@ export function handleRequest(deps: HttpDeps, request: HttpRequest): HttpRespons
     });
   }
 
-  if (request.method === "GET" && request.path === "/assets/pico.min.css") {
+  if (request.method === "GET" && request.path === "/assets/app.css") {
     try {
       const assetsRoot = process.env.HANSE_ASSETS ?? path.join(process.cwd(), "assets");
       return {
         status: 200,
         contentType: "text/css; charset=utf-8",
-        body: readFileSync(path.join(assetsRoot, "pico.min.css"), "utf8"),
+        body: readFileSync(path.join(assetsRoot, "app.css"), "utf8"),
       };
     } catch {
       return json(404, { error: "not found" });

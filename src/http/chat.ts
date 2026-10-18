@@ -73,29 +73,14 @@ function renderChatPage(deps: HttpDeps, appKey: string | undefined): string {
     )
     .join("");
   const selected = appKey ? JSON.stringify(appKey) : "null";
-  return `<!doctype html><html lang="en" data-theme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>hanse chat</title>
-<link rel="stylesheet" href="/assets/pico.min.css">
-<style>
-body{margin:0;padding:0}
-header{padding:.6rem 1rem;border-bottom:1px solid var(--pico-muted-border-color);display:flex;gap:1rem;align-items:center;margin:0}
-main{display:grid;grid-template-columns:220px 1fr 300px;height:calc(100vh - 49px);margin:0;max-width:none;padding:0}
-aside,section{overflow:auto;border-right:1px solid var(--pico-muted-border-color);padding:.5rem}
-#messages{flex:1;overflow:auto;padding:.5rem}
-#messages .msg{margin:.4rem 0;padding:.5rem;border-radius:6px;white-space:pre-wrap}
-#messages .user{background:rgba(80,130,200,.22)}
-#messages .assistant{background:rgba(255,255,255,.06);border:1px solid var(--pico-muted-border-color)}
-#prompt{width:calc(100% - 90px);height:60px;margin:0}
-.h{font-weight:bold;margin:.4rem 0;opacity:.8}
-.handoff{font-size:.8rem;margin:.2rem 0;padding:.2rem;border-left:3px solid var(--pico-muted-border-color)}
-</style></head><body>
-<header><b>hanse</b> <a href="/">dashboard</a>
-<select id="app" onchange="location.href='/chat?app='+encodeURIComponent(this.value)">${options || '<option value="">(no apps)</option>'}</select>
-<span id="err" style="color:#ff6b6b"></span></header>
-<main>
-<aside><div class="h">Sessions</div><div id="sessions"></div><button onclick="newSession()">+ new</button></aside>
-<section style="display:flex;flex-direction:column"><div id="messages"></div><div><textarea id="prompt" placeholder="message..."></textarea><button id="send" onclick="send()">send</button></div></section>
-<aside><div class="h">Handoffs</div><div id="handoffs"></div></aside>
-</main>
+  return `<!doctype html><html lang="en" data-theme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>hanse chat</title><link rel="stylesheet" href="/assets/app.css"></head>
+<body class="flex h-screen flex-col bg-base-100 text-base-content">
+<div class="navbar min-h-12 border-b border-base-300 bg-base-200 px-4"><div class="flex flex-1 items-center gap-3"><span class="text-lg font-semibold tracking-tight">hanse</span><a class="btn btn-xs btn-ghost" href="/">dashboard</a><select id="app" class="select select-bordered select-xs" onchange="location.href='/chat?app='+encodeURIComponent(this.value)">${options || '<option value="">(no apps)</option>'}</select></div><div class="flex-none"><span id="err" class="text-xs text-error"></span></div></div>
+<div class="flex min-h-0 flex-1 overflow-hidden">
+<aside class="w-56 overflow-auto border-r border-base-300 p-2"><div class="mb-1 flex items-center justify-between px-1"><span class="text-xs font-semibold uppercase opacity-60">Sessions</span><button class="btn btn-xs btn-ghost" onclick="newSession()">+</button></div><div id="sessions" class="space-y-1"></div></aside>
+<section class="flex min-w-0 flex-1 flex-col"><div id="messages" class="flex-1 space-y-2 overflow-auto p-3"></div><div class="flex items-end gap-2 border-t border-base-300 p-2"><textarea id="prompt" class="textarea textarea-bordered textarea-sm h-16 flex-1" placeholder="message..."></textarea><button id="send" class="btn btn-primary btn-sm" onclick="send()">send</button></div></section>
+<aside class="w-64 overflow-auto border-l border-base-300 p-2"><div class="mb-1 px-1 text-xs font-semibold uppercase opacity-60">Handoffs</div><div id="handoffs" class="space-y-1"></div></aside>
+</div>
 <script>
 const APP = ${selected};
 const $ = (id) => document.getElementById(id);
@@ -112,14 +97,13 @@ async function loadSessions() {
   const data = await j('/api/apps/' + encodeURIComponent(APP) + '/sessions');
   const list = $('sessions'); list.innerHTML = '';
   for (const s of data.sessions) {
-    const div = document.createElement('div');
-    div.textContent = s.title || s.id.slice(0, 10);
-    div.style.cursor = 'pointer'; div.style.padding = '2px';
-    if (s.id === sessionId) { div.style.background = '#ddd'; }
-    div.onclick = () => { sessionId = s.id; loadMessages(); loadSessions(); };
-    list.appendChild(div);
+    const b = document.createElement('button');
+    b.className = 'btn btn-xs btn-ghost w-full justify-start' + (s.id === sessionId ? ' btn-active' : '');
+    b.textContent = s.title || s.id.slice(0, 10);
+    b.onclick = () => { sessionId = s.id; loadMessages(); loadSessions(); };
+    list.appendChild(b);
   }
-  if (!sessionId && data.sessions.length > 0) { sessionId = data.sessions[0].id; }
+  if (!sessionId && data.sessions.length > 0) sessionId = data.sessions[0].id;
   if (data.sessions.length === 0) { await newSession(); return; }
   await loadMessages();
 }
@@ -131,7 +115,12 @@ async function loadMessages() {
     const role = m.info.role;
     const text = (m.parts || []).filter(p => p.type === 'text' && p.text).map(p => p.text).join('\\n');
     if (!text) continue;
-    const div = document.createElement('div'); div.className = 'msg ' + role; div.textContent = text; box.appendChild(div);
+    const wrap = document.createElement('div');
+    wrap.className = 'chat ' + (role === 'user' ? 'chat-end' : 'chat-start');
+    const bubble = document.createElement('div');
+    bubble.className = 'chat-bubble text-sm' + (role === 'user' ? ' chat-bubble-primary' : '');
+    bubble.textContent = text;
+    wrap.appendChild(bubble); box.appendChild(wrap);
   }
   box.scrollTop = box.scrollHeight;
 }
@@ -148,13 +137,16 @@ async function loadHandoffs() {
   const data = await j('/api/handoffs');
   const box = $('handoffs'); box.innerHTML = '';
   for (const h of data.handoffs.filter(h => h.fromAppId.endsWith(':' + APP) || h.toAppId.endsWith(':' + APP))) {
-    const div = document.createElement('div'); div.className = 'handoff';
-    div.textContent = h.state + ' · ' + h.summary; box.appendChild(div);
+    const d = document.createElement('div');
+    d.className = 'rounded border border-base-300 bg-base-200 p-2 text-xs';
+    d.textContent = h.state + ' · ' + h.summary;
+    box.appendChild(d);
   }
 }
 loadSessions().then(loadHandoffs).catch(showError);
 setInterval(() => { loadHandoffs().catch(() => {}); }, 5000);
-</script></body></html>`;
+</script>
+</body></html>`;
 }
 
 export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<HttpResponse> {

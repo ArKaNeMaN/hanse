@@ -16,98 +16,68 @@ export function escapeHtml(value: string): string {
     .replace(/"/g, "&quot;");
 }
 
-const STYLE = [
-  ".muted{opacity:.7;font-size:.85rem}",
-  "td form{display:inline-block;margin:0}",
-  "td form button{margin:0 .2rem}",
-  "table{font-size:.85rem}",
-].join("");
-
 function page(title: string, body: string): string {
-  return `<!doctype html><html lang="en" data-theme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title><link rel="stylesheet" href="/assets/pico.min.css"><style>${STYLE}</style></head><body><main class="container">${body}</main></body></html>`;
+  return `<!doctype html><html lang="en" data-theme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title><link rel="stylesheet" href="/assets/app.css"></head><body class="min-h-screen bg-base-100 text-base-content">${body}</body></html>`;
+}
+
+function stateBadge(state: string): string {
+  const map: Record<string, string> = {
+    delivered: "badge-success",
+    rejected: "badge-error",
+    failed: "badge-error",
+    expired: "badge-warning",
+    awaiting_approval: "badge-warning",
+    dispatching: "badge-info",
+    in_progress: "badge-info",
+    queued: "badge-ghost",
+    cancelled: "badge-ghost",
+  };
+  return `<span class="badge badge-sm ${map[state] ?? "badge-ghost"}">${escapeHtml(state)}</span>`;
+}
+
+function navbar(authenticated: boolean): string {
+  const right = authenticated
+    ? '<span class="text-xs opacity-60">operator</span>'
+    : '<a class="btn btn-xs btn-ghost" href="/login">sign in</a>';
+  return `<div class="navbar min-h-12 border-b border-base-300 bg-base-200 px-4"><div class="flex-1"><span class="text-lg font-semibold tracking-tight">hanse</span></div><div class="flex-none flex items-center gap-2">${right}</div></div>`;
 }
 
 export function renderLogin(): string {
   return page(
     "hanse - sign in",
-    [
-      "<h1>hanse</h1>",
-      "<p>Enter the operator token to manage handoffs.</p>",
-      '<form method="post" action="/login"><input name="token" type="password" placeholder="operator token" autofocus><button type="submit">Sign in</button></form>',
-    ].join(""),
+    `<div class="flex min-h-screen items-center justify-center p-4"><form method="post" action="/login" class="card w-80 border border-base-300 bg-base-200"><div class="card-body gap-3"><h1 class="text-xl font-semibold tracking-tight">hanse</h1><p class="text-xs opacity-60">Enter the operator token.</p><input name="token" type="password" class="input input-bordered input-sm w-full" placeholder="operator token" autofocus><button class="btn btn-primary btn-sm w-full">sign in</button></div></form></div>`,
   );
 }
 
-function renderHandoffRow(handoff: Handoff, authenticated: boolean): string {
-  const pending = handoff.state === "awaiting_approval";
-  const actions = pending
-    ? authenticated
-      ? `<form method="post" action="/api/handoffs/${escapeHtml(handoff.id)}/approve"><button type="submit">approve</button></form>` +
-        `<form method="post" action="/api/handoffs/${escapeHtml(handoff.id)}/reject"><button type="submit">reject</button></form>`
-      : '<span class="muted">sign in to decide</span>'
-    : "";
-  return `<tr><td>${escapeHtml(handoff.id.slice(0, 8))}</td><td>${escapeHtml(handoff.state)}</td><td>${escapeHtml(handoff.fromAppId)}</td><td>${escapeHtml(handoff.toAppId)}</td><td>${escapeHtml(handoff.summary)}</td><td>${actions}</td></tr>`;
-}
-
-function renderNewHandoffForm(project: ProjectView): string {
-  if (project.apps.length < 2) {
-    return '<p class="muted">Two applications are required to create a handoff.</p>';
-  }
-  const options = project.apps
-    .map((app) => `<option value="${escapeHtml(app.appKey)}">${escapeHtml(app.appKey)}</option>`)
+function renderProject(project: ProjectView, authenticated: boolean): string {
+  const appRows = project.apps
+    .map(
+      (app) =>
+        `<tr><td class="font-medium">${escapeHtml(app.appKey)}</td><td class="font-mono text-xs opacity-60">${escapeHtml(app.path)}</td><td>${app.kind ? `<span class="badge badge-ghost badge-sm">${escapeHtml(app.kind)}</span>` : ""}</td><td class="text-right"><a class="btn btn-xs btn-primary" href="/chat?app=${encodeURIComponent(app.appKey)}">chat</a></td></tr>`,
+    )
     .join("");
-  return [
-    `<fieldset><legend>New handoff</legend>`,
-    `<form method="post" action="/api/handoffs">`,
-    `<input type="hidden" name="project" value="${escapeHtml(project.id)}">`,
-    `from <select name="from">${options}</select> to <select name="to">${options}</select>`,
-    `<input name="summary" placeholder="summary">`,
-    `<textarea name="spec" placeholder="spec / requirement" rows="3"></textarea>`,
-    `<label><input type="checkbox" name="requires_approval" value="1" style="width:auto"> requires approval</label>`,
-    `<button type="submit">Request change</button>`,
-    `</form></fieldset>`,
-  ].join("");
+  const handoffRows = project.handoffs
+    .map((handoff) => {
+      const actions =
+        authenticated && handoff.state === "awaiting_approval"
+          ? `<form method="post" action="/api/handoffs/${escapeHtml(handoff.id)}/approve" class="inline"><button class="btn btn-xs btn-success">approve</button></form> <form method="post" action="/api/handoffs/${escapeHtml(handoff.id)}/reject" class="inline"><button class="btn btn-xs btn-error">reject</button></form>`
+          : "";
+      return `<tr><td class="font-mono text-xs">${escapeHtml(handoff.id.slice(0, 8))}</td><td>${stateBadge(handoff.state)}</td><td class="text-xs opacity-70">${escapeHtml(handoff.fromAppId.split(":").pop() ?? "")}</td><td class="text-xs opacity-70">${escapeHtml(handoff.toAppId.split(":").pop() ?? "")}</td><td class="text-xs">${escapeHtml(handoff.summary)}</td><td class="text-right">${actions}</td></tr>`;
+    })
+    .join("");
+  return `<section class="card border border-base-300 bg-base-200"><div class="card-body gap-3 p-4"><h2 class="card-title text-base">${escapeHtml(project.name)} <span class="font-mono text-xs font-normal opacity-40">${escapeHtml(project.id.slice(0, 8))}</span></h2><div class="overflow-x-auto"><table class="table table-sm"><thead><tr><th>app</th><th>path</th><th>kind</th><th></th></tr></thead><tbody>${appRows || '<tr><td colspan="4" class="text-sm opacity-50">(no applications)</td></tr>'}</tbody></table></div><div class="divider my-1"></div><h3 class="text-sm font-semibold">Handoffs</h3><div class="overflow-x-auto"><table class="table table-sm"><thead><tr><th>id</th><th>state</th><th>from</th><th>to</th><th>summary</th><th></th></tr></thead><tbody>${handoffRows || '<tr><td colspan="6" class="text-sm opacity-50">(no handoffs)</td></tr>'}</tbody></table></div></div></section>`;
 }
 
 export function renderDashboard(projects: ProjectView[], authenticated: boolean): string {
-  const parts: string[] = ["<h1>hanse</h1>"];
-  parts.push(
-    authenticated
-      ? '<p class="muted">signed in as operator</p>'
-      : '<p class="muted">read-only - <a href="/login">sign in</a></p>',
+  const newProject = authenticated
+    ? '<form method="post" action="/api/projects" class="flex items-center gap-2"><input name="name" class="input input-bordered input-sm w-56" placeholder="new project name"><button class="btn btn-primary btn-sm">create</button></form>'
+    : "";
+  const sections =
+    projects.length === 0
+      ? '<div class="text-sm opacity-60">No projects. Create one above or mount a project with <code>.hanse/project.yaml</code>.</div>'
+      : projects.map((project) => renderProject(project, authenticated)).join("");
+  return page(
+    "hanse",
+    `${navbar(authenticated)}<main class="mx-auto max-w-6xl space-y-5 p-4"><div class="flex items-center justify-between"><h1 class="text-lg font-semibold">Projects</h1>${newProject}</div>${sections}</main>`,
   );
-  parts.push(
-    authenticated
-      ? '<fieldset><legend>New project</legend><form method="post" action="/api/projects"><input name="name" placeholder="project name"><button type="submit">Create</button></form></fieldset>'
-      : "",
-  );
-  if (projects.length === 0) {
-    parts.push(
-      '<p class="muted">No projects registered. Mount a project with <code>.hanse/project.yaml</code>.</p>',
-    );
-  }
-  for (const project of projects) {
-    parts.push(
-      `<h2>${escapeHtml(project.name)} <span class="muted">${escapeHtml(project.id.slice(0, 8))}</span></h2>`,
-    );
-    const appRows = project.apps
-      .map(
-        (app) =>
-          `<tr><td>${escapeHtml(app.appKey)}</td><td>${escapeHtml(app.path)}</td><td>${escapeHtml(app.kind ?? "-")}</td><td><a href="/chat?app=${encodeURIComponent(app.appKey)}">chat</a></td></tr>`,
-      )
-      .join("");
-    parts.push(
-      `<table><thead><tr><th>app</th><th>path</th><th>kind</th><th></th></tr></thead><tbody>${appRows || '<tr><td colspan="4" class="muted">(no applications)</td></tr>'}</tbody></table>`,
-    );
-    const handoffRows = project.handoffs
-      .map((handoff) => renderHandoffRow(handoff, authenticated))
-      .join("");
-    parts.push(
-      `<table><thead><tr><th>id</th><th>state</th><th>from</th><th>to</th><th>summary</th><th></th></tr></thead><tbody>${handoffRows || '<tr><td colspan="6" class="muted">(no handoffs)</td></tr>'}</tbody></table>`,
-    );
-    if (authenticated) {
-      parts.push(renderNewHandoffForm(project));
-    }
-  }
-  return page("hanse", parts.join(""));
 }
