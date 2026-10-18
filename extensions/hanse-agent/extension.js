@@ -1,8 +1,9 @@
 const vscode = require("vscode");
 const http = require("http");
 
-const API_HOST = "127.0.0.1";
-const API_PORT = 8787;
+const API_URL = new URL(process.env.HANSE_API_BASE || "http://127.0.0.1:8787");
+const API_HOST = API_URL.hostname;
+const API_PORT = Number(API_URL.port || (API_URL.protocol === "https:" ? 443 : 80));
 const TOKEN = process.env.HANSE_OPERATOR_TOKEN || "";
 
 function api(path, method, body) {

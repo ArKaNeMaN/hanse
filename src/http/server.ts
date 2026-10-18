@@ -12,6 +12,7 @@ import { handleChat, streamSessionEvents } from "./chat.js";
 import { type HttpDeps, handleRequest } from "./handler.js";
 
 const IDE_PORT = Number(process.env.HANSE_IDE_PORT ?? 8080);
+const IDE_HOST = process.env.HANSE_IDE_HOST ?? "127.0.0.1";
 
 function readBody(request: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -67,7 +68,7 @@ function proxyHttp(
   const target = `${stripped || "/"}${parsed.search}`;
   const upstream = http.request(
     {
-      host: "127.0.0.1",
+      host: IDE_HOST,
       port: IDE_PORT,
       method: request.method,
       path: target,
@@ -142,7 +143,7 @@ export function createHttpServer(deps: HttpDeps): Server {
       socket.destroy();
       return;
     }
-    const connection = net.connect(IDE_PORT, "127.0.0.1", () => {
+    const connection = net.connect(IDE_PORT, IDE_HOST, () => {
       const target = url.replace(/^\/ide/, "") || "/";
       const lines = [`${request.method} ${target} HTTP/${request.httpVersion}`];
       for (let index = 0; index < request.rawHeaders.length; index += 2) {
