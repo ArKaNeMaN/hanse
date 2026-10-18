@@ -113,19 +113,41 @@ function prepareIde(stateHome: string): { extDir: string; userDataDir: string } 
   mkdirSync(extDir, { recursive: true });
   mkdirSync(path.join(userDataDir, "User"), { recursive: true });
 
-  const ownExtension = "/app/extensions/hanse-agent";
-  if (existsSync(ownExtension)) {
-    const target = path.join(extDir, "hanse.hanse-agent-0.1.0");
-    rmSync(target, { recursive: true, force: true });
-    cpSync(ownExtension, target, { recursive: true });
+  const codeServer = process.env.HANSE_IDE_BIN ?? "/usr/lib/code-server/bin/code-server";
+  const vsix = "/app/extensions/hanse-agent.vsix";
+  if (existsSync(vsix)) {
+    try {
+      execFileSync(
+        codeServer,
+        ["--install-extension", vsix, "--extensions-dir", extDir, "--force"],
+        { stdio: "ignore" },
+      );
+    } catch (error) {
+      process.stderr.write(
+        `hanse: failed to install bundled extension: ${error instanceof Error ? error.message : String(error)}\n`,
+      );
+    }
   }
-  const bakedExtensions = "/opt/hanse-ext";
-  if (existsSync(bakedExtensions)) {
-    for (const entry of readdirSync(bakedExtensions)) {
-      const target = path.join(extDir, entry);
-      if (!existsSync(target)) {
-        cpSync(path.join(bakedExtensions, entry), target, { recursive: true });
-      }
+  const hasTheme = readdirSync(extDir).some((entry) =>
+    entry.startsWith("github.github-vscode-theme"),
+  );
+  if (!hasTheme) {
+    try {
+      execFileSync(
+        codeServer,
+        [
+          "--install-extension",
+          "GitHub.github-vscode-theme",
+          "--extensions-dir",
+          extDir,
+          "--force",
+        ],
+        { stdio: "ignore" },
+      );
+    } catch (error) {
+      process.stderr.write(
+        `hanse: failed to install GitHub theme: ${error instanceof Error ? error.message : String(error)}\n`,
+      );
     }
   }
   const settingsPath = path.join(userDataDir, "User", "settings.json");
