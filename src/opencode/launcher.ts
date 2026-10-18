@@ -110,6 +110,14 @@ export function launchInstance(db: SqliteDatabase, input: LaunchInput): RunningI
   const pid = child.pid ?? null;
   recordInstance(db, { id, appId: input.appId, endpoint, pid, bootId, state: "running" });
 
+  child.on("error", () => {
+    try {
+      recordInstance(db, { id, appId: input.appId, endpoint, pid: null, bootId, state: "failed" });
+    } catch {
+      return;
+    }
+  });
+
   child.on("exit", () => {
     try {
       recordInstance(db, { id, appId: input.appId, endpoint, pid: null, bootId, state: "stopped" });

@@ -181,14 +181,21 @@ export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<
   if (found === undefined) {
     return json(404, { error: `unknown application: ${appKey}` });
   }
-  const endpoint = await deps.manager.ensure({
-    id: found.app.id,
-    projectId: found.project.id,
-    appKey: found.app.appKey,
-    appDir: found.app.path.startsWith("/")
-      ? found.app.path
-      : `${found.project.rootPath}/${found.app.path}`,
-  });
+  let endpoint: string;
+  try {
+    endpoint = await deps.manager.ensure({
+      id: found.app.id,
+      projectId: found.project.id,
+      appKey: found.app.appKey,
+      appDir: found.app.path.startsWith("/")
+        ? found.app.path
+        : `${found.project.rootPath}/${found.app.path}`,
+    });
+  } catch (error) {
+    return json(502, {
+      error: `agent failed to start: ${error instanceof Error ? error.message : String(error)}`,
+    });
+  }
 
   try {
     if (sessionsMatch !== null) {
