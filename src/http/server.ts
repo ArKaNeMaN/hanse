@@ -48,13 +48,14 @@ function isAuthed(deps: HttpDeps, request: IncomingMessage): boolean {
 }
 
 function proxyHttp(request: IncomingMessage, response: ServerResponse): void {
+  const target = (request.url ?? "/").replace(/^\/ide/, "") || "/";
   const upstream = http.request(
     {
       host: "127.0.0.1",
       port: IDE_PORT,
       method: request.method,
-      path: request.url,
-      headers: { ...request.headers, host: `127.0.0.1:${IDE_PORT}` },
+      path: target,
+      headers: { ...request.headers },
     },
     (upstreamResponse) => {
       response.writeHead(upstreamResponse.statusCode ?? 502, upstreamResponse.headers);
@@ -126,7 +127,8 @@ export function createHttpServer(deps: HttpDeps): Server {
       return;
     }
     const connection = net.connect(IDE_PORT, "127.0.0.1", () => {
-      const lines = [`${request.method} ${url} HTTP/${request.httpVersion}`];
+      const target = url.replace(/^\/ide/, "") || "/";
+      const lines = [`${request.method} ${target} HTTP/${request.httpVersion}`];
       for (let index = 0; index < request.rawHeaders.length; index += 2) {
         lines.push(`${request.rawHeaders[index]}: ${request.rawHeaders[index + 1]}`);
       }
