@@ -11,6 +11,10 @@ Guidance for AI agents working in this repository (the `hanse` coordinator).
 4. [`docs/journal/0001-core.md`](docs/journal/0001-core.md) - stage-by-stage history and decisions.
 5. [`docs/process.md`](docs/process.md) - the delivery pipeline (gates, reviewers, artifacts).
 
+> Local-only (optional): if `docs/deploy/` exists, read `docs/deploy/README.md` - it is git-ignored
+> and holds the `deployment-host` deployment runbook plus the rule that every update is deployed there after the
+> gates pass.
+
 ## What this repository is
 
 A public, pre-alpha TypeScript/Node project: a self-hosted coordinator/workbench for projects of
