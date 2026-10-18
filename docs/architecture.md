@@ -1,6 +1,7 @@
 # Architecture
 
-> Status: design (pre-alpha). Nothing here is implemented yet.
+> **Superseded.** See [`docs/current-state.md`](current-state.md) for what is implemented now. This file
+> is the early Stage 0 design notes.
 
 `hanse` is a coordinator/workbench. It hosts **projects**, each containing **applications**. Each
 application runs as its own isolated `opencode` agent instance, and applications exchange structured
