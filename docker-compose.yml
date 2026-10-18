@@ -13,5 +13,16 @@ services:
       - ./workspace:/data/workspace
       - hanse-state:/data/state
 
+  ide:
+    image: codercom/code-server:latest
+    container_name: hanse-ide
+    restart: unless-stopped
+    environment:
+      PASSWORD: ${CODE_SERVER_PASSWORD:?set CODE_SERVER_PASSWORD in .env}
+    ports:
+      - "<LAN_HOST>:8444:8080"
+    volumes:
+      - ./workspace:/home/coder/workspace
+
 volumes:
   hanse-state:
