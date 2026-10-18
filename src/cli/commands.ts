@@ -1,3 +1,4 @@
+import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readdir, writeFile } from "node:fs/promises";
@@ -150,6 +151,30 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
     }));
   };
   const server = createHttpServer({ db, workspaceRoot: workspace, getProjects, manager });
+
+  let ide: ChildProcess | null = null;
+  const ideBin = process.env.HANSE_IDE_BIN ?? "/usr/lib/code-server/bin/code-server";
+  if (process.env.HANSE_IDE !== "0" && existsSync(ideBin)) {
+    ide = spawn(
+      ideBin,
+      [
+        "--auth",
+        "none",
+        "--bind-addr",
+        "127.0.0.1:8080",
+        "--abs-proxy-base-path",
+        "/ide",
+        "--disable-telemetry",
+        "--disable-update-check",
+        "--user-data-dir",
+        path.join(coordinatorStateDir(ctx.stateHome), "code-server", "data"),
+        "--extensions-dir",
+        path.join(coordinatorStateDir(ctx.stateHome), "code-server", "extensions"),
+        workspace,
+      ],
+      { stdio: "inherit" },
+    );
+  }
   await new Promise<void>((resolve) => {
     server.listen(options.port, options.hostname, resolve);
   });
@@ -160,6 +185,7 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
   return await new Promise<number>((resolve) => {
     const shutdown = (): void => {
       manager.stopAll();
+      ide?.kill("SIGTERM");
       server.close(() => {
         db.close();
         resolve(0);

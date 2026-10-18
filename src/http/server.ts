@@ -1,7 +1,16 @@
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import http, {
+  createServer,
+  type IncomingMessage,
+  type Server,
+  type ServerResponse,
+} from "node:http";
+import net from "node:net";
+import type { Duplex } from "node:stream";
+import { authenticate } from "../identity/auth.js";
 import { handleChat, streamSessionEvents } from "./chat.js";
-import type { HttpDeps } from "./handler.js";
-import { handleRequest } from "./handler.js";
+import { type HttpDeps, handleRequest } from "./handler.js";
+
+const IDE_PORT = Number(process.env.HANSE_IDE_PORT ?? 8080);
 
 function readBody(request: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -12,12 +21,71 @@ function readBody(request: IncomingMessage): Promise<string> {
   });
 }
 
-/** Create the coordinator HTTP server. Binds locally by default. */
+function cookieToken(header: string | undefined): string | undefined {
+  if (header === undefined) {
+    return undefined;
+  }
+  for (const part of header.split(";")) {
+    const [key, value] = part.trim().split("=");
+    if (key === "hanse_token" && value !== undefined) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function isAuthed(deps: HttpDeps, request: IncomingMessage): boolean {
+  const token = cookieToken(request.headers.cookie);
+  if (token === undefined || token.length === 0) {
+    return false;
+  }
+  try {
+    authenticate(deps.db, `Bearer ${token}`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function proxyHttp(request: IncomingMessage, response: ServerResponse): void {
+  const upstream = http.request(
+    {
+      host: "127.0.0.1",
+      port: IDE_PORT,
+      method: request.method,
+      path: request.url,
+      headers: { ...request.headers, host: `127.0.0.1:${IDE_PORT}` },
+    },
+    (upstreamResponse) => {
+      response.writeHead(upstreamResponse.statusCode ?? 502, upstreamResponse.headers);
+      upstreamResponse.pipe(response);
+    },
+  );
+  upstream.on("error", () => {
+    if (!response.headersSent) {
+      response.writeHead(502);
+    }
+    response.end();
+  });
+  request.pipe(upstream);
+}
+
 export function createHttpServer(deps: HttpDeps): Server {
-  return createServer((request: IncomingMessage, response: ServerResponse) => {
+  const server = createServer((request: IncomingMessage, response: ServerResponse) => {
+    const url = new URL(request.url ?? "/", "http://localhost");
+
+    if (url.pathname === "/ide" || url.pathname.startsWith("/ide/")) {
+      if (!isAuthed(deps, request)) {
+        response.writeHead(302, { location: "/login" });
+        response.end();
+        return;
+      }
+      proxyHttp(request, response);
+      return;
+    }
+
     void readBody(request)
       .then(async (body) => {
-        const url = new URL(request.url ?? "/", "http://localhost");
         const httpRequest = {
           method: request.method ?? "GET",
           path: url.pathname,
@@ -50,4 +118,28 @@ export function createHttpServer(deps: HttpDeps): Server {
         );
       });
   });
+
+  server.on("upgrade", (request: IncomingMessage, socket: Duplex, head: Buffer) => {
+    const url = request.url ?? "";
+    if (!url.startsWith("/ide") || !isAuthed(deps, request)) {
+      socket.destroy();
+      return;
+    }
+    const connection = net.connect(IDE_PORT, "127.0.0.1", () => {
+      const lines = [`${request.method} ${url} HTTP/${request.httpVersion}`];
+      for (let index = 0; index < request.rawHeaders.length; index += 2) {
+        lines.push(`${request.rawHeaders[index]}: ${request.rawHeaders[index + 1]}`);
+      }
+      connection.write(`${lines.join("\r\n")}\r\n\r\n`);
+      if (head.length > 0) {
+        connection.write(head);
+      }
+      socket.pipe(connection);
+      connection.pipe(socket);
+    });
+    connection.on("error", () => socket.destroy());
+    socket.on("error", () => connection.destroy());
+  });
+
+  return server;
 }
