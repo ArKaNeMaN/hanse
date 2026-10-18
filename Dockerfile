@@ -19,7 +19,7 @@ COPY --from=build /app/assets ./assets
 COPY extensions ./extensions
 COPY --from=ide /usr/lib/code-server /usr/lib/code-server
 RUN ln -sf /usr/lib/code-server/bin/code-server /usr/bin/code-server
-RUN code-server --install-extension GitHub.github-vscode-theme --extensions-dir /opt/hanse-ext --force
+RUN code-server --install-extension GitHub.github-vscode-theme --extensions-dir /opt/hanse-ext --force && chown -R 1000:1000 /opt/hanse-ext && chmod -R a+rX /opt/hanse-ext
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*
 RUN npm i -g opencode-ai@1.19.3
 EXPOSE 8787
