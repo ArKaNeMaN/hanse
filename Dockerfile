@@ -24,7 +24,7 @@ RUN chmod 0755 /usr/local/bin/hanse-shell
 RUN code-server --install-extension /app/extensions/hanse-agent.vsix --extensions-dir /opt/hanse-ext --force \
  && code-server --install-extension GitHub.github-vscode-theme --extensions-dir /opt/hanse-ext --force \
  && mkdir -p /home/node/.config/code-server/User \
- && printf '%s' '{"workbench.colorTheme":"GitHub Dark Dimmed","workbench.startupEditor":"none","terminal.integrated.profiles.linux":{"hanse":{"path":"/usr/local/bin/hanse-shell"}},"terminal.integrated.defaultProfile.linux":"hanse"}' > /home/node/.config/code-server/User/settings.json \
+ && printf '%s' '{"workbench.colorTheme":"GitHub Dark Dimmed","workbench.startupEditor":"none","chat.commandCenter.enabled":false,"terminal.integrated.profiles.linux":{"hanse":{"path":"/usr/local/bin/hanse-shell"}},"terminal.integrated.defaultProfile.linux":"hanse"}' > /home/node/.config/code-server/User/settings.json \
  && chown -R 1000:1000 /opt/hanse-ext /home/node/.config
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*
 RUN npm i -g opencode-ai@1.19.3

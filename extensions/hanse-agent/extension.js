@@ -184,6 +184,12 @@ function activate(context) {
       vscode.commands.executeCommand("workbench.view.extension.hanse");
     }),
   );
+  context.subscriptions.push(
+    vscode.commands.registerCommand("hanse.moveToRight", async () => {
+      await vscode.commands.executeCommand("hanse.chat.focus");
+      await vscode.commands.executeCommand("workbench.action.moveFocusedView");
+    }),
+  );
   vscode.commands.executeCommand("workbench.view.extension.hanse");
 }
 

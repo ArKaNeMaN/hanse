@@ -37,6 +37,10 @@
       {
         "command": "hanse.open",
         "title": "Hanse: Open Agent Chat"
+      },
+      {
+        "command": "hanse.moveToRight",
+        "title": "Hanse: Move Chat to Secondary Side Bar"
       }
     ]
   }
