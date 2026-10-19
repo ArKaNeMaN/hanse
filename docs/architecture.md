@@ -20,8 +20,8 @@ requests through the coordinator.
 
 Every application instance is isolated:
 
-- separate `XDG_DATA_HOME`, `XDG_STATE_HOME`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, and `OPENCODE_DB`
-  (see ADR 0003);
+- separate `XDG_DATA_HOME`, `XDG_STATE_HOME`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, `OPENCODE_DB`,
+  and `TMPDIR` (per-instance scratch under `/tmp/hanse/<project-id>/<app-key>`) (see ADR 0003);
 - separate working tree / git worktree;
 - separate session and context.
 

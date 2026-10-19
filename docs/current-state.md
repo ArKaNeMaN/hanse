@@ -90,8 +90,9 @@ Both containers use the same image (`hanse:0.1.0`, built from `Dockerfile`).
 
 - `opencode` (`opencode-ai@1.19.3`) is installed in the image.
 - The coordinator runs **one `opencode serve` per (project, app)**, lazily on first chat use, on
-  `127.0.0.1:4100+`, with isolated `XDG_*` and `OPENCODE_DB` under the project runtime root. The host
-  `auth.json` is copied into each instance's data dir; model access works (verified with `deepseek`).
+  `127.0.0.1:4100+`, with isolated `XDG_*` and `OPENCODE_DB` under the project runtime root and a
+  per-instance scratch `TMPDIR` (`/tmp/hanse/<projectId>/<appKey>`). The host `auth.json` is copied
+  into each instance's data dir; model access works (verified with `deepseek`).
 - Every managed instance also loads the image-baked OMO baseline
   (`oh-my-openagent@5.1.35`, `/opt/hanse/omo`) through `HANSE_OMO_PLUGIN`. Its config is baked at
   `/home/node/.omo/omo.jsonc` and pins OMO agents/categories to `deepseek/deepseek-flash`.
@@ -274,7 +275,9 @@ Host `./state` is mounted at `/data/state` in `hanse` only:
   principals, events, secrets, settings, provider keys.
 - `hanse/secret.key` - AES-256-GCM key for the credential store and provider keys (mode `0600`).
 - `hanse/projects/<projectId>/apps/<appKey>/{data,state,config,cache}` - per-instance opencode state
-  (`state/opencode.db`) and the reconciled `data/opencode/auth.json` (mode `0600`).
+  (`state/opencode.db`) and the reconciled `data/opencode/auth.json` (mode `0600`). Scratch is not
+  kept under `state`: each instance gets `TMPDIR=/tmp/hanse/<projectId>/<appKey>`, so opencode's
+  pre-approved `<TMPDIR>/opencode` directory is per instance instead of a shared `/tmp/opencode`.
 - `/home/node/.omo/omo.jsonc` - image-baked OMO baseline plus coordinator-generated per-app profiles;
   the file and OMO state remain shared by all instances under the same uid.
 
@@ -312,7 +315,7 @@ coordinator; operators do not set them.
 
 ## Verification
 
-`npm run lint && npm run typecheck && npm test && npm run build` (all green; 558 tests). Chat browser
+`npm run lint && npm run typecheck && npm test && npm run build` (all green; 560 tests). Chat browser
 QA: `node docs/design/chat-qa.mjs` (deterministic fixtures; 3 scenarios, 81 assertions, 10
 screenshots, zero console/page errors). Live smoke on `deployment-host` against the real `demo-app` agent: 1
 scenario, 2 assertions, streaming assistant text and a rendered markdown table, zero console/page

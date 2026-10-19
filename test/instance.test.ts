@@ -24,8 +24,23 @@ describe("resolveInstanceEnv", () => {
   });
 
   it("sanitizes application keys for filesystem use", () => {
-    const env = resolveInstanceEnv("/rt", { projectId: "p", app: "web ui" });
+    const env = resolveInstanceEnv("/rt", { projectId: "p", app: "web ui" }, "/tmp");
     expect(env.XDG_DATA_HOME).toBe("/rt/apps/web-ui/data");
+    expect(env.TMPDIR).toBe("/tmp/hanse/p/web-ui");
+  });
+
+  it("gives each application its own scratch root", () => {
+    const web = resolveInstanceEnv("/rt", { projectId: "p", app: "web" }, "/tmp");
+    const api = resolveInstanceEnv("/rt", { projectId: "p", app: "api" }, "/tmp");
+    expect(web.TMPDIR).toBe("/tmp/hanse/p/web");
+    expect(api.TMPDIR).toBe("/tmp/hanse/p/api");
+    expect(web.TMPDIR).not.toBe(api.TMPDIR);
+  });
+
+  it("separates scratch roots of same-named applications across projects", () => {
+    const one = resolveInstanceEnv("/rt", { projectId: "p1", app: "web" }, "/tmp");
+    const two = resolveInstanceEnv("/rt", { projectId: "p2", app: "web" }, "/tmp");
+    expect(one.TMPDIR).not.toBe(two.TMPDIR);
   });
 });
 

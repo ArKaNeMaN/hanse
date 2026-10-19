@@ -1,3 +1,4 @@
+import os from "node:os";
 import path from "node:path";
 import type { PermissionPolicy } from "./policy.js";
 
@@ -16,6 +17,8 @@ export interface IsolatedEnv {
   XDG_CONFIG_HOME: string;
   XDG_CACHE_HOME: string;
   OPENCODE_DB: string;
+  /** Per-instance scratch root; opencode uses `${TMPDIR}/opencode` inside it. */
+  TMPDIR: string;
 }
 
 /** Name under which the coordinator MCP server is exposed to managed agents. */
@@ -70,7 +73,11 @@ export function defaultRuntimeRoot(xdgStateHome: string, projectId: string): str
 }
 
 /** Compute the isolated environment for a single application instance. */
-export function resolveInstanceEnv(runtimeRoot: string, identity: InstanceIdentity): IsolatedEnv {
+export function resolveInstanceEnv(
+  runtimeRoot: string,
+  identity: InstanceIdentity,
+  tmpRoot: string = os.tmpdir(),
+): IsolatedEnv {
   const appDir = path.join(runtimeRoot, "apps", sanitizeAppKey(identity.app));
   const stateDir = path.join(appDir, "state");
   return {
@@ -79,6 +86,12 @@ export function resolveInstanceEnv(runtimeRoot: string, identity: InstanceIdenti
     XDG_CONFIG_HOME: path.join(appDir, "config"),
     XDG_CACHE_HOME: path.join(appDir, "cache"),
     OPENCODE_DB: path.join(stateDir, "opencode.db"),
+    TMPDIR: path.join(
+      tmpRoot,
+      "hanse",
+      sanitizeAppKey(identity.projectId),
+      sanitizeAppKey(identity.app),
+    ),
   };
 }
 

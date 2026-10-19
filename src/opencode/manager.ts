@@ -401,6 +401,7 @@ export class InstanceManager {
       xdgDataHome: isolated.XDG_DATA_HOME,
       xdgConfigHome: isolated.XDG_CONFIG_HOME,
       xdgCacheHome: isolated.XDG_CACHE_HOME,
+      tmpdir: isolated.TMPDIR,
       baselinePlugins,
     });
     try {

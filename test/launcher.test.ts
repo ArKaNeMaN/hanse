@@ -86,13 +86,17 @@ describe("launcher", () => {
       baselinePlugins: [plugin],
     });
     expect(env.XDG_DATA_HOME).toBe("/rt/apps/web/data");
+    expect(env.TMPDIR).toBe(path.join(tmpdir(), "hanse", "p", "web"));
     const overlay = JSON.parse(env.OPENCODE_CONFIG_CONTENT ?? "{}") as {
       mcp?: Record<string, unknown>;
       plugin?: string[];
+      permission?: { external_directory?: Record<string, string> };
     };
     expect(overlay.mcp?.hanse).toBeDefined();
     expect(overlay.mcp?.codegraph).toBeDefined();
     expect(overlay.plugin).toEqual([plugin]);
+    expect(overlay.permission?.external_directory?.[`${env.TMPDIR}/opencode/*`]).toBe("allow");
+    expect(overlay.permission?.external_directory?.["/tmp/opencode/*"]).toBeUndefined();
   });
 
   it("launches and stops an instance, tracking state", async () => {
@@ -112,6 +116,7 @@ describe("launcher", () => {
     };
     expect(started.state).toBe("running");
     expect(started.pid).toBeGreaterThan(0);
+    expect(existsSync(path.join(tmpdir(), "hanse", "p", "web"))).toBe(true);
 
     await stopInstance(db, running);
     const stopped = db.prepare("SELECT state, pid FROM instances WHERE app_id = 'p:web'").get() as {

@@ -82,6 +82,7 @@ export function buildInstanceEnv(input: LaunchInput): NodeJS.ProcessEnv {
       xdgDataHome: isolated.XDG_DATA_HOME,
       xdgConfigHome: isolated.XDG_CONFIG_HOME,
       xdgCacheHome: isolated.XDG_CACHE_HOME,
+      tmpdir: isolated.TMPDIR,
       baselinePlugins: input.baselinePlugins,
     }),
     webPermissionOptions(input.web),
@@ -165,6 +166,7 @@ export function launchInstance(db: SqliteDatabase, input: LaunchInput): RunningI
     writeAuthFile(path.join(String(env.XDG_DATA_HOME), "opencode", "auth.json"), input.auth);
   }
   mkdirSync(input.appDir, { recursive: true });
+  mkdirSync(String(env.TMPDIR), { recursive: true });
   const child = spawn(bin, args, {
     cwd: input.appDir,
     env,
