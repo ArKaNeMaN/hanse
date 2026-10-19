@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { ServerResponse } from "node:http";
 import {
   deleteSavedPermission,
@@ -16,7 +17,11 @@ import {
   replyQuestionV2,
   OpencodeHttpError as UpstreamError,
 } from "../opencode/client.js";
-import { createEventStream } from "../opencode/events.js";
+import {
+  APP_STREAM_MAX_FRAME_BYTES,
+  createEventStream,
+  type HanseEvent,
+} from "../opencode/events.js";
 import type { ManagedApp } from "../opencode/manager.js";
 import {
   MAX_FEEDBACK_LENGTH,
@@ -687,8 +692,15 @@ export async function streamAppEvents(
   }
 
   const controller = new AbortController();
+  const streamID = randomUUID();
+  let seq = 0;
   let heartbeat: NodeJS.Timeout | undefined;
   let queue: Promise<void> = Promise.resolve();
+  const emit = (event: HanseEvent): string => {
+    seq += 1;
+    return `data: ${JSON.stringify({ ...event, seq, streamID })}\n\n`;
+  };
+  const ready = `data: ${JSON.stringify({ type: "stream.ready", seq: 0, streamID })}\n\n`;
   const write = (chunk: string): Promise<void> => {
     queue = queue.then(() => writeChunk(response, chunk));
     return queue;
@@ -714,6 +726,7 @@ export async function streamAppEvents(
     }
     const stream = createEventStream(upstream.body, {
       signal: controller.signal,
+      maxFrameBytes: APP_STREAM_MAX_FRAME_BYTES,
       onAttached: () => {
         response.writeHead(200, {
           "content-type": "text/event-stream",
@@ -721,7 +734,7 @@ export async function streamAppEvents(
           connection: "keep-alive",
           "x-accel-buffering": "no",
         });
-        void write('data: {"type":"stream.ready"}\n\n');
+        void write(ready);
         heartbeat = setInterval(() => {
           void write(": ping\n\n");
         }, heartbeatInterval());
@@ -731,7 +744,7 @@ export async function streamAppEvents(
       if (response.destroyed || response.writableEnded) {
         break;
       }
-      await write(`data: ${JSON.stringify(event)}\n\n`);
+      await write(emit(event));
     }
     cleanup();
     await queue;

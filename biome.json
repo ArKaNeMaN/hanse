@@ -11,7 +11,8 @@
       "!assets",
       "!src/http/styles.css",
       "!extensions",
-      "!docs/design/showcase.html"
+      "!docs/design/showcase.html",
+      "!docs/design/artifacts"
     ]
   },
   "formatter": {

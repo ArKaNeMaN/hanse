@@ -60,6 +60,10 @@ const ASSETS: Record<string, { file: string; contentType: string }> = {
   "/assets/app.css": { file: "app.css", contentType: "text/css; charset=utf-8" },
   "/assets/app.js": { file: "app.js", contentType: "text/javascript; charset=utf-8" },
   "/assets/chat.js": { file: "chat.js", contentType: "text/javascript; charset=utf-8" },
+  "/assets/chat-core.js": {
+    file: "chat-core.js",
+    contentType: "text/javascript; charset=utf-8",
+  },
   "/assets/git.js": { file: "git.js", contentType: "text/javascript; charset=utf-8" },
   "/assets/favicon.svg": { file: "favicon.svg", contentType: "image/svg+xml" },
 };

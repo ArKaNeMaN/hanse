@@ -56,11 +56,12 @@ Both containers use the same image (`hanse:0.1.0`, built from `Dockerfile`).
 - Handoff decisions use `POST /api/handoffs/:id/decision` (`decision=approved|rejected`, optional
   `reason`, `return_to`); the legacy `/approve` and `/reject` endpoints still work.
 - Static assets are allowlisted: `/assets/app.css`, `/assets/app.js`, `/assets/chat.js`,
-  `/assets/git.js`, `/assets/favicon.svg`.
+  `/assets/chat-core.js`, `/assets/git.js`, `/assets/favicon.svg`.
 - `assets/app.js` adds shell drawer, native-dialog, theme, toast, password-visibility, and
-  submit-busy behavior. `assets/chat.js` owns the chat workspace (sessions, messages, SSE, composer,
-  drawers, safe markdown rendering). `assets/git.js` hydrates the application git panel. Pages remain
-  server-rendered; no bundler or client framework is used.
+  submit-busy behavior. `assets/chat.js` is an ESM module that owns the chat workspace (sessions,
+  messages, typed SSE, composer, queue, questions, OMO cards, safe markdown/tables) and imports the
+  pure helpers in `assets/chat-core.js`. `assets/git.js` hydrates the application git panel. Pages
+  remain server-rendered; no bundler or client framework is used.
 - The chat workspace is the stage-3 three-pane surface: sessions rail, thread, and context rail.
   Below 1360 the context pane is a drawer; below 768 both rails are drawers. The thread is the only
   scroll owner. `session` is mirrored to the URL, and the optional `project` query disambiguates
@@ -97,18 +98,63 @@ Both containers use the same image (`hanse:0.1.0`, built from `Dockerfile`).
   (`@colbymchenry/codegraph@1.6.2`, `/opt/hanse/codegraph`) through `HANSE_CODEGRAPH_BIN`. The
   application must be indexed with `codegraph init` (creates `.codegraph/`) before graph queries
   return data.
-- Our chat UI (`/chat?app=<appKey>&project=<projectId>`) lists/filters sessions, renders text with a
-  safe markdown subset, tool calls (output/error), reasoning, and patches, and sends prompts. The
-  optional `project` query is additive and disambiguates duplicate app keys. API:
+- Our chat UI (`/chat?app=<appKey>&project=<projectId>`) lists/filters sessions, streams assistant
+  text and running tool output, renders tool calls (output/error/previews), reasoning, patches, GFM
+  pipe tables, and OMO system cards, and sends prompts optimistically. The optional `project` query
+  is additive and disambiguates duplicate app keys. API:
   `GET/POST /api/apps/:app/sessions`, `DELETE /api/apps/:app/sessions/:sid`,
   `GET/POST /api/apps/:app/sessions/:sid/messages`; all accept `?project=<projectId>`.
+  `POST .../messages?async=1` accepts `{text}` and returns `202 {accepted, messageID, sessionID}`
+  without waiting for the turn; the blocking route without `async` keeps its `200 {message}`
+  response. Async text is capped at 32 KiB; an older upstream without `prompt_async` returns
+  `502 async_unavailable`, and the blocking route remains available.
+- The app-level SSE (`GET /api/apps/:app/events`) carries typed frames
+  (`stream.ready`, `message.updated`, `message.part.updated`, `message.part.delta`,
+  `message.part.omitted`, `session.status`, `session.activity`, `todo.updated`, question/permission
+  events, `stream.warning`) enveloped with `seq` and `streamID`. `stream.ready` starts at `seq: 0`;
+  the client drops `seq <= lastSeq` per stream, hydrates on a new `streamID`, and schedules one
+  reconcile on a gap or `frame_too_large`/`invalid_json`/`delta_too_large` warning. Caps: 8 MiB app
+  SSE frame, 256 KiB typed event, 64 KiB delta/text snapshot/tool output/patch, and an 8 MiB
+  `GET /messages` response (`502 messages_too_large` over cap; the client keeps its last feed and
+  shows the too-large notice).
+- The feed is patched through keyed message/part nodes with one `requestAnimationFrame` flush:
+  markdown re-renders at most every 50 ms while streaming (and once on seal/idle), running tool output
+  at most every 100 ms (and once on completion), and the feed is never replaced on a token. Snapshot
+  hydration seals completed messages, leaves only the last uncompleted assistant's text/reasoning
+  unsealed, merges optimistic rows by server ID, and preserves open tool disclosures and scroll.
+- Send/queue behavior: a submitted prompt appears immediately as an optimistic operator row
+  (`sending`, then `accepted` after the 202; `queued` while the agent is busy; `unknown` during the
+  delivery-unknown grace). The queue strip above the prompt dock is derived from upstream history
+  (last visible assistant `parentID`, `finish:"tool-calls"`/idle overrides, bare shells ignored), shows
+  up to three one-line previews plus `+N more`, excludes the active head and OMO rows, and has no
+  remove control. The status line appends `· N queued` only on the allowed labels.
+- Status is derived from `session.status`, the latest part, and the queue:
+  `Sending`, `Thinking`, `Working`, `Running <tool>`, `Waiting for you`, `Ready`, `Retrying`,
+  `Paused`, with elapsed time that freezes while waiting and resets on `Ready`. Inline questions in
+  the feed gate the composer and show `Waiting for you`; the top-bar/per-session counts include them.
+- The chat workspace renders GFM pipe tables (alignment, escaped pipes/code spans, 16-column and
+  200-row caps, no raw HTML), one-line tool previews, a `todowrite` checklist, streamed bash output
+  with a 64 KiB live-tail window and truncation notice, and collapsed `Thinking` reasoning. OMO
+  internal/synthetic messages are classified client-side into system cards (markers and
+  `<system-reminder>` tags hidden, long results collapsed) and are excluded from the queue; no
+  server OMO field or persistence is added.
+- Layout: at `>=1024` the feed and composer share one centered content box sized
+  `min(100%, max(60ch, 75%))` with a `96rem` cap (about 75%, floor-driven ~87% at 1440, and 75% at
+  1920); below 1024 both are 100%. The feed/composer share horizontal padding, tables/tool bodies use
+  the full feed width, and assistant prose stays near a 68ch reading measure. There is no horizontal
+  page overflow at 390.
 - Sessions are created lazily: opening a chat or pressing "New session" only starts a draft, and the
   first message creates the upstream session. Deletion is human-only (`403` for agent principals),
   proxies opencode `DELETE /session/:id`, and the UI selects the next session or returns to the draft
   when the active one is removed.
 - The chat workspace renders interactive opencode prompts above the composer:
   - **Questions** support one or many questions, options, multi-select, custom answers, review, and
-    dismissal. Empty answers are allowed after an explicit "Send without answering?" confirmation.
+    dismissal. Questions correlated to a `question` tool part render inline at that part (and become
+    read-only Q&A cards after completion); uncorrelated questions stay in the dock. Empty answers are
+    allowed after an explicit "Send without answering?" confirmation. Single-select questions in a
+    multi-question block auto-advance with focus and one announcement; multi-select does not
+    auto-advance, and a single-question block does not auto-submit. Custom-answer Enter submits the
+    current step once.
   - **Permissions** show the type, patterns, bounded metadata, and `once`/`always`/`reject` with
     optional feedback. v1 `always` lasts for the app instance until restart; v2 `always` is a durable,
     project-scoped saved permission. A reject also rejects other pending permissions in the same
@@ -127,7 +173,8 @@ Both containers use the same image (`hanse:0.1.0`, built from `Dockerfile`).
   `GET /api/apps/:app/sessions/:sid/todo`, and the typed app-level SSE
   `GET /api/apps/:app/events`; all accept `?project=<projectId>`. The old raw
   `GET /api/apps/:app/sessions/:sid/events` remains for compatibility but is no longer used by the
-  chat client.
+  chat client. The typed app SSE keeps its heartbeat, backpressure, and `session.activity`
+  compatibility frames for older clients.
 - Every managed instance receives an explicit permission overlay (`OPENCODE_CONFIG_CONTENT`):
   `external_directory` is deny-all outside the app plus trusted runtime roots (tool-output, git repos
   cache, temp, per-instance config/cache skills, `~/.claude/skills`, `~/.agents/skills`, bundled
@@ -198,13 +245,17 @@ The IDE container keeps its extensions at `/opt/hanse-ext` and settings at
 | `HANSE_IDE=0` | serve | do not spawn code-server in the coordinator |
 | `HANSE_IDE_HOST` / `HANSE_IDE_PORT` | serve | proxy target for `/ide` (default `127.0.0.1:8080`) |
 | `HANSE_IDE_BIN` | serve | code-server binary |
-| `HANSE_ASSETS` | serve | directory for `app.css`, `app.js`, `chat.js`, `git.js`, and `favicon.svg` |
+| `HANSE_ASSETS` | serve | directory for `app.css`, `app.js`, `chat.js`, `chat-core.js`, `git.js`, and `favicon.svg` |
 | `HANSE_DB` / `HANSE_PROJECT_ID` / `HANSE_APP_KEY` | `hanse mcp` | MCP server binding |
 | `HANSE_API_BASE` | extension | coordinator base URL (`http://hanse:8787`) |
 
 ## Verification
 
-`npm run lint && npm run typecheck && npm test && npm run build` (all green; 256 tests).
+`npm run lint && npm run typecheck && npm test && npm run build` (all green; 396 tests). Browser QA:
+`node docs/design/chat-qa.mjs` (deterministic fixtures; 3 scenarios, 81 assertions, 10 screenshots,
+zero console/page errors). Live smoke on `deployment-host` against the real `demo-app` agent: 1 scenario, 2
+assertions, streaming assistant text and a rendered markdown table, zero console/page errors.
+Evidence: [`docs/design/artifacts/chat/`](design/artifacts/chat/README.md).
 
 ## Known limitations and residual risks
 
@@ -239,5 +290,12 @@ The IDE container keeps its extensions at `/opt/hanse-ext` and settings at
   IDE writing to the same repository.
 - The IDE chat can be moved to the right sidebar only by a one-time user action (VS Code limitation).
 - Chat messages render every item in a session (no virtualization); very large sessions are the
-  scaling limit. Drawers close on Escape/scrim/close but do not trap focus. Markdown is a deliberate
-  subset: no tables, images, embeds, or raw HTML.
+  scaling limit. The idle `GET /messages` snapshot is capped at 8 MiB (`messages_too_large`); the
+  running tool output shown live is capped to a 64 KiB tail and the full result appears only when the
+  whole message snapshot fits the cap (no dedicated full-output fetch). Queued messages cannot be
+  removed while the agent is busy (upstream `DELETE .../message/:mid` returns 409 `SessionBusyError`),
+  the queue is not persisted/reorderable, and there is no client-side holding queue. OMO
+  classification is client-only (no server persistence), and permissions always stay in the dock (no
+  inline permission cards). Drawers close on Escape/scrim/close but do not trap focus. Markdown is a
+  deliberate subset: tables are supported, but there are no images, embeds, or raw HTML, and there is
+  no server-side markdown rendering.

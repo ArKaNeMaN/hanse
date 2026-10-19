@@ -247,7 +247,12 @@ export function toastRegion(notice?: Notice): string {
   return `<div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="false">${toasts}</div>`;
 }
 
-export function documentPage(options: { title: string; body: string; scripts?: string[] }): string {
+export function documentPage(options: {
+  title: string;
+  body: string;
+  scripts?: string[];
+  moduleScripts?: string[];
+}): string {
   return `<!doctype html>
 <html lang="en" data-theme="dark">
   <head>
@@ -269,6 +274,7 @@ export function documentPage(options: { title: string; body: string; scripts?: s
     <link rel="stylesheet" href="/assets/app.css" />
     <script src="/assets/app.js" defer></script>
     ${(options.scripts ?? []).map((script) => `<script src="${escapeHtml(script)}" defer></script>`).join("")}
+    ${(options.moduleScripts ?? []).map((script) => `<script type="module" src="${escapeHtml(script)}"></script>`).join("")}
   </head>
   <body class="app-body">
     ${iconSprite()}
@@ -301,6 +307,7 @@ export interface ShellOptions {
   pageClass?: string;
   bodyClass?: string;
   scripts?: string[];
+  moduleScripts?: string[];
   notice?: Notice;
   topbarActions?: string;
 }
@@ -425,6 +432,7 @@ export function appShell(options: ShellOptions): string {
   return documentPage({
     title: `${options.title} - hanse`,
     scripts: options.scripts,
+    moduleScripts: options.moduleScripts,
     body: `<a class="skip-link" href="#main">Skip to content</a>
     <div class="app-shell" data-nav="closed" id="shell">
       ${sidebar(options)}

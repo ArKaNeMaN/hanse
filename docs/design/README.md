@@ -12,6 +12,12 @@
   design.
 - [Interactive prompts](./interactive-prompts.md) - question/permission docks, the session Todo
   panel, and the app-scoped permission policy.
+- [Chat UX overhaul](./chat-ux-overhaul.md) - streaming assistant text and tool output, optimistic
+  send and upstream queueing, truthful agent status, inline question/Q&A cards with auto-advance,
+  OMO system cards, markdown tables, and the feed measure.
+- [Chat UX QA harness](./chat-qa.mjs) and [artifacts](./artifacts/chat/README.md) - deterministic
+  browser scenarios (streaming, queue/send, inline questions, OMO, tools, tables, width), JSON
+  reports, screenshots, and the `--live` real-agent mode.
 - [Architecture overview](./overview.md) - the coordinator architecture and stage plan.
 
 ## Run the showcase
@@ -42,5 +48,14 @@ Query parameters:
 - `git/` - Application page and git panel captures at 390/768/1440 plus deterministic state
   captures (see [`artifacts/git/README.md`](./artifacts/git/README.md)).
 
-The capture script resolves an installed Playwright module and Chromium build; it adds no
-Playwright dependency to the product.
+## Chat QA
+
+`node docs/design/chat-qa.mjs` is the phase-6 browser gate for the chat UX overhaul. It self-starts
+a throwaway server (or targets `CHAT_QA_URL`/`CHAT_QA_TOKEN`), intercepts `/api/apps/**` with
+deterministic fixtures, and writes screenshots plus `report.json` to
+[`artifacts/chat/`](./artifacts/chat/README.md). It exits 1 on any failed assertion, console error,
+or page error. `--live` runs a real managed-agent smoke when `CHAT_QA_URL`, `CHAT_QA_TOKEN`, and
+`CHAT_QA_LIVE_SESSION` are present.
+
+Both scripts resolve an installed Playwright module and Chromium build; they add no Playwright
+dependency to the product.

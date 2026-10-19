@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { ServerResponse } from "node:http";
 import type { Handoff } from "../coordinator/handoff.js";
 import type { Principal } from "../identity/principals.js";
@@ -6,7 +7,9 @@ import {
   deleteSession,
   listMessages,
   listSessions,
+  OpencodeHttpError,
   sendPrompt,
+  sendPromptAsync,
 } from "../opencode/client.js";
 import type { RegisteredApp } from "../registry/index.js";
 import { appDir, findApp } from "./apps.js";
@@ -220,15 +223,15 @@ function renderChatPage(
       <span class="mono" id="chat-session-id">-</span>
       <span class="chat-live" id="chat-live" data-state="starting">Starting agent...</span>
       <span class="caption" id="chat-message-count">0 messages</span>
-      <span class="chat-waiting" id="chat-waiting" hidden>${icon("stamp")}Waiting for you</span>
+      <span class="chat-waiting" id="chat-waiting" role="status" aria-live="polite" hidden>${icon("stamp")}Waiting for you</span>
       <button class="btn btn-ghost btn-sm chat-plan-chip" id="chat-plan-chip" type="button" aria-controls="chat-plan-section" title="Open the plan panel" hidden>${icon("activity")}<span id="chat-plan-chip-label">Plan 0/0</span></button>
-      <span class="chat-working" id="chat-working" hidden><span class="spinner" aria-hidden="true"></span>Working</span>
+      <span class="chat-working" id="chat-working" hidden><span class="spinner" aria-hidden="true" data-chat-working-spinner></span><span class="chat-working__label" id="chat-working-label" role="status" aria-live="polite" aria-atomic="true">Ready</span><span class="chat-working__elapsed" id="chat-working-elapsed" aria-hidden="true" hidden></span><span class="chat-working__queued" id="chat-working-queued" aria-hidden="true" hidden></span></span>
       <button class="btn btn-ghost btn-sm chat-retry" id="chat-stream-retry" type="button" hidden>${icon("refresh")}Retry</button>
     </div>
     <div class="policy-warning" id="chat-policy-warning" role="status" hidden></div>
     <div class="chat-thread__viewport">
       <div class="chat-thread__scroll" id="chat-scroll">
-        <div class="chat-thread__inner" id="chat-messages" role="log" aria-live="polite" aria-relevant="additions">
+        <div class="chat-thread__inner" id="chat-messages" role="log" aria-live="off">
           <div class="skeleton-stack" aria-hidden="true">
             <span class="skeleton skeleton--title"></span>
             <span class="skeleton"></span>
@@ -237,9 +240,15 @@ function renderChatPage(
             <span class="skeleton skeleton--short"></span>
           </div>
         </div>
+        <div class="chat-question-placeholder" id="chat-question-placeholder"></div>
       </div>
       <button class="btn btn-secondary btn-sm chat-new-messages" id="chat-new-messages" type="button" hidden>New messages ${icon("arrow-right")}</button>
     </div>
+    <div class="chat-queue-strip" id="chat-queue-strip" hidden>
+      <span class="chat-queue-strip__count" id="chat-queue-strip-count" role="status" aria-live="polite" aria-atomic="true"></span>
+      <ol class="chat-queue-strip__list" id="chat-queue-strip-list"></ol>
+    </div>
+    <p class="chat-session-notice" id="chat-session-notice" role="status" hidden>Session too large to refresh; showing the last loaded state.</p>
     <section class="prompt-dock" id="chat-prompt-dock" aria-label="Agent requests" hidden></section>
     <form class="composer" id="chat-composer" data-no-busy>
       <div class="composer__row">
@@ -252,6 +261,11 @@ function renderChatPage(
         <span>${plural(handoffs.length, "handoff")} in context</span>
       </div>
       <p class="field-error" id="chat-send-error" role="alert" hidden></p>
+      <div class="chat-send-recovery" id="chat-send-recovery" hidden>
+        <span id="chat-send-recovery-text">Delivery unknown; checking…</span>
+        <button class="btn btn-secondary btn-sm" type="button" id="chat-send-check" hidden>Check again</button>
+        <button class="btn btn-ghost btn-sm" type="button" id="chat-send-remove" hidden>Remove</button>
+      </div>
     </form>
   </section>`;
 
@@ -313,7 +327,7 @@ function renderChatPage(
     header: "",
     pageClass: "page--chat",
     bodyClass: "page__body--chat",
-    scripts: ["/assets/chat.js"],
+    moduleScripts: ["/assets/chat.js"],
     topbarActions,
     body: `<div class="chat-shell chat-shell--workspace" id="chat-shell" data-app-key="${escapeHtml(app.appKey)}" data-project-id="${escapeHtml(project.id)}" data-app-initials="${escapeHtml(initials(app.appKey))}" data-operator-initials="${escapeHtml(initials(principal.name))}" data-chat-sessions="closed" data-chat-context="closed">
       <h1 class="sr-only">Chat with ${escapeHtml(app.appKey)}</h1>
@@ -444,8 +458,10 @@ export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<
   const appKey = safeDecode((sessionsMatch ?? sessionMatch ?? messagesMatch)?.[1] ?? "");
   const found = findApp(deps, projectId, appKey);
   if (found === undefined) {
-    return json(404, { error: `unknown application: ${appKey}` });
+    return json(404, { error: `unknown application: ${appKey}`, code: "unknown_app" });
   }
+  const asyncSend =
+    messagesMatch !== null && request.method === "POST" && request.query?.async === "1";
   let endpoint: string;
   try {
     endpoint = await deps.manager.ensure({
@@ -455,9 +471,10 @@ export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<
       appDir: appDir(found.project, found.app),
     });
   } catch (error) {
-    return json(502, {
-      error: `agent failed to start: ${error instanceof Error ? error.message : String(error)}`,
-    });
+    const message = `agent failed to start: ${error instanceof Error ? error.message : String(error)}`;
+    return asyncSend
+      ? json(502, { error: message, code: "agent_unavailable", outcome: "not_sent" })
+      : json(502, { error: message });
   }
 
   try {
@@ -479,6 +496,64 @@ export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<
     }
     if (messagesMatch !== null && request.method === "POST") {
       const sessionId = safeDecode(messagesMatch[2] ?? "");
+      if (asyncSend) {
+        let body: { text?: unknown };
+        try {
+          body = JSON.parse(request.body ?? "{}") as { text?: unknown };
+        } catch {
+          return json(400, { error: "invalid JSON body", code: "invalid_json" });
+        }
+        const text = typeof body.text === "string" ? body.text : "";
+        if (text.trim().length === 0) {
+          return json(400, { error: "empty message", code: "empty_message" });
+        }
+        if (Buffer.byteLength(text, "utf8") > 32 * 1024) {
+          return json(400, { error: "message too large", code: "message_too_large" });
+        }
+        const messageID = `msg_${randomUUID().replaceAll("-", "")}`;
+        try {
+          await sendPromptAsync(endpoint, sessionId, text, messageID);
+        } catch (error) {
+          if (error instanceof OpencodeHttpError) {
+            if (error.status === 404) {
+              return json(404, {
+                error: "session not found",
+                code: "session_not_found",
+                outcome: "not_sent",
+              });
+            }
+            if (error.status === 405) {
+              return json(502, {
+                error: "async prompt route unavailable",
+                code: "async_unavailable",
+                outcome: "not_sent",
+              });
+            }
+            if (error.status === 0) {
+              return json(502, {
+                error: error.message,
+                code: "agent_unavailable",
+                outcome: "unknown",
+                messageID,
+                sessionID: sessionId,
+              });
+            }
+            return json(502, {
+              error: error.message,
+              code: "agent_unavailable",
+              outcome: "not_sent",
+            });
+          }
+          return json(502, {
+            error: error instanceof Error ? error.message : String(error),
+            code: "agent_unavailable",
+            outcome: "unknown",
+            messageID,
+            sessionID: sessionId,
+          });
+        }
+        return json(202, { accepted: true, messageID, sessionID: sessionId });
+      }
       const body = JSON.parse(request.body ?? "{}") as { text?: string };
       const text = typeof body.text === "string" ? body.text : "";
       if (text.length === 0) {
@@ -487,6 +562,9 @@ export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<
       return json(200, { message: await sendPrompt(endpoint, sessionId, text) });
     }
   } catch (error) {
+    if (error instanceof OpencodeHttpError && error.code === "messages_too_large") {
+      return json(502, { error: "session too large to refresh", code: "messages_too_large" });
+    }
     return json(502, { error: error instanceof Error ? error.message : String(error) });
   }
   return json(405, { error: "method not allowed" });

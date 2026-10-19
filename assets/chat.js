@@ -1,4 +1,46 @@
-(function () {
+import {
+  applySnapshot,
+  classifyOmo,
+  deriveQueue,
+  parseMarkdownTable,
+  rekeyOptimistic,
+} from "./chat-core.js";
+
+const UNKNOWN_ACCEPTANCE_GRACE_MS = 5000;
+const HYDRATION_BUFFER_EVENTS = 200;
+const HYDRATION_BUFFER_BYTES = 256 * 1024;
+const MARKDOWN_THROTTLE_MS = 50;
+const TOOL_OUTPUT_THROTTLE_MS = 100;
+const IDLE_RECONCILE_MS = 200;
+const RECONCILE_MS = 500;
+const OMO_CLASSIFY_QUIET_MS = 100;
+const OMO_DETAILS_CHAR_LIMIT = 600;
+const OMO_DETAILS_LINE_LIMIT = 8;
+
+const KNOWN_PART_TYPES = new Set([
+  "text",
+  "reasoning",
+  "tool",
+  "step-start",
+  "step-finish",
+  "patch",
+  "file",
+  "subtask",
+  "retry",
+  "compaction",
+  "snapshot",
+  "agent",
+]);
+const HIDDEN_PART_TYPES = new Set([
+  "step-start",
+  "step-finish",
+  "retry",
+  "compaction",
+  "snapshot",
+  "agent",
+]);
+
+function main() {
   const shell = document.getElementById("chat-shell");
   if (shell === null) {
     return;
@@ -20,6 +62,9 @@
   const liveEl = document.getElementById("chat-live");
   const countEl = document.getElementById("chat-message-count");
   const workingEl = document.getElementById("chat-working");
+  const workingLabelEl = document.getElementById("chat-working-label");
+  const workingElapsedEl = document.getElementById("chat-working-elapsed");
+  const workingQueuedEl = document.getElementById("chat-working-queued");
   const streamRetry = document.getElementById("chat-stream-retry");
   const newMessages = document.getElementById("chat-new-messages");
   const appSelect = document.getElementById("chat-app-select");
@@ -36,6 +81,7 @@
   );
   const scrim = document.querySelector("[data-chat-scrim]");
   const promptDock = document.getElementById("chat-prompt-dock");
+  const questionPlaceholderEl = document.getElementById("chat-question-placeholder");
   const policyWarning = document.getElementById("chat-policy-warning");
   const policyChip = document.getElementById("chat-policy-chip");
   const policyChipLabel = document.getElementById("chat-policy-chip-label");
@@ -57,19 +103,56 @@
   const savedBadge = document.getElementById("chat-saved-badge");
   const waitingEl = document.getElementById("chat-waiting");
   const composerHintText = document.getElementById("chat-composer-hint-text");
+  const queueStrip = document.getElementById("chat-queue-strip");
+  const queueStripCount = document.getElementById("chat-queue-strip-count");
+  const queueStripList = document.getElementById("chat-queue-strip-list");
+  const sessionNotice = document.getElementById("chat-session-notice");
+  const sendRecovery = document.getElementById("chat-send-recovery");
+  const sendRecoveryText = document.getElementById("chat-send-recovery-text");
+  const sendCheck = document.getElementById("chat-send-check");
+  const sendRemove = document.getElementById("chat-send-remove");
 
   let sessions = [];
   let sessionId = null;
-  let messages = [];
   let eventSource = null;
-  let reloadTimer = null;
   let failures = 0;
   let creatingSession = false;
-  const pendingSends = new Set();
   const deletingSessions = new Set();
-  let stickToBottom = true;
-  let loadSequence = 0;
-  let renderSequence = 0;
+  let queueStripSignature = "";
+  let sessionSnapshotTooLarge = false;
+
+  let store = createThreadStore(null);
+  const sessionRuntime = new Map();
+  const acceptanceBySession = new Map();
+  let messageNodes = new Map();
+  let partNodes = new Map();
+  const partOwner = new Map();
+  const partRenderState = new Map();
+  const omoClassifyTimers = new Map();
+  const omoCardState = new WeakMap();
+  let dirtyMessages = new Set();
+  let dirtyParts = new Set();
+  let orderDirty = false;
+  let flushHandle = null;
+  let flushTimer = null;
+  let flushPending = false;
+  let forceFinalRender = false;
+  let lastRenderedCount = 0;
+  let hydrationSeq = 0;
+  let hydrating = false;
+  let hydrationBuffer = null;
+  let reconcileTimer = null;
+  let idleReconcileTimer = null;
+  let followUpHydration = false;
+  let sessionsSignature = "";
+  let sessionsFailed = false;
+  let sessionsLoaded = false;
+  let runtimeState = "stopped";
+  let elapsedAccumulated = 0;
+  let elapsedStartedAt = null;
+  let elapsedTimer = null;
+  let elapsedText = "";
+  let workingLabel = "";
 
   const prompts = new Map();
   const promptDrafts = new Map();
@@ -77,6 +160,14 @@
   const tombstones = new Map();
   const promptBusy = new Set();
   const promptErrors = new Map();
+  const promptOutcomes = new Map();
+  const correlationQuestionKeys = new Map();
+  const inlineUnavailable = new Set();
+  const deferredUnavailable = new Set();
+  const omittedPartIDs = new Set();
+  let inlineCards = new Map();
+  let inlineCardByPart = new Map();
+  let messagesHydratedSession = null;
   let promptEventSeq = 0;
   const promptEventLog = [];
   let promptHydrationSeq = 0;
@@ -123,6 +214,499 @@
     return svg;
   }
 
+  function createThreadStore(id) {
+    return {
+      sessionID: id,
+      generation: 0,
+      turnGeneration: 0,
+      order: [],
+      messages: new Map(),
+      activePromptID: null,
+      queue: [],
+      openParts: new Set(),
+      lastSeqByStream: new Map(),
+      currentStreamID: null,
+      pendingDeltas: new Map(),
+      agentStatus: null,
+      connection: "connecting",
+    };
+  }
+
+  function acceptanceFor(id) {
+    let state = acceptanceBySession.get(id);
+    if (state === undefined) {
+      state = {
+        chain: Promise.resolve(),
+        inFlight: false,
+        posting: false,
+        state: "idle",
+        sessionID: null,
+        tempID: null,
+        serverID: null,
+        text: "",
+        knownUserIDs: new Set(),
+        bufferedEvents: [],
+        absenceSince: null,
+        graceTimer: null,
+        exposeRecovery: false,
+      };
+      acceptanceBySession.set(id, state);
+    }
+    return state;
+  }
+
+  function activeAcceptance() {
+    return acceptanceFor(sessionId === null ? "draft" : sessionId);
+  }
+
+  function acceptanceInFlight() {
+    const state = activeAcceptance();
+    return state !== null && state.inFlight === true;
+  }
+
+  function acceptancePosting() {
+    const state = activeAcceptance();
+    return state !== null && state.posting === true;
+  }
+
+  function acceptanceUnknown() {
+    const state = activeAcceptance();
+    return state !== null && state.state === "unknown";
+  }
+
+  function clearAcceptanceGrace(state) {
+    state.absenceSince = null;
+    state.exposeRecovery = false;
+    if (state.graceTimer !== null) window.clearTimeout(state.graceTimer);
+    state.graceTimer = null;
+    renderSendRecovery();
+  }
+
+  function resolveAcceptance(state) {
+    state.state = "accepted";
+    state.inFlight = false;
+    state.posting = false;
+    state.tempID = null;
+    clearAcceptanceGrace(state);
+    if (state.serverID !== null) {
+      const record = store.messages.get(state.serverID);
+      if (record !== undefined) {
+        record.optimistic = undefined;
+        delete record.optimistic;
+        record.version += 1;
+      }
+    }
+    recomputeQueue();
+    syncComposer();
+    renderSendRecovery();
+    scheduleFlush();
+  }
+
+  function startAcceptanceGrace(state) {
+    if (state.absenceSince !== null) return;
+    state.absenceSince = Date.now();
+    state.exposeRecovery = false;
+    state.graceTimer = window.setTimeout(() => {
+      state.graceTimer = null;
+      if (state.state !== "unknown") return;
+      state.exposeRecovery = true;
+      renderSendRecovery();
+    }, UNKNOWN_ACCEPTANCE_GRACE_MS);
+  }
+
+  function bufferPre202(event) {
+    const state = activeAcceptance();
+    if (state === null || state.serverID !== null || state.state !== "sending") return false;
+    if (
+      event !== null &&
+      typeof event === "object" &&
+      event.type === "message.updated" &&
+      event.role !== undefined &&
+      event.role !== "user"
+    ) {
+      return false;
+    }
+    state.bufferedEvents.push(event);
+    if (state.bufferedEvents.length > HYDRATION_BUFFER_EVENTS) state.bufferedEvents.shift();
+    return true;
+  }
+
+  function matchingUserMessage(state) {
+    if (state.text.length === 0) return null;
+    let matched = null;
+    for (const id of store.order) {
+      const record = store.messages.get(id);
+      if (record === undefined || record.role !== "user") continue;
+      if (state.knownUserIDs.has(id)) continue;
+      if (record.optimistic === "sending" || record.optimistic === "unknown") continue;
+      for (const partID of record.partOrder) {
+        const part = record.parts.get(partID);
+        if (part === undefined || part.type !== "text" || partIgnored(part)) continue;
+        if (partTextValue(part).trim() === state.text) {
+          matched = id;
+          break;
+        }
+      }
+      if (matched !== null) break;
+    }
+    return matched;
+  }
+
+  function resolveUnknownFromSnapshot(snapshotIDs) {
+    const state = activeAcceptance();
+    if (state === null || state.state !== "unknown") return;
+    if (state.serverID !== null) {
+      const present =
+        snapshotIDs instanceof Set ? snapshotIDs.has(state.serverID) : store.messages.has(state.serverID);
+      if (present) resolveAcceptance(state);
+      else startAcceptanceGrace(state);
+      return;
+    }
+    const matched = matchingUserMessage(state);
+    if (matched === null) {
+      startAcceptanceGrace(state);
+      return;
+    }
+    const tempID = state.tempID;
+    state.serverID = matched;
+    if (tempID !== null && store.messages.has(tempID)) {
+      rekeyAcceptanceRow(state, matched, false);
+    }
+    resolveAcceptance(state);
+  }
+
+  async function checkUnknownAcceptance(id) {
+    const state = acceptanceBySession.get(id);
+    if (state === undefined || state.state !== "unknown") return;
+    state.exposeRecovery = false;
+    state.absenceSince = null;
+    if (state.graceTimer !== null) {
+      window.clearTimeout(state.graceTimer);
+      state.graceTimer = null;
+    }
+    renderSendRecovery();
+    await hydrateMessages({ reason: "unknown-check", silent: true });
+  }
+
+  function removeUnknownAcceptance(id) {
+    const state = acceptanceBySession.get(id);
+    if (state === undefined || state.state !== "unknown") return;
+    const target = state.serverID !== null ? state.serverID : state.tempID;
+    if (target !== null) removeStoredMessage(target);
+    state.state = "idle";
+    state.inFlight = false;
+    state.posting = false;
+    state.tempID = null;
+    state.serverID = null;
+    clearAcceptanceGrace(state);
+    recomputeQueue();
+    syncComposer();
+    renderSendRecovery();
+    scheduleFlush();
+  }
+
+  function currentStatusType() {
+    const status = store.agentStatus;
+    if (status === null || typeof status !== "object") return undefined;
+    if (typeof status.type === "string") return status.type;
+    if (status.status && typeof status.status.type === "string") return status.status.type;
+    return undefined;
+  }
+
+  function lastAssistantRecord() {
+    for (let index = store.order.length - 1; index >= 0; index -= 1) {
+      const record = store.messages.get(store.order[index]);
+      if (record !== undefined && record.role === "assistant") return record;
+    }
+    return null;
+  }
+
+  function partTextValue(part) {
+    if (part === undefined || part === null) return "";
+    const data = part.data && typeof part.data === "object" ? part.data : part;
+    return typeof data.text === "string" ? data.text : "";
+  }
+
+  function partIgnored(part) {
+    if (part === undefined || part === null) return false;
+    const data = part.data && typeof part.data === "object" ? part.data : part;
+    return data.ignored === true;
+  }
+
+  function findRunningTool() {
+    for (let index = store.order.length - 1; index >= 0; index -= 1) {
+      const record = store.messages.get(store.order[index]);
+      if (record === undefined || record.role !== "assistant") continue;
+      for (let partIndex = record.partOrder.length - 1; partIndex >= 0; partIndex -= 1) {
+        const part = record.parts.get(record.partOrder[partIndex]);
+        if (part === undefined || part.type !== "tool") continue;
+        const data = part.data && typeof part.data === "object" ? part.data : part;
+        const status = data.state && typeof data.state === "object" ? data.state : {};
+        if (status.status === "running") return data;
+      }
+    }
+    return null;
+  }
+
+  function lastAssistantHasUnsealed(type) {
+    const record = lastAssistantRecord();
+    if (record === null) return false;
+    for (const partID of record.partOrder) {
+      const part = record.parts.get(partID);
+      if (part === undefined || part.type !== type || part.sealed === true) continue;
+      if (partTextValue(part).trim().length > 0) return true;
+    }
+    return false;
+  }
+
+  function humanizeTool(tool) {
+    const map = {
+      bash: "bash",
+      edit: "edit",
+      write: "write",
+      read: "read",
+      grep: "grep",
+      glob: "glob",
+      webfetch: "fetch",
+      websearch: "search",
+      task: "task",
+      todowrite: "plan",
+      question: "question",
+      patch: "patch",
+    };
+    const name = typeof tool === "string" && tool.length > 0 ? tool : "tool";
+    return map[name] || name;
+  }
+
+  function statusSeedTime() {
+    for (let index = store.order.length - 1; index >= 0; index -= 1) {
+      const record = store.messages.get(store.order[index]);
+      if (record === undefined || record.role !== "assistant") continue;
+      for (const partID of record.partOrder) {
+        const part = record.parts.get(partID);
+        if (part === undefined || part.type !== "tool") continue;
+        const data = part.data && typeof part.data === "object" ? part.data : part;
+        const state = data.state && typeof data.state === "object" ? data.state : {};
+        if (state.status === "running") {
+          const start = state.time && typeof state.time === "object" ? state.time.start : undefined;
+          if (typeof start === "number") return start < 1_000_000_000_000 ? start * 1000 : start;
+        }
+      }
+      if (typeof record.time?.created === "number") {
+        const created = record.time.created;
+        return created < 1_000_000_000_000 ? created * 1000 : created;
+      }
+    }
+    return null;
+  }
+
+  function activeStatusLabel() {
+    if (activePromptEntries().length > 0) return "Waiting for you";
+    if (acceptancePosting()) return "Sending";
+    const type = currentStatusType();
+    const turnActive =
+      type === "busy" ||
+      type === "retry" ||
+      store.queue.length > 0 ||
+      store.activePromptID !== null;
+    if (liveEl !== null && liveEl.dataset.state === "paused" && turnActive) {
+      return "Paused";
+    }
+    if (type === "retry") return "Retrying";
+    if (type === "idle") return "Ready";
+    const runningTool = findRunningTool();
+    if (runningTool !== null) return `Running ${humanizeTool(runningTool.tool)}`;
+    if (lastAssistantHasUnsealed("reasoning")) return "Thinking";
+    if (type === "busy") {
+      return lastAssistantHasUnsealed("text") ? "Working" : "Thinking";
+    }
+    if (store.queue.length > 0 || store.activePromptID !== null) return "Working";
+    return "Ready";
+  }
+
+  function queueSuffixAllowed(label) {
+    return (
+      label === "Thinking" ||
+      label === "Working" ||
+      label === "Retrying" ||
+      label === "Ready" ||
+      label.startsWith("Running ")
+    );
+  }
+
+  function elapsedMs() {
+    return elapsedAccumulated + (elapsedStartedAt === null ? 0 : Date.now() - elapsedStartedAt);
+  }
+
+  function formatElapsed(ms) {
+    const total = Math.max(0, Math.floor(ms / 1000));
+    if (total < 1) return "";
+    if (total < 60) return `${total}s`;
+    return `${Math.floor(total / 60)}m ${String(total % 60).padStart(2, "0")}s`;
+  }
+
+  function renderElapsed() {
+    if (workingElapsedEl === null) return;
+    const text = elapsedText;
+    workingElapsedEl.hidden = text.length === 0;
+    if (workingElapsedEl.textContent !== text) workingElapsedEl.textContent = text;
+  }
+
+  function tickElapsed() {
+    elapsedText = elapsedStartedAt === null && elapsedAccumulated <= 0
+      ? ""
+      : formatElapsed(elapsedMs());
+    renderElapsed();
+  }
+
+  function ensureElapsedTimer() {
+    if (elapsedTimer !== null) return;
+    elapsedTimer = window.setInterval(tickElapsed, 1000);
+  }
+
+  function resetElapsed() {
+    elapsedAccumulated = 0;
+    elapsedStartedAt = null;
+    elapsedText = "";
+    if (elapsedTimer !== null) {
+      window.clearInterval(elapsedTimer);
+      elapsedTimer = null;
+    }
+    renderElapsed();
+  }
+
+  function startElapsed() {
+    if (elapsedStartedAt !== null) return;
+    const seed = statusSeedTime();
+    elapsedStartedAt = seed === null ? Date.now() : seed;
+    ensureElapsedTimer();
+    tickElapsed();
+  }
+
+  function freezeElapsed() {
+    if (elapsedStartedAt === null) return;
+    elapsedAccumulated += Date.now() - elapsedStartedAt;
+    elapsedStartedAt = null;
+    tickElapsed();
+  }
+
+  function resumeElapsed() {
+    if (elapsedStartedAt !== null) return;
+    elapsedStartedAt = Date.now();
+    ensureElapsedTimer();
+  }
+
+  function updateWorkingStatus() {
+    if (workingEl === null) return;
+    const label = activeStatusLabel();
+    const waiting = label === "Waiting for you";
+    const paused = label === "Paused";
+    if (waiting || paused) freezeElapsed();
+    else if (label === "Ready") resetElapsed();
+    else if (label === "Sending" || label === "Retrying" || label.startsWith("Running ") || label === "Thinking" || label === "Working") {
+      if (elapsedStartedAt === null) startElapsed();
+      else resumeElapsed();
+    }
+    if (waiting) {
+      workingEl.hidden = true;
+    } else {
+      workingEl.hidden = false;
+      const spinner = workingEl.querySelector("[data-chat-working-spinner]");
+      if (spinner !== null) spinner.hidden = label === "Ready" || paused;
+      if (workingLabelEl !== null && workingLabel !== label) {
+        workingLabel = label;
+        workingLabelEl.textContent = label;
+      }
+      if (workingQueuedEl !== null) {
+        const suffix = store.queue.length > 0 && queueSuffixAllowed(label)
+          ? `· ${store.queue.length} queued`
+          : "";
+        workingQueuedEl.hidden = suffix.length === 0;
+        if (workingQueuedEl.textContent !== suffix) workingQueuedEl.textContent = suffix;
+      }
+    }
+  }
+
+  function sessionStatusType() {
+    return currentStatusType();
+  }
+
+  function recomputeQueue() {
+    const derived = deriveQueue(store, { sessionStatusType: sessionStatusType() });
+    store.queue = [...derived.queuedIDs];
+    store.activePromptID = derived.nextActivePromptID;
+    for (const id of store.order) {
+      const record = store.messages.get(id);
+      if (record === undefined || record.optimistic === undefined) continue;
+      if (record.optimistic === "sending" || record.optimistic === "unknown") continue;
+      if (id === derived.activeID) record.optimistic = "accepted";
+      else if (derived.queuedIDs.includes(id)) record.optimistic = "queued";
+      else record.optimistic = "accepted";
+    }
+    updateWorkingStatus();
+    renderQueueStrip();
+  }
+
+  function queueQueueState(record) {
+    if (record.optimistic === "sending") return "Sending…";
+    if (record.optimistic === "unknown") return "Delivery unknown";
+    return "Queued";
+  }
+
+  function queuePreview(record) {
+    for (const partID of record.partOrder) {
+      const part = record.parts.get(partID);
+      if (part === undefined || part.type !== "text" || partIgnored(part)) continue;
+      const text = partTextValue(part);
+      const firstLine = text.split("\n")[0].trim();
+      if (firstLine.length === 0) continue;
+      return {
+        preview: firstLine.replace(/\s+/g, " ").slice(0, 120),
+        title: firstLine,
+      };
+    }
+    return { preview: "Queued message", title: "Queued message" };
+  }
+
+  function renderQueueStrip() {
+    if (queueStrip === null || queueStripList === null) return;
+    const ids = store.queue.filter((id) => store.messages.has(id));
+    const signature = JSON.stringify(
+      ids.map((id) => {
+        const record = store.messages.get(id);
+        const preview = queuePreview(record);
+        return [id, preview.preview, queueQueueState(record)];
+      }),
+    );
+    const count = ids.length;
+    queueStrip.hidden = count === 0;
+    if (queueStripCount !== null) {
+      const text =
+        count === 0 ? "" : `${count} ${count === 1 ? "message" : "messages"} queued`;
+      if (queueStripCount.textContent !== text) queueStripCount.textContent = text;
+    }
+    if (signature === queueStripSignature) return;
+    queueStripSignature = signature;
+    if (count === 0) {
+      queueStripList.replaceChildren();
+      return;
+    }
+    const rows = [];
+    for (const id of ids.slice(0, 3)) {
+      const record = store.messages.get(id);
+      const preview = queuePreview(record);
+      const item = element("li", "chat-queue-strip__item");
+      const previewEl = element("span", "chat-queue-strip__preview", preview.preview);
+      previewEl.title = preview.title;
+      item.append(previewEl, element("span", "chat-queue-strip__state", queueQueueState(record)));
+      rows.push(item);
+    }
+    if (count > 3) {
+      rows.push(element("li", "chat-queue-strip__more", `+${count - 3} more`));
+    }
+    queueStripList.replaceChildren(...rows);
+  }
+
   function apiBase() {
     return `/api/apps/${encodeURIComponent(appKey)}`;
   }
@@ -144,6 +728,11 @@
     return withProject(
       `${apiBase()}/sessions/${encodeURIComponent(session || "")}/messages`,
     );
+  }
+
+  function asyncMessagesUrl(id) {
+    const url = messagesUrl(id);
+    return `${url}${url.includes("?") ? "&" : "?"}async=1`;
   }
 
   function eventsUrl() {
@@ -184,8 +773,9 @@
       const raw = await response.text();
       let message = raw;
       let code;
+      let parsed;
       try {
-        const parsed = JSON.parse(raw);
+        parsed = JSON.parse(raw);
         if (parsed && typeof parsed.error === "string") {
           message = parsed.error;
         }
@@ -200,6 +790,11 @@
       );
       failure.status = response.status;
       failure.code = code;
+      if (parsed && typeof parsed === "object") {
+        if (typeof parsed.outcome === "string") failure.outcome = parsed.outcome;
+        if (typeof parsed.messageID === "string") failure.messageID = parsed.messageID;
+        if (typeof parsed.sessionID === "string") failure.sessionID = parsed.sessionID;
+      }
       throw failure;
     }
     return response.json();
@@ -259,19 +854,34 @@
     if (streamRetry !== null) {
       streamRetry.hidden = state !== "paused";
     }
-  }
-
-  function setWorking(working) {
-    if (workingEl !== null) {
-      workingEl.hidden = !working;
-    }
+    updateWorkingStatus();
+    if (sessionId !== null) refreshInlineQuestions();
   }
 
   function requestKey(request) {
     return `${request.source}:${request.id}`;
   }
 
-  function pendingForSession(id) {
+  function validToolRef(request) {
+    const tool = request && request.tool && typeof request.tool === "object" ? request.tool : null;
+    if (tool === null) return false;
+    return (
+      typeof tool.messageID === "string" &&
+      tool.messageID.length > 0 &&
+      typeof tool.callID === "string" &&
+      tool.callID.length > 0
+    );
+  }
+
+  function questionCorrelationKey(request) {
+    return `${request.source}:${request.sessionID}:${request.tool.messageID}:${request.tool.callID}`;
+  }
+
+  function isCorrelatedQuestion(entry) {
+    return entry !== undefined && entry.kind === "question" && validToolRef(entry.request);
+  }
+
+  function allPendingForSession(id) {
     const items = [];
     for (const entry of prompts.values()) {
       if (entry.request.sessionID === id) items.push(entry);
@@ -279,8 +889,20 @@
     return items.sort((a, b) => (promptSeen.get(a.key) || 0) - (promptSeen.get(b.key) || 0));
   }
 
+  function dockRenderEntries(id) {
+    return allPendingForSession(id).filter((entry) => !isCorrelatedQuestion(entry));
+  }
+
+  function pendingForSession(id) {
+    return allPendingForSession(id);
+  }
+
   function activePromptEntries() {
-    return sessionId === null ? [] : pendingForSession(sessionId);
+    return sessionId === null ? [] : allPendingForSession(sessionId);
+  }
+
+  function activeDockEntries() {
+    return sessionId === null ? [] : dockRenderEntries(sessionId);
   }
 
   function otherSessionPromptCount() {
@@ -299,14 +921,13 @@
     return count;
   }
 
-  function hasActiveSend() {
-    return sessionId === null ? pendingSends.has("draft") : pendingSends.has(sessionId);
-  }
-
   function pruneTombstones() {
     const cutoff = Date.now() - 10 * 60 * 1000;
     for (const [key, at] of tombstones) {
       if (at < cutoff) tombstones.delete(key);
+    }
+    for (const [key, outcome] of promptOutcomes) {
+      if (outcome.at < cutoff) promptOutcomes.delete(key);
     }
   }
 
@@ -317,13 +938,26 @@
     promptBusy.delete(key);
   }
 
+  function recordQuestionOutcome(key, outcome) {
+    promptOutcomes.set(key, { at: Date.now(), ...outcome });
+  }
+
+  function questionOutcomeFor(entry) {
+    if (entry === undefined) return undefined;
+    return promptOutcomes.get(entry.key);
+  }
+
+  function questionKeyForCorrelation(correlationKey) {
+    return correlationQuestionKeys.get(correlationKey);
+  }
+
   function announce(message) {
     if (announcer === null) return;
     window.clearTimeout(announceTimer);
     announcer.textContent = "";
     announceTimer = window.setTimeout(() => {
       announcer.textContent = message;
-    }, 30);
+    }, 300);
   }
 
   function showToast(message, tone) {
@@ -355,12 +989,12 @@
 
   function syncComposer() {
     const promptsWaiting = activePromptEntries().length > 0;
-    const sending = hasActiveSend();
+    const sending = acceptanceInFlight() || acceptanceUnknown();
     if (sendButton instanceof HTMLButtonElement) {
       sendButton.disabled = sending || promptsWaiting;
     }
     if (waitingEl !== null) waitingEl.hidden = !promptsWaiting;
-    setWorking(sending && !promptsWaiting);
+    updateWorkingStatus();
     if (composerHintText !== null) {
       composerHintText.textContent = promptsWaiting
         ? "Answer the request above to continue."
@@ -370,6 +1004,26 @@
     renderSessions();
     updateInputNeeded();
     updatePlanChip();
+  }
+
+  function renderSendRecovery() {
+    if (sendRecovery === null) return;
+    const state = activeAcceptance();
+    const unknown = state !== null && state.state === "unknown";
+    const visible = unknown && state.exposeRecovery === true;
+    sendRecovery.hidden = !visible;
+    if (sendCheck instanceof HTMLButtonElement) sendCheck.hidden = !visible;
+    if (sendRemove instanceof HTMLButtonElement) sendRemove.hidden = !visible;
+    if (sendRecoveryText !== null) {
+      sendRecoveryText.textContent = unknown
+        ? "Delivery unknown; checking…"
+        : "";
+    }
+  }
+
+  function setSessionNotice(visible) {
+    if (sessionNotice === null) return;
+    sessionNotice.hidden = !visible;
   }
 
   function setBusy(button, busy) {
@@ -402,6 +1056,9 @@
 
   function showSessionsLoading() {
     if (sessionsList === null) return;
+    sessionsFailed = false;
+    sessionsLoaded = false;
+    sessionsSignature = "";
     const skeleton = element("div", "skeleton-stack chat-sessions__skeleton");
     skeleton.setAttribute("aria-hidden", "true");
     skeleton.append(
@@ -415,6 +1072,8 @@
 
   function showSessionsError(error, retry) {
     if (sessionsList === null) return;
+    sessionsFailed = true;
+    sessionsSignature = "";
     const state = element("div", "error-state chat-error");
     state.setAttribute("role", "alert");
     const mark = element("span", "error-state__mark");
@@ -446,8 +1105,26 @@
     sessionError.textContent = message === null ? "" : message;
   }
 
+  function sessionsSignatureValue() {
+    const needle = (sessionSearch === null ? "" : sessionSearch.value).trim().toLowerCase();
+    return JSON.stringify({
+      sessionId,
+      needle,
+      sessions: sessions.map((session) => {
+        const id = String(session.id);
+        return [id, sessionLabel(session), promptCountForSession(id)];
+      }),
+      runtime: runtimeState,
+      deleting: [...deletingSessions].sort(),
+      creating: creatingSession,
+    });
+  }
+
   function renderSessions() {
-    if (sessionsList === null) return;
+    if (sessionsList === null || sessionsFailed || !sessionsLoaded) return;
+    const signature = sessionsSignatureValue();
+    if (signature === sessionsSignature) return;
+    sessionsSignature = signature;
     const needle = (sessionSearch === null ? "" : sessionSearch.value).trim().toLowerCase();
     const visible = sessions.filter((session) => {
       if (needle.length === 0) return true;
@@ -547,6 +1224,9 @@
 
   function showThreadError(error, retry) {
     if (messagesEl === null) return;
+    resetFeedDom();
+    sessionSnapshotTooLarge = false;
+    setSessionNotice(false);
     messagesEl.removeAttribute("aria-busy");
     setRuntime("error");
     const state = element("div", "error-state chat-error");
@@ -564,17 +1244,20 @@
     body.append(button);
     state.append(mark, body);
     messagesEl.replaceChildren(state);
+    if (countEl !== null) countEl.textContent = plural(0, "message");
     if (newMessages !== null) newMessages.hidden = true;
     setLive("Paused", "paused");
   }
 
   function setRuntime(state) {
+    runtimeState = state;
     const contextRuntimeEl = document.getElementById("chat-context-runtime");
     for (const target of [runtimeEl, contextRuntimeEl]) {
       if (target !== null) {
         target.replaceChildren(statusChip(state));
       }
     }
+    renderSessions();
   }
 
   function statusChip(status) {
@@ -645,14 +1328,53 @@
     }
   }
 
-  function startsBlock(line) {
+  function startsBlock(line, lines, index) {
     return (
       /^```/.test(line) ||
       /^#{1,6}\s+/.test(line) ||
       /^\s*(---|\*\*\*|___)\s*$/.test(line) ||
       /^\s*>\s?/.test(line) ||
-      /^\s*([-*]|\d+\.)\s+/.test(line)
+      /^\s*([-*]|\d+\.)\s+/.test(line) ||
+      (Array.isArray(lines) && parseMarkdownTable(lines, index) !== null)
     );
+  }
+
+  function renderTable(container, table) {
+    const wrap = element("div", "message__table-wrap");
+    wrap.tabIndex = 0;
+    wrap.setAttribute("role", "region");
+    wrap.setAttribute("aria-label", "Table");
+    const node = element("table", "message__table");
+    const head = element("thead");
+    const headRow = element("tr");
+    for (const header of table.headers) {
+      const cell = element("th");
+      cell.setAttribute("scope", "col");
+      cell.dataset.align = header.align;
+      renderInline(cell, header.text);
+      headRow.append(cell);
+    }
+    head.append(headRow);
+    node.append(head);
+    if (table.rows.length > 0) {
+      const body = element("tbody");
+      for (const row of table.rows) {
+        const rowNode = element("tr");
+        for (let column = 0; column < table.headers.length; column += 1) {
+          const cell = element("td");
+          cell.dataset.align = table.headers[column].align;
+          renderInline(cell, row[column] || "");
+          rowNode.append(cell);
+        }
+        body.append(rowNode);
+      }
+      node.append(body);
+    }
+    wrap.append(node);
+    if (table.truncated) {
+      wrap.append(element("p", "message__table-note", "Table truncated to 200 rows."));
+    }
+    container.append(wrap);
   }
 
   function renderMarkdown(container, text) {
@@ -678,6 +1400,12 @@
         if (language.length > 0) code.dataset.language = language;
         pre.append(code);
         container.append(pre);
+        continue;
+      }
+      const table = parseMarkdownTable(lines, index);
+      if (table !== null) {
+        renderTable(container, table);
+        index = table.nextIndex;
         continue;
       }
       const heading = /^(#{1,6})\s+(.+)$/.exec(line);
@@ -725,7 +1453,7 @@
       while (
         index < lines.length &&
         lines[index].trim().length > 0 &&
-        !startsBlock(lines[index])
+        !startsBlock(lines[index], lines, index)
       ) {
         if (!first) paragraph.append(element("br"));
         renderInline(paragraph, lines[index]);
@@ -744,55 +1472,301 @@
     return "completed";
   }
 
-  function toolPath(part) {
-    const state = part.state && typeof part.state === "object" ? part.state : {};
-    const input = state.input && typeof state.input === "object" ? state.input : {};
-    const candidate =
-      input.command || input.filePath || input.path || input.pattern || input.url || part.title;
-    return typeof candidate === "string" ? candidate : "";
+  function partState(data) {
+    return data.state && typeof data.state === "object" ? data.state : {};
   }
 
-  function toolOutput(part) {
-    const state = part.state && typeof part.state === "object" ? part.state : {};
+  function partInput(data) {
+    const state = partState(data);
+    return state.input && typeof state.input === "object" ? state.input : {};
+  }
+
+  function partMetadata(data) {
+    const state = partState(data);
+    return state.metadata && typeof state.metadata === "object" ? state.metadata : {};
+  }
+
+  function stringField(value) {
+    return typeof value === "string" ? value : "";
+  }
+
+  function previewValue(value) {
+    const raw = typeof value === "string" ? value : "";
+    const trimmed = raw.trim();
+    if (trimmed.length === 0) return null;
+    const firstLine = trimmed.split("\n")[0].replace(/\s+/g, " ").trim();
+    if (firstLine.length === 0) return null;
+    return { preview: firstLine.slice(0, 120), title: trimmed };
+  }
+
+  function todoListFor(data, status) {
+    const input = partInput(data);
+    const metadata = partMetadata(data);
+    const primary = status === "completed" ? metadata.todos : input.todos;
+    const fallback = status === "completed" ? input.todos : metadata.todos;
+    if (Array.isArray(primary)) return primary;
+    if (Array.isArray(fallback)) return fallback;
+    return [];
+  }
+
+  function todoStatusEntry(status) {
+    const map = {
+      pending: { icon: "clock", label: "Pending" },
+      in_progress: { icon: "activity", label: "Now" },
+      completed: { icon: "check", label: "Done" },
+      cancelled: { icon: "slash", label: "Dropped" },
+    };
+    return map[status] || { icon: "alert-circle", label: "Unknown" };
+  }
+
+  function todoPreview(todos) {
+    const total = todos.length;
+    if (total === 0) return previewValue("No tasks");
+    let done = 0;
+    let now = 0;
+    for (const todo of todos) {
+      const status = todo && typeof todo === "object" ? todo.status : undefined;
+      if (status === "completed") done += 1;
+      else if (status === "in_progress") now += 1;
+    }
+    return previewValue(`${done} of ${total} done${now > 0 ? ` · ${now} now` : ""}`);
+  }
+
+  function toolPreview(data, tool, status) {
+    const state = partState(data);
+    const input = partInput(data);
+    const title = stringField(state.title) || stringField(data.title);
+    let value = "";
+    switch (tool) {
+      case "bash":
+        value = stringField(input.command) || title;
+        break;
+      case "read":
+      case "write":
+      case "edit":
+        value = stringField(input.filePath) || stringField(input.path);
+        break;
+      case "grep": {
+        const pattern = stringField(input.pattern);
+        const searchPath = stringField(input.path) || stringField(input.filePath);
+        value = pattern.length > 0 && searchPath.length > 0 ? `${pattern} in ${searchPath}` : pattern;
+        if (value.length === 0) value = title;
+        break;
+      }
+      case "glob":
+        value = stringField(input.pattern) || title;
+        break;
+      case "webfetch":
+        value = stringField(input.url) || title;
+        break;
+      case "websearch":
+        value = stringField(input.query) || title;
+        break;
+      case "task":
+        value =
+          stringField(input.description) ||
+          stringField(input.agent) ||
+          stringField(input.subagent) ||
+          title;
+        break;
+      case "todowrite":
+        return todoPreview(todoListFor(data, status));
+      case "question":
+        if (status === "completed") {
+          value = "Answered";
+        } else {
+          const questions = Array.isArray(input.questions) ? input.questions.length : 0;
+          value = `Question · ${questions} waiting`;
+        }
+        break;
+      default:
+        value = title;
+        if (value.length === 0) {
+          for (const key of Object.keys(input)) {
+            if (typeof input[key] === "string" && input[key].length > 0) {
+              value = input[key];
+              break;
+            }
+          }
+        }
+        if (value.length === 0) value = tool;
+    }
+    return previewValue(value);
+  }
+
+  function toolOutputText(data, tool, status) {
+    const state = partState(data);
+    const metadata = partMetadata(data);
+    if (status === "running") {
+      if (typeof metadata.output === "string" && metadata.output.length > 0) {
+        return metadata.output;
+      }
+      if (tool === "bash") return "Waiting for output…";
+    }
+    if (status === "error" && typeof state.error === "string" && state.error.length > 0) {
+      return state.error;
+    }
+    if (typeof state.output === "string" && state.output.length > 0) return state.output;
+    if (typeof metadata.output === "string" && metadata.output.length > 0) {
+      return metadata.output;
+    }
     if (typeof state.error === "string" && state.error.length > 0) return state.error;
-    if (typeof state.output === "string") return state.output;
-    if (typeof part.output === "string") return part.output;
-    if (typeof part.text === "string") return part.text;
+    if (typeof data.output === "string" && data.output.length > 0) return data.output;
+    if (typeof data.text === "string" && data.text.length > 0) return data.text;
     return "No output";
   }
 
-  function renderTool(part, key) {
-    const status = toolStatus(part);
-    const details = element("details", "tool-call");
-    details.dataset.toolKey = key;
-    if (status === "error") details.open = true;
-    const summary = element("summary");
-    summary.append(
-      iconNode("terminal"),
-      element("span", "mono", String(part.tool || "tool")),
-    );
-    const path = toolPath(part);
-    if (path.length > 0) {
-      const pathEl = element("span", "tool-call__path", path);
-      pathEl.title = path;
-      summary.append(pathEl);
+  function epochMs(value) {
+    if (typeof value !== "number" || !Number.isFinite(value)) return null;
+    return value < 1_000_000_000_000 ? value * 1000 : value;
+  }
+
+  function toolElapsedText(data, status) {
+    if (status !== "running") return "";
+    const start = epochMs(partState(data).time?.start);
+    if (start === null) return "";
+    return formatElapsed(Date.now() - start);
+  }
+
+  function toolGlyph(tool) {
+    const map = {
+      bash: "terminal",
+      read: "code",
+      write: "code",
+      edit: "code",
+      grep: "search",
+      glob: "search",
+      webfetch: "search",
+      websearch: "search",
+      task: "activity",
+      todowrite: "check",
+      question: "message",
+    };
+    return map[tool] || "terminal";
+  }
+
+  function truncationNotice(part, status) {
+    if (part.partial !== true && part.truncated !== true) return "";
+    if (status === "running" || status === "pending") {
+      return "Output truncated for live view; the full result may load when the turn ends.";
     }
-    summary.append(statusChip(status));
-    details.append(summary, element("pre", "", toolOutput(part)));
-    return details;
+    if (sessionSnapshotTooLarge) {
+      return "Full output unavailable; session snapshot exceeds 8 MiB.";
+    }
+    return "Output truncated at 64 KiB.";
   }
 
-  function renderDetail(kind, text, key) {
-    const details = element("details", "tool-call");
-    details.dataset.toolKey = key;
-    const summary = element("summary");
-    summary.append(iconNode(kind === "patch" ? "code" : "activity"));
-    summary.append(element("span", "mono", kind));
-    details.append(summary, element("pre", "", text));
-    return details;
+  function detailLabel(part) {
+    if (part.type === "reasoning") return "Thinking";
+    return part.type;
   }
 
-  function messageTime(info) {
+  function detailPreview(kind, data) {
+    if (kind === "patch") return previewValue(stringField(data.title));
+    if (kind === "file") {
+      return previewValue(
+        stringField(data.filename) ||
+          stringField(data.path) ||
+          stringField(data.name) ||
+          stringField(data.title),
+      );
+    }
+    if (kind === "subtask") {
+      return previewValue(
+        stringField(data.description) ||
+          stringField(data.agent) ||
+          stringField(data.title) ||
+          stringField(data.prompt),
+      );
+    }
+    return null;
+  }
+
+  function detailBodyText(kind, data) {
+    if (kind === "reasoning") return stringField(data.text) || "Reasoning";
+    if (kind === "patch") {
+      return stringField(data.patch) || stringField(data.text) || "Patch";
+    }
+    if (typeof data.output === "string" && data.output.length > 0) return data.output;
+    if (typeof data.error === "string" && data.error.length > 0) return data.error;
+    if (typeof data.text === "string" && data.text.length > 0) return data.text;
+    if (typeof data.content === "string" && data.content.length > 0) return data.content;
+    if (typeof data.patch === "string" && data.patch.length > 0) return data.patch;
+    return "No output";
+  }
+
+  function partDataOf(part) {
+    return part.data && typeof part.data === "object" ? part.data : part;
+  }
+
+  function partKeyFor(record, part) {
+    return `${record.id}:${part.id}`;
+  }
+
+  function isQuestionToolPart(part) {
+    if (part === undefined || part === null || part.type !== "tool") return false;
+    const data = partDataOf(part);
+    return data.tool === "question";
+  }
+
+  function isVisibleRecordPart(part) {
+    if (part === undefined || part === null) return false;
+    if (part.type === "text") {
+      return !partIgnored(part) && partTextValue(part).trim().length > 0;
+    }
+    if (
+      part.type === "tool" ||
+      part.type === "reasoning" ||
+      part.type === "patch" ||
+      part.type === "file" ||
+      part.type === "subtask"
+    ) {
+      return true;
+    }
+    if (!KNOWN_PART_TYPES.has(part.type)) return true;
+    return false;
+  }
+
+  function recordHasVisiblePart(record) {
+    for (const partID of record.partOrder) {
+      if (isVisibleRecordPart(record.parts.get(partID))) return true;
+    }
+    return false;
+  }
+
+  function isSystemRecord(record) {
+    return record.role === "user" && record.system !== undefined && record.system !== null;
+  }
+
+  function isPendingRecord(record) {
+    return record.role === "user" && record.classificationPending === true;
+  }
+
+  function recordNeedsNode(record) {
+    return recordHasVisiblePart(record) || isSystemRecord(record) || isPendingRecord(record);
+  }
+
+  function isOptimisticRecord(record) {
+    return typeof record.optimistic === "string" && record.optimistic.length > 0;
+  }
+
+  function messageMode(record) {
+    if (isSystemRecord(record)) return "system";
+    if (isPendingRecord(record)) return "pending";
+    return record.role;
+  }
+
+  function hasCompleteTextSnapshot(record) {
+    for (const partID of record.partOrder) {
+      const part = record.parts.get(partID);
+      if (part === undefined || part.type !== "text") continue;
+      if (part.provisional === true || part.partial === true) continue;
+      const data = partDataOf(part);
+      if (data.provisional === true || data.partial === true) continue;
+      return true;
+    }
+    return false;
+  }  function messageTime(info) {
     if (!info || typeof info !== "object") return "";
     const time = info.time;
     let value = null;
@@ -807,42 +1781,1006 @@
     return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   }
 
-  function renderMessage(message, messageIndex) {
-    const info = message.info && typeof message.info === "object" ? message.info : {};
-    const messageKey = String(info.id ?? messageIndex);
-    const role = info.role === "user" ? "user" : "assistant";
-    const wrapper = element("article", "message" + (role === "user" ? " message--user" : ""));
-    wrapper.dataset.role = role;
-    const meta = element("div", "message__meta");
-    const avatar = element("span", "avatar avatar--sm", role === "user" ? operatorInitials : appInitials);
-    avatar.setAttribute("aria-hidden", "true");
-    meta.append(
-      avatar,
-      element("span", "message__role", role === "user" ? "operator" : appKey),
-    );
-    const stamp = messageTime(info);
-    if (stamp.length > 0) meta.append(element("span", "message__time", stamp));
-    wrapper.append(meta);
+  function renderMessageMeta(record, node) {
+    const mode = messageMode(record);
+    const system = isSystemRecord(record) ? record.system : null;
+    const signature = `${mode}|${messageTime(record)}|${node.dataset.optimistic || ""}|${
+      system === null ? "" : `${system.kind}|${system.title}`
+    }`;
+    if (node.dataset.metaSignature === signature) return;
+    node.dataset.metaSignature = signature;
+    const meta = node.querySelector(".message__meta");
+    if (meta === null) return;
+    const children = [];
+    if (mode === "system") {
+      children.push(iconNode("settings", "icon--sm"));
+      children.push(element("span", "message__role", "OMO"));
+      children.push(element("span", "message__kind", system.kind));
+    } else if (mode === "pending") {
+      children.push(iconNode("activity", "icon--sm"));
+      children.push(element("span", "message__role", "Message"));
+    } else {
+      const avatar = element(
+        "span",
+        "avatar avatar--sm",
+        record.role === "user" ? operatorInitials : appInitials,
+      );
+      avatar.setAttribute("aria-hidden", "true");
+      children.push(avatar);
+      children.push(element("span", "message__role", record.role === "user" ? "operator" : appKey));
+    }
+    const stamp = messageTime(record);
+    if (stamp.length > 0) children.push(element("span", "message__time", stamp));
+    meta.replaceChildren(...children);
+  }
 
-    const parts = Array.isArray(message.parts) ? message.parts : [];
-    parts.forEach((part, partIndex) => {
-      if (!part || typeof part !== "object") return;
-      const key = `${messageKey}:${partIndex}`;
-      if (part.type === "text" && typeof part.text === "string" && part.text.length > 0) {
-        const body = element("div", "message__body");
-        renderMarkdown(body, part.text);
-        wrapper.append(body);
-      } else if (part.type === "tool") {
-        wrapper.append(renderTool(part, key));
-      } else if (part.type === "reasoning") {
-        const text = typeof part.text === "string" ? part.text : "Reasoning";
-        wrapper.append(renderDetail("reasoning", text, key));
-      } else if (part.type === "patch") {
-        const text = typeof part.patch === "string" ? part.patch : typeof part.text === "string" ? part.text : "Patch";
-        wrapper.append(renderDetail("patch", text, key));
+  function collapsePreview(value) {
+    return value.replace(/\s+/g, " ").trim().slice(0, 120);
+  }
+
+  function omoBodyNeedsDetails(body) {
+    if (body.length > OMO_DETAILS_CHAR_LIMIT) return true;
+    if (body.split("\n").length > OMO_DETAILS_LINE_LIMIT) return true;
+    return /\*\*(ID|Description):\*\*/.test(body);
+  }
+
+  function omoBodyPreview(body) {
+    const patterns = [
+      /\*\*ID:\*\*\s*([^\n]+)/,
+      /\*\*Description:\*\*\s*([^\n]+)/,
+      /\*\*Duration:\*\*\s*([^\n]+)/,
+    ];
+    for (const pattern of patterns) {
+      const match = pattern.exec(body);
+      if (match !== null && match[1] !== undefined) return collapsePreview(match[1]);
+    }
+    const firstLine = body.split("\n").find((line) => line.trim().length > 0) ?? "";
+    return collapsePreview(firstLine);
+  }
+
+  function renderOmoCard(record, node) {
+    const system = record.system;
+    if (system === undefined || system === null) return;
+    const card = node.querySelector(".omo-card");
+    if (card !== null && omoCardState.get(node) === system) return;
+    const nextCard = card === null ? element("div", "omo-card") : card;
+    nextCard.dataset.kind = system.kind;
+    nextCard.dataset.tone = system.tone;
+    const head = element("div", "omo-card__head");
+    const title = element("div", "omo-card__title", system.title.length > 0 ? system.title : system.kind);
+    head.append(title, element("span", "omo-card__kind", system.kind));
+    nextCard.replaceChildren(head);
+    if (typeof system.body === "string" && system.body.trim().length > 0) {
+      const body = element("div", "omo-card__body message__body");
+      if (omoBodyNeedsDetails(system.body)) {
+        const details = element("details", "omo-card__details");
+        details.append(
+          element("summary", "omo-card__preview", omoBodyPreview(system.body)),
+          body,
+        );
+        renderMarkdown(body, system.body);
+        nextCard.append(details);
+      } else {
+        renderMarkdown(body, system.body);
+        nextCard.append(body);
       }
+    }
+    if (card === null) node.append(nextCard);
+    omoCardState.set(node, system);
+  }
+
+  function removeOmoCard(node) {
+    const card = node.querySelector(".omo-card");
+    if (card !== null) card.remove();
+    omoCardState.delete(node);
+  }
+
+  function detachRecordPartNodes(record, node) {
+    for (const partID of record.partOrder) {
+      const partNode = partNodes.get(`${record.id}:${partID}`);
+      if (partNode !== undefined && partNode.parentNode === node) partNode.remove();
+    }
+  }
+
+  function optimisticLabel(state) {
+    if (state === "sending") return "Sending…";
+    if (state === "queued") return "Queued";
+    if (state === "unknown") return "Delivery unknown; checking…";
+    return "";
+  }
+
+  function syncMessageOptimistic(record, node) {
+    let stateEl = node.querySelector(".message__state");
+    const label = optimisticLabel(record.optimistic);
+    if (label.length === 0) {
+      if (stateEl !== null) stateEl.remove();
+      return;
+    }
+    if (stateEl === null) {
+      stateEl = element("div", "message__state");
+      stateEl.setAttribute("aria-hidden", "true");
+      node.append(stateEl);
+    }
+    if (stateEl.textContent !== label) stateEl.textContent = label;
+  }
+
+  function createMessageNode(record) {
+    const mode = messageMode(record);
+    const classes = ["message"];
+    if (mode === "user") classes.push("message--user");
+    else if (mode === "system") classes.push("message--system");
+    else if (mode === "pending") classes.push("message--pending");
+    const node = element("article", classes.join(" "));
+    node.dataset.messageId = record.id;
+    node.dataset.role = record.role;
+    if (record.optimistic !== undefined) {
+      node.classList.add("message--optimistic");
+      node.dataset.state = record.optimistic;
+      node.dataset.optimistic = record.optimistic;
+    }
+    node.append(element("div", "message__meta"));
+    renderMessageMeta(record, node);
+    syncMessageOptimistic(record, node);
+    return node;
+  }
+
+  function attachOpenTracking(node, part) {
+    node.addEventListener("toggle", () => {
+      if (node.open) store.openParts.add(part.id);
+      else store.openParts.delete(part.id);
     });
-    return wrapper;
+  }
+
+  function createPartNode(record, part) {
+    const key = partKeyFor(record, part);
+    if (part.type === "tool") {
+      if (isQuestionToolPart(part)) {
+        const slot = element("div", "chat-question-slot");
+        slot.dataset.messageId = record.id;
+        slot.dataset.partId = part.id;
+        slot.dataset.partType = part.type;
+        slot.dataset.toolKey = key;
+        return slot;
+      }
+      const details = element("details", "tool-call");
+      details.dataset.messageId = record.id;
+      details.dataset.partId = part.id;
+      details.dataset.partType = part.type;
+      details.dataset.toolKey = key;
+      details.append(element("summary"));
+      attachOpenTracking(details, part);
+      return details;
+    }
+    if (
+      part.type === "reasoning" ||
+      part.type === "patch" ||
+      part.type === "file" ||
+      part.type === "subtask"
+    ) {
+      const details = element("details", "tool-call");
+      details.dataset.messageId = record.id;
+      details.dataset.partId = part.id;
+      details.dataset.partType = part.type;
+      details.dataset.toolKey = key;
+      details.append(element("summary"));
+      attachOpenTracking(details, part);
+      return details;
+    }
+    const body = element("div", "message__body");
+    body.dataset.messageId = record.id;
+    body.dataset.partId = part.id;
+    body.dataset.partType = part.type;
+    return body;
+  }
+
+  function insertPartNode(record, node, partID) {
+    const messageNode = messageNodes.get(record.id);
+    if (messageNode === undefined) return;
+    const index = record.partOrder.indexOf(partID);
+    let anchor = null;
+    for (let cursor = index + 1; cursor < record.partOrder.length; cursor += 1) {
+      const candidate = partNodes.get(`${record.id}:${record.partOrder[cursor]}`);
+      if (candidate !== undefined && candidate.parentNode === messageNode) {
+        anchor = candidate;
+        break;
+      }
+    }
+    if (anchor === null) messageNode.append(node);
+    else messageNode.insertBefore(node, anchor);
+  }
+
+  function syncPartOrder(record, messageNode) {
+    if (messageNode === undefined) return;
+    const desired = [];
+    for (const partID of record.partOrder) {
+      const node = partNodes.get(`${record.id}:${partID}`);
+      if (node !== undefined && node.parentNode === messageNode) desired.push(node);
+    }
+    const current = Array.from(messageNode.children).filter((child) =>
+      child.hasAttribute("data-part-id"),
+    );
+    if (
+      current.length === desired.length &&
+      current.every((node, index) => node === desired[index])
+    ) {
+      return;
+    }
+    for (const node of desired) messageNode.append(node);
+  }
+
+  function renderStateFor(key) {
+    let state = partRenderState.get(key);
+    if (state === undefined) {
+      state = { rendered: false, text: "", output: "", path: "", status: "", tool: "", at: 0 };
+      partRenderState.set(key, state);
+    }
+    return state;
+  }
+
+  function updateTextPart(node, part, key, force) {
+    const state = renderStateFor(key);
+    const text = partTextValue(part);
+    if (state.rendered && state.text === text) return true;
+    if (!force && part.sealed !== true && Date.now() - state.at < MARKDOWN_THROTTLE_MS) {
+      return false;
+    }
+    node.replaceChildren();
+    renderMarkdown(node, text);
+    if (part.partial === true) node.dataset.partial = "true";
+    else delete node.dataset.partial;
+    state.rendered = true;
+    state.text = text;
+    state.at = Date.now();
+    return true;
+  }
+
+  function directChildByClass(node, className) {
+    for (const child of node.children) {
+      if (child.classList.contains(className)) return child;
+    }
+    return null;
+  }
+
+  function directPre(node) {
+    for (const child of node.children) {
+      if (child.tagName === "PRE") return child;
+    }
+    return null;
+  }
+
+  function ensureToolBody(node, state, kind) {
+    if (state.bodyKind !== kind) {
+      for (const child of Array.from(node.children)) {
+        if (child.tagName === "SUMMARY") continue;
+        child.remove();
+      }
+      state.bodyKind = kind;
+    }
+    if (kind === "todo") {
+      let list = directChildByClass(node, "tool-todo");
+      if (list === null) {
+        list = element("ul", "tool-todo");
+        node.append(list);
+      }
+      return list;
+    }
+    if (kind === "bash") {
+      let pre = directChildByClass(node, "tool-call__output");
+      if (pre === null) {
+        pre = element("pre", "tool-call__output");
+        node.append(pre);
+      }
+      return pre;
+    }
+    if (kind === "pre") {
+      let pre = directPre(node);
+      if (pre === null) {
+        pre = element("pre");
+        node.append(pre);
+      }
+      return pre;
+    }
+    return null;
+  }
+
+  function syncTruncationNotice(node, text) {
+    let note = directChildByClass(node, "tool-call__truncated");
+    if (text.length === 0) {
+      if (note !== null) note.remove();
+      return;
+    }
+    if (note === null) {
+      note = element("p", "tool-call__truncated");
+      node.append(note);
+    }
+    if (note.textContent !== text) note.textContent = text;
+    if (node.lastChild !== note) node.append(note);
+  }
+
+  function renderToolTodo(list, todos) {
+    const rows = [];
+    let currentMarked = false;
+    for (const todo of todos) {
+      const item = element("li", "tool-todo__item");
+      const status = todo && typeof todo === "object" ? todo.status : undefined;
+      const entry = todoStatusEntry(status);
+      item.dataset.status = typeof status === "string" ? status : "unknown";
+      if (status === "in_progress" && !currentMarked) {
+        item.setAttribute("aria-current", "step");
+        currentMarked = true;
+      }
+      const glyph = element("span", "tool-todo__status");
+      glyph.append(iconNode(entry.icon, "icon--sm"), document.createTextNode(entry.label));
+      const content = element(
+        "span",
+        "tool-todo__content",
+        todo && typeof todo.content === "string" ? todo.content : "",
+      );
+      const priority =
+        todo && typeof todo.priority === "string" ? todo.priority : "unknown";
+      item.append(
+        glyph,
+        content,
+        priorityMeter(priority),
+        element("span", "sr-only", `Priority: ${priority}`),
+      );
+      rows.push(item);
+    }
+    list.replaceChildren(...rows);
+  }
+
+  function updateToolPart(node, part, key, force) {
+    const state = renderStateFor(key);
+    const data = partDataOf(part);
+    const tool = String(data.tool || "tool");
+    const status = toolStatus(data);
+    const preview = toolPreview(data, tool, status);
+    const elapsed = toolElapsedText(data, status);
+    const todos = tool === "todowrite" ? todoListFor(data, status) : null;
+    const output = todos === null ? toolOutputText(data, tool, status) : "";
+    const notice = truncationNotice(part, status);
+    const signature = [
+      tool,
+      status,
+      preview === null ? "" : `${preview.preview}\n${preview.title}`,
+      elapsed,
+      output,
+      todos === null ? "" : JSON.stringify(todos),
+      notice,
+    ].join("|");
+    if (state.rendered && state.signature === signature) return true;
+    if (
+      !force &&
+      status === "running" &&
+      state.rendered &&
+      Date.now() - state.at < TOOL_OUTPUT_THROTTLE_MS
+    ) {
+      return false;
+    }
+    const summary = node.querySelector("summary");
+    if (summary === null) return true;
+    const hadFocus = summary.contains(document.activeElement);
+    const summaryChildren = [
+      iconNode(toolGlyph(tool)),
+      element("span", "mono", tool),
+    ];
+    if (preview !== null) {
+      const previewEl = element("span", "tool-call__path", preview.preview);
+      previewEl.title = preview.title;
+      summaryChildren.push(previewEl);
+    }
+    summaryChildren.push(statusChip(status));
+    if (elapsed.length > 0) {
+      summaryChildren.push(element("span", "tool-call__elapsed mono", elapsed));
+    }
+    summary.replaceChildren(...summaryChildren);
+    if (hadFocus) summary.focus();
+
+    const bodyKind = tool === "todowrite" ? "todo" : tool === "bash" ? "bash" : "pre";
+    const body = ensureToolBody(node, state, bodyKind);
+    if (body !== null) {
+      if (bodyKind === "todo") {
+        renderToolTodo(body, todos || []);
+      } else {
+        const follow = body.scrollHeight - body.scrollTop - body.clientHeight < 24;
+        if (body.textContent !== output) body.textContent = output;
+        if (follow) body.scrollTop = body.scrollHeight;
+      }
+    }
+    syncTruncationNotice(node, notice);
+
+    if (status !== "error") state.errorOpened = false;
+    if (!state.rendered) {
+      if (status === "error") {
+        node.open = true;
+        store.openParts.add(part.id);
+        state.errorOpened = true;
+      } else {
+        node.open = store.openParts.has(part.id);
+      }
+    } else if (status === "error" && state.errorOpened !== true) {
+      node.open = true;
+      store.openParts.add(part.id);
+      state.errorOpened = true;
+    }
+    state.rendered = true;
+    state.tool = tool;
+    state.status = status;
+    state.path = preview === null ? "" : preview.preview;
+    state.output = output;
+    state.signature = signature;
+    state.at = Date.now();
+    return true;
+  }
+
+  function updateDetailPart(node, part, key, force) {
+    const state = renderStateFor(key);
+    const data = partDataOf(part);
+    const kind = part.type;
+    const label = detailLabel(part);
+    const preview = detailPreview(kind, data);
+    const text = detailBodyText(kind, data);
+    const notice = truncationNotice(part, "completed");
+    const signature = [
+      label,
+      preview === null ? "" : `${preview.preview}\n${preview.title}`,
+      text,
+      notice,
+    ].join("|");
+    if (state.rendered && state.signature === signature) return true;
+    if (!force && state.rendered && Date.now() - state.at < MARKDOWN_THROTTLE_MS) return false;
+    const summary = node.querySelector("summary");
+    if (summary === null) return true;
+    const hadFocus = summary.contains(document.activeElement);
+    const summaryChildren = [
+      iconNode(kind === "patch" || kind === "file" ? "code" : "activity"),
+      element("span", "mono", label),
+    ];
+    if (preview !== null) {
+      const previewEl = element("span", "tool-call__path", preview.preview);
+      previewEl.title = preview.title;
+      summaryChildren.push(previewEl);
+    }
+    summary.replaceChildren(...summaryChildren);
+    const body = ensureToolBody(node, state, "pre");
+    if (body !== null) {
+      if (body.textContent !== text) body.textContent = text;
+    }
+    syncTruncationNotice(node, notice);
+    if (hadFocus) summary.focus();
+    if (!state.rendered) node.open = store.openParts.has(part.id);
+    state.rendered = true;
+    state.text = text;
+    state.signature = signature;
+    state.at = Date.now();
+    return true;
+  }
+
+  function updatePartNode(node, record, part, force) {
+    const key = partKeyFor(record, part);
+    if (part.type === "text") return updateTextPart(node, part, key, force);
+    if (isQuestionToolPart(part)) return updateInlineQuestionPart(node, record, part);
+    if (part.type === "tool") return updateToolPart(node, part, key, force);
+    if (
+      part.type === "reasoning" ||
+      part.type === "patch" ||
+      part.type === "file" ||
+      part.type === "subtask"
+    ) {
+      return updateDetailPart(node, part, key, force);
+    }
+    const state = renderStateFor(key);
+    if (!state.rendered) {
+      node.replaceChildren(document.createTextNode(`Unsupported content: ${String(part.type)}`));
+      node.dataset.partial = "true";
+      state.rendered = true;
+    }
+    return true;
+  }
+
+  function ensurePartNode(record, part, force) {
+    const key = partKeyFor(record, part);
+    if (isSystemRecord(record) || isPendingRecord(record)) {
+      const hiddenNode = partNodes.get(key);
+      if (hiddenNode !== undefined && hiddenNode.parentNode !== null) hiddenNode.remove();
+      return true;
+    }
+    let node = partNodes.get(key);
+    if (!isVisibleRecordPart(part)) {
+      if (node !== undefined) {
+        node.remove();
+        partNodes.delete(key);
+        partRenderState.delete(key);
+      }
+      return true;
+    }
+    if (node !== undefined && node.dataset.partType !== part.type) {
+      node.remove();
+      partNodes.delete(key);
+      partRenderState.delete(key);
+      node = undefined;
+    }
+    if (node !== undefined) {
+      const questionSlot = node.classList.contains("chat-question-slot");
+      if (isQuestionToolPart(part) !== questionSlot && part.type === "tool") {
+        node.remove();
+        partNodes.delete(key);
+        partRenderState.delete(key);
+        node = undefined;
+      }
+    }
+    if (node === undefined) {
+      node = createPartNode(record, part);
+      partNodes.set(key, node);
+      partOwner.set(part.id, record.id);
+      insertPartNode(record, node, part.id);
+    } else if (node.parentNode === null) {
+      insertPartNode(record, node, part.id);
+    }
+    node.dataset.partType = part.type;
+    return updatePartNode(node, record, part, force);
+  }
+
+  function ensureMessageNode(record) {
+    let node = messageNodes.get(record.id);
+    if (!recordNeedsNode(record)) {
+      if (node !== undefined) {
+        node.remove();
+        messageNodes.delete(record.id);
+      }
+      for (const partID of record.partOrder) {
+        const key = `${record.id}:${partID}`;
+        const partNode = partNodes.get(key);
+        if (partNode !== undefined) {
+          partNode.remove();
+          partNodes.delete(key);
+          partRenderState.delete(key);
+        }
+      }
+      return null;
+    }
+    if (node === undefined) {
+      node = createMessageNode(record);
+      messageNodes.set(record.id, node);
+      messagesEl.append(node);
+    }
+    const mode = messageMode(record);
+    node.dataset.role = record.role;
+    node.classList.toggle("message--user", mode === "user");
+    node.classList.toggle("message--system", mode === "system");
+    node.classList.toggle("message--pending", mode === "pending");
+    if (record.optimistic !== undefined) {
+      node.classList.add("message--optimistic");
+      node.dataset.state = record.optimistic;
+      node.dataset.optimistic = record.optimistic;
+    } else {
+      node.classList.remove("message--optimistic");
+      delete node.dataset.state;
+      delete node.dataset.optimistic;
+    }
+    if (mode === "system") {
+      detachRecordPartNodes(record, node);
+      renderOmoCard(record, node);
+    } else {
+      removeOmoCard(node);
+      if (mode === "pending") detachRecordPartNodes(record, node);
+    }
+    renderMessageMeta(record, node);
+    syncMessageOptimistic(record, node);
+    return node;
+  }
+
+  function removeStoredMessage(id) {
+    clearOmoClassifyTimer(id);
+    const record = store.messages.get(id);
+    if (record !== undefined) {
+      for (const partID of record.partOrder) {
+        if (partOwner.get(partID) === id) partOwner.delete(partID);
+      }
+    }
+    store.messages.delete(id);
+    store.order = store.order.filter((item) => item !== id);
+    const node = messageNodes.get(id);
+    if (node !== undefined) {
+      node.remove();
+      messageNodes.delete(id);
+    }
+    recomputeQueue();
+  }
+
+  function localID() {
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+      return `local_${crypto.randomUUID()}`;
+    }
+    return `local_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+  }
+
+  function insertOptimisticMessage(id, text) {
+    const partID = `${id}:part:text`;
+    const part = {
+      id: partID,
+      type: "text",
+      data: { id: partID, type: "text", text, provisional: true, placeholder: true },
+      provisional: true,
+      partial: false,
+      sealed: false,
+      version: 1,
+    };
+    const record = {
+      id,
+      role: "user",
+      optimistic: "sending",
+      partOrder: [partID],
+      parts: new Map([[partID, part]]),
+      version: 1,
+    };
+    store.messages.set(id, record);
+    store.order.push(id);
+    partOwner.set(partID, id);
+    markOptimisticOperator(record);
+    orderDirty = true;
+    dirtyMessages.add(id);
+    recomputeQueue();
+    scheduleFlush();
+  }
+
+  function userPlaceholderPartID(record) {
+    for (const partID of record.partOrder) {
+      const part = record.parts.get(partID);
+      if (part === undefined || part.type !== "text") continue;
+      const data = partDataOf(part);
+      if (part.provisional === true || data.provisional === true || data.placeholder === true) {
+        return partID;
+      }
+    }
+    return null;
+  }
+
+  function renamePartEntry(
+    oldKey,
+    newKey,
+    oldPartID,
+    newPartID,
+    oldMessageID,
+    newMessageID,
+  ) {
+    const node = partNodes.get(oldKey);
+    if (node !== undefined) {
+      partNodes.delete(oldKey);
+      partNodes.set(newKey, node);
+      node.dataset.messageId = newMessageID;
+      node.dataset.partId = newPartID;
+    }
+    const state = partRenderState.get(oldKey);
+    if (state !== undefined) {
+      partRenderState.delete(oldKey);
+      partRenderState.set(newKey, state);
+    }
+    if (partOwner.get(oldPartID) === oldMessageID) partOwner.delete(oldPartID);
+    partOwner.set(newPartID, newMessageID);
+  }
+
+  function renamePartKey(messageID, oldPartID, newPartID) {
+    renamePartEntry(
+      `${messageID}:${oldPartID}`,
+      `${messageID}:${newPartID}`,
+      oldPartID,
+      newPartID,
+      messageID,
+      messageID,
+    );
+  }
+
+  function renamePartMessage(oldMessageID, newMessageID, oldPartID, newPartID) {
+    renamePartEntry(
+      `${oldMessageID}:${oldPartID}`,
+      `${newMessageID}:${newPartID}`,
+      oldPartID,
+      newPartID,
+      oldMessageID,
+      newMessageID,
+    );
+  }
+
+  function removePartKey(messageID, partID) {
+    const key = `${messageID}:${partID}`;
+    const node = partNodes.get(key);
+    if (node !== undefined) node.remove();
+    partNodes.delete(key);
+    partRenderState.delete(key);
+    if (partOwner.get(partID) === messageID) partOwner.delete(partID);
+  }
+
+  function rekeyMessageDom(tempID, serverID, oldPartIDs, newRecord) {
+    const node = messageNodes.get(tempID);
+    if (node !== undefined) {
+      messageNodes.delete(tempID);
+      messageNodes.set(serverID, node);
+      node.dataset.messageId = serverID;
+    }
+    const newPartIDs = newRecord === undefined ? [] : [...newRecord.partOrder];
+    const newSet = new Set(newPartIDs);
+    const oldSet = new Set(oldPartIDs);
+    const replacementID = newPartIDs.find((partID) => !oldSet.has(partID)) || null;
+    let placeholderUsed = false;
+    for (const oldPartID of oldPartIDs) {
+      if (newSet.has(oldPartID)) {
+        renamePartMessage(tempID, serverID, oldPartID, oldPartID);
+        continue;
+      }
+      if (!placeholderUsed && replacementID !== null) {
+        placeholderUsed = true;
+        renamePartMessage(tempID, serverID, oldPartID, replacementID);
+        continue;
+      }
+      removePartKey(tempID, oldPartID);
+    }
+    for (const partID of newPartIDs) {
+      partOwner.set(partID, serverID);
+    }
+  }
+
+  function applyBufferedLeftovers(events, serverID) {
+    if (!Array.isArray(events) || events.length === 0) return;
+    const leftovers = events.filter(
+      (event) => event === null || typeof event !== "object" || event.messageID !== serverID,
+    );
+    if (leftovers.length === 0) return;
+    for (const event of leftovers) {
+      const replay = { ...event };
+      delete replay.seq;
+      delete replay.streamID;
+      handleStreamEvent(replay);
+    }
+  }
+
+  function statusTypeOf(status) {
+    if (status === null || typeof status !== "object") return undefined;
+    if (typeof status.type === "string") return status.type;
+    if (status.status && typeof status.status.type === "string") return status.status.type;
+    return undefined;
+  }
+
+  function savedStoreFor(id) {
+    const saved = sessionRuntime.get(id);
+    if (saved === undefined) return null;
+    return {
+      sessionID: id,
+      generation: 0,
+      turnGeneration: saved.turnGeneration ?? 0,
+      order: [...saved.order],
+      messages: saved.messages,
+      activePromptID: saved.activePromptID ?? null,
+      queue: Array.isArray(saved.queue) ? [...saved.queue] : [],
+      openParts: new Set(saved.openParts),
+      lastSeqByStream: new Map(saved.lastSeqByStream),
+      currentStreamID: saved.currentStreamID ?? null,
+      pendingDeltas: new Map(),
+      agentStatus: saved.agentStatus ?? null,
+      connection: "live",
+    };
+  }
+
+  function commitSavedStore(id, next) {
+    const saved = sessionRuntime.get(id);
+    if (saved === undefined) return;
+    saved.order = next.order;
+    saved.messages = next.messages;
+    saved.activePromptID = next.activePromptID;
+    saved.queue = next.queue;
+    saved.agentStatus = next.agentStatus;
+    saved.turnGeneration = next.turnGeneration;
+    saved.lastSeqByStream = next.lastSeqByStream;
+    saved.currentStreamID = next.currentStreamID;
+  }
+
+  function rekeyAcceptanceRow(state, serverID, keepUnknown) {
+    const tempID = state.tempID;
+    if (tempID === null) return false;
+    const targetID = state.sessionID;
+    const active = targetID !== null && targetID === sessionId;
+    const baseStore = active ? store : targetID === null ? null : savedStoreFor(targetID);
+    if (baseStore === null) return false;
+    const oldRecord = baseStore.messages.get(tempID);
+    if (oldRecord === undefined) return false;
+    const oldPartIDs = [...oldRecord.partOrder];
+    const buffered = state.bufferedEvents;
+    const result = rekeyOptimistic(baseStore, {
+      tempID,
+      serverID,
+      bufferedEvents: buffered,
+      sessionStatusType: active ? sessionStatusType() : statusTypeOf(baseStore.agentStatus),
+    });
+    const record = result.store.messages.get(serverID);
+    if (record === undefined) return false;
+    if (keepUnknown) record.optimistic = "unknown";
+    if (record.role === "user") markOptimisticOperator(record);
+    if (active) {
+      store = result.store;
+      rekeyMessageDom(tempID, serverID, oldPartIDs, record);
+      dirtyMessages.add(serverID);
+      orderDirty = true;
+      for (const partID of record.partOrder) {
+        partOwner.set(partID, serverID);
+        dirtyParts.add(partID);
+      }
+      recomputeQueue();
+      applyBufferedLeftovers(buffered, serverID);
+      scheduleFlush();
+    } else if (targetID !== null) {
+      commitSavedStore(targetID, result.store);
+    }
+    state.tempID = null;
+    state.serverID = serverID;
+    state.bufferedEvents = [];
+    return true;
+  }
+
+  function stateTargetsActiveSession(state) {
+    return state.sessionID === sessionId;
+  }
+
+  function activeRowFor(state, id) {
+    if (stateTargetsActiveSession(state)) return store.messages.get(id);
+    if (state.sessionID === null) return null;
+    const saved = sessionRuntime.get(state.sessionID);
+    return saved === undefined ? undefined : saved.messages.get(id);
+  }
+
+  function removeAcceptanceRow(state, id) {
+    if (stateTargetsActiveSession(state)) {
+      removeStoredMessage(id);
+      return;
+    }
+    const saved = state.sessionID === null ? undefined : sessionRuntime.get(state.sessionID);
+    if (saved === undefined) return;
+    saved.messages.delete(id);
+    saved.order = saved.order.filter((item) => item !== id);
+    saved.queue = saved.queue.filter((item) => item !== id);
+    if (saved.activePromptID === id) saved.activePromptID = null;
+  }
+
+  function moveAcceptance(fromKey, toKey) {
+    if (fromKey === toKey) return;
+    const state = acceptanceBySession.get(fromKey);
+    if (state === undefined) return;
+    acceptanceBySession.delete(fromKey);
+    acceptanceBySession.set(toKey, state);
+  }
+
+  function markAllDirty() {
+    dirtyMessages = new Set(store.order);
+    dirtyParts = new Set();
+    for (const id of store.order) {
+      const record = store.messages.get(id);
+      if (record === undefined) continue;
+      for (const partID of record.partOrder) {
+        dirtyParts.add(partID);
+        partOwner.set(partID, id);
+      }
+    }
+    orderDirty = true;
+  }
+
+  function applyPendingDeltas() {
+    if (store.pendingDeltas.size === 0) return;
+    for (const [partID, delta] of store.pendingDeltas) {
+      const messageID = partOwner.get(partID);
+      if (messageID === undefined) continue;
+      const record = store.messages.get(messageID);
+      const part = record === undefined ? undefined : record.parts.get(partID);
+      if (part === undefined || part.sealed === true) continue;
+      const data = partDataOf(part);
+      data.text = (typeof data.text === "string" ? data.text : "") + delta;
+      part.version += 1;
+      dirtyParts.add(partID);
+    }
+    store.pendingDeltas.clear();
+  }
+
+  function syncMessageOrder() {
+    if (messagesEl === null) return;
+    const desired = [];
+    for (const id of store.order) {
+      const node = messageNodes.get(id);
+      if (node !== undefined && node.parentNode === messagesEl) desired.push(node);
+    }
+    const current = Array.from(messagesEl.children).filter((child) =>
+      child.classList.contains("message"),
+    );
+    if (
+      current.length === desired.length &&
+      current.every((node, index) => node === desired[index])
+    ) {
+      return;
+    }
+    for (const child of Array.from(messagesEl.children)) {
+      if (!child.classList.contains("message")) child.remove();
+    }
+    for (const node of desired) messagesEl.append(node);
+  }
+
+  function renderDirty(full, force) {
+    const throttled = new Set();
+    if (full) {
+      const wanted = new Set(store.order);
+      for (const [id, node] of messageNodes) {
+        if (!wanted.has(id)) {
+          node.remove();
+          messageNodes.delete(id);
+        }
+      }
+      for (const [key, node] of partNodes) {
+        const separator = key.indexOf(":");
+        const messageID = separator < 0 ? "" : key.slice(0, separator);
+        if (wanted.has(messageID)) continue;
+        node.remove();
+        partNodes.delete(key);
+        partRenderState.delete(key);
+      }
+      for (const id of store.order) {
+        const record = store.messages.get(id);
+        if (record === undefined) continue;
+        const validParts = new Set(record.partOrder);
+        for (const [key, node] of partNodes) {
+          if (!key.startsWith(`${id}:`)) continue;
+          const partID = key.slice(id.length + 1);
+          if (validParts.has(partID)) continue;
+          node.remove();
+          partNodes.delete(key);
+          partRenderState.delete(key);
+          partOwner.delete(partID);
+        }
+        const node = ensureMessageNode(record);
+        if (node === null) continue;
+        for (const partID of record.partOrder) {
+          const part = record.parts.get(partID);
+          if (part === undefined) continue;
+          if (!ensurePartNode(record, part, force)) throttled.add(partID);
+        }
+        syncPartOrder(record, node);
+      }
+    } else {
+      const rendered = new Set();
+      for (const id of dirtyMessages) {
+        const record = store.messages.get(id);
+        if (record === undefined) continue;
+        const node = ensureMessageNode(record);
+        if (node === null) continue;
+        for (const partID of record.partOrder) {
+          const part = record.parts.get(partID);
+          if (part === undefined) continue;
+          if (!ensurePartNode(record, part, force)) throttled.add(partID);
+          rendered.add(partID);
+        }
+        syncPartOrder(record, node);
+      }
+      for (const partID of dirtyParts) {
+        if (rendered.has(partID)) continue;
+        const messageID = partOwner.get(partID);
+        if (messageID === undefined) continue;
+        const record = store.messages.get(messageID);
+        if (record === undefined) continue;
+        const part = record.parts.get(partID);
+        if (part === undefined) continue;
+        const node = ensureMessageNode(record);
+        if (node === null) continue;
+        if (!ensurePartNode(record, part, force)) throttled.add(partID);
+        syncPartOrder(record, node);
+      }
+    }
+    if (full || orderDirty) syncMessageOrder();
+    if (messagesEl !== null) {
+      const messages = messagesEl.querySelectorAll(".message");
+      if (messages.length === 0 && store.order.length === 0) {
+        messagesEl.replaceChildren(emptyThread());
+      } else if (messages.length > 0) {
+        for (const child of Array.from(messagesEl.children)) {
+          if (!child.classList.contains("message")) child.remove();
+        }
+      }
+    }
+    return throttled;
   }
 
   function isAtBottom() {
@@ -850,44 +2788,95 @@
     return scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight < 80;
   }
 
-  function renderMessages(options) {
-    if (messagesEl === null || scrollEl === null) return;
-    messagesEl.removeAttribute("aria-busy");
-    const previous = options.previousScroll;
-    const previousCount = options.previousCount;
-    const openTools = new Set(
-      [...messagesEl.querySelectorAll("details[data-tool-key][open]")].map(
-        (node) => node.dataset.toolKey,
-      ),
-    );
-    const sequence = ++renderSequence;
-    messagesEl.replaceChildren();
-    if (messages.length === 0) {
-      messagesEl.append(emptyThread());
-    } else {
-      messages.forEach((message, index) => {
-        const node = renderMessage(message, index);
-        if (node.childNodes.length > 1) messagesEl.append(node);
-      });
-    }
-    if (sequence === renderSequence && openTools.size > 0) {
-      for (const node of messagesEl.querySelectorAll("details[data-tool-key]")) {
-        if (openTools.has(node.dataset.toolKey)) node.open = true;
+  function captureScrollAnchor() {
+    if (scrollEl === null || isAtBottom()) return null;
+    const top = scrollEl.getBoundingClientRect().top;
+    for (const id of store.order) {
+      const record = store.messages.get(id);
+      if (record === undefined) continue;
+      for (const partID of record.partOrder) {
+        const node = partNodes.get(`${id}:${partID}`);
+        if (node === undefined) continue;
+        const rect = node.getBoundingClientRect();
+        if (rect.bottom > top + 1) return { messageID: id, partID, offset: rect.top - top };
       }
+      const messageNode = messageNodes.get(id);
+      if (messageNode === undefined) continue;
+      const rect = messageNode.getBoundingClientRect();
+      if (rect.bottom > top + 1) return { messageID: id, partID: null, offset: rect.top - top };
     }
-    if (countEl !== null) {
-      countEl.textContent = plural(messages.length, "message");
+    return null;
+  }
+
+  function restoreScrollAnchor(anchor) {
+    if (anchor === null || scrollEl === null) return;
+    const node =
+      anchor.partID === null
+        ? messageNodes.get(anchor.messageID)
+        : partNodes.get(`${anchor.messageID}:${anchor.partID}`);
+    if (node === undefined) return;
+    const top = node.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top;
+    scrollEl.scrollTop += top - anchor.offset;
+  }
+
+  function scheduleFlush() {
+    if (document.hidden) {
+      flushPending = true;
+      return;
     }
-    if (options.initial || options.forceBottom || options.atBottom) {
-      scrollEl.scrollTop = scrollEl.scrollHeight;
-      stickToBottom = true;
+    if (flushHandle !== null) return;
+    flushHandle = window.requestAnimationFrame(() => {
+      flushHandle = null;
+      flushFrame({});
+    });
+  }
+
+  function scheduleFlushAt(delay) {
+    if (flushTimer !== null) return;
+    flushTimer = window.setTimeout(() => {
+      flushTimer = null;
+      scheduleFlush();
+    }, delay);
+  }
+
+  function flushFrame(options) {
+    if (messagesEl === null) return;
+    if (document.hidden) {
+      flushPending = true;
+      return;
+    }
+    const settings = options || {};
+    const force = forceFinalRender;
+    forceFinalRender = false;
+    applyPendingDeltas();
+    updateWorkingStatus();
+    const atBottom = isAtBottom();
+    const anchor = atBottom ? null : captureScrollAnchor();
+    const previousCount = lastRenderedCount;
+    const full = settings.full === true;
+    if (full) markAllDirty();
+    const throttled = renderDirty(full, force);
+    messagesEl.removeAttribute("aria-busy");
+    const count = store.order.length;
+    if (countEl !== null && (count !== previousCount || settings.full === true)) {
+      countEl.textContent = plural(count, "message");
+    }
+    if (settings.forceBottom === true || atBottom) {
+      if (scrollEl !== null) scrollEl.scrollTop = scrollEl.scrollHeight;
       if (newMessages !== null) newMessages.hidden = true;
     } else {
-      scrollEl.scrollTop = previous;
-      if (messages.length > previousCount && newMessages !== null) {
-        newMessages.hidden = false;
-      }
+      restoreScrollAnchor(anchor);
+      if (count > previousCount && newMessages !== null) newMessages.hidden = false;
     }
+    lastRenderedCount = count;
+    dirtyMessages = new Set();
+    if (throttled.size > 0) {
+      dirtyParts = throttled;
+      scheduleFlushAt(MARKDOWN_THROTTLE_MS);
+    } else {
+      dirtyParts = new Set();
+    }
+    orderDirty = false;
   }
 
   function closeStream() {
@@ -895,17 +2884,14 @@
       eventSource.close();
       eventSource = null;
     }
-    if (reloadTimer !== null) {
-      window.clearTimeout(reloadTimer);
-      reloadTimer = null;
+    if (reconcileTimer !== null) {
+      window.clearTimeout(reconcileTimer);
+      reconcileTimer = null;
     }
-  }
-
-  function scheduleReload() {
-    if (reloadTimer !== null) window.clearTimeout(reloadTimer);
-    reloadTimer = window.setTimeout(() => {
-      loadMessages({ silent: true, atBottom: isAtBottom() }).catch(() => {});
-    }, 300);
+    if (idleReconcileTimer !== null) {
+      window.clearTimeout(idleReconcileTimer);
+      idleReconcileTimer = null;
+    }
   }
 
   function subscribe() {
@@ -942,17 +2928,484 @@
     };
   }
 
+  function scheduleReconcile(delay) {
+    if (reconcileTimer !== null) return;
+    reconcileTimer = window.setTimeout(() => {
+      reconcileTimer = null;
+      hydrateMessages({ reason: "reconcile", silent: true }).catch(() => {});
+    }, delay === undefined ? RECONCILE_MS : delay);
+  }
+
+  function scheduleIdleReconcile() {
+    if (idleReconcileTimer !== null) window.clearTimeout(idleReconcileTimer);
+    idleReconcileTimer = window.setTimeout(() => {
+      idleReconcileTimer = null;
+      hydrateMessages({ reason: "idle", silent: true }).catch(() => {});
+    }, IDLE_RECONCILE_MS);
+  }
+
+  function requestFollowUpHydration() {
+    followUpHydration = true;
+    if (currentStatusType() !== "busy" && currentStatusType() !== "retry") {
+      followUpHydration = false;
+      scheduleReconcile(200);
+    }
+  }
+
+  function sealAllParts() {
+    for (const id of store.order) {
+      const record = store.messages.get(id);
+      if (record === undefined) continue;
+      for (const partID of record.partOrder) {
+        const part = record.parts.get(partID);
+        if (part === undefined) continue;
+        part.sealed = true;
+        dirtyParts.add(partID);
+        dirtyMessages.add(id);
+      }
+    }
+    forceFinalRender = true;
+    scheduleFlush();
+  }
+
+  function ensureLiveMessage(id, role) {
+    let record = store.messages.get(id);
+    let created = false;
+    if (record === undefined) {
+      record = {
+        id,
+        role,
+        partOrder: [],
+        parts: new Map(),
+        version: 1,
+      };
+      store.messages.set(id, record);
+      store.order.push(id);
+      created = true;
+      orderDirty = true;
+    } else if (record.role !== role) {
+      record.role = role;
+      record.version += 1;
+    }
+    dirtyMessages.add(id);
+    return { record, created };
+  }
+
+  function ensurePartMessage(id) {
+    let record = store.messages.get(id);
+    if (record === undefined) {
+      record = ensureLiveMessage(id, "assistant").record;
+    } else {
+      dirtyMessages.add(id);
+    }
+    return record;
+  }
+
+  function sameOmoMeta(left, right) {
+    if (left === right) return true;
+    if (left === undefined || right === undefined || left === null || right === null) return false;
+    if (
+      left.kind !== right.kind ||
+      left.tone !== right.tone ||
+      left.title !== right.title ||
+      left.body !== right.body
+    ) {
+      return false;
+    }
+    const leftHeaders = Array.isArray(left.headers) ? left.headers : [];
+    const rightHeaders = Array.isArray(right.headers) ? right.headers : [];
+    return (
+      leftHeaders.length === rightHeaders.length &&
+      leftHeaders.every((header, index) => header === rightHeaders[index])
+    );
+  }
+
+  function clearOmoClassifyTimer(id) {
+    const timer = omoClassifyTimers.get(id);
+    if (timer !== undefined) {
+      window.clearTimeout(timer);
+      omoClassifyTimers.delete(id);
+    }
+  }
+
+  function clearAllOmoClassifyTimers() {
+    for (const timer of omoClassifyTimers.values()) window.clearTimeout(timer);
+    omoClassifyTimers.clear();
+  }
+
+  function markOptimisticOperator(record) {
+    clearOmoClassifyTimer(record.id);
+    delete record.classificationPending;
+    delete record.system;
+  }
+
+  function classifyLiveUserMessage(record) {
+    if (record === undefined || record.role !== "user") return;
+    clearOmoClassifyTimer(record.id);
+    if (isOptimisticRecord(record)) {
+      markOptimisticOperator(record);
+      return;
+    }
+    const parts = [];
+    for (const partID of record.partOrder) {
+      const part = record.parts.get(partID);
+      if (part === undefined) continue;
+      const data = partDataOf(part);
+      parts.push({ ...data, id: part.id, type: part.type });
+    }
+    const system = classifyOmo({ info: { id: record.id, role: "user" }, parts });
+    let changed = false;
+    if (system === null) {
+      if (record.system !== undefined) {
+        delete record.system;
+        changed = true;
+      }
+    } else if (!sameOmoMeta(record.system, system)) {
+      record.system = system;
+      changed = true;
+    }
+    if (record.classificationPending === true) {
+      delete record.classificationPending;
+      changed = true;
+    }
+    if (changed) {
+      record.version += 1;
+      dirtyMessages.add(record.id);
+    }
+    recomputeQueue();
+    scheduleFlush();
+  }
+
+  function scheduleUserClassification(record) {
+    if (record === undefined || record.role !== "user") return;
+    if (isOptimisticRecord(record)) {
+      markOptimisticOperator(record);
+      return;
+    }
+    clearOmoClassifyTimer(record.id);
+    if (!hasCompleteTextSnapshot(record)) return;
+    const id = record.id;
+    const timer = window.setTimeout(() => {
+      omoClassifyTimers.delete(id);
+      classifyLiveUserMessage(store.messages.get(id));
+    }, OMO_CLASSIFY_QUIET_MS);
+    omoClassifyTimers.set(id, timer);
+  }
+
+  function flushPendingUserClassifications() {
+    clearAllOmoClassifyTimers();
+    for (const id of [...store.order]) {
+      const record = store.messages.get(id);
+      if (record === undefined || record.role !== "user") continue;
+      if (record.classificationPending !== true) continue;
+      classifyLiveUserMessage(record);
+    }
+  }
+
+  function applyAgentStatus(payload) {
+    if (typeof payload.sessionID !== "string") return;
+    if (payload.sessionID !== sessionId) {
+      let runtime = sessionRuntime.get(payload.sessionID);
+      if (runtime === undefined) {
+        runtime = {};
+        sessionRuntime.set(payload.sessionID, runtime);
+      }
+      runtime.agentStatus = payload.status;
+      return;
+    }
+    const previous = currentStatusType();
+    const next = payload.status && typeof payload.status === "object" ? payload.status : null;
+    const nextType = next !== null && typeof next.type === "string" ? next.type : undefined;
+    if (nextType !== previous && (nextType === "busy" || nextType === "idle")) {
+      store.turnGeneration += 1;
+    }
+    store.agentStatus = next;
+    if (nextType === "idle") {
+      flushPendingUserClassifications();
+      sealAllParts();
+      recomputeQueue();
+      if (followUpHydration) {
+        followUpHydration = false;
+      }
+      scheduleIdleReconcile();
+    } else {
+      recomputeQueue();
+      updateWorkingStatus();
+    }
+    scheduleFlush();
+  }
+
+  function bufferHydrationEvent(payload) {
+    if (!hydrating || hydrationBuffer === null) return false;
+    const type = payload.type;
+    if (
+      type !== "message.updated" &&
+      type !== "message.part.updated" &&
+      type !== "message.part.delta" &&
+      type !== "message.part.omitted" &&
+      type !== "session.status"
+    ) {
+      return false;
+    }
+    if (typeof payload.sessionID === "string" && payload.sessionID !== sessionId) return false;
+    let size = 0;
+    try {
+      size = JSON.stringify(payload).length * 2;
+    } catch (error) {
+      void error;
+    }
+    if (
+      hydrationBuffer.events.length >= HYDRATION_BUFFER_EVENTS ||
+      hydrationBuffer.bytes + size > HYDRATION_BUFFER_BYTES
+    ) {
+      hydrationBuffer.overflow = true;
+      hydrationBuffer.contentDiscarded = true;
+      return true;
+    }
+    hydrationBuffer.events.push(payload);
+    hydrationBuffer.bytes += size;
+    if (type !== "session.status") hydrationBuffer.contentDiscarded = true;
+    return true;
+  }
+
+  function handleStreamReady(payload) {
+    const streamID = typeof payload.streamID === "string" ? payload.streamID : null;
+    const changed = streamID !== null && streamID !== store.currentStreamID;
+    if (streamID !== null) {
+      store.currentStreamID = streamID;
+      store.lastSeqByStream = new Map([[streamID, 0]]);
+    }
+    if (hasStreamReady) announce("Reconnected.");
+    hasStreamReady = true;
+    setLive("Live", "live");
+    hydrate({ reconnect: true }).catch(() => {});
+    hydrateMessages({ reason: changed ? "reconnect" : "ready", silent: true }).catch(() => {});
+  }
+
+  function envelopeAccepted(payload) {
+    const streamID = typeof payload.streamID === "string" ? payload.streamID : null;
+    const seq = typeof payload.seq === "number" ? payload.seq : null;
+    if (streamID !== null) {
+      if (store.currentStreamID !== streamID) {
+        store.currentStreamID = streamID;
+        store.lastSeqByStream = new Map([[streamID, 0]]);
+        scheduleReconcile(RECONCILE_MS);
+      }
+      if (seq !== null) {
+        const last = store.lastSeqByStream.get(streamID) || 0;
+        if (seq <= last) return false;
+        if (last > 0 && seq > last + 1) scheduleReconcile(RECONCILE_MS);
+        store.lastSeqByStream.set(streamID, seq);
+      }
+    }
+    return true;
+  }
+
   function handleStreamEvent(payload) {
     if (payload === null || typeof payload !== "object") return;
     const type = payload.type;
     if (type === "stream.ready") {
-      const reconnect = hasStreamReady;
-      hasStreamReady = true;
-      setLive("Live", "live");
-      hydrate({ reconnect });
+      handleStreamReady(payload);
       return;
     }
-    if (type === "stream.warning") return;
+    if (!envelopeAccepted(payload)) return;
+
+    if (type === "stream.warning") {
+      announce("Live updates were interrupted; refreshing.");
+      scheduleReconcile(RECONCILE_MS);
+      return;
+    }
+
+    if (type === "message.updated") {
+      if (bufferHydrationEvent(payload)) return;
+      if (typeof payload.messageID !== "string") return;
+      if (typeof payload.sessionID === "string" && payload.sessionID !== sessionId) return;
+      if (payload.role === "user" && bufferPre202(payload)) return;
+      const role = payload.role === "user" ? "user" : "assistant";
+      const existing = store.messages.get(payload.messageID);
+      const wasUser = existing !== undefined && existing.role === "user";
+      const { record } = ensureLiveMessage(payload.messageID, role);
+      record.role = role;
+      if (role === "user") {
+        if (isOptimisticRecord(record)) markOptimisticOperator(record);
+        else if (existing === undefined || !wasUser) {
+          record.classificationPending = true;
+          scheduleUserClassification(record);
+        }
+      }
+      if (typeof payload.parentID === "string") record.parentID = payload.parentID;
+      if (typeof payload.finish === "string") record.finish = payload.finish;
+      if (payload.time && typeof payload.time === "object") record.time = payload.time;
+      record.version += 1;
+      recomputeQueue();
+      scheduleFlush();
+      return;
+    }
+
+    if (type === "message.part.updated") {
+      if (bufferHydrationEvent(payload)) return;
+      if (typeof payload.messageID !== "string" || typeof payload.partID !== "string") return;
+      if (typeof payload.sessionID === "string" && payload.sessionID !== sessionId) return;
+      if (bufferPre202(payload)) return;
+      const partType =
+        typeof payload.partType === "string"
+          ? payload.partType
+          : payload.part && typeof payload.part.type === "string"
+            ? payload.part.type
+            : "text";
+      const record = ensurePartMessage(payload.messageID);
+      if (record.role === "user" && partType === "text") {
+        const placeholder = userPlaceholderPartID(record);
+        if (placeholder !== null && placeholder !== payload.partID) {
+          const replacement = record.parts.get(placeholder);
+          if (replacement !== undefined) {
+            record.parts.delete(placeholder);
+            record.parts.set(payload.partID, replacement);
+            record.partOrder = record.partOrder.map((partID) =>
+              partID === placeholder ? payload.partID : partID,
+            );
+            renamePartKey(record.id, placeholder, payload.partID);
+          }
+        }
+      }
+      const data =
+        payload.part && typeof payload.part === "object" ? { ...payload.part } : { id: payload.partID };
+      data.id = payload.partID;
+      data.type = partType;
+      let part = record.parts.get(payload.partID);
+      if (part === undefined) {
+        part = {
+          id: payload.partID,
+          type: partType,
+          data,
+          provisional: false,
+          partial: payload.truncated !== undefined,
+          sealed: false,
+          version: 1,
+        };
+        record.parts.set(payload.partID, part);
+        record.partOrder.push(payload.partID);
+        partOwner.set(payload.partID, record.id);
+        orderDirty = true;
+      } else {
+        part.id = payload.partID;
+        part.type = partType;
+        part.data = data;
+        part.version += 1;
+        part.provisional = false;
+      }
+      if (payload.truncated !== undefined) part.partial = true;
+      store.pendingDeltas.delete(payload.partID);
+      if (!KNOWN_PART_TYPES.has(partType)) {
+        record.needsReconcile = true;
+        scheduleReconcile(RECONCILE_MS);
+      }
+      if (record.role === "user") scheduleUserClassification(record);
+      dirtyMessages.add(record.id);
+      dirtyParts.add(payload.partID);
+      recomputeQueue();
+      scheduleFlush();
+      return;
+    }
+
+    if (type === "message.part.delta") {
+      if (bufferHydrationEvent(payload)) return;
+      if (
+        typeof payload.messageID !== "string" ||
+        typeof payload.partID !== "string" ||
+        typeof payload.delta !== "string" ||
+        payload.delta.length === 0
+      ) {
+        return;
+      }
+      if (typeof payload.sessionID === "string" && payload.sessionID !== sessionId) return;
+      if (bufferPre202(payload)) return;
+      const record = ensurePartMessage(payload.messageID);
+      if (record.role === "user" && userPlaceholderPartID(record) !== null) return;
+      let part = record.parts.get(payload.partID);
+      if (part === undefined) {
+        part = {
+          id: payload.partID,
+          type: "text",
+          data: { id: payload.partID, type: "text", text: "", provisional: true },
+          provisional: true,
+          partial: false,
+          sealed: false,
+          version: 1,
+        };
+        record.parts.set(payload.partID, part);
+        record.partOrder.push(payload.partID);
+        partOwner.set(payload.partID, record.id);
+        orderDirty = true;
+      }
+      if (part.sealed === true) return;
+      if (record.role === "user" && part.provisional === true) return;
+      const queued = store.pendingDeltas.get(payload.partID) || "";
+      store.pendingDeltas.set(payload.partID, queued + payload.delta);
+      dirtyMessages.add(record.id);
+      dirtyParts.add(payload.partID);
+      scheduleFlush();
+      return;
+    }
+
+    if (type === "message.part.omitted") {
+      if (bufferHydrationEvent(payload)) return;
+      if (typeof payload.messageID !== "string" || typeof payload.partID !== "string") return;
+      if (typeof payload.sessionID === "string" && payload.sessionID !== sessionId) return;
+      if (bufferPre202(payload)) return;
+      const record = ensurePartMessage(payload.messageID);
+      let part = record.parts.get(payload.partID);
+      if (part === undefined) {
+        const partType = typeof payload.partType === "string" ? payload.partType : "text";
+        part = {
+          id: payload.partID,
+          type: partType,
+          data: {
+            id: payload.partID,
+            type: partType,
+            text: "",
+            provisional: partType === "text",
+          },
+          provisional: partType === "text",
+          partial: true,
+          sealed: false,
+          version: 1,
+        };
+        record.parts.set(payload.partID, part);
+        record.partOrder.push(payload.partID);
+        partOwner.set(payload.partID, record.id);
+        orderDirty = true;
+      }
+      part.partial = true;
+      omittedPartIDs.add(payload.partID);
+      for (const entry of prompts.values()) {
+        if (!isCorrelatedQuestion(entry)) continue;
+        if (entry.request.tool.callID === payload.partID) {
+          inlineUnavailable.add(questionCorrelationKey(entry.request));
+        }
+      }
+      record.needsReconcile = true;
+      dirtyMessages.add(record.id);
+      dirtyParts.add(payload.partID);
+      scheduleReconcile(RECONCILE_MS);
+      scheduleFlush();
+      if (payload.sessionID === sessionId) refreshInlineQuestions();
+      return;
+    }
+
+    if (type === "session.status") {
+      if (bufferHydrationEvent(payload)) return;
+      applyAgentStatus(payload);
+      return;
+    }
+
+    if (type === "session.activity") {
+      if (typeof payload.sessionID === "string" && payload.sessionID !== sessionId) return;
+      const cause = payload.cause;
+      if (cause === "message" || cause === "status") return;
+      scheduleReconcile(RECONCILE_MS);
+      return;
+    }
 
     if (type === "question.asked" || type === "permission.asked") {
       promptEventSeq += 1;
@@ -963,10 +3416,23 @@
       const key = requestKey(request);
       tombstones.delete(key);
       const kind = type === "question.asked" ? "question" : "permission";
+      if (kind === "question") {
+        promptOutcomes.delete(key);
+        if (validToolRef(request)) {
+          const correlationKey = questionCorrelationKey(request);
+          if (omittedPartIDs.has(request.tool.callID)) {
+            inlineUnavailable.add(correlationKey);
+          } else {
+            inlineUnavailable.delete(correlationKey);
+          }
+          correlationQuestionKeys.set(correlationKey, key);
+        }
+      }
       if (!prompts.has(key)) promptSeen.set(key, Date.now());
       prompts.set(key, { key, kind, request });
       if (request.sessionID === sessionId) {
         renderPromptDock();
+        refreshInlineQuestions();
         announce(kind === "question" ? "The agent has a question." : "The agent needs permission.");
       }
       syncComposer();
@@ -979,14 +3445,36 @@
       promptEventLog.push({ seq: promptEventSeq, event: payload });
       if (promptEventLog.length > 100) promptEventLog.shift();
       const key = `${payload.source}:${payload.requestID}`;
-      const wasOpen = prompts.has(key) && !promptBusy.has(key);
+      if (promptBusy.has(key)) return;
+      const existingOutcome = promptOutcomes.get(key);
+      if (existingOutcome !== undefined && existingOutcome.local === true) return;
+      const wasOpen = prompts.has(key);
+      const closedEntry = prompts.get(key);
+      if (type === "question.rejected") {
+        recordQuestionOutcome(key, {
+          kind: "dismissed",
+          answers: null,
+          questions: closedEntry === undefined ? undefined : closedEntry.request.questions,
+        });
+      } else {
+        recordQuestionOutcome(key, {
+          kind: "answered",
+          elsewhere: true,
+          answers: null,
+          questions: closedEntry === undefined ? undefined : closedEntry.request.questions,
+        });
+      }
       recordTombstone(key);
       prompts.delete(key);
       if (wasOpen) {
-        announce("Answered elsewhere.");
-        showToast("Answered elsewhere.", "success");
+        const message = type === "question.rejected" ? "Question dismissed." : "Answered elsewhere.";
+        announce(message);
+        showToast(message, "success");
       }
-      if (payload.sessionID === sessionId) renderPromptDock();
+      if (payload.sessionID === sessionId) {
+        renderPromptDock();
+        refreshInlineQuestions();
+      }
       syncComposer();
       renderQueue();
       return;
@@ -1023,10 +3511,6 @@
       }
       return;
     }
-
-    if (type === "session.activity" && payload.sessionID === sessionId) {
-      scheduleReload();
-    }
   }
 
   function replayPromptEvents(startSeq) {
@@ -1051,6 +3535,24 @@
         payload.type === "permission.replied"
       ) {
         const key = `${payload.source}:${payload.requestID}`;
+        const existingOutcome = promptOutcomes.get(key);
+        const closedEntry = prompts.get(key);
+        if (existingOutcome === undefined || existingOutcome.local !== true) {
+          if (payload.type === "question.rejected") {
+            recordQuestionOutcome(key, {
+              kind: "dismissed",
+              answers: null,
+              questions: closedEntry === undefined ? undefined : closedEntry.request.questions,
+            });
+          } else if (payload.type === "question.replied") {
+            recordQuestionOutcome(key, {
+              kind: "answered",
+              elsewhere: true,
+              answers: null,
+              questions: closedEntry === undefined ? undefined : closedEntry.request.questions,
+            });
+          }
+        }
         recordTombstone(key);
         prompts.delete(key);
       }
@@ -1097,10 +3599,44 @@
       }
       promptHydrationRetried = false;
       promptStale = false;
+      const previousCorrelated = new Map();
+      for (const entry of prompts.values()) {
+        if (isCorrelatedQuestion(entry)) {
+          previousCorrelated.set(entry.key, {
+            correlationKey: questionCorrelationKey(entry.request),
+            questions: entry.request.questions,
+          });
+        }
+      }
       prompts.clear();
       for (const [key, value] of next) prompts.set(key, value);
+      for (const [key, previous] of previousCorrelated) {
+        if (next.has(key) || tombstones.has(key) || promptOutcomes.has(key)) continue;
+        const partInfo = findQuestionPartByCorrelation(previous.correlationKey);
+        if (partInfo !== null && isTerminalQuestionPart(partInfo.part)) continue;
+        recordQuestionOutcome(key, {
+          kind: "expired",
+          reason: "Request no longer pending",
+          questions: previous.questions,
+        });
+      }
+      for (const entry of next.values()) {
+        if (!isCorrelatedQuestion(entry)) continue;
+        const correlationKey = questionCorrelationKey(entry.request);
+        correlationQuestionKeys.set(correlationKey, entry.key);
+        if (entry.request.sessionID !== sessionId) continue;
+        const partInfo = findQuestionPartForEntry(entry);
+        if (partInfo !== null) {
+          inlineUnavailable.delete(correlationKey);
+        } else if (messagesHydratedSession === sessionId && !hydrating) {
+          inlineUnavailable.add(correlationKey);
+        } else {
+          deferredUnavailable.add(correlationKey);
+        }
+      }
       applyPolicyWarnings(Array.isArray(data.warnings) ? data.warnings : []);
       renderPromptDock();
+      refreshInlineQuestions();
       renderQueue();
       syncComposer();
     } else {
@@ -1110,6 +3646,7 @@
         promptDock.hidden = false;
         renderPromptDock();
       }
+      refreshInlineQuestions();
     }
 
     if (savedResult.status === "fulfilled") {
@@ -1118,9 +3655,6 @@
 
     if (sessionId !== null) {
       await loadTodo(sessionId).catch(() => {});
-    }
-    if (settings.reconnect === true) {
-      loadMessages({ silent: true }).catch(() => {});
     }
   }
 
@@ -1132,6 +3666,7 @@
         answers: entry.request.questions.map(() => []),
         custom: entry.request.questions.map(() => ""),
         confirm: null,
+        composing: false,
       };
       promptDrafts.set(entry.key, draft);
     }
@@ -1192,21 +3727,57 @@
     return empty ? "Send without answering" : error ? "Try again" : "Send answer";
   }
 
-  function syncQuestionChrome(entry, draft) {
-    if (promptDock === null) return;
-    const primary = promptDock.querySelector("[data-prompt-primary]");
-    if (primary !== null && !promptBusy.has(entry.key)) {
-      primary.textContent = primaryActionLabel(entry, draft);
+  function questionPanelId(controller) {
+    return controller.prefix.length > 0 ? `${controller.prefix}panel` : "chat-prompt-panel";
+  }
+
+  function questionHeadingId(controller) {
+    return controller.prefix.length > 0 ? `${controller.prefix}title` : "chat-prompt-title";
+  }
+
+  function questionOptionName(controller, index) {
+    return controller.prefix.length > 0
+      ? `${controller.prefix}option-${index}`
+      : `prompt-option-${index}`;
+  }
+
+  function questionCustomId(controller, index) {
+    return controller.prefix.length > 0
+      ? `${controller.prefix}custom-${index}`
+      : `prompt-custom-${index}`;
+  }
+
+  function questionController(entry, options) {
+    return {
+      entry,
+      scope: options.scope,
+      prefix: options.prefix || "",
+      inline: options.inline === true,
+      correlationKey: options.correlationKey,
+      rerender: options.rerender,
+    };
+  }
+
+  function promptsAreStale() {
+    return promptStale || (liveEl !== null && liveEl.dataset.state === "paused");
+  }
+
+  function syncQuestionChrome(controller, draft) {
+    const scope = controller.scope;
+    if (!(scope instanceof HTMLElement)) return;
+    const primary = scope.querySelector("[data-prompt-primary]");
+    if (primary !== null && !promptBusy.has(controller.entry.key)) {
+      primary.textContent = primaryActionLabel(controller.entry, draft);
     }
-    const reviewTab = promptDock.querySelector("[data-prompt-review-tab]");
+    const reviewTab = scope.querySelector("[data-prompt-review-tab]");
     if (reviewTab !== null) {
-      const left = unresolvedQuestions(entry, draft);
+      const left = unresolvedQuestions(controller.entry, draft);
       reviewTab.replaceChildren(
         document.createTextNode(left > 0 ? `Review · ${left} left` : "Review"),
       );
     }
-    entry.request.questions.forEach((_, index) => {
-      const tab = promptDock.querySelector(`[data-prompt-tab="${index}"]`);
+    controller.entry.request.questions.forEach((_, index) => {
+      const tab = scope.querySelector(`[data-prompt-tab="${index}"]`);
       if (tab === null) return;
       const answered = questionAnswered(draft, index);
       const check = tab.querySelector(".icon");
@@ -1215,14 +3786,107 @@
     });
   }
 
-  function focusOption(index, label) {
-    if (promptDock === null) return;
-    for (const input of promptDock.querySelectorAll(`input[name="prompt-option-${index}"]`)) {
+  function focusOption(controller, index, label) {
+    const scope = controller.scope;
+    if (!(scope instanceof HTMLElement)) return;
+    for (const input of scope.querySelectorAll(`input[data-prompt-option-index="${index}"]`)) {
       if (input instanceof HTMLInputElement && input.value === label) {
         input.focus();
         return;
       }
     }
+  }
+
+  function patchQuestionSelections(controller, draft, index) {
+    const scope = controller.scope;
+    if (!(scope instanceof HTMLElement)) return;
+    for (const input of scope.querySelectorAll(`input[data-prompt-option-index="${index}"]`)) {
+      if (input instanceof HTMLInputElement) {
+        input.checked = draft.answers[index].includes(input.value);
+      }
+    }
+    const custom = scope.querySelector(`input[data-prompt-custom="${index}"]`);
+    if (custom instanceof HTMLInputElement && custom.value !== draft.custom[index]) {
+      custom.value = draft.custom[index] || "";
+    }
+    syncQuestionChrome(controller, draft);
+  }
+
+  function focusQuestionHeading(controller) {
+    const scope = controller.scope;
+    if (!(scope instanceof HTMLElement)) return;
+    const heading = scope.querySelector("[data-question-heading]");
+    if (heading instanceof HTMLElement) heading.focus();
+  }
+
+  function focusQuestionStep(controller, index, isReview) {
+    const scope = controller.scope;
+    if (!(scope instanceof HTMLElement)) return;
+    if (isReview) {
+      const primary = scope.querySelector("[data-prompt-primary]");
+      if (primary instanceof HTMLElement) {
+        primary.focus();
+        return;
+      }
+      const reviewTab = scope.querySelector("[data-prompt-review-tab]");
+      if (reviewTab instanceof HTMLElement) {
+        reviewTab.focus();
+        return;
+      }
+      focusQuestionHeading(controller);
+      return;
+    }
+    const field = scope.querySelector(`[data-prompt-field="${index}"]`);
+    const target =
+      field instanceof HTMLElement
+        ? field.querySelector("input, textarea")
+        : scope.querySelector(`[data-prompt-tab="${index}"]`);
+    if (target instanceof HTMLElement) target.focus();
+    else focusQuestionHeading(controller);
+  }
+
+  function captureQuestionFocus(card) {
+    const active = document.activeElement;
+    if (!(active instanceof HTMLElement) || !card.contains(active)) return null;
+    if (active.dataset.promptTab !== undefined) {
+      return { kind: "tab", index: active.dataset.promptTab };
+    }
+    if (active.dataset.promptReviewTab !== undefined) return { kind: "review" };
+    if (active.dataset.promptCustom !== undefined) {
+      return { kind: "custom", index: active.dataset.promptCustom };
+    }
+    if (active.dataset.promptOptionIndex !== undefined) {
+      return {
+        kind: "option",
+        index: active.dataset.promptOptionIndex,
+        value: active.value,
+      };
+    }
+    if (active.dataset.promptPrimary !== undefined) return { kind: "primary" };
+    return { kind: "any" };
+  }
+
+  function restoreQuestionFocus(card, saved) {
+    let target = null;
+    if (saved.kind === "tab") {
+      target = card.querySelector(`[data-prompt-tab="${saved.index}"]`);
+    } else if (saved.kind === "review") {
+      target = card.querySelector("[data-prompt-review-tab]");
+    } else if (saved.kind === "custom") {
+      target = card.querySelector(`[data-prompt-custom="${saved.index}"]`);
+    } else if (saved.kind === "option") {
+      for (const input of card.querySelectorAll(
+        `input[data-prompt-option-index="${saved.index}"]`,
+      )) {
+        if (input instanceof HTMLInputElement && input.value === saved.value) {
+          target = input;
+          break;
+        }
+      }
+    } else if (saved.kind === "primary") {
+      target = card.querySelector("[data-prompt-primary]");
+    }
+    if (target instanceof HTMLElement) target.focus();
   }
 
   function focusComposer() {
@@ -1237,6 +3901,75 @@
     const target = promptDock.querySelector("h2, h3, button, input, textarea");
     if (target instanceof HTMLElement) target.focus();
     else focusComposer();
+  }
+
+  function focusQuestionEntry(entry) {
+    if (!isCorrelatedQuestion(entry)) {
+      focusDock();
+      return;
+    }
+    const card = cardForQuestionEntry(entry);
+    if (!(card instanceof HTMLElement)) {
+      focusRequestFallback();
+      return;
+    }
+    card.scrollIntoView({ block: "nearest" });
+    const target = card.querySelector("[data-question-heading], input, textarea, button");
+    if (target instanceof HTMLElement) target.focus();
+    else focusComposer();
+  }
+
+  function focusRequestFallback() {
+    if (activeDockEntries().length > 0) focusDock();
+    else focusComposer();
+  }
+
+  function focusRequest() {
+    const entries = activePromptEntries();
+    const inline = entries.find((entry) => isCorrelatedQuestion(entry));
+    if (inline !== undefined) {
+      focusQuestionEntry(inline);
+      return;
+    }
+    focusRequestFallback();
+  }
+
+  function draftForPromptEntry(entry) {
+    return entry.kind === "question" ? questionDraft(entry) : permissionDraft(entry);
+  }
+
+  function cancelPromptStep() {
+    const entries = activePromptEntries();
+    if (entries.length === 0) return false;
+    const focused = entries.find((entry) => {
+      const card = cardForQuestionEntry(entry);
+      return card instanceof HTMLElement && card.contains(document.activeElement);
+    });
+    const ordered = focused === undefined ? entries : [focused, ...entries.filter((entry) => entry !== focused)];
+    for (const entry of ordered) {
+      const draft = draftForPromptEntry(entry);
+      if (draft.confirm !== null) {
+        draft.confirm = null;
+        renderPromptEntry(entry);
+        if (entry.kind === "question") focusQuestionEntry(entry);
+        else focusDock();
+        return true;
+      }
+    }
+    for (const entry of ordered) {
+      if (entry.kind !== "question") continue;
+      const draft = questionDraft(entry);
+      const steps = entry.request.questions.length;
+      const needsReview =
+        steps > 1 || (entry.request.questions[0] !== undefined && entry.request.questions[0].multiple === true);
+      if (needsReview && draft.index === steps) {
+        draft.index = Math.max(0, steps - 1);
+        renderPromptEntry(entry);
+        focusQuestionEntry(entry);
+        return true;
+      }
+    }
+    return false;
   }
 
   function buildPromptHead(entry, label, metaText) {
@@ -1272,11 +4005,12 @@
     return head;
   }
 
-  function renderTabs(entry, draft, tabs) {
+  function renderTabs(entry, draft, tabs, controller) {
     const tabsEl = element("div", "prompt-dock__tabs");
     tabsEl.setAttribute("role", "tablist");
     tabsEl.setAttribute("aria-label", "Questions");
     const questions = entry.request.questions;
+    const panelId = questionPanelId(controller);
     questions.forEach((question, index) => {
       const answered = questionAnswered(draft, index);
       const tab = element("button", "prompt-dock__tab");
@@ -1285,14 +4019,14 @@
       tab.setAttribute("role", "tab");
       tab.setAttribute("aria-selected", draft.index === index ? "true" : "false");
       tab.tabIndex = draft.index === index ? 0 : -1;
-      tab.setAttribute("aria-controls", "chat-prompt-panel");
+      tab.setAttribute("aria-controls", panelId);
       const label = question.header.trim().length > 0 ? question.header : `Question ${index + 1}`;
       tab.append(document.createTextNode(label));
       if (answered) tab.append(iconNode("check", "icon--sm"));
       tab.addEventListener("click", () => {
         draft.index = index;
-        renderPromptDock();
-        focusTab(index);
+        controller.rerender();
+        focusTab(controller, index);
       });
       tab.addEventListener("keydown", (event) => {
         if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
@@ -1300,8 +4034,8 @@
         const delta = event.key === "ArrowRight" ? 1 : -1;
         const next = (index + delta + tabs) % tabs;
         draft.index = next;
-        renderPromptDock();
-        focusTab(next);
+        controller.rerender();
+        focusTab(controller, next);
       });
       tabsEl.append(tab);
     });
@@ -1312,38 +4046,50 @@
       review.dataset.promptReviewTab = "true";
       review.setAttribute("role", "tab");
       review.setAttribute("aria-selected", draft.index === questions.length ? "true" : "false");
-      review.setAttribute("aria-controls", "chat-prompt-panel");
+      review.setAttribute("aria-controls", panelId);
       review.tabIndex = draft.index === questions.length ? 0 : -1;
       review.append(
         document.createTextNode(left > 0 ? `Review · ${left} left` : "Review"),
       );
       review.addEventListener("click", () => {
         draft.index = questions.length;
-        renderPromptDock();
-        focusTab(questions.length);
+        controller.rerender();
+        focusTab(controller, questions.length);
       });
       tabsEl.append(review);
     }
     return tabsEl;
   }
 
-  function focusTab(index) {
-    if (promptDock === null) return;
-    const tabs = Array.from(promptDock.querySelectorAll("[data-prompt-tab]"));
+  function focusTab(controller, index) {
+    const scope = controller.scope;
+    if (!(scope instanceof HTMLElement)) return;
+    const tabs = Array.from(scope.querySelectorAll("[data-prompt-tab]"));
     const target = tabs.find((tab) => tab.dataset.promptTab === String(index));
-    if (target instanceof HTMLElement) target.focus();
-    else {
-      const selected = promptDock.querySelector('[role="tab"][aria-selected="true"]');
-      if (selected instanceof HTMLElement) selected.focus();
-      else focusDock();
+    if (target instanceof HTMLElement) {
+      target.focus();
+      return;
     }
+    if (index === controller.entry.request.questions.length) {
+      const review = scope.querySelector("[data-prompt-review-tab]");
+      if (review instanceof HTMLElement) {
+        review.focus();
+        return;
+      }
+    }
+    const selected = scope.querySelector('[role="tab"][aria-selected="true"]');
+    if (selected instanceof HTMLElement) selected.focus();
+    else focusQuestionHeading(controller);
   }
 
-  function buildQuestionField(entry, draft, index) {
+  function buildQuestionField(entry, draft, index, controller) {
     const question = entry.request.questions[index];
     const fieldset = element("fieldset", "prompt-question");
-    fieldset.id = "chat-prompt-panel";
+    fieldset.id = questionPanelId(controller);
+    fieldset.dataset.promptField = String(index);
     const legend = element("legend", "prompt-question__header");
+    legend.tabIndex = -1;
+    legend.dataset.questionHeading = "true";
     legend.textContent = question.header.trim().length > 0 ? question.header : `Question ${index + 1}`;
     fieldset.append(legend);
     fieldset.append(element("p", "prompt-question__text", question.question));
@@ -1353,9 +4099,11 @@
       const label = element("label", "prompt-option");
       const input = element("input", question.multiple ? "checkbox" : "radio");
       input.type = inputType;
-      input.name = `prompt-option-${index}`;
+      input.name = questionOptionName(controller, index);
       input.value = option.label;
       input.checked = draft.answers[index].includes(option.label);
+      input.dataset.promptOptionIndex = String(index);
+      input.dataset.promptOptionValue = option.label;
       if (!question.multiple) input.dataset.single = "true";
       input.addEventListener("change", () => {
         if (question.multiple) {
@@ -1366,8 +4114,18 @@
           draft.answers[index] = [option.label];
           draft.custom[index] = "";
         }
-        renderPromptDock();
-        focusOption(index, option.label);
+        const steps = entry.request.questions.length;
+        const autoAdvance =
+          question.multiple !== true &&
+          steps > 1 &&
+          draft.confirm === null &&
+          draft.composing !== true;
+        if (autoAdvance) {
+          advanceQuestionStep(entry, controller, index + 1 >= steps ? steps : index + 1);
+          return;
+        }
+        patchQuestionSelections(controller, draft, index);
+        focusOption(controller, index, option.label);
       });
       const body = element("span", "prompt-option__body");
       body.append(element("span", "prompt-option__label", option.label));
@@ -1381,22 +4139,44 @@
     if (question.custom) {
       const custom = element("div", "prompt-custom");
       const customLabel = element("label", "label", "Other");
-      customLabel.htmlFor = `prompt-custom-${index}`;
+      customLabel.htmlFor = questionCustomId(controller, index);
       const customInput = element("input", "input");
       customInput.type = "text";
-      customInput.id = `prompt-custom-${index}`;
+      customInput.id = questionCustomId(controller, index);
       customInput.dataset.promptCustom = String(index);
       customInput.value = draft.custom[index];
       customInput.placeholder = "Type a custom answer";
+      customInput.addEventListener("compositionstart", () => {
+        draft.composing = true;
+      });
+      customInput.addEventListener("compositionend", () => {
+        draft.composing = false;
+      });
       customInput.addEventListener("input", () => {
         draft.custom[index] = customInput.value;
         if (!question.multiple && customInput.value.trim().length > 0) {
           draft.answers[index] = [];
-          for (const input of fieldset.querySelectorAll('input[type="radio"]')) {
-            input.checked = false;
+          for (const input of controller.scope.querySelectorAll(
+            `input[data-prompt-option-index="${index}"]`,
+          )) {
+            if (input instanceof HTMLInputElement) input.checked = false;
           }
         }
-        syncQuestionChrome(entry, draft);
+        syncQuestionChrome(controller, draft);
+      });
+      customInput.addEventListener("keydown", (event) => {
+        if (
+          event.key !== "Enter" ||
+          event.shiftKey ||
+          event.isComposing ||
+          event.metaKey ||
+          event.ctrlKey
+        ) {
+          return;
+        }
+        event.preventDefault();
+        if (draft.confirm !== null) return;
+        runQuestionPrimaryAction(entry, controller);
       });
       custom.append(customLabel, customInput);
       fieldset.append(custom);
@@ -1404,9 +4184,9 @@
     return fieldset;
   }
 
-  function buildReview(entry, draft) {
+  function buildReview(entry, draft, controller) {
     const wrap = element("div", "prompt-dock__review");
-    wrap.id = "chat-prompt-panel";
+    wrap.id = questionPanelId(controller);
     wrap.append(element("p", "overline", "Review answers"));
     const list = element("ol", "prompt-review-list");
     entry.request.questions.forEach((question, index) => {
@@ -1426,8 +4206,8 @@
       jump.type = "button";
       jump.addEventListener("click", () => {
         draft.index = index;
-        renderPromptDock();
-        focusDock();
+        controller.rerender();
+        focusQuestionStep(controller, index, false);
       });
       item.append(body, jump);
       list.append(item);
@@ -1436,7 +4216,41 @@
     return wrap;
   }
 
-  function buildQuestionActions(entry, draft, isReview) {
+  function advanceQuestionStep(entry, controller, target) {
+    const draft = questionDraft(entry);
+    const steps = entry.request.questions.length;
+    const next = Math.max(0, Math.min(target, steps));
+    draft.index = next;
+    controller.rerender();
+    if (next >= steps) announce("Review");
+    else announce(`Question ${next + 1} of ${steps}`);
+    focusQuestionStep(controller, next, next >= steps);
+  }
+
+  function runQuestionPrimaryAction(entry, controller) {
+    if (promptBusy.has(entry.key)) return;
+    if (entry.request.tooLarge === true) return;
+    const draft = questionDraft(entry);
+    if (draft.confirm !== null || draft.composing === true) return;
+    const steps = entry.request.questions.length;
+    const needsReview = questionNeedsReview(entry.request);
+    const isReview = needsReview && draft.index === steps;
+    if (isReview) {
+      submitQuestion(entry);
+      return;
+    }
+    if (draft.index < steps - 1) {
+      advanceQuestionStep(entry, controller, draft.index + 1);
+      return;
+    }
+    if (needsReview) {
+      advanceQuestionStep(entry, controller, steps);
+      return;
+    }
+    submitQuestion(entry);
+  }
+
+  function buildQuestionActions(entry, draft, isReview, controller) {
     const footer = element("div", "prompt-dock__foot");
     const left = element("div", "cluster");
     const dismiss = element("button", "btn btn-ghost btn-sm", "Dismiss");
@@ -1444,7 +4258,7 @@
     dismiss.disabled = promptBusy.has(entry.key);
     dismiss.addEventListener("click", () => {
       draft.confirm = draft.confirm === "dismiss" ? null : "dismiss";
-      renderPromptDock();
+      controller.rerender();
     });
     left.append(dismiss);
 
@@ -1460,9 +4274,7 @@
           back.type = "button";
           back.disabled = busy;
           back.addEventListener("click", () => {
-            draft.index = Math.max(0, steps - 1);
-            renderPromptDock();
-            focusDock();
+            advanceQuestionStep(entry, controller, Math.max(0, steps - 1));
           });
           right.append(back);
         }
@@ -1481,9 +4293,7 @@
         next.type = "button";
         next.disabled = busy;
         next.addEventListener("click", () => {
-          draft.index += 1;
-          renderPromptDock();
-          focusDock();
+          advanceQuestionStep(entry, controller, draft.index + 1);
         });
         right.append(next);
       } else {
@@ -1498,9 +4308,7 @@
           review.dataset.promptPrimary = "true";
           review.disabled = busy;
           review.addEventListener("click", () => {
-            draft.index = steps;
-            renderPromptDock();
-            focusDock();
+            advanceQuestionStep(entry, controller, steps);
           });
           right.append(review);
         } else {
@@ -1521,7 +4329,7 @@
     return footer;
   }
 
-  function buildConfirm(entry, draft, kind) {
+  function buildConfirm(entry, draft, kind, controller) {
     const box = element("div", "prompt-confirm");
     box.setAttribute("role", "group");
     const text = element("p", "prompt-confirm__text");
@@ -1532,8 +4340,8 @@
       cancel.type = "button";
       cancel.addEventListener("click", () => {
         draft.confirm = null;
-        renderPromptDock();
-        focusDock();
+        controller.rerender();
+        focusQuestionHeading(controller);
       });
       const confirm = element("button", "btn btn-danger btn-sm", "Dismiss request");
       confirm.type = "button";
@@ -1551,8 +4359,8 @@
       cancel.type = "button";
       cancel.addEventListener("click", () => {
         draft.confirm = null;
-        renderPromptDock();
-        focusDock();
+        controller.rerender();
+        focusQuestionHeading(controller);
       });
       const confirm = element("button", "btn btn-primary btn-sm", "Send without answering");
       confirm.type = "button";
@@ -1564,92 +4372,703 @@
     return box;
   }
 
-  function buildQuestionDock(entry) {
+  function buildInlineQuestionHead(entry, controller, metaText, view) {
+    const head = element("div", "prompt-dock__head");
+    const identity = element("div", "prompt-dock__identity");
+    const overline = element("p", "overline", "Question");
+    overline.id = questionHeadingId(controller);
+    overline.tabIndex = -1;
+    overline.dataset.questionHeading = "true";
+    identity.append(overline);
+    if (metaText.length > 0) identity.append(element("span", "prompt-dock__count", metaText));
+    if (entry !== null && entry !== undefined) {
+      const queueSize = Math.max(0, pendingForSession(entry.request.sessionID).length - 1);
+      if (queueSize > 0) {
+        identity.append(
+          element("span", "prompt-dock__queue-count", `${queueSize} more waiting`),
+        );
+      }
+    }
+    if (view.stateLabel) {
+      const chip = element("span", "chat-question__state", view.stateLabel);
+      chip.dataset.state = view.state;
+      identity.append(chip);
+    }
+    if (view.stale) identity.append(element("span", "prompt-dock__queue-count", "Not updating"));
+    head.append(identity);
+    return head;
+  }
+
+  function buildQuestionCardInto(card, entry, controller, view) {
     const request = entry.request;
     const draft = questionDraft(entry);
     const steps = request.questions.length;
     const needsReview = steps > 1 || (request.questions[0] && request.questions[0].multiple === true);
     const tabs = needsReview ? steps + 1 : steps;
-    if (draft.index >= tabs) draft.index = tabs - 1;
+    if (tabs === 0) draft.index = 0;
+    else if (draft.index >= tabs) draft.index = tabs - 1;
     const isReview = needsReview && draft.index === steps;
     const meta = isReview
       ? "Review"
       : steps > 0
         ? `Question ${Math.min(draft.index + 1, steps)} of ${steps}`
         : "Question";
-    const card = element("article", "prompt-dock__card");
-    card.dataset.kind = "question";
-    const headingId = "chat-prompt-title";
-    card.setAttribute("aria-labelledby", headingId);
-    const head = buildPromptHead(entry, "Question", meta);
-    head.querySelector(".prompt-dock__identity .overline").id = headingId;
-    card.append(head);
-    if (!dockCollapsed) {
-      const body = element("div", "prompt-dock__body");
-      if (request.tooLarge === true) {
-        body.append(
-          element("p", "prompt-dock__title", "This question is too large to answer."),
-          element(
-            "p",
-            "prompt-dock__copy",
-            request.tooLargeReason || "Its answers cannot be aligned safely.",
-          ),
-        );
-      } else {
-        if (tabs > 1) body.append(renderTabs(entry, draft, tabs));
-        if (steps > 1 && !isReview) {
-          const stepper = element("div", "prompt-dock__stepper");
-          const prev = element("button", "btn btn-ghost btn-sm", "Back");
-          prev.type = "button";
-          prev.disabled = draft.index === 0;
-          prev.addEventListener("click", () => {
-            draft.index = Math.max(0, draft.index - 1);
-            renderPromptDock();
-            focusDock();
-          });
-          const label = element(
-            "span",
-            "prompt-dock__step-label",
-            isReview ? "Review" : `Question ${draft.index + 1} of ${steps}`,
-          );
-          const next = element(
-            "button",
-            "btn btn-ghost btn-sm",
-            isReview ? "Back" : draft.index === steps - 1 ? "Review" : "Next",
-          );
-          next.type = "button";
-          next.disabled = isReview ? false : draft.index >= tabs - 1;
-          next.addEventListener("click", () => {
-            draft.index = isReview ? Math.max(0, steps - 1) : Math.min(tabs - 1, draft.index + 1);
-            renderPromptDock();
-            focusDock();
-          });
-          stepper.append(prev, label, next);
-          body.append(stepper);
-        }
-        if (isReview) {
-          body.append(buildReview(entry, draft));
-        } else if (steps > 0) {
-          body.append(buildQuestionField(entry, draft, draft.index));
-        }
-      }
-      if (draft.confirm === "dismiss") {
-        body.append(buildConfirm(entry, draft, "dismiss"));
-      } else if (draft.confirm === "empty") {
-        body.append(buildConfirm(entry, draft, "empty"));
-      }
-      const error = promptErrors.get(entry.key);
-      if (error !== undefined) {
-        const errorEl = element("p", "field-error prompt-dock__error", error);
-        errorEl.setAttribute("role", "alert");
-        body.append(errorEl);
-      }
-      card.append(body);
-      if (draft.confirm !== "dismiss" && draft.confirm !== "empty") {
-        card.append(buildQuestionActions(entry, draft, isReview));
+    if (view.inline) {
+      card.classList.add("chat-question");
+      card.dataset.questionKey = entry.key;
+      card.dataset.correlationKey = controller.correlationKey || "";
+      card.dataset.state = view.state;
+      if (view.stale) card.dataset.stale = "true";
+      else delete card.dataset.stale;
+    } else {
+      card.dataset.kind = "question";
+    }
+    card.setAttribute("aria-labelledby", questionHeadingId(controller));
+    const head = view.inline
+      ? buildInlineQuestionHead(entry, controller, meta, view)
+      : buildPromptHead(entry, "Question", meta);
+    if (!view.inline) {
+      const heading = head.querySelector(".prompt-dock__identity .overline");
+      if (heading !== null) {
+        heading.id = questionHeadingId(controller);
+        heading.tabIndex = -1;
+        heading.dataset.questionHeading = "true";
       }
     }
+    card.append(head);
+    if (!view.inline && dockCollapsed) return card;
+    const body = element("div", "prompt-dock__body");
+    if (view.note) body.append(element("p", "prompt-dock__copy", view.note));
+    if (request.tooLarge === true) {
+      body.append(element("p", "prompt-dock__title", "This question is too large to answer."));
+      if (typeof request.summary === "string" && request.summary.length > 0) {
+        body.append(element("p", "prompt-dock__copy", request.summary));
+      }
+      body.append(
+        element(
+          "p",
+          "prompt-dock__copy",
+          request.tooLargeReason || "Its answers cannot be aligned safely.",
+        ),
+      );
+    } else {
+      if (tabs > 1) body.append(renderTabs(entry, draft, tabs, controller));
+      if (steps > 1 && !isReview) {
+        const stepper = element("div", "prompt-dock__stepper");
+        const prev = element("button", "btn btn-ghost btn-sm", "Back");
+        prev.type = "button";
+        prev.disabled = draft.index === 0;
+        prev.addEventListener("click", () => {
+          advanceQuestionStep(entry, controller, Math.max(0, draft.index - 1));
+        });
+        const label = element(
+          "span",
+          "prompt-dock__step-label",
+          isReview ? "Review" : `Question ${draft.index + 1} of ${steps}`,
+        );
+        const next = element(
+          "button",
+          "btn btn-ghost btn-sm",
+          isReview ? "Back" : draft.index === steps - 1 ? "Review" : "Next",
+        );
+        next.type = "button";
+        next.disabled = isReview ? false : draft.index >= tabs - 1;
+        next.addEventListener("click", () => {
+          advanceQuestionStep(
+            entry,
+            controller,
+            isReview ? Math.max(0, steps - 1) : Math.min(tabs - 1, draft.index + 1),
+          );
+        });
+        stepper.append(prev, label, next);
+        body.append(stepper);
+      }
+      if (isReview) {
+        body.append(buildReview(entry, draft, controller));
+      } else if (steps > 0) {
+        body.append(buildQuestionField(entry, draft, draft.index, controller));
+      }
+    }
+    if (draft.confirm === "dismiss") {
+      body.append(buildConfirm(entry, draft, "dismiss", controller));
+    } else if (draft.confirm === "empty") {
+      body.append(buildConfirm(entry, draft, "empty", controller));
+    }
+    const error = promptErrors.get(entry.key);
+    if (error !== undefined) {
+      const errorEl = element("p", "field-error prompt-dock__error", error);
+      errorEl.setAttribute("role", "alert");
+      body.append(errorEl);
+    }
+    card.append(body);
+    if (draft.confirm !== "dismiss" && draft.confirm !== "empty") {
+      card.append(buildQuestionActions(entry, draft, isReview, controller));
+    }
     return card;
+  }
+
+  function buildQuestionCard(entry, controller, view) {
+    const card = element("article", view.inline ? "chat-question" : "prompt-dock__card");
+    if (view.inline) card.tabIndex = -1;
+    return buildQuestionCardInto(card, entry, controller, view);
+  }
+
+  function buildQuestionDock(entry) {
+    const controller = questionController(entry, {
+      scope: promptDock,
+      prefix: "",
+      inline: false,
+      rerender: renderPromptDock,
+    });
+    return buildQuestionCard(entry, controller, {
+      inline: false,
+      state: entry.request.tooLarge === true ? "tooLarge" : "pending",
+      stateLabel: "",
+      note: "",
+      stale: promptsAreStale(),
+    });
+  }
+
+  function questionPartState(part) {
+    const data = partDataOf(part);
+    return data.state && typeof data.state === "object" ? data.state : {};
+  }
+
+  function isTerminalQuestionPart(part) {
+    const status = questionPartState(part).status;
+    return typeof status === "string" && status !== "running" && status !== "pending";
+  }
+
+  function questionPartQuestions(part) {
+    const input = questionPartState(part).input;
+    return input && Array.isArray(input.questions) ? input.questions : [];
+  }
+
+  function questionPartAnswers(part) {
+    const metadata = questionPartState(part).metadata;
+    return metadata && Array.isArray(metadata.answers) ? metadata.answers : undefined;
+  }
+
+  function questionPartOutput(part) {
+    const state = questionPartState(part);
+    if (typeof state.output === "string") return state.output;
+    if (state.output !== undefined && state.output !== null) {
+      try {
+        return JSON.stringify(state.output, null, 2);
+      } catch (error) {
+        void error;
+      }
+    }
+    const data = partDataOf(part);
+    if (typeof data.output === "string") return data.output;
+    return undefined;
+  }
+
+  function questionLabelFor(question, index) {
+    if (question && typeof question.question === "string" && question.question.trim().length > 0) {
+      return question.question;
+    }
+    if (question && typeof question.header === "string" && question.header.trim().length > 0) {
+      return question.header;
+    }
+    return `Question ${index + 1}`;
+  }
+
+  function answerText(raw) {
+    if (Array.isArray(raw)) {
+      const values = raw.map((value) => String(value)).filter((value) => value.length > 0);
+      return values.length > 0 ? values.join(", ") : "No answer";
+    }
+    if (typeof raw === "string") return raw.length > 0 ? raw : "No answer";
+    if (raw === undefined || raw === null) return "No answer";
+    return String(raw);
+  }
+
+  function questionAnswerData(view) {
+    const part = view.part;
+    const outcomeQuestions =
+      view.outcome && Array.isArray(view.outcome.questions) ? view.outcome.questions : [];
+    const questions =
+      part !== null && part !== undefined
+        ? questionPartQuestions(part)
+        : view.entry !== undefined
+          ? view.entry.request.questions
+          : outcomeQuestions;
+    const partAnswers = part ? questionPartAnswers(part) : undefined;
+    const output = part ? questionPartOutput(part) : undefined;
+    let answers = partAnswers;
+    if (!Array.isArray(answers) && view.outcome && Array.isArray(view.outcome.answers)) {
+      answers = view.outcome.answers;
+    }
+    if (Array.isArray(answers)) {
+      if (answers.length === questions.length && !(answers.length === 0 && typeof output === "string")) {
+        return { kind: "rows", questions, answers };
+      }
+      if (typeof output === "string" && output.length > 0) {
+        return { kind: "output", output, note: "Answer detail unavailable" };
+      }
+      return { kind: "note", note: "Answer detail unavailable" };
+    }
+    if (typeof output === "string" && output.length > 0) {
+      return { kind: "output", output };
+    }
+    if (view.outcome && view.outcome.elsewhere === true) {
+      return { kind: "note", note: "Answers will appear when the question finishes." };
+    }
+    return { kind: "note", note: "Answer detail unavailable" };
+  }
+
+  function questionPartSignature(part) {
+    const state = questionPartState(part);
+    let answers = "";
+    try {
+      answers = JSON.stringify(state.metadata && state.metadata.answers);
+    } catch (error) {
+      void error;
+    }
+    const output = questionPartOutput(part) || "";
+    return `${state.status || ""}|${answers}|${output.length}|${output.slice(0, 120)}`;
+  }
+
+  function questionPartIdentity(part, record) {
+    const data = partDataOf(part);
+    const messageID =
+      typeof data.messageID === "string" && data.messageID.length > 0
+        ? data.messageID
+        : record.id;
+    const callID =
+      typeof data.callID === "string" && data.callID.length > 0
+        ? data.callID
+        : typeof part.id === "string"
+          ? part.id
+          : "";
+    return `${messageID}:${callID}`;
+  }
+
+  function partCorrelationKey(part, record) {
+    const data = partDataOf(part);
+    const source = typeof data.source === "string" && data.source.length > 0 ? data.source : "history";
+    const session =
+      typeof data.sessionID === "string" && data.sessionID.length > 0
+        ? data.sessionID
+        : store.sessionID || "";
+    const messageID =
+      typeof data.messageID === "string" && data.messageID.length > 0
+        ? data.messageID
+        : record.id;
+    const callID =
+      typeof data.callID === "string" && data.callID.length > 0
+        ? data.callID
+        : typeof part.id === "string"
+          ? part.id
+          : "";
+    return `${source}:${session}:${messageID}:${callID}`;
+  }
+
+  function findEntryForQuestionPart(part) {
+    const data = partDataOf(part);
+    if (typeof data.messageID !== "string" || typeof data.callID !== "string") return undefined;
+    for (const entry of prompts.values()) {
+      if (!isCorrelatedQuestion(entry)) continue;
+      const tool = entry.request.tool;
+      if (tool.messageID === data.messageID && tool.callID === data.callID) return entry;
+    }
+    return undefined;
+  }
+
+  function findQuestionPartForEntry(entry) {
+    if (!isCorrelatedQuestion(entry)) return null;
+    const tool = entry.request.tool;
+    for (const id of store.order) {
+      const record = store.messages.get(id);
+      if (record === undefined) continue;
+      for (const partID of record.partOrder) {
+        const part = record.parts.get(partID);
+        if (!isQuestionToolPart(part)) continue;
+        const data = partDataOf(part);
+        if (data.messageID === tool.messageID && data.callID === tool.callID) {
+          return { record, part };
+        }
+      }
+    }
+    return null;
+  }
+
+  function findQuestionPartByCorrelation(correlationKey) {
+    for (const id of store.order) {
+      const record = store.messages.get(id);
+      if (record === undefined) continue;
+      for (const partID of record.partOrder) {
+        const part = record.parts.get(partID);
+        if (!isQuestionToolPart(part)) continue;
+        if (partCorrelationKey(part, record) === correlationKey) return { record, part };
+      }
+    }
+    return null;
+  }
+
+  function findEntryByCorrelation(correlationKey) {
+    for (const entry of prompts.values()) {
+      if (isCorrelatedQuestion(entry) && questionCorrelationKey(entry.request) === correlationKey) {
+        return entry;
+      }
+    }
+    return undefined;
+  }
+
+  function resolveInlineQuestionView(entry, partInfo, correlationKey, questionKeyHint) {
+    const part = partInfo ? partInfo.part : undefined;
+    const status = part ? questionPartState(part).status : undefined;
+    const terminal = part !== undefined && isTerminalQuestionPart(part);
+    const answers = part ? questionPartAnswers(part) : undefined;
+    const output = part ? questionPartOutput(part) : undefined;
+    const hasDetail = answers !== undefined || output !== undefined;
+    const knownKey =
+      entry !== undefined
+        ? entry.key
+        : questionKeyHint !== undefined && questionKeyHint.length > 0
+          ? questionKeyHint
+          : questionKeyForCorrelation(correlationKey);
+    const outcome =
+      entry !== undefined
+        ? questionOutcomeFor(entry)
+        : knownKey === undefined
+          ? undefined
+          : promptOutcomes.get(knownKey);
+    const base = { entry, part, partInfo, outcome, stale: promptsAreStale() };
+    const authoritative = terminal && (hasDetail || (status === "completed" && outcome === undefined));
+    if (authoritative) {
+      return { ...base, state: "answered", stateLabel: "Answered" };
+    }
+    if (outcome && outcome.kind === "dismissed") {
+      return { ...base, state: "dismissed", stateLabel: "Dismissed" };
+    }
+    if (outcome && outcome.kind === "expired") {
+      return {
+        ...base,
+        state: "expired",
+        stateLabel: outcome.reason || "Request no longer pending",
+      };
+    }
+    if (outcome && outcome.kind === "answered") {
+      return {
+        ...base,
+        state: "answered",
+        stateLabel: outcome.elsewhere === true ? "Answered elsewhere" : "Answered",
+        elsewhere: outcome.elsewhere === true,
+      };
+    }
+    if (terminal) return { ...base, state: "answered", stateLabel: "Answered" };
+    if (entry !== undefined && entry.request.tooLarge === true) {
+      return { ...base, state: "tooLarge", stateLabel: "Too large" };
+    }
+    if (entry !== undefined) {
+      const omitted =
+        omittedPartIDs.has(entry.request.tool.callID) || inlineUnavailable.has(correlationKey);
+      if (part === undefined && omitted) {
+        return { ...base, state: "part-unavailable", stateLabel: "Part unavailable" };
+      }
+      if (part === undefined) {
+        return { ...base, state: "preparing", stateLabel: "Preparing request…" };
+      }
+      return { ...base, state: "pending", stateLabel: "" };
+    }
+    if (part === undefined && inlineUnavailable.has(correlationKey)) {
+      return { ...base, state: "part-unavailable", stateLabel: "Part unavailable" };
+    }
+    if (knownKey !== undefined && outcome === undefined) {
+      return {
+        ...base,
+        state: "expired",
+        stateLabel: "Request no longer pending",
+      };
+    }
+    return { ...base, state: "preparing", stateLabel: "Preparing request…", readOnlyPart: true };
+  }
+
+  function buildReadOnlyInlineCard(card, view, controller) {
+    card.replaceChildren();
+    card.className = "chat-question";
+    card.tabIndex = -1;
+    card.dataset.state = view.state;
+    if (view.stale) card.dataset.stale = "true";
+    else delete card.dataset.stale;
+    card.setAttribute("aria-labelledby", questionHeadingId(controller));
+    card.append(buildInlineQuestionHead(view.entry, controller, "", view));
+    const body = element("div", "prompt-dock__body");
+    const questions =
+      view.part !== undefined
+        ? questionPartQuestions(view.part)
+        : view.entry !== undefined
+          ? view.entry.request.questions
+          : view.outcome && Array.isArray(view.outcome.questions)
+            ? view.outcome.questions
+            : [];
+    if (view.state === "answered") {
+      const data = questionAnswerData(view);
+      if (data.kind === "rows") {
+        const answers = element("div", "chat-question__answers");
+        data.questions.forEach((question, index) => {
+          const item = element("div", "chat-question__answer");
+          item.append(
+            element("span", "chat-question__answer-label", questionLabelFor(question, index)),
+            element(
+              "span",
+              "chat-question__answer-value",
+              answerText(data.answers[index]),
+            ),
+          );
+          answers.append(item);
+        });
+        body.append(answers);
+      } else if (data.kind === "output") {
+        const output = element("pre", "chat-question__answer-value");
+        output.textContent = data.output;
+        body.append(output);
+        if (data.note) body.append(element("p", "prompt-dock__copy", data.note));
+      } else {
+        body.append(element("p", "prompt-dock__copy", data.note));
+      }
+    } else {
+      const copy =
+        view.state === "dismissed"
+          ? "Dismissed"
+          : view.state === "expired"
+            ? (view.outcome && view.outcome.reason) || "Request no longer pending"
+            : view.state === "part-unavailable"
+              ? "Question part unavailable"
+              : "Preparing request…";
+      body.append(element("p", "prompt-dock__copy", copy));
+      if (questions.length > 0) {
+        const list = element("div", "chat-question__answers");
+        questions.forEach((question, index) => {
+          list.append(
+            element("span", "chat-question__answer-label", questionLabelFor(question, index)),
+          );
+        });
+        body.append(list);
+      }
+    }
+    card.append(body);
+    return card;
+  }
+
+  function shortQuestionKey(value) {
+    let hash = 2166136261;
+    for (let index = 0; index < value.length; index += 1) {
+      hash ^= value.charCodeAt(index);
+      hash = Math.imul(hash, 16777619);
+    }
+    return (hash >>> 0).toString(36);
+  }
+
+  function inlineIdPrefix(correlationKey) {
+    return `chat-question-${shortQuestionKey(correlationKey)}-`;
+  }
+
+  function ensureInlineCard(correlationKey) {
+    let card = inlineCards.get(correlationKey);
+    if (card === undefined) {
+      card = element("article", "chat-question");
+      card.tabIndex = -1;
+      inlineCards.set(correlationKey, card);
+    }
+    return card;
+  }
+
+  function inlineCardForUpdate(correlationKey, partInfo) {
+    let card = inlineCards.get(correlationKey);
+    if (card !== undefined) return card;
+    if (partInfo !== null && partInfo !== undefined) {
+      const existing = inlineCardByPart.get(
+        questionPartIdentity(partInfo.part, partInfo.record),
+      );
+      if (existing !== undefined) {
+        inlineCards.set(correlationKey, existing);
+        return existing;
+      }
+    }
+    return ensureInlineCard(correlationKey);
+  }
+
+  function placeInlineCard(card, partInfo) {
+    const active = document.activeElement;
+    const hadFocus = active instanceof HTMLElement && card.contains(active);
+    let moved = false;
+    if (partInfo !== null && partInfo !== undefined) {
+      const slot = partNodes.get(`${partInfo.record.id}:${partInfo.part.id}`);
+      if (slot instanceof HTMLElement && slot.classList.contains("chat-question-slot")) {
+        if (card.parentNode !== slot) {
+          slot.append(card);
+          moved = true;
+        }
+      } else if (questionPlaceholderEl !== null && card.parentNode !== questionPlaceholderEl) {
+        questionPlaceholderEl.append(card);
+        moved = true;
+      }
+    } else if (questionPlaceholderEl !== null && card.parentNode !== questionPlaceholderEl) {
+      questionPlaceholderEl.append(card);
+      moved = true;
+    }
+    if (moved && hadFocus && document.activeElement !== active) active.focus();
+  }
+
+  function updateInlineCard(entry, partInfo, correlationKey, force) {
+    if (entry !== undefined && entry !== null) {
+      correlationQuestionKeys.set(correlationKey, entry.key);
+    }
+    const partIdentity = partInfo
+      ? questionPartIdentity(partInfo.part, partInfo.record)
+      : undefined;
+    const existingByPart =
+      partIdentity === undefined ? undefined : inlineCardByPart.get(partIdentity);
+    const questionKeyHint =
+      entry === undefined || entry === null
+        ? existingByPart === undefined
+          ? undefined
+          : existingByPart.dataset.questionKey
+        : undefined;
+    const view = resolveInlineQuestionView(
+      entry || undefined,
+      partInfo,
+      correlationKey,
+      questionKeyHint,
+    );
+    const card = inlineCardForUpdate(correlationKey, partInfo);
+    const draft = entry !== undefined && entry !== null ? questionDraft(entry) : null;
+    const signature = [
+      view.state,
+      view.stateLabel,
+      view.stale ? "1" : "0",
+      partInfo ? questionPartSignature(partInfo.part) : "no-part",
+      entry ? entry.key : "",
+      questionKeyHint || "",
+      draft ? draft.index : "",
+      draft ? draft.confirm || "" : "",
+      view.outcome
+        ? `${view.outcome.kind}:${view.outcome.elsewhere ? 1 : 0}:${
+            Array.isArray(view.outcome.answers) ? view.outcome.answers.length : 0
+          }`
+        : "",
+    ].join("|");
+    if (force || card.dataset.inlineSignature !== signature) {
+      const saved = card.contains(document.activeElement)
+        ? captureQuestionFocus(card)
+        : null;
+      card.replaceChildren();
+      card.className = "chat-question";
+      card.tabIndex = -1;
+      const controller = questionController(entry || null, {
+        scope: card,
+        prefix: inlineIdPrefix(correlationKey),
+        inline: true,
+        correlationKey,
+        rerender: () => refreshInlineQuestion(correlationKey, true),
+      });
+      if (
+        entry !== undefined &&
+        entry !== null &&
+        (view.state === "pending" ||
+          view.state === "preparing" ||
+          view.state === "part-unavailable" ||
+          view.state === "tooLarge")
+      ) {
+        const note =
+          view.state === "part-unavailable" ? "Question part unavailable" : "";
+        buildQuestionCardInto(card, entry, controller, {
+          inline: true,
+          state: view.state,
+          stateLabel: view.stateLabel,
+          note,
+          stale: view.stale,
+        });
+        card.dataset.state = view.state;
+      } else {
+        buildReadOnlyInlineCard(card, view, controller);
+      }
+      card.dataset.inlineSignature = signature;
+      if (saved !== null) {
+        if (view.state === "answered" || view.state === "dismissed" || view.state === "expired") {
+          if (!composerHasDraft()) focusComposer();
+        } else {
+          restoreQuestionFocus(card, saved);
+        }
+      }
+    }
+    card.dataset.questionKey = entry
+      ? entry.key
+      : questionKeyHint !== undefined && questionKeyHint.length > 0
+        ? questionKeyHint
+        : questionKeyForCorrelation(correlationKey) || "";
+    card.dataset.correlationKey = correlationKey;
+    card.dataset.state = view.state;
+    if (view.stale) card.dataset.stale = "true";
+    else delete card.dataset.stale;
+    if (partInfo) {
+      inlineCardByPart.set(questionPartIdentity(partInfo.part, partInfo.record), card);
+    }
+    placeInlineCard(card, partInfo);
+    return card;
+  }
+
+  function updateInlineQuestionPart(node, record, part) {
+    const entry = findEntryForQuestionPart(part);
+    const correlationKey = entry
+      ? questionCorrelationKey(entry.request)
+      : partCorrelationKey(part, record);
+    inlineUnavailable.delete(correlationKey);
+    const card = updateInlineCard(entry || null, { record, part }, correlationKey, false);
+    if (node.firstChild !== card) node.append(card);
+    return true;
+  }
+
+  function refreshInlineQuestion(correlationKey, force) {
+    const entry = findEntryByCorrelation(correlationKey);
+    let partInfo = entry ? findQuestionPartForEntry(entry) : null;
+    if (partInfo === null) partInfo = findQuestionPartByCorrelation(correlationKey);
+    updateInlineCard(entry || null, partInfo, correlationKey, force === true);
+  }
+
+  function refreshInlineQuestions() {
+    if (messagesEl === null) return;
+    const seen = new Set();
+    for (const entry of activePromptEntries()) {
+      if (!isCorrelatedQuestion(entry)) continue;
+      const correlationKey = questionCorrelationKey(entry.request);
+      correlationQuestionKeys.set(correlationKey, entry.key);
+      updateInlineCard(entry, findQuestionPartForEntry(entry), correlationKey, false);
+      seen.add(correlationKey);
+    }
+    for (const id of store.order) {
+      const record = store.messages.get(id);
+      if (record === undefined) continue;
+      for (const partID of record.partOrder) {
+        const part = record.parts.get(partID);
+        if (!isQuestionToolPart(part)) continue;
+        const entry = findEntryForQuestionPart(part);
+        if (entry !== undefined && isCorrelatedQuestion(entry)) {
+          const correlationKey = questionCorrelationKey(entry.request);
+          if (seen.has(correlationKey)) continue;
+        }
+        const correlationKey =
+          entry !== undefined && isCorrelatedQuestion(entry)
+            ? questionCorrelationKey(entry.request)
+            : partCorrelationKey(part, record);
+        if (seen.has(correlationKey)) continue;
+        updateInlineCard(entry || null, { record, part }, correlationKey, false);
+        seen.add(correlationKey);
+      }
+    }
+    const partCards = new Set(inlineCardByPart.values());
+    for (const [correlationKey, card] of inlineCards) {
+      if (seen.has(correlationKey) || partCards.has(card)) continue;
+      updateInlineCard(null, null, correlationKey, false);
+    }
+  }
+
+  function cardForQuestionEntry(entry) {
+    if (!isCorrelatedQuestion(entry)) return promptDock;
+    return inlineCards.get(questionCorrelationKey(entry.request)) || null;
   }
 
   function permissionRisk(request) {
@@ -1990,7 +5409,7 @@
 
   function renderPromptDock() {
     if (promptDock === null) return;
-    const entries = activePromptEntries();
+    const entries = activeDockEntries();
     const wasHidden = promptDock.hidden;
     if (entries.length === 0) {
       promptDock.hidden = true;
@@ -2010,42 +5429,65 @@
     }
   }
 
+  function renderPromptEntry(entry) {
+    if (isCorrelatedQuestion(entry)) {
+      refreshInlineQuestion(questionCorrelationKey(entry.request), true);
+    }
+    renderPromptDock();
+  }
+
   async function submitQuestion(entry) {
     if (promptBusy.has(entry.key)) return;
     const draft = questionDraft(entry);
     const answers = entry.request.questions.map((_, index) => answersForQuestion(draft, index));
     if (answers.some((answer) => answer.length === 0) && draft.confirm !== "empty") {
       draft.confirm = "empty";
-      renderPromptDock();
+      renderPromptEntry(entry);
       return;
     }
+    const focusWasInside =
+      cardForQuestionEntry(entry) instanceof HTMLElement &&
+      cardForQuestionEntry(entry).contains(document.activeElement);
     draft.confirm = null;
     promptBusy.add(entry.key);
     promptErrors.delete(entry.key);
-    renderPromptDock();
+    renderPromptEntry(entry);
     try {
       await api(questionReplyUrl(entry.request.id), {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ source: entry.request.source, answers }),
       });
+      recordQuestionOutcome(entry.key, {
+        kind: "answered",
+        local: true,
+        elsewhere: false,
+        answers,
+        questions: entry.request.questions,
+      });
       recordTombstone(entry.key);
       prompts.delete(entry.key);
       announce("Answer sent.");
-      focusComposer();
+      if (focusWasInside && !composerHasDraft()) focusComposer();
     } catch (error) {
       if (error.status === 404) {
+        recordQuestionOutcome(entry.key, {
+          kind: "expired",
+          reason: "Already answered or expired",
+          questions: entry.request.questions,
+        });
         recordTombstone(entry.key);
         prompts.delete(entry.key);
         announce("Already answered or expired.");
         showToast("Already answered or expired.", "error");
-        focusComposer();
+        if (focusWasInside && !composerHasDraft()) focusComposer();
       } else {
         promptErrors.set(entry.key, error.message || String(error));
       }
     } finally {
       promptBusy.delete(entry.key);
       renderPromptDock();
+      refreshInlineQuestions();
       renderQueue();
       syncComposer();
     }
@@ -2054,33 +5496,48 @@
   async function dismissQuestion(entry) {
     if (promptBusy.has(entry.key)) return;
     const draft = questionDraft(entry);
+    const focusWasInside =
+      cardForQuestionEntry(entry) instanceof HTMLElement &&
+      cardForQuestionEntry(entry).contains(document.activeElement);
     draft.confirm = null;
     promptBusy.add(entry.key);
     promptErrors.delete(entry.key);
-    renderPromptDock();
+    renderPromptEntry(entry);
     try {
       await api(questionRejectUrl(entry.request.id), {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ source: entry.request.source }),
       });
+      recordQuestionOutcome(entry.key, {
+        kind: "dismissed",
+        local: true,
+        answers: null,
+        questions: entry.request.questions,
+      });
       recordTombstone(entry.key);
       prompts.delete(entry.key);
       announce("Question dismissed.");
-      focusComposer();
+      if (focusWasInside && !composerHasDraft()) focusComposer();
     } catch (error) {
       if (error.status === 404) {
+        recordQuestionOutcome(entry.key, {
+          kind: "expired",
+          reason: "Already answered or expired",
+          questions: entry.request.questions,
+        });
         recordTombstone(entry.key);
         prompts.delete(entry.key);
         announce("Already answered or expired.");
         showToast("Already answered or expired.", "error");
-        focusComposer();
+        if (focusWasInside && !composerHasDraft()) focusComposer();
       } else {
         promptErrors.set(entry.key, error.message || String(error));
       }
     } finally {
       promptBusy.delete(entry.key);
       renderPromptDock();
+      refreshInlineQuestions();
       renderQueue();
       syncComposer();
     }
@@ -2505,6 +5962,7 @@
     else if (completed === total) summary = "All steps complete";
     else summary = `${completed} of ${total} complete`;
     if (cancelled > 0) summary += ` · ${cancelled} cancelled`;
+    if (cached !== undefined && cached.truncated === true) summary += " · List truncated";
     if (paused) summary = "Not updating";
     else if (todoState === "error") summary = "Not updating";
     planSummary.textContent = summary;
@@ -2515,52 +5973,177 @@
     updatePlanChip();
   }
 
-  async function loadMessages(options) {
+  function currentLastSeq() {
+    if (store.currentStreamID === null) return 0;
+    return store.lastSeqByStream.get(store.currentStreamID) || 0;
+  }
+
+  function replayBufferedStatuses(buffer, startSeq) {
+    if (buffer === null || buffer.events.length === 0) return;
+    const last = new Map();
+    for (const event of buffer.events) {
+      if (event.type !== "session.status") continue;
+      if (typeof event.seq !== "number" || event.seq <= startSeq) continue;
+      last.set(event.sessionID, event);
+    }
+    for (const event of last.values()) applyAgentStatus(event);
+  }
+
+  function saveCurrentRuntime() {
+    if (sessionId === null) return;
+    if (!sessions.some((session) => String(session.id) === sessionId)) return;
+    sessionRuntime.set(sessionId, {
+      order: [...store.order],
+      messages: store.messages,
+      openParts: new Set(store.openParts),
+      agentStatus: store.agentStatus,
+      turnGeneration: store.turnGeneration,
+      activePromptID: store.activePromptID,
+      queue: [...store.queue],
+      lastSeqByStream: new Map(store.lastSeqByStream),
+      currentStreamID: store.currentStreamID,
+    });
+  }
+
+  function adoptRuntime(id) {
+    const saved = sessionRuntime.get(id);
+    const next = createThreadStore(id);
+    if (saved === undefined) return next;
+    next.order = [...saved.order];
+    next.messages = saved.messages;
+    next.openParts = new Set(saved.openParts);
+    next.agentStatus = saved.agentStatus ?? null;
+    next.turnGeneration = saved.turnGeneration ?? 0;
+    next.activePromptID = saved.activePromptID ?? null;
+    next.queue = Array.isArray(saved.queue) ? [...saved.queue] : [];
+    next.lastSeqByStream = new Map(saved.lastSeqByStream);
+    next.currentStreamID = saved.currentStreamID ?? null;
+    return next;
+  }
+
+  async function hydrateMessages(options) {
     const settings = options || {};
     const target = typeof settings.session === "string" ? settings.session : sessionId;
-    if (target === null) return;
-    const active = target === sessionId;
-    const sequence = active ? ++loadSequence : 0;
-    const atBottom = isAtBottom();
-    const previousScroll = scrollEl === null ? 0 : scrollEl.scrollTop;
-    const previousCount = messages.length;
-    if (settings.initial) showMessagesLoading();
+    if (target === null || target !== sessionId) return;
+    const sequence = ++hydrationSeq;
+    const startSeq = currentLastSeq();
+    const turnGeneration = store.turnGeneration;
+    const initial = settings.initial === true;
+    hydrating = true;
+    hydrationBuffer = {
+      events: [],
+      bytes: 0,
+      overflow: false,
+      contentDiscarded: false,
+    };
+    if (initial) showMessagesLoading();
     try {
       const data = await api(messagesUrl(target));
-      if (active && (sequence !== loadSequence || sessionId !== target)) return;
-      if (!active) return;
-      messages = Array.isArray(data.messages) ? data.messages : [];
-      renderMessages({
-        initial: settings.initial === true,
-        atBottom,
-        previousScroll,
-        previousCount,
-        forceBottom: settings.forceBottom === true,
+      if (sequence !== hydrationSeq || sessionId !== target) return;
+      const snapshotMessages = Array.isArray(data.messages) ? data.messages : [];
+      const snapshotIDs = new Set();
+      for (const entry of snapshotMessages) {
+        if (entry === null || typeof entry !== "object") continue;
+        const info = entry.info && typeof entry.info === "object" ? entry.info : entry;
+        if (typeof info.id === "string") snapshotIDs.add(info.id);
+      }
+      const result = applySnapshot(store, snapshotMessages, {
+        capturedTurnGeneration: turnGeneration,
+        sessionStatusType: currentStatusType(),
+        sessionID: target,
       });
-      if (settings.initial) setLive("Live", "live");
+      store = result.store;
+      clearAllOmoClassifyTimers();
+      sessionSnapshotTooLarge = false;
+      setSessionNotice(false);
+      const buffer = hydrationBuffer;
+      const contentDiscarded =
+        result.contentDiscarded === true ||
+        (buffer !== null && buffer.contentDiscarded === true);
+      replayBufferedStatuses(buffer, startSeq);
+      resolveUnknownFromSnapshot(snapshotIDs);
+      recomputeQueue();
+      const turnChanged =
+        result.turnChanged === true || store.turnGeneration !== turnGeneration;
+      forceFinalRender = true;
+      flushFrame({
+        full: true,
+        forceBottom: initial || settings.forceBottom === true,
+      });
+      messagesHydratedSession = target;
+      for (const correlationKey of Array.from(deferredUnavailable)) {
+        const entry = findEntryByCorrelation(correlationKey);
+        if (entry === undefined) {
+          deferredUnavailable.delete(correlationKey);
+          continue;
+        }
+        if (entry.request.sessionID !== sessionId) continue;
+        if (findQuestionPartForEntry(entry) === null) {
+          inlineUnavailable.add(correlationKey);
+        } else {
+          inlineUnavailable.delete(correlationKey);
+        }
+        deferredUnavailable.delete(correlationKey);
+      }
+      refreshInlineQuestions();
+      if (initial) setLive("Live", "live");
       setRuntime("running");
-    } catch (error) {
-      if (active && (sequence !== loadSequence || sessionId !== target)) return;
-      if (!active) return;
-      if (settings.silent) {
-        setLive("Reconnecting", "reconnecting");
+      if (turnChanged) requestFollowUpHydration();
+      if (settings.reason === "idle" || settings.reason === "reconnect") {
+        refreshSessions().catch(() => {});
+      }
+      if (contentDiscarded) scheduleReconcile(RECONCILE_MS);
+      if (buffer !== null && buffer.overflow && settings.retried !== true) {
+        hydrating = false;
+        hydrationBuffer = null;
+        await hydrateMessages({ ...settings, retried: true });
         return;
       }
-      showThreadError(error, () => loadMessages({ initial: true }));
+    } catch (error) {
+      if (sequence !== hydrationSeq || sessionId !== target) return;
+      if (error !== null && typeof error === "object" && error.code === "messages_too_large") {
+        if (store.order.length === 0) {
+          showThreadError(error, () => hydrateMessages({ initial: true }));
+        } else {
+          sessionSnapshotTooLarge = true;
+          setSessionNotice(true);
+          forceFinalRender = true;
+          flushFrame({ full: true });
+          announce("Session too large to refresh; showing the last loaded state.");
+        }
+      } else if (settings.silent === true && messagesEl !== null && !messagesEl.hasAttribute("aria-busy")) {
+        setLive("Reconnecting", "reconnecting");
+      } else {
+        showThreadError(error, () => hydrateMessages({ initial: true }));
+      }
+    } finally {
+      if (sequence === hydrationSeq) {
+        hydrating = false;
+        hydrationBuffer = null;
+      }
     }
+  }
+
+  async function loadMessages(options) {
+    await hydrateMessages(options);
   }
 
   async function refreshSessions() {
     try {
       const data = await api(sessionsUrl());
       sessions = Array.isArray(data.sessions) ? data.sessions : [];
+      sessionsFailed = false;
+      sessionsLoaded = true;
       if (sessions.length === 0) {
         if (sessionId !== null) startDraft({ focus: false });
         else showSessionsEmpty();
         return;
       }
-      if (sessionId === null || !sessions.some((session) => session.id === sessionId)) {
+      if (sessionId === null) {
         sessionId = String(sessions[0].id);
+      } else if (!sessions.some((session) => session.id === sessionId)) {
+        await selectSession(String(sessions[0].id), { focus: false });
+        return;
       }
       renderSessions();
       const current = sessions.find((session) => session.id === sessionId);
@@ -2580,9 +6163,45 @@
     window.history.replaceState(null, "", `/chat?${params.toString()}`);
   }
 
+  function resetFeedDom() {
+    clearAllOmoClassifyTimers();
+    messageNodes = new Map();
+    partNodes = new Map();
+    partOwner.clear();
+    partRenderState.clear();
+    inlineCards = new Map();
+    inlineCardByPart = new Map();
+    messagesHydratedSession = null;
+    dirtyMessages = new Set();
+    dirtyParts = new Set();
+    orderDirty = false;
+    lastRenderedCount = 0;
+    if (newMessages !== null) newMessages.hidden = true;
+    if (messagesEl !== null) messagesEl.replaceChildren();
+    if (questionPlaceholderEl !== null) questionPlaceholderEl.replaceChildren();
+    queueStripSignature = "";
+    if (queueStrip !== null) queueStrip.hidden = true;
+    if (queueStripCount !== null) queueStripCount.textContent = "";
+    if (queueStripList !== null) queueStripList.replaceChildren();
+  }
+
   async function selectSession(id, options) {
     const settings = options || {};
+    const previous = sessionId;
+    if (previous !== null && previous !== id) saveCurrentRuntime();
+    hydrationSeq += 1;
+    hydrating = false;
+    hydrationBuffer = null;
     sessionId = id;
+    if (previous !== id) store = adoptRuntime(id);
+    store.sessionID = id;
+    store.connection = "connecting";
+    resetFeedDom();
+    resetElapsed();
+    sessionSnapshotTooLarge = false;
+    setSessionNotice(false);
+    recomputeQueue();
+    renderSendRecovery();
     const session = sessions.find((candidate) => candidate.id === id);
     if (sessionTitleEl !== null) {
       sessionTitleEl.textContent = session === undefined ? `Session ${id.slice(0, 8)}` : sessionLabel(session);
@@ -2599,20 +6218,29 @@
     closeSessions(false);
     closeContext(false);
     setLive("Loading messages", "reconnecting");
-    await loadMessages({ initial: true });
+    await loadMessages({ initial: true, forceBottom: true });
     if (settings.focusDock === true) {
-      focusDock();
+      refreshInlineQuestions();
+      focusRequest();
     } else if (settings.focus === true) {
-      if (activePromptEntries().length > 0) focusDock();
+      if (activePromptEntries().length > 0) focusRequest();
       else if (promptEl instanceof HTMLTextAreaElement) promptEl.focus();
     }
   }
 
   function startDraft(options) {
     const settings = options || {};
-    loadSequence += 1;
+    saveCurrentRuntime();
+    hydrationSeq += 1;
+    hydrating = false;
+    hydrationBuffer = null;
     sessionId = null;
-    messages = [];
+    store = createThreadStore(null);
+    resetFeedDom();
+    sessionSnapshotTooLarge = false;
+    setSessionNotice(false);
+    recomputeQueue();
+    renderSendRecovery();
     showSessionError(null);
     if (sessionTitleEl !== null) sessionTitleEl.textContent = "New session";
     if (sessionIdEl !== null) {
@@ -2621,12 +6249,12 @@
     }
     updateUrl();
     renderSessions();
-    renderMessages({
-      initial: true,
-      atBottom: true,
-      previousScroll: 0,
-      previousCount: 0,
-    });
+    if (messagesEl !== null) {
+      messagesEl.removeAttribute("aria-busy");
+      messagesEl.replaceChildren(emptyThread());
+    }
+    if (countEl !== null) countEl.textContent = plural(0, "message");
+    resetElapsed();
     setLive("Ready", "idle");
     renderPromptDock();
     loadTodo(null).catch(() => {});
@@ -2689,6 +6317,8 @@
       const wasActive = sessionId === id;
       sessions = sessions.filter((candidate) => String(candidate.id) !== id);
       deletingSessions.delete(id);
+      sessionRuntime.delete(id);
+      acceptanceBySession.delete(id);
       if (wasActive) {
         if (sessions.length > 0) {
           await selectSession(String(sessions[0].id), { focus: false });
@@ -2713,6 +6343,8 @@
     try {
       const data = await api(sessionsUrl());
       sessions = Array.isArray(data.sessions) ? data.sessions : [];
+      sessionsFailed = false;
+      sessionsLoaded = true;
       renderSessions();
       if (sessions.length === 0) {
         startDraft({ focus: false });
@@ -2758,9 +6390,9 @@
 
   async function sendPrompt() {
     if (!(promptEl instanceof HTMLTextAreaElement)) return;
-    if (hasActiveSend()) return;
+    if (acceptanceInFlight() || acceptanceUnknown()) return;
     if (activePromptEntries().length > 0) {
-      focusDock();
+      focusRequest();
       return;
     }
     const text = promptEl.value.trim();
@@ -2770,50 +6402,140 @@
     }
     const draft = promptEl.value;
     const initialSession = sessionId;
-    let pendingKey = initialSession === null ? "draft" : initialSession;
-    if (pendingSends.has(pendingKey)) return;
-    pendingSends.add(pendingKey);
+    const acceptanceKey = initialSession === null ? "draft" : initialSession;
+    const state = acceptanceFor(acceptanceKey);
+    if (state.inFlight || state.state === "unknown") return;
+    const tempID = localID();
+    const knownUserIDs = new Set();
+    for (const id of store.order) {
+      const record = store.messages.get(id);
+      if (record !== undefined && record.role === "user") knownUserIDs.add(id);
+    }
+    state.inFlight = true;
+    state.posting = false;
+    state.state = "sending";
+    state.sessionID = initialSession;
+    state.tempID = tempID;
+    state.serverID = null;
+    state.text = text;
+    state.knownUserIDs = knownUserIDs;
+    state.bufferedEvents = [];
+    clearAcceptanceGrace(state);
+    insertOptimisticMessage(tempID, text);
     showSendError(null);
     showSessionError(null);
-    syncComposer();
+    setSessionNotice(false);
     promptEl.value = "";
     resizePrompt();
-    let sentId = initialSession;
-    try {
-      const id = await ensureSession();
-      sentId = id;
-      if (pendingKey === "draft") {
-        pendingSends.delete("draft");
-        pendingKey = id;
-        pendingSends.add(id);
+    syncComposer();
+    renderSendRecovery();
+
+    const run = async () => {
+      let id = initialSession;
+      let posted = false;
+      try {
+        if (id === null) {
+          id = await ensureSession();
+          moveAcceptance("draft", id);
+          state.sessionID = id;
+          store.sessionID = id;
+        }
+        state.posting = true;
+        updateWorkingStatus();
+        posted = true;
+        const accepted = await api(asyncMessagesUrl(id), {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ text }),
+        });
+        state.posting = false;
+        const serverID =
+          accepted !== null && typeof accepted === "object" && typeof accepted.messageID === "string"
+            ? accepted.messageID
+            : null;
+        if (serverID === null) {
+          const failure = new Error("Delivery unknown; checking…");
+          failure.outcome = "unknown";
+          throw failure;
+        }
+        rekeyAcceptanceRow(state, serverID, false);
+        state.state = "accepted";
+        state.inFlight = false;
+        state.tempID = null;
+        state.serverID = serverID;
+        clearAcceptanceGrace(state);
+        recomputeQueue();
+        syncComposer();
+        setRuntime("running");
+        if (eventSource !== null && eventSource.readyState === 1) {
+          setLive("Live", "live");
+        }
+        if (sessionId === id && promptEl instanceof HTMLTextAreaElement) promptEl.focus();
+        refreshSessions().catch(() => {});
+      } catch (error) {
+        state.posting = false;
+        const outcome =
+          error !== null && typeof error === "object" ? error.outcome : undefined;
+        const unknown =
+          outcome === "unknown" ||
+          (posted &&
+            (error === null || typeof error !== "object" || error.status === undefined));
+        if (unknown) {
+          const returnedID =
+            error !== null && typeof error === "object" && typeof error.messageID === "string"
+              ? error.messageID
+              : null;
+          if (returnedID !== null) {
+            if (!rekeyAcceptanceRow(state, returnedID, true)) {
+              state.serverID = returnedID;
+              state.tempID = null;
+            }
+            state.state = "unknown";
+            state.inFlight = false;
+            clearAcceptanceGrace(state);
+            recomputeQueue();
+          } else {
+            const record = activeRowFor(state, tempID);
+            if (record !== undefined && record !== null) {
+              record.optimistic = "unknown";
+              record.version += 1;
+              if (state.sessionID === sessionId) dirtyMessages.add(tempID);
+            }
+            state.state = "unknown";
+            state.inFlight = false;
+            if (state.sessionID === sessionId) {
+              recomputeQueue();
+              scheduleFlush();
+            }
+          }
+          syncComposer();
+          renderSendRecovery();
+          if (sessionId !== null) {
+            hydrateMessages({ reason: "unknown", silent: true }).catch(() => {});
+          }
+        } else {
+          removeAcceptanceRow(state, tempID);
+          state.inFlight = false;
+          state.posting = false;
+          state.state = "idle";
+          state.tempID = null;
+          state.serverID = null;
+          state.text = "";
+          state.knownUserIDs = new Set();
+          state.bufferedEvents = [];
+          clearAcceptanceGrace(state);
+          if (promptEl instanceof HTMLTextAreaElement && promptEl.value.length === 0) {
+            promptEl.value = draft;
+            resizePrompt();
+          }
+          showSendError(error.message || String(error));
+          syncComposer();
+          renderSendRecovery();
+          scheduleFlush();
+        }
       }
-      syncComposer();
-      await api(messagesUrl(id), {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ text }),
-      });
-      await loadMessages({ forceBottom: true, session: id });
-      await refreshSessions();
-      setRuntime("running");
-      if (eventSource !== null && eventSource.readyState === 1) {
-        setLive("Live", "live");
-      }
-      if (sessionId === id) promptEl.focus();
-    } catch (error) {
-      if (sessionId === sentId) {
-        promptEl.value = draft;
-        resizePrompt();
-        showSendError(error.message || String(error));
-        promptEl.focus();
-      } else {
-        announce(`Message failed: ${error.message || String(error)}`);
-      }
-    } finally {
-      pendingSends.delete(pendingKey);
-      if (sentId !== null) pendingSends.delete(sentId);
-      syncComposer();
-    }
+    };
+    state.chain = state.chain.then(run, run);
   }
 
   function contextOpen() {
@@ -2894,25 +6616,9 @@
   }
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") return;
-    const entry = activePromptEntries()[0];
-    if (entry !== undefined) {
-      const draft = entry.kind === "question" ? questionDraft(entry) : permissionDraft(entry);
-      if (draft.confirm !== null) {
-        draft.confirm = null;
-        renderPromptDock();
-        event.preventDefault();
-        return;
-      }
-      if (entry.kind === "question") {
-        const steps = entry.request.questions.length;
-        const needsReview = steps > 1 || entry.request.questions[0].multiple === true;
-        if (needsReview && draft.index === steps) {
-          draft.index = Math.max(0, steps - 1);
-          renderPromptDock();
-          event.preventDefault();
-          return;
-        }
-      }
+    if (cancelPromptStep()) {
+      event.preventDefault();
+      return;
     }
     if (queueEl !== null && !queueEl.hidden) {
       event.preventDefault();
@@ -2957,6 +6663,18 @@
       }
     });
   }
+  if (sendCheck instanceof HTMLButtonElement) {
+    sendCheck.addEventListener("click", () => {
+      const key = sessionId === null ? "draft" : sessionId;
+      checkUnknownAcceptance(key).catch(() => {});
+    });
+  }
+  if (sendRemove instanceof HTMLButtonElement) {
+    sendRemove.addEventListener("click", () => {
+      const key = sessionId === null ? "draft" : sessionId;
+      removeUnknownAcceptance(key);
+    });
+  }
   if (promptEl instanceof HTMLTextAreaElement) {
     promptEl.addEventListener("input", resizePrompt);
     promptEl.addEventListener("keydown", (event) => {
@@ -2976,27 +6694,62 @@
   }
   if (scrollEl !== null) {
     scrollEl.addEventListener("scroll", () => {
-      stickToBottom = isAtBottom();
-      if (stickToBottom && newMessages !== null) newMessages.hidden = true;
+      if (isAtBottom() && newMessages !== null) newMessages.hidden = true;
     });
   }
   if (newMessages !== null) {
     newMessages.addEventListener("click", () => {
       if (scrollEl !== null) scrollEl.scrollTop = scrollEl.scrollHeight;
       newMessages.hidden = true;
-      stickToBottom = true;
       if (promptEl instanceof HTMLTextAreaElement) promptEl.focus();
     });
   }
-  if (promptDock !== null) {
-    promptDock.addEventListener("keydown", (event) => {
-      if (event.key !== "Enter" || !(event.metaKey || event.ctrlKey)) return;
-      const entry = activePromptEntries()[0];
-      if (entry === undefined || entry.kind !== "question") return;
-      event.preventDefault();
-      submitQuestion(entry);
-    });
-  }
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) return;
+    if (flushPending) {
+      flushPending = false;
+      flushFrame({ full: true });
+    }
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" || !(event.metaKey || event.ctrlKey)) return;
+    const target =
+      event.target instanceof Element
+        ? event.target.closest("#chat-prompt-dock, .chat-question")
+        : null;
+    if (!(target instanceof HTMLElement)) return;
+    let entry;
+    if (target.classList.contains("chat-question")) {
+      if (
+        target.dataset.state !== "pending" &&
+        target.dataset.state !== "preparing" &&
+        target.dataset.state !== "part-unavailable"
+      ) {
+        return;
+      }
+      const key = target.dataset.questionKey;
+      entry = Array.from(prompts.values()).find((candidate) => candidate.key === key);
+    } else {
+      entry = activeDockEntries()[0];
+    }
+    if (entry === undefined || entry.kind !== "question") return;
+    event.preventDefault();
+    const controller = isCorrelatedQuestion(entry)
+      ? questionController(entry, {
+          scope: target,
+          prefix: inlineIdPrefix(questionCorrelationKey(entry.request)),
+          inline: true,
+          correlationKey: questionCorrelationKey(entry.request),
+          rerender: () => refreshInlineQuestion(questionCorrelationKey(entry.request), true),
+        })
+      : questionController(entry, {
+          scope: promptDock,
+          prefix: "",
+          inline: false,
+          rerender: renderPromptDock,
+        });
+    runQuestionPrimaryAction(entry, controller);
+  });
   if (inputNeeded !== null) {
     inputNeeded.addEventListener("click", () => {
       if (queueEl !== null && !queueEl.hidden) closeQueue(true);
@@ -3039,4 +6792,6 @@
   bootSessions();
   subscribe();
   hydrate().catch(() => {});
-})();
+}
+
+main();

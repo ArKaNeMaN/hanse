@@ -1,0 +1,312 @@
+{
+  "tool": "chat-qa",
+  "mode": "deterministic",
+  "startedAt": "2026-10-19T12:28:31.954Z",
+  "status": "PASS",
+  "baseUrl": "http://127.0.0.1:38443",
+  "app": "web",
+  "project": "11111111-1111-4111-8111-111111111111",
+  "scenarios": [
+    {
+      "name": "main",
+      "status": "PASS",
+      "ms": 3127,
+      "checks": [
+        "feed is rendered",
+        "composer row is rendered",
+        "feed and composer share one width (508 vs 508)",
+        "feed is ~80% of the scroll client at 1440 (80%)",
+        "feed is ~87% of the padded content box at 1440 (87%)",
+        "no horizontal page overflow at 1440 (0px)",
+        "queue strip is visible",
+        "queue strip shows 2 rows (2)",
+        "queue count reads 2 messages queued (2 messages queued)",
+        "both queued rows carry the Queued state",
+        "GFM table rendered (1)",
+        "table has 2 headers (2)",
+        "table has 3 body rows (3)",
+        "OMO system card rendered (1)",
+        "OMO card class rendered (1)",
+        "todowrite checklist has 3 items (3)",
+        "assistant text is rendered",
+        "streamed text delta is rendered exactly once (count=1, snapshots=2)",
+        "OMO markers are hidden from the system card",
+        "status label is visible",
+        "status label is a Running label (Running plan)",
+        "status carries the queued suffix (· 2 queued)",
+        "status shows elapsed time (46s)",
+        "tool disclosures rendered (3)",
+        "all tool disclosures expand",
+        "bash tool disclosure is present",
+        "running bash output is visible (✓ test/chat-core.test.ts (70 tests) ✓ test/chat-page.test.ts (25 tests))",
+        "reasoning disclosure is labelled Thinking",
+        "todowrite checklist is rendered",
+        "todowrite statuses are Done/Now/Pending",
+        "exactly one in-progress todo is aria-current (1)",
+        "no horizontal page overflow at 390 (0px)",
+        "feed is rendered at 390",
+        "table wrapper stays inside the feed at 390 (358 <= 358)",
+        "queue strip scrolls horizontally on mobile",
+        "OMO system card survives the mobile layout",
+        "todowrite checklist survives the mobile layout"
+      ],
+      "data": {
+        "metrics": {
+          "feedWidth": 508,
+          "scrollClient": 632,
+          "contentWidth": 584,
+          "composerWidth": 508,
+          "overflowX": 0,
+          "status": {
+            "hidden": false,
+            "label": "Running plan",
+            "elapsed": "46s",
+            "queued": "· 2 queued"
+          },
+          "queue": {
+            "hidden": false,
+            "count": "2 messages queued",
+            "rows": [
+              {
+                "text": "Also check the build.Queued",
+                "state": "Queued"
+              },
+              {
+                "text": "And run lint after that.Queued",
+                "state": "Queued"
+              }
+            ]
+          },
+          "tables": 1,
+          "tableHeaders": 2,
+          "tableRows": 3,
+          "systems": 1,
+          "omo": 1,
+          "todos": 3,
+          "systemText": "OMOTask result03:28 PM[BACKGROUND TASK RESULT READY]Task result`task_42`ID: task_42Description: inspect the chat layoutDuration: 12sBackground work finished; the result is ready.",
+          "assistantText": "I'll run the suite and then summarize.CheckResulttypecheckpasstests396 passbuildpassThe tool output is visible below.Lint is queued next.",
+          "bodyText": "OPoperator03:27 PMPlease run the test suite, show a table, and keep the working output visible.WEweb03:27 PMThinkingI should run the tests and inspect the output before summarizing. The table will make the result easy to scan.I'll run the suite and then summarize.CheckResulttypecheckpasstests396 passbuildpassThe tool output is visible below.Lint is queued next.bashnpm testRunning45s✓ test/chat-core.test.ts (70 tests) ✓ test/chat-page.test.ts (25 tests) todowrite1 of 3 done · 1 nowRunning41sDoneRun typecheckPriority: highNowRun vitestPriority: highPendingCheck buildPriority: mediumOPoperator03:28 PMAlso check the build.OPoperator03:28 PMAnd run lint after that.OMOTask result03:28 PM[BACKGROUND TASK RESULT READY]Task result`task_42`ID: task_42Description: inspect the chat layoutDuration: 12sBackground work finished; the result is ready."
+        },
+        "tools": {
+          "details": [
+            {
+              "open": true,
+              "text": "ThinkingI should run the tests and inspect the output before summarizing. The table will make the result easy to scan.",
+              "output": "",
+              "todoItems": 0
+            },
+            {
+              "open": true,
+              "text": "bashnpm testRunning45s✓ test/chat-core.test.ts (70 tests) ✓ test/chat-page.test.ts (25 tests)",
+              "output": "✓ test/chat-core.test.ts (70 tests) ✓ test/chat-page.test.ts (25 tests)",
+              "todoItems": 0
+            },
+            {
+              "open": true,
+              "text": "todowrite1 of 3 done · 1 nowRunning41sDoneRun typecheckPriority: highNowRun vitestPriority: highPendingCheck buildPriority: medium",
+              "output": "",
+              "todoItems": 3
+            }
+          ],
+          "todoStatuses": [
+            "Done",
+            "Now",
+            "Pending"
+          ],
+          "ariaCurrent": 1
+        },
+        "mobile": {
+          "overflowX": 0,
+          "feedWidth": 358,
+          "tableWidth": 358,
+          "queueList": {
+            "client": 222,
+            "scroll": 361
+          },
+          "systems": 1,
+          "todos": 3
+        }
+      }
+    },
+    {
+      "name": "questions",
+      "status": "PASS",
+      "ms": 4202,
+      "checks": [
+        "one inline question card (1)",
+        "inline question is pending (pending)",
+        "the prompt dock is hidden for a correlated question",
+        "the composer is disabled while a question is pending",
+        "the inline question hides the working status",
+        "inline card heading is Question (Question)",
+        "single-select advances to Question 2 of 2 (Question 2 of 2)",
+        "focus moves to Q2's first input (checkbox:Unit)",
+        "focused input belongs to Q2 (Pick checks)",
+        "multi-select does not auto-advance",
+        "multi-select Unit remains checked",
+        "question reply is submitted once (1)",
+        "question reply body: expected [[\"Red\"],[\"Unit\"]], got [[\"Red\"],[\"Unit\"]]",
+        "completed part renders an answered card (answered)",
+        "the answered card replaces the pending card in place",
+        "answered Q&A values: expected [\"Red\",\"Unit\"], got [\"Red\",\"Unit\"]",
+        "custom-answer Enter submits exactly once",
+        "custom-answer reply body: expected [[\"Green\"]], got [[\"Green\"]]",
+        "custom answer becomes an answered card (answered)",
+        "custom answer is shown in the Q&A card",
+        "focus returns to the composer after submit (chat-prompt)"
+      ],
+      "data": {
+        "reply": {
+          "source": "v1",
+          "answers": [
+            [
+              "Red"
+            ],
+            [
+              "Unit"
+            ]
+          ]
+        },
+        "answered": {
+          "state": "answered",
+          "answers": [
+            "Red",
+            "Unit"
+          ],
+          "cardCount": 1,
+          "text": "QuestionAnsweredPick a colorRedPick checksUnit"
+        },
+        "custom": {
+          "source": "v1",
+          "answers": [
+            [
+              "Green"
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "name": "send",
+      "status": "PASS",
+      "ms": 4389,
+      "checks": [
+        "one optimistic row appears before the 202",
+        "optimistic row is local and sending (local_72168b17-4cc3-4a9a-b95e-f4d6c4b7e29f:sending)",
+        "optimistic row shows the submitted text",
+        "composer clears optimistically",
+        "the optimistic row is rekeyed, not duplicated",
+        "optimistic row adopts the server ID (msg_new:accepted)",
+        "exactly one user row carries the server ID",
+        "no local row remains after rekey",
+        "the prompt text appears once (1)",
+        "assistant text deltas render (The last run passed. | Streaming works.)",
+        "no duplicate user text after the server echo (1)",
+        "status is not Ready while the turn is active (Working)",
+        "two async sends were accepted (2)",
+        "both sends use the async flag",
+        "queue strip is visible for the busy send",
+        "queue strip shows one queued row (1)",
+        "queue count reads 1 message queued (1 message queued)",
+        "the second send is presented as queued",
+        "status carries the queued suffix (· 1 queued)",
+        "a completed assistant with parentID clears the queue",
+        "no queued row remains after consumption",
+        "user rows contain no duplicate after consumption: expected [\"msg_su\",\"msg_new\",\"msg_new2\"], got [\"msg_su\",\"msg_new\",\"msg_new2\"]",
+        "the queued assistant reply is rendered"
+      ],
+      "data": {
+        "sending": {
+          "optimistic": [
+            {
+              "id": "local_72168b17-4cc3-4a9a-b95e-f4d6c4b7e29f",
+              "state": "sending",
+              "text": "OPoperatorSending…Please stream the answer."
+            }
+          ],
+          "composer": ""
+        },
+        "after202": {
+          "optimistic": [
+            {
+              "id": "msg_new",
+              "state": "accepted"
+            }
+          ],
+          "users": [
+            "msg_su",
+            "msg_new"
+          ],
+          "promptOccurrences": 1
+        },
+        "streamed": {
+          "users": [
+            {
+              "id": "msg_su",
+              "text": "OPoperator03:28 PMSummarize the last run."
+            },
+            {
+              "id": "msg_new",
+              "text": "OPoperator03:28 PMPlease stream the answer."
+            }
+          ],
+          "assistants": [
+            "The last run passed.",
+            "Streaming works."
+          ],
+          "promptOccurrences": 1,
+          "status": "Working"
+        },
+        "queued": {
+          "queue": {
+            "hidden": false,
+            "count": "1 message queued",
+            "rows": [
+              "Second queued message.Queued"
+            ]
+          },
+          "optimistic": [
+            {
+              "id": "msg_new",
+              "state": "accepted"
+            },
+            {
+              "id": "msg_new2",
+              "state": "queued"
+            }
+          ],
+          "status": "Working",
+          "queuedSuffix": "· 1 queued"
+        },
+        "consumed": {
+          "queueHidden": true,
+          "queueRows": 0,
+          "users": [
+            "msg_su",
+            "msg_new",
+            "msg_new2"
+          ],
+          "assistants": [
+            "The last run passed.",
+            "Streaming works.",
+            "Queued answer."
+          ]
+        }
+      }
+    }
+  ],
+  "screenshots": [
+    "docs/design/artifacts/chat/main-1440-dark.png",
+    "docs/design/artifacts/chat/main-1440-tools.png",
+    "docs/design/artifacts/chat/main-390-dark.png",
+    "docs/design/artifacts/chat/question-pending-1440-dark.png",
+    "docs/design/artifacts/chat/question-q2-1440-dark.png",
+    "docs/design/artifacts/chat/question-answered-1440-dark.png",
+    "docs/design/artifacts/chat/question-custom-1440-dark.png",
+    "docs/design/artifacts/chat/send-sending-1440-dark.png",
+    "docs/design/artifacts/chat/send-streaming-1440-dark.png",
+    "docs/design/artifacts/chat/send-queued-1440-dark.png"
+  ],
+  "consoleErrors": [],
+  "finishedAt": "2026-10-19T12:28:44.120Z"
+}

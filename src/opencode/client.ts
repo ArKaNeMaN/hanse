@@ -89,13 +89,15 @@ export class OpencodeHttpError extends Error {
   readonly status: number;
   readonly path: string;
   readonly bodyExcerpt: string;
+  readonly code?: string;
 
-  constructor(path: string, status: number, bodyExcerpt: string) {
+  constructor(path: string, status: number, bodyExcerpt: string, code?: string) {
     super(`opencode ${path} -> ${status}: ${bodyExcerpt}`);
     this.name = "OpencodeHttpError";
     this.status = status;
     this.path = path;
     this.bodyExcerpt = bodyExcerpt;
+    this.code = code;
   }
 }
 
@@ -109,6 +111,8 @@ export interface OpencodeRequestOptions {
 export const OPENCODE_READ_TIMEOUT_MS = 5_000;
 export const OPENCODE_REPLY_TIMEOUT_MS = 10_000;
 export const OPENCODE_MAX_BODY_BYTES = 1024 * 1024;
+export const MESSAGES_RESPONSE_MAX_BYTES = 8 * 1024 * 1024;
+export const MESSAGES_RESPONSE_TIMEOUT_MS = 30_000;
 const ERROR_EXCERPT_BYTES = 4_096;
 const ERROR_EXCERPT_CHARS = 300;
 
@@ -144,8 +148,30 @@ export async function deleteSession(endpoint: string, sessionId: string): Promis
   }
 }
 
-export function listMessages(endpoint: string, sessionId: string): Promise<OpencodeMessage[]> {
-  return call<OpencodeMessage[]>(endpoint, `/session/${sessionId}/message`);
+export async function listMessages(
+  endpoint: string,
+  sessionId: string,
+  options?: OpencodeRequestOptions,
+): Promise<OpencodeMessage[]> {
+  const path = `/session/${encodeURIComponent(sessionId)}/message`;
+  const response = await requestResponse(
+    endpoint,
+    path,
+    { method: "GET" },
+    MESSAGES_RESPONSE_TIMEOUT_MS,
+    options,
+  );
+  const maxBytes = options?.maxBytes ?? MESSAGES_RESPONSE_MAX_BYTES;
+  const { text, tooLarge } = await readCapped(response, maxBytes);
+  if (tooLarge) {
+    throw new OpencodeHttpError(
+      path,
+      0,
+      `response body exceeded ${maxBytes} bytes`,
+      "messages_too_large",
+    );
+  }
+  return JSON.parse(text) as OpencodeMessage[];
 }
 
 export function sendPrompt(
@@ -157,6 +183,22 @@ export function sendPrompt(
     method: "POST",
     body: JSON.stringify({ parts: [{ type: "text", text }] }),
   });
+}
+
+export function sendPromptAsync(
+  endpoint: string,
+  sessionId: string,
+  text: string,
+  messageID: string,
+  options?: OpencodeRequestOptions,
+): Promise<void> {
+  return sendVoid(
+    endpoint,
+    `/session/${encodeURIComponent(sessionId)}/prompt_async`,
+    { parts: [{ type: "text", text }], messageID },
+    "POST",
+    options,
+  );
 }
 
 function v2LocationQuery(appDir: string): string {

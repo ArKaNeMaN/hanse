@@ -3,13 +3,17 @@ import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   deleteSavedPermission,
+  listMessages,
   listPermissions,
   listPermissionsV2,
   listQuestions,
   listQuestionsV2,
   listSavedPermissions,
   listTodos,
+  MESSAGES_RESPONSE_MAX_BYTES,
+  MESSAGES_RESPONSE_TIMEOUT_MS,
   OPENCODE_MAX_BODY_BYTES,
+  OPENCODE_REPLY_TIMEOUT_MS,
   OpencodeHttpError,
   rejectQuestion,
   rejectQuestionV2,
@@ -17,6 +21,8 @@ import {
   replyPermissionV2,
   replyQuestion,
   replyQuestionV2,
+  sendPrompt,
+  sendPromptAsync,
 } from "../src/opencode/client.js";
 
 interface UpstreamCall {
@@ -263,5 +269,173 @@ describe("typed upstream errors", () => {
     expect((error as OpencodeHttpError).status).toBe(0);
     expect((error as OpencodeHttpError).bodyExcerpt).toContain("exceeded");
     expect(OPENCODE_MAX_BODY_BYTES).toBe(1024 * 1024);
+  });
+});
+
+describe("async prompt client", () => {
+  it("posts the exact prompt_async body and accepts 204 without parsing JSON", async () => {
+    const server = await upstream((request, response, body) => {
+      if (request.url === "/session/ses_1/prompt_async" && request.method === "POST") {
+        expect(JSON.parse(body)).toEqual({
+          parts: [{ type: "text", text: "hello" }],
+          messageID: "msg_0123",
+        });
+        noContent(response);
+        return;
+      }
+      response.writeHead(404);
+      response.end("missing");
+    });
+
+    await expect(
+      sendPromptAsync(server.endpoint, "ses_1", "hello", "msg_0123"),
+    ).resolves.toBeUndefined();
+    expect(server.calls).toEqual([
+      {
+        method: "POST",
+        url: "/session/ses_1/prompt_async",
+        body: JSON.stringify({
+          parts: [{ type: "text", text: "hello" }],
+          messageID: "msg_0123",
+        }),
+      },
+    ]);
+    expect(OPENCODE_REPLY_TIMEOUT_MS).toBe(10_000);
+  });
+
+  it("maps upstream 404, 405, and 5xx as typed errors", async () => {
+    const server = await upstream((request, response) => {
+      if (request.url === "/session/missing/prompt_async") {
+        response.writeHead(404);
+        response.end("no session");
+        return;
+      }
+      if (request.url === "/session/old/prompt_async") {
+        response.writeHead(405);
+        response.end("no route");
+        return;
+      }
+      if (request.url === "/session/broken/prompt_async") {
+        response.writeHead(500);
+        response.end("boom");
+        return;
+      }
+      response.writeHead(404);
+      response.end("missing");
+    });
+
+    const missing = await sendPromptAsync(server.endpoint, "missing", "hi", "msg_1").catch(
+      (caught: unknown) => caught,
+    );
+    expect(missing).toBeInstanceOf(OpencodeHttpError);
+    expect((missing as OpencodeHttpError).status).toBe(404);
+
+    const old = await sendPromptAsync(server.endpoint, "old", "hi", "msg_2").catch(
+      (caught: unknown) => caught,
+    );
+    expect(old).toBeInstanceOf(OpencodeHttpError);
+    expect((old as OpencodeHttpError).status).toBe(405);
+
+    const broken = await sendPromptAsync(server.endpoint, "broken", "hi", "msg_3").catch(
+      (caught: unknown) => caught,
+    );
+    expect(broken).toBeInstanceOf(OpencodeHttpError);
+    expect((broken as OpencodeHttpError).status).toBe(500);
+  });
+
+  it("reports a timeout as a status-0 transport error", async () => {
+    const server = await upstream(() => {
+      // Never respond.
+    });
+    const error = await sendPromptAsync(server.endpoint, "ses_1", "hi", "msg_1", {
+      timeoutMs: 50,
+    }).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(OpencodeHttpError);
+    expect((error as OpencodeHttpError).status).toBe(0);
+    expect((error as OpencodeHttpError).bodyExcerpt).toContain("timed out");
+  });
+});
+
+describe("bounded messages client", () => {
+  it("uses the explicit 8 MiB cap and 30 s timeout defaults", () => {
+    expect(MESSAGES_RESPONSE_MAX_BYTES).toBe(8 * 1024 * 1024);
+    expect(MESSAGES_RESPONSE_TIMEOUT_MS).toBe(30_000);
+  });
+
+  it("reads a valid messages response through the capped reader", async () => {
+    const messages = [
+      { info: { id: "msg_1", role: "user" }, parts: [{ type: "text", text: "hello" }] },
+    ];
+    const server = await upstream((request, response) => {
+      if (request.method === "GET" && request.url === "/session/ses_1/message") {
+        json(response, messages);
+        return;
+      }
+      response.writeHead(404);
+      response.end("missing");
+    });
+
+    await expect(listMessages(server.endpoint, "ses_1")).resolves.toEqual(messages);
+  });
+
+  it("accepts a valid response larger than the default 1 MiB body cap", async () => {
+    const text = "x".repeat(2 * 1024 * 1024);
+    const messages = [
+      { info: { id: "msg_big", role: "assistant" }, parts: [{ type: "text", text }] },
+    ];
+    const server = await upstream((_request, response) => {
+      json(response, messages);
+    });
+
+    const received = await listMessages(server.endpoint, "ses_1");
+    expect(received).toHaveLength(1);
+    expect(received[0]?.parts[0]?.text).toBe(text);
+  });
+
+  it("throws messages_too_large on cap overflow", async () => {
+    const server = await upstream((_request, response) => {
+      json(response, [{ info: { id: "msg_1", role: "user" }, parts: [] }]);
+    });
+    const error = await listMessages(server.endpoint, "ses_1", { maxBytes: 16 }).catch(
+      (caught: unknown) => caught,
+    );
+    expect(error).toBeInstanceOf(OpencodeHttpError);
+    expect((error as OpencodeHttpError).status).toBe(0);
+    expect((error as OpencodeHttpError).code).toBe("messages_too_large");
+    expect((error as OpencodeHttpError).bodyExcerpt).toContain("exceeded");
+  });
+
+  it("does not report a transport timeout as messages_too_large", async () => {
+    const server = await upstream(() => {
+      // Never respond.
+    });
+    const error = await listMessages(server.endpoint, "ses_1", { timeoutMs: 50 }).catch(
+      (caught: unknown) => caught,
+    );
+    expect(error).toBeInstanceOf(OpencodeHttpError);
+    expect((error as OpencodeHttpError).status).toBe(0);
+    expect((error as OpencodeHttpError).code).toBeUndefined();
+    expect((error as OpencodeHttpError).bodyExcerpt).toContain("timed out");
+  });
+});
+
+describe("blocking prompt client", () => {
+  it("keeps the synchronous message body and parses the message response", async () => {
+    const message = {
+      info: { id: "msg_1", role: "user" },
+      parts: [{ type: "text", text: "hello" }],
+    };
+    const server = await upstream((request, response, body) => {
+      if (request.url === "/session/ses_1/message" && request.method === "POST") {
+        expect(JSON.parse(body)).toEqual({ parts: [{ type: "text", text: "hello" }] });
+        json(response, message);
+        return;
+      }
+      response.writeHead(404);
+      response.end("missing");
+    });
+
+    await expect(sendPrompt(server.endpoint, "ses_1", "hello")).resolves.toEqual(message);
+    expect(server.calls).toHaveLength(1);
   });
 });
