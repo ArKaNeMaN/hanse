@@ -1039,6 +1039,331 @@ describe("applySnapshot", () => {
     const result = applySnapshot(makeStore({ messages: [] }), [], { contentDiscarded: true });
     expect(result.contentDiscarded).toBe(true);
   });
+
+  it("tail keeps an older prefix and applies updated snapshot parts", () => {
+    const current = makeStore({
+      messages: [
+        user("u1", [textPart("u1p", "first")]),
+        assistant("a1", [textPart("a1p", "answer")], {
+          parentID: "u1",
+          finish: "stop",
+          time: { created: 1, completed: 2 },
+        }),
+        user("u2", [textPart("u2p", "older prompt")]),
+        assistant("a2", [textPart("a2p", "older answer")], {
+          parentID: "u2",
+          finish: "stop",
+          time: { created: 3, completed: 4 },
+        }),
+      ],
+    });
+    const snapshot = [
+      snapMessage("u2", "user", [snapPart("u2p", "text", { text: "updated prompt" })], {
+        time: { completed: 3 },
+      }),
+      snapMessage("a2", "assistant", [snapPart("a2p", "text", { text: "updated answer" })], {
+        parentID: "u2",
+        finish: "stop",
+        time: { created: 3, completed: 4 },
+      }),
+    ];
+
+    const { store } = applySnapshot(current, snapshot, { position: "tail" });
+    expect(store.order).toEqual(["u1", "a1", "u2", "a2"]);
+    expect(store.messages.get("u1")?.parts.get("u1p")?.data.text).toBe("first");
+    expect(store.messages.get("a1")?.parts.get("a1p")?.data.text).toBe("answer");
+    expect(store.messages.get("u2")?.parts.get("u2p")?.data.text).toBe("updated prompt");
+    expect(store.messages.get("a2")?.parts.get("a2p")?.data.text).toBe("updated answer");
+  });
+
+  it("tail keeps transient newer live records and merges an optimistic row present in the snapshot", () => {
+    const current = makeStore({
+      messages: [
+        user("u1", [textPart("u1p", "hi")]),
+        assistant("a1", [textPart("a1p", "done")], {
+          parentID: "u1",
+          finish: "stop",
+          time: { created: 1, completed: 2 },
+        }),
+        {
+          ...user("msg_1", [{ id: "local_p", type: "text", text: "hello", provisional: true }]),
+          optimistic: "sending",
+        },
+        assistant("a2", [textPart("a2p", "live tail")], {
+          parentID: "msg_1",
+          time: { created: 5 },
+        }),
+      ],
+    });
+    const snapshot = [
+      snapMessage("u1", "user", [snapPart("u1p", "text", { text: "hi" })], {
+        time: { completed: 1 },
+      }),
+      snapMessage("a1", "assistant", [snapPart("a1p", "text", { text: "done" })], {
+        parentID: "u1",
+        finish: "stop",
+        time: { created: 1, completed: 2 },
+      }),
+      snapMessage("msg_1", "user", [snapPart("server_p", "text", { text: "hello" })]),
+    ];
+
+    const { store } = applySnapshot(current, snapshot, { position: "tail" });
+    expect(store.order).toEqual(["u1", "a1", "msg_1", "a2"]);
+    expect(store.order.filter((id) => id === "msg_1")).toHaveLength(1);
+    expect(store.messages.get("a2")?.parts.get("a2p")?.data.text).toBe("live tail");
+    expect(store.messages.get("msg_1")?.optimistic).toBe("accepted");
+    expect(store.messages.get("msg_1")?.parts.has("server_p")).toBe(true);
+    expect(store.messages.get("msg_1")?.parts.has("local_p")).toBe(false);
+  });
+
+  it("tail seals a preserved previously-unsealed text part", () => {
+    const current = makeStore({
+      messages: [
+        user("u1", [textPart("u1p", "hi")]),
+        assistant("a1", [textPart("a1p", "still streaming")], {
+          parentID: "u1",
+          time: { created: 1 },
+        }),
+        user("u2", [textPart("u2p", "next")]),
+      ],
+    });
+    const snapshot = [
+      snapMessage("u2", "user", [snapPart("u2p", "text", { text: "next" })], {
+        time: { completed: 3 },
+      }),
+    ];
+
+    const { store } = applySnapshot(current, snapshot, { position: "tail" });
+    expect(store.messages.get("a1")?.parts.get("a1p")?.sealed).toBe(true);
+    expect(store.messages.get("a1")?.parts.get("a1p")?.data.text).toBe("still streaming");
+  });
+
+  it("tail preserves openParts for a preserved record", () => {
+    const current = makeStore({
+      messages: [
+        user("u1", [textPart("u1p", "hi")]),
+        assistant("a1", [textPart("a1p", "streaming")], {
+          parentID: "u1",
+          time: { created: 1 },
+        }),
+        user("u2", [textPart("u2p", "next")]),
+      ],
+      openParts: ["a1p"],
+    });
+    const snapshot = [
+      snapMessage("u2", "user", [snapPart("u2p", "text", { text: "next" })], {
+        time: { completed: 3 },
+      }),
+    ];
+
+    const { store } = applySnapshot(current, snapshot, { position: "tail" });
+    expect(store.openParts.has("a1p")).toBe(true);
+  });
+
+  it("older prepends a page, de-duplicates overlap, and keeps the tail sealing", () => {
+    const current = makeStore({
+      messages: [
+        user("u2", [textPart("u2p", "current prompt")]),
+        assistant("a2", [{ id: "a2p", type: "text", text: "current answer", sealed: true }], {
+          parentID: "u2",
+          finish: "stop",
+          time: { created: 5, completed: 6 },
+        }),
+      ],
+    });
+    const snapshot = [
+      snapMessage("u1", "user", [snapPart("u1p", "text", { text: "older" })], {
+        time: { completed: 1 },
+      }),
+      snapMessage("a1", "assistant", [snapPart("a1p", "text", { text: "older answer" })], {
+        parentID: "u1",
+        finish: "stop",
+        time: { created: 1, completed: 2 },
+      }),
+      snapMessage("u2", "user", [snapPart("u2p", "text", { text: "current prompt" })], {
+        time: { completed: 3 },
+      }),
+    ];
+
+    const { store } = applySnapshot(current, snapshot, { position: "older" });
+    expect(store.order).toEqual(["u1", "a1", "u2", "a2"]);
+    expect(store.order.filter((id) => id === "u2")).toHaveLength(1);
+    expect(store.messages.get("a1")?.parts.get("a1p")?.data.text).toBe("older answer");
+    expect(store.messages.get("a2")?.parts.get("a2p")?.sealed).toBe(true);
+  });
+
+  it("older with an empty page is a no-op for order and messages", () => {
+    const current = makeStore({
+      messages: [
+        user("u1", [textPart("u1p", "hi")]),
+        assistant("a1", [textPart("a1p", "done")], {
+          parentID: "u1",
+          finish: "stop",
+          time: { created: 1, completed: 2 },
+        }),
+        { ...user("msg_q", [textPart("qp", "queued")]), optimistic: "sending" },
+      ],
+    });
+
+    const { store } = applySnapshot(current, [], { position: "older" });
+    expect(store.order).toEqual(current.order);
+    expect(store.messages.get("u1")?.parts.get("u1p")?.data.text).toBe("hi");
+    expect(store.messages.get("a1")?.parts.get("a1p")?.data.text).toBe("done");
+    expect(store.messages.get("msg_q")?.parts.get("qp")?.data.text).toBe("queued");
+  });
+
+  it("tail keeps an accepted server row in the older prefix instead of appending it", () => {
+    const current = makeStore({
+      messages: [
+        {
+          ...user("msg_acc", [textPart("acc_p", "accepted prompt")]),
+          optimistic: "accepted",
+        },
+        user("u2", [textPart("u2p", "next")]),
+      ],
+    });
+    const snapshot = [
+      snapMessage("u2", "user", [snapPart("u2p", "text", { text: "next" })], {
+        time: { completed: 3 },
+      }),
+      snapMessage("a2", "assistant", [snapPart("a2p", "text", { text: "answer" })], {
+        parentID: "u2",
+        finish: "stop",
+        time: { created: 3, completed: 4 },
+      }),
+    ];
+
+    const { store } = applySnapshot(current, snapshot, { position: "tail" });
+    expect(store.order).toEqual(["msg_acc", "u2", "a2"]);
+    expect(store.messages.get("msg_acc")?.parts.get("acc_p")?.data.text).toBe("accepted prompt");
+  });
+
+  it("older keeps an accepted server row in place when it is absent from the page", () => {
+    const current = makeStore({
+      messages: [
+        {
+          ...user("msg_acc", [textPart("acc_p", "accepted prompt")]),
+          optimistic: "accepted",
+        },
+        user("u2", [textPart("u2p", "next")]),
+        assistant("a2", [textPart("a2p", "answer")], {
+          parentID: "u2",
+          finish: "stop",
+          time: { created: 3, completed: 4 },
+        }),
+      ],
+    });
+    const snapshot = [
+      snapMessage("u1", "user", [snapPart("u1p", "text", { text: "older" })], {
+        time: { completed: 1 },
+      }),
+      snapMessage("a1", "assistant", [snapPart("a1p", "text", { text: "older answer" })], {
+        parentID: "u1",
+        finish: "stop",
+        time: { created: 1, completed: 2 },
+      }),
+    ];
+
+    const { store } = applySnapshot(current, snapshot, { position: "older" });
+    expect(store.order).toEqual(["u1", "a1", "msg_acc", "u2", "a2"]);
+    expect(store.messages.get("msg_acc")?.parts.get("acc_p")?.data.text).toBe("accepted prompt");
+  });
+
+  it("tail with an empty snapshot is a no-op and does not seal a live part", () => {
+    const current = makeStore({
+      messages: [
+        user("u1", [textPart("u1p", "hi")]),
+        assistant("a1", [{ id: "a1p", type: "text", text: "streaming", sealed: false }], {
+          parentID: "u1",
+          time: { created: 1 },
+        }),
+      ],
+      pendingDeltas: [["a1p", " more"]],
+    });
+
+    const result = applySnapshot(current, [], { position: "tail" });
+    expect(result.store.order).toEqual(current.order);
+    expect(result.store.messages.get("a1")?.parts.get("a1p")?.sealed).not.toBe(true);
+    expect(result.store.pendingDeltas.get("a1p")).toBe(" more");
+    expect(result.contentDiscarded).toBe(false);
+  });
+
+  it("replace with keepOptimistic transient drops an accepted row and keeps a sending local row", () => {
+    const current = makeStore({
+      messages: [
+        { ...user("msg_acc", [textPart("acc_p", "accepted")]), optimistic: "accepted" },
+        {
+          ...user("local_send", [textPart("ls_p", "sending")]),
+          optimistic: "sending",
+        },
+      ],
+    });
+    const snapshot = [snapMessage("u1", "user", [snapPart("u1p", "text", { text: "new" })])];
+
+    const { store } = applySnapshot(current, snapshot, {
+      position: "replace",
+      keepOptimistic: "transient",
+    });
+    expect(store.order).toEqual(["u1", "local_send"]);
+    expect(store.messages.has("msg_acc")).toBe(false);
+    expect(store.messages.get("local_send")?.optimistic).toBe("sending");
+  });
+
+  it("replace defaults to keepOptimistic all and keeps an accepted row absent from the snapshot", () => {
+    const current = makeStore({
+      messages: [{ ...user("msg_acc", [textPart("acc_p", "accepted")]), optimistic: "accepted" }],
+    });
+    const snapshot = [snapMessage("u1", "user", [snapPart("u1p", "text", { text: "new" })])];
+
+    const defaulted = applySnapshot(current, snapshot).store;
+    const explicit = applySnapshot(current, snapshot, { keepOptimistic: "all" }).store;
+    expect(defaulted.order).toEqual(["u1", "msg_acc"]);
+    expect(explicit.order).toEqual(["u1", "msg_acc"]);
+    expect(explicit.messages.get("msg_acc")?.parts.get("acc_p")?.data.text).toBe("accepted");
+  });
+
+  it("replace with keepOptimistic transient keeps an accepted row present in the snapshot", () => {
+    const current = makeStore({
+      messages: [{ ...user("msg_acc", [textPart("acc_p", "accepted")]), optimistic: "accepted" }],
+    });
+    const snapshot = [
+      snapMessage("msg_acc", "user", [snapPart("server_p", "text", { text: "accepted" })]),
+    ];
+
+    const { store } = applySnapshot(current, snapshot, {
+      position: "replace",
+      keepOptimistic: "transient",
+    });
+    expect(store.order).toEqual(["msg_acc"]);
+    expect(store.messages.get("msg_acc")?.parts.has("server_p")).toBe(true);
+    expect(store.messages.get("msg_acc")?.parts.has("acc_p")).toBe(false);
+  });
+
+  it("replace remains the default and drops records outside the snapshot", () => {
+    const current = makeStore({
+      messages: [
+        user("u1", [textPart("u1p", "old")]),
+        assistant("a1", [textPart("a1p", "old answer")], {
+          parentID: "u1",
+          finish: "stop",
+          time: { created: 1, completed: 2 },
+        }),
+        user("u2", [textPart("u2p", "new")]),
+      ],
+    });
+    const snapshot = [
+      snapMessage("u2", "user", [snapPart("u2p", "text", { text: "new" })], {
+        time: { completed: 3 },
+      }),
+    ];
+
+    const defaulted = applySnapshot(current, snapshot).store;
+    const explicit = applySnapshot(current, snapshot, { position: "replace" }).store;
+    expect(defaulted.order).toEqual(["u2"]);
+    expect(explicit.order).toEqual(defaulted.order);
+    expect(explicit.messages.has("u1")).toBe(false);
+    expect(explicit.messages.get("u2")?.parts.get("u2p")?.data.text).toBe("new");
+  });
 });
 
 describe("rekeyOptimistic", () => {

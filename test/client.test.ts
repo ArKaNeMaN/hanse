@@ -3,6 +3,7 @@ import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   deleteSavedPermission,
+  listMessagePage,
   listMessages,
   listPermissions,
   listPermissionsV2,
@@ -303,6 +304,33 @@ describe("async prompt client", () => {
     expect(OPENCODE_REPLY_TIMEOUT_MS).toBe(10_000);
   });
 
+  it("forwards a provider/model pair in the prompt_async body", async () => {
+    const server = await upstream((request, response, body) => {
+      if (request.url === "/session/ses_1/prompt_async" && request.method === "POST") {
+        expect(JSON.parse(body)).toEqual({
+          parts: [{ type: "text", text: "hello" }],
+          messageID: "msg_0123",
+          model: { providerID: "deepseek", modelID: "deepseek-flash" },
+        });
+        noContent(response);
+        return;
+      }
+      response.writeHead(404);
+      response.end("missing");
+    });
+
+    await expect(
+      sendPromptAsync(
+        server.endpoint,
+        "ses_1",
+        "hello",
+        "msg_0123",
+        undefined,
+        "deepseek/deepseek-flash",
+      ),
+    ).resolves.toBeUndefined();
+  });
+
   it("maps upstream 404, 405, and 5xx as typed errors", async () => {
     const server = await upstream((request, response) => {
       if (request.url === "/session/missing/prompt_async") {
@@ -419,6 +447,60 @@ describe("bounded messages client", () => {
   });
 });
 
+describe("paged messages client", () => {
+  it("sends limit and an encoded before cursor and reads the next cursor header", async () => {
+    const messages = [
+      { info: { id: "msg_1", role: "user" }, parts: [{ type: "text", text: "hello" }] },
+    ];
+    const before = "cur/one+= two";
+    const nextCursor = "next/one+= two";
+    const server = await upstream((request, response) => {
+      const url = new URL(request.url ?? "/", "http://localhost");
+      if (request.method === "GET" && url.pathname === "/session/ses_1/message") {
+        expect(url.searchParams.get("limit")).toBe("30");
+        expect(url.searchParams.get("before")).toBe(before);
+        response.writeHead(200, {
+          "content-type": "application/json",
+          "x-next-cursor": nextCursor,
+        });
+        response.end(JSON.stringify(messages));
+        return;
+      }
+      response.writeHead(404);
+      response.end("missing");
+    });
+
+    const page = await listMessagePage(server.endpoint, "ses_1", { limit: 30, before });
+    expect(page).toEqual({ messages, nextCursor });
+    expect(server.calls[0]?.url).toBe("/session/ses_1/message?limit=30&before=cur%2Fone%2B%3D+two");
+  });
+
+  it("omits nextCursor when the header is absent", async () => {
+    const messages = [{ info: { id: "msg_1", role: "assistant" }, parts: [] }];
+    const server = await upstream((_request, response) => {
+      json(response, messages);
+    });
+
+    await expect(listMessagePage(server.endpoint, "ses_1", { limit: 5 })).resolves.toEqual({
+      messages,
+    });
+  });
+
+  it("keeps the messages_too_large code on cap overflow", async () => {
+    const server = await upstream((_request, response) => {
+      json(response, [{ info: { id: "msg_1", role: "user" }, parts: [] }]);
+    });
+    const error = await listMessagePage(server.endpoint, "ses_1", {
+      limit: 5,
+      maxBytes: 16,
+    }).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(OpencodeHttpError);
+    expect((error as OpencodeHttpError).status).toBe(0);
+    expect((error as OpencodeHttpError).code).toBe("messages_too_large");
+    expect((error as OpencodeHttpError).bodyExcerpt).toContain("exceeded");
+  });
+});
+
 describe("blocking prompt client", () => {
   it("keeps the synchronous message body and parses the message response", async () => {
     const message = {
@@ -437,5 +519,28 @@ describe("blocking prompt client", () => {
 
     await expect(sendPrompt(server.endpoint, "ses_1", "hello")).resolves.toEqual(message);
     expect(server.calls).toHaveLength(1);
+  });
+
+  it("forwards a provider/model pair on the blocking prompt", async () => {
+    const message = {
+      info: { id: "msg_1", role: "user" },
+      parts: [{ type: "text", text: "hello" }],
+    };
+    const server = await upstream((request, response, body) => {
+      if (request.url === "/session/ses_1/message" && request.method === "POST") {
+        expect(JSON.parse(body)).toEqual({
+          parts: [{ type: "text", text: "hello" }],
+          model: { providerID: "deepseek", modelID: "deepseek-v4-pro" },
+        });
+        json(response, message);
+        return;
+      }
+      response.writeHead(404);
+      response.end("missing");
+    });
+
+    await expect(
+      sendPrompt(server.endpoint, "ses_1", "hello", "deepseek/deepseek-v4-pro"),
+    ).resolves.toEqual(message);
   });
 });

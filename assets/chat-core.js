@@ -618,6 +618,23 @@ function isLocalOptimistic(id, record) {
 }
 
 /**
+ * A row that exists only in the client until the server confirms it. Accepted/queued server-backed
+ * rows are normal history and keep their chronological position when they are absent from a page.
+ *
+ * @param {string} id
+ * @param {MessageRecord} record
+ * @returns {boolean}
+ */
+function isTransientLocal(id, record) {
+  return (
+    id.startsWith("local_") ||
+    record.optimistic === "sending" ||
+    record.optimistic === "unknown" ||
+    record.optimistic === "failed"
+  );
+}
+
+/**
  * Merge a server row with the matching local optimistic row. Server data wins; local in-flight
  * acceptance is preserved.
  *
@@ -814,6 +831,29 @@ function applySnapshotSealing(order, messages, snapshotIDs) {
 }
 
 /**
+ * Seal a preserved record that predates the newest snapshot message. Tool parts keep their own
+ * running/pending state; every other record part is terminal.
+ *
+ * @param {MessageRecord} record
+ */
+function sealPreservedRecord(record) {
+  for (const part of record.parts.values()) {
+    if (
+      part.type === "text" ||
+      part.type === "reasoning" ||
+      part.type === "patch" ||
+      part.type === "file" ||
+      part.type === "subtask"
+    ) {
+      part.sealed = true;
+    } else if (part.type === "tool") {
+      const status = partData(part).state?.status;
+      part.sealed = status !== "running" && status !== "pending";
+    }
+  }
+}
+
+/**
  * @param {ThreadStore} base
  * @param {string[]} order
  * @param {Map<string, MessageRecord>} messages
@@ -876,7 +916,9 @@ function presentationState(store, id, derived, preserveInFlight = true) {
  *   sessionStatusType?: string,
  *   contentDiscarded?: boolean,
  *   discardedContent?: boolean,
- *   sessionID?: string
+ *   sessionID?: string,
+ *   position?: "replace" | "tail" | "older",
+ *   keepOptimistic?: "all" | "transient"
  * }} [options]
  * @returns {{ store: ThreadStore, contentDiscarded: boolean, turnChanged: boolean }}
  */
@@ -889,30 +931,158 @@ export function applySnapshot(currentStore, snapshotMessages, options = {}) {
       : [];
   const currentOrder = Array.isArray(base?.order) ? base.order : [];
   const currentMessages = base?.messages instanceof Map ? base.messages : new Map();
+  const position =
+    options?.position === "tail" || options?.position === "older" ? options.position : "replace";
   const built = buildSnapshotMessages(snapshotSource, currentMessages);
-  const order = [...built.order];
-  const messages = new Map(built.messages);
   const snapshotIDs = built.snapshotIDs;
   const snapshotPartIDs = built.snapshotPartIDs;
   const adoptedIDs = new Set();
+  const emptyPage =
+    built.order.length === 0 && (position === "tail" || position === "older");
 
-  for (const id of currentOrder) {
-    const local = currentMessages.get(id);
-    if (local === undefined || !isLocalOptimistic(id, local)) {
-      continue;
+  let order;
+  let messages;
+  if (emptyPage) {
+    order = [...currentOrder];
+    messages = new Map();
+    for (const [id, record] of currentMessages) {
+      const cloned = cloneMessage(record);
+      if (cloned !== null) {
+        messages.set(id, cloned);
+      }
     }
-    const server = messages.get(id);
-    if (server !== undefined) {
-      messages.set(id, mergeOptimisticRecord(server, local));
-      adoptedIDs.add(id);
-      continue;
+  } else if (position === "tail") {
+    const currentIndex = new Map();
+    for (let index = 0; index < currentOrder.length; index++) {
+      currentIndex.set(currentOrder[index], index);
     }
-    const cloned = cloneMessage(local);
-    if (cloned === null) {
-      continue;
+    let anchor = -1;
+    for (const id of built.order) {
+      const index = currentIndex.get(id);
+      if (index !== undefined) {
+        anchor = index;
+        break;
+      }
     }
-    messages.set(id, cloned);
-    order.push(id);
+    const prefixEnd = anchor < 0 ? currentOrder.length : anchor;
+    const seen = new Set();
+    const prefixIDs = [];
+    for (let index = 0; index < prefixEnd; index++) {
+      const id = currentOrder[index];
+      if (seen.has(id) || snapshotIDs.has(id)) {
+        continue;
+      }
+      const record = currentMessages.get(id);
+      if (record === undefined || isTransientLocal(id, record)) {
+        continue;
+      }
+      seen.add(id);
+      prefixIDs.push(id);
+    }
+    const suffixIDs = [];
+    if (anchor >= 0) {
+      for (let index = anchor + 1; index < currentOrder.length; index++) {
+        const id = currentOrder[index];
+        if (seen.has(id) || snapshotIDs.has(id)) {
+          continue;
+        }
+        const record = currentMessages.get(id);
+        if (record === undefined || isTransientLocal(id, record)) {
+          continue;
+        }
+        seen.add(id);
+        suffixIDs.push(id);
+      }
+    }
+    order = [];
+    messages = new Map(built.messages);
+    for (const id of prefixIDs) {
+      const cloned = cloneMessage(currentMessages.get(id));
+      if (cloned === null) {
+        continue;
+      }
+      sealPreservedRecord(cloned);
+      messages.set(id, cloned);
+      order.push(id);
+    }
+    for (const id of built.order) {
+      if (seen.has(id)) {
+        continue;
+      }
+      seen.add(id);
+      order.push(id);
+    }
+    for (const id of suffixIDs) {
+      const cloned = cloneMessage(currentMessages.get(id));
+      if (cloned === null) {
+        continue;
+      }
+      messages.set(id, cloned);
+      order.push(id);
+    }
+  } else if (position === "older") {
+    const seen = new Set();
+    order = [];
+    messages = new Map(built.messages);
+    for (const id of built.order) {
+      if (seen.has(id)) {
+        continue;
+      }
+      seen.add(id);
+      order.push(id);
+    }
+    for (const id of currentOrder) {
+      if (seen.has(id) || snapshotIDs.has(id)) {
+        continue;
+      }
+      const record = currentMessages.get(id);
+      if (record === undefined || isTransientLocal(id, record)) {
+        continue;
+      }
+      const cloned = cloneMessage(record);
+      if (cloned === null) {
+        continue;
+      }
+      seen.add(id);
+      messages.set(id, cloned);
+      order.push(id);
+    }
+  } else {
+    order = [...built.order];
+    messages = new Map(built.messages);
+  }
+
+  if (!emptyPage) {
+    const keepTransientOnly =
+      position !== "replace" || options?.keepOptimistic === "transient";
+    for (const id of currentOrder) {
+      const local = currentMessages.get(id);
+      if (local === undefined) {
+        continue;
+      }
+      if (keepTransientOnly) {
+        if (!isTransientLocal(id, local)) {
+          continue;
+        }
+      } else if (!isLocalOptimistic(id, local)) {
+        continue;
+      }
+      const server = messages.get(id);
+      if (server !== undefined) {
+        messages.set(id, mergeOptimisticRecord(server, local));
+        adoptedIDs.add(id);
+        continue;
+      }
+      const cloned = cloneMessage(local);
+      if (cloned === null) {
+        continue;
+      }
+      if (position !== "replace" && order.includes(id)) {
+        continue;
+      }
+      messages.set(id, cloned);
+      order.push(id);
+    }
   }
 
   applySnapshotSealing(order, messages, snapshotIDs);

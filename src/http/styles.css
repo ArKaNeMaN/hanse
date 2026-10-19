@@ -3508,6 +3508,95 @@
     display: none;
   }
 
+  .chat-history {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-2);
+    min-block-size: var(--space-6);
+    margin-block-end: var(--space-3);
+    color: var(--text-3);
+    font-size: var(--text-caption);
+  }
+
+  .chat-history[hidden] {
+    display: none;
+  }
+
+  .chat-history[data-state="error"] .spinner {
+    display: none;
+  }
+
+  .chat-generating {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    margin-block-start: var(--space-3);
+    color: var(--text-2);
+    font-size: var(--text-caption);
+  }
+
+  .chat-generating[hidden] {
+    display: none;
+  }
+
+  .chat-generating__dots {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+  }
+
+  .chat-generating__dots > span {
+    inline-size: var(--space-1);
+    block-size: var(--space-1);
+    border-radius: var(--radius-pill);
+    background: currentColor;
+    opacity: 0.25;
+    animation: chat-generating-pulse 1.2s ease-in-out infinite;
+  }
+
+  .chat-generating__dots > span:nth-child(2) {
+    animation-delay: 0.15s;
+  }
+
+  .chat-generating__dots > span:nth-child(3) {
+    animation-delay: 0.3s;
+  }
+
+  .chat-generating__label {
+    min-inline-size: 0;
+  }
+
+  .chat-generating__elapsed {
+    color: var(--text-3);
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .chat-generating__elapsed[hidden] {
+    display: none;
+  }
+
+  @keyframes chat-generating-pulse {
+    0%,
+    100% {
+      opacity: 0.25;
+      transform: translateY(0);
+    }
+
+    50% {
+      opacity: 1;
+      transform: translateY(-1px);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .chat-generating__dots > span {
+      animation: none;
+      opacity: 0.6;
+    }
+  }
+
   .chat-thread__viewport {
     position: relative;
     min-block-size: 0;
@@ -5074,6 +5163,8 @@
 
   @media (min-width: 1024px) {
     .chat-thread__inner,
+    .chat-history,
+    .chat-generating,
     .composer__row,
     .composer__hint,
     .chat-send-recovery,

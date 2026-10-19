@@ -21,6 +21,8 @@
 - [Web tools and hierarchical settings](./web-tools-and-settings.md) - global/project/app settings,
   encrypted model-provider keys, builtin/DeepSeek web drivers, per-app OMO model profiles, and the
   explicit restart workflow.
+- [Chat pagination and generation indicator](./chat-pagination.md) - 30-message session tail,
+  cursor-based scroll-up history, overlap-aware snapshot merge, and the in-feed generation row.
 - [Architecture overview](./overview.md) - the coordinator architecture and stage plan.
 
 ## Run the showcase

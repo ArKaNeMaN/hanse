@@ -15,7 +15,17 @@ export interface OpencodeMessage {
   parts: OpencodePart[];
 }
 
+export interface OpencodeMessagePage {
+  messages: OpencodeMessage[];
+  nextCursor?: string;
+}
+
 export type OpencodeToolRef = Record<string, unknown>;
+
+export interface OpencodeModel {
+  providerID: string;
+  modelID: string;
+}
 
 export interface OpencodeQuestionOption {
   label: string;
@@ -162,6 +172,35 @@ export async function listMessages(
     options,
   );
   const maxBytes = options?.maxBytes ?? MESSAGES_RESPONSE_MAX_BYTES;
+  return readMessageList(response, path, maxBytes);
+}
+
+export async function listMessagePage(
+  endpoint: string,
+  sessionId: string,
+  options: { limit: number; before?: string; maxBytes?: number; timeoutMs?: number },
+): Promise<OpencodeMessagePage> {
+  const params = new URLSearchParams({ limit: String(options.limit) });
+  if (options.before !== undefined) params.set("before", options.before);
+  const path = `/session/${encodeURIComponent(sessionId)}/message?${params.toString()}`;
+  const response = await requestResponse(
+    endpoint,
+    path,
+    { method: "GET" },
+    MESSAGES_RESPONSE_TIMEOUT_MS,
+    options,
+  );
+  const maxBytes = options.maxBytes ?? MESSAGES_RESPONSE_MAX_BYTES;
+  const messages = await readMessageList(response, path, maxBytes);
+  const cursor = response.headers.get("x-next-cursor");
+  return cursor === null || cursor.length === 0 ? { messages } : { messages, nextCursor: cursor };
+}
+
+async function readMessageList(
+  response: Response,
+  path: string,
+  maxBytes: number,
+): Promise<OpencodeMessage[]> {
   const { text, tooLarge } = await readCapped(response, maxBytes);
   if (tooLarge) {
     throw new OpencodeHttpError(
@@ -178,10 +217,15 @@ export function sendPrompt(
   endpoint: string,
   sessionId: string,
   text: string,
+  model?: string,
 ): Promise<OpencodeMessage> {
+  const parsedModel = parseOpencodeModel(model);
   return call<OpencodeMessage>(endpoint, `/session/${sessionId}/message`, {
     method: "POST",
-    body: JSON.stringify({ parts: [{ type: "text", text }] }),
+    body: JSON.stringify({
+      parts: [{ type: "text", text }],
+      ...(parsedModel === undefined ? {} : { model: parsedModel }),
+    }),
   });
 }
 
@@ -191,14 +235,27 @@ export function sendPromptAsync(
   text: string,
   messageID: string,
   options?: OpencodeRequestOptions,
+  model?: string,
 ): Promise<void> {
+  const parsedModel = parseOpencodeModel(model);
   return sendVoid(
     endpoint,
     `/session/${encodeURIComponent(sessionId)}/prompt_async`,
-    { parts: [{ type: "text", text }], messageID },
+    {
+      parts: [{ type: "text", text }],
+      messageID,
+      ...(parsedModel === undefined ? {} : { model: parsedModel }),
+    },
     "POST",
     options,
   );
+}
+
+function parseOpencodeModel(model: string | undefined): OpencodeModel | undefined {
+  if (model === undefined || model.length === 0) return undefined;
+  const slash = model.indexOf("/");
+  if (slash <= 0 || slash === model.length - 1) return undefined;
+  return { providerID: model.slice(0, slash), modelID: model.slice(slash + 1) };
 }
 
 function v2LocationQuery(appDir: string): string {

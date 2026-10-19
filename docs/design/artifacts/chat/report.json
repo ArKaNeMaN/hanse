@@ -1,16 +1,16 @@
 {
   "tool": "chat-qa",
   "mode": "deterministic",
-  "startedAt": "2026-10-19T12:28:31.954Z",
+  "startedAt": "2026-10-19T19:38:19.375Z",
   "status": "PASS",
-  "baseUrl": "http://127.0.0.1:38443",
+  "baseUrl": "http://127.0.0.1:33729",
   "app": "web",
   "project": "11111111-1111-4111-8111-111111111111",
   "scenarios": [
     {
       "name": "main",
       "status": "PASS",
-      "ms": 3127,
+      "ms": 3122,
       "checks": [
         "feed is rendered",
         "composer row is rendered",
@@ -83,9 +83,9 @@
           "systems": 1,
           "omo": 1,
           "todos": 3,
-          "systemText": "OMOTask result03:28 PM[BACKGROUND TASK RESULT READY]Task result`task_42`ID: task_42Description: inspect the chat layoutDuration: 12sBackground work finished; the result is ready.",
+          "systemText": "OMOTask result10:38 PM[BACKGROUND TASK RESULT READY]Task result`task_42`ID: task_42Description: inspect the chat layoutDuration: 12sBackground work finished; the result is ready.",
           "assistantText": "I'll run the suite and then summarize.CheckResulttypecheckpasstests396 passbuildpassThe tool output is visible below.Lint is queued next.",
-          "bodyText": "OPoperator03:27 PMPlease run the test suite, show a table, and keep the working output visible.WEweb03:27 PMThinkingI should run the tests and inspect the output before summarizing. The table will make the result easy to scan.I'll run the suite and then summarize.CheckResulttypecheckpasstests396 passbuildpassThe tool output is visible below.Lint is queued next.bashnpm testRunning45s✓ test/chat-core.test.ts (70 tests) ✓ test/chat-page.test.ts (25 tests) todowrite1 of 3 done · 1 nowRunning41sDoneRun typecheckPriority: highNowRun vitestPriority: highPendingCheck buildPriority: mediumOPoperator03:28 PMAlso check the build.OPoperator03:28 PMAnd run lint after that.OMOTask result03:28 PM[BACKGROUND TASK RESULT READY]Task result`task_42`ID: task_42Description: inspect the chat layoutDuration: 12sBackground work finished; the result is ready."
+          "bodyText": "OPoperator10:37 PMPlease run the test suite, show a table, and keep the working output visible.WEweb10:37 PMThinkingI should run the tests and inspect the output before summarizing. The table will make the result easy to scan.I'll run the suite and then summarize.CheckResulttypecheckpasstests396 passbuildpassThe tool output is visible below.Lint is queued next.bashnpm testRunning45s✓ test/chat-core.test.ts (70 tests) ✓ test/chat-page.test.ts (25 tests) todowrite1 of 3 done · 1 nowRunning41sDoneRun typecheckPriority: highNowRun vitestPriority: highPendingCheck buildPriority: mediumOPoperator10:37 PMAlso check the build.OPoperator10:37 PMAnd run lint after that.OMOTask result10:38 PM[BACKGROUND TASK RESULT READY]Task result`task_42`ID: task_42Description: inspect the chat layoutDuration: 12sBackground work finished; the result is ready."
         },
         "tools": {
           "details": [
@@ -131,7 +131,7 @@
     {
       "name": "questions",
       "status": "PASS",
-      "ms": 4202,
+      "ms": 4217,
       "checks": [
         "one inline question card (1)",
         "inline question is pending (pending)",
@@ -189,10 +189,10 @@
     {
       "name": "send",
       "status": "PASS",
-      "ms": 4389,
+      "ms": 4424,
       "checks": [
         "one optimistic row appears before the 202",
-        "optimistic row is local and sending (local_72168b17-4cc3-4a9a-b95e-f4d6c4b7e29f:sending)",
+        "optimistic row is local and sending (local_1c1403ae-593e-4abc-91c5-c3e9f9522bf4:sending)",
         "optimistic row shows the submitted text",
         "composer clears optimistically",
         "the optimistic row is rekeyed, not duplicated",
@@ -219,7 +219,7 @@
         "sending": {
           "optimistic": [
             {
-              "id": "local_72168b17-4cc3-4a9a-b95e-f4d6c4b7e29f",
+              "id": "local_1c1403ae-593e-4abc-91c5-c3e9f9522bf4",
               "state": "sending",
               "text": "OPoperatorSending…Please stream the answer."
             }
@@ -243,11 +243,11 @@
           "users": [
             {
               "id": "msg_su",
-              "text": "OPoperator03:28 PMSummarize the last run."
+              "text": "OPoperator10:38 PMSummarize the last run."
             },
             {
               "id": "msg_new",
-              "text": "OPoperator03:28 PMPlease stream the answer."
+              "text": "OPoperator10:38 PMPlease stream the answer."
             }
           ],
           "assistants": [
@@ -308,5 +308,5 @@
     "docs/design/artifacts/chat/send-queued-1440-dark.png"
   ],
   "consoleErrors": [],
-  "finishedAt": "2026-10-19T12:28:44.120Z"
+  "finishedAt": "2026-10-19T19:38:31.567Z"
 }

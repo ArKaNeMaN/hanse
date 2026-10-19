@@ -5,6 +5,7 @@ import type { Principal } from "../identity/principals.js";
 import {
   createSession,
   deleteSession,
+  listMessagePage,
   listMessages,
   listSessions,
   OpencodeHttpError,
@@ -48,6 +49,12 @@ function safeDecode(value: string): string {
   } catch {
     return value;
   }
+}
+
+function pageLimit(value: string): number | undefined {
+  if (!/^[1-9][0-9]*$/.test(value)) return undefined;
+  const limit = Number(value);
+  return limit <= 200 ? limit : undefined;
 }
 
 function requestPath(request: HttpRequest): string {
@@ -250,6 +257,7 @@ function renderChatPage(
     <div class="policy-warning" id="chat-policy-warning" role="status" hidden></div>
     <div class="chat-thread__viewport">
       <div class="chat-thread__scroll" id="chat-scroll">
+        <div class="chat-history" id="chat-history" data-state="idle" hidden><span class="spinner" aria-hidden="true"></span><span id="chat-history-label">Loading earlier messages...</span></div>
         <div class="chat-thread__inner" id="chat-messages" role="log" aria-live="off">
           <div class="skeleton-stack" aria-hidden="true">
             <span class="skeleton skeleton--title"></span>
@@ -259,6 +267,7 @@ function renderChatPage(
             <span class="skeleton skeleton--short"></span>
           </div>
         </div>
+        <div class="chat-generating" id="chat-generating" hidden aria-hidden="true"><span class="chat-generating__dots" aria-hidden="true"><span></span><span></span><span></span></span><span class="chat-generating__label" id="chat-generating-label"></span><span class="chat-generating__elapsed" id="chat-generating-elapsed"></span></div>
         <div class="chat-question-placeholder" id="chat-question-placeholder"></div>
       </div>
       <button class="btn btn-secondary btn-sm chat-new-messages" id="chat-new-messages" type="button" hidden>New messages ${icon("arrow-right")}</button>
@@ -494,6 +503,28 @@ export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<
   }
   const asyncSend =
     messagesMatch !== null && request.method === "POST" && request.query?.async === "1";
+  const pagedRead = messagesMatch !== null && request.method === "GET";
+  let limit: number | undefined;
+  let before: string | undefined;
+  if (pagedRead) {
+    const rawLimit = request.query?.limit;
+    if (rawLimit !== undefined) {
+      limit = pageLimit(rawLimit);
+      if (limit === undefined) {
+        return json(400, { error: "invalid limit", code: "invalid_limit" });
+      }
+    }
+    const rawBefore = request.query?.before;
+    if (rawBefore !== undefined) {
+      if (limit === undefined) {
+        return json(400, { error: "before requires limit", code: "cursor_requires_limit" });
+      }
+      before = rawBefore.trim();
+      if (before.length === 0) {
+        return json(400, { error: "invalid message cursor", code: "invalid_cursor" });
+      }
+    }
+  }
   let endpoint: string;
   try {
     endpoint = await deps.manager.ensure({
@@ -524,7 +555,25 @@ export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<
     }
     if (messagesMatch !== null && request.method === "GET") {
       const sessionId = safeDecode(messagesMatch[2] ?? "");
-      return json(200, { messages: await listMessages(endpoint, sessionId) });
+      if (limit === undefined) {
+        return json(200, { messages: await listMessages(endpoint, sessionId) });
+      }
+      try {
+        const page = await listMessagePage(
+          endpoint,
+          sessionId,
+          before === undefined ? { limit } : { limit, before },
+        );
+        return json(200, { messages: page.messages, nextCursor: page.nextCursor ?? null });
+      } catch (error) {
+        if (error instanceof OpencodeHttpError && error.status === 400 && before !== undefined) {
+          return json(400, { error: "invalid message cursor", code: "invalid_cursor" });
+        }
+        if (error instanceof OpencodeHttpError && error.status === 404) {
+          return json(404, { error: "session not found", code: "session_not_found" });
+        }
+        throw error;
+      }
     }
     if (messagesMatch !== null && request.method === "POST") {
       const sessionId = safeDecode(messagesMatch[2] ?? "");

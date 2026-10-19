@@ -271,8 +271,20 @@ describe("chat page", () => {
     expect(response.body).toContain('id="chat-question-placeholder"');
     const messages = response.body.indexOf('id="chat-messages"');
     const questionPlaceholder = response.body.indexOf('id="chat-question-placeholder"');
+    const history = response.body.indexOf('id="chat-history"');
+    const generating = response.body.indexOf('id="chat-generating"');
     expect(messages).toBeGreaterThan(-1);
     expect(questionPlaceholder).toBeGreaterThan(messages);
+    expect(history).toBeGreaterThan(-1);
+    expect(history).toBeLessThan(messages);
+    expect(generating).toBeGreaterThan(messages);
+    expect(generating).toBeLessThan(questionPlaceholder);
+    expect(response.body).toContain('id="chat-history-label"');
+    expect(response.body).toContain('id="chat-generating-label"');
+    expect(response.body).toContain('id="chat-generating-elapsed"');
+    expect(response.body).toMatch(/id="chat-generating"[^>]*aria-hidden="true"/);
+    const ids = Array.from(response.body.matchAll(/\sid="([^"]+)"/g), (match) => match[1]);
+    expect(new Set(ids).size).toBe(ids.length);
     expect(response.body).not.toContain('class="page-header"');
     const application = response.body.indexOf('id="context-app-title"');
     const plan = response.body.indexOf('id="context-plan-title"');
@@ -470,6 +482,191 @@ describe("chat page", () => {
 
     expect(response.status).toBe(502);
     expect(JSON.parse(response.body).error).toContain("opencode DELETE /session/ses_1");
+  });
+});
+
+describe("paged message list route", () => {
+  const messagesPath = "/api/apps/storefront/sessions/ses_1/messages";
+
+  function listRequest(f: Fixture, query: Record<string, string>): HttpRequest {
+    return request({
+      path: messagesPath,
+      query: { project: "p1", ...query },
+      headers: auth(f.token),
+    });
+  }
+
+  it("returns nextCursor and forwards limit for a paged read", async () => {
+    const f = fixture();
+    const messages = [{ info: { id: "msg_1", role: "user" }, parts: [] }];
+    const upstream = await fakeOpencodeHandler((incoming, outgoing) => {
+      if (incoming.method === "GET" && incoming.url === "/session/ses_1/message?limit=30") {
+        outgoing.writeHead(200, {
+          "content-type": "application/json",
+          "x-next-cursor": "next-1",
+        });
+        outgoing.end(JSON.stringify(messages));
+        return;
+      }
+      outgoing.writeHead(404);
+      outgoing.end("missing");
+    });
+    useUpstream(f.deps, upstream.endpoint);
+
+    const response = await handleChat(f.deps, listRequest(f, { limit: "30" }));
+    expect(response.status).toBe(200);
+    expect(JSON.parse(response.body)).toEqual({ messages, nextCursor: "next-1" });
+    expect(upstream.calls.map((call) => `${call.method} ${call.url}`)).toEqual([
+      "GET /session/ses_1/message?limit=30",
+    ]);
+  });
+
+  it("forwards an opaque before cursor encoded to upstream", async () => {
+    const f = fixture();
+    const before = "op/aque+ =值";
+    const upstream = await fakeOpencodeHandler((incoming, outgoing) => {
+      const url = new URL(incoming.url ?? "/", "http://localhost");
+      if (incoming.method === "GET" && url.pathname === "/session/ses_1/message") {
+        expect(url.searchParams.get("limit")).toBe("30");
+        expect(url.searchParams.get("before")).toBe(before);
+        outgoing.writeHead(200, { "content-type": "application/json" });
+        outgoing.end("[]");
+        return;
+      }
+      outgoing.writeHead(404);
+      outgoing.end("missing");
+    });
+    useUpstream(f.deps, upstream.endpoint);
+
+    const response = await handleChat(f.deps, listRequest(f, { limit: "30", before }));
+    expect(response.status).toBe(200);
+    expect(JSON.parse(response.body)).toEqual({ messages: [], nextCursor: null });
+    const url = new URL(upstream.calls[0]?.url ?? "/", "http://localhost");
+    expect(url.searchParams.get("before")).toBe(before);
+    expect(upstream.calls[0]?.url).not.toContain(before);
+  });
+
+  it("rejects non-canonical or out-of-range limits before starting the agent", async () => {
+    const f = fixture();
+    const upstream = await fakeOpencode(200, "[]");
+    let ensureCalls = 0;
+    f.deps.manager = {
+      ensure: async () => {
+        ensureCalls += 1;
+        return upstream.endpoint;
+      },
+    } as unknown as InstanceManager;
+
+    for (const limit of ["0", "201", "-1", "1.5", "abc", "", "030", " 30", "+30", "1e2"]) {
+      const response = await handleChat(f.deps, listRequest(f, { limit }));
+      expect(response.status, `limit=${JSON.stringify(limit)}`).toBe(400);
+      expect(JSON.parse(response.body).code).toBe("invalid_limit");
+    }
+    expect(ensureCalls).toBe(0);
+    expect(upstream.calls).toEqual([]);
+  });
+
+  it("rejects before without limit", async () => {
+    const f = fixture();
+    const upstream = await fakeOpencode(200, "[]");
+    let ensureCalls = 0;
+    f.deps.manager = {
+      ensure: async () => {
+        ensureCalls += 1;
+        return upstream.endpoint;
+      },
+    } as unknown as InstanceManager;
+
+    const response = await handleChat(f.deps, listRequest(f, { before: "cur-1" }));
+    expect(response.status).toBe(400);
+    expect(JSON.parse(response.body)).toEqual({
+      error: "before requires limit",
+      code: "cursor_requires_limit",
+    });
+    expect(ensureCalls).toBe(0);
+  });
+
+  it("rejects an empty or whitespace-only before cursor", async () => {
+    const f = fixture();
+    const upstream = await fakeOpencode(200, "[]");
+    let ensureCalls = 0;
+    f.deps.manager = {
+      ensure: async () => {
+        ensureCalls += 1;
+        return upstream.endpoint;
+      },
+    } as unknown as InstanceManager;
+
+    for (const before of ["", "   "]) {
+      const response = await handleChat(f.deps, listRequest(f, { limit: "30", before }));
+      expect(response.status).toBe(400);
+      expect(JSON.parse(response.body)).toEqual({
+        error: "invalid message cursor",
+        code: "invalid_cursor",
+      });
+    }
+    expect(ensureCalls).toBe(0);
+  });
+
+  it("keeps the legacy response without limit", async () => {
+    const f = fixture();
+    const messages = [{ info: { id: "msg_1", role: "assistant" }, parts: [] }];
+    const upstream = await fakeOpencodeHandler((incoming, outgoing) => {
+      if (incoming.method === "GET" && incoming.url === "/session/ses_1/message") {
+        outgoing.writeHead(200, { "content-type": "application/json" });
+        outgoing.end(JSON.stringify(messages));
+        return;
+      }
+      outgoing.writeHead(404);
+      outgoing.end("missing");
+    });
+    useUpstream(f.deps, upstream.endpoint);
+
+    const response = await handleChat(f.deps, listRequest(f, {}));
+    expect(response.status).toBe(200);
+    expect(JSON.parse(response.body)).toEqual({ messages });
+  });
+
+  it("maps an upstream 400 on a before request to invalid_cursor", async () => {
+    const f = fixture();
+    const upstream = await fakeOpencodeHandler((incoming, outgoing) => {
+      if (incoming.method === "GET" && incoming.url?.startsWith("/session/ses_1/message")) {
+        outgoing.writeHead(400, { "content-type": "application/json" });
+        outgoing.end(JSON.stringify({ error: "bad cursor" }));
+        return;
+      }
+      outgoing.writeHead(404);
+      outgoing.end("missing");
+    });
+    useUpstream(f.deps, upstream.endpoint);
+
+    const response = await handleChat(f.deps, listRequest(f, { limit: "30", before: "bad" }));
+    expect(response.status).toBe(400);
+    expect(JSON.parse(response.body)).toEqual({
+      error: "invalid message cursor",
+      code: "invalid_cursor",
+    });
+  });
+
+  it("maps an upstream 404 on a paged read to session_not_found", async () => {
+    const f = fixture();
+    const upstream = await fakeOpencodeHandler((incoming, outgoing) => {
+      if (incoming.method === "GET" && incoming.url?.startsWith("/session/ses_1/message")) {
+        outgoing.writeHead(404);
+        outgoing.end("no session");
+        return;
+      }
+      outgoing.writeHead(404);
+      outgoing.end("missing");
+    });
+    useUpstream(f.deps, upstream.endpoint);
+
+    const response = await handleChat(f.deps, listRequest(f, { limit: "30" }));
+    expect(response.status).toBe(404);
+    expect(JSON.parse(response.body)).toEqual({
+      error: "session not found",
+      code: "session_not_found",
+    });
   });
 });
 

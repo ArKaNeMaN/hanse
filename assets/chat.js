@@ -16,6 +16,9 @@ const RECONCILE_MS = 500;
 const OMO_CLASSIFY_QUIET_MS = 100;
 const OMO_DETAILS_CHAR_LIMIT = 600;
 const OMO_DETAILS_LINE_LIMIT = 8;
+const MESSAGES_PAGE_SIZE = 30;
+const HISTORY_SCROLL_THRESHOLD_PX = 120;
+const HISTORY_MAX_CONTINUE_PAGES = 3;
 
 const KNOWN_PART_TYPES = new Set([
   "text",
@@ -55,6 +58,11 @@ function main() {
   const sessionError = document.getElementById("session-error");
   const messagesEl = document.getElementById("chat-messages");
   const scrollEl = document.getElementById("chat-scroll");
+  const historyEl = document.getElementById("chat-history");
+  const historyLabelEl = document.getElementById("chat-history-label");
+  const generatingEl = document.getElementById("chat-generating");
+  const generatingLabelEl = document.getElementById("chat-generating-label");
+  const generatingElapsedEl = document.getElementById("chat-generating-elapsed");
   const composer = document.getElementById("chat-composer");
   const promptEl = document.getElementById("chat-prompt");
   const sendButton = document.getElementById("chat-send");
@@ -120,6 +128,12 @@ function main() {
   const deletingSessions = new Set();
   let queueStripSignature = "";
   let sessionSnapshotTooLarge = false;
+  let historyCursor = null;
+  let historyLoaded = false;
+  let historyRequestSeq = 0;
+  let historyRequest = null;
+  let prependPending = false;
+  let historyScrollFrame = null;
 
   let store = createThreadStore(null);
   const sessionRuntime = new Map();
@@ -546,10 +560,12 @@ function main() {
   }
 
   function renderElapsed() {
-    if (workingElapsedEl === null) return;
     const text = elapsedText;
-    workingElapsedEl.hidden = text.length === 0;
-    if (workingElapsedEl.textContent !== text) workingElapsedEl.textContent = text;
+    for (const target of [workingElapsedEl, generatingElapsedEl]) {
+      if (target === null) continue;
+      target.hidden = text.length === 0;
+      if (target.textContent !== text) target.textContent = text;
+    }
   }
 
   function tickElapsed() {
@@ -597,7 +613,6 @@ function main() {
   }
 
   function updateWorkingStatus() {
-    if (workingEl === null) return;
     const label = activeStatusLabel();
     const waiting = label === "Waiting for you";
     const paused = label === "Paused";
@@ -607,6 +622,12 @@ function main() {
       if (elapsedStartedAt === null) startElapsed();
       else resumeElapsed();
     }
+    const active = !waiting && !paused && label !== "Ready";
+    if (generatingEl !== null) generatingEl.hidden = !active;
+    if (generatingLabelEl !== null && generatingLabelEl.textContent !== label) {
+      generatingLabelEl.textContent = label;
+    }
+    if (workingEl === null) return;
     if (waiting) {
       workingEl.hidden = true;
     } else {
@@ -724,11 +745,18 @@ function main() {
     return withProject(`${apiBase()}/sessions/${encodeURIComponent(id)}`);
   }
 
-  function messagesUrl(id) {
+  function messagesUrl(id, options) {
     const session = id === undefined ? sessionId : id;
-    return withProject(
-      `${apiBase()}/sessions/${encodeURIComponent(session || "")}/messages`,
-    );
+    const settings = options || {};
+    const params = new URLSearchParams();
+    if (projectId.length > 0) params.set("project", projectId);
+    if (settings.limit !== undefined) params.set("limit", String(settings.limit));
+    if (settings.before !== undefined && settings.before !== null) {
+      params.set("before", settings.before);
+    }
+    const query = params.toString();
+    const base = `${apiBase()}/sessions/${encodeURIComponent(session || "")}/messages`;
+    return query.length === 0 ? base : `${base}?${query}`;
   }
 
   function asyncMessagesUrl(id) {
@@ -803,6 +831,11 @@ function main() {
 
   function plural(count, singular, pluralForm) {
     return `${count} ${count === 1 ? singular : pluralForm || `${singular}s`}`;
+  }
+
+  function messageCountLabel(count) {
+    if (historyCursor === null) return plural(count, "message");
+    return `${count}+ ${count === 1 ? "message" : "messages"}`;
   }
 
   function relativeTime(value) {
@@ -2790,8 +2823,9 @@ function main() {
     return scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight < 80;
   }
 
-  function captureScrollAnchor() {
-    if (scrollEl === null || isAtBottom()) return null;
+  function captureScrollAnchor(force = false) {
+    if (scrollEl === null) return null;
+    if (!force && isAtBottom()) return null;
     const top = scrollEl.getBoundingClientRect().top;
     for (const id of store.order) {
       const record = store.messages.get(id);
@@ -2843,32 +2877,39 @@ function main() {
 
   function flushFrame(options) {
     if (messagesEl === null) return;
+    const settings = options || {};
+    const prepend = settings.prepend === true;
     if (document.hidden) {
       flushPending = true;
+      if (prepend) prependPending = true;
       return;
     }
-    const settings = options || {};
     const force = forceFinalRender;
     forceFinalRender = false;
     applyPendingDeltas();
     updateWorkingStatus();
-    const atBottom = isAtBottom();
-    const anchor = atBottom ? null : captureScrollAnchor();
+    const atBottom = prepend ? false : isAtBottom();
+    const anchor = prepend
+      ? captureScrollAnchor(true)
+      : atBottom
+        ? null
+        : captureScrollAnchor();
     const previousCount = lastRenderedCount;
     const full = settings.full === true;
     if (full) markAllDirty();
     const throttled = renderDirty(full, force);
     messagesEl.removeAttribute("aria-busy");
     const count = store.order.length;
-    if (countEl !== null && (count !== previousCount || settings.full === true)) {
-      countEl.textContent = plural(count, "message");
+    if (countEl !== null) {
+      const label = messageCountLabel(count);
+      if (countEl.textContent !== label) countEl.textContent = label;
     }
-    if (settings.forceBottom === true || atBottom) {
+    if (!prepend && (settings.forceBottom === true || atBottom)) {
       if (scrollEl !== null) scrollEl.scrollTop = scrollEl.scrollHeight;
       if (newMessages !== null) newMessages.hidden = true;
     } else {
       restoreScrollAnchor(anchor);
-      if (count > previousCount && newMessages !== null) newMessages.hidden = false;
+      if (!prepend && count > previousCount && newMessages !== null) newMessages.hidden = false;
     }
     lastRenderedCount = count;
     dirtyMessages = new Set();
@@ -3113,6 +3154,8 @@ function main() {
         sessionRuntime.set(payload.sessionID, runtime);
       }
       runtime.agentStatus = payload.status;
+      if (runtime.historyCursor === undefined) runtime.historyCursor = null;
+      if (runtime.historyLoaded === undefined) runtime.historyLoaded = false;
       return;
     }
     const previous = currentStatusType();
@@ -6079,21 +6122,26 @@ function main() {
       queue: [...store.queue],
       lastSeqByStream: new Map(store.lastSeqByStream),
       currentStreamID: store.currentStreamID,
+      historyCursor,
+      historyLoaded,
     });
   }
 
   function adoptRuntime(id) {
     const saved = sessionRuntime.get(id);
     const next = createThreadStore(id);
+    historyCursor = saved === undefined ? null : saved.historyCursor ?? null;
+    historyLoaded = saved === undefined ? false : saved.historyLoaded ?? false;
     if (saved === undefined) return next;
-    next.order = [...saved.order];
-    next.messages = saved.messages;
-    next.openParts = new Set(saved.openParts);
+    next.order = Array.isArray(saved.order) ? [...saved.order] : [];
+    next.messages = saved.messages instanceof Map ? saved.messages : new Map();
+    next.openParts = saved.openParts instanceof Set ? new Set(saved.openParts) : new Set();
     next.agentStatus = saved.agentStatus ?? null;
     next.turnGeneration = saved.turnGeneration ?? 0;
     next.activePromptID = saved.activePromptID ?? null;
     next.queue = Array.isArray(saved.queue) ? [...saved.queue] : [];
-    next.lastSeqByStream = new Map(saved.lastSeqByStream);
+    next.lastSeqByStream =
+      saved.lastSeqByStream instanceof Map ? new Map(saved.lastSeqByStream) : new Map();
     next.currentStreamID = saved.currentStreamID ?? null;
     return next;
   }
@@ -6115,7 +6163,7 @@ function main() {
     };
     if (initial) showMessagesLoading();
     try {
-      const data = await api(messagesUrl(target));
+      const data = await api(messagesUrl(target, { limit: MESSAGES_PAGE_SIZE }));
       if (sequence !== hydrationSeq || sessionId !== target) return;
       const snapshotMessages = Array.isArray(data.messages) ? data.messages : [];
       const snapshotIDs = new Set();
@@ -6124,12 +6172,69 @@ function main() {
         const info = entry.info && typeof entry.info === "object" ? entry.info : entry;
         if (typeof info.id === "string") snapshotIDs.add(info.id);
       }
+      let hasServerWindow = false;
+      for (const id of store.order) {
+        if (typeof id !== "string" || id.startsWith("local_")) continue;
+        if (store.messages.has(id)) {
+          hasServerWindow = true;
+          break;
+        }
+      }
+      let overlap = false;
+      for (const id of snapshotIDs) {
+        if (typeof id !== "string" || id.startsWith("local_")) continue;
+        if (store.messages.has(id)) {
+          overlap = true;
+          break;
+        }
+      }
+      let position = "tail";
+      let resetWindow = false;
+      if (hasServerWindow && snapshotMessages.length > 0 && !overlap) {
+        position = "replace";
+        resetWindow = true;
+      }
+      let prefixPreserved = false;
+      if (position === "tail") {
+        let anchorIndex = -1;
+        for (let index = 0; index < store.order.length; index += 1) {
+          if (snapshotIDs.has(store.order[index])) {
+            anchorIndex = index;
+            break;
+          }
+        }
+        if (anchorIndex === -1) {
+          prefixPreserved = hasServerWindow;
+        } else {
+          for (let index = 0; index < anchorIndex; index += 1) {
+            const id = store.order[index];
+            if (typeof id !== "string" || id.startsWith("local_")) continue;
+            if (store.messages.has(id) && !snapshotIDs.has(id)) {
+              prefixPreserved = true;
+              break;
+            }
+          }
+        }
+      }
       const result = applySnapshot(store, snapshotMessages, {
+        position,
+        ...(resetWindow ? { keepOptimistic: "transient" } : {}),
         capturedTurnGeneration: turnGeneration,
         sessionStatusType: currentStatusType(),
         sessionID: target,
       });
       store = result.store;
+      const nextCursor = data.nextCursor ?? null;
+      if (resetWindow) {
+        historyLoaded = false;
+        historyCursor = nextCursor;
+        historyRequestSeq += 1;
+        historyRequest = null;
+        prependPending = false;
+        hideHistoryRow();
+      } else if (!historyLoaded && !prefixPreserved) {
+        historyCursor = nextCursor;
+      }
       clearAllOmoClassifyTimers();
       sessionSnapshotTooLarge = false;
       setSessionNotice(false);
@@ -6145,7 +6250,7 @@ function main() {
       forceFinalRender = true;
       flushFrame({
         full: true,
-        forceBottom: initial || settings.forceBottom === true,
+        forceBottom: initial || settings.forceBottom === true || resetWindow,
       });
       messagesHydratedSession = target;
       for (const correlationKey of Array.from(deferredUnavailable)) {
@@ -6201,6 +6306,129 @@ function main() {
     }
   }
 
+  function showHistoryLoading() {
+    if (historyEl === null) return;
+    historyEl.hidden = false;
+    historyEl.dataset.state = "loading";
+    if (historyLabelEl !== null) historyLabelEl.textContent = "Loading earlier messages...";
+  }
+
+  function showHistoryError(message) {
+    if (historyEl === null) return;
+    historyEl.hidden = false;
+    historyEl.dataset.state = "error";
+    if (historyLabelEl !== null) historyLabelEl.textContent = message;
+  }
+
+  function hideHistoryRow() {
+    if (historyEl === null) return;
+    historyEl.hidden = true;
+    historyEl.dataset.state = "idle";
+  }
+
+  function handleHistoryError(error) {
+    const code = error !== null && typeof error === "object" ? error.code : undefined;
+    const status = error !== null && typeof error === "object" ? error.status : undefined;
+    if (code === "invalid_cursor") {
+      historyCursor = null;
+      showHistoryError("Earlier messages unavailable.");
+      return;
+    }
+    if (code === "session_not_found" || status === 404) {
+      historyCursor = null;
+      showHistoryError("Session no longer exists.");
+      refreshSessions().catch(() => {});
+      return;
+    }
+    if (code === "messages_too_large") {
+      historyCursor = null;
+      showHistoryError("Earlier messages are too large to load.");
+      return;
+    }
+    showHistoryError("Earlier messages unavailable - scroll to retry.");
+  }
+
+  async function loadOlderMessages() {
+    if (sessionId === null || historyCursor === null || historyRequest !== null) return;
+    const target = sessionId;
+    const token = {
+      session: target,
+      seq: ++historyRequestSeq,
+      generation: store.generation,
+      cursor: historyCursor,
+    };
+    historyRequest = token;
+    showHistoryLoading();
+    let loaded = false;
+    let errorShown = false;
+    let pageCount = 0;
+    try {
+      while (true) {
+        const data = await api(
+          messagesUrl(target, { limit: MESSAGES_PAGE_SIZE, before: token.cursor }),
+        );
+        if (
+          sessionId !== target ||
+          historyRequest !== token ||
+          store.generation !== token.generation ||
+          historyCursor !== token.cursor
+        ) {
+          return;
+        }
+        const pageMessages = Array.isArray(data.messages) ? data.messages : [];
+        const pageIDs = new Set();
+        for (const entry of pageMessages) {
+          if (entry === null || typeof entry !== "object") continue;
+          const info = entry.info && typeof entry.info === "object" ? entry.info : entry;
+          if (typeof info.id === "string") pageIDs.add(info.id);
+        }
+        let newIDs = 0;
+        for (const id of pageIDs) {
+          if (!store.messages.has(id)) newIDs += 1;
+        }
+        const result = applySnapshot(store, pageMessages, {
+          position: "older",
+          sessionStatusType: currentStatusType(),
+          sessionID: target,
+        });
+        store = result.store;
+        historyLoaded = true;
+        historyCursor = data.nextCursor ?? null;
+        const acceptance = acceptanceBySession.get(target);
+        if (acceptance !== undefined && acceptance.knownUserIDs instanceof Set) {
+          for (const id of pageIDs) {
+            const record = store.messages.get(id);
+            if (record !== undefined && record.role === "user") {
+              acceptance.knownUserIDs.add(id);
+            }
+          }
+        }
+        loaded = true;
+        pageCount += 1;
+        token.cursor = historyCursor;
+        token.generation = store.generation;
+        if (historyCursor === null) break;
+        if (newIDs > 0) break;
+        if (pageCount >= HISTORY_MAX_CONTINUE_PAGES) break;
+      }
+      forceFinalRender = true;
+      hideHistoryRow();
+      flushFrame({ full: true, prepend: true });
+    } catch (error) {
+      errorShown = true;
+      if (loaded) {
+        forceFinalRender = true;
+        flushFrame({ full: true, prepend: true });
+      }
+      handleHistoryError(error);
+    } finally {
+      if (historyRequest === token) {
+        historyRequest = null;
+        if (!errorShown) hideHistoryRow();
+      }
+    }
+  }
+
   async function loadMessages(options) {
     await hydrateMessages(options);
   }
@@ -6242,6 +6470,7 @@ function main() {
 
   function resetFeedDom() {
     clearAllOmoClassifyTimers();
+    historyRequest = null;
     messageNodes = new Map();
     partNodes = new Map();
     partOwner.clear();
@@ -6253,7 +6482,13 @@ function main() {
     dirtyParts = new Set();
     orderDirty = false;
     lastRenderedCount = 0;
+    historyRequest = null;
     if (newMessages !== null) newMessages.hidden = true;
+    if (historyEl !== null) {
+      historyEl.hidden = true;
+      historyEl.dataset.state = "idle";
+    }
+    if (generatingEl !== null) generatingEl.hidden = true;
     if (messagesEl !== null) messagesEl.replaceChildren();
     if (questionPlaceholderEl !== null) questionPlaceholderEl.replaceChildren();
     queueStripSignature = "";
@@ -6267,10 +6502,18 @@ function main() {
     const previous = sessionId;
     if (previous !== null && previous !== id) saveCurrentRuntime();
     hydrationSeq += 1;
+    historyRequestSeq += 1;
+    historyRequest = null;
+    prependPending = false;
     hydrating = false;
     hydrationBuffer = null;
     sessionId = id;
-    if (previous !== id) store = adoptRuntime(id);
+    if (previous !== id) {
+      store = adoptRuntime(id);
+      const runtime = sessionRuntime.get(id);
+      historyCursor = runtime === undefined ? null : runtime.historyCursor ?? null;
+      historyLoaded = runtime === undefined ? false : runtime.historyLoaded ?? false;
+    }
     store.sessionID = id;
     store.connection = "connecting";
     resetFeedDom();
@@ -6309,6 +6552,11 @@ function main() {
     const settings = options || {};
     saveCurrentRuntime();
     hydrationSeq += 1;
+    historyRequestSeq += 1;
+    historyRequest = null;
+    historyCursor = null;
+    historyLoaded = false;
+    prependPending = false;
     hydrating = false;
     hydrationBuffer = null;
     sessionId = null;
@@ -6772,6 +7020,14 @@ function main() {
   if (scrollEl !== null) {
     scrollEl.addEventListener("scroll", () => {
       if (isAtBottom() && newMessages !== null) newMessages.hidden = true;
+      if (scrollEl.scrollTop > HISTORY_SCROLL_THRESHOLD_PX) return;
+      if (historyScrollFrame !== null) return;
+      historyScrollFrame = window.requestAnimationFrame(() => {
+        historyScrollFrame = null;
+        if (scrollEl.scrollTop <= HISTORY_SCROLL_THRESHOLD_PX) {
+          loadOlderMessages().catch(() => {});
+        }
+      });
     });
   }
   if (newMessages !== null) {
@@ -6785,7 +7041,9 @@ function main() {
     if (document.hidden) return;
     if (flushPending) {
       flushPending = false;
-      flushFrame({ full: true });
+      const prepend = prependPending;
+      prependPending = false;
+      flushFrame({ full: true, prepend });
     }
   });
   document.addEventListener("keydown", (event) => {

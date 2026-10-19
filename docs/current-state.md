@@ -106,6 +106,9 @@ Both containers use the same image (`hanse:0.1.0`, built from `Dockerfile`).
   is additive and disambiguates duplicate app keys. API:
   `GET/POST /api/apps/:app/sessions`, `DELETE /api/apps/:app/sessions/:sid`,
   `GET/POST /api/apps/:app/sessions/:sid/messages`; all accept `?project=<projectId>`.
+  `GET .../messages` accepts optional `limit` (1..200) and `before` (an opaque upstream cursor);
+  with `limit` it returns `{messages, nextCursor}` and the chat opens a 30-message tail. Without
+  `limit` the legacy `{messages}` full-history response is unchanged.
   `POST .../messages?async=1` accepts `{text}` and returns `202 {accepted, messageID, sessionID}`
   without waiting for the turn; the blocking route without `async` keeps its `200 {message}`
   response. Async text is capped at 32 KiB; an older upstream without `prompt_async` returns
@@ -124,6 +127,15 @@ Both containers use the same image (`hanse:0.1.0`, built from `Dockerfile`).
   at most every 100 ms (and once on completion), and the feed is never replaced on a token. Snapshot
   hydration seals completed messages, leaves only the last uncompleted assistant's text/reasoning
   unsealed, merges optimistic rows by server ID, and preserves open tool disclosures and scroll.
+  The client loads a 30-message tail on open and prepends 30-message older pages when the thread is
+  scrolled near the top; the scroll anchor is preserved and prepends never show the "New messages"
+  affordance. Tail hydration merges by message ID and keeps loaded history; a provably disjoint tail
+  (more than a page missed while disconnected) resets to a contiguous window. An older-page failure
+  is terminal per kind (bad cursor, missing session, oversize) or retryable on the next top-scroll.
+- A decorative in-feed generation row (`#chat-generating`) mirrors the active status label
+  (`Sending`, `Thinking`, `Working`, `Running <tool>`, `Retrying`) and elapsed time inside the
+  conversation. It is `aria-hidden` (the meta chip remains the live region) and honors
+  `prefers-reduced-motion`.
 - Send/queue behavior: a submitted prompt appears immediately as an optimistic operator row
   (`sending`, then `accepted` after the 202; `queued` while the agent is busy; `unknown` during the
   delivery-unknown grace). The queue strip above the prompt dock is derived from upstream history
@@ -300,7 +312,7 @@ coordinator; operators do not set them.
 
 ## Verification
 
-`npm run lint && npm run typecheck && npm test && npm run build` (all green; 522 tests). Chat browser
+`npm run lint && npm run typecheck && npm test && npm run build` (all green; 558 tests). Chat browser
 QA: `node docs/design/chat-qa.mjs` (deterministic fixtures; 3 scenarios, 81 assertions, 10
 screenshots, zero console/page errors). Live smoke on `deployment-host` against the real `demo-app` agent: 1
 scenario, 2 assertions, streaming assistant text and a rendered markdown table, zero console/page
@@ -367,10 +379,11 @@ Settings stage verification:
   repositories. A per-repository in-memory lock serializes UI actions but does not cover agents or the
   IDE writing to the same repository.
 - The IDE chat can be moved to the right sidebar only by a one-time user action (VS Code limitation).
-- Chat messages render every item in a session (no virtualization); very large sessions are the
-  scaling limit. The idle `GET /messages` snapshot is capped at 8 MiB (`messages_too_large`); the
-  running tool output shown live is capped to a 64 KiB tail and the full result appears only when the
-  whole message snapshot fits the cap (no dedicated full-output fetch). Queued messages cannot be
+- Chat loads a 30-message tail and prepends older pages on scroll-up, but the loaded window is not
+  virtualized; very large loaded windows remain the scaling limit. The idle `GET /messages` snapshot
+  is capped at 8 MiB (`messages_too_large`); the running tool output shown live is capped to a 64 KiB
+  tail and the full result appears only when the whole message snapshot fits the cap (no dedicated
+  full-output fetch). Queued messages cannot be
   removed while the agent is busy (upstream `DELETE .../message/:mid` returns 409 `SessionBusyError`),
   the queue is not persisted/reorderable, and there is no client-side holding queue. OMO
   classification is client-only (no server persistence), and permissions always stay in the dock (no
