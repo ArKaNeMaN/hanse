@@ -55,12 +55,6 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable={{is_default_branch}}
-          labels: |
-            org.opencontainers.image.title=hanse
-            org.opencontainers.image.description=Self-hosted coordinator/workbench for projects of isolated opencode agent applications.
-            org.opencontainers.image.url=https://github.com/ArKaNeMaN/hanse
-            org.opencontainers.image.documentation=https://github.com/ArKaNeMaN/hanse/blob/main/docs/deployment.md
-            org.opencontainers.image.licenses=NOASSERTION
 
       - name: Build and push (linux/amd64, linux/arm64)
         uses: docker/build-push-action@v6
@@ -69,7 +63,6 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             VERSION=${{ steps.pkg.outputs.version }}
             REVISION=${{ github.sha }}
