@@ -964,6 +964,116 @@ describe("session.status and session.idle", () => {
   });
 });
 
+describe("session.error", () => {
+  function errorEvent(
+    id: string,
+    message: string,
+    extra: Record<string, unknown> = {},
+  ): Record<string, unknown> {
+    return {
+      id,
+      type: "session.error",
+      properties: {
+        sessionID: "ses_1",
+        error: { name: "UnknownError", data: { message } },
+        ...extra,
+      },
+    };
+  }
+
+  it("projects the session, name, and first message line", () => {
+    const projector = new EventProjector();
+    const events = projector.project(
+      errorEvent("evt_error", "Model not found: deepseek/deepseek_flash\n    at foo"),
+    );
+    expect(events).toEqual([
+      {
+        type: "session.error",
+        sessionID: "ses_1",
+        name: "UnknownError",
+        message: "Model not found: deepseek/deepseek_flash",
+      },
+    ]);
+  });
+
+  it("suppresses a stack-trace variant with the same first line", () => {
+    const projector = new EventProjector();
+    const first = projector.project(errorEvent("evt_error_1", "Model not found: deepseek/flash"));
+    expect(first).toHaveLength(1);
+    const stack = projector.project(
+      errorEvent("evt_error_2", "Model not found: deepseek/flash\n    at Provider.init (/x.js:1)"),
+    );
+    expect(stack).toEqual([]);
+  });
+
+  it("suppresses a prefixed variant of the same error", () => {
+    const projector = new EventProjector();
+    const first = projector.project(errorEvent("evt_error_1", "Model not found: deepseek/flash"));
+    expect(first).toEqual([
+      {
+        type: "session.error",
+        sessionID: "ses_1",
+        name: "UnknownError",
+        message: "Model not found: deepseek/flash",
+      },
+    ]);
+    const prefixed = projector.project(
+      errorEvent(
+        "evt_error_2",
+        "ProviderModelNotFoundError: Model not found: deepseek/flash\n    at getModel (/x.js:1)",
+      ),
+    );
+    expect(prefixed).toEqual([]);
+  });
+
+  it("resets dedupe on a new busy attempt", () => {
+    const projector = new EventProjector();
+    projector.project(errorEvent("evt_error_1", "Model not found: deepseek/flash"));
+    projector.project({
+      id: "evt_busy",
+      type: "session.status",
+      properties: { sessionID: "ses_1", status: { type: "busy" } },
+    });
+    const repeated = projector.project(
+      errorEvent("evt_error_2", "Model not found: deepseek/flash"),
+    );
+    expect(repeated).toEqual([
+      {
+        type: "session.error",
+        sessionID: "ses_1",
+        name: "UnknownError",
+        message: "Model not found: deepseek/flash",
+      },
+    ]);
+  });
+
+  it("falls back to a bounded activity when the direct session id is missing", () => {
+    const projector = new EventProjector();
+    const events = projector.project({
+      id: "evt_error_no_session",
+      type: "session.error",
+      properties: {
+        info: { id: "ses_2" },
+        error: { name: "UnknownError", data: { message: "boom" } },
+      },
+    });
+    expect(events).toEqual([{ type: "session.activity", sessionID: "ses_2", cause: "unknown" }]);
+  });
+
+  it("bounds an oversized message and stays under the typed event budget", () => {
+    const projector = new EventProjector();
+    const events = projector.project(
+      errorEvent("evt_error_big", "x".repeat(MAX_STATUS_MESSAGE + 500)),
+    );
+    expect(events).toHaveLength(1);
+    const event = events[0];
+    expect(event?.type).toBe("session.error");
+    if (event?.type !== "session.error") return;
+    expect(event.message.length).toBeLessThanOrEqual(MAX_STATUS_MESSAGE);
+    expect(bytes(event)).toBeLessThanOrEqual(MAX_TYPED_EVENT_BYTES);
+  });
+});
+
 describe("session.activity", () => {
   it.each([
     [

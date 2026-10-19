@@ -4642,6 +4642,14 @@
     color: var(--warning);
   }
 
+  .message--optimistic[data-state="failed"] .message__state {
+    color: var(--danger);
+  }
+
+  .message--optimistic[data-state="failed"] .message__body {
+    border-color: color-mix(in oklab, var(--danger) 40%, var(--line));
+  }
+
   .message__state {
     color: var(--text-3);
     font-family: var(--font-mono);

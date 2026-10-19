@@ -40,7 +40,7 @@
  * @property {string} [parentID] Assistant -> last consumed user message.
  * @property {string} [finish] Assistant finish reason.
  * @property {{ created?: number, completed?: number }} [time]
- * @property {"sending" | "queued" | "accepted" | "unknown"} [optimistic] Presentation only.
+ * @property {"sending" | "queued" | "accepted" | "unknown" | "failed"} [optimistic] Presentation only.
  * @property {OmoSystemMeta} [system] Derived, never persisted.
  * @property {string[]} partOrder
  * @property {Map<string, PartRecord>} parts
@@ -483,6 +483,9 @@ export function deriveQueue(store, status = {}) {
     if (record.classificationPending === true) {
       continue;
     }
+    if (record.optimistic === "failed") {
+      continue;
+    }
     pending.push(record.id);
   }
 
@@ -842,11 +845,14 @@ function preservedOpenParts(base, order, messages, currentOpenParts) {
  * @param {string} id
  * @param {{ activeID: string | null, queuedIDs: string[] }} derived
  * @param {boolean} [preserveInFlight]
- * @returns {"sending" | "queued" | "accepted" | "unknown"}
+ * @returns {"sending" | "queued" | "accepted" | "unknown" | "failed"}
  */
 function presentationState(store, id, derived, preserveInFlight = true) {
   const record = store.messages.get(id);
   const current = record?.optimistic;
+  if (current === "failed") {
+    return current;
+  }
   if (preserveInFlight && (current === "sending" || current === "unknown")) {
     return current;
   }

@@ -112,6 +112,10 @@ configuration. This stage does not wire the coordinator's encrypted credential s
   and `/home/node/.omo/omo.jsonc` exist in the `hanse` image, and that `HANSE_OMO_PLUGIN` is set.
 - **Settings show "Restart required"**: settings never auto-restart agents. Use the restart action on
   the app/chat/settings page; an active turn is interrupted and sessions are kept.
+- **Chat shows "Agent error: Model not found"**: the selected `llm.model` is not a model ID the
+  provider exposes (for example `deepseek/deepseek_flash` instead of `deepseek/deepseek-flash`).
+  Fix the setting at the narrowest scope; chat prompts carry the effective model, so the next message
+  uses it without a restart. Restart only if OMO subagents or the instance profile must change too.
 - **Provider/model or web-tool warning**: add the provider key on the settings page, or mount a host
   `auth.json` with the provider; a cleared key suppresses both wider scopes and host auth.
 - **Built-in search warning**: built-in search depends on the OMO baseline (`HANSE_OMO_PLUGIN`).

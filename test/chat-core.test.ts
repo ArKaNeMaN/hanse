@@ -23,7 +23,7 @@ interface MessageInit {
   parentID?: string;
   finish?: string;
   time?: { created?: number; completed?: number };
-  optimistic?: "sending" | "queued" | "accepted" | "unknown";
+  optimistic?: "sending" | "queued" | "accepted" | "unknown" | "failed";
   system?: Record<string, unknown>;
   classificationPending?: boolean;
   needsReconcile?: boolean;
@@ -368,6 +368,28 @@ describe("deriveQueue", () => {
       queuedIDs: ["temp_unknown"],
       turnContinues: false,
       nextActivePromptID: "temp_sending",
+    });
+  });
+
+  it("ignores a failed user record even when it is the last prompt", () => {
+    const store = makeStore({
+      messages: [
+        user("u1"),
+        assistant("a1", [textPart("a1t", "done")], {
+          parentID: "u1",
+          finish: "stop",
+          time: { created: 1, completed: 2 },
+        }),
+        { ...user("u_failed", [textPart("fp", "boom")]), optimistic: "failed" },
+      ],
+      activePromptID: "u_failed",
+    });
+
+    expect(deriveQueue(store, { sessionStatusType: "busy" })).toEqual({
+      activeID: null,
+      queuedIDs: [],
+      turnContinues: false,
+      nextActivePromptID: null,
     });
   });
 
@@ -856,6 +878,44 @@ describe("applySnapshot", () => {
     expect(present.store.messages.get("msg_u")?.optimistic).toBe("accepted");
     expect(present.store.messages.size).toBe(1);
     expect(present.store.messages.get("msg_u")?.parts.has("sp")).toBe(true);
+  });
+
+  it("preserves a failed user row across snapshot reconciliation", () => {
+    const local = makeStore({
+      messages: [{ ...user("local_failed", [textPart("lf", "boom")]), optimistic: "failed" }],
+    });
+    const kept = applySnapshot(local, []).store;
+    expect(kept.messages.get("local_failed")?.optimistic).toBe("failed");
+    expect(kept.order).toEqual(["local_failed"]);
+    expect(kept.queue).toEqual([]);
+    expect(deriveQueue(kept, { sessionStatusType: "idle" }).activeID).toBeNull();
+
+    const adopted = applySnapshot(local, [
+      snapMessage("local_failed", "user", [snapPart("sf", "text", { text: "boom" })]),
+    ]).store;
+    expect(adopted.messages.get("local_failed")?.optimistic).toBe("failed");
+    expect(adopted.queue).toEqual([]);
+    expect(deriveQueue(adopted, { sessionStatusType: "idle" }).activeID).toBeNull();
+  });
+
+  it("keeps a local synthetic error card when the snapshot is empty", () => {
+    const errorID = "local_error_stream_1";
+    const partID = `${errorID}:part:text`;
+    const current = makeStore({
+      messages: [
+        {
+          id: errorID,
+          role: "assistant",
+          time: { created: 1 },
+          parts: [{ id: partID, type: "text", text: "**Agent error:** boom", sealed: true }],
+        },
+      ],
+    });
+
+    const { store } = applySnapshot(current, []);
+    expect(store.order).toEqual([errorID]);
+    expect(store.messages.get(errorID)?.role).toBe("assistant");
+    expect(store.messages.get(errorID)?.parts.get(partID)?.data.text).toBe("**Agent error:** boom");
   });
 
   it("derives queued presentation for a kept optimistic row during a streaming turn", () => {

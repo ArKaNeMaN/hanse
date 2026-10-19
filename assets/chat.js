@@ -639,6 +639,7 @@ function main() {
       const record = store.messages.get(id);
       if (record === undefined || record.optimistic === undefined) continue;
       if (record.optimistic === "sending" || record.optimistic === "unknown") continue;
+      if (record.optimistic === "failed") continue;
       if (id === derived.activeID) record.optimistic = "accepted";
       else if (derived.queuedIDs.includes(id)) record.optimistic = "queued";
       else record.optimistic = "accepted";
@@ -1886,6 +1887,7 @@ function main() {
     if (state === "sending") return "Sending…";
     if (state === "queued") return "Queued";
     if (state === "unknown") return "Delivery unknown; checking…";
+    if (state === "failed") return "Failed";
     return "";
   }
 
@@ -3390,6 +3392,81 @@ function main() {
       scheduleReconcile(RECONCILE_MS);
       scheduleFlush();
       if (payload.sessionID === sessionId) refreshInlineQuestions();
+      return;
+    }
+
+    if (type === "session.error") {
+      if (typeof payload.sessionID === "string" && payload.sessionID !== sessionId) return;
+      const rawMessage = typeof payload.message === "string" ? payload.message.trim() : "";
+      const message =
+        rawMessage.length > 0 ? rawMessage : "The agent failed without an error message.";
+
+      const acceptance = activeAcceptance();
+      const failedIDs = new Set();
+      if (typeof store.activePromptID === "string") failedIDs.add(store.activePromptID);
+      for (const id of store.queue) failedIDs.add(id);
+      if (typeof acceptance.serverID === "string") failedIDs.add(acceptance.serverID);
+      if (typeof acceptance.tempID === "string") failedIDs.add(acceptance.tempID);
+      for (const id of failedIDs) {
+        const record = store.messages.get(id);
+        if (record === undefined || record.role !== "user") continue;
+        record.optimistic = "failed";
+        record.version += 1;
+        dirtyMessages.add(id);
+      }
+      if (acceptance.state === "sending" || acceptance.state === "unknown") {
+        acceptance.state = "idle";
+        acceptance.inFlight = false;
+        acceptance.posting = false;
+        acceptance.tempID = null;
+        acceptance.serverID = null;
+        clearAcceptanceGrace(acceptance);
+      }
+      recomputeQueue();
+      syncComposer();
+
+      const streamID = typeof payload.streamID === "string" ? payload.streamID : "";
+      const seq = typeof payload.seq === "number" ? payload.seq : undefined;
+      const errorID = `local_error_${streamID || "stream"}_${seq ?? Date.now()}`;
+      if (!store.messages.has(errorID)) {
+        const partID = `${errorID}:part:text`;
+        const part = {
+          id: partID,
+          type: "text",
+          data: { id: partID, type: "text", text: `**Agent error:** ${message}` },
+          provisional: false,
+          partial: false,
+          sealed: true,
+          version: 1,
+        };
+        const record = {
+          id: errorID,
+          role: "assistant",
+          provisional: false,
+          partial: false,
+          sealed: true,
+          time: { created: Date.now() },
+          partOrder: [partID],
+          parts: new Map([[partID, part]]),
+          version: 1,
+        };
+        store.messages.set(errorID, record);
+        store.order.push(errorID);
+        partOwner.set(partID, errorID);
+        orderDirty = true;
+        dirtyMessages.add(errorID);
+      }
+
+      if (currentStatusType() !== "idle") {
+        applyAgentStatus({ sessionID: payload.sessionID, status: { type: "idle" } });
+      } else {
+        recomputeQueue();
+        scheduleFlush();
+      }
+
+      announce("The agent failed; details are in the chat.");
+      const toastMessage = message.length > 180 ? `${message.slice(0, 179)}…` : message;
+      showToast(`Agent error: ${toastMessage}`, "error");
       return;
     }
 

@@ -30,6 +30,7 @@ export const MAX_PATCH_BYTES = 64 * 1024;
 export const MAX_PART_STRING_BYTES = 8 * 1024;
 export const MAX_PART_ARRAY_ITEMS = 200;
 export const MAX_STATUS_MESSAGE = 2_000;
+export const MAX_ERROR_NAME_LENGTH = 200;
 export const MAX_STATUS_ACTION_BYTES = 2 * 1024;
 export const MAX_MESSAGE_INFO_BYTES = 8 * 1024;
 export const IDENTITY_SALVAGE_PREFIX_BYTES = 64 * 1024;
@@ -172,6 +173,12 @@ export type HanseEvent =
       sessionID: string;
       status: HanseSessionStatus;
       truncated?: Truncation;
+    }
+  | {
+      type: "session.error";
+      sessionID: string;
+      name?: string;
+      message: string;
     }
   | { type: "session.activity"; sessionID: string; cause?: HanseActivityCause }
   | {
@@ -552,6 +559,20 @@ function boundedReason(reason: string): string {
   return `${reason.slice(0, MAX_REASON_LENGTH - 3)}...`;
 }
 
+/** First line with content; stack traces must never reach the UI. */
+function firstNonEmptyLine(value: string): string {
+  for (const line of value.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed.length > 0) return trimmed;
+  }
+  return "";
+}
+
+/** Drop a leading error-class prefix so the short and stack-trace variants dedupe. */
+function normalizeErrorMessage(value: string): string {
+  return firstNonEmptyLine(value).replace(/^[A-Za-z_$][\w.$]*Error:\s*/, "");
+}
+
 function questionSummary(questions: NormalizedQuestion[]): string {
   const first = questions[0];
   if (first === undefined) return "";
@@ -751,6 +772,7 @@ export class EventProjector {
   private readonly runningSnapshotAt = new Map<string, number>();
   private readonly toolStatus = new Map<string, string>();
   private readonly lastStatus = new Map<string, HanseSessionStatus["type"]>();
+  private readonly lastError = new Map<string, string>();
   private readonly deltaWarned = new Set<string>();
 
   project(raw: unknown): HanseEvent[] {
@@ -797,6 +819,8 @@ export class EventProjector {
         return this.partDelta(properties);
       case "session.status":
         return this.sessionStatus(properties);
+      case "session.error":
+        return this.sessionError(properties);
       case "session.idle":
         return this.sessionIdle(properties);
       case "message.part.removed":
@@ -1002,7 +1026,45 @@ export class EventProjector {
             truncated: { fields: bounds.fields, omittedBytes: bounds.omittedBytes },
           };
     this.rememberStatus(sessionID, type);
+    if (type === "busy") this.lastError.delete(sessionID);
     return [event, { type: "session.activity", sessionID, cause: "status" }];
+  }
+
+  private sessionError(properties: Record<string, unknown>): HanseEvent[] {
+    const sessionID = asString(properties.sessionID);
+    if (sessionID === undefined) return this.activity(properties, "unknown");
+
+    const error = asRecord(properties.error);
+    const errorName = asString(error?.name);
+    const errorData = asRecord(error?.data);
+    const rawMessage =
+      asString(errorData?.message) ??
+      asString(error?.message) ??
+      asString(properties.message) ??
+      errorName ??
+      "Agent failed";
+    const bounds: Bounds = { fields: [], omittedBytes: 0 };
+    const message = boundChars(
+      normalizeErrorMessage(rawMessage) || "Agent failed",
+      MAX_STATUS_MESSAGE,
+      "error.message",
+      bounds,
+    );
+    if (this.lastError.get(sessionID) === message) return [];
+    this.rememberMap(this.lastError, sessionID, message);
+
+    const name =
+      errorName === undefined
+        ? undefined
+        : boundChars(errorName, MAX_ERROR_NAME_LENGTH, "error.name", bounds);
+    return [
+      {
+        type: "session.error",
+        sessionID,
+        message,
+        ...(name === undefined ? {} : { name }),
+      },
+    ];
   }
 
   private sessionIdle(properties: Record<string, unknown>): HanseEvent[] {

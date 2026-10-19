@@ -72,6 +72,22 @@ function projectAppKey(projectId: string, appKey: string): string {
   return `${projectId}:${appKey}`;
 }
 
+function effectiveModel(
+  deps: HttpDeps,
+  found: { project: { id: string }; app: { appKey: string } },
+): string | undefined {
+  try {
+    return (
+      deps.settings?.resolve({
+        projectId: found.project.id,
+        appKey: found.app.appKey,
+      }).effective.llm.model.value ?? undefined
+    );
+  } catch {
+    return undefined;
+  }
+}
+
 function navProjects(site: SiteModel): Array<{ id: string; name: string; appCount: number }> {
   return site.projects.map((project) => ({
     id: project.id,
@@ -528,7 +544,14 @@ export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<
         }
         const messageID = `msg_${randomUUID().replaceAll("-", "")}`;
         try {
-          await sendPromptAsync(endpoint, sessionId, text, messageID);
+          await sendPromptAsync(
+            endpoint,
+            sessionId,
+            text,
+            messageID,
+            undefined,
+            effectiveModel(deps, found),
+          );
         } catch (error) {
           if (error instanceof OpencodeHttpError) {
             if (error.status === 404) {
@@ -575,7 +598,9 @@ export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<
       if (text.length === 0) {
         return json(400, { error: "empty message" });
       }
-      return json(200, { message: await sendPrompt(endpoint, sessionId, text) });
+      return json(200, {
+        message: await sendPrompt(endpoint, sessionId, text, effectiveModel(deps, found)),
+      });
     }
   } catch (error) {
     if (error instanceof OpencodeHttpError && error.code === "messages_too_large") {

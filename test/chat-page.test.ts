@@ -502,7 +502,29 @@ describe("async chat send", () => {
     expect(JSON.parse(upstream.calls[0]?.body ?? "")).toEqual({
       parts: [{ type: "text", text: "hello" }],
       messageID: payload.messageID,
+      model: { providerID: "deepseek", modelID: "deepseek-flash" },
     });
+  });
+
+  it("forwards a global model override to prompt_async", async () => {
+    const f = fixture();
+    f.settings.set("global", {}, "llm.model", "deepseek/deepseek-v4-pro", "owner");
+    const upstream = await fakeOpencodeHandler((incoming, outgoing, body) => {
+      if (incoming.method === "POST" && incoming.url === "/session/ses_1/prompt_async") {
+        expect(JSON.parse(body)).toMatchObject({
+          model: { providerID: "deepseek", modelID: "deepseek-v4-pro" },
+        });
+        noContent(outgoing);
+        return;
+      }
+      outgoing.writeHead(404);
+      outgoing.end("missing");
+    });
+    useUpstream(f.deps, upstream.endpoint);
+
+    const response = await handleChat(f.deps, asyncRequest({ headers: auth(f.token) }));
+    expect(response.status).toBe(202);
+    expect(upstream.calls).toHaveLength(1);
   });
 
   it("returns 202 for a busy session and never probes session status", async () => {
@@ -732,7 +754,7 @@ describe("async chat send", () => {
     expect(upstream.calls).toEqual([]);
   });
 
-  it("keeps the blocking send path unchanged without async=1", async () => {
+  it("sends the default effective model on the blocking path", async () => {
     const f = fixture();
     const message = {
       info: { id: "msg_1", role: "user" },
@@ -740,7 +762,10 @@ describe("async chat send", () => {
     };
     const upstream = await fakeOpencodeHandler((incoming, outgoing, body) => {
       if (incoming.method === "POST" && incoming.url === "/session/ses_1/message") {
-        expect(JSON.parse(body)).toEqual({ parts: [{ type: "text", text: "hello" }] });
+        expect(JSON.parse(body)).toEqual({
+          parts: [{ type: "text", text: "hello" }],
+          model: { providerID: "deepseek", modelID: "deepseek-flash" },
+        });
         outgoing.writeHead(200, { "content-type": "application/json" });
         outgoing.end(JSON.stringify(message));
         return;

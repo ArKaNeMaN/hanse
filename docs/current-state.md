@@ -112,8 +112,8 @@ Both containers use the same image (`hanse:0.1.0`, built from `Dockerfile`).
   `502 async_unavailable`, and the blocking route remains available.
 - The app-level SSE (`GET /api/apps/:app/events`) carries typed frames
   (`stream.ready`, `message.updated`, `message.part.updated`, `message.part.delta`,
-  `message.part.omitted`, `session.status`, `session.activity`, `todo.updated`, question/permission
-  events, `stream.warning`) enveloped with `seq` and `streamID`. `stream.ready` starts at `seq: 0`;
+  `message.part.omitted`, `session.status`, `session.error`, `session.activity`, `todo.updated`,
+  question/permission events, `stream.warning`) enveloped with `seq` and `streamID`. `stream.ready` starts at `seq: 0`;
   the client drops `seq <= lastSeq` per stream, hydrates on a new `streamID`, and schedules one
   reconcile on a gap or `frame_too_large`/`invalid_json`/`delta_too_large` warning. Caps: 8 MiB app
   SSE frame, 256 KiB typed event, 64 KiB delta/text snapshot/tool output/patch, and an 8 MiB
@@ -134,6 +134,11 @@ Both containers use the same image (`hanse:0.1.0`, built from `Dockerfile`).
   `Sending`, `Thinking`, `Working`, `Running <tool>`, `Waiting for you`, `Ready`, `Retrying`,
   `Paused`, with elapsed time that freezes while waiting and resets on `Ready`. Inline questions in
   the feed gate the composer and show `Waiting for you`; the top-bar/per-session counts include them.
+- Upstream `session.error` is projected with a 2000-char first-line message (stack traces are
+  dropped) and deduplicated per attempt (`session.status: busy` resets the dedupe). The client inserts
+  an `Agent error` card into the feed, marks the active and queued prompts `Failed`, drops them from
+  the queue, releases the composer, and settles the session to idle, so a failed turn never looks
+  hung.
 - The chat workspace renders GFM pipe tables (alignment, escaped pipes/code spans, 16-column and
   200-row caps, no raw HTML), one-line tool previews, a `todowrite` checklist, streamed bash output
   with a 64 KiB live-tail window and truncation notice, and collapsed `Thinking` reasoning. OMO
@@ -214,7 +219,8 @@ Both containers use the same image (`hanse:0.1.0`, built from `Dockerfile`).
   `.omo` layer).
 - Settings never auto-restart an agent. Running instances record the effective settings/auth/profile
   hash and `appliedProfile`; the app, chat, and settings surfaces show "Restart required" and a
-  restart action. Existing sessions may keep their session model; OMO subagents use the profile.
+  restart action. Chat prompts carry the effective `llm.model`, so existing sessions switch model on
+  the next message; OMO subagents use the profile and change only after a restart.
 - CLI: `hanse web-mcp` runs the managed web tools MCP server (internal; spawned by opencode).
 - API: `GET/POST /api/settings`, `POST /api/settings/provider`, and
   `POST /api/apps/:app/restart?project=<id>`; all human-only. Settings responses include effective
@@ -339,8 +345,10 @@ Settings stage verification:
   per-instance `auth.json`, the DB, and `secret.key` (known trust-model limit). Ciphertext is not
   AAD-bound and key rotation is not implemented; clearing is logical (`secure_delete` plus a WAL
   checkpoint), and physical media/backups may retain old pages.
-- Settings changes require an explicit restart; a restart interrupts an active turn. Existing
-  sessions may keep their previous session model even after the selected model changes.
+- Settings changes require an explicit restart to update the OMO profile, web tools, and the
+  instance config; a restart interrupts an active turn. Chat prompts carry the effective model, so
+  the main session adopts a model change on its next message without a restart; OMO subagents keep
+  the profile from instance start.
 - Built-in search requires the OMO baseline; without OMO the settings UI warns and no built-in
   search tool is available. Managed DeepSeek web tools depend on a usable provider key and on the
   external DeepSeek Search/Fetch API; there is no per-instance cost budget.
