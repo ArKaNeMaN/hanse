@@ -89,6 +89,14 @@ Both containers use the same image (`hanse:0.1.0`, built from `Dockerfile`).
 - The coordinator runs **one `opencode serve` per (project, app)**, lazily on first chat use, on
   `127.0.0.1:4100+`, with isolated `XDG_*` and `OPENCODE_DB` under the project runtime root. The host
   `auth.json` is copied into each instance's data dir; model access works (verified with `deepseek`).
+- Every managed instance also loads the image-baked OMO baseline
+  (`oh-my-openagent@5.1.35`, `/opt/hanse/omo`) through `HANSE_OMO_PLUGIN`. Its config is baked at
+  `/home/node/.omo/omo.jsonc` and pins OMO agents/categories to `deepseek/deepseek-flash`.
+  Per-project/per-app MCP and plugin inheritance is not implemented yet.
+- Every managed instance also gets the codegraph MCP server
+  (`@colbymchenry/codegraph@1.6.2`, `/opt/hanse/codegraph`) through `HANSE_CODEGRAPH_BIN`. The
+  application must be indexed with `codegraph init` (creates `.codegraph/`) before graph queries
+  return data.
 - Our chat UI (`/chat?app=<appKey>&project=<projectId>`) lists/filters sessions, renders text with a
   safe markdown subset, tool calls (output/error), reasoning, and patches, and sends prompts. The
   optional `project` query is additive and disambiguates duplicate app keys. API:
@@ -154,6 +162,8 @@ The IDE container keeps its extensions at `/opt/hanse-ext` and settings at
 | `HANSE_OPERATOR_TOKEN` | serve, ide | operator token (UI login + extension API) |
 | `HANSE_STATE_HOME` | serve | state root (default `~/.local/state`) |
 | `HANSE_AUTH_FILE` | serve | path to opencode `auth.json` copied into instances |
+| `HANSE_OMO_PLUGIN` | serve | comma-separated baseline plugin specs injected into every instance |
+| `HANSE_CODEGRAPH_BIN` | serve | path to the codegraph CLI used for the baseline MCP server |
 | `HANSE_IDE_URL` | dashboard | IDE link (set to `/ide/`) |
 | `HANSE_IDE=0` | serve | do not spawn code-server in the coordinator |
 | `HANSE_IDE_HOST` / `HANSE_IDE_PORT` | serve | proxy target for `/ide` (default `127.0.0.1:8080`) |
@@ -164,7 +174,7 @@ The IDE container keeps its extensions at `/opt/hanse-ext` and settings at
 
 ## Verification
 
-`npm run lint && npm run typecheck && npm test && npm run build` (all green; 153 tests).
+`npm run lint && npm run typecheck && npm test && npm run build` (all green; 156 tests).
 
 ## Known limitations and residual risks
 
@@ -173,6 +183,10 @@ The IDE container keeps its extensions at `/opt/hanse-ext` and settings at
 - **Agents run in the `hanse` container as the same uid as the coordinator, so they can read
   `/data/state` (DB, `secret.key`).** The IDE is isolated, agents are not.
 - Cross-app handoff delivery to a live sibling session is not automatic (see above).
+- The OMO baseline is image-wide; `~/.omo` and its model config are shared by every instance under
+  the same uid. Per-instance OMO state is not isolated yet.
+- Codegraph indexes are per application (`<app>/.codegraph/`) and are not built automatically;
+  `~/.codegraph` global state is shared by all instances under the same uid.
 - No TLS; intended for a trusted LAN (VPN/reverse proxy for remote access).
 - The writer lock is a single-node file lock (`O_EXCL` + pid liveness), not a distributed lock.
 - `git clone` in the add-app endpoint is synchronous (`execFileSync`) and blocks the event loop.

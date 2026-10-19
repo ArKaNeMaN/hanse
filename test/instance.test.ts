@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildConfigOverlay,
+  CODEGRAPH_MCP_NAME,
   COORDINATOR_MCP_NAME,
   resolveInstanceEnv,
   serializeConfigOverlay,
@@ -33,6 +34,31 @@ describe("buildConfigOverlay", () => {
   it("omits instructions when none are provided", () => {
     const overlay = buildConfigOverlay({ coordinatorCommand: ["hanse", "mcp"] });
     expect(overlay.instructions).toBeUndefined();
+  });
+
+  it("injects baseline plugins", () => {
+    const plugin = "file:///opt/hanse/omo/node_modules/oh-my-openagent";
+    const overlay = buildConfigOverlay({ coordinatorCommand: ["hanse", "mcp"], plugins: [plugin] });
+    expect(overlay.plugin).toEqual([plugin]);
+  });
+
+  it("omits plugins when none are provided", () => {
+    const overlay = buildConfigOverlay({ coordinatorCommand: ["hanse", "mcp"] });
+    expect(overlay.plugin).toBeUndefined();
+  });
+
+  it("adds the baseline codegraph MCP server", () => {
+    const overlay = buildConfigOverlay({
+      coordinatorCommand: ["hanse", "mcp"],
+      codegraphCommand: [
+        "node",
+        "/opt/hanse/codegraph/node_modules/.bin/codegraph",
+        "serve",
+        "--mcp",
+      ],
+    });
+    expect(overlay.mcp?.[CODEGRAPH_MCP_NAME]?.type).toBe("local");
+    expect(overlay.mcp?.[COORDINATOR_MCP_NAME]?.type).toBe("local");
   });
 
   it("serializes to valid JSON for OPENCODE_CONFIG_CONTENT", () => {

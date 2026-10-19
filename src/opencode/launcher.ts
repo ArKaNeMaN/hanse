@@ -13,7 +13,9 @@ export interface LaunchInput {
   port: number;
   coordinatorCommand: string[];
   coordinatorEnvironment?: Record<string, string>;
+  codegraphCommand?: string[];
   instructions?: string[];
+  baselinePlugins?: string[];
   command?: string[];
   baseEnv?: NodeJS.ProcessEnv;
   authSource?: string;
@@ -37,8 +39,10 @@ export function buildInstanceEnv(input: LaunchInput): NodeJS.ProcessEnv {
   const isolated = resolveInstanceEnv(input.runtimeRoot, input.identity);
   const overlay = buildConfigOverlay({
     coordinatorCommand: input.coordinatorCommand,
+    codegraphCommand: input.codegraphCommand,
     environment: input.coordinatorEnvironment,
     instructions: input.instructions,
+    plugins: input.baselinePlugins,
   });
   return {
     ...process.env,

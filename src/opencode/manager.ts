@@ -18,6 +18,19 @@ interface Entry {
 const PORT_BASE = 4100;
 const PORT_COUNT = 100;
 
+function resolveBaselinePlugins(): string[] {
+  return (process.env.HANSE_OMO_PLUGIN ?? "")
+    .split(",")
+    .map((spec) => spec.trim())
+    .filter((spec) => spec.length > 0);
+}
+
+function resolveCodegraphCommand(): string[] | undefined {
+  const bin = process.env.HANSE_CODEGRAPH_BIN?.trim();
+  if (bin === undefined || bin.length === 0) return undefined;
+  return [process.execPath, bin, "serve", "--mcp", "--no-watch"];
+}
+
 function portFree(port: number): Promise<boolean> {
   return new Promise((resolve) => {
     const probe = createServer();
@@ -80,6 +93,8 @@ export class InstanceManager {
         HANSE_PROJECT_ID: app.projectId,
         HANSE_APP_KEY: app.appKey,
       },
+      baselinePlugins: resolveBaselinePlugins(),
+      codegraphCommand: resolveCodegraphCommand(),
       authSource: process.env.HANSE_AUTH_FILE,
     });
     this.#running.set(app.id, { run, endpoint: run.endpoint });

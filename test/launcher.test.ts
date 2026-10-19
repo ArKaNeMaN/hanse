@@ -33,6 +33,7 @@ const fakeCommand = ["node", "-e", "setInterval(() => {}, 1000)"];
 
 describe("launcher", () => {
   it("composes an isolated environment with the overlay", () => {
+    const plugin = "file:///opt/hanse/omo/node_modules/oh-my-openagent";
     const env = buildInstanceEnv({
       appId: "p:web",
       identity: { projectId: "p", app: "web" },
@@ -40,12 +41,22 @@ describe("launcher", () => {
       runtimeRoot: "/rt",
       port: 4096,
       coordinatorCommand: ["hanse", "mcp"],
+      codegraphCommand: [
+        "node",
+        "/opt/hanse/codegraph/node_modules/.bin/codegraph",
+        "serve",
+        "--mcp",
+      ],
+      baselinePlugins: [plugin],
     });
     expect(env.XDG_DATA_HOME).toBe("/rt/apps/web/data");
     const overlay = JSON.parse(env.OPENCODE_CONFIG_CONTENT ?? "{}") as {
       mcp?: Record<string, unknown>;
+      plugin?: string[];
     };
     expect(overlay.mcp?.hanse).toBeDefined();
+    expect(overlay.mcp?.codegraph).toBeDefined();
+    expect(overlay.plugin).toEqual([plugin]);
   });
 
   it("launches and stops an instance, tracking state", async () => {

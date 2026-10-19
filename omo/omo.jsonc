@@ -1,0 +1,28 @@
+{
+  "$schema": "https://raw.githubusercontent.com/code-yeongyu/oh-my-openagent/dev/assets/omo.schema.json",
+  "disabled_hooks": ["auto-update-checker"],
+  "[opencode]": {
+    "agents": {
+      "hephaestus": { "model": "deepseek/deepseek-flash" },
+      "oracle": { "model": "deepseek/deepseek-flash" },
+      "librarian": { "model": "deepseek/deepseek-flash" },
+      "explore": { "model": "deepseek/deepseek-flash" },
+      "multimodal-looker": { "model": "deepseek/deepseek-flash" },
+      "prometheus": { "model": "deepseek/deepseek-flash" },
+      "metis": { "model": "deepseek/deepseek-flash" },
+      "momus": { "model": "deepseek/deepseek-flash" },
+      "atlas": { "model": "deepseek/deepseek-flash" },
+      "sisyphus-junior": { "model": "deepseek/deepseek-flash" }
+    },
+    "categories": {
+      "visual-engineering": { "model": "deepseek/deepseek-flash" },
+      "ultrabrain": { "model": "deepseek/deepseek-flash" },
+      "deep-low": { "model": "deepseek/deepseek-flash" },
+      "artistry": { "model": "deepseek/deepseek-flash" },
+      "quick": { "model": "deepseek/deepseek-flash" },
+      "unspecified-low": { "model": "deepseek/deepseek-flash" },
+      "unspecified-high": { "model": "deepseek/deepseek-flash" },
+      "writing": { "model": "deepseek/deepseek-flash" }
+    }
+  }
+}

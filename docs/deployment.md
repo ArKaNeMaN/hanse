@@ -46,7 +46,11 @@ ssh deployment-host 'cd <INSTALL_DIR> && docker compose build && docker compose 
 ```
 
 The image build installs `opencode-ai`, code-server (copied from `codercom/code-server`), git +
-CA certificates, the bundled VSIX extension, and the GitHub theme. It needs network access.
+CA certificates, the bundled VSIX extension, and the GitHub theme. It also bakes
+`oh-my-openagent@5.1.35` at `/opt/hanse/omo` and `omo/omo.jsonc` at `/home/node/.omo/omo.jsonc`;
+managed instances load it through `HANSE_OMO_PLUGIN`. It also bakes `@colbymchenry/codegraph@1.6.2`
+at `/opt/hanse/codegraph`; managed instances get the `codegraph` MCP server through
+`HANSE_CODEGRAPH_BIN`. The build needs network access.
 
 ## Ports and volumes
 
@@ -100,6 +104,11 @@ configuration. This stage does not wire the coordinator's encrypted credential s
   does this). In the browser, run `Developer: Reload Window`.
 - **Agent fails to start**: check that `/run/hanse/auth.json` is mounted and readable; check code-server
   and opencode logs.
+- **OMO baseline missing in an agent**: confirm `/opt/hanse/omo/node_modules/oh-my-openagent/package.json`
+  and `/home/node/.omo/omo.jsonc` exist in the `hanse` image, and that `HANSE_OMO_PLUGIN` is set.
+- **Codegraph MCP missing in an agent**: confirm `/opt/hanse/codegraph/node_modules/.bin/codegraph`
+  exists and `HANSE_CODEGRAPH_BIN` is set. Codegraph queries return no data until the application
+  repository is indexed with `codegraph init`.
 - **`git clone` fails on add-app**: the image installs `git` + `ca-certificates`; a TLS error means the
   CA bundle is missing.
 - **Git push/fetch fails in the application page**: check the container's ambient SSH/HTTPS
