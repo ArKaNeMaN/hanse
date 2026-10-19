@@ -11,3 +11,4 @@ them.
 - `0006-chat-ux-overhaul.md` - typed chat streaming, optimistic send/queue, status model, inline questions/Q&A, OMO cards, tool/table renderers, feed measure, browser QA harness, and accepted debt.
 - `0007-web-tools-and-settings.md` - hierarchical settings and encrypted provider keys, DeepSeek/built-in web drivers, per-app OMO model profiles, restart workflow, security review, and accepted risks.
 - `0008-chat-pagination.md` - 30-message session tail, cursor-based scroll-up history, overlap-aware snapshot merge, in-feed generation indicator, verification, and residual risks.
+- `0009-packaging-and-publishing.md` - reproducible multi-arch image, Compose release/build/auth overlays, `/healthz`, CI container gate, GHCR publishing, and the public deployment guide.

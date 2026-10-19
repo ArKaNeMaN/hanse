@@ -1,0 +1,14 @@
+# Optional overlay: reuse the host user's opencode credentials instead of entering provider keys in
+# the settings UI. The file is mounted read-only and copied into each managed instance.
+#
+#   HANSE_HOST_AUTH_FILE="$HOME/.local/share/opencode/auth.json" \
+#     docker compose -f compose.yaml -f compose.host-auth.yaml up -d
+#
+# The host file must already exist. Docker creates a directory when a bind-mount source is missing,
+# which makes the coordinator fail to read it.
+services:
+  hanse:
+    environment:
+      HANSE_AUTH_FILE: /run/hanse/auth.json
+    volumes:
+      - ${HANSE_HOST_AUTH_FILE:?set HANSE_HOST_AUTH_FILE to your opencode auth.json}:/run/hanse/auth.json:ro

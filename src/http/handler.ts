@@ -317,6 +317,10 @@ function route(deps: HttpDeps, request: HttpRequest): HttpResponse {
     return json(404, { error: "not found" });
   }
 
+  if (request.method === "GET" && request.path === "/healthz") {
+    return json(200, { status: "ok" });
+  }
+
   if (request.method === "GET" && request.path === "/login") {
     const human = humanFrom(deps, request);
     if (human !== undefined) {

@@ -12,7 +12,7 @@ Guidance for AI agents working in this repository (the `hanse` coordinator).
 5. [`docs/process.md`](docs/process.md) - the delivery pipeline (gates, reviewers, artifacts).
 
 > Local-only (optional): if `docs/deploy/` exists, read `docs/deploy/README.md` - it is git-ignored
-> and holds the `deployment-host` deployment runbook plus the rule that every update is deployed there after the
+> and holds the host deployment runbook plus the rule that every update is deployed there after the
 > gates pass.
 
 ## What this repository is

@@ -1,0 +1,72 @@
+name: hanse
+
+x-hanse-image: &hanse-image
+  image: ${HANSE_IMAGE:-ghcr.io/arkaneman/hanse}:${HANSE_TAG:-latest}
+
+services:
+  hanse:
+    <<: *hanse-image
+    container_name: hanse
+    restart: unless-stopped
+    user: "1000:1000"
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      HANSE_OPERATOR_TOKEN: ${HANSE_OPERATOR_TOKEN:?set HANSE_OPERATOR_TOKEN in .env}
+      HANSE_STATE_HOME: /data/state
+      HANSE_IDE_URL: /ide/
+      HANSE_IDE: "0"
+      HANSE_IDE_HOST: ide
+      HANSE_IDE_PORT: "8080"
+    ports:
+      - "${HANSE_BIND:-127.0.0.1}:${HANSE_PORT:-8787}:8787"
+    volumes:
+      - ${HANSE_WORKSPACE:-./workspace}:/data/workspace
+      - ${HANSE_STATE:-./state}:/data/state
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8787/healthz').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  ide:
+    <<: *hanse-image
+    container_name: hanse-ide
+    restart: unless-stopped
+    user: "1000:1000"
+    security_opt:
+      - no-new-privileges:true
+    command:
+      - /usr/lib/code-server/bin/code-server
+      - --auth
+      - none
+      - --bind-addr
+      - 0.0.0.0:8080
+      - --disable-telemetry
+      - --disable-update-check
+      - --extensions-dir
+      - /opt/hanse-ext
+      - --user-data-dir
+      - /home/coder/.config/code-server
+      - /data/workspace
+    environment:
+      HANSE_API_BASE: http://hanse:8787
+      HANSE_OPERATOR_TOKEN: ${HANSE_OPERATOR_TOKEN:?set HANSE_OPERATOR_TOKEN in .env}
+    volumes:
+      - ${HANSE_WORKSPACE:-./workspace}:/data/workspace
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    depends_on:
+      hanse:
+        condition: service_healthy

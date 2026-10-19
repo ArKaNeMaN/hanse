@@ -10,3 +10,5 @@ assets/app.css
 .omo/
 .DS_Store
 docs/deploy/
+compose.override.yaml
+*.tgz

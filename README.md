@@ -1,5 +1,8 @@
 # hanse
 
+[![CI](https://github.com/ArKaNeMaN/hanse/actions/workflows/ci.yml/badge.svg)](https://github.com/ArKaNeMaN/hanse/actions/workflows/ci.yml)
+[![Container](https://img.shields.io/badge/container-ghcr.io%2Farkaneman%2Fhanse-blue)](https://github.com/ArKaNeMaN/hanse/pkgs/container/hanse)
+
 > **Status: pre-alpha, functional core.** A self-hosted coordinator/workbench for projects of
 > isolated `opencode` agent applications, with a web UI, integrated agent chat, cross-application
 > handoffs, and an embedded web IDE.
@@ -27,7 +30,28 @@ and requirements) to each other through the coordinator - like independent teams
 - Embedded web IDE (code-server) at `/ide/`: opened in the selected project/application, GitHub Dark
   Dimmed theme, a bundled "Hanse Agent" chat extension with tabs per app, and a terminal rooted in the
   opened folder.
-- Docker Compose deployment, intended for a trusted LAN.
+- Docker Compose deployment from a multi-arch image, intended for a trusted LAN.
+
+## Run it
+
+The published image is `ghcr.io/arkaneman/hanse` for `linux/amd64` and `linux/arm64`:
+
+```bash
+mkdir -p hanse && cd hanse
+curl -fsSLO https://raw.githubusercontent.com/ArKaNeMaN/hanse/main/compose.yaml
+curl -fsSLO https://raw.githubusercontent.com/ArKaNeMaN/hanse/main/.env.example
+cp .env.example .env
+python3 -c 'import secrets; print(secrets.token_urlsafe(32))'
+mkdir -p workspace state
+# put the printed token into .env, then:
+docker compose up -d
+```
+
+Open <http://127.0.0.1:8787> and sign in with the token. The coordinator binds loopback by default;
+set `HANSE_BIND=0.0.0.0` to expose it on the LAN.
+
+The full guide covers model credentials, LAN/TLS exposure, backups, upgrades, source builds, image
+publishing, and troubleshooting: [`docs/deployment.md`](docs/deployment.md).
 
 ## Read first
 
@@ -38,7 +62,7 @@ and requirements) to each other through the coordinator - like independent teams
 
 ## Development
 
-Requires Node.js >= 20.
+Requires Node.js >= 20 (the image and CI use Node 22).
 
 ```bash
 npm install
@@ -47,6 +71,12 @@ npm test
 npm run lint
 npm run build        # tsc + Tailwind CSS -> dist/ and assets/app.css
 node dist/index.js --help
+```
+
+Build the image from source with the Compose overlay:
+
+```bash
+docker compose -f compose.yaml -f compose.build.yaml up -d --build
 ```
 
 ## License

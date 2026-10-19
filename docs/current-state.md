@@ -21,17 +21,21 @@ coordinator. The product surface is one web UI (dashboard + chat + handoffs) plu
 
 ## Runtime topology (two containers, one exposed port)
 
-Both containers use the same image (`hanse:0.1.0`, built from `Dockerfile`).
+Both containers use the same multi-arch image (`ghcr.io/arkaneman/hanse`, built from `Dockerfile`).
+Compose definitions live in `compose.yaml`; `compose.build.yaml` adds a source build, and
+`compose.host-auth.yaml` mounts a host `opencode` auth file.
 
 - **`hanse`** (coordinator): runs `node dist/index.js serve --workspace /data/workspace`. Mounts
-  `./workspace:/data/workspace`, `./state:/data/state`, and the host opencode auth file read-only.
+  `./workspace:/data/workspace` and `./state:/data/state`; the host opencode auth file is optional.
   Runs as uid 1000. `HANSE_IDE=0` means it does **not** spawn code-server itself.
 - **`hanse-ide`** (VS Code): runs bundled code-server. Mounts **only** `./workspace:/data/workspace`
   (no `state` - `/data/state` does not exist there). Serves on `8080`, reachable only on the compose
   network.
-- **Exposed port:** `<LAN_HOST>:8787` (LAN only). `/` and `/api/*` are our UI; `/ide/*` is
-  reverse-proxied to `ide:8080` (HTTP and WebSocket), with `/ide` stripped and `?folder` confined to the
-  workspace root. The coordinator is the single front door.
+- **Exposed port:** `${HANSE_BIND:-127.0.0.1}:${HANSE_PORT:-8787}` (loopback by default; set
+  `HANSE_BIND=0.0.0.0` or a LAN IP to expose it). `/healthz` is an unauthenticated liveness endpoint.
+  `/` and `/api/*` are our UI; `/ide/*` is reverse-proxied to `ide:8080` (HTTP and WebSocket), with
+  `/ide` stripped and `?folder` confined to the workspace root. The coordinator is the single front
+  door.
 
 ## Auth (one login)
 
@@ -95,7 +99,7 @@ Both containers use the same image (`hanse:0.1.0`, built from `Dockerfile`).
   into each instance's data dir; model access works (verified with `deepseek`).
 - Every managed instance also loads the image-baked OMO baseline
   (`oh-my-openagent@5.1.35`, `/opt/hanse/omo`) through `HANSE_OMO_PLUGIN`. Its config is baked at
-  `/home/node/.omo/omo.jsonc` and pins OMO agents/categories to `deepseek/deepseek-flash`.
+  `/home/coder/.omo/omo.jsonc` and pins OMO agents/categories to `deepseek/deepseek-flash`.
   Per-project/per-app MCP and plugin inheritance is not implemented yet.
 - Every managed instance also gets the codegraph MCP server
   (`@colbymchenry/codegraph@1.6.2`, `/opt/hanse/codegraph`) through `HANSE_CODEGRAPH_BIN`. The
@@ -278,11 +282,11 @@ Host `./state` is mounted at `/data/state` in `hanse` only:
   (`state/opencode.db`) and the reconciled `data/opencode/auth.json` (mode `0600`). Scratch is not
   kept under `state`: each instance gets `TMPDIR=/tmp/hanse/<projectId>/<appKey>`, so opencode's
   pre-approved `<TMPDIR>/opencode` directory is per instance instead of a shared `/tmp/opencode`.
-- `/home/node/.omo/omo.jsonc` - image-baked OMO baseline plus coordinator-generated per-app profiles;
+- `/home/coder/.omo/omo.jsonc` - image-baked OMO baseline plus coordinator-generated per-app profiles;
   the file and OMO state remain shared by all instances under the same uid.
 
 The IDE container keeps its extensions at `/opt/hanse-ext` and settings at
-`/home/node/.config/code-server`; it does not see `state`.
+`/home/coder/.config/code-server`; it does not see `state`.
 
 ## CLI
 
@@ -315,9 +319,9 @@ coordinator; operators do not set them.
 
 ## Verification
 
-`npm run lint && npm run typecheck && npm test && npm run build` (all green; 560 tests). Chat browser
+`npm run lint && npm run typecheck && npm test && npm run build` (all green; 561 tests). Chat browser
 QA: `node docs/design/chat-qa.mjs` (deterministic fixtures; 3 scenarios, 81 assertions, 10
-screenshots, zero console/page errors). Live smoke on `deployment-host` against the real `demo-app` agent: 1
+screenshots, zero console/page errors). Live smoke against a real deployment: 1
 scenario, 2 assertions, streaming assistant text and a rendered markdown table, zero console/page
 errors. Evidence: [`docs/design/artifacts/chat/`](design/artifacts/chat/README.md).
 
@@ -325,7 +329,7 @@ Settings stage verification:
 
 - Temporary Playwright smoke of seed-generated settings pages at 1440 and 390 (dark): six pages,
   zero console/page errors, zero duplicate DOM ids; screenshots inspected.
-- Built image `hanse:qa`, run as uid 1000 with a writable `/home/node/.omo`, real
+- Built image `hanse:qa`, run as uid 1000 with a writable `/home/coder/.omo`, real
   `opencode-ai@1.19.3` + `oh-my-openagent@5.1.35`: the per-app OMO profile was written, `/agent`
   reported `deepseek/deepseek-flash` for the pinned agents, and a second run selected
   `deepseek/deepseek-v4-pro` with `/config` and `/agent` both reporting it (20 profile pins).

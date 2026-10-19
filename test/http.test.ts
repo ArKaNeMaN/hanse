@@ -628,6 +628,14 @@ describe("http API and assets", () => {
     expect((f.db.prepare("SELECT COUNT(*) AS c FROM handoffs").get() as { c: number }).c).toBe(2);
   });
 
+  it("serves an unauthenticated health check", () => {
+    const f = fixture();
+    const response = handleRequest(deps(f), { method: "GET", path: "/healthz", headers: {} });
+    expect(response.status).toBe(200);
+    expect(response.contentType).toContain("application/json");
+    expect(JSON.parse(response.body)).toEqual({ status: "ok" });
+  });
+
   it("serves the allowlisted assets without auth", () => {
     const f = fixture();
     const request: HttpRequest = { method: "GET", path: "/assets/app.js", headers: {} };
