@@ -74,6 +74,28 @@ describe("buildConfigOverlay", () => {
     expect(JSON.parse(serialized)).toBeTypeOf("object");
   });
 
+  it("adds the model and extra MCP servers without an agent map", () => {
+    const overlay = buildConfigOverlay({
+      coordinatorCommand: ["hanse", "mcp"],
+      codegraphCommand: ["node", "codegraph", "serve"],
+      model: "deepseek/deepseek-pro",
+      mcpServers: {
+        hanse: { type: "local", command: ["hijacked"] },
+        extra: { type: "local", command: ["extra", "serve"] },
+      },
+    });
+    expect(overlay.model).toBe("deepseek/deepseek-pro");
+    expect(overlay.mcp?.extra?.command).toEqual(["extra", "serve"]);
+    expect(overlay.mcp?.[COORDINATOR_MCP_NAME]?.command).toEqual(["hanse", "mcp"]);
+    expect(overlay.mcp?.[CODEGRAPH_MCP_NAME]?.command).toEqual(["node", "codegraph", "serve"]);
+    expect(overlay).not.toHaveProperty("agent");
+  });
+
+  it("omits an empty model", () => {
+    const overlay = buildConfigOverlay({ coordinatorCommand: ["hanse", "mcp"], model: "" });
+    expect(overlay.model).toBeUndefined();
+  });
+
   it("includes the permission overlay and preserves plugins, MCP, and instructions", () => {
     const plugin = "file:///opt/hanse/omo/node_modules/oh-my-openagent";
     const permission = buildPermissionPolicy(["/data/opencode/tool-output"]);

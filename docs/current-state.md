@@ -48,7 +48,9 @@ Both containers use the same image (`hanse:0.1.0`, built from `Dockerfile`).
   IDE link, mobile drawer, sidebar theme toggle (dark default, `localStorage["hanse-theme"]`),
   sign-out, skip link, notice toasts, and the full status/icon/dialog primitive set.
 - Authenticated pages: `/` fleet overview, `/projects`, `/projects/:id`,
-  `/projects/:id/apps/:appKey`, `/handoffs`, and the `/chat?app=<key>&project=<id>` workspace.
+  `/projects/:id/apps/:appKey`, `/settings`, `/projects/:id/settings`,
+  `/projects/:id/apps/:appKey/settings`, `/handoffs`, and the `/chat?app=<key>&project=<id>`
+  workspace.
   `/login` is a standalone cover/plate. All HTML pages except `/login` and `/assets/*` require a
   **human** principal; unauthenticated requests redirect to `/login?next=<validated local path>`.
 - Browser forms post to the existing API endpoints and receive a 303 back to a validated `return_to`
@@ -183,7 +185,41 @@ Both containers use the same image (`hanse:0.1.0`, built from `Dockerfile`).
   coordinator strips its own credentials (`HANSE_OPERATOR_TOKEN`, `OPENCODE_PERMISSION`, etc.) from
   the instance environment and sets `GIT_CEILING_DIRECTORIES` to the app's real parent so a nested
   app cannot inherit a wider parent worktree. Effective rulesets are verified after start with a
-  **warning-only** result (no startup block).
+  **warning-only** result (no startup block). For built-in web drivers `webfetch`/`websearch` remain
+  allowed; a managed search/fetch driver denies the corresponding built-in and allows
+  `hanse_web_search`/`hanse_web_fetch`.
+
+## Settings and web tools
+
+- Human-only settings pages: `/settings`, `/projects/:id/settings`, and
+  `/projects/:id/apps/:appKey/settings`. Values resolve global -> project -> application. Missing
+  rows inherit; `null`/`cleared` is an explicit empty override. `llm.model` is a non-clearable scalar
+  with default `deepseek/deepseek-flash`; `web.search` and `web.fetch` default to `{driver:"builtin"}`
+  and are clearable.
+- `settings` and `provider_keys` live in `coordinator.db` (migration v3). Provider API keys are
+  entered in the settings UI, AES-256-GCM encrypted, and never returned. At instance start the
+  coordinator reconciles the host `auth.json` with effective provider keys into the per-instance
+  `auth.json` (mode 0600), scrubs inherited `OPENCODE_AUTH_CONTENT`/profile env, and removes stale
+  entries.
+- Web drivers are selectable per tool: `builtin` (OMO `websearch` MCP for search, opencode
+  `webfetch` for fetch) and `deepseek` (standalone `/v1/tools/search` and `/v1/tools/fetch`). A
+  managed driver disables the corresponding built-in: search adds `websearch` to the OMO profile's
+  `disabled_mcps` and denies the permission; fetch denies `webfetch`. The `hanse_web` stdio MCP
+  server is registered only when at least one managed tool is configured and exposes `search`/
+  `fetch` (opencode names them `hanse_web_search`/`hanse_web_fetch`).
+- The selected model is written to `OPENCODE_CONFIG_CONTENT.model` and to an app-specific OMO
+  profile under `~/.omo/omo.jsonc`, selected with `OMO_PROFILE`. The profile pins every OMO
+  agent/category and carries `disabled_mcps`; it is applied at instance start. A post-start `/agent`
+  check records a warning when an agent reports a different model (for example through a project
+  `.omo` layer).
+- Settings never auto-restart an agent. Running instances record the effective settings/auth/profile
+  hash and `appliedProfile`; the app, chat, and settings surfaces show "Restart required" and a
+  restart action. Existing sessions may keep their session model; OMO subagents use the profile.
+- CLI: `hanse web-mcp` runs the managed web tools MCP server (internal; spawned by opencode).
+- API: `GET/POST /api/settings`, `POST /api/settings/provider`, and
+  `POST /api/apps/:app/restart?project=<id>`; all human-only. Settings responses include effective
+  values, sources, raw scoped rows, provider statuses (never key material), warnings, and pending
+  restarts.
 
 ## Handoffs (agent-to-agent requests)
 
@@ -217,10 +253,12 @@ Both containers use the same image (`hanse:0.1.0`, built from `Dockerfile`).
 Host `./state` is mounted at `/data/state` in `hanse` only:
 
 - `hanse/coordinator.db` (+ `-wal`, `-shm`) - projects, apps, instances, tasks, handoffs, approvals,
-  principals, events, secrets.
-- `hanse/secret.key` - AES-256-GCM key for the credential store (mode `0600`).
+  principals, events, secrets, settings, provider keys.
+- `hanse/secret.key` - AES-256-GCM key for the credential store and provider keys (mode `0600`).
 - `hanse/projects/<projectId>/apps/<appKey>/{data,state,config,cache}` - per-instance opencode state
-  (`state/opencode.db`).
+  (`state/opencode.db`) and the reconciled `data/opencode/auth.json` (mode `0600`).
+- `/home/node/.omo/omo.jsonc` - image-baked OMO baseline plus coordinator-generated per-app profiles;
+  the file and OMO state remain shared by all instances under the same uid.
 
 The IDE container keeps its extensions at `/opt/hanse-ext` and settings at
 `/home/node/.config/code-server`; it does not see `state`.
@@ -231,6 +269,8 @@ The IDE container keeps its extensions at `/opt/hanse-ext` and settings at
 - `hanse status [dir]` - discover/register a project and print its apps.
 - `hanse serve` - run the web UI/API (`--workspace`, `--hostname`, `--port`, `--state-home`).
 - `hanse mcp` - run the coordinator MCP server bound to an app (used by opencode).
+- `hanse web-mcp` - run the managed web tools MCP server (internal; spawned by opencode when a
+  DeepSeek web driver is configured).
 
 ## Environment variables
 
@@ -238,24 +278,42 @@ The IDE container keeps its extensions at `/opt/hanse-ext` and settings at
 | --- | --- | --- |
 | `HANSE_OPERATOR_TOKEN` | serve, ide | operator token (UI login + extension API) |
 | `HANSE_STATE_HOME` | serve | state root (default `~/.local/state`) |
-| `HANSE_AUTH_FILE` | serve | path to opencode `auth.json` copied into instances |
+| `HANSE_AUTH_FILE` | serve | host opencode `auth.json`; reconciled with provider-key settings into each instance |
 | `HANSE_OMO_PLUGIN` | serve | comma-separated baseline plugin specs injected into every instance |
 | `HANSE_CODEGRAPH_BIN` | serve | path to the codegraph CLI used for the baseline MCP server |
 | `HANSE_IDE_URL` | dashboard | IDE link (set to `/ide/`) |
 | `HANSE_IDE=0` | serve | do not spawn code-server in the coordinator |
 | `HANSE_IDE_HOST` / `HANSE_IDE_PORT` | serve | proxy target for `/ide` (default `127.0.0.1:8080`) |
 | `HANSE_IDE_BIN` | serve | code-server binary |
-| `HANSE_ASSETS` | serve | directory for `app.css`, `app.js`, `chat.js`, `chat-core.js`, `git.js`, and `favicon.svg` |
+| `HANSE_ASSETS` | serve | directory for `app.css`, `app.js`, `chat.js`, `chat-core.js`, `git.js`, `settings.js`, and `favicon.svg` |
 | `HANSE_DB` / `HANSE_PROJECT_ID` / `HANSE_APP_KEY` | `hanse mcp` | MCP server binding |
 | `HANSE_API_BASE` | extension | coordinator base URL (`http://hanse:8787`) |
 
+`HANSE_WEB_CONFIG` and `HANSE_OPENCODE_AUTH_FILE` are internal `hanse_web` MCP variables set by the
+coordinator; operators do not set them.
+
 ## Verification
 
-`npm run lint && npm run typecheck && npm test && npm run build` (all green; 396 tests). Browser QA:
-`node docs/design/chat-qa.mjs` (deterministic fixtures; 3 scenarios, 81 assertions, 10 screenshots,
-zero console/page errors). Live smoke on `deployment-host` against the real `demo-app` agent: 1 scenario, 2
-assertions, streaming assistant text and a rendered markdown table, zero console/page errors.
-Evidence: [`docs/design/artifacts/chat/`](design/artifacts/chat/README.md).
+`npm run lint && npm run typecheck && npm test && npm run build` (all green; 522 tests). Chat browser
+QA: `node docs/design/chat-qa.mjs` (deterministic fixtures; 3 scenarios, 81 assertions, 10
+screenshots, zero console/page errors). Live smoke on `deployment-host` against the real `demo-app` agent: 1
+scenario, 2 assertions, streaming assistant text and a rendered markdown table, zero console/page
+errors. Evidence: [`docs/design/artifacts/chat/`](design/artifacts/chat/README.md).
+
+Settings stage verification:
+
+- Temporary Playwright smoke of seed-generated settings pages at 1440 and 390 (dark): six pages,
+  zero console/page errors, zero duplicate DOM ids; screenshots inspected.
+- Built image `hanse:qa`, run as uid 1000 with a writable `/home/node/.omo`, real
+  `opencode-ai@1.19.3` + `oh-my-openagent@5.1.35`: the per-app OMO profile was written, `/agent`
+  reported `deepseek/deepseek-flash` for the pinned agents, and a second run selected
+  `deepseek/deepseek-v4-pro` with `/config` and `/agent` both reporting it (20 profile pins).
+  Managed search registered `hanse_web`
+  with `search` and removed OMO `websearch` from `/config`, permissions were `websearch: deny` and
+  `hanse_web_search: allow`, and restart returned `{restarted:true}` then
+  `{restarted:false,reason:"not_running"}`. The managed tool was listed through the real
+  `hanse web-mcp`; no paid DeepSeek Search/Fetch call was made (driver tests use a local fake
+  server).
 
 ## Known limitations and residual risks
 
@@ -272,8 +330,20 @@ Evidence: [`docs/design/artifacts/chat/`](design/artifacts/chat/README.md).
   escape, and `.env`/network are intentionally allowed. Hard isolation needs a separate design
   (separate uid/container, authenticated upstream, or a proxy the agent cannot reach).
 - Cross-app handoff delivery to a live sibling session is not automatic (see above).
-- The OMO baseline is image-wide; `~/.omo` and its model config are shared by every instance under
-  the same uid. Per-instance OMO state is not isolated yet.
+- The OMO baseline is image-wide; the selected model is applied through an app-specific profile, but
+  `~/.omo` state and the config file are still shared by every instance under the same uid.
+  Per-instance OMO state is not isolated yet. A project `.omo/omo.jsonc` layer can override profile
+  pins; the post-start `/agent` check is warning-only.
+- Settings live in the coordinator DB, not in the repository; they do not travel with a cloned
+  project. Provider keys are encrypted at rest, but agents run as the same uid and can read the
+  per-instance `auth.json`, the DB, and `secret.key` (known trust-model limit). Ciphertext is not
+  AAD-bound and key rotation is not implemented; clearing is logical (`secure_delete` plus a WAL
+  checkpoint), and physical media/backups may retain old pages.
+- Settings changes require an explicit restart; a restart interrupts an active turn. Existing
+  sessions may keep their previous session model even after the selected model changes.
+- Built-in search requires the OMO baseline; without OMO the settings UI warns and no built-in
+  search tool is available. Managed DeepSeek web tools depend on a usable provider key and on the
+  external DeepSeek Search/Fetch API; there is no per-instance cost budget.
 - Codegraph indexes are per application (`<app>/.codegraph/`) and are not built automatically;
   `~/.codegraph` global state is shared by all instances under the same uid.
 - No TLS; intended for a trusted LAN (VPN/reverse proxy for remote access).

@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -38,6 +38,22 @@ describe("secrets", () => {
     const keyPath = path.join(dir, "secret.key");
     expect(readFileSync(keyPath).length).toBe(32);
     expect(statSync(keyPath).mode & 0o777).toBe(0o600);
+  });
+
+  it("enforces 0600 on an existing key file", () => {
+    const { dir } = fixture();
+    const keyPath = path.join(dir, "secret.key");
+    chmodSync(keyPath, 0o644);
+    expect(loadOrCreateKey(keyPath).length).toBe(32);
+    expect(statSync(keyPath).mode & 0o777).toBe(0o600);
+  });
+
+  it("rejects a non-regular key path", () => {
+    const { dir } = fixture();
+    const keyPath = path.join(dir, "secret.key");
+    rmSync(keyPath);
+    mkdirSync(keyPath);
+    expect(() => loadOrCreateKey(keyPath)).toThrow("regular file");
   });
 
   it("round-trips seal/open and rejects a wrong key", () => {

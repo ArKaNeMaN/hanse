@@ -42,6 +42,13 @@ setup: npm install   # optional setup command
   one project with separate clones.
 - Keep coordinator-specific files inside `.hanse/` so repository roots stay clean.
 
+## Settings
+
+Settings are **not** stored in `.hanse/` manifests. Global, project, and application settings and
+encrypted model-provider keys live in the coordinator SQLite database (`settings` and
+`provider_keys` migrations). Missing rows inherit; `null`/`cleared` is an explicit empty override.
+Provider keys are never written to YAML, the project repository, or the opencode config overlay.
+
 ## Runtime layout (outside repositories)
 
 ```

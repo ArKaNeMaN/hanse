@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -6,7 +7,10 @@ import { getHandoff, type HandoffState } from "../src/coordinator/handoff.js";
 import { CoordinatorService } from "../src/coordinator/service.js";
 import { GitService } from "../src/git/service.js";
 import { type HttpDeps, type HttpRequest, handleRequest } from "../src/http/handler.js";
+import { createHttpServer } from "../src/http/server.js";
+import { safeLocalPath } from "../src/http/ui.js";
 import { createPrincipal, upsertPrincipalWithToken } from "../src/identity/principals.js";
+import { SettingsService } from "../src/settings/index.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
 
 const dirs: string[] = [];
@@ -320,6 +324,8 @@ describe("http pages", () => {
     expect(response.body).toContain("Waiting for approval");
     expect(response.body).toContain('href="/projects/p/apps/a"');
     expect(response.body).toContain('aria-label="Open a application"');
+    expect(response.body).toContain('href="/projects/p/settings"');
+    expect(response.body).toContain('href="/settings"');
   });
 
   it("returns a styled 404 for an unknown project", () => {
@@ -638,12 +644,64 @@ describe("http API and assets", () => {
     expect(favicon.status).toBe(200);
     expect(favicon.contentType).toBe("image/svg+xml");
 
+    const settingsJs = handleRequest(deps(f), {
+      method: "GET",
+      path: "/assets/settings.js",
+      headers: {},
+    });
+    expect(settingsJs.status).toBe(200);
+    expect(settingsJs.contentType).toContain("text/javascript");
+    expect(settingsJs.body).toContain("data-settings-driver");
+    expect(settingsJs.body).toContain("data-driver-fields");
+
     const missing = handleRequest(deps(f), {
       method: "GET",
       path: "/assets/missing.js",
       headers: {},
     });
     expect(missing.status).toBe(404);
+  });
+
+  it("dispatches settings routes before the chat fallback", async () => {
+    const f = fixture();
+    const token = humanToken(f.db);
+    const settings = new SettingsService({ db: f.db, secretKey: randomBytes(32) });
+    const server = createHttpServer({ ...deps(f), settings });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    const port = typeof address === "object" && address !== null ? address.port : 0;
+    try {
+      const api = await fetch(`http://127.0.0.1:${port}/api/settings?scope=global`, {
+        headers: auth(token),
+      });
+      expect(api.status).toBe(200);
+      expect(api.headers.get("cache-control")).toBe("no-store");
+      const payload = (await api.json()) as {
+        effective: { llm: { model: { value: string } } };
+        pendingRestart: unknown[];
+      };
+      expect(payload.effective.llm.model.value).toBe("deepseek/deepseek-flash");
+      expect(payload.pendingRestart).toEqual([]);
+
+      const page = await fetch(`http://127.0.0.1:${port}/settings`, {
+        headers: { ...auth(token), accept: "text/html" },
+      });
+      expect(page.status).toBe(200);
+      expect(await page.text()).toContain(">Settings</h1>");
+
+      const restart = await fetch(`http://127.0.0.1:${port}/api/apps/a/restart?project=p`, {
+        method: "POST",
+        headers: auth(token),
+      });
+      expect(restart.status).toBe(503);
+
+      const unknown = await fetch(`http://127.0.0.1:${port}/settings/nope`, {
+        headers: auth(token),
+      });
+      expect(unknown.status).toBe(404);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 
   it("returns a styled 404 for an unknown HTML route", () => {
@@ -657,5 +715,14 @@ describe("http API and assets", () => {
     expect(response.status).toBe(404);
     expect(response.contentType).toContain("text/html");
     expect(response.body).toContain("Page not found");
+  });
+});
+
+describe("safeLocalPath", () => {
+  it("rejects control characters and protocol-relative redirects", () => {
+    expect(safeLocalPath("/settings")).toBe("/settings");
+    expect(safeLocalPath("/\t/evil.example")).toBe("/");
+    expect(safeLocalPath("//evil.example")).toBe("/");
+    expect(safeLocalPath("/\\evil.example")).toBe("/");
   });
 });

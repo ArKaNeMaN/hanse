@@ -1,8 +1,18 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { resolveInstanceEnv } from "../src/opencode/instance.js";
 import {
   buildInstanceEnv,
   type LaunchInput,
@@ -122,6 +132,10 @@ describe("launcher", () => {
           baseEnv: {
             HANSE_OPERATOR_TOKEN: "base-env-token",
             OPENCODE_PERMISSION: '{"*":"allow"}',
+            OPENCODE_AUTH_CONTENT: '{"deepseek":{}}',
+            OMO_PROFILE: "inherited",
+            OCX_PROFILE: "inherited",
+            OPENCODE_CONFIG_DIR: "/state/config",
             HANSE_API_BASE: "http://127.0.0.1:8787",
             HANSE_AUTH_FILE: "/state/auth.json",
             HANSE_DB: "/state/coordinator.db",
@@ -133,6 +147,10 @@ describe("launcher", () => {
       for (const key of [
         "HANSE_OPERATOR_TOKEN",
         "OPENCODE_PERMISSION",
+        "OPENCODE_AUTH_CONTENT",
+        "OMO_PROFILE",
+        "OCX_PROFILE",
+        "OPENCODE_CONFIG_DIR",
         "HANSE_API_BASE",
         "HANSE_AUTH_FILE",
         "HANSE_DB",
@@ -209,5 +227,126 @@ describe("launcher", () => {
     expect(
       git({ ...process.env, GIT_CEILING_DIRECTORIES: ownEnv.GIT_CEILING_DIRECTORIES }, own),
     ).toBe(realpathSync(own));
+  });
+
+  it("writes the merged auth snapshot with mode 0600", async () => {
+    const { db, dir } = fixture();
+    const runtimeRoot = path.join(dir, "rt");
+    const auth = { deepseek: { type: "api", key: "sk-test" } };
+    const running = launchInstance(db, {
+      appId: "p:web",
+      identity: { projectId: "p", app: "web" },
+      appDir: dir,
+      runtimeRoot,
+      port: 0,
+      coordinatorCommand: ["hanse", "mcp"],
+      command: fakeCommand,
+      auth,
+    });
+    const authFile = path.join(
+      resolveInstanceEnv(runtimeRoot, { projectId: "p", app: "web" }).XDG_DATA_HOME,
+      "opencode",
+      "auth.json",
+    );
+    expect(JSON.parse(readFileSync(authFile, "utf8"))).toEqual(auth);
+    expect(statSync(authFile).mode & 0o777).toBe(0o600);
+    expect(statSync(path.dirname(authFile)).mode & 0o777).toBe(0o700);
+    await stopInstance(db, running, { timeoutMs: 1000 });
+    db.close();
+  });
+
+  it("removes a stale auth file when the merged snapshot is empty", async () => {
+    const { db, dir } = fixture();
+    const runtimeRoot = path.join(dir, "rt");
+    const authFile = path.join(
+      resolveInstanceEnv(runtimeRoot, { projectId: "p", app: "web" }).XDG_DATA_HOME,
+      "opencode",
+      "auth.json",
+    );
+    mkdirSync(path.dirname(authFile), { recursive: true });
+    writeFileSync(authFile, '{"stale":true}');
+    const running = launchInstance(db, {
+      appId: "p:web",
+      identity: { projectId: "p", app: "web" },
+      appDir: dir,
+      runtimeRoot,
+      port: 0,
+      coordinatorCommand: ["hanse", "mcp"],
+      command: fakeCommand,
+      auth: {},
+    });
+    expect(existsSync(authFile)).toBe(false);
+    await stopInstance(db, running, { timeoutMs: 1000 });
+    db.close();
+  });
+
+  it("scrubs inherited profile/auth overrides and sets only the applied profile", () => {
+    const env = buildInstanceEnv(
+      launchInput({
+        baseEnv: {
+          OPENCODE_AUTH_CONTENT: '{"deepseek":{"type":"api","key":"inherited"}}',
+          OMO_PROFILE: "inherited-profile",
+          OCX_PROFILE: "inherited-profile",
+          OPENCODE_CONFIG_DIR: "/tmp/inherited-config",
+        },
+        omoProfile: "hanse-app-abc",
+      }),
+    );
+    for (const key of ["OPENCODE_AUTH_CONTENT", "OCX_PROFILE", "OPENCODE_CONFIG_DIR"]) {
+      expect(env[key]).toBeUndefined();
+    }
+    expect(env.OMO_PROFILE).toBe("hanse-app-abc");
+  });
+
+  it("omits OMO_PROFILE when no profile was applied", () => {
+    const env = buildInstanceEnv(launchInput({ baseEnv: { OMO_PROFILE: "inherited" } }));
+    expect(env.OMO_PROFILE).toBeUndefined();
+  });
+
+  it("includes the model, extra MCP servers, and managed web permissions", () => {
+    const web: LaunchInput["web"] = {
+      search: {
+        value: { driver: "deepseek", options: { provider: "deepseek" } },
+        state: "set",
+        source: "global",
+        sources: ["global"],
+      },
+      fetch: { value: null, state: "cleared", source: "global", sources: ["global"] },
+    };
+    const env = buildInstanceEnv(
+      launchInput({
+        model: "deepseek/deepseek-pro",
+        web,
+        mcpServers: {
+          hanse_web: {
+            type: "local",
+            command: ["node", "main.js", "web-mcp"],
+            environment: {
+              HANSE_WEB_CONFIG: '{"search":{"provider":"deepseek"}}',
+              HANSE_OPENCODE_AUTH_FILE: "/rt/apps/web/data/opencode/auth.json",
+            },
+          },
+        },
+      }),
+    );
+    const overlay = JSON.parse(env.OPENCODE_CONFIG_CONTENT ?? "{}") as {
+      model?: string;
+      mcp?: Record<string, { environment?: Record<string, string> }>;
+      permission?: {
+        websearch?: string;
+        webfetch?: string;
+        hanse_web_search?: string;
+        hanse_web_fetch?: string;
+      };
+    };
+    expect(overlay.model).toBe("deepseek/deepseek-pro");
+    expect(overlay.mcp?.hanse_web?.environment).toEqual({
+      HANSE_WEB_CONFIG: '{"search":{"provider":"deepseek"}}',
+      HANSE_OPENCODE_AUTH_FILE: "/rt/apps/web/data/opencode/auth.json",
+    });
+    expect(overlay.permission?.websearch).toBe("deny");
+    expect(overlay.permission?.webfetch).toBe("deny");
+    expect(overlay.permission?.hanse_web_search).toBe("allow");
+    expect(overlay.permission?.hanse_web_fetch).toBeUndefined();
   });
 });

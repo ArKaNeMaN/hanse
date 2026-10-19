@@ -9,6 +9,7 @@ import type { GitService } from "../git/service.js";
 import { authenticate } from "../identity/auth.js";
 import type { Principal } from "../identity/principals.js";
 import type { InstanceManager } from "../opencode/manager.js";
+import type { SettingsService } from "../settings/index.js";
 import type { SqliteDatabase } from "../store/index.js";
 import { renderApplication } from "./application.js";
 import { humanFrom, principalFrom } from "./auth.js";
@@ -37,6 +38,7 @@ export interface HttpDeps {
   getProjects: () => ProjectContext[];
   git: GitService;
   manager?: InstanceManager;
+  settings?: SettingsService;
 }
 
 export interface HttpRequest {
@@ -65,6 +67,10 @@ const ASSETS: Record<string, { file: string; contentType: string }> = {
     contentType: "text/javascript; charset=utf-8",
   },
   "/assets/git.js": { file: "git.js", contentType: "text/javascript; charset=utf-8" },
+  "/assets/settings.js": {
+    file: "settings.js",
+    contentType: "text/javascript; charset=utf-8",
+  },
   "/assets/favicon.svg": { file: "favicon.svg", contentType: "image/svg+xml" },
 };
 

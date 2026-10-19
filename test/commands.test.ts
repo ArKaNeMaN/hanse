@@ -1,9 +1,14 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { CliIo } from "../src/cli/cli.js";
-import { type CommandContext, initCommand, statusCommand } from "../src/cli/commands.js";
+import {
+  type CommandContext,
+  initCommand,
+  serveCommand,
+  statusCommand,
+} from "../src/cli/commands.js";
 
 const dirs: string[] = [];
 
@@ -46,5 +51,14 @@ describe("cli commands", () => {
   it("status fails cleanly without a manifest", async () => {
     const { ctx } = await context();
     expect(await statusCommand(".", ctx)).toBe(1);
+  });
+
+  it("serve fails closed when the secret key has the wrong length", async () => {
+    const { ctx, lines } = await context();
+    await mkdir(path.join(ctx.stateHome, "hanse"), { recursive: true });
+    await writeFile(path.join(ctx.stateHome, "hanse", "secret.key"), "too-short");
+    const code = await serveCommand({ workspace: ".", hostname: "127.0.0.1", port: 0 }, ctx);
+    expect(code).toBe(1);
+    expect(lines.join("\n")).toContain("secret key");
   });
 });

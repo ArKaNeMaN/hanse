@@ -1,5 +1,5 @@
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 const KEY_BYTES = 32;
@@ -12,10 +12,15 @@ export interface Sealed {
 
 export function loadOrCreateKey(keyPath: string): Buffer {
   if (existsSync(keyPath)) {
+    if (!lstatSync(keyPath).isFile()) {
+      throw new Error("secret key must be a regular file");
+    }
     const key = readFileSync(keyPath);
     if (key.length !== KEY_BYTES) {
       throw new Error(`secret key must be ${KEY_BYTES} bytes`);
     }
+    // Enforce the expected mode on legacy/restored files; creation below already sets it.
+    chmodSync(keyPath, 0o600);
     return key;
   }
   mkdirSync(path.dirname(keyPath), { recursive: true });

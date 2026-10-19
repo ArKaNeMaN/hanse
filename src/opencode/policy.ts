@@ -16,9 +16,23 @@ export interface PermissionPolicy {
   todoread: PermissionAction;
   webfetch: PermissionAction;
   websearch: PermissionAction;
+  hanse_web_search?: PermissionAction;
+  hanse_web_fetch?: PermissionAction;
   read: PermissionRules;
   edit: PermissionRules;
   doom_loop: PermissionAction;
+}
+
+/** Web-tool permission decisions derived from the effective settings. */
+export interface WebPermissionOptions {
+  /** Action for opencode's built-in fetch tool. Defaults to `allow`. */
+  webfetch?: PermissionAction;
+  /** Action for opencode's built-in search tool. Defaults to `allow`. */
+  websearch?: PermissionAction;
+  /** Register the managed `hanse_web_search` tool. Defaults to false. */
+  managedSearch?: boolean;
+  /** Register the managed `hanse_web_fetch` tool. Defaults to false. */
+  managedFetch?: boolean;
 }
 
 /** Environment-derived roots that agent tools may read outside the app directory. */
@@ -66,6 +80,10 @@ export interface VerifyPolicyOptions {
 const SCRUBBED_ENV_KEYS = [
   "HANSE_OPERATOR_TOKEN",
   "OPENCODE_PERMISSION",
+  "OPENCODE_AUTH_CONTENT",
+  "OPENCODE_CONFIG_DIR",
+  "OMO_PROFILE",
+  "OCX_PROFILE",
   "HANSE_API_BASE",
   "HANSE_AUTH_FILE",
   "HANSE_DB",
@@ -131,18 +149,23 @@ function pluginSkillRoots(specs: string[]): string[] {
  * override narrower project/plugin denies. The `edit` config/plugin denies are duplicated in bare and
  * star-slash-prefixed forms because opencode matches worktree-relative paths.
  */
-export function buildPermissionPolicy(roots: string[]): PermissionPolicy {
+export function buildPermissionPolicy(
+  roots: string[],
+  options: WebPermissionOptions = {},
+): PermissionPolicy {
   const external: PermissionRules = { "*": "deny" };
   for (const root of roots) {
     external[permissionPattern(root)] = "allow";
   }
-  return {
+  const policy: PermissionPolicy = {
     external_directory: external,
     question: "allow",
     todowrite: "allow",
     todoread: "allow",
-    webfetch: "allow",
-    websearch: "allow",
+    webfetch: options.webfetch ?? "allow",
+    websearch: options.websearch ?? "allow",
+    ...(options.managedSearch === true ? { hanse_web_search: "allow" as const } : {}),
+    ...(options.managedFetch === true ? { hanse_web_fetch: "allow" as const } : {}),
     read: {
       "*.env": "allow",
       "*.env.*": "allow",
@@ -167,6 +190,7 @@ export function buildPermissionPolicy(roots: string[]): PermissionPolicy {
     },
     doom_loop: "ask",
   };
+  return policy;
 }
 
 /** Coordinator-only environment keys that must never reach a managed agent. */

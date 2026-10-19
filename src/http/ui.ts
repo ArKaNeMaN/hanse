@@ -191,12 +191,15 @@ export function safeLocalPath(value: string | undefined, fallback = "/"): string
   if (value === undefined) {
     return fallback;
   }
+  const hasControlCharacter = [...value].some((character) => {
+    const code = character.codePointAt(0) ?? 0;
+    return code < 0x20 || code === 0x7f;
+  });
   if (
     !value.startsWith("/") ||
     value.startsWith("//") ||
     value.includes("\\") ||
-    value.includes("\n") ||
-    value.includes("\r")
+    hasControlCharacter
   ) {
     return fallback;
   }
@@ -296,7 +299,7 @@ export interface NavProject {
 
 export interface ShellOptions {
   title: string;
-  active: "overview" | "projects" | "project" | "handoffs" | "none";
+  active: "overview" | "projects" | "project" | "handoffs" | "settings" | "none";
   activeProjectId?: string;
   breadcrumb: Crumb[];
   projects: NavProject[];
@@ -395,6 +398,12 @@ function sidebar(options: ShellOptions): string {
       iconName: "branch",
       active: options.active === "handoffs",
       count: options.pendingCount,
+    }) +
+    navItem({
+      href: "/settings",
+      label: "Settings",
+      iconName: "settings",
+      active: options.active === "settings",
     });
 
   return `<aside class="sidebar" id="sidebar" aria-label="Primary">

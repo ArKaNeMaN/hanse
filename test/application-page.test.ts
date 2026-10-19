@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -6,6 +7,8 @@ import { CoordinatorService } from "../src/coordinator/service.js";
 import { GitService } from "../src/git/service.js";
 import { type HttpDeps, type HttpRequest, handleRequest } from "../src/http/handler.js";
 import { createPrincipal } from "../src/identity/principals.js";
+import type { InstanceManager } from "../src/opencode/manager.js";
+import { SettingsService } from "../src/settings/index.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
 
 const dirs: string[] = [];
@@ -30,6 +33,7 @@ interface Fixture {
   db: SqliteDatabase;
   deps: HttpDeps;
   token: string;
+  settings: SettingsService;
 }
 
 function fixture(): Fixture {
@@ -46,10 +50,12 @@ function fixture(): Fixture {
     "INSERT INTO apps (id,project_id,app_key,path,kind,contract,created_at) VALUES ('p1:storefront','p1','storefront','apps/storefront','service','AGENTS.md',?)",
   ).run(now);
   const token = createPrincipal(db, { kind: "human", name: "operator" }).token;
+  const settings = new SettingsService({ db, secretKey: randomBytes(32) });
   const deps: HttpDeps = {
     db,
     workspaceRoot: "/tmp",
     git: new GitService({ workspaceRoot: "/tmp" }),
+    settings,
     getProjects: () => [
       {
         id: "p1",
@@ -59,7 +65,7 @@ function fixture(): Fixture {
       },
     ],
   };
-  return { db, deps, token };
+  return { db, deps, token, settings };
 }
 
 function auth(token: string): Record<string, string> {
@@ -107,6 +113,8 @@ describe("application page", () => {
     expect(response.body).toContain("apps/storefront");
     expect(response.body).toContain('href="/projects/p1"');
     expect(response.body).toContain('href="/chat?app=storefront&amp;project=p1"');
+    expect(response.body).toContain('href="/projects/p1/apps/storefront/settings"');
+    expect(response.body).toContain("Application settings");
     expect(response.body).toContain("/ide/?folder=");
     expect(response.body).toContain('aria-current="page">storefront</span>');
   });
@@ -119,6 +127,26 @@ describe("application page", () => {
       expect(response.contentType).toContain("text/html");
       expect(response.body).toContain("Page not found");
     }
+  });
+
+  it("shows the pending banner and restart form without leaking provider keys", () => {
+    const f = fixture();
+    f.settings.setProviderKey("global", {}, "deepseek", "sk-application-secret", "owner");
+    f.deps.manager = {
+      pendingRestart: (appId: string) =>
+        appId === "p1:storefront"
+          ? { pending: true, reasons: ["settings_changed"] }
+          : { pending: false, reasons: [] },
+    } as unknown as InstanceManager;
+
+    const response = handleRequest(f.deps, get("/projects/p1/apps/storefront", auth(f.token)));
+    expect(response.status).toBe(200);
+    expect(response.body).toContain('id="settings-pending"');
+    expect(response.body).toContain("Settings changed");
+    expect(response.body).toContain("Restart required");
+    expect(response.body).toContain('action="/api/apps/storefront/restart?project=p1"');
+    expect(response.body).toContain('href="/projects/p1/apps/storefront/settings"');
+    expect(response.body).not.toContain("sk-application-secret");
   });
 
   it("redirects unauthenticated and agent principals to login", () => {

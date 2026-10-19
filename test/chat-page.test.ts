@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -11,6 +12,7 @@ import { type HttpDeps, type HttpRequest, handleRequest } from "../src/http/hand
 import { createHttpServer } from "../src/http/server.js";
 import { createPrincipal } from "../src/identity/principals.js";
 import type { InstanceManager } from "../src/opencode/manager.js";
+import { SettingsService } from "../src/settings/index.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
 
 const dirs: string[] = [];
@@ -42,6 +44,7 @@ interface Fixture {
   db: SqliteDatabase;
   deps: HttpDeps;
   token: string;
+  settings: SettingsService;
 }
 
 function addProject(
@@ -75,10 +78,12 @@ function fixture(projects = true): Fixture {
     addProject(db, "p2", "Beta", [{ key: "storefront", path: "apps/storefront" }]);
   }
   const token = createPrincipal(db, { kind: "human", name: "operator" }).token;
+  const settings = new SettingsService({ db, secretKey: randomBytes(32) });
   const deps: HttpDeps = {
     db,
     workspaceRoot: "/tmp",
     git: new GitService({ workspaceRoot: "/tmp" }),
+    settings,
     getProjects: () =>
       (
         db.prepare("SELECT id, name, root_path FROM projects ORDER BY rowid").all() as Array<{
@@ -93,7 +98,7 @@ function fixture(projects = true): Fixture {
         service: new CoordinatorService(db, row.id),
       })),
   };
-  return { db, deps, token };
+  return { db, deps, token, settings };
 }
 
 function auth(token: string): Record<string, string> {
@@ -276,6 +281,28 @@ describe("chat page", () => {
     expect(application).toBeLessThan(plan);
     expect(plan).toBeLessThan(saved);
     expect(saved).toBeLessThan(handoffs);
+  });
+
+  it("shows settings, a pending restart marker, and a restart action without leaking keys", async () => {
+    const f = fixture();
+    f.settings.setProviderKey("global", {}, "deepseek", "sk-chat-secret", "owner");
+    f.deps.manager = {
+      pendingRestart: (appId: string) =>
+        appId === "p1:storefront"
+          ? { pending: true, reasons: ["settings_changed"] }
+          : { pending: false, reasons: [] },
+    } as unknown as InstanceManager;
+
+    const response = await handleChat(
+      f.deps,
+      request({ query: { app: "storefront", project: "p1" }, headers: auth(f.token) }),
+    );
+    expect(response.status).toBe(200);
+    expect(response.body).toContain('href="/projects/p1/apps/storefront/settings"');
+    expect(response.body).toContain('id="chat-settings-pending"');
+    expect(response.body).toContain("Restart required");
+    expect(response.body).toContain('action="/api/apps/storefront/restart?project=p1"');
+    expect(response.body).not.toContain("sk-chat-secret");
   });
 
   it("redirects a missing app to the canonical chat URL", async () => {

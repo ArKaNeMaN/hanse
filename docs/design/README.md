@@ -18,6 +18,9 @@
 - [Chat UX QA harness](./chat-qa.mjs) and [artifacts](./artifacts/chat/README.md) - deterministic
   browser scenarios (streaming, queue/send, inline questions, OMO, tools, tables, width), JSON
   reports, screenshots, and the `--live` real-agent mode.
+- [Web tools and hierarchical settings](./web-tools-and-settings.md) - global/project/app settings,
+  encrypted model-provider keys, builtin/DeepSeek web drivers, per-app OMO model profiles, and the
+  explicit restart workflow.
 - [Architecture overview](./overview.md) - the coordinator architecture and stage plan.
 
 ## Run the showcase

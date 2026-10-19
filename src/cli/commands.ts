@@ -2,6 +2,7 @@ import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdir, readdir, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { ConfigError } from "../config/load.js";
 import { CoordinatorService } from "../coordinator/service.js";
@@ -11,9 +12,19 @@ import { createHttpServer } from "../http/server.js";
 import { upsertPrincipalWithToken } from "../identity/principals.js";
 import { runMcpServer } from "../mcp/server.js";
 import { InstanceManager } from "../opencode/manager.js";
+import { OmoProfileStore } from "../opencode/omo-profile.js";
 import { discoverProject, registerProject } from "../registry/index.js";
-import { coordinatorDbPath, coordinatorStateDir, defaultStateHome } from "../runtime/index.js";
+import {
+  coordinatorDbPath,
+  coordinatorStateDir,
+  defaultStateHome,
+  secretKeyPath,
+} from "../runtime/index.js";
+import { loadOrCreateKey } from "../secrets/index.js";
+import { SettingsService } from "../settings/index.js";
 import { openDatabase, runMigrations } from "../store/index.js";
+import { parseWebMcpConfig } from "../web/config.js";
+import { runWebMcpServer } from "../web/mcp.js";
 import type { CliIo } from "./cli.js";
 
 export interface CommandContext {
@@ -183,8 +194,27 @@ async function discoverProjectDirs(workspace: string): Promise<string[]> {
 /** Serve the web dashboard and HTTP API for every project found in the workspace. */
 export async function serveCommand(options: ServeOptions, ctx: CommandContext): Promise<number> {
   const workspace = path.resolve(ctx.cwd, options.workspace);
+  let secretKey: Buffer;
+  try {
+    secretKey = loadOrCreateKey(secretKeyPath(ctx.stateHome));
+  } catch (error) {
+    ctx.io.stderr(
+      `serve: cannot load settings secret key at ${secretKeyPath(ctx.stateHome)}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+    return 1;
+  }
   const db = openDatabase(coordinatorDbPath(ctx.stateHome));
   runMigrations(db);
+  const settings = new SettingsService({
+    db,
+    secretKey,
+    hostAuthFile: process.env.HANSE_AUTH_FILE,
+  });
+  const omoProfiles = new OmoProfileStore({
+    path: path.join(os.homedir(), ".omo", "omo.jsonc"),
+  });
 
   const token = process.env.HANSE_OPERATOR_TOKEN;
   if (token !== undefined && token.length > 0) {
@@ -200,6 +230,7 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
     db,
     coordinatorDbPath(ctx.stateHome),
     coordinatorStateDir(ctx.stateHome),
+    { settings, omoProfiles },
   );
   const getProjects = (): ProjectContext[] => {
     const rows = db.prepare("SELECT id, name, root_path FROM projects").all() as {
@@ -215,7 +246,14 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
     }));
   };
   const git = new GitService({ workspaceRoot: workspace });
-  const server = createHttpServer({ db, workspaceRoot: workspace, getProjects, git, manager });
+  const server = createHttpServer({
+    db,
+    workspaceRoot: workspace,
+    getProjects,
+    git,
+    manager,
+    settings,
+  });
 
   let ide: ChildProcess | null = null;
   const ideBin = process.env.HANSE_IDE_BIN ?? "/usr/lib/code-server/bin/code-server";
@@ -260,6 +298,30 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
     process.on("SIGINT", shutdown);
     process.on("SIGTERM", shutdown);
   });
+}
+
+/** Run the managed web tools MCP server (stdio) for one application. */
+export async function webMcpCommand(ctx: CommandContext): Promise<number> {
+  const rawConfig = process.env.HANSE_WEB_CONFIG;
+  if (rawConfig === undefined || rawConfig.trim().length === 0) {
+    ctx.io.stderr("web-mcp: HANSE_WEB_CONFIG is required");
+    return 2;
+  }
+  const authFile = process.env.HANSE_OPENCODE_AUTH_FILE;
+  if (authFile === undefined || authFile.length === 0) {
+    ctx.io.stderr("web-mcp: HANSE_OPENCODE_AUTH_FILE is required");
+    return 2;
+  }
+  let config: ReturnType<typeof parseWebMcpConfig>;
+  try {
+    config = parseWebMcpConfig(rawConfig);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    ctx.io.stderr(`web-mcp: ${message}`);
+    return 2;
+  }
+  await runWebMcpServer(config, authFile);
+  return 0;
 }
 
 /** Run the coordinator MCP server (stdio) bound to one application. */

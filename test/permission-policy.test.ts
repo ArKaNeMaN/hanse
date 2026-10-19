@@ -8,6 +8,7 @@ import { endpointFor, type LaunchInput, type RunningInstance } from "../src/open
 import { InstanceManager } from "../src/opencode/manager.js";
 import {
   type AgentPermissionRule,
+  buildPermissionPolicy,
   evaluateAgentPolicy,
   type PolicyFetch,
   verifyInstancePolicy,
@@ -350,5 +351,52 @@ describe("manager policy warnings", () => {
       "policy_unverified: agent policy verification timed out",
     ]);
     manager.stopAll();
+  });
+});
+
+describe("web permission policy", () => {
+  it("adds managed web tool keys after the built-in web keys", () => {
+    const policy = buildPermissionPolicy(ROOTS, {
+      webfetch: "deny",
+      websearch: "deny",
+      managedSearch: true,
+      managedFetch: true,
+    });
+    expect(Object.keys(policy)).toEqual([
+      "external_directory",
+      "question",
+      "todowrite",
+      "todoread",
+      "webfetch",
+      "websearch",
+      "hanse_web_search",
+      "hanse_web_fetch",
+      "read",
+      "edit",
+      "doom_loop",
+    ]);
+    expect(policy.webfetch).toBe("deny");
+    expect(policy.websearch).toBe("deny");
+    expect(policy.hanse_web_search).toBe("allow");
+    expect(policy.hanse_web_fetch).toBe("allow");
+  });
+
+  it("emits only the managed key that is active", () => {
+    const policy = buildPermissionPolicy(ROOTS, {
+      webfetch: "allow",
+      websearch: "deny",
+      managedSearch: true,
+      managedFetch: false,
+    });
+    expect(policy.hanse_web_search).toBe("allow");
+    expect(policy.hanse_web_fetch).toBeUndefined();
+    expect(Object.keys(policy)).not.toContain("hanse_web_fetch");
+  });
+
+  it("keeps built-in web tools allowed by default", () => {
+    const policy = buildPermissionPolicy(ROOTS);
+    expect(policy.webfetch).toBe("allow");
+    expect(policy.websearch).toBe("allow");
+    expect(Object.keys(policy)).not.toContain("hanse_web_search");
   });
 });

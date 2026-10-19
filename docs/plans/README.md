@@ -5,3 +5,4 @@
 - [0003 - OMO baseline and isolation](./0003-opencode-baseline-and-isolation.md) - discussion draft: OMO baseline, project/app MCP/plugin config, confinement questions.
 - [0004 - Interactive prompts](./0004-interactive-prompts.md) - question/permission docks (v1+v2), Todo panel, saved permissions, permission policy, tests, rollout.
 - [0005 - Chat UX overhaul](./0005-chat-ux-overhaul.md) - typed streaming, optimistic send and upstream queueing, status model, inline questions/Q&A, OMO system cards, tool renderers, tables, feed measure, QA, deploy. Status: complete (QA evidence in journal 0006); deployment pending.
+- [0006 - Web tools and hierarchical settings](./0006-web-tools-and-settings.md) - global/project/app settings, encrypted provider keys, model + OMO profiles, builtin/DeepSeek web drivers, per-app web MCP, explicit restart. Status: implemented and verified (journal 0007); commit/deployment pending.

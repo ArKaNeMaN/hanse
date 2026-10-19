@@ -13,6 +13,7 @@ import { handleChat, streamSessionEvents } from "./chat.js";
 import { handleGit } from "./git.js";
 import { type HttpDeps, handleRequest } from "./handler.js";
 import { handlePrompts, streamAppEvents } from "./prompts.js";
+import { handleSettings, isSettingsRoute } from "./settings.js";
 
 const IDE_PORT = Number(process.env.HANSE_IDE_PORT ?? 8080);
 const IDE_HOST = process.env.HANSE_IDE_HOST ?? "127.0.0.1";
@@ -150,14 +151,17 @@ export function createHttpServer(deps: HttpDeps): Server {
           /^\/api\/apps\/[^/]+\/(?:prompts|questions\/[^/]+\/(?:reply|reject)|permissions\/(?:[^/]+\/reply|saved(?:\/[^/]+)?)|sessions\/[^/]+\/todo)$/.test(
             url.pathname,
           );
+        const isSettings = isSettingsRoute(httpRequest.method, url.pathname);
         const isChat = url.pathname === "/chat" || url.pathname.startsWith("/api/apps/");
         const result = isGit
           ? await handleGit(deps, httpRequest)
           : isPrompts
             ? await handlePrompts(deps, httpRequest)
-            : isChat
-              ? await handleChat(deps, httpRequest)
-              : handleRequest(deps, httpRequest);
+            : isSettings
+              ? await handleSettings(deps, httpRequest)
+              : isChat
+                ? await handleChat(deps, httpRequest)
+                : handleRequest(deps, httpRequest);
         response.writeHead(result.status, {
           "content-type": result.contentType,
           ...(result.headers ?? {}),

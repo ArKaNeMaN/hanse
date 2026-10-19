@@ -33,6 +33,7 @@ export interface McpLocalServer {
 
 /** Subset of the opencode config produced as a per-instance overlay. */
 export interface OpencodeOverlay {
+  model?: string;
   mcp?: Record<string, McpLocalServer>;
   instructions?: string[];
   plugin?: string[];
@@ -52,6 +53,10 @@ export interface BuildOverlayOptions {
   environment?: Record<string, string>;
   /** Explicit permission overlay (see `buildPermissionPolicy`). */
   permission?: PermissionPolicy;
+  /** Effective model applied to the main agent and opencode-native agents. */
+  model?: string;
+  /** Extra MCP servers merged before the codegraph and coordinator entries. */
+  mcpServers?: Record<string, McpLocalServer>;
 }
 
 /** Make an application key safe to use as a filesystem path segment. */
@@ -91,7 +96,13 @@ export function buildConfigOverlay(options: BuildOverlayOptions): OpencodeOverla
   if (options.plugins !== undefined && options.plugins.length > 0) {
     overlay.plugin = options.plugins;
   }
+  if (options.model !== undefined && options.model.length > 0) {
+    overlay.model = options.model;
+  }
   const mcp: Record<string, McpLocalServer> = {};
+  if (options.mcpServers !== undefined) {
+    Object.assign(mcp, options.mcpServers);
+  }
   if (options.codegraphCommand !== undefined && options.codegraphCommand.length > 0) {
     mcp[CODEGRAPH_MCP_NAME] = {
       type: "local",

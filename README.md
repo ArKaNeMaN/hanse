@@ -13,6 +13,11 @@ and requirements) to each other through the coordinator - like independent teams
 - Project/application registry, and creating projects and adding applications from the UI (by path or
   `git clone`).
 - One isolated `opencode` instance per application (own XDG state and DB; model auth copied in).
+- Global/project/application settings in the coordinator DB, with an encrypted provider-key store, a
+  selectable model that also applies to OMO agents/categories, and human-only settings pages.
+- Optional per-tool web drivers: built-in OMO/opencode tools or the DeepSeek standalone Search/Fetch
+  APIs, exposed through the managed `hanse_web` MCP server only when configured.
+- Explicit "restart required" markers and a restart action; settings never restart agents silently.
 - Integrated chat with agents: sessions, messages, SSE updates, tool-call/diff rendering.
 - Application page with a lightweight git workbench: status, fetch, fast-forward update, local branch
   switch, commit, and push.

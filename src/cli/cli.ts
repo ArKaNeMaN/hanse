@@ -5,6 +5,7 @@ import {
   mcpCommand,
   serveCommand,
   statusCommand,
+  webMcpCommand,
 } from "./commands.js";
 import { parseArgs } from "./parse.js";
 
@@ -37,6 +38,7 @@ function buildUsage(): string[] {
     "  status [dir]    Discover and register a project, print its status",
     "  serve           Serve the web dashboard and HTTP API",
     "  mcp             Run the coordinator MCP server (stdio)",
+    "  web-mcp         Run the managed web tools MCP server (stdio)",
     "",
     "Options:",
     "  -h, --help            Show this help and exit",
@@ -90,6 +92,8 @@ export async function runCli(argv: readonly string[], io: CliIo = defaultIo): Pr
       );
     case "mcp":
       return mcpCommand(defaultContext(process.cwd(), io, args.flags));
+    case "web-mcp":
+      return webMcpCommand(defaultContext(process.cwd(), io, args.flags));
     default:
       io.stderr(`Unknown command: ${args.command}`);
       io.stderr(`Run \`${PACKAGE_NAME} --help\` for usage.`);

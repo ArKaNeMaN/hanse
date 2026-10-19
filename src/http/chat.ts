@@ -175,6 +175,9 @@ function renderChatPage(
   const path = ref?.path ?? app.path;
   const folder = appDir(project, app);
   const appHref = `/projects/${encodeURIComponent(project.id)}/apps/${encodeURIComponent(app.appKey)}`;
+  const settingsHref = `/projects/${encodeURIComponent(project.id)}/apps/${encodeURIComponent(app.appKey)}/settings`;
+  const pendingRestart = site.pendingRestart.get(app.id) ?? false;
+  const chatHref = `/chat?app=${encodeURIComponent(app.appKey)}&project=${encodeURIComponent(project.id)}`;
   const breadcrumb = [
     { label: "Projects", href: "/projects" },
     { label: project.name, href: `/projects/${encodeURIComponent(project.id)}` },
@@ -283,8 +286,21 @@ function renderChatPage(
         <div class="cluster">
           <a class="btn btn-secondary btn-sm" href="${escapeHtml(ideFolderUrl(folder))}" target="_blank" rel="noreferrer">${icon("external")}Open IDE</a>
           <a class="btn btn-ghost btn-sm" href="${escapeHtml(appHref)}">Application</a>
+          <a class="btn btn-ghost btn-sm" href="${escapeHtml(settingsHref)}">${icon("settings")}Settings</a>
           <a class="btn btn-ghost btn-sm" href="/projects/${encodeURIComponent(project.id)}">Open project</a>
         </div>
+        ${
+          pendingRestart
+            ? `<div class="stack--tight" id="chat-settings-pending">
+                <div class="cluster"><span class="badge badge-warning">Restart required</span><span class="small">Settings changed</span></div>
+                <p class="hint">Restart the agent to apply the new model, auth, or web tools. An active turn will be interrupted.</p>
+                <form method="post" action="/api/apps/${encodeURIComponent(app.appKey)}/restart?project=${encodeURIComponent(project.id)}">
+                  <input type="hidden" name="return_to" value="${escapeHtml(chatHref)}" />
+                  <button class="btn btn-primary btn-sm" type="submit">${icon("refresh")}Restart agent</button>
+                </form>
+              </div>`
+            : ""
+        }
       </section>
       <hr class="rule" />
       <section class="chat-context__section chat-plan-section" id="chat-plan-section" aria-labelledby="context-plan-title">

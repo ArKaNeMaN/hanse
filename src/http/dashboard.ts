@@ -1,5 +1,6 @@
 import { type Handoff, type HandoffState, listHandoffs } from "../coordinator/handoff.js";
 import type { CoordinatorService } from "../coordinator/service.js";
+import type { InstanceManager } from "../opencode/manager.js";
 import type { RegisteredApp } from "../registry/index.js";
 import type { SqliteDatabase } from "../store/index.js";
 import { appDir } from "./apps.js";
@@ -47,6 +48,7 @@ export interface SiteModel {
   projects: ProjectView[];
   apps: Map<string, AppRef>;
   runtime: Map<string, RuntimeState>;
+  pendingRestart: Map<string, boolean>;
   pendingCount: number;
   runningCount: number;
   failedCount: number;
@@ -63,6 +65,7 @@ export interface DashboardDeps {
     rootPath: string;
     service: Pick<CoordinatorService, "listApps">;
   }>;
+  manager?: Pick<InstanceManager, "pendingRestart">;
 }
 
 export interface PageChrome {
@@ -116,6 +119,7 @@ export function buildSite(deps: DashboardDeps): SiteModel {
   const meta = projectMeta(deps.db);
   const runtime = runtimeMap(deps.db);
   const apps = new Map<string, AppRef>();
+  const pendingRestart = new Map<string, boolean>();
   const projects = deps.getProjects().map((project) => {
     const details = meta.get(project.id);
     const projectApps = project.service.listApps();
@@ -156,6 +160,7 @@ export function buildSite(deps: DashboardDeps): SiteModel {
       }
     }
     for (const app of project.apps) {
+      pendingRestart.set(app.id, deps.manager?.pendingRestart(app.id).pending ?? false);
       const state = runtime.get(app.id) ?? "stopped";
       if (state === "running") {
         runningCount += 1;
@@ -171,6 +176,7 @@ export function buildSite(deps: DashboardDeps): SiteModel {
     projects,
     apps,
     runtime,
+    pendingRestart,
     pendingCount,
     runningCount,
     failedCount,
@@ -726,18 +732,19 @@ export function renderProject(
       plural(project.apps.length, "application"),
       `${counts.waiting} waiting`,
     ],
-    actions: `<a class="btn btn-secondary" href="${escapeHtml(ideFolderUrl(project.rootPath))}" target="_blank" rel="noreferrer">${icon("external")}Open IDE</a><button class="btn btn-primary" type="button" data-dialog-open="new-handoff">${icon("branch")}New handoff</button>`,
+    actions: `<a class="btn btn-secondary" href="/projects/${encodeURIComponent(project.id)}/settings">${icon("settings")}Settings</a><a class="btn btn-secondary" href="${escapeHtml(ideFolderUrl(project.rootPath))}" target="_blank" rel="noreferrer">${icon("external")}Open IDE</a><button class="btn btn-primary" type="button" data-dialog-open="new-handoff">${icon("branch")}New handoff</button>`,
   });
 
   const appRows = project.apps
     .map((app) => {
       const runtime = site.runtime.get(app.id) ?? "stopped";
+      const pending = site.pendingRestart.get(app.id) ?? false;
       const appHref = `/projects/${encodeURIComponent(project.id)}/apps/${encodeURIComponent(app.appKey)}`;
       return `<tr>
         <td data-label="Application"><strong class="table__primary"><a href="${escapeHtml(appHref)}">${escapeHtml(app.appKey)}</a></strong></td>
         <td data-label="Kind"><span class="badge badge--mono">${escapeHtml(app.kind ?? "app")}</span></td>
         <td data-label="Path"><span class="mono">${escapeHtml(app.path)}</span></td>
-        <td data-label="Runtime">${runtimePill(runtime)}</td>
+        <td data-label="Runtime"><div class="cluster">${runtimePill(runtime)}${pending ? `<a class="badge badge-warning" href="${escapeHtml(`/projects/${encodeURIComponent(project.id)}/apps/${encodeURIComponent(app.appKey)}/settings`)}">Restart required</a>` : ""}</div></td>
         <td data-label="Actions" class="table__actions"><div class="table__action-group">
           <a class="btn btn-ghost btn-sm" href="${escapeHtml(`/chat?app=${encodeURIComponent(app.appKey)}&project=${encodeURIComponent(project.id)}`)}">${icon("message")}Chat</a>
           <a class="btn btn-ghost btn-icon btn-sm" href="${escapeHtml(ideFolderUrl(appDir(project, app)))}" target="_blank" rel="noreferrer" aria-label="Open ${escapeHtml(app.appKey)} in IDE" title="Open in IDE">${icon("external")}</a>
