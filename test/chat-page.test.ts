@@ -186,7 +186,32 @@ describe("chat page", () => {
     expect(response.body).toContain("Message storefront agent");
     expect(response.body).toContain('href="/projects/p1/apps/storefront"');
     expect(response.body).toContain(">Application</a>");
+    expect(response.body).toContain(
+      'class="policy-warning" id="chat-policy-warning" role="status"',
+    );
+    expect(response.body).toContain('class="prompt-dock" id="chat-prompt-dock"');
+    expect(response.body).toContain('id="chat-input-needed"');
+    expect(response.body).toContain('id="chat-input-needed-count"');
+    expect(response.body).toContain('id="chat-policy-chip"');
+    expect(response.body).toContain('id="chat-waiting"');
+    expect(response.body).toContain('id="chat-plan-chip"');
+    expect(response.body).toContain('id="chat-plan-section"');
+    expect(response.body).toContain('id="context-plan-title"');
+    expect(response.body).toContain('id="chat-plan-list"');
+    expect(response.body).toContain('id="chat-saved-section"');
+    expect(response.body).toContain('id="chat-saved-list"');
+    expect(response.body).toContain('id="chat-announcer"');
+    expect(response.body).toContain('aria-live="polite"');
+    expect(response.body).toContain('id="chat-queue"');
+    expect(response.body).toContain('id="chat-composer-hint-text"');
     expect(response.body).not.toContain('class="page-header"');
+    const application = response.body.indexOf('id="context-app-title"');
+    const plan = response.body.indexOf('id="context-plan-title"');
+    const saved = response.body.indexOf('id="context-saved-title"');
+    const handoffs = response.body.indexOf('id="context-handoffs-title"');
+    expect(application).toBeLessThan(plan);
+    expect(plan).toBeLessThan(saved);
+    expect(saved).toBeLessThan(handoffs);
   });
 
   it("redirects a missing app to the canonical chat URL", async () => {
@@ -254,6 +279,9 @@ describe("chat page", () => {
     expect(response.status).toBe(200);
     expect(response.contentType).toContain("text/javascript");
     expect(response.body).toContain('getElementById("chat-shell")');
+    expect(response.body).toContain("new EventSource(eventsUrl())");
+    expect(response.body).toContain("function hasActiveSend()");
+    expect(response.body).toContain("chat-prompt-dock");
   });
 
   it("deletes a session through opencode for a human principal", async () => {

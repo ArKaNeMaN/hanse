@@ -1,9 +1,10 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { copyFileSync, mkdirSync } from "node:fs";
+import { copyFileSync, mkdirSync, realpathSync } from "node:fs";
 import path from "node:path";
 import type { SqliteDatabase } from "../store/index.js";
 import { buildConfigOverlay, type InstanceIdentity, resolveInstanceEnv } from "./instance.js";
+import { buildPermissionPolicy, resolvePermissionPaths, scrubInstanceEnv } from "./policy.js";
 
 export interface LaunchInput {
   appId: string;
@@ -34,22 +35,40 @@ export function endpointFor(hostname: string, port: number): string {
   return `http://${hostname}:${port}`;
 }
 
+function realParentDir(appDir: string): string {
+  try {
+    return path.dirname(realpathSync(appDir));
+  } catch {
+    return path.dirname(path.resolve(appDir));
+  }
+}
+
 /** Compose the isolated environment for one instance, including the config overlay. */
 export function buildInstanceEnv(input: LaunchInput): NodeJS.ProcessEnv {
   const isolated = resolveInstanceEnv(input.runtimeRoot, input.identity);
+  const permission = buildPermissionPolicy(
+    resolvePermissionPaths({
+      xdgDataHome: isolated.XDG_DATA_HOME,
+      xdgConfigHome: isolated.XDG_CONFIG_HOME,
+      xdgCacheHome: isolated.XDG_CACHE_HOME,
+      baselinePlugins: input.baselinePlugins,
+    }),
+  );
   const overlay = buildConfigOverlay({
     coordinatorCommand: input.coordinatorCommand,
     codegraphCommand: input.codegraphCommand,
     environment: input.coordinatorEnvironment,
     instructions: input.instructions,
     plugins: input.baselinePlugins,
+    permission,
   });
-  return {
+  return scrubInstanceEnv({
     ...process.env,
     ...input.baseEnv,
     ...isolated,
     OPENCODE_CONFIG_CONTENT: JSON.stringify(overlay),
-  };
+    GIT_CEILING_DIRECTORIES: realParentDir(input.appDir),
+  });
 }
 
 function recordInstance(

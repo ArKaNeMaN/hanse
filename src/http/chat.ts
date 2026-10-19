@@ -178,7 +178,7 @@ function renderChatPage(
     { label: app.appKey, href: appHref },
     { label: "Chat" },
   ];
-  const topbarActions = `<button class="btn btn-ghost btn-icon chat-context-toggle" type="button" data-chat-context-toggle aria-controls="chat-context" aria-expanded="false" aria-label="Open context panel" title="Context panel">${icon("panel-right")}</button><a class="btn btn-ghost btn-icon" href="${escapeHtml(ideFolderUrl(folder))}" target="_blank" rel="noreferrer" aria-label="Open application in IDE" title="Open in IDE">${icon("external")}</a>`;
+  const topbarActions = `<button class="btn btn-ghost btn-sm chat-input-needed" id="chat-input-needed" type="button" aria-haspopup="dialog" aria-controls="chat-queue" aria-expanded="false" aria-label="No requests need input" hidden>${icon("message")}<span class="chat-input-needed__count" id="chat-input-needed-count" aria-hidden="true">0</span></button><button class="btn btn-ghost btn-sm policy-chip" id="chat-policy-chip" type="button" aria-controls="chat-policy-warning" aria-expanded="false" hidden>${icon("alert-triangle")}<span id="chat-policy-chip-label">Policy warning</span></button><button class="btn btn-ghost btn-icon chat-context-toggle" type="button" data-chat-context-toggle aria-controls="chat-context" aria-expanded="false" aria-label="Open context panel" title="Context panel">${icon("panel-right")}</button><a class="btn btn-ghost btn-icon" href="${escapeHtml(ideFolderUrl(folder))}" target="_blank" rel="noreferrer" aria-label="Open application in IDE" title="Open in IDE">${icon("external")}</a>`;
 
   const sessions = `<aside class="chat-sessions" id="chat-sessions" aria-label="Sessions">
     <div class="chat-pane-head">
@@ -220,9 +220,12 @@ function renderChatPage(
       <span class="mono" id="chat-session-id">-</span>
       <span class="chat-live" id="chat-live" data-state="starting">Starting agent...</span>
       <span class="caption" id="chat-message-count">0 messages</span>
+      <span class="chat-waiting" id="chat-waiting" hidden>${icon("stamp")}Waiting for you</span>
+      <button class="btn btn-ghost btn-sm chat-plan-chip" id="chat-plan-chip" type="button" aria-controls="chat-plan-section" title="Open the plan panel" hidden>${icon("activity")}<span id="chat-plan-chip-label">Plan 0/0</span></button>
       <span class="chat-working" id="chat-working" hidden><span class="spinner" aria-hidden="true"></span>Working</span>
       <button class="btn btn-ghost btn-sm chat-retry" id="chat-stream-retry" type="button" hidden>${icon("refresh")}Retry</button>
     </div>
+    <div class="policy-warning" id="chat-policy-warning" role="status" hidden></div>
     <div class="chat-thread__viewport">
       <div class="chat-thread__scroll" id="chat-scroll">
         <div class="chat-thread__inner" id="chat-messages" role="log" aria-live="polite" aria-relevant="additions">
@@ -237,6 +240,7 @@ function renderChatPage(
       </div>
       <button class="btn btn-secondary btn-sm chat-new-messages" id="chat-new-messages" type="button" hidden>New messages ${icon("arrow-right")}</button>
     </div>
+    <section class="prompt-dock" id="chat-prompt-dock" aria-label="Agent requests" hidden></section>
     <form class="composer" id="chat-composer" data-no-busy>
       <div class="composer__row">
         <label class="sr-only" for="chat-prompt">Message ${escapeHtml(app.appKey)} agent</label>
@@ -244,7 +248,7 @@ function renderChatPage(
         <button class="btn btn-primary" id="chat-send" type="submit">${icon("send")}<span class="btn__label">Send</span></button>
       </div>
       <div class="composer__hint" id="chat-composer-hint">
-        <span>Enter to send / Shift+Enter for a new line</span>
+        <span id="chat-composer-hint-text">Enter to send / Shift+Enter for a new line</span>
         <span>${plural(handoffs.length, "handoff")} in context</span>
       </div>
       <p class="field-error" id="chat-send-error" role="alert" hidden></p>
@@ -267,6 +271,18 @@ function renderChatPage(
           <a class="btn btn-ghost btn-sm" href="${escapeHtml(appHref)}">Application</a>
           <a class="btn btn-ghost btn-sm" href="/projects/${encodeURIComponent(project.id)}">Open project</a>
         </div>
+      </section>
+      <hr class="rule" />
+      <section class="chat-context__section chat-plan-section" id="chat-plan-section" aria-labelledby="context-plan-title">
+        <div class="cluster summary-row"><h2 class="overline" id="context-plan-title" tabindex="-1">Plan</h2><span class="caption" id="chat-plan-summary">No plan yet</span></div>
+        <p class="chat-plan__empty" id="chat-plan-empty">Send a message to start a session.</p>
+        <ul class="chat-plan__list" id="chat-plan-list" hidden></ul>
+      </section>
+      <hr class="rule" />
+      <section class="chat-context__section" id="chat-saved-section" aria-labelledby="context-saved-title" hidden>
+        <div class="cluster summary-row"><h2 class="overline" id="context-saved-title">Saved permissions</h2><span class="badge" id="chat-saved-badge" hidden>New</span></div>
+        <p class="caption">Durable project grants. Revoke to restore the policy.</p>
+        <div class="chat-saved" id="chat-saved-list"></div>
       </section>
       <hr class="rule" />
       <section class="chat-context__section" aria-labelledby="context-handoffs-title">
@@ -304,6 +320,14 @@ function renderChatPage(
       ${sessions}
       ${thread}
       ${context}
+      <div class="chat-queue" id="chat-queue" role="dialog" aria-modal="false" aria-labelledby="chat-queue-title" hidden>
+        <div class="chat-queue__head">
+          <p class="overline" id="chat-queue-title">Needs input</p>
+          <button class="btn btn-ghost btn-icon btn-sm" type="button" data-chat-queue-close aria-label="Close request queue">${icon("x")}</button>
+        </div>
+        <div class="chat-queue__list" id="chat-queue-list"></div>
+      </div>
+      <p class="sr-only" id="chat-announcer" role="status" aria-live="polite" aria-atomic="true"></p>
       <div class="chat-scrim" data-chat-scrim></div>
     </div>`,
   });

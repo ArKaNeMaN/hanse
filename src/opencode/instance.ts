@@ -1,4 +1,5 @@
 import path from "node:path";
+import type { PermissionPolicy } from "./policy.js";
 
 /** Identity of a managed application instance. */
 export interface InstanceIdentity {
@@ -35,6 +36,7 @@ export interface OpencodeOverlay {
   mcp?: Record<string, McpLocalServer>;
   instructions?: string[];
   plugin?: string[];
+  permission?: PermissionPolicy;
 }
 
 export interface BuildOverlayOptions {
@@ -48,6 +50,8 @@ export interface BuildOverlayOptions {
   plugins?: string[];
   /** Environment passed to the coordinator MCP server. */
   environment?: Record<string, string>;
+  /** Explicit permission overlay (see `buildPermissionPolicy`). */
+  permission?: PermissionPolicy;
 }
 
 /** Make an application key safe to use as a filesystem path segment. */
@@ -108,6 +112,9 @@ export function buildConfigOverlay(options: BuildOverlayOptions): OpencodeOverla
   }
   if (options.instructions !== undefined && options.instructions.length > 0) {
     overlay.instructions = options.instructions;
+  }
+  if (options.permission !== undefined) {
+    overlay.permission = options.permission;
   }
   return overlay;
 }

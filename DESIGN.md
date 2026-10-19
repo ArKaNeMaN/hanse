@@ -770,6 +770,54 @@ copy, and behavior live in [the git workbench design](docs/design/git-workbench.
 `.display`, `.h1`, `.h2`, `.h3`, `.body-lg`, `.body`, `.small`, `.caption`, `.overline`, `.mono`.
 These map exactly to Section 3. No other font sizes are allowed in product CSS.
 
+### 5.19 Interactive prompts, plan, and policy warnings
+
+- **Prompt dock:** `.prompt-dock` is an in-flow row directly above `.composer` inside the chat
+  thread, so it never covers messages and the thread keeps page scroll ownership. The single visible
+  `.prompt-dock__card` is capped at 76ch, surface 1 with a hairline; `.prompt-dock__head` carries the
+  `QUESTION`/`PERMISSION` overline, position or risk chip, queue count, and collapse control.
+  `.prompt-dock__body` is the only scroll region inside the dock (`min(45dvh, 30rem)` desktop,
+  `min(50dvh, 22rem)` at < 768).
+- **Question anatomy:** `.prompt-dock__tabs` (>= 768) and `.prompt-dock__stepper` (< 768) are mutually
+  exclusive; `.prompt-question` is a native `<fieldset>` with an uppercase `legend`, question text,
+  `.prompt-option` native radio/checkbox rows (label plus description), and `.prompt-custom` for the
+  `Other` input. `.prompt-review` lists answers for the Review step. Selection is wash 2 plus the
+  native control, never an accent edge; focus stays on the native input.
+- **Permission anatomy:** `.risk-chip` pairs a word, glyph, and 3-tick meter so risk is never
+  color-only. `.prompt-scope` states `This request:`/`Always grants:` with mono patterns and the
+  v1/v2 scope sentence (`For this app instance until restart.` / `Saved for this project until
+  revoked.`). `.prompt-caveat` carries the `*`, external-directory, and bash-glob explanations.
+  `.prompt-evidence` renders only fields the request provides (command, filepath/diff, URL, patterns,
+  tool/input) in a label/value grid; `.prompt-evidence__pre` scrolls and wraps. `.prompt-confirm`
+  holds inline Always/Deny confirmations with the cascade warning and optional feedback.
+- **Actions:** Deny is a danger ghost at the start of `.prompt-dock__foot`; Always allow and Allow once
+  are at the end. Buttons are `btn-sm` on desktop and resolve to the 44px mobile target. Submitting
+  labels the primary action `Sending answer…` / `Sending reply…` and disables the dock controls.
+- **Top bar and queue:** `.chat-input-needed` shows a mono count pill for requests in other sessions;
+  `.chat-queue` is a non-modal popover at >= 640 and a bottom sheet below, opened from that control.
+  `.policy-chip` is the compact post-dismissal warning control; `.chat-waiting` is the meta-strip
+  `Waiting for you` stamp.
+- **Policy warning:** `.policy-warning` is a full-width in-flow banner below the meta strip with a
+  text-only `.policy-warning__list` and a Dismiss action. It uses surface 2 plus a hairline, not a
+  colored side stripe, and is `role="status"`.
+- **Plan (Todo):** `.chat-plan-section` sits in the context rail after Application and before Handoffs.
+  `.chat-plan__item` is a read-only 3-column row: `.chat-plan__status` (glyph + `Pending`/`Now`/`Done`/
+  `Dropped`/`Unknown`), `.chat-plan__content`, and `.chat-plan__priority` (3-tick meter; the text
+  label is visually hidden). Only the first `in_progress` row gets `aria-current="step"`. The list is
+  capped at `14rem` with contained scroll; `.chat-plan__empty` carries empty/loading/error/paused
+  states. `.chat-plan-chip` shows `Plan N/M` in the thread meta only below 1360 and opens the drawer
+  at the Plan heading.
+- **Saved permissions:** `.chat-saved` lists durable v2 grants as `.chat-saved__row` with mono action,
+  resource, and upstream project id, plus an inline-confirmed Revoke action. The section is hidden
+  when empty; `.chat-saved__actions`, `.chat-saved__action`, `.chat-saved__resource`,
+  `.chat-saved__project` name the row parts. A new grant briefly shows the `New` badge.
+- **Session flag:** `.session-item__flag` marks a rail row with a waiting count. It is glyph + text;
+  the count is duplicated in the top-bar control.
+- **Accessibility and motion:** prompt text, options, metadata, and plan rows are `textContent` only;
+  no markdown or links. The dock is a labelled region, questions use `<fieldset>`/`<legend>`, tabs use
+  roving tabindex with `aria-controls`, errors use `role="alert"`, and `#chat-announcer` is the single
+  polite live region for arrivals and outcomes. Reduced motion changes opacity only.
+
 ---
 
 ## 6. Motion & Interaction
@@ -934,6 +982,28 @@ spacing value.
 `.tool-call__path`, `.composer`, `.composer__row`, `.composer__hint`. Markdown descendants of
 `.message__body` (`p`, `h3`-`h5`, `ul`, `ol`, `li`, `blockquote`, `pre`, `code`, `a`, `hr`, `strong`,
 `em`) are part of the message surface and use existing type/space tokens.
+- Interactive prompts and plan: `.chat-input-needed`, `.chat-input-needed__count`, `.policy-chip`,
+`.chat-waiting`, `.chat-plan-chip`, `.policy-warning`, `.policy-warning__lead`,
+`.policy-warning__mark`, `.policy-warning__label`, `.policy-warning__list`,
+`.policy-warning__dismiss`, `.prompt-dock`, `.prompt-dock__card`, `.prompt-dock__head`,
+`.prompt-dock__identity`, `.prompt-dock__count`, `.prompt-dock__queue-count`, `.prompt-dock__body`,
+`.prompt-dock__title`, `.prompt-dock__copy`, `.prompt-dock__tabs`, `.prompt-dock__tab`,
+`.prompt-dock__stepper`, `.prompt-dock__step-label`, `.prompt-question`, `.prompt-question__header`,
+`.prompt-question__text`, `.prompt-options`, `.prompt-option`, `.prompt-option__body`,
+`.prompt-option__label`, `.prompt-option__desc`, `.prompt-custom`, `.prompt-dock__review`,
+`.prompt-review-list`, `.prompt-review`, `.prompt-review__body`, `.prompt-review__header`,
+`.prompt-review__answer`, `.prompt-dock__foot`, `.prompt-confirm`, `.prompt-confirm__text`,
+`.prompt-confirm__body`, `.prompt-dock__error`, `.risk-chip`, `.risk-chip__meter`, `.risk-chip__tick`,
+`.prompt-scope`, `.prompt-scope__row`, `.prompt-scope__label`, `.prompt-scope__list`,
+`.prompt-scope__note`, `.prompt-scope__action`, `.prompt-caveat`, `.prompt-evidence`, `.prompt-evidence__grid`,
+`.prompt-evidence__label`, `.prompt-evidence__value`, `.prompt-evidence__pre`,
+`.prompt-evidence__diff`, `.prompt-evidence__details`, `.prompt-feedback`, `.chat-queue`,
+`.chat-queue__head`, `.chat-queue__list`, `.chat-queue__row`, `.chat-queue__kind`,
+`.chat-queue__title`, `.chat-queue__session`, `.chat-queue__empty`, `.session-item__flag`,
+`.chat-plan-section`, `.chat-plan__list`, `.chat-plan__item`, `.chat-plan__status`, `.chat-plan__body`,
+`.chat-plan__content`, `.chat-plan__priority`, `.chat-plan__tick`, `.chat-plan__empty`, `.chat-saved`,
+`.chat-saved__row`, `.chat-saved__meta`, `.chat-saved__action`, `.chat-saved__resource`,
+`.chat-saved__project`, `.chat-saved__actions`.
 - Utilities: `.display`, `.h1`, `.h2`, `.h3`, `.body-lg`, `.body`, `.small`, `.caption`,
 `.overline`, `.mono`, `.rule`, `.rule--strong`, `.rule--double`, `.sr-only`, `.skip-link`,
 `.chart-ground`.

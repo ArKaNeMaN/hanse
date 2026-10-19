@@ -7,3 +7,4 @@ them.
 - `0002-web-redesign.md` - the from-scratch web UI redesign (The Chart Room), stages 2-3 and final QA.
 - `0003-git-workbench.md` - the Application page, human-only git API, client panel, verification, and accepted debt.
 - `0004-session-lifecycle.md` - lazy chat session creation on first send, human-only session deletion, and the draft state.
+- `0005-interactive-prompts.md` - question/permission docks, v1+v2 prompts, Todo/Plan panel, saved permissions, and the permission guardrail.

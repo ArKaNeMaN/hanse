@@ -101,12 +101,42 @@ Both containers use the same image (`hanse:0.1.0`, built from `Dockerfile`).
   safe markdown subset, tool calls (output/error), reasoning, and patches, and sends prompts. The
   optional `project` query is additive and disambiguates duplicate app keys. API:
   `GET/POST /api/apps/:app/sessions`, `DELETE /api/apps/:app/sessions/:sid`,
-  `GET/POST /api/apps/:app/sessions/:sid/messages`, SSE
-  `GET /api/apps/:app/sessions/:sid/events`; all accept `?project=<projectId>`.
+  `GET/POST /api/apps/:app/sessions/:sid/messages`; all accept `?project=<projectId>`.
 - Sessions are created lazily: opening a chat or pressing "New session" only starts a draft, and the
   first message creates the upstream session. Deletion is human-only (`403` for agent principals),
   proxies opencode `DELETE /session/:id`, and the UI selects the next session or returns to the draft
   when the active one is removed.
+- The chat workspace renders interactive opencode prompts above the composer:
+  - **Questions** support one or many questions, options, multi-select, custom answers, review, and
+    dismissal. Empty answers are allowed after an explicit "Send without answering?" confirmation.
+  - **Permissions** show the type, patterns, bounded metadata, and `once`/`always`/`reject` with
+    optional feedback. v1 `always` lasts for the app instance until restart; v2 `always` is a durable,
+    project-scoped saved permission. A reject also rejects other pending permissions in the same
+    session.
+  - Prompt sources are v1 and v2 (`source` on every request/reply); v2 replies use the
+    session-scoped upstream routes. `tooLarge` requests are dismiss-only.
+  - The session **Plan** panel shows opencode's Todo list in the context rail (with a `Plan N/M`
+    chip below 1360), updates on `todo.updated`, and is read-only. v2 saved permissions are listed
+    and revocable in the context rail.
+  - A top-bar stamp/count surfaces requests waiting in other sessions of the same app, with
+    per-session flags in the sessions rail. Policy warnings from `/prompts` render as a banner/chip.
+- API for prompts, Todo, and events (human-only; agent principals get `403`):
+  `GET /api/apps/:app/prompts`, `POST /api/apps/:app/questions/:id/reply|reject`,
+  `POST /api/apps/:app/permissions/:id/reply`,
+  `GET/DELETE /api/apps/:app/permissions/saved[/:id]`,
+  `GET /api/apps/:app/sessions/:sid/todo`, and the typed app-level SSE
+  `GET /api/apps/:app/events`; all accept `?project=<projectId>`. The old raw
+  `GET /api/apps/:app/sessions/:sid/events` remains for compatibility but is no longer used by the
+  chat client.
+- Every managed instance receives an explicit permission overlay (`OPENCODE_CONFIG_CONTENT`):
+  `external_directory` is deny-all outside the app plus trusted runtime roots (tool-output, git repos
+  cache, temp, per-instance config/cache skills, `~/.claude/skills`, `~/.agents/skills`, bundled
+  plugin skills); `question`, `todowrite`, `todoread`, `webfetch`, `websearch`, and `.env`
+  read/write are allowed; `.opencode` config/plugin edits are denied; `doom_loop` asks. The
+  coordinator strips its own credentials (`HANSE_OPERATOR_TOKEN`, `OPENCODE_PERMISSION`, etc.) from
+  the instance environment and sets `GIT_CEILING_DIRECTORIES` to the app's real parent so a nested
+  app cannot inherit a wider parent worktree. Effective rulesets are verified after start with a
+  **warning-only** result (no startup block).
 
 ## Handoffs (agent-to-agent requests)
 
@@ -174,14 +204,22 @@ The IDE container keeps its extensions at `/opt/hanse-ext` and settings at
 
 ## Verification
 
-`npm run lint && npm run typecheck && npm test && npm run build` (all green; 156 tests).
+`npm run lint && npm run typecheck && npm test && npm run build` (all green; 256 tests).
 
 ## Known limitations and residual risks
 
 - Single user; no RBAC or multi-tenant isolation.
 - Trust model: trusted repositories; agents execute code.
 - **Agents run in the `hanse` container as the same uid as the coordinator, so they can read
-  `/data/state` (DB, `secret.key`).** The IDE is isolated, agents are not.
+  `/data/state` (DB, `secret.key`), `/proc/<pid>/environ`, and the unauthenticated loopback
+  `opencode serve` API.** The IDE is isolated, agents are not. "Human-only" prompt routes are a
+  Hanse-route guarantee, not a hard boundary: an agent with `bash` can call the upstream prompt API
+  directly, including a v2 `always` reply that creates a durable project-scoped saved permission.
+- The permission overlay is a guardrail, not a sandbox. App-owned `opencode.json`/plugins can widen
+  the final ruleset (the `.opencode` edit deny is bypassable with `bash`), verification is
+  warning-only by owner decision, `bash` path checks are best-effort, symlinks/bind mounts can
+  escape, and `.env`/network are intentionally allowed. Hard isolation needs a separate design
+  (separate uid/container, authenticated upstream, or a proxy the agent cannot reach).
 - Cross-app handoff delivery to a live sibling session is not automatic (see above).
 - The OMO baseline is image-wide; `~/.omo` and its model config are shared by every instance under
   the same uid. Per-instance OMO state is not isolated yet.

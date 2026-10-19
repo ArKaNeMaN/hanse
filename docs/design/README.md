@@ -10,6 +10,8 @@
   decisions, accepted debt, and the stage-4 handoff.
 - [Git workbench](./git-workbench.md) - the application page and human-only git status/actions
   design.
+- [Interactive prompts](./interactive-prompts.md) - question/permission docks, the session Todo
+  panel, and the app-scoped permission policy.
 - [Architecture overview](./overview.md) - the coordinator architecture and stage plan.
 
 ## Run the showcase

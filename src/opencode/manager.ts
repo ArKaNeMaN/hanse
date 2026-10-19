@@ -1,7 +1,13 @@
 import { connect, createServer } from "node:net";
 import path from "node:path";
 import type { SqliteDatabase } from "../store/index.js";
-import { launchInstance, type RunningInstance } from "./launcher.js";
+import { resolveInstanceEnv } from "./instance.js";
+import { type LaunchInput, launchInstance, type RunningInstance } from "./launcher.js";
+import {
+  resolvePermissionPaths,
+  type VerifyPolicyOptions,
+  verifyInstancePolicy,
+} from "./policy.js";
 
 export interface ManagedApp {
   id: string;
@@ -13,6 +19,17 @@ export interface ManagedApp {
 interface Entry {
   run: RunningInstance;
   endpoint: string;
+  policyWarnings: string[];
+}
+
+export interface InstanceManagerOptions {
+  /** Injectable launcher for tests. */
+  launch?: (db: SqliteDatabase, input: LaunchInput) => RunningInstance;
+  /** Injectable policy verifier for tests. */
+  verify?: (options: VerifyPolicyOptions) => Promise<string[]>;
+  verificationTimeoutMs?: number;
+  verificationRetries?: number;
+  verificationRetryDelayMs?: number;
 }
 
 const PORT_BASE = 4100;
@@ -66,13 +83,20 @@ export class InstanceManager {
   readonly #db: SqliteDatabase;
   readonly #dbPath: string;
   readonly #runtimeRoot: string;
+  readonly #options: InstanceManagerOptions;
   readonly #running = new Map<string, Entry>();
   #nextPort = PORT_BASE;
 
-  constructor(db: SqliteDatabase, dbPath: string, runtimeRoot: string) {
+  constructor(
+    db: SqliteDatabase,
+    dbPath: string,
+    runtimeRoot: string,
+    options: InstanceManagerOptions = {},
+  ) {
     this.#db = db;
     this.#dbPath = dbPath;
     this.#runtimeRoot = runtimeRoot;
+    this.#options = options;
   }
 
   async ensure(app: ManagedApp): Promise<string> {
@@ -81,11 +105,14 @@ export class InstanceManager {
       return existing.endpoint;
     }
     const port = await this.#allocatePort();
-    const run = launchInstance(this.#db, {
+    const runtimeRoot = path.join(this.#runtimeRoot, "projects", app.projectId);
+    const baselinePlugins = resolveBaselinePlugins();
+    const launch = this.#options.launch ?? launchInstance;
+    const run = launch(this.#db, {
       appId: app.id,
       identity: { projectId: app.projectId, app: app.appKey },
       appDir: app.appDir,
-      runtimeRoot: path.join(this.#runtimeRoot, "projects", app.projectId),
+      runtimeRoot,
       port,
       coordinatorCommand: [process.execPath, process.argv[1] ?? "", "mcp"],
       coordinatorEnvironment: {
@@ -93,13 +120,56 @@ export class InstanceManager {
         HANSE_PROJECT_ID: app.projectId,
         HANSE_APP_KEY: app.appKey,
       },
-      baselinePlugins: resolveBaselinePlugins(),
+      baselinePlugins,
       codegraphCommand: resolveCodegraphCommand(),
       authSource: process.env.HANSE_AUTH_FILE,
     });
-    this.#running.set(app.id, { run, endpoint: run.endpoint });
+    const entry: Entry = { run, endpoint: run.endpoint, policyWarnings: [] };
+    this.#running.set(app.id, entry);
     await waitForPort(port, 10000);
+    entry.policyWarnings = await this.#verifyPolicy(
+      app,
+      runtimeRoot,
+      baselinePlugins,
+      run.endpoint,
+    );
     return run.endpoint;
+  }
+
+  /** Policy warnings recorded for an app, or an empty list when it has not been verified. */
+  policyWarnings(appId: string): string[] {
+    return [...(this.#running.get(appId)?.policyWarnings ?? [])];
+  }
+
+  async #verifyPolicy(
+    app: ManagedApp,
+    runtimeRoot: string,
+    baselinePlugins: string[],
+    endpoint: string,
+  ): Promise<string[]> {
+    const verify = this.#options.verify ?? verifyInstancePolicy;
+    const isolated = resolveInstanceEnv(runtimeRoot, {
+      projectId: app.projectId,
+      app: app.appKey,
+    });
+    const trustedRoots = resolvePermissionPaths({
+      xdgDataHome: isolated.XDG_DATA_HOME,
+      xdgConfigHome: isolated.XDG_CONFIG_HOME,
+      xdgCacheHome: isolated.XDG_CACHE_HOME,
+      baselinePlugins,
+    });
+    try {
+      return await verify({
+        endpoint,
+        appDir: app.appDir,
+        trustedRoots,
+        timeoutMs: this.#options.verificationTimeoutMs,
+        retries: this.#options.verificationRetries,
+        retryDelayMs: this.#options.verificationRetryDelayMs,
+      });
+    } catch {
+      return ["policy_unverified: agent policy verification failed"];
+    }
   }
 
   stopAll(): void {
