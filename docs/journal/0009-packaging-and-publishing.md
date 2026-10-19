@@ -81,10 +81,17 @@ development but not a public deployment story:
 
 - `npm run lint`, `npm run typecheck`, `npm test` (561 tests), and `npm run build` are green.
 - `docker compose config` validates the release, build, and host-auth overlays.
-- The local `linux/amd64` image builds and answers `/healthz`, `/login`, `/assets/app.css`, and the
-  proxied IDE.
-- The publish workflow builds both architectures and the image is pullable anonymously from GHCR.
-- The image is deployed to the reference host and passes the same health checks.
+- Local `linux/amd64` and `linux/arm64` images build. Both run `node`, `opencode`, `code-server`, and
+  `better-sqlite3`; the amd64 image served `/healthz`, `/login`, `/assets/app.css`, `/settings`, the
+  project/application creation API, and the proxied IDE.
+- The source-build overlay (`compose.build.yaml`) builds and tags `hanse:dev`.
+- CI's Docker job built the image in 3m14s. The publish workflow built both architectures in 9m15s,
+  pushed `main`, `sha-3b2c35e`, and `latest`, and made the package public.
+- Anonymous `docker pull ghcr.io/arkaneman/hanse:sha-3b2c35e` succeeds; the index contains
+  `linux/amd64`, `linux/arm64`, and attestation manifests.
+- The published image was deployed to the reference host, preserving the existing project and
+  workspace. Both services are healthy; `/healthz`, login, authenticated pages, assets, the API, and
+  `/ide/` return the expected statuses.
 
 ## Known limits
 

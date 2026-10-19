@@ -32,8 +32,10 @@ curl -fsSLO https://raw.githubusercontent.com/ArKaNeMaN/hanse/main/compose.yaml
 curl -fsSLO https://raw.githubusercontent.com/ArKaNeMaN/hanse/main/.env.example
 cp .env.example .env
 
-# Generate a token, then replace the change-me placeholder in .env with it.
-python3 -c 'import secrets; print(secrets.token_urlsafe(32))'
+# Generate a token and put it in .env.
+TOKEN=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')
+sed -i.bak "s|^HANSE_OPERATOR_TOKEN=.*|HANSE_OPERATOR_TOKEN=$TOKEN|" .env && rm -f .env.bak
+echo "operator token: $TOKEN"
 
 mkdir -p workspace state
 docker compose pull
@@ -364,7 +366,7 @@ and run the container smoke test against `/healthz`, `/login`, the assets, and `
 ## Known limits
 
 - Pre-alpha, single operator, trusted-LAN threat model. See
-  [`docs/current-state.md`](current-state.md#known-limits-and-security-notes) for the full list.
+  [`docs/current-state.md`](current-state.md#known-limitations-and-residual-risks) for the full list.
 - Agents share the coordinator uid inside the container and can read `state`; they are not a sandbox.
 - Database migrations are forward-only.
 - The image is large (code-server, `opencode`, OMO, and CodeGraph are bundled).

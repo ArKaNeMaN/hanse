@@ -41,9 +41,10 @@ mkdir -p hanse && cd hanse
 curl -fsSLO https://raw.githubusercontent.com/ArKaNeMaN/hanse/main/compose.yaml
 curl -fsSLO https://raw.githubusercontent.com/ArKaNeMaN/hanse/main/.env.example
 cp .env.example .env
-python3 -c 'import secrets; print(secrets.token_urlsafe(32))'
+TOKEN=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')
+sed -i.bak "s|^HANSE_OPERATOR_TOKEN=.*|HANSE_OPERATOR_TOKEN=$TOKEN|" .env && rm -f .env.bak
+echo "operator token: $TOKEN"
 mkdir -p workspace state
-# put the printed token into .env, then:
 docker compose up -d
 ```
 
