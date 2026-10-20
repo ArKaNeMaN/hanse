@@ -115,12 +115,25 @@ function renderMessages(messages) {
 document.getElementById('send').onclick = () => {
   const input = document.getElementById('input');
   const text = input.value.trim();
-  if (!text || !current || !sessionId) return;
+  if (!text || !current) return;
   input.value = '';
   post({ type: 'send', app: current, sessionId: sessionId, text: text });
 };
 post({ type: 'init' });
 </script></body></html>`;
+}
+
+const pendingSessions = new Map();
+
+function ensureSession(app) {
+  let pending = pendingSessions.get(app);
+  if (pending === undefined) {
+    pending = api(`/api/apps/${encodeURIComponent(app)}/sessions`, "POST").finally(() => {
+      pendingSessions.delete(app);
+    });
+    pendingSessions.set(app, pending);
+  }
+  return pending;
 }
 
 class ChatProvider {
@@ -140,24 +153,35 @@ class ChatProvider {
           }
           view.webview.postMessage({ type: "apps", apps });
         } else if (message.type === "select") {
-          const session = await api(
+          const data = await api(
             `/api/apps/${encodeURIComponent(message.app)}/sessions`,
-            "POST",
+            "GET",
           );
-          view.webview.postMessage({ type: "session", sessionId: session.id });
+          const latest = Array.isArray(data.sessions) ? data.sessions[0] : undefined;
+          if (latest === undefined) {
+            view.webview.postMessage({ type: "session", sessionId: null });
+            return;
+          }
+          view.webview.postMessage({ type: "session", sessionId: latest.id });
           const messages = await api(
-            `/api/apps/${encodeURIComponent(message.app)}/sessions/${session.id}/messages`,
+            `/api/apps/${encodeURIComponent(message.app)}/sessions/${latest.id}/messages`,
             "GET",
           );
           view.webview.postMessage({ type: "messages", messages: messages.messages });
         } else if (message.type === "send") {
+          let sessionId = message.sessionId;
+          if (!sessionId) {
+            const session = await ensureSession(message.app);
+            sessionId = session.id;
+            view.webview.postMessage({ type: "session", sessionId });
+          }
           await api(
-            `/api/apps/${encodeURIComponent(message.app)}/sessions/${message.sessionId}/messages`,
+            `/api/apps/${encodeURIComponent(message.app)}/sessions/${sessionId}/messages`,
             "POST",
             { text: message.text },
           );
           const messages = await api(
-            `/api/apps/${encodeURIComponent(message.app)}/sessions/${message.sessionId}/messages`,
+            `/api/apps/${encodeURIComponent(message.app)}/sessions/${sessionId}/messages`,
             "GET",
           );
           view.webview.postMessage({ type: "messages", messages: messages.messages });
