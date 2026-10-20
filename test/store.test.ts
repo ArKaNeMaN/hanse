@@ -27,13 +27,13 @@ describe("store", () => {
     db.close();
   });
 
-  it("migrates to v5 with agent tokens and runner container columns", () => {
+  it("migrates to v6 with agent tokens, runner containers, and app image columns", () => {
     const db = openDatabase(tempDbPath());
     runMigrations(db);
     const versions = db.prepare("SELECT version FROM schema_migrations ORDER BY version").all() as {
       version: number;
     }[];
-    expect(versions.map((row) => row.version)).toEqual([1, 2, 3, 4, 5]);
+    expect(versions.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6]);
 
     const tokenColumns = (
       db.prepare("PRAGMA table_info(agent_tokens)").all() as {
@@ -51,6 +51,18 @@ describe("store", () => {
     expect(instanceColumns).toContain("runtime_state");
     expect(instanceColumns).toContain("container_id");
     expect(instanceColumns).toContain("container_name");
+
+    const appColumns = (
+      db.prepare("PRAGMA table_info(apps)").all() as {
+        name: string;
+      }[]
+    ).map((row) => row.name);
+    expect(appColumns).toContain("image_status");
+    expect(appColumns).toContain("image_ref");
+    expect(appColumns).toContain("image_hash");
+    expect(appColumns).toContain("image_base_digest");
+    expect(appColumns).toContain("image_built_at");
+    expect(appColumns).toContain("image_error");
 
     const now = new Date().toISOString();
     db.prepare(

@@ -39,7 +39,9 @@ export class CoordinatorService {
   listApps(): RegisteredApp[] {
     const rows = this.#db
       .prepare(
-        "SELECT id, project_id, app_key, path, kind, contract FROM apps WHERE project_id = ? ORDER BY app_key",
+        `SELECT id, project_id, app_key, path, kind, contract,
+                image_status, image_ref, image_hash, image_base_digest, image_built_at, image_error
+         FROM apps WHERE project_id = ? ORDER BY app_key`,
       )
       .all(this.#projectId) as {
       id: string;
@@ -48,6 +50,12 @@ export class CoordinatorService {
       path: string;
       kind: string | null;
       contract: string;
+      image_status: RegisteredApp["imageStatus"];
+      image_ref: string | null;
+      image_hash: string | null;
+      image_base_digest: string | null;
+      image_built_at: string | null;
+      image_error: string | null;
     }[];
     return rows.map((row) => ({
       id: row.id,
@@ -56,6 +64,15 @@ export class CoordinatorService {
       path: row.path,
       kind: row.kind,
       contract: row.contract,
+      imageStatus: row.image_status,
+      imageRef: row.image_ref,
+      imageHash: row.image_hash,
+      imageBaseDigest: row.image_base_digest,
+      imageBuiltAt: row.image_built_at,
+      imageError: row.image_error,
+      buildDockerfile: null,
+      buildArgs: {},
+      buildSpecHash: null,
     }));
   }
 

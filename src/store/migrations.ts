@@ -189,4 +189,17 @@ ALTER TABLE instances ADD COLUMN container_id TEXT;
 ALTER TABLE instances ADD COLUMN container_name TEXT;
 `,
   },
+  {
+    version: 6,
+    name: "app-images",
+    sql: `
+ALTER TABLE apps ADD COLUMN image_ref TEXT;
+ALTER TABLE apps ADD COLUMN image_status TEXT NOT NULL DEFAULT 'missing'
+  CHECK (image_status IN ('missing', 'building', 'ready', 'stale', 'error'));
+ALTER TABLE apps ADD COLUMN image_hash TEXT;
+ALTER TABLE apps ADD COLUMN image_base_digest TEXT;
+ALTER TABLE apps ADD COLUMN image_built_at TEXT;
+ALTER TABLE apps ADD COLUMN image_error TEXT;
+`,
+  },
 ];

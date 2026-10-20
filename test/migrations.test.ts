@@ -1,0 +1,105 @@
+import { describe, expect, it } from "vitest";
+import { openDatabase, runMigrations } from "../src/store/index.js";
+import { MIGRATIONS } from "../src/store/migrations.js";
+
+const IMAGE_COLUMNS = [
+  "image_ref",
+  "image_status",
+  "image_hash",
+  "image_base_digest",
+  "image_built_at",
+  "image_error",
+];
+
+const now = "2026-10-21T00:00:00.000Z";
+
+function appColumns(db: ReturnType<typeof openDatabase>): string[] {
+  return (
+    db.prepare("PRAGMA table_info(apps)").all() as Array<{
+      name: string;
+    }>
+  ).map((row) => row.name);
+}
+
+function insertProjectAndApp(db: ReturnType<typeof openDatabase>): void {
+  db.prepare(
+    "INSERT INTO projects (id,name,base_branch,root_path,created_at,updated_at) VALUES ('p','P','main','/tmp',?,?)",
+  ).run(now, now);
+  db.prepare(
+    "INSERT INTO apps (id,project_id,app_key,path,contract,created_at) VALUES ('a1','p','a','apps/a','AGENTS.md',?)",
+  ).run(now);
+}
+
+describe("migration v6 app-images", () => {
+  it("applies fresh migrations and defaults existing app inserts to missing", () => {
+    const db = openDatabase(":memory:");
+    expect(runMigrations(db)).toBe(6);
+    expect(runMigrations(db)).toBe(0);
+
+    const versions = db.prepare("SELECT version FROM schema_migrations ORDER BY version").all() as {
+      version: number;
+    }[];
+    expect(versions.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6]);
+
+    const columns = appColumns(db);
+    for (const column of IMAGE_COLUMNS) {
+      expect(columns).toContain(column);
+    }
+
+    insertProjectAndApp(db);
+    const row = db
+      .prepare(
+        "SELECT image_status, image_ref, image_hash, image_base_digest, image_built_at, image_error FROM apps WHERE id = 'a1'",
+      )
+      .get() as {
+      image_status: string;
+      image_ref: string | null;
+      image_hash: string | null;
+      image_base_digest: string | null;
+      image_built_at: string | null;
+      image_error: string | null;
+    };
+    expect(row).toEqual({
+      image_status: "missing",
+      image_ref: null,
+      image_hash: null,
+      image_base_digest: null,
+      image_built_at: null,
+      image_error: null,
+    });
+
+    expect(() =>
+      db.prepare("UPDATE apps SET image_status = 'bogus' WHERE id = 'a1'").run(),
+    ).toThrow();
+    for (const status of ["building", "ready", "stale", "error"]) {
+      db.prepare("UPDATE apps SET image_status = ? WHERE id = 'a1'").run(status);
+    }
+    db.close();
+  });
+
+  it("upgrades a v5 database and preserves existing app rows", () => {
+    const db = openDatabase(":memory:");
+    db.exec(
+      "CREATE TABLE schema_migrations (" +
+        "version INTEGER PRIMARY KEY, name TEXT NOT NULL, checksum TEXT NOT NULL, applied_at TEXT NOT NULL)",
+    );
+    const record = db.prepare(
+      "INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?, ?, ?, ?)",
+    );
+    for (const migration of MIGRATIONS.filter((candidate) => candidate.version <= 5)) {
+      db.exec(migration.sql);
+      record.run(migration.version, migration.name, "existing", now);
+    }
+    insertProjectAndApp(db);
+    expect(appColumns(db)).not.toContain("image_status");
+
+    expect(runMigrations(db)).toBe(1);
+
+    const row = db.prepare("SELECT image_status, image_error FROM apps WHERE id = 'a1'").get() as {
+      image_status: string;
+      image_error: string | null;
+    };
+    expect(row).toEqual({ image_status: "missing", image_error: null });
+    db.close();
+  });
+});

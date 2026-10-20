@@ -32,7 +32,16 @@ contract: AGENTS.md  # path to the interface/contract doc (default: AGENTS.md)
 ports:               # optional named ports
   http: 3000
 setup: npm install   # optional setup command
+build:               # optional per-app image environment
+  dockerfile: Dockerfile   # path relative to the app directory (default: Dockerfile)
+  args:                     # optional build arguments, hashed into the build spec
+    NODE_VERSION: "22"
 ```
+
+The Dockerfile is a complete Dockerfile. It is resolved under the app directory with `realpath`
+containment (no `..`, absolute paths, or escaping symlinks); an invalid manifest or Dockerfile marks
+the app image `error` without failing project registration. The build spec hash covers the Dockerfile
+bytes, the default/base image reference, and sorted build args, so app source edits do not change it.
 
 ## Naming and portability
 
