@@ -385,6 +385,10 @@ B1.6 `hanse-down.sh` live smoke: down removed the static stack and managed app/n
 recreated the static services healthy, the app was lazily recreated, sessions returned `200`, and the
 terminal page remained human-only (`303` anonymous, `200` authenticated). A subsequent
 `up --remove-orphans` preserved the running app.
+B1.5 live smoke: git status and fetch returned `200` through the coordinator/runner one-shot sandbox
+(`demo-app`, public GitHub remote), no `hanse-git-*` container remained, the app container had no
+`HANSE_GIT_*` environment, and the terminal WebSocket still returned `B1_LAN_OK`. The `b1` probe
+passed again after the deploy.
 Chat browser
 QA: `node docs/design/chat-qa.mjs` (deterministic fixtures; 3 scenarios, 81 assertions, 10
 screenshots, zero console/page errors). Live smoke against a real deployment: 1
