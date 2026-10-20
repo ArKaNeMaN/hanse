@@ -93,9 +93,9 @@ development but not a public deployment story:
   `linux/amd64`, `linux/arm64`, and attestation manifests. The follow-up publish at `sha-1f114ea`
   (`sha256:499197381079009ad21d4ad60da9847633c723b6ec3e01f3d1b372a3a9ccaa64`) carries the corrected
   `org.opencontainers.image.version=0.1.0` and `revision=1f114ea` labels.
-- The published image was deployed to the reference host, preserving the existing project and
-  workspace. Both services are healthy; `/healthz`, login, authenticated pages, assets, the API, and
-  `/ide/` return the expected statuses.
+- The final published image (`sha-1f114ea`, digest `sha256:49919738…`) was deployed to the reference
+  host, preserving the existing project and workspace. Both services are healthy; `/healthz`, login,
+  authenticated pages, assets, the API, and `/ide/` return the expected statuses.
 
 ## Known limits
 
