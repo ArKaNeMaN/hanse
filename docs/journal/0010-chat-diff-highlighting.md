@@ -1,7 +1,8 @@
 # Stage 0008 - Chat diff highlighting
 
 - Date: 2026-10-20
-- Status: implemented and verified; commit/push/deploy authorized and pending
+- Status: implemented, verified, and deployed to `deployment-host` as `sha-3e25c46`; deployment record in the
+  local `docs/deploy/deploy-log.md`
 - Design: [`docs/design/chat-diff-highlighting.md`](../design/chat-diff-highlighting.md)
 - Plan: [`docs/plans/0008-chat-diff-highlighting.md`](../plans/0008-chat-diff-highlighting.md)
 - Gate reviews: `oracle` design review (PASS after four gate rounds); `momus` plan review
@@ -101,7 +102,9 @@ agent-controlled Markdown/markup/Bash, which cannot be time-boxed on the main th
 
 ## Deployment
 
-Owner authorized commit, push to `origin/main`, and deployment to `deployment-host` per
-[`docs/deploy/host.md`](../deploy/deployment-host.md). Deployment uses the published `sha-<short>` image,
-state/workspace/env backup, rollback tag, `git archive` delivery, `HANSE_TAG`, `docker compose
-pull`, health-check, and a deploy-log entry.
+Deployed to `deployment-host` on 2026-10-20 from commit `3e25c46` using the published
+`ghcr.io/arkaneman/hanse:sha-3e25c46` image (index digest
+`sha256:70e890eba14381730e0da8e74d1511ff1d4b8daea81c58a391a35c0198b19b3b`), after a
+state/workspace/env backup and rollback tag `hanse:rollback-20261020-035855`. `git archive` delivery,
+`HANSE_TAG`, `docker compose pull`, and `up -d --remove-orphans` completed; `/healthz` is 200, the new
+assets are 200, both containers are healthy, and the local deploy log records the details.

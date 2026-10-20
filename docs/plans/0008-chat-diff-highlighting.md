@@ -1,6 +1,6 @@
 # Plan 0008 - Chat diff highlighting
 
-- Status: implemented and verified (journal 0010); commit/deployment pending.
+- Status: implemented, verified, and deployed to `deployment-host` (journal 0010).
 - Design: [`docs/design/chat-diff-highlighting.md`](../design/chat-diff-highlighting.md) (Oracle
   design review **PASS**, 2026-10-20).
 - Owner decisions: [`docs/open-questions.md`](../open-questions.md) (no open items).
