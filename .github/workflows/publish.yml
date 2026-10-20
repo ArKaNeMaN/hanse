@@ -9,6 +9,11 @@ on:
       - "**/*.md"
       - ".github/**"
   workflow_dispatch:
+    inputs:
+      platforms:
+        description: Build platforms
+        required: false
+        default: linux/amd64
 
 permissions:
   contents: read
@@ -72,12 +77,12 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Build and push ${{ matrix.name }} (linux/amd64, linux/arm64)
+      - name: Build and push ${{ matrix.name }}
         uses: docker/build-push-action@v6
         with:
           context: .
           target: ${{ matrix.target }}
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ github.event.inputs.platforms || 'linux/amd64' }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           build-args: |

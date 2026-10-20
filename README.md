@@ -31,14 +31,15 @@ and requirements) to each other through the coordinator - like independent teams
 - Embedded web IDE (code-server) at `/ide/`: opened in the selected project/application, GitHub Dark
   Dimmed theme, a bundled "Hanse Agent" chat extension with tabs per app, and a terminal rooted in the
   opened folder.
-- Docker Compose deployment from multi-arch coordinator, IDE, and agent images, intended for a
-  trusted LAN.
+- Docker Compose deployment from coordinator, IDE, and agent images, intended for a trusted LAN.
+  Published images are `linux/amd64`; arm64 is built on demand until it returns to the default
+  publish matrix.
 
 ## Run it
 
 The published images are `ghcr.io/arkaneman/hanse` (coordinator),
 `ghcr.io/arkaneman/hanse-agent-ide` (IDE), and `ghcr.io/arkaneman/hanse-agent-default` (agents), for
-`linux/amd64` and `linux/arm64`:
+`linux/amd64`:
 
 ```bash
 mkdir -p hanse && cd hanse

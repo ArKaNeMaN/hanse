@@ -138,29 +138,8 @@ FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv
 # Python 3.12 (bookworm, matching agent-base) as a copyable, prebuilt toolchain.
 FROM python:${PYTHON_VERSION}-slim-bookworm AS python-toolchain
 
-# PHP 8.3 with a fixed extension set. Extensions are compiled here and the resulting /usr/local tree
-# is copied into the agent images, so the final images keep no compiler/build headers for PHP.
-FROM php:${PHP_VERSION}-cli-bookworm AS php-toolchain
-RUN apt-get update \
- && apt-get install -y --no-install-recommends \
-      libfreetype6-dev libicu-dev libjpeg62-turbo-dev libonig-dev libpng-dev libpq-dev \
-      libxml2-dev libzip-dev \
- && docker-php-ext-configure gd --with-freetype --with-jpeg \
- && docker-php-ext-install -j"$(nproc)" bcmath gd intl mbstring pdo_mysql pdo_pgsql zip \
- && rm -rf /var/lib/apt/lists/*
-
-# Trixie variants for agent-ide, which is based on the Debian 13 code-server image. Using native
-# toolchains avoids mixing bookworm libraries into a trixie userspace.
+# Python 3.12 (trixie) for agent-ide, which is based on the Debian 13 code-server image.
 FROM python:${PYTHON_VERSION}-slim-trixie AS python-toolchain-trixie
-
-FROM php:${PHP_VERSION}-cli-trixie AS php-toolchain-trixie
-RUN apt-get update \
- && apt-get install -y --no-install-recommends \
-      libfreetype6-dev libicu-dev libjpeg62-turbo-dev libonig-dev libpng-dev libpq-dev \
-      libxml2-dev libzip-dev \
- && docker-php-ext-configure gd --with-freetype --with-jpeg \
- && docker-php-ext-install -j"$(nproc)" bcmath gd intl mbstring pdo_mysql pdo_pgsql zip \
- && rm -rf /var/lib/apt/lists/*
 
 # The agent runtime: Node 22, opencode, the Hanse CLI, mise, OMO, codegraph, git. No application
 # toolchains and no /data/state. `hanse agent-host` is added in B0.4; the CMD is declared now so the
@@ -223,6 +202,7 @@ CMD ["hanse", "agent-host"]
 # with mise into a per-app MISE_DATA_DIR.
 FROM agent-base AS agent-default
 
+ARG PHP_VERSION
 ARG UV_VERSION
 
 LABEL org.opencontainers.image.title="hanse-agent-default" \
@@ -239,7 +219,9 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=python-toolchain /usr/local /usr/local
-COPY --from=php-toolchain /usr/local /usr/local
+COPY scripts/install-php.sh /tmp/install-php.sh
+RUN sh /tmp/install-php.sh bookworm "$PHP_VERSION" \
+ && rm -f /tmp/install-php.sh
 COPY --from=uv /uv /usr/local/bin/uv
 
 RUN node --version \
@@ -258,6 +240,7 @@ USER 1000:1000
 FROM codercom/code-server:${CODE_SERVER_VERSION} AS agent-ide
 
 ARG MISE_VERSION
+ARG PHP_VERSION
 ARG UV_VERSION
 ARG VSCODE_THEME_VERSION
 ARG VERSION=0.1.0
@@ -287,13 +270,20 @@ RUN apt-get update \
       jq ripgrep postgresql-client default-mysql-client redis-tools \
  && rm -rf /var/lib/apt/lists/*
 
+COPY scripts/install-php.sh /tmp/install-php.sh
+RUN sh /tmp/install-php.sh trixie "$PHP_VERSION" \
+ && rm -f /tmp/install-php.sh
+
 WORKDIR /app
-COPY --from=agent-default /app /app
-COPY --from=agent-default /opt/hanse /opt/hanse
-COPY --from=agent-default /usr/local/bin/node /usr/local/bin/node
-COPY --from=agent-default /usr/local/lib/node_modules/opencode-ai /usr/local/lib/node_modules/opencode-ai
+COPY --from=deps /app/node_modules ./node_modules
+COPY --from=build /app/dist ./dist
+COPY --from=build /app/assets ./assets
+COPY package.json LICENSE ./
+COPY --from=nodejs /usr/local/bin/node /usr/local/bin/node
+COPY --from=opencode /usr/local/lib/node_modules/opencode-ai /usr/local/lib/node_modules/opencode-ai
+COPY --from=omo /opt/hanse/omo /opt/hanse/omo
+COPY --from=codegraph /opt/hanse/codegraph /opt/hanse/codegraph
 COPY --from=python-toolchain-trixie /usr/local /usr/local
-COPY --from=php-toolchain-trixie /usr/local /usr/local
 COPY --from=uv /uv /usr/local/bin/uv
 COPY --from=mise /usr/local/bin/mise /usr/local/bin/mise
 COPY extensions ./extensions

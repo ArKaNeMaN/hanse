@@ -21,8 +21,9 @@ coordinator. The product surface is one web UI (dashboard + chat + handoffs) plu
 
 ## Runtime topology (three containers, one exposed port)
 
-Three multi-arch images are built from `Dockerfile`:
-`ghcr.io/arkaneman/hanse` (coordinator), `hanse-agent-default` (agents), and `hanse-agent-ide` (IDE).
+Three images are built from `Dockerfile`: `ghcr.io/arkaneman/hanse` (coordinator),
+`hanse-agent-default` (agents), and `hanse-agent-ide` (IDE). Publish currently targets
+`linux/amd64`; arm64 is on-demand/backlog.
 Compose definitions live in `compose.yaml`; `compose.build.yaml` adds a source build, and
 `compose.host-auth.yaml` mounts a host `opencode` auth file.
 

@@ -17,7 +17,8 @@ networks; agents also have a separate network and cannot reach the IDE.
 ## Requirements
 
 - Docker Engine 24+ with Compose v2 (Docker Desktop works on macOS and Windows/WSL2).
-- A Linux `amd64` or `arm64` host. The published images are multi-arch.
+- A Linux `amd64` host. The default publish workflow builds `linux/amd64`; arm64 is on-demand until
+  it returns to the default matrix.
 - About 2 GB of RAM for an idle deployment, plus room for the projects and the agents you run.
 - About 8 GB of disk for the coordinator, IDE, and agent images plus the volumes. The images bundle
   code-server, the toolchains, `opencode`, the OMO baseline, and CodeGraph.
@@ -28,7 +29,7 @@ networks; agents also have a separate network and cannot reach the IDE.
 
 The images are published to GitHub Container Registry as
 `ghcr.io/arkaneman/hanse`, `ghcr.io/arkaneman/hanse-agent-ide`, and
-`ghcr.io/arkaneman/hanse-agent-default` (`linux/amd64` and `linux/arm64`).
+`ghcr.io/arkaneman/hanse-agent-default` (`linux/amd64`).
 
 ```bash
 mkdir -p hanse && cd hanse
@@ -226,7 +227,9 @@ The source-build overlay tags the results as `hanse:dev`, `hanse-agent-default:d
 `HANSE_IDE_BUILD_IMAGE`) so it does not overwrite the published tags. The build needs network access
 and several GB of disk. It compiles TypeScript and Tailwind, installs production dependencies for the
 target architecture, then installs `opencode`, the OMO baseline, CodeGraph, Python, PHP, and the
-code-server IDE layer.
+code-server IDE layer. PHP 8.3 and its extensions come from prebuilt
+[`packages.sury.org`](https://packages.sury.org/php/) Debian packages rather than compiling
+extensions from source.
 
 Run the repository gates before building:
 
@@ -243,6 +246,7 @@ npm run build
 | Argument | Default | Contents |
 | --- | --- | --- |
 | `NODE_VERSION` | `22` | Node.js for the coordinator and build stages. |
+| `PHP_VERSION` | `8.3` | PHP CLI and extension package version from Sury. |
 | `CODE_SERVER_VERSION` | `4.141.0` | Base image tag for code-server. |
 | `OPENCODE_VERSION` | `1.19.3` | `opencode-ai` package. |
 | `OMO_VERSION` | `5.1.35` | `oh-my-openagent` baseline. |
@@ -341,8 +345,8 @@ git configuration. Git is not wired to the encrypted provider-key store.
 - **Port already allocated**: change `HANSE_PORT`, or stop the process using 8787.
 - **`pull access denied` for GHCR**: the package is private or you are not signed in. Run
   `docker login ghcr.io`, or make the package public in its GitHub package settings.
-- **`exec format error` / wrong architecture**: check `uname -m`. The published images support
-  `linux/amd64` and `linux/arm64`; use a matching host or build locally.
+- **`exec format error` / wrong architecture**: check `uname -m`. The published images currently
+  support `linux/amd64`; build locally for another architecture.
 - **`auth.json` is read as a directory**: the host file did not exist when Docker created the bind
   mount. Create/authenticate the host file first, then recreate the container.
 - **Container restart loop**: `docker compose logs --tail=50 hanse`. Permission errors and an
@@ -373,7 +377,7 @@ git configuration. Git is not wired to the encrypted provider-key store.
 
 ## Maintainers: publishing to GHCR
 
-`.github/workflows/publish.yml` builds `linux/amd64` and `linux/arm64` and pushes to
+`.github/workflows/publish.yml` builds `linux/amd64` by default (arm64 via manual dispatch) and pushes to
 `ghcr.io/<owner>/hanse` on every push to `main`, on `v*` tags, and on manual dispatch.
 
 Tags produced:
