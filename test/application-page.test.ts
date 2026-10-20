@@ -108,8 +108,13 @@ describe("application page", () => {
     expect(response.body).toContain("/assets/git.js");
     expect(response.body).toContain("/assets/images.js");
     expect(response.body).toContain('id="image-panel"');
-    expect(response.body).toContain('id="image-status"');
-    expect(response.body).toContain('id="image-logs"');
+    expect(response.body).toContain('id="image-status" data-status="default"');
+    expect(response.body).toContain("Default agent image");
+    expect(response.body).toContain("shared default agent image");
+    expect(response.body).not.toContain('id="image-build"');
+    expect(response.body).not.toContain("Build image");
+    expect(response.body).not.toContain('id="image-logs"');
+    expect(response.body).not.toContain('id="image-rollback-form"');
     expect(response.body).toContain(
       "Git actions need JavaScript. Use the IDE for repository operations.",
     );
@@ -122,6 +127,43 @@ describe("application page", () => {
     expect(response.body).toContain("Application settings");
     expect(response.body).toContain("/ide/?folder=");
     expect(response.body).toContain('aria-current="page">storefront</span>');
+  });
+
+  it("keeps build controls for an app with a configured image build", () => {
+    const f = fixture();
+    f.db
+      .prepare(
+        "UPDATE apps SET image_status = 'missing', image_ref = NULL, image_hash = 'hash' WHERE id = 'p1:storefront'",
+      )
+      .run();
+
+    const response = handleRequest(f.deps, get("/projects/p1/apps/storefront", auth(f.token)));
+
+    expect(response.status).toBe(200);
+    expect(response.body).toContain('id="image-build"');
+    expect(response.body).toContain("Build image");
+    expect(response.body).toContain('id="image-logs"');
+    expect(response.body).toContain('id="image-rollback-form"');
+    expect(response.body).toContain('id="image-status" data-status="missing"');
+    expect(response.body).not.toContain("shared default agent image");
+  });
+
+  it("keeps the build panel visible for an invalid build configuration", () => {
+    const f = fixture();
+    f.db
+      .prepare(
+        "UPDATE apps SET image_status = 'error', image_error = 'build.dockerfile escapes the application directory' WHERE id = 'p1:storefront'",
+      )
+      .run();
+
+    const response = handleRequest(f.deps, get("/projects/p1/apps/storefront", auth(f.token)));
+
+    expect(response.status).toBe(200);
+    expect(response.body).toContain('id="image-build"');
+    expect(response.body).toContain("Retry build");
+    expect(response.body).toContain('id="image-status" data-status="error"');
+    expect(response.body).toContain("build.dockerfile escapes the application directory");
+    expect(response.body).not.toContain("shared default agent image");
   });
 
   it("returns a styled 404 for an unknown project or application", () => {

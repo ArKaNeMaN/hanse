@@ -122,6 +122,22 @@ function imagePanel(
   </section>`;
 }
 
+function defaultImagePanel(project: { id: string }, app: RegisteredApp): string {
+  return `<section class="card section" id="image-panel"
+      data-project-id="${escapeHtml(project.id)}"
+      data-app-key="${escapeHtml(app.appKey)}"
+      data-status="default">
+    <div class="card__head">
+      <h2 class="card__title" id="image-title">Image</h2>
+      <span class="badge badge-ghost" id="image-status" data-status="default" role="status">Default</span>
+    </div>
+    <div class="card__body stack--tight">
+      <p class="small" id="image-hint">This application uses the shared default agent image. Add a per-app Dockerfile build configuration to use a custom image.</p>
+      <div class="stack--tight"><span class="overline">Agent image</span><span class="mono" id="image-ref">Default agent image</span></div>
+    </div>
+  </section>`;
+}
+
 function applicationRail(
   project: { id: string; name: string },
   app: RegisteredApp,
@@ -186,7 +202,10 @@ export function renderApplication(
       </section>`
     : "";
 
-  const body = `${pendingBanner}${imagePanel(project, app, app.imageStatus)}<div id="git-panel" data-project-id="${escapeHtml(project.id)}" data-app-key="${escapeHtml(app.appKey)}" data-api-base="${escapeHtml(apiBase)}">
+  const image = app.buildConfigured
+    ? imagePanel(project, app, app.imageStatus)
+    : defaultImagePanel(project, app);
+  const body = `${pendingBanner}${image}<div id="git-panel" data-project-id="${escapeHtml(project.id)}" data-app-key="${escapeHtml(app.appKey)}" data-api-base="${escapeHtml(apiBase)}">
     <p id="git-live" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>
     <div class="workbench-grid workbench-grid--detail section">
       <div class="stack">
