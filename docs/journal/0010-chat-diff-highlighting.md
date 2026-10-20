@@ -116,4 +116,8 @@ parses the path, XML line numbers, code, and trailing status line into a `read` 
 allocator applies a 64 KiB / 2,000-line line-aware cap, and the existing `.tool-code` renderer
 highlights it with a `.tool-code__foot` status footer. Errors, running/pending parts, and malformed
 output keep the plain fallback. Verified by the `npm run lint/typecheck/test/build` gates and the
-deterministic `read` chat-QA scenario.
+deterministic `read` chat-QA scenario (10 scenarios, 211 assertions, 20 screenshots).
+Deployed to `deployment-host` on 2026-10-20 as `ghcr.io/arkaneman/hanse:sha-4110d51` (index digest
+`sha256:4ae1259cf54039defb17ffd61e007e2ec583b4f7ecf66b084b493fd83beccc1e`), with rollback tag
+`hanse:rollback-20261020-131715` and backup
+`<BACKUP_DIR>/20261020-131715-pre-read-render/`; health checks are green.
