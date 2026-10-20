@@ -39,7 +39,7 @@ ide_exec() {
   $compose exec -T ide "$@"
 }
 
-if [ "$mode" = "b1" ]; then
+if [ "$mode" = "b1" ] || [ "$mode" = "b2" ]; then
   if ! $compose config >/dev/null; then
     fail "docker compose config"
     exit 1
@@ -92,6 +92,16 @@ if [ "$mode" = "b1" ]; then
     else
       fail "coordinator is attached to the app network"
     fi
+  fi
+
+  if [ "$mode" = "b2" ]; then
+    check "runner image usage rejects anonymous" $compose exec -T runner node -e \
+      "fetch('http://127.0.0.1:8790/v1/images/usage').then((r) => process.exit(r.status === 401 ? 0 : 1)).catch(() => process.exit(1))"
+    check "runner image usage" $compose exec -T runner node -e \
+      "fetch('http://127.0.0.1:8790/v1/images/usage', {headers:{authorization:'Bearer '+process.env.HANSE_RUNTIME_TOKEN}}).then(async (r) => {const b=await r.json(); if (!r.ok || !['ok','warning','critical'].includes(b.level)) process.exit(1)}).catch(() => process.exit(1))"
+    check "coordinator image usage auth" hanse_exec node -e \
+      "fetch('http://127.0.0.1:8787/api/images/usage', {headers:{cookie:'hanse_token='+process.env.HANSE_OPERATOR_TOKEN}}).then((r) => process.exit(r.status === 200 ? 0 : 1)).catch(() => process.exit(1))"
+    check "docker system df" sh -c 'docker system df >/dev/null'
   fi
 
   if [ "$failures" -ne 0 ]; then
