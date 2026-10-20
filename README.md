@@ -31,6 +31,8 @@ and requirements) to each other through the coordinator - like independent teams
 - Embedded web IDE (code-server) at `/ide/`: opened in the selected project/application, GitHub Dark
   Dimmed theme, a bundled "Hanse Agent" chat extension with tabs per app, and a terminal rooted in the
   opened folder.
+- Human-only operator terminal per application: a coordinator-proxied WebSocket/TTY exec in the
+  managed app container, with no operator or runtime token exposed to the app.
 - Docker Compose deployment from coordinator, IDE, runner, and agent images, intended for a trusted
   LAN. Published images are `linux/amd64`; arm64 is built on demand until it returns to the default
   publish matrix.

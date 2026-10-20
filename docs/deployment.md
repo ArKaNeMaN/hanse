@@ -16,7 +16,8 @@ container per application:
 
 Only the coordinator publishes a host port. The IDE is on the `front` network, the runner is on the
 `control` network, and app containers live on their own `hanse-app-*` networks; app containers cannot
-reach the IDE.
+reach the IDE. The human-only operator terminal is proxied by the coordinator to the runner and needs
+no extra published port.
 
 ## Requirements
 
@@ -185,8 +186,9 @@ hanse.example.com {
 }
 ```
 
-Caddy handles the HTTP and WebSocket upgrade used by `/ide/` automatically. With nginx, set
-`proxy_http_version 1.1` and forward the `Upgrade`/`Connection` headers for `/ide/`.
+Caddy handles the HTTP and WebSocket upgrade used by `/ide/` and the operator terminal automatically.
+With nginx, set `proxy_http_version 1.1` and forward the `Upgrade`/`Connection` headers for `/ide/`
+and `/api/apps/*/terminal`; the terminal WebSocket is proxied through the coordinator.
 
 Security model, in short:
 
@@ -294,6 +296,21 @@ done
 Use `--load` instead of `--push` for a single-platform local image. The publish workflow builds all
 three images for both architectures and pushes provenance and SBOM attestations.
 
+## Operator terminal
+
+Every application page links to `/terminal?app=<app>&project=<project>`. It is a human-only,
+line-oriented console in the managed app container, not a second IDE terminal:
+
+- The coordinator proxies the WebSocket at `/api/apps/<app>/terminal?project=<project>` to the
+  runner's `/v1/apps/<appId>/exec` with the internal runtime token. The operator cookie is never
+  forwarded to the app container, and no token appears in URLs or HTML.
+- The runner opens a TTY exec as uid 1000 in the managed app container with a fixed login shell.
+  Closing or reloading the page closes only that exec stream; the app container keeps running.
+- Resize is applied through Docker's exec resize call. Alternate-screen applications, mouse reporting,
+  and full ANSI/xterm rendering are not supported; use the IDE terminal for those.
+- The terminal requires a running managed app container. If the app has not been started, open its
+  chat first; the terminal does not start or restart the app.
+
 ## Health checks and logs
 
 ```bash
@@ -378,6 +395,9 @@ git configuration. Git is not wired to the encrypted provider-key store.
   unreadable `auth.json` are common causes.
 - **IDE shows a blank page or disconnects**: check `docker compose logs ide`; make sure the coordinator
   can resolve the `ide` service and that a reverse proxy forwards WebSocket upgrades for `/ide/`.
+- **Operator terminal does not connect**: confirm the app is running, open it from the application
+  page while signed in, and check `docker compose logs hanse runner`. A reverse proxy must forward
+  WebSocket upgrades for `/api/apps/*/terminal`, not only `/ide/`.
 - **Agent fails to start**: confirm a provider key or host `auth.json` is configured, then inspect the
   instance logs from the app page. `HANSE_AUTH_FILE` is only set by the host-auth overlay.
 - **`Agent error: Model not found`**: the selected `llm.model` is not an ID the provider exposes (for

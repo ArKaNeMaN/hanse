@@ -372,6 +372,8 @@ coordinator; operators do not set them.
 live smoke on `deployment-host`: coordinator/IDE/runner healthy, per-app `demo-app` container running,
 `scripts/agent-runtime-probe.sh b1` passes, coordinator recreate reattaches the app network, and the
 app agent has no `/data/state`, Docker socket, operator/runtime token, or sibling app access.
+B1.4 terminal live smoke: `/terminal` returns `200`, direct runner exec, coordinator proxy, and the
+LAN WebSocket each returned `B1_*_OK`, and closing the terminal left the app container running.
 Chat browser
 QA: `node docs/design/chat-qa.mjs` (deterministic fixtures; 3 scenarios, 81 assertions, 10
 screenshots, zero console/page errors). Live smoke against a real deployment: 1
