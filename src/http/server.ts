@@ -152,7 +152,9 @@ export function createHttpServer(deps: HttpDeps): Server {
             url.pathname,
           );
         const isSettings = isSettingsRoute(httpRequest.method, url.pathname);
-        const isChat = url.pathname === "/chat" || url.pathname.startsWith("/api/apps/");
+        const isRuntime = /^\/api\/apps\/[^/]+\/runtime$/.test(url.pathname);
+        const isChat =
+          !isRuntime && (url.pathname === "/chat" || url.pathname.startsWith("/api/apps/"));
         const result = isGit
           ? await handleGit(deps, httpRequest)
           : isPrompts
