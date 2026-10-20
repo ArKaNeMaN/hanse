@@ -13,6 +13,8 @@ import {
   mcpTokenPath,
   revokeAgentToken,
 } from "../mcp/agent-tokens.js";
+import { appNetworkName, mapToHostPath } from "../runner/names.js";
+import { RUNNER_APP_PORT } from "../runner/validate.js";
 import { hashValue } from "../settings/hash.js";
 import type {
   EffectiveSettings,
@@ -90,6 +92,10 @@ export interface InstanceManagerOptions {
   workspaceRoot?: string;
   /** Agents root used to validate `stateDir`. Defaults to the manager runtime root. */
   agentsRoot?: string;
+  /** Absolute host workspace path for the B1 runner. Enables host-path specs. */
+  hostWorkspace?: string;
+  /** Absolute host agents path for the B1 runner. Enables host-path specs. */
+  hostAgents?: string;
 }
 
 const DEFAULT_MODEL = "deepseek/deepseek-flash";
@@ -380,13 +386,27 @@ export class InstanceManager {
         ...(omoProfile === undefined ? {} : { OMO_PROFILE: omoProfile }),
         ...(existsSync(authFile) ? { HANSE_OPENCODE_AUTH_FILE: authFile } : {}),
       };
+      const workspaceRoot = this.#options.workspaceRoot ?? path.dirname(path.resolve(app.appDir));
+      const agentsRoot = this.#options.agentsRoot ?? this.#runtimeRoot;
+      const hostWorkspace = this.#options.hostWorkspace;
+      const hostAgents = this.#options.hostAgents;
+      const hostPaths = hostWorkspace !== undefined && hostAgents !== undefined;
+      const specAppDir = hostPaths
+        ? mapToHostPath(workspaceRoot, app.appDir, hostWorkspace, "appDir")
+        : app.appDir;
+      const specStateDir = hostPaths
+        ? mapToHostPath(agentsRoot, isolated.XDG_STATE_HOME, hostAgents, "stateDir")
+        : isolated.XDG_STATE_HOME;
+      const specNetworkName = hostPaths ? appNetworkName(app.id) : "agents";
+      const specPort = hostPaths ? RUNNER_APP_PORT : undefined;
       const hashInput: SpecHashInput = {
         appId: app.id,
         image: process.env.HANSE_AGENT_IMAGE?.trim() || DEFAULT_AGENT_IMAGE,
-        pathMode: "container",
-        appDir: app.appDir,
-        stateDir: isolated.XDG_STATE_HOME,
-        networkName: "agents",
+        pathMode: hostPaths ? "host" : "container",
+        appDir: specAppDir,
+        stateDir: specStateDir,
+        networkName: specNetworkName,
+        ...(specPort === undefined ? {} : { port: specPort }),
         env,
         resources: resolveRuntimeResources(),
         labels: {
@@ -397,12 +417,13 @@ export class InstanceManager {
       const spec: AppRuntimeSpec = validateAppRuntimeSpec(
         { ...hashInput, specHash: computeSpecHash(hashInput) },
         {
-          workspaceRoot: this.#options.workspaceRoot ?? path.dirname(path.resolve(app.appDir)),
-          agentsRoot: this.#options.agentsRoot ?? this.#runtimeRoot,
+          workspaceRoot: hostPaths ? hostWorkspace : workspaceRoot,
+          agentsRoot: hostPaths ? hostAgents : agentsRoot,
         },
       );
 
       const status = await this.#options.runtime.ensure(spec);
+      this.#recordStatus(app, status);
       if (status.state !== "running" || status.endpoint === null) {
         throw new Error(`agent runtime did not start ${app.id}: ${status.error ?? status.state}`);
       }
@@ -478,7 +499,8 @@ export class InstanceManager {
       if (endpoint !== undefined && endpoint !== null) {
         clearEndpointAuthorization(endpoint);
       }
-      await this.#options.runtime.delete(appId);
+      const finalStatus = await this.#options.runtime.delete(appId);
+      this.#recordStatusById(appId, finalStatus);
       this.#revokeAgentToken(appId, entry);
       return wasRunning;
     });
@@ -537,6 +559,69 @@ export class InstanceManager {
       clearEndpointAuthorization(entry.endpoint);
     }
     this.#running.clear();
+  }
+
+  #recordStatus(app: ManagedApp, status: Awaited<ReturnType<AgentRuntimeClient["ensure"]>>): void {
+    const now = new Date().toISOString();
+    const startedAt = status.state === "running" ? now : null;
+    this.#db
+      .prepare(
+        `INSERT INTO instances
+           (id, app_id, endpoint, state, runtime_state, spec_hash, container_id, container_name, started_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(app_id) DO UPDATE SET
+           endpoint = excluded.endpoint,
+           state = excluded.state,
+           runtime_state = excluded.runtime_state,
+           spec_hash = excluded.spec_hash,
+           container_id = excluded.container_id,
+           container_name = excluded.container_name,
+           started_at = CASE
+             WHEN instances.state = 'running' THEN instances.started_at
+             ELSE excluded.started_at
+           END,
+           updated_at = excluded.updated_at`,
+      )
+      .run(
+        app.id,
+        app.id,
+        status.endpoint,
+        status.state,
+        status.state,
+        status.specHash,
+        status.containerId ?? null,
+        status.containerName ?? null,
+        startedAt,
+        now,
+      );
+  }
+
+  #recordStatusById(
+    appId: string,
+    status: Awaited<ReturnType<AgentRuntimeClient["delete"]>>,
+  ): void {
+    this.#db
+      .prepare(
+        `UPDATE instances SET
+           endpoint = ?,
+           state = ?,
+           runtime_state = ?,
+           spec_hash = ?,
+           container_id = ?,
+           container_name = ?,
+           updated_at = ?
+         WHERE app_id = ?`,
+      )
+      .run(
+        status.endpoint,
+        status.state,
+        status.state,
+        status.specHash,
+        status.containerId ?? null,
+        status.containerName ?? null,
+        new Date().toISOString(),
+        appId,
+      );
   }
 
   #currentSettingsHash(app: ManagedApp): string | undefined {

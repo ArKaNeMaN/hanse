@@ -303,8 +303,22 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
     ctx.io.stderr("serve: HANSE_RUNTIME_TOKEN is required");
     return 1;
   }
+  const runnerUrl = process.env.HANSE_RUNNER_URL?.trim();
+  const hostWorkspace = process.env.HANSE_HOST_WORKSPACE?.trim() || undefined;
+  const hostAgents = process.env.HANSE_HOST_AGENTS?.trim() || undefined;
+  if (runnerUrl !== undefined && runnerUrl.length > 0) {
+    if (hostWorkspace === undefined || hostAgents === undefined) {
+      ctx.io.stderr(
+        "serve: HANSE_HOST_WORKSPACE and HANSE_HOST_AGENTS are required with HANSE_RUNNER_URL",
+      );
+      return 1;
+    }
+  }
   const runtime = new HttpAgentRuntimeClient({
-    baseUrl: process.env.HANSE_AGENT_SUPERVISOR_URL?.trim() || "http://127.0.0.1:8789",
+    baseUrl:
+      runnerUrl && runnerUrl.length > 0
+        ? runnerUrl
+        : process.env.HANSE_AGENT_SUPERVISOR_URL?.trim() || "http://127.0.0.1:8789",
     token: runtimeToken,
   });
   const db = openDatabase(coordinatorDbPath(ctx.stateHome));
@@ -333,6 +347,8 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
     settings,
     omoProfiles,
     workspaceRoot: workspace,
+    ...(hostWorkspace === undefined ? {} : { hostWorkspace }),
+    ...(hostAgents === undefined ? {} : { hostAgents }),
   });
   const getProjects = (): ProjectContext[] => {
     const rows = db.prepare("SELECT id, name, root_path FROM projects").all() as {

@@ -371,6 +371,64 @@ function routeMutation(
   return action(fields);
 }
 
+function routeRuntimeStatus(deps: HttpDeps, request: HttpRequest): HttpResponse | undefined {
+  const match = /^\/api\/apps\/([^/]+)\/runtime$/.exec(request.path);
+  if (match === null || request.method !== "GET") {
+    return undefined;
+  }
+  const principal = principalFrom(deps, request);
+  if (principal === undefined) {
+    return json(401, { error: "sign in required" });
+  }
+  if (principal.kind !== "human") {
+    return json(403, { error: "only a human principal may read runtime status" });
+  }
+  const appKey = safeDecode(match[1] ?? "");
+  const projectId = request.query?.project;
+  if (projectId === undefined || projectId.length === 0) {
+    return json(400, { error: "project query is required" });
+  }
+  const project = deps.getProjects().find((candidate) => candidate.id === projectId);
+  if (project === undefined) {
+    return json(404, { error: "project not found" });
+  }
+  const app = deps.db
+    .prepare("SELECT id FROM apps WHERE project_id = ? AND app_key = ?")
+    .get(project.id, appKey) as { id: string } | undefined;
+  if (app === undefined) {
+    return json(404, { error: "application not found" });
+  }
+  const row = deps.db
+    .prepare(
+      `SELECT endpoint, state, runtime_state AS runtimeState, spec_hash AS specHash,
+              container_id AS containerId, container_name AS containerName,
+              started_at AS startedAt, updated_at AS updatedAt
+       FROM instances WHERE app_id = ?`,
+    )
+    .get(app.id) as
+    | {
+        endpoint: string | null;
+        state: string;
+        runtimeState: string | null;
+        specHash: string | null;
+        containerId: string | null;
+        containerName: string | null;
+        startedAt: string | null;
+        updatedAt: string | null;
+      }
+    | undefined;
+  return json(200, {
+    appId: app.id,
+    state: row?.runtimeState ?? row?.state ?? "stopped",
+    endpoint: row?.endpoint ?? null,
+    specHash: row?.specHash ?? null,
+    containerId: row?.containerId ?? null,
+    containerName: row?.containerName ?? null,
+    startedAt: row?.startedAt ?? null,
+    updatedAt: row?.updatedAt ?? null,
+  });
+}
+
 function route(deps: HttpDeps, request: HttpRequest): HttpResponse {
   const assetResponse = asset(request);
   if (assetResponse !== undefined) {
@@ -475,6 +533,11 @@ function route(deps: HttpDeps, request: HttpRequest): HttpResponse {
       }
       return browser ? redirectWithNotice(returnTo, "Handoff created.", "success") : redirect("/");
     });
+  }
+
+  const runtimeStatus = routeRuntimeStatus(deps, request);
+  if (runtimeStatus !== undefined) {
+    return runtimeStatus;
   }
 
   if (request.method === "POST" && request.path === "/api/projects") {

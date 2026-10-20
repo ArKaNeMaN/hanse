@@ -16,6 +16,9 @@ services:
       HANSE_RUNTIME_TOKEN: ${HANSE_RUNTIME_TOKEN:?set HANSE_RUNTIME_TOKEN in .env}
       HANSE_STATE_HOME: /data/state
       HANSE_AGENTS_HOME: /data/agents
+      HANSE_RUNNER_URL: http://runner:8790
+      HANSE_HOST_WORKSPACE: ${HANSE_HOST_WORKSPACE:?set HANSE_HOST_WORKSPACE to the absolute host workspace path}
+      HANSE_HOST_AGENTS: ${HANSE_HOST_AGENTS:?set HANSE_HOST_AGENTS to the absolute host agents path}
       HANSE_AGENT_SUPERVISOR_URL: http://agents:8789
       HANSE_AGENT_API_BASE: http://hanse:8787
       HANSE_AGENT_IMAGE: ${HANSE_AGENT_IMAGE:-ghcr.io/arkaneman/hanse-agent-default}:${HANSE_AGENT_TAG:-${HANSE_TAG:-latest}}

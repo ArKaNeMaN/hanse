@@ -181,4 +181,12 @@ ALTER TABLE instances ADD COLUMN spec_hash TEXT;
 ALTER TABLE instances ADD COLUMN runtime_state TEXT;
 `,
   },
+  {
+    version: 5,
+    name: "runner-containers",
+    sql: `
+ALTER TABLE instances ADD COLUMN container_id TEXT;
+ALTER TABLE instances ADD COLUMN container_name TEXT;
+`,
+  },
 ];

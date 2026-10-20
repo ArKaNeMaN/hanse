@@ -27,13 +27,13 @@ describe("store", () => {
     db.close();
   });
 
-  it("migrates to v4 with agent tokens and instance runtime columns", () => {
+  it("migrates to v5 with agent tokens and runner container columns", () => {
     const db = openDatabase(tempDbPath());
     runMigrations(db);
     const versions = db.prepare("SELECT version FROM schema_migrations ORDER BY version").all() as {
       version: number;
     }[];
-    expect(versions.map((row) => row.version)).toEqual([1, 2, 3, 4]);
+    expect(versions.map((row) => row.version)).toEqual([1, 2, 3, 4, 5]);
 
     const tokenColumns = (
       db.prepare("PRAGMA table_info(agent_tokens)").all() as {
@@ -49,6 +49,8 @@ describe("store", () => {
     ).map((row) => row.name);
     expect(instanceColumns).toContain("spec_hash");
     expect(instanceColumns).toContain("runtime_state");
+    expect(instanceColumns).toContain("container_id");
+    expect(instanceColumns).toContain("container_name");
 
     const now = new Date().toISOString();
     db.prepare(

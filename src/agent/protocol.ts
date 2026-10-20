@@ -17,6 +17,8 @@ export interface RuntimeAppStatus {
   state: RuntimeAppState;
   specHash: string | null;
   version: RuntimeVersion | null;
+  containerId?: string | null;
+  containerName?: string | null;
   error?: string;
 }
 
