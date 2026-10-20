@@ -43,10 +43,14 @@ export interface RegisteredProject {
   apps: RegisteredApp[];
 }
 
-interface AppBuildInspection {
+/** Result of reading one application's build declaration from its real app directory. */
+export interface AppBuildInspection {
   status: AppImageStatus;
   error: string | null;
+  /** Canonical absolute Dockerfile path, or `null` when the app is not build-configured. */
   dockerfile: string | null;
+  /** Manifest Dockerfile value relative to the application directory. */
+  relativeDockerfile: string | null;
   args: Record<string, string>;
   specHash: string | null;
 }
@@ -100,7 +104,7 @@ export function registerProject(
 ): RegisteredProject {
   const prepared = project.apps.map((entry) => {
     const appDir = resolveAppPath({ appPath: entry.path, projectRoot: rootPath, workspaceRoot });
-    return { entry, inspection: inspectAppBuild(appDir) };
+    return { entry, inspection: resolveAppBuild(appDir) };
   });
 
   const now = new Date().toISOString();
@@ -178,7 +182,16 @@ export function registerProject(
   return { id: project.id, name: project.name, baseBranch: project.base_branch, rootPath, apps };
 }
 
-function inspectAppBuild(appDir: string): AppBuildInspection {
+/**
+ * Read `.hanse/app.yaml` from the application's real directory and resolve its build spec.
+ *
+ * Exported so the coordinator image service uses exactly the same Dockerfile containment and hash
+ * rules as registration, including the configured default image/digest.
+ */
+export function resolveAppBuild(
+  appDir: string,
+  defaultImage: string = defaultImageReference(),
+): AppBuildInspection {
   let raw: string | undefined;
   try {
     raw = readAppConfig(appDir);
@@ -213,13 +226,14 @@ function inspectAppBuild(appDir: string): AppBuildInspection {
     const resolved = resolveBuildDockerfile({ appDir, dockerfile: build.dockerfile });
     const specHash = computeBuildSpecHash({
       dockerfile: resolved.content,
-      defaultImage: defaultImageReference(),
+      defaultImage,
       buildArgs: args,
     });
     return {
       status: "missing",
       error: null,
       dockerfile: resolved.path,
+      relativeDockerfile: build.dockerfile,
       args,
       specHash,
     };
@@ -256,7 +270,14 @@ function readAppConfig(appDir: string): string | undefined {
 }
 
 function emptyInspection(): AppBuildInspection {
-  return { status: "missing", error: null, dockerfile: null, args: {}, specHash: null };
+  return {
+    status: "missing",
+    error: null,
+    dockerfile: null,
+    relativeDockerfile: null,
+    args: {},
+    specHash: null,
+  };
 }
 
 function failedInspection(error: unknown, args: Record<string, string> = {}): AppBuildInspection {
@@ -264,6 +285,7 @@ function failedInspection(error: unknown, args: Record<string, string> = {}): Ap
     status: "error",
     error: boundedErrorMessage(error),
     dockerfile: null,
+    relativeDockerfile: null,
     args,
     specHash: null,
   };
@@ -303,8 +325,20 @@ function mergeImageMetadata(
       imageError: null,
     };
   }
+  const hashChanged =
+    existing.image_hash !== null &&
+    inspection.specHash !== null &&
+    existing.image_hash !== inspection.specHash;
+  let imageStatus: AppImageStatus;
+  if (existing.image_status === "error" || hashChanged) {
+    imageStatus = "stale";
+  } else if (existing.image_status === "stale") {
+    imageStatus = existing.image_ref === null ? "missing" : "ready";
+  } else {
+    imageStatus = existing.image_status;
+  }
   return {
-    imageStatus: existing.image_status === "error" ? "stale" : existing.image_status,
+    imageStatus,
     imageRef: existing.image_ref,
     imageHash: existing.image_hash ?? inspection.specHash,
     imageBaseDigest: existing.image_base_digest,

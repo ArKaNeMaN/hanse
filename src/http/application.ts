@@ -1,7 +1,15 @@
 import type { RegisteredApp } from "../registry/index.js";
 import { appDir } from "./apps.js";
 import type { PageChrome, SiteModel } from "./dashboard.js";
-import { appShell, escapeHtml, icon, ideFolderUrl, pageHeader, runtimePill } from "./ui.js";
+import {
+  appShell,
+  escapeHtml,
+  icon,
+  ideFolderUrl,
+  pageHeader,
+  runtimePill,
+  timeTag,
+} from "./ui.js";
 
 function navProjects(site: SiteModel): Array<{ id: string; name: string; appCount: number }> {
   return site.projects.map((project) => ({
@@ -18,6 +26,92 @@ function loadingBody(id: string, lines: number): string {
     return `<span class="skeleton${modifier}"></span>`;
   }).join("");
   return `<div class="card__body" id="${id}" aria-busy="true"><span class="sr-only">Loading repository status.</span><div class="skeleton-stack" aria-hidden="true">${skeletons}</div></div>`;
+}
+
+const IMAGE_STATUS: Record<
+  RegisteredApp["imageStatus"],
+  { label: string; tone: string; action: string; hint: string }
+> = {
+  missing: {
+    label: "Missing",
+    tone: "badge-ghost",
+    action: "Build image",
+    hint: "No app image has been built. Build it before starting the agent.",
+  },
+  building: {
+    label: "Building",
+    tone: "badge-info",
+    action: "Building...",
+    hint: "The runner is building this image. The previous image remains in use.",
+  },
+  ready: {
+    label: "Ready",
+    tone: "badge-success",
+    action: "Rebuild image",
+    hint: "The image matches the current Dockerfile and default base.",
+  },
+  stale: {
+    label: "Stale",
+    tone: "badge-warning",
+    action: "Rebuild image",
+    hint: "The Dockerfile or default base changed. The running container keeps the old image until you rebuild.",
+  },
+  error: {
+    label: "Error",
+    tone: "badge-error",
+    action: "Retry build",
+    hint: "The last build failed. Review the logs and retry; the previous image is kept.",
+  },
+};
+
+function imagePanel(
+  project: { id: string },
+  app: RegisteredApp,
+  imageStatus: RegisteredApp["imageStatus"],
+): string {
+  const status = IMAGE_STATUS[imageStatus] ?? IMAGE_STATUS.missing;
+  const buildHref = `/api/apps/${encodeURIComponent(app.appKey)}/build?project=${encodeURIComponent(project.id)}`;
+  const imageUrl = `/api/apps/${encodeURIComponent(app.appKey)}/image?project=${encodeURIComponent(project.id)}`;
+  const logsUrl = `/api/apps/${encodeURIComponent(app.appKey)}/image/logs?project=${encodeURIComponent(project.id)}`;
+  const appHref = `/projects/${encodeURIComponent(project.id)}/apps/${encodeURIComponent(app.appKey)}`;
+  const disabled = imageStatus === "building" ? " disabled" : "";
+  const error = app.imageError
+    ? `<p class="small" id="image-error">${escapeHtml(app.imageError)}</p>`
+    : '<p class="small" id="image-error" hidden></p>';
+  return `<section class="card section" id="image-panel"
+      data-project-id="${escapeHtml(project.id)}"
+      data-app-key="${escapeHtml(app.appKey)}"
+      data-status="${escapeHtml(imageStatus)}"
+      data-image-url="${escapeHtml(imageUrl)}"
+      data-logs-url="${escapeHtml(logsUrl)}">
+    <div class="card__head">
+      <h2 class="card__title" id="image-title">Image</h2>
+      <div class="cluster">
+        <span class="badge ${status.tone}" id="image-status" data-status="${escapeHtml(imageStatus)}" role="status" aria-live="polite">${escapeHtml(status.label)}</span>
+        <button class="btn btn-ghost btn-icon btn-sm" type="button" id="image-refresh" aria-label="Refresh image status" title="Refresh image status">${icon("refresh")}</button>
+      </div>
+    </div>
+    <div class="card__body stack--tight">
+      <p class="sr-only" id="image-live" role="status" aria-live="polite" aria-atomic="true"></p>
+      <div class="cluster">
+        <form method="post" action="${escapeHtml(buildHref)}">
+          <input type="hidden" name="return_to" value="${escapeHtml(appHref)}" />
+          <button class="btn btn-primary btn-sm" type="submit" id="image-build" data-action-label="${escapeHtml(status.action)}"${disabled}>${icon("layers")}${escapeHtml(status.action)}</button>
+        </form>
+        <span class="small" id="image-hint">${escapeHtml(status.hint)}</span>
+      </div>
+      <div class="stack--tight"><span class="overline">Reference</span><span class="mono" id="image-ref">${escapeHtml(app.imageRef ?? "Not built")}</span></div>
+      <div class="stack--tight"><span class="overline">Built</span><span class="small" id="image-built" data-built-at="${escapeHtml(app.imageBuiltAt ?? "")}">${app.imageBuiltAt ? timeTag(app.imageBuiltAt) : "Never"}</span></div>
+      ${error}
+      <div class="stack--tight">
+        <div class="cluster">
+          <span class="overline">Build logs</span>
+          <button class="btn btn-ghost btn-icon btn-sm" type="button" id="image-logs-refresh" aria-label="Refresh build logs" title="Refresh build logs">${icon("refresh")}</button>
+        </div>
+        <pre class="mono prose--pre image-logs" id="image-logs" aria-live="polite">No build logs yet.</pre>
+      </div>
+    </div>
+  </section>`;
 }
 
 function applicationRail(
@@ -84,7 +178,7 @@ export function renderApplication(
       </section>`
     : "";
 
-  const body = `${pendingBanner}<div id="git-panel" data-project-id="${escapeHtml(project.id)}" data-app-key="${escapeHtml(app.appKey)}" data-api-base="${escapeHtml(apiBase)}">
+  const body = `${pendingBanner}${imagePanel(project, app, app.imageStatus)}<div id="git-panel" data-project-id="${escapeHtml(project.id)}" data-app-key="${escapeHtml(app.appKey)}" data-api-base="${escapeHtml(apiBase)}">
     <p id="git-live" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>
     <div class="workbench-grid workbench-grid--detail section">
       <div class="stack">
@@ -137,7 +231,7 @@ export function renderApplication(
     operatorName: chrome.operatorName,
     notice: chrome.notice,
     header,
-    scripts: ["/assets/git.js"],
+    scripts: ["/assets/git.js", "/assets/images.js"],
     body,
   });
 }

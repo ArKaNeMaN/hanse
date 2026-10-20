@@ -2740,6 +2740,18 @@
     flex: none;
   }
 
+  .image-logs {
+    max-block-size: 18rem;
+    overflow: auto;
+    padding: var(--space-3);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: var(--surface-2);
+    color: var(--text-1);
+    font-size: var(--text-mono-sm);
+    overflow-wrap: anywhere;
+  }
+
   .git-commit {
     display: flex;
     flex-direction: column;

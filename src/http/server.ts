@@ -11,6 +11,7 @@ import { isHumanCookie } from "./auth.js";
 import { handleChat, streamSessionEvents } from "./chat.js";
 import { handleGit } from "./git.js";
 import { type HttpDeps, handleRequest } from "./handler.js";
+import { handleImages } from "./images.js";
 import { handlePrompts, streamAppEvents } from "./prompts.js";
 import { handleSettings, isSettingsRoute } from "./settings.js";
 import { proxyTerminalUpgrade } from "./terminal.js";
@@ -134,6 +135,7 @@ export function createHttpServer(deps: HttpDeps): Server {
           await streamAppEvents(deps, httpRequest, response);
           return;
         }
+        const isImages = /^\/api\/apps\/[^/]+\/(?:build|image(?:\/logs)?)$/.test(url.pathname);
         const isGit = /^\/api\/projects\/[^/]+\/apps\/[^/]+\/git(?:\/|$)/.test(url.pathname);
         const isPrompts =
           /^\/api\/apps\/[^/]+\/(?:prompts|questions\/[^/]+\/(?:reply|reject)|permissions\/(?:[^/]+\/reply|saved(?:\/[^/]+)?)|sessions\/[^/]+\/todo)$/.test(
@@ -143,15 +145,17 @@ export function createHttpServer(deps: HttpDeps): Server {
         const isRuntime = /^\/api\/apps\/[^/]+\/runtime$/.test(url.pathname);
         const isChat =
           !isRuntime && (url.pathname === "/chat" || url.pathname.startsWith("/api/apps/"));
-        const result = isGit
-          ? await handleGit(deps, httpRequest)
-          : isPrompts
-            ? await handlePrompts(deps, httpRequest)
-            : isSettings
-              ? await handleSettings(deps, httpRequest)
-              : isChat
-                ? await handleChat(deps, httpRequest)
-                : handleRequest(deps, httpRequest);
+        const result = isImages
+          ? await handleImages(deps, httpRequest)
+          : isGit
+            ? await handleGit(deps, httpRequest)
+            : isPrompts
+              ? await handlePrompts(deps, httpRequest)
+              : isSettings
+                ? await handleSettings(deps, httpRequest)
+                : isChat
+                  ? await handleChat(deps, httpRequest)
+                  : handleRequest(deps, httpRequest);
         response.writeHead(result.status, {
           "content-type": result.contentType,
           ...(result.headers ?? {}),

@@ -1,0 +1,487 @@
+import { randomUUID } from "node:crypto";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import type { Server } from "node:http";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { CoordinatorService } from "../src/coordinator/service.js";
+import { GitService } from "../src/git/service.js";
+import { type HttpDeps, type HttpRequest, handleRequest } from "../src/http/handler.js";
+import { handleImages } from "../src/http/images.js";
+import { createHttpServer } from "../src/http/server.js";
+import { createPrincipal } from "../src/identity/principals.js";
+import type { ImageBuildInput, RunnerImageRecord } from "../src/images/client.js";
+import { type ImageRunnerClient, ImageService } from "../src/images/service.js";
+import { discoverProject, registerProject } from "../src/registry/index.js";
+import { computeBuildSpecHash, defaultImageReference } from "../src/runtime/build-spec.js";
+import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
+
+const dirs: string[] = [];
+const databases: SqliteDatabase[] = [];
+const servers: Server[] = [];
+const previousImage = process.env.HANSE_AGENT_IMAGE;
+const previousDigest = process.env.HANSE_AGENT_IMAGE_DIGEST;
+
+beforeEach(() => {
+  process.env.HANSE_AGENT_IMAGE = "agent-default:test";
+  delete process.env.HANSE_AGENT_IMAGE_DIGEST;
+});
+
+afterEach(async () => {
+  await Promise.all(
+    servers.splice(0).map(
+      (server) =>
+        new Promise<void>((resolve) => {
+          server.closeAllConnections();
+          server.close(() => resolve());
+        }),
+    ),
+  );
+  for (const db of databases.splice(0)) {
+    try {
+      db.close();
+    } catch {
+      // already closed
+    }
+  }
+  for (const dir of dirs.splice(0)) {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  if (previousImage === undefined) delete process.env.HANSE_AGENT_IMAGE;
+  else process.env.HANSE_AGENT_IMAGE = previousImage;
+  if (previousDigest === undefined) delete process.env.HANSE_AGENT_IMAGE_DIGEST;
+  else process.env.HANSE_AGENT_IMAGE_DIGEST = previousDigest;
+});
+
+// biome-ignore lint/suspicious/noTemplateCurlyInString: Dockerfile variable syntax is intentional
+const DOCKERFILE = "ARG HANSE_BASE\nFROM ${HANSE_BASE}\nRUN echo web\n";
+const APP_YAML = [
+  "name: web",
+  "kind: service",
+  "build:",
+  "  dockerfile: Dockerfile",
+  "  args:",
+  "    NODE_VERSION: '22'",
+  "",
+].join("\n");
+
+class FakeImageRunner implements ImageRunnerClient {
+  readonly inputs: ImageBuildInput[] = [];
+  readonly records = new Map<string, RunnerImageRecord>();
+  readonly builds = new Map<string, RunnerImageRecord>();
+  nextBuild = 1;
+  buildFailure: Error | undefined;
+
+  async build(
+    input: ImageBuildInput,
+  ): Promise<{ buildId: string; appId: string; status: "building" }> {
+    if (this.buildFailure !== undefined) {
+      throw this.buildFailure;
+    }
+    this.inputs.push(input);
+    const buildId = `build-${this.nextBuild}`;
+    this.nextBuild += 1;
+    const record: RunnerImageRecord = {
+      appId: input.appId,
+      status: "building",
+      imageRef: this.records.get(input.appId)?.imageRef ?? null,
+      imageId: this.records.get(input.appId)?.imageId ?? null,
+      buildId,
+      logs: "",
+      error: null,
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    };
+    this.records.set(input.appId, record);
+    this.builds.set(buildId, record);
+    return { buildId, appId: input.appId, status: "building" };
+  }
+
+  async get(appId: string): Promise<RunnerImageRecord> {
+    return (
+      this.records.get(appId) ?? {
+        appId,
+        status: "missing",
+        imageRef: null,
+        imageId: null,
+        buildId: null,
+        logs: "",
+        error: null,
+        updatedAt: null,
+      }
+    );
+  }
+
+  async getBuild(buildId: string): Promise<RunnerImageRecord | undefined> {
+    return this.builds.get(buildId);
+  }
+
+  set(appId: string, patch: Partial<RunnerImageRecord>): void {
+    const current = this.records.get(appId);
+    if (current === undefined) {
+      throw new Error("no record to patch");
+    }
+    const next = { ...current, ...patch };
+    this.records.set(appId, next);
+    if (next.buildId !== null) {
+      this.builds.set(next.buildId, next);
+    }
+  }
+}
+
+interface Fixture {
+  db: SqliteDatabase;
+  deps: HttpDeps;
+  workspace: string;
+  projectRoot: string;
+  appDir: string;
+  hostWorkspace: string;
+  projectId: string;
+  appId: string;
+  token: string;
+  agentToken: string;
+  runner: FakeImageRunner;
+  service: ImageService;
+}
+
+async function fixture(): Promise<Fixture> {
+  const base = mkdtempSync(path.join(tmpdir(), "hanse-app-image-"));
+  dirs.push(base);
+  const workspacePath = path.join(base, "workspace");
+  mkdirSync(workspacePath, { recursive: true });
+  const workspace = realpathSync(workspacePath);
+  const projectRoot = path.join(workspace, "project");
+  const appDir = path.join(projectRoot, "apps", "web");
+  const hostWorkspace = path.join(base, "host-workspace");
+  mkdirSync(path.join(projectRoot, ".hanse"), { recursive: true });
+  mkdirSync(path.join(appDir, ".hanse"), { recursive: true });
+  const projectId = randomUUID();
+  writeFileSync(
+    path.join(projectRoot, ".hanse", "project.yaml"),
+    `id: ${projectId}\nname: Alpha\nbase_branch: main\napps:\n  - path: apps/web\n`,
+    "utf8",
+  );
+  writeFileSync(path.join(appDir, ".hanse", "app.yaml"), APP_YAML, "utf8");
+  writeFileSync(path.join(appDir, "Dockerfile"), DOCKERFILE, "utf8");
+
+  const db = openDatabase(path.join(base, "coordinator.db"));
+  databases.push(db);
+  runMigrations(db);
+  const { project, rootPath } = await discoverProject(projectRoot);
+  registerProject(db, project, rootPath, workspace);
+
+  const runner = new FakeImageRunner();
+  const service = new ImageService({
+    db,
+    workspaceRoot: workspace,
+    hostWorkspace,
+    defaultImage: defaultImageReference(),
+    runner,
+  });
+  const token = createPrincipal(db, { kind: "human", name: "operator" }).token;
+  const agentToken = createPrincipal(db, { kind: "agent", name: "agent" }).token;
+  const appKey = "web";
+  const appId = `${projectId}:${appKey}`;
+  const deps: HttpDeps = {
+    db,
+    workspaceRoot: workspace,
+    git: new GitService({ workspaceRoot: workspace }),
+    images: service,
+    getProjects: () => [
+      {
+        id: projectId,
+        name: "Alpha",
+        rootPath: projectRoot,
+        workspaceRoot: workspace,
+        service: new CoordinatorService(db, projectId),
+      },
+    ],
+  };
+  return {
+    db,
+    deps,
+    workspace,
+    projectRoot,
+    appDir,
+    hostWorkspace,
+    projectId,
+    appId,
+    token,
+    agentToken,
+    runner,
+    service,
+  };
+}
+
+function auth(token: string, extra: Record<string, string> = {}): Record<string, string> {
+  return { authorization: `Bearer ${token}`, ...extra };
+}
+
+function buildRequest(f: Fixture, token = f.token): HttpRequest {
+  return {
+    method: "POST",
+    path: "/api/apps/web/build",
+    headers: auth(token, { "content-type": "application/json" }),
+    query: { project: f.projectId },
+    body: "{}",
+  };
+}
+
+function imageRequest(f: Fixture, token = f.token): HttpRequest {
+  return {
+    method: "GET",
+    path: "/api/apps/web/image",
+    headers: auth(token),
+    query: { project: f.projectId },
+  };
+}
+
+function row(f: Fixture): {
+  image_status: string;
+  image_ref: string | null;
+  image_hash: string | null;
+  image_base_digest: string | null;
+  image_built_at: string | null;
+  image_error: string | null;
+} {
+  return f.db
+    .prepare(
+      `SELECT image_status, image_ref, image_hash, image_base_digest, image_built_at, image_error
+       FROM apps WHERE id = ?`,
+    )
+    .get(f.appId) as {
+    image_status: string;
+    image_ref: string | null;
+    image_hash: string | null;
+    image_base_digest: string | null;
+    image_built_at: string | null;
+    image_error: string | null;
+  };
+}
+
+function markReady(f: Fixture, imageRef = "hanse-app-p:old"): void {
+  const current = row(f);
+  f.db
+    .prepare(
+      `UPDATE apps SET image_status = 'ready', image_ref = ?, image_hash = ?,
+         image_base_digest = 'sha256:old', image_built_at = '2026-01-01T00:00:00.000Z'
+       WHERE id = ?`,
+    )
+    .run(imageRef, current.image_hash, f.appId);
+}
+
+describe("app image API", () => {
+  it("is human-only and returns 404 for an unknown app", async () => {
+    const f = await fixture();
+
+    const anonymous = await handleImages(f.deps, {
+      method: "GET",
+      path: "/api/apps/web/image",
+      headers: {},
+      query: { project: f.projectId },
+    });
+    expect(anonymous.status).toBe(401);
+
+    const agent = await handleImages(f.deps, imageRequest(f, f.agentToken));
+    expect(agent.status).toBe(403);
+    expect(agent.body).toContain("forbidden");
+
+    const unknown = await handleImages(f.deps, {
+      method: "GET",
+      path: "/api/apps/missing/image",
+      headers: auth(f.token),
+      query: { project: f.projectId },
+    });
+    expect(unknown.status).toBe(404);
+    expect(f.runner.inputs).toHaveLength(0);
+  });
+
+  it("delegates the live manifest build spec to the runner and marks the row building", async () => {
+    const f = await fixture();
+    expect(row(f).image_status).toBe("missing");
+    expect(f.runner.inputs).toHaveLength(0);
+
+    const response = await handleImages(f.deps, buildRequest(f));
+    expect(response.status).toBe(202);
+    const result = JSON.parse(response.body) as { buildId: string; status: string };
+    expect(result).toMatchObject({ buildId: "build-1", status: "building" });
+
+    expect(f.runner.inputs).toHaveLength(1);
+    const input = f.runner.inputs[0] as ImageBuildInput;
+    const expectedHash = computeBuildSpecHash({
+      dockerfile: DOCKERFILE,
+      defaultImage: "agent-default:test",
+      buildArgs: { NODE_VERSION: "22" },
+    });
+    expect(input).toEqual({
+      appId: f.appId,
+      appDir: path.join(f.hostWorkspace, "project", "apps", "web"),
+      dockerfile: "Dockerfile",
+      baseImage: "agent-default:test",
+      buildArgs: { NODE_VERSION: "22" },
+      specHash: expectedHash,
+    });
+    expect(row(f).image_status).toBe("building");
+    expect(row(f).image_error).toBeNull();
+  });
+
+  it("persists ready and preserved-error status updates from the runner", async () => {
+    const f = await fixture();
+    await handleImages(f.deps, buildRequest(f));
+    f.runner.set(f.appId, {
+      status: "ready",
+      imageRef: "hanse-app-p:build-1",
+      imageId: "sha256:image-one",
+      updatedAt: "2026-02-02T03:04:05.000Z",
+    });
+    const ready = await handleImages(f.deps, imageRequest(f));
+    expect(ready.status).toBe(200);
+    const readyView = JSON.parse(ready.body) as Record<string, unknown>;
+    expect(readyView).toMatchObject({
+      appId: f.appId,
+      status: "ready",
+      imageRef: "hanse-app-p:build-1",
+      imageId: "sha256:image-one",
+    });
+    expect(row(f)).toMatchObject({
+      image_status: "ready",
+      image_ref: "hanse-app-p:build-1",
+      image_built_at: "2026-02-02T03:04:05.000Z",
+      image_error: null,
+    });
+    const builtHash = row(f).image_hash;
+
+    await handleImages(f.deps, buildRequest(f));
+    f.runner.set(f.appId, {
+      status: "error",
+      error: "docker build failed\nlayer two",
+      updatedAt: "2026-02-03T00:00:00.000Z",
+    });
+    const failed = await handleImages(f.deps, imageRequest(f));
+    const failedView = JSON.parse(failed.body) as Record<string, unknown>;
+    expect(failedView.status).toBe("error");
+    expect(failedView.error).toBe("docker build failed layer two");
+    expect(String(failedView.error).length).toBeLessThanOrEqual(400);
+    expect(row(f)).toMatchObject({
+      image_status: "error",
+      image_ref: "hanse-app-p:build-1",
+      image_hash: builtHash,
+      image_error: "docker build failed layer two",
+    });
+  });
+
+  it("returns a redacted, bounded log tail", async () => {
+    const f = await fixture();
+    await handleImages(f.deps, buildRequest(f));
+    f.runner.set(f.appId, {
+      logs: `step one\nworkspace: ${f.hostWorkspace}/project/apps/web\nAuthorization: Bearer supersecret\n`,
+    });
+
+    const response = await handleImages(f.deps, {
+      method: "GET",
+      path: "/api/apps/web/image/logs",
+      headers: auth(f.token),
+      query: { project: f.projectId },
+    });
+    expect(response.status).toBe(200);
+    const body = JSON.parse(response.body) as { logs: string; buildId: string };
+    expect(body.buildId).toBe("build-1");
+    expect(body.logs).toContain("step one");
+    expect(body.logs).toContain("<workspace>");
+    expect(body.logs).not.toContain(f.hostWorkspace);
+    expect(body.logs).not.toContain("supersecret");
+  });
+
+  it("serves build and status routes through the HTTP server dispatch", async () => {
+    const f = await fixture();
+    const server = createHttpServer(f.deps);
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (address === null || typeof address === "string") {
+      throw new Error("server has no port");
+    }
+
+    const response = await fetch(
+      `http://127.0.0.1:${address.port}/api/apps/web/build?project=${encodeURIComponent(f.projectId)}`,
+      {
+        method: "POST",
+        headers: auth(f.token, { "content-type": "application/json" }),
+        body: "{}",
+      },
+    );
+    expect(response.status).toBe(202);
+    expect(f.runner.inputs).toHaveLength(1);
+  });
+
+  it("renders image component markers, the asset, and does not auto-build", async () => {
+    const f = await fixture();
+    const page = handleRequest(f.deps, {
+      method: "GET",
+      path: `/projects/${f.projectId}/apps/web`,
+      headers: auth(f.token),
+    });
+    expect(page.status).toBe(200);
+    expect(page.body).toContain('id="image-panel"');
+    expect(page.body).toContain('data-status="missing"');
+    expect(page.body).toContain('id="image-status"');
+    expect(page.body).toContain('id="image-build"');
+    expect(page.body).toContain('id="image-logs"');
+    expect(page.body).toContain('id="image-refresh"');
+    expect(page.body).toContain("/assets/images.js");
+    expect(page.body).toContain(
+      `action="/api/apps/web/build?project=${encodeURIComponent(f.projectId)}"`,
+    );
+    expect(f.runner.inputs).toHaveLength(0);
+
+    const asset = handleRequest(f.deps, {
+      method: "GET",
+      path: "/assets/images.js",
+      headers: {},
+    });
+    expect(asset.status).toBe(200);
+    expect(asset.contentType).toContain("text/javascript");
+    expect(asset.body).toContain("image-panel");
+  });
+});
+
+describe("app image stale detection", () => {
+  it("marks a ready image stale after a Dockerfile change without building", async () => {
+    const f = await fixture();
+    markReady(f);
+    const before = row(f);
+    const imageRef = before.image_ref;
+    const builtHash = before.image_hash;
+
+    writeFileSync(path.join(f.appDir, "Dockerfile"), `${DOCKERFILE}RUN true\n`, "utf8");
+    const { project, rootPath } = await discoverProject(f.projectRoot);
+    const updated = registerProject(f.db, project, rootPath, f.workspace).apps.find(
+      (app) => app.appKey === "web",
+    );
+
+    expect(updated?.imageStatus).toBe("stale");
+    expect(updated?.buildSpecHash).not.toBe(builtHash);
+    expect(row(f)).toMatchObject({
+      image_status: "stale",
+      image_ref: imageRef,
+      image_hash: builtHash,
+    });
+    expect(f.runner.inputs).toHaveLength(0);
+  });
+
+  it("marks a ready image stale when the default base image changes", async () => {
+    const f = await fixture();
+    markReady(f);
+    const builtHash = row(f).image_hash;
+
+    process.env.HANSE_AGENT_IMAGE = "agent-default:next";
+    const { project, rootPath } = await discoverProject(f.projectRoot);
+    const updated = registerProject(f.db, project, rootPath, f.workspace).apps.find(
+      (app) => app.appKey === "web",
+    );
+
+    expect(updated?.imageStatus).toBe("stale");
+    expect(updated?.buildSpecHash).not.toBe(builtHash);
+    expect(row(f).image_status).toBe("stale");
+    expect(f.runner.inputs).toHaveLength(0);
+  });
+});

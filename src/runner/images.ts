@@ -5,6 +5,11 @@ import { resolveWithinRoot } from "../runtime/app-path.js";
 import { boundedErrorMessage } from "../runtime/build-spec.js";
 import { BuildContextError, createBuildContext, DEFAULT_DOCKERFILE } from "./build-context.js";
 import type { DockerBuildRuntime } from "./docker.js";
+import {
+  type ImageValidationResult,
+  type ImageValidationRuntime,
+  ImageValidationService,
+} from "./image-validation.js";
 import { appContainerName } from "./names.js";
 import type { RunnerConfig } from "./validate.js";
 
@@ -79,11 +84,13 @@ interface BuildJob {
 export interface ImageBuildServiceOptions {
   readonly config: RunnerConfig;
   readonly build?: DockerBuildRuntime;
+  readonly validation?: ImageValidationRuntime;
 }
 
 export class ImageBuildService {
   readonly #config: RunnerConfig;
   readonly #build: DockerBuildRuntime | undefined;
+  readonly #validation: ImageValidationRuntime | undefined;
   readonly #byApp = new Map<string, RunnerImageRecord>();
   readonly #byBuild = new Map<string, RunnerImageRecord>();
   #active: string | undefined;
@@ -91,6 +98,7 @@ export class ImageBuildService {
   constructor(options: ImageBuildServiceOptions) {
     this.#config = options.config;
     this.#build = options.build;
+    this.#validation = options.validation;
   }
 
   async start(raw: unknown): Promise<ImageBuildResult> {
@@ -172,10 +180,25 @@ export class ImageBuildService {
           result.error ?? new Error("docker build completed without an image id"),
         );
       } else {
-        record.status = "ready";
-        record.imageRef = job.tag;
-        record.imageId = result.imageId;
-        record.error = null;
+        const validation = await this.#validateImage(job.tag, job.request.appId);
+        if (validation !== undefined) {
+          record.logs = boundedLogs(
+            `${record.logs}${record.logs.endsWith("\n") || record.logs.length === 0 ? "" : "\n"}${
+              validation.logs
+            }`,
+          );
+        }
+        if (validation !== undefined && !validation.ok) {
+          record.status = "error";
+          record.error = boundedErrorMessage(
+            new Error(validation.error ?? "image validation failed"),
+          );
+        } else {
+          record.status = "ready";
+          record.imageRef = job.tag;
+          record.imageId = result.imageId;
+          record.error = null;
+        }
       }
     } catch (error) {
       record.status = "error";
@@ -186,6 +209,14 @@ export class ImageBuildService {
         this.#active = undefined;
       }
     }
+  }
+
+  async #validateImage(
+    imageRef: string,
+    appId: string,
+  ): Promise<ImageValidationResult | undefined> {
+    if (this.#validation === undefined) return undefined;
+    return new ImageValidationService({ runtime: this.#validation }).validate(imageRef, appId);
   }
 }
 

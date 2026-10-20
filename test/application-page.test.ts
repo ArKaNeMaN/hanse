@@ -106,6 +106,10 @@ describe("application page", () => {
     expect(response.body).toContain('aria-busy="true"');
     expect(response.body).toContain("Loading repository status.");
     expect(response.body).toContain("/assets/git.js");
+    expect(response.body).toContain("/assets/images.js");
+    expect(response.body).toContain('id="image-panel"');
+    expect(response.body).toContain('id="image-status"');
+    expect(response.body).toContain('id="image-logs"');
     expect(response.body).toContain(
       "Git actions need JavaScript. Use the IDE for repository operations.",
     );

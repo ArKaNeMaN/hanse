@@ -9,6 +9,7 @@ import { CoordinatorService } from "../coordinator/service.js";
 import type { GitService } from "../git/service.js";
 import { authenticate } from "../identity/auth.js";
 import type { Principal } from "../identity/principals.js";
+import type { ImageService } from "../images/service.js";
 import { verifyAgentToken } from "../mcp/agent-tokens.js";
 import { handleRpc } from "../mcp/protocol.js";
 import type { InstanceManager } from "../opencode/manager.js";
@@ -46,6 +47,8 @@ export interface HttpDeps {
   manager?: InstanceManager;
   settings?: SettingsService;
   runner?: { url: string; token: string };
+  /** Present when the coordinator is wired to the runner; image routes 503 otherwise. */
+  images?: ImageService;
 }
 
 export interface HttpRequest {
@@ -86,6 +89,7 @@ const ASSETS: Record<string, { file: string; contentType: string }> = {
     contentType: "text/javascript; charset=utf-8",
   },
   "/assets/git.js": { file: "git.js", contentType: "text/javascript; charset=utf-8" },
+  "/assets/images.js": { file: "images.js", contentType: "text/javascript; charset=utf-8" },
   "/assets/vendor/prism/prism-1.30.0.min.js": {
     file: "vendor/prism/prism-1.30.0.min.js",
     contentType: "text/javascript; charset=utf-8",

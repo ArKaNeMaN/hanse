@@ -4,6 +4,7 @@ import {
   agentSupervisorCommand,
   defaultContext,
   gitOpCommand,
+  imagesCommand,
   initCommand,
   mcpCommand,
   runnerCommand,
@@ -41,6 +42,7 @@ function buildUsage(): string[] {
     "  init [dir]      Scaffold a project (.hanse/project.yaml)",
     "  status [dir]    Discover and register a project, print its status",
     "  serve           Serve the web dashboard and HTTP API",
+    "  images build    Build one app image through the runner (human action)",
     "  mcp             Run the coordinator MCP server (stdio)",
     "  web-mcp         Run the managed web tools MCP server (stdio)",
     "  agent-host      Run a single-app agent host (internal; --spec <file>)",
@@ -52,7 +54,9 @@ function buildUsage(): string[] {
     "  -h, --help            Show this help and exit",
     "  -v, --version         Show the version and exit",
     "      --state-home <p>  Override the coordinator state directory",
-    "      --workspace <p>   Workspace of projects (serve; default: cwd)",
+    "      --workspace <p>   Workspace of projects (serve/images; default: cwd)",
+    "      --app <key>       Application key (images build)",
+    "      --project <p>     Project id or path (images build)",
     "      --hostname <h>    Bind host (serve/agent-supervisor/runner; default: 127.0.0.1/0.0.0.0)",
     "      --port <n>        Bind port (serve/agent-supervisor/runner; default: 8787/8789/8790)",
     "      --spec <p>        Runtime spec file (agent-host)",
@@ -130,6 +134,16 @@ export async function runCli(argv: readonly string[], io: CliIo = defaultIo): Pr
       const hostname = typeof args.flags.hostname === "string" ? args.flags.hostname : "0.0.0.0";
       return runnerCommand({ hostname, port }, defaultContext(process.cwd(), io, args.flags));
     }
+    case "images":
+      return imagesCommand(
+        {
+          action: args.positionals[0],
+          app: typeof args.flags.app === "string" ? args.flags.app : undefined,
+          project: typeof args.flags.project === "string" ? args.flags.project : undefined,
+          workspace: typeof args.flags.workspace === "string" ? args.flags.workspace : ".",
+        },
+        defaultContext(process.cwd(), io, args.flags),
+      );
     case "git-op":
       return gitOpCommand(defaultContext(process.cwd(), io, args.flags));
     default:

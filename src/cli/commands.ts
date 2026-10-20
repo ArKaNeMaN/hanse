@@ -23,6 +23,8 @@ import { GitService } from "../git/service.js";
 import type { ProjectContext } from "../http/handler.js";
 import { createHttpServer } from "../http/server.js";
 import { upsertPrincipalWithToken } from "../identity/principals.js";
+import { RunnerImageClient } from "../images/client.js";
+import { ImageService, ImageServiceError } from "../images/service.js";
 import { runRemoteMcpServer } from "../mcp/remote.js";
 import { runMcpServer } from "../mcp/server.js";
 import { InstanceManager } from "../opencode/manager.js";
@@ -31,6 +33,7 @@ import { discoverProject, registerProject } from "../registry/index.js";
 import { DockerClient } from "../runner/docker.js";
 import { runRunner } from "../runner/server.js";
 import { loadRunnerConfig } from "../runner/validate.js";
+import { defaultImageReference } from "../runtime/build-spec.js";
 import {
   agentsHome,
   coordinatorDbPath,
@@ -126,6 +129,110 @@ export interface ServeOptions {
   workspace: string;
   hostname: string;
   port: number;
+}
+export interface ImagesOptions {
+  action: string | undefined;
+  app: string | undefined;
+  project: string | undefined;
+  workspace: string;
+}
+
+/**
+ * `hanse images build` - start one human-requested app image build through the runner.
+ *
+ * The CLI only reads the coordinator DB/manifest and calls the runner HTTP API; Docker never runs in
+ * the CLI process. `--workspace` is the coordinator workspace root used to map app paths back to the
+ * runner host path (defaults to the current directory).
+ */
+export async function imagesCommand(options: ImagesOptions, ctx: CommandContext): Promise<number> {
+  if (options.action !== "build") {
+    ctx.io.stderr(
+      "images: usage: hanse images build --app <appKey> [--project <id|path>] [--workspace <p>]",
+    );
+    return 2;
+  }
+  const runnerUrl = process.env.HANSE_RUNNER_URL?.trim();
+  const token = process.env.HANSE_RUNTIME_TOKEN?.trim();
+  if (
+    runnerUrl === undefined ||
+    runnerUrl.length === 0 ||
+    token === undefined ||
+    token.length === 0
+  ) {
+    ctx.io.stderr("images: HANSE_RUNNER_URL and HANSE_RUNTIME_TOKEN are required");
+    return 2;
+  }
+
+  const workspaceRoot = path.resolve(ctx.cwd, options.workspace);
+  const db = openDatabase(coordinatorDbPath(ctx.stateHome));
+  try {
+    runMigrations(db);
+    let rootPath: string;
+    try {
+      rootPath = await imagesProjectRoot(db, options.project, ctx.cwd, workspaceRoot);
+    } catch (error) {
+      ctx.io.stderr(`images: ${error instanceof Error ? error.message : String(error)}`);
+      return 1;
+    }
+    const { project } = await discoverProject(rootPath);
+    const registered = registerProject(db, project, rootPath, workspaceRoot);
+    const candidates = registered.apps.filter((app) => app.buildDockerfile !== null);
+    const app =
+      options.app === undefined
+        ? candidates.length === 1
+          ? candidates[0]
+          : undefined
+        : registered.apps.find((candidate) => candidate.appKey === options.app);
+    if (app === undefined) {
+      if (options.app === undefined && candidates.length !== 1) {
+        ctx.io.stderr(
+          "images: --app <appKey> is required when the project has zero or multiple buildable apps",
+        );
+      } else {
+        ctx.io.stderr(`images: unknown or non-buildable app: ${options.app ?? ""}`);
+      }
+      return 1;
+    }
+
+    const hostWorkspace = process.env.HANSE_HOST_WORKSPACE?.trim() || workspaceRoot;
+    const service = new ImageService({
+      db,
+      workspaceRoot,
+      hostWorkspace,
+      defaultImage: defaultImageReference(),
+      runner: new RunnerImageClient({ baseUrl: runnerUrl, token }),
+    });
+    const result = await service.build(app.id, app.appKey);
+    ctx.io.stdout(`Building image for ${app.appKey} (build ${result.buildId})`);
+    return 0;
+  } catch (error) {
+    if (error instanceof ImageServiceError) {
+      ctx.io.stderr(`images: ${error.message}`);
+      return 1;
+    }
+    ctx.io.stderr(`images: ${error instanceof Error ? error.message : String(error)}`);
+    return 1;
+  } finally {
+    db.close();
+  }
+}
+
+async function imagesProjectRoot(
+  db: ReturnType<typeof openDatabase>,
+  project: string | undefined,
+  cwd: string,
+  workspaceRoot: string,
+): Promise<string> {
+  if (project === undefined) {
+    return workspaceRoot;
+  }
+  const row = db.prepare("SELECT root_path FROM projects WHERE id = ?").get(project) as
+    | { root_path: string }
+    | undefined;
+  if (row !== undefined) {
+    return row.root_path;
+  }
+  return path.resolve(cwd, project);
 }
 
 function prepareIde(stateHome: string): { extDir: string; userDataDir: string } {
@@ -343,6 +450,7 @@ export async function runnerCommand(
       docker,
       exec: docker,
       build: docker,
+      validation: docker,
       hostname: options.hostname,
       port: options.port,
       onListening: (address) => ctx.io.stdout(`hanse runner listening on ${address}`),
@@ -439,6 +547,16 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
       ? {}
       : { remote: { baseUrl: runnerUrl, token: runtimeToken } }),
   });
+  const images =
+    runnerUrl === undefined || runnerUrl.length === 0 || hostWorkspace === undefined
+      ? undefined
+      : new ImageService({
+          db,
+          workspaceRoot: workspace,
+          hostWorkspace,
+          defaultImage: defaultImageReference(),
+          runner: new RunnerImageClient({ baseUrl: runnerUrl, token: runtimeToken }),
+        });
   const server = createHttpServer({
     db,
     workspaceRoot: workspace,
@@ -449,6 +567,7 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
     ...(runnerUrl === undefined || runnerUrl.length === 0
       ? {}
       : { runner: { url: runnerUrl, token: runtimeToken } }),
+    ...(images === undefined ? {} : { images }),
   });
 
   let ide: ChildProcess | null = null;

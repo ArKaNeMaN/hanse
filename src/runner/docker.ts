@@ -317,6 +317,24 @@ export interface DockerContainerInspect {
   };
 }
 
+/**
+ * The image fields the runner inspects before deploying it. Docker returns more; only the fields
+ * that affect the fixed app envelope or validation are typed here.
+ */
+export interface DockerImageInspect {
+  Id?: string;
+  RepoTags?: string[];
+  Config?: {
+    User?: string;
+    Env?: string[];
+    Entrypoint?: string[] | null;
+    Cmd?: string[] | null;
+    Volumes?: Record<string, unknown> | null;
+    WorkingDir?: string;
+    Labels?: Record<string, string>;
+  };
+}
+
 export interface DockerLogs {
   logs: string;
   truncated: boolean;
@@ -560,14 +578,14 @@ export class DockerClient {
     return body.ApiVersion ?? body.Version ?? "unknown";
   }
 
-  async inspectImage(reference: string): Promise<{ Id?: string } | undefined> {
+  async inspectImage(reference: string): Promise<DockerImageInspect | undefined> {
     const response = await this.#transport.request(
       "GET",
       `/images/${encodeURIComponent(reference)}/json`,
     );
     if (response.status === 404) return undefined;
     this.#check(response, `inspect image ${reference}`);
-    return decodeJson<{ Id?: string }>(response, `inspect image ${reference}`);
+    return decodeJson<DockerImageInspect>(response, `inspect image ${reference}`);
   }
 
   async buildImage(options: DockerBuildOptions): Promise<DockerBuildResult> {

@@ -40,6 +40,7 @@ import {
   type DockerExecStream,
   type DockerRuntime,
 } from "./docker.js";
+import type { ImageValidationRuntime } from "./image-validation.js";
 import { ImageBuildError, ImageBuildService } from "./images.js";
 import { appContainerName, appNetworkName } from "./names.js";
 import {
@@ -503,6 +504,7 @@ export interface RunnerServiceOptions {
   docker: DockerRuntime;
   exec?: DockerExecRuntime;
   build?: DockerBuildRuntime;
+  validation?: ImageValidationRuntime;
 }
 
 /** Per-app container runtime behind the same API shape as the B0 supervisor. */
@@ -519,6 +521,7 @@ export class RunnerService {
     this.#images = new ImageBuildService({
       config: options.config,
       ...(options.build === undefined ? {} : { build: options.build }),
+      ...(options.validation === undefined ? {} : { validation: options.validation }),
     });
   }
 
@@ -1061,6 +1064,7 @@ export interface RunRunnerOptions {
   docker: DockerRuntime;
   exec?: DockerExecRuntime;
   build?: DockerBuildRuntime;
+  validation?: ImageValidationRuntime;
   hostname: string;
   port: number;
   onListening?: (address: string) => void;
@@ -1073,6 +1077,7 @@ export async function runRunner(options: RunRunnerOptions): Promise<number> {
     docker: options.docker,
     ...(options.exec === undefined ? {} : { exec: options.exec }),
     ...(options.build === undefined ? {} : { build: options.build }),
+    ...(options.validation === undefined ? {} : { validation: options.validation }),
   });
   const server = service.createServer();
   await new Promise<void>((resolve, reject) => {
