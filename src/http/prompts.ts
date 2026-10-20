@@ -17,6 +17,7 @@ import {
   replyQuestionV2,
   OpencodeHttpError as UpstreamError,
 } from "../opencode/client.js";
+import { authorizationFor } from "../opencode/endpoint-auth.js";
 import {
   APP_STREAM_MAX_FRAME_BYTES,
   createEventStream,
@@ -715,8 +716,12 @@ export async function streamAppEvents(
   response.on("close", cleanup);
 
   try {
+    const authorization = authorizationFor(endpoint);
     const upstream = await fetch(`${endpoint}/event`, {
-      headers: { accept: "text/event-stream" },
+      headers: {
+        accept: "text/event-stream",
+        ...(authorization === undefined ? {} : { authorization }),
+      },
       signal: controller.signal,
     });
     if (!upstream.ok || upstream.body === null) {

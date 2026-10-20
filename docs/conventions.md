@@ -51,10 +51,22 @@ Provider keys are never written to YAML, the project repository, or the opencode
 
 ## Runtime layout (outside repositories)
 
+Coordinator state lives under `$XDG_STATE_HOME/hanse/` (`coordinator.db`, `secret.key`, and the
+coordinator's own records). It is never mounted into agents.
+
+Per-app agent state lives outside the coordinator state, under `HANSE_AGENTS_HOME` (default
+`~/.local/state/hanse-agents`; Compose uses `/data/agents`):
+
+```text
+<projectId>/<appKey>/
+├── home/                  HOME, .omo profile, tool config
+├── data/ state/ config/ cache/   XDG dirs and opencode DB
+├── tmp/                   per-app TMPDIR
+├── mise/                  per-app toolchain cache
+└── mcp-token              per-app MCP token (0600)
 ```
-$XDG_STATE_HOME/hanse/<project-id>/
-├── apps/<app>/data  state  config  cache
-└── <coordinator state: queue, locks, handoffs>
-```
+
+The app directory remains under the workspace; only its runtime state lives under the agents root.
+The IDE never sees either the coordinator state or the agents root.
 
 `.hanse-runtime/` (gitignored) may be used as a local override during development.

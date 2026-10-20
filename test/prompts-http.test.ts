@@ -90,6 +90,7 @@ function fixture(): Fixture {
         id: row.id,
         name: row.name,
         rootPath: row.root_path,
+        workspaceRoot: "/tmp",
         service: new CoordinatorService(db, row.id),
       })),
   };

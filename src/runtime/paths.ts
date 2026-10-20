@@ -11,6 +11,20 @@ export function coordinatorStateDir(stateHome: string): string {
   return path.join(stateHome, "hanse");
 }
 
+/**
+ * Root for per-app agent runtime state (`<projectId>/<appKey>/{home,data,...}`).
+ *
+ * This is deliberately independent of `HANSE_STATE_HOME`: agent state must never live under the
+ * coordinator state directory.
+ */
+export function agentsHome(env: NodeJS.ProcessEnv = process.env): string {
+  const configured = env.HANSE_AGENTS_HOME;
+  if (configured !== undefined && configured.length > 0) {
+    return configured;
+  }
+  return path.join(os.homedir(), ".local", "state", "hanse-agents");
+}
+
 /** Path to the coordinator SQLite database. */
 export function coordinatorDbPath(stateHome: string): string {
   return path.join(coordinatorStateDir(stateHome), "coordinator.db");

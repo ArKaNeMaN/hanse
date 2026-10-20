@@ -1,4 +1,3 @@
-import os from "node:os";
 import path from "node:path";
 import type { PermissionPolicy } from "./policy.js";
 
@@ -10,8 +9,9 @@ export interface InstanceIdentity {
   app: string;
 }
 
-/** Per-instance, isolated XDG and opencode environment variables. */
+/** Per-instance, isolated HOME, XDG, toolchain, and opencode environment variables. */
 export interface IsolatedEnv {
+  HOME: string;
   XDG_DATA_HOME: string;
   XDG_STATE_HOME: string;
   XDG_CONFIG_HOME: string;
@@ -19,6 +19,7 @@ export interface IsolatedEnv {
   OPENCODE_DB: string;
   /** Per-instance scratch root; opencode uses `${TMPDIR}/opencode` inside it. */
   TMPDIR: string;
+  MISE_DATA_DIR: string;
 }
 
 /** Name under which the coordinator MCP server is exposed to managed agents. */
@@ -73,25 +74,22 @@ export function defaultRuntimeRoot(xdgStateHome: string, projectId: string): str
 }
 
 /** Compute the isolated environment for a single application instance. */
-export function resolveInstanceEnv(
-  runtimeRoot: string,
-  identity: InstanceIdentity,
-  tmpRoot: string = os.tmpdir(),
-): IsolatedEnv {
-  const appDir = path.join(runtimeRoot, "apps", sanitizeAppKey(identity.app));
-  const stateDir = path.join(appDir, "state");
+export function resolveInstanceEnv(agentsHome: string, identity: InstanceIdentity): IsolatedEnv {
+  const appRoot = path.join(
+    agentsHome,
+    sanitizeAppKey(identity.projectId),
+    sanitizeAppKey(identity.app),
+  );
+  const stateDir = path.join(appRoot, "state");
   return {
-    XDG_DATA_HOME: path.join(appDir, "data"),
+    HOME: path.join(appRoot, "home"),
+    XDG_DATA_HOME: path.join(appRoot, "data"),
     XDG_STATE_HOME: stateDir,
-    XDG_CONFIG_HOME: path.join(appDir, "config"),
-    XDG_CACHE_HOME: path.join(appDir, "cache"),
+    XDG_CONFIG_HOME: path.join(appRoot, "config"),
+    XDG_CACHE_HOME: path.join(appRoot, "cache"),
     OPENCODE_DB: path.join(stateDir, "opencode.db"),
-    TMPDIR: path.join(
-      tmpRoot,
-      "hanse",
-      sanitizeAppKey(identity.projectId),
-      sanitizeAppKey(identity.app),
-    ),
+    TMPDIR: path.join(appRoot, "tmp"),
+    MISE_DATA_DIR: path.join(appRoot, "mise"),
   };
 }
 

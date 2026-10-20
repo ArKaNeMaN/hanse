@@ -13,7 +13,12 @@ services:
       - no-new-privileges:true
     environment:
       HANSE_OPERATOR_TOKEN: ${HANSE_OPERATOR_TOKEN:?set HANSE_OPERATOR_TOKEN in .env}
+      HANSE_RUNTIME_TOKEN: ${HANSE_RUNTIME_TOKEN:?set HANSE_RUNTIME_TOKEN in .env}
       HANSE_STATE_HOME: /data/state
+      HANSE_AGENTS_HOME: /data/agents
+      HANSE_AGENT_SUPERVISOR_URL: http://agents:8789
+      HANSE_AGENT_API_BASE: http://hanse:8787
+      HANSE_AGENT_IMAGE: ${HANSE_AGENT_IMAGE:-ghcr.io/arkaneman/hanse-agent-default}:${HANSE_AGENT_TAG:-${HANSE_TAG:-latest}}
       HANSE_IDE_URL: /ide/
       HANSE_IDE: "0"
       HANSE_IDE_HOST: ide
@@ -23,6 +28,13 @@ services:
     volumes:
       - ${HANSE_WORKSPACE:-./workspace}:/data/workspace
       - ${HANSE_STATE:-./state}:/data/state
+      - ${HANSE_AGENTS:-./agents}:/data/agents
+    networks:
+      - front
+      - agents
+    depends_on:
+      agents:
+        condition: service_healthy
     healthcheck:
       test:
         [
@@ -37,7 +49,7 @@ services:
       start_period: 30s
 
   ide:
-    <<: *hanse-image
+    image: ${HANSE_IDE_IMAGE:-ghcr.io/arkaneman/hanse-agent-ide}:${HANSE_AGENT_TAG:-${HANSE_TAG:-latest}}
     container_name: hanse-ide
     restart: unless-stopped
     user: "1000:1000"
@@ -61,6 +73,8 @@ services:
       HANSE_OPERATOR_TOKEN: ${HANSE_OPERATOR_TOKEN:?set HANSE_OPERATOR_TOKEN in .env}
     volumes:
       - ${HANSE_WORKSPACE:-./workspace}:/data/workspace
+    networks:
+      - front
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/"]
       interval: 30s
@@ -70,3 +84,50 @@ services:
     depends_on:
       hanse:
         condition: service_healthy
+
+  agents:
+    image: ${HANSE_AGENT_IMAGE:-ghcr.io/arkaneman/hanse-agent-default}:${HANSE_AGENT_TAG:-${HANSE_TAG:-latest}}
+    container_name: hanse-agents
+    restart: unless-stopped
+    user: "1000:1000"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    pids_limit: 4096
+    stop_grace_period: 30s
+    command:
+      - hanse
+      - agent-supervisor
+      - --hostname
+      - 0.0.0.0
+      - --port
+      - "8789"
+    environment:
+      HANSE_RUNTIME_TOKEN: ${HANSE_RUNTIME_TOKEN:?set HANSE_RUNTIME_TOKEN in .env}
+      HANSE_AGENTS_HOME: /data/agents
+    volumes:
+      - ${HANSE_WORKSPACE:-./workspace}:/data/workspace
+      - ${HANSE_AGENTS:-./agents}:/data/agents
+    tmpfs:
+      - /tmp:rw,exec,nosuid,size=1g
+      - /run:rw,nosuid,size=16m
+    networks:
+      - agents
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8789/healthz').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+networks:
+  front:
+  agents:

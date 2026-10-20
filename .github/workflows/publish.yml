@@ -23,13 +23,29 @@ concurrency:
 jobs:
   publish:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: hanse
+            target: runtime
+            suffix: ""
+          - name: hanse-agent-base
+            target: agent-base
+            suffix: "-agent-base"
+          - name: hanse-agent-default
+            target: agent-default
+            suffix: "-agent-default"
+          - name: hanse-agent-ide
+            target: agent-ide
+            suffix: "-agent-ide"
     steps:
       - uses: actions/checkout@v4
 
       - name: Compute the lowercase image name
         id: image
-        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}${{ matrix.suffix }}" >> "$GITHUB_OUTPUT"
 
       - name: Read the package version
         id: pkg
@@ -56,18 +72,19 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Build and push (linux/amd64, linux/arm64)
+      - name: Build and push ${{ matrix.name }} (linux/amd64, linux/arm64)
         uses: docker/build-push-action@v6
         with:
           context: .
+          target: ${{ matrix.target }}
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           build-args: |
             VERSION=${{ steps.pkg.outputs.version }}
             REVISION=${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
           provenance: mode=max
           sbom: true
 

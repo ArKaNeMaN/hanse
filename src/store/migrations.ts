@@ -164,4 +164,21 @@ CREATE TABLE provider_keys (
 );
 `,
   },
+  {
+    version: 4,
+    name: "agent-runtime",
+    sql: `
+CREATE TABLE agent_tokens (
+  id TEXT PRIMARY KEY,
+  app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL,
+  revoked_at TEXT
+);
+CREATE INDEX agent_tokens_app_id ON agent_tokens(app_id);
+
+ALTER TABLE instances ADD COLUMN spec_hash TEXT;
+ALTER TABLE instances ADD COLUMN runtime_state TEXT;
+`,
+  },
 ];

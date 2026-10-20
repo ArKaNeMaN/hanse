@@ -1,4 +1,12 @@
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -92,6 +100,28 @@ describe("OmoProfileStore", () => {
 
     const secondOpencode = (profileFor(json, second.name ?? "") as Json)["[opencode]"] as Json;
     expect(secondOpencode.disabled_mcps).toEqual([]);
+  });
+
+  it("reads the base from the store path and writes the profile to a separate target", async () => {
+    const { dir, file, store } = fixture();
+    const target = path.join(dir, "agents", "p", "web", "home", ".omo", "omo.jsonc");
+    const input = {
+      appId: "p:web",
+      model: "deepseek/deepseek-pro",
+      disableWebsearch: true,
+    };
+
+    const first = await store.ensure(input, target);
+    expect(first.applied).toBe(true);
+    expect(JSON.parse(readFileSync(file, "utf8"))).toEqual(baseConfig());
+
+    const written = JSON.parse(readFileSync(target, "utf8")) as Json;
+    expect(written.$schema).toBe("https://example.invalid/omo.schema.json");
+    expect(profileFor(written, first.name ?? "")).toBeDefined();
+    expect(statSync(target).mode & 0o777).toBe(0o600);
+
+    const second = await store.ensure(input, path.join(dir, "other", "omo.jsonc"));
+    expect(second.contentHash).toBe(first.contentHash);
   });
 
   it("adds every pinned agent and category with the selected model", async () => {

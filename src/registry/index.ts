@@ -1,5 +1,6 @@
 import path from "node:path";
 import { loadProject } from "../config/load.js";
+import { resolveAppPath } from "../runtime/app-path.js";
 import type { Project } from "../schema/index.js";
 import type { SqliteDatabase } from "../store/index.js";
 
@@ -34,12 +35,23 @@ export async function discoverProject(
   return { project, rootPath };
 }
 
-/** Upsert a project and its applications into the store. Idempotent. */
+/**
+ * Upsert a project and its applications into the store. Idempotent.
+ *
+ * Every manifest app path is validated before anything is written. Relative paths are confined to
+ * `rootPath`; absolute paths are confined to `workspaceRoot`, which defaults to `rootPath` for
+ * standalone commands that have no broader workspace (for example `hanse status`).
+ */
 export function registerProject(
   db: SqliteDatabase,
   project: Project,
   rootPath: string,
+  workspaceRoot: string = rootPath,
 ): RegisteredProject {
+  for (const entry of project.apps) {
+    resolveAppPath({ appPath: entry.path, projectRoot: rootPath, workspaceRoot });
+  }
+
   const now = new Date().toISOString();
   db.prepare(
     `INSERT INTO projects (id, name, base_branch, root_path, created_at, updated_at)

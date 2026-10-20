@@ -1,10 +1,8 @@
-import { type ChildProcess, spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { endpointFor, type LaunchInput, type RunningInstance } from "../src/opencode/launcher.js";
 import { InstanceManager } from "../src/opencode/manager.js";
 import {
   type AgentPermissionRule,
@@ -13,11 +11,11 @@ import {
   type PolicyFetch,
   verifyInstancePolicy,
 } from "../src/opencode/policy.js";
-import { openDatabase, type SqliteDatabase } from "../src/store/index.js";
+import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
+import { FakeAgentRuntime } from "./fixtures/fake-runtime.js";
 
 const dirs: string[] = [];
 const servers: Server[] = [];
-const children: ChildProcess[] = [];
 const databases: SqliteDatabase[] = [];
 
 afterEach(async () => {
@@ -30,7 +28,6 @@ afterEach(async () => {
         }),
     ),
   );
-  for (const child of children.splice(0)) child.kill("SIGKILL");
   for (const db of databases.splice(0)) {
     try {
       db.close();
@@ -264,38 +261,32 @@ describe("policy verification", () => {
   });
 });
 
-function fakeLaunch(server: Server): (db: SqliteDatabase, input: LaunchInput) => RunningInstance {
-  return (_db, input) => {
-    server.listen(input.port, "127.0.0.1");
-    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
-      stdio: "ignore",
-    });
-    children.push(child);
-    return {
-      id: "fake",
-      appId: input.appId,
-      endpoint: endpointFor("127.0.0.1", input.port),
-      pid: child.pid,
-      bootId: "boot",
-      process: child,
-    };
-  };
-}
-
-function managerFixture(handler: Parameters<typeof createServer>[1]): {
+async function managerFixture(handler: Parameters<typeof createServer>[1]): Promise<{
   manager: InstanceManager;
   db: SqliteDatabase;
-} {
+}> {
   const dir = mkdtempSync(path.join(tmpdir(), "hanse-policy-"));
   dirs.push(dir);
   const db = openDatabase(":memory:");
   databases.push(db);
+  runMigrations(db);
+  const now = new Date().toISOString();
+  db.prepare(
+    "INSERT INTO projects (id,name,base_branch,root_path,created_at,updated_at) VALUES ('p','P','main',?,?,?)",
+  ).run(APP_DIR, now, now);
+  db.prepare(
+    "INSERT INTO apps (id,project_id,app_key,path,contract,created_at) VALUES ('p:web','p','web',?, 'AGENTS.md', ?)",
+  ).run(APP_DIR, now);
   const server = createServer(handler);
   servers.push(server);
-  const manager = new InstanceManager(db, path.join(dir, "coordinator.db"), dir, {
-    launch: fakeLaunch(server),
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address() as AddressInfo;
+  const runtime = new FakeAgentRuntime(() => `http://127.0.0.1:${address.port}`);
+  const manager = new InstanceManager(db, dir, {
+    runtime,
     verificationTimeoutMs: 50,
     verificationRetries: 0,
+    workspaceRoot: "/srv",
   });
   return { manager, db };
 }
@@ -309,7 +300,7 @@ const APP = {
 
 describe("manager policy warnings", () => {
   it("stores mismatch warnings and exposes them per app", async () => {
-    const { manager } = managerFixture((incoming, outgoing) => {
+    const { manager } = await managerFixture((incoming, outgoing) => {
       const body = incoming.url?.endsWith("/agent")
         ? [
             {
@@ -337,11 +328,11 @@ describe("manager policy warnings", () => {
       `agent "custom-auditor": external_directory does not deny sibling path ${VERIFY_SIBLING}`,
     );
     expect(manager.policyWarnings("unknown")).toEqual([]);
-    manager.stopAll();
+    await manager.stopAll();
   });
 
   it("stores a timeout warning and still returns the endpoint", async () => {
-    const { manager } = managerFixture(() => {
+    const { manager } = await managerFixture(() => {
       // Never respond; the verification timeout must not block startup.
     });
 
@@ -350,7 +341,7 @@ describe("manager policy warnings", () => {
     expect(manager.policyWarnings(APP.id)).toEqual([
       "policy_unverified: agent policy verification timed out",
     ]);
-    manager.stopAll();
+    await manager.stopAll();
   });
 });
 

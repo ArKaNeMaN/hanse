@@ -109,19 +109,15 @@ async function configureIdentity(dir: string): Promise<void> {
   await git(dir, ["config", "user.email", "operator@example.com"]);
 }
 
-async function initBare(root: string): Promise<string> {
-  const dir = path.join(root, "remote.git");
-  mkdirSync(dir, { recursive: true });
-  await git(dir, ["init", "--bare", "-b", "main"]);
-  return dir;
-}
-
 async function setupOrigin(root: string): Promise<{ repo: string; bare: string }> {
-  const bare = await initBare(root);
   const repo = await initRepo(root);
   writeFileSync(path.join(repo, "tracked.txt"), "one\n");
   await git(repo, ["add", "tracked.txt"]);
   await git(repo, ["commit", "-m", "initial"]);
+  // The git workbench only accepts file:// remotes inside the application directory.
+  const bare = path.join(repo, ".git", "remotes", "remote.git");
+  mkdirSync(bare, { recursive: true });
+  await git(bare, ["init", "--bare", "-b", "main"]);
   await git(repo, ["remote", "add", "origin", pathToFileURL(bare).href]);
   await git(repo, ["push", "-u", "origin", "main"]);
   return { repo, bare };
@@ -383,14 +379,36 @@ describe("GitService status", () => {
     const service = new GitService({ workspaceRoot: root, runner });
     await service.status(await service.resolveRepository(root, "repo"));
 
+    const fixedConfig = [
+      "-c",
+      "color.ui=false",
+      "-c",
+      "core.hooksPath=/dev/null",
+      "-c",
+      "core.fsmonitor=false",
+      "-c",
+      "credential.helper=",
+      "-c",
+      "protocol.ext.allow=never",
+      "-c",
+      "submodule.recurse=false",
+      "-c",
+      "core.pager=cat",
+      "-c",
+      "core.sshCommand=ssh",
+    ];
     for (const command of commands) {
       expect(command.bin).toBe("git");
       expect(command.cwd).toBe(realpathSync(repo));
-      expect(command.args.slice(0, 2)).toEqual(["-c", "color.ui=false"]);
+      expect(command.args.slice(0, fixedConfig.length)).toEqual(fixedConfig);
       expect(command.env.GIT_TERMINAL_PROMPT).toBe("0");
+      expect(command.env.GIT_CONFIG_NOSYSTEM).toBe("1");
+      expect(command.env.GIT_CONFIG_GLOBAL).toBe("/dev/null");
+      expect(command.env.GIT_SSH_COMMAND).toBe("ssh");
       expect(command.env.GCM_INTERACTIVE).toBe("never");
       expect(command.env.LC_ALL).toBe("C");
       expect(command.env.GIT_PAGER).toBe("cat");
+      expect(command.env.HOME).toEqual(expect.any(String));
       expect(command.maxBuffer).toBe(8 * 1024 * 1024);
       expect(command.killSignal).toBe("SIGKILL");
     }
@@ -614,22 +632,22 @@ describe("GitService mutations", () => {
     });
   });
 
-  it("leaves changes staged when a commit hook fails", async () => {
+  it("does not execute repository hooks", async () => {
     const root = workspace();
     const { repo } = await setupOrigin(root);
     writeFileSync(path.join(repo, "tracked.txt"), "two\n");
-    const hook = path.join(repo, ".git", "hooks", "pre-commit");
-    writeFileSync(hook, "#!/bin/sh\nexit 1\n");
-    chmodSync(hook, 0o755);
+    for (const name of ["pre-commit", "post-commit"]) {
+      const hook = path.join(repo, ".git", "hooks", name);
+      writeFileSync(hook, "#!/bin/sh\nexit 1\n");
+      chmodSync(hook, 0o755);
+    }
 
     const service = new GitService({ workspaceRoot: root });
     const resolved = await service.resolveRepository(root, "repo");
-    await expect(service.commitAll(resolved, "message")).rejects.toMatchObject({
-      code: "git_failed",
-      message: expect.stringContaining("changes remain staged"),
-    });
+    const result = await service.commitAll(resolved, "message");
+    expect(result.commit).toMatchObject({ subject: "message" });
     const status = await service.status(resolved);
-    expect(status.files?.some((file) => file.group === "staged")).toBe(true);
+    expect(status.clean).toBe(true);
   });
 
   it("rejects a mutation when index.lock already exists", async () => {

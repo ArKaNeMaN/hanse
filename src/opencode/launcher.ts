@@ -79,6 +79,7 @@ export function buildInstanceEnv(input: LaunchInput): NodeJS.ProcessEnv {
   const isolated = resolveInstanceEnv(input.runtimeRoot, input.identity);
   const permission = buildPermissionPolicy(
     resolvePermissionPaths({
+      home: isolated.HOME,
       xdgDataHome: isolated.XDG_DATA_HOME,
       xdgConfigHome: isolated.XDG_CONFIG_HOME,
       xdgCacheHome: isolated.XDG_CACHE_HOME,
@@ -165,8 +166,20 @@ export function launchInstance(db: SqliteDatabase, input: LaunchInput): RunningI
   if (input.auth !== undefined) {
     writeAuthFile(path.join(String(env.XDG_DATA_HOME), "opencode", "auth.json"), input.auth);
   }
+  const isolated = resolveInstanceEnv(input.runtimeRoot, input.identity);
+  for (const directory of [
+    isolated.HOME,
+    isolated.XDG_DATA_HOME,
+    isolated.XDG_STATE_HOME,
+    isolated.XDG_CONFIG_HOME,
+    isolated.XDG_CACHE_HOME,
+    isolated.TMPDIR,
+    isolated.MISE_DATA_DIR,
+  ]) {
+    mkdirSync(directory, { recursive: true });
+  }
+  mkdirSync(path.join(isolated.XDG_DATA_HOME, "opencode"), { recursive: true });
   mkdirSync(input.appDir, { recursive: true });
-  mkdirSync(String(env.TMPDIR), { recursive: true });
   const child = spawn(bin, args, {
     cwd: input.appDir,
     env,

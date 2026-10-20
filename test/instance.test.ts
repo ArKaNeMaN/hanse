@@ -16,30 +16,32 @@ import {
 } from "../src/opencode/policy.js";
 
 describe("resolveInstanceEnv", () => {
-  it("isolates state per application", () => {
+  it("isolates state per application under the agents root", () => {
     const web = resolveInstanceEnv("/rt", { projectId: "p", app: "web" });
     const api = resolveInstanceEnv("/rt", { projectId: "p", app: "api" });
     expect(web.XDG_DATA_HOME).not.toBe(api.XDG_DATA_HOME);
-    expect(web.OPENCODE_DB).toBe("/rt/apps/web/state/opencode.db");
+    expect(web.OPENCODE_DB).toBe("/rt/p/web/state/opencode.db");
   });
 
   it("sanitizes application keys for filesystem use", () => {
-    const env = resolveInstanceEnv("/rt", { projectId: "p", app: "web ui" }, "/tmp");
-    expect(env.XDG_DATA_HOME).toBe("/rt/apps/web-ui/data");
-    expect(env.TMPDIR).toBe("/tmp/hanse/p/web-ui");
+    const env = resolveInstanceEnv("/rt", { projectId: "p", app: "web ui" });
+    expect(env.XDG_DATA_HOME).toBe("/rt/p/web-ui/data");
+    expect(env.TMPDIR).toBe("/rt/p/web-ui/tmp");
   });
 
-  it("gives each application its own scratch root", () => {
-    const web = resolveInstanceEnv("/rt", { projectId: "p", app: "web" }, "/tmp");
-    const api = resolveInstanceEnv("/rt", { projectId: "p", app: "api" }, "/tmp");
-    expect(web.TMPDIR).toBe("/tmp/hanse/p/web");
-    expect(api.TMPDIR).toBe("/tmp/hanse/p/api");
+  it("gives each application its own HOME and scratch root", () => {
+    const web = resolveInstanceEnv("/rt", { projectId: "p", app: "web" });
+    const api = resolveInstanceEnv("/rt", { projectId: "p", app: "api" });
+    expect(web.HOME).toBe("/rt/p/web/home");
+    expect(api.HOME).toBe("/rt/p/api/home");
+    expect(web.TMPDIR).toBe("/rt/p/web/tmp");
+    expect(api.TMPDIR).toBe("/rt/p/api/tmp");
     expect(web.TMPDIR).not.toBe(api.TMPDIR);
   });
 
-  it("separates scratch roots of same-named applications across projects", () => {
-    const one = resolveInstanceEnv("/rt", { projectId: "p1", app: "web" }, "/tmp");
-    const two = resolveInstanceEnv("/rt", { projectId: "p2", app: "web" }, "/tmp");
+  it("separates same-named applications across projects", () => {
+    const one = resolveInstanceEnv("/rt", { projectId: "p1", app: "web" });
+    const two = resolveInstanceEnv("/rt", { projectId: "p2", app: "web" });
     expect(one.TMPDIR).not.toBe(two.TMPDIR);
   });
 });
@@ -118,14 +120,14 @@ describe("buildConfigOverlay", () => {
       coordinatorCommand: ["hanse", "mcp"],
       plugins: [plugin],
       instructions: ["shared/AGENTS.md"],
-      environment: { HANSE_DB: "/state/coordinator.db" },
+      environment: { HANSE_MCP_API_BASE: "http://127.0.0.1:8787" },
       permission,
     });
     expect(overlay.permission).toBe(permission);
     expect(overlay.plugin).toEqual([plugin]);
     expect(overlay.instructions).toEqual(["shared/AGENTS.md"]);
     expect(overlay.mcp?.[COORDINATOR_MCP_NAME]?.environment).toEqual({
-      HANSE_DB: "/state/coordinator.db",
+      HANSE_MCP_API_BASE: "http://127.0.0.1:8787",
     });
   });
 });

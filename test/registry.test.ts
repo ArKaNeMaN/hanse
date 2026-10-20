@@ -42,10 +42,10 @@ describe("registry", () => {
 
     const db = openDatabase(path.join(root, "db.sqlite"));
     runMigrations(db);
-    const registered = registerProject(db, project, rootPath);
+    const registered = registerProject(db, project, rootPath, rootPath);
     expect(registered.apps.map((app) => app.appKey).sort()).toEqual(["api", "web"]);
 
-    registerProject(db, project, rootPath);
+    registerProject(db, project, rootPath, rootPath);
     const count = db.prepare("SELECT COUNT(*) AS c FROM apps").get() as { c: number };
     expect(count.c).toBe(2);
     db.close();

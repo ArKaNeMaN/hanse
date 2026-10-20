@@ -4,17 +4,22 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { mkdir, readdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { HttpAgentRuntimeClient } from "../agent/client.js";
+import { runAgentHost } from "../agent/host.js";
+import { runAgentSupervisor } from "../agent/supervisor.js";
 import { ConfigError } from "../config/load.js";
 import { CoordinatorService } from "../coordinator/service.js";
 import { GitService } from "../git/service.js";
 import type { ProjectContext } from "../http/handler.js";
 import { createHttpServer } from "../http/server.js";
 import { upsertPrincipalWithToken } from "../identity/principals.js";
+import { runRemoteMcpServer } from "../mcp/remote.js";
 import { runMcpServer } from "../mcp/server.js";
 import { InstanceManager } from "../opencode/manager.js";
 import { OmoProfileStore } from "../opencode/omo-profile.js";
 import { discoverProject, registerProject } from "../registry/index.js";
 import {
+  agentsHome,
   coordinatorDbPath,
   coordinatorStateDir,
   defaultStateHome,
@@ -86,7 +91,7 @@ export async function statusCommand(dir: string, ctx: CommandContext): Promise<n
   const db = openDatabase(coordinatorDbPath(ctx.stateHome));
   try {
     runMigrations(db);
-    const registered = registerProject(db, project, rootPath);
+    const registered = registerProject(db, project, rootPath, rootPath);
     ctx.io.stdout(`Project ${registered.name} (${registered.id})`);
     ctx.io.stdout(`  root: ${registered.rootPath}`);
     if (registered.apps.length === 0) {
@@ -191,6 +196,55 @@ async function discoverProjectDirs(workspace: string): Promise<string[]> {
   return dirs;
 }
 
+/** Run a single-app agent host (internal runtime process). */
+export async function agentHostCommand(specFile: string, ctx: CommandContext): Promise<number> {
+  const controller = new AbortController();
+  const stop = (): void => controller.abort();
+  process.once("SIGTERM", stop);
+  process.once("SIGINT", stop);
+  try {
+    return await runAgentHost(specFile, { signal: controller.signal });
+  } catch (error) {
+    ctx.io.stderr(`agent-host: ${error instanceof Error ? error.message : String(error)}`);
+    return 1;
+  } finally {
+    process.removeListener("SIGTERM", stop);
+    process.removeListener("SIGINT", stop);
+  }
+}
+
+export interface AgentSupervisorCommandOptions {
+  hostname: string;
+  port: number;
+}
+
+/** Run the B0 runtime supervisor (internal runtime process). */
+export async function agentSupervisorCommand(
+  options: AgentSupervisorCommandOptions,
+  ctx: CommandContext,
+): Promise<number> {
+  const token = process.env.HANSE_RUNTIME_TOKEN;
+  if (token === undefined || token.trim().length === 0) {
+    ctx.io.stderr("agent-supervisor: HANSE_RUNTIME_TOKEN is required");
+    return 2;
+  }
+  if (!Number.isInteger(options.port) || options.port < 1 || options.port > 65535) {
+    ctx.io.stderr("agent-supervisor: --port must be an integer between 1 and 65535");
+    return 2;
+  }
+  try {
+    return await runAgentSupervisor({
+      token,
+      hostname: options.hostname,
+      port: options.port,
+      onListening: (address) => ctx.io.stdout(`hanse agent-supervisor listening on ${address}`),
+    });
+  } catch (error) {
+    ctx.io.stderr(`agent-supervisor: ${error instanceof Error ? error.message : String(error)}`);
+    return 1;
+  }
+}
+
 /** Serve the web dashboard and HTTP API for every project found in the workspace. */
 export async function serveCommand(options: ServeOptions, ctx: CommandContext): Promise<number> {
   const workspace = path.resolve(ctx.cwd, options.workspace);
@@ -205,6 +259,15 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
     );
     return 1;
   }
+  const runtimeToken = process.env.HANSE_RUNTIME_TOKEN;
+  if (runtimeToken === undefined || runtimeToken.trim().length === 0) {
+    ctx.io.stderr("serve: HANSE_RUNTIME_TOKEN is required");
+    return 1;
+  }
+  const runtime = new HttpAgentRuntimeClient({
+    baseUrl: process.env.HANSE_AGENT_SUPERVISOR_URL?.trim() || "http://127.0.0.1:8789",
+    token: runtimeToken,
+  });
   const db = openDatabase(coordinatorDbPath(ctx.stateHome));
   runMigrations(db);
   const settings = new SettingsService({
@@ -223,15 +286,15 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
 
   for (const dir of await discoverProjectDirs(workspace)) {
     const { project, rootPath } = await discoverProject(dir);
-    registerProject(db, project, rootPath);
+    registerProject(db, project, rootPath, workspace);
   }
 
-  const manager = new InstanceManager(
-    db,
-    coordinatorDbPath(ctx.stateHome),
-    coordinatorStateDir(ctx.stateHome),
-    { settings, omoProfiles },
-  );
+  const manager = new InstanceManager(db, path.resolve(agentsHome()), {
+    runtime,
+    settings,
+    omoProfiles,
+    workspaceRoot: workspace,
+  });
   const getProjects = (): ProjectContext[] => {
     const rows = db.prepare("SELECT id, name, root_path FROM projects").all() as {
       id: string;
@@ -242,6 +305,7 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
       id: row.id,
       name: row.name,
       rootPath: row.root_path,
+      workspaceRoot: workspace,
       service: new CoordinatorService(db, row.id),
     }));
   };
@@ -288,7 +352,7 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
 
   return await new Promise<number>((resolve) => {
     const shutdown = (): void => {
-      manager.stopAll();
+      manager.detach();
       ide?.kill("SIGTERM");
       server.close(() => {
         db.close();
@@ -326,6 +390,17 @@ export async function webMcpCommand(ctx: CommandContext): Promise<number> {
 
 /** Run the coordinator MCP server (stdio) bound to one application. */
 export async function mcpCommand(ctx: CommandContext): Promise<number> {
+  const apiBase = process.env.HANSE_MCP_API_BASE?.trim();
+  const tokenFile = process.env.HANSE_AGENT_TOKEN_FILE?.trim();
+  if (
+    apiBase !== undefined &&
+    apiBase.length > 0 &&
+    tokenFile !== undefined &&
+    tokenFile.length > 0
+  ) {
+    await runRemoteMcpServer({ baseUrl: apiBase, tokenFile });
+    return 0;
+  }
   const projectId = process.env.HANSE_PROJECT_ID;
   const appKey = process.env.HANSE_APP_KEY;
   if (projectId === undefined || appKey === undefined) {

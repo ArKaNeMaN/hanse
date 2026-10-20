@@ -42,7 +42,7 @@ function providerLocation(
 describe("migration v3", () => {
   it("applies once and creates the settings tables", () => {
     const db = openDatabase(":memory:");
-    expect(runMigrations(db)).toBe(3);
+    expect(runMigrations(db)).toBe(4);
     expect(runMigrations(db)).toBe(0);
 
     const tables = (

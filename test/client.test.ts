@@ -3,6 +3,7 @@ import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   deleteSavedPermission,
+  deleteSession,
   listMessagePage,
   listMessages,
   listPermissions,
@@ -10,6 +11,7 @@ import {
   listQuestions,
   listQuestionsV2,
   listSavedPermissions,
+  listSessions,
   listTodos,
   MESSAGES_RESPONSE_MAX_BYTES,
   MESSAGES_RESPONSE_TIMEOUT_MS,
@@ -25,6 +27,7 @@ import {
   sendPrompt,
   sendPromptAsync,
 } from "../src/opencode/client.js";
+import { setEndpointAuthorization } from "../src/opencode/endpoint-auth.js";
 
 interface UpstreamCall {
   method: string;
@@ -542,5 +545,27 @@ describe("blocking prompt client", () => {
     await expect(
       sendPrompt(server.endpoint, "ses_1", "hello", "deepseek/deepseek-v4-pro"),
     ).resolves.toEqual(message);
+  });
+});
+
+describe("endpoint authorization", () => {
+  it("adds the registered Basic header to JSON and delete calls", async () => {
+    const seen: Array<string | undefined> = [];
+    const server = await upstream((request, response) => {
+      seen.push(request.headers.authorization);
+      if ((request.method ?? "GET") === "DELETE") {
+        response.writeHead(204);
+        response.end();
+        return;
+      }
+      json(response, []);
+    });
+    setEndpointAuthorization(server.endpoint, "opencode", "hunter2");
+
+    await listSessions(server.endpoint);
+    await deleteSession(server.endpoint, "ses_1");
+
+    const expected = `Basic ${Buffer.from("opencode:hunter2", "utf8").toString("base64")}`;
+    expect(seen).toEqual([expected, expected]);
   });
 });

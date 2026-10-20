@@ -12,6 +12,7 @@ import {
   sendPrompt,
   sendPromptAsync,
 } from "../opencode/client.js";
+import { authorizationFor } from "../opencode/endpoint-auth.js";
 import type { RegisteredApp } from "../registry/index.js";
 import { appDir, findApp } from "./apps.js";
 import { humanFrom, principalFrom } from "./auth.js";
@@ -187,7 +188,10 @@ function renderNoApps(site: SiteModel, chrome: PageChrome): string {
 
 function renderChatPage(
   site: SiteModel,
-  found: { project: { id: string; name: string; rootPath: string }; app: RegisteredApp },
+  found: {
+    project: { id: string; name: string; rootPath: string; workspaceRoot: string };
+    app: RegisteredApp;
+  },
   principal: Principal,
   chrome: PageChrome,
 ): string {
@@ -421,8 +425,12 @@ export async function streamSessionEvents(
     response.end();
     return;
   }
+  const authorization = authorizationFor(endpoint);
   const upstream = await fetch(`${endpoint}/event`, {
-    headers: { accept: "text/event-stream" },
+    headers: {
+      accept: "text/event-stream",
+      ...(authorization === undefined ? {} : { authorization }),
+    },
     signal: controller.signal,
   }).catch(() => undefined);
   if (upstream === undefined || !upstream.ok || upstream.body === null) {

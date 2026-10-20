@@ -1,6 +1,7 @@
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { authorizationFor } from "./endpoint-auth.js";
 
 /** Action opencode applies when a permission rule matches. */
 export type PermissionAction = "allow" | "deny" | "ask";
@@ -348,12 +349,20 @@ function pathWarnings(value: unknown, appDir: string): string[] {
   return warnings;
 }
 
-async function fetchJson(fetchImpl: PolicyFetch, url: string, timeoutMs: number): Promise<unknown> {
+async function fetchJson(
+  fetchImpl: PolicyFetch,
+  url: string,
+  timeoutMs: number,
+  authorization: string | undefined,
+): Promise<unknown> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetchImpl(url, {
-      headers: { accept: "application/json" },
+      headers: {
+        accept: "application/json",
+        ...(authorization === undefined ? {} : { authorization }),
+      },
       signal: controller.signal,
     });
     if (!response.ok) {
@@ -389,12 +398,13 @@ export async function verifyInstancePolicy(options: VerifyPolicyOptions): Promis
   const retries = options.retries ?? 2;
   const retryDelayMs = options.retryDelayMs ?? 100;
   let timedOut = false;
+  const authorization = authorizationFor(options.endpoint);
 
   for (let attempt = 0; attempt <= retries; attempt += 1) {
     try {
       const [agentsValue, pathValue] = await Promise.all([
-        fetchJson(fetchImpl, `${options.endpoint}/agent`, timeoutMs),
-        fetchJson(fetchImpl, `${options.endpoint}/path`, timeoutMs),
+        fetchJson(fetchImpl, `${options.endpoint}/agent`, timeoutMs, authorization),
+        fetchJson(fetchImpl, `${options.endpoint}/path`, timeoutMs, authorization),
       ]);
       const warnings = pathWarnings(pathValue, options.appDir);
       const externalPath = "/etc/hostname";

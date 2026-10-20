@@ -45,6 +45,9 @@ npm run build
 ## Commit policy
 
 - One stage, one coherent commit (code + tests + docs + record).
+- Exception: when the record must capture an owner-verified deployment, a stage may use one code commit
+  (code + tests + docs) plus one docs-only deploy-record commit. Both belong to the same stage; the
+  code commit remains coherent.
 - The maintainer authorizes commits; in autonomous mode the agent may commit each completed stage and
   push to `origin`.
 - Commit messages follow Conventional Commits (`type(scope): summary`).

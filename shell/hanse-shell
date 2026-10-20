@@ -1,4 +1,34 @@
 #!/bin/sh
-cd "$(pwd -P)" 2>/dev/null || true
-export HOME="$PWD"
-exec /bin/bash "$@"
+# Operator terminal for the IDE.
+#
+# The workspace is agent-controlled. Never inherit its environment and never
+# source workspace startup files: exported bash functions, BASH_ENV/ENV,
+# PROMPT_COMMAND, HOME, and PATH can all be supplied by a malicious project.
+set -eu
+
+workspace=/data/workspace
+home=/home/coder
+
+cwd=$(pwd -P 2>/dev/null || printf '%s' "$workspace")
+case "$cwd" in
+  "$workspace" | "$workspace"/*) ;;
+  *) cwd=$workspace ;;
+esac
+
+cd "$cwd" 2>/dev/null || cd "$workspace" || exit 1
+
+exec /usr/bin/env -i \
+  HOME="$home" \
+  USER=coder \
+  LOGNAME=coder \
+  SHELL=/bin/bash \
+  PATH="$home/.local/share/mise/shims:$home/.local/bin:/usr/local/bin:/usr/bin:/bin" \
+  MISE_DATA_DIR="$home/.local/share/mise" \
+  MISE_CONFIG_DIR="$home/.config/mise" \
+  MISE_CACHE_DIR="$home/.cache/mise" \
+  MISE_STATE_DIR="$home/.local/state/mise" \
+  LANG=C.UTF-8 \
+  LC_ALL=C.UTF-8 \
+  TERM="${TERM:-xterm-256color}" \
+  COLORTERM="${COLORTERM:-truecolor}" \
+  /bin/bash --norc --noprofile "$@"

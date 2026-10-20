@@ -1,11 +1,10 @@
-import type { ChildProcess } from "node:child_process";
-import { EventEmitter } from "node:events";
-import { mkdtempSync, rmSync } from "node:fs";
-import { createServer, type Server } from "node:http";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { endpointFor, type LaunchInput, type RunningInstance } from "../src/opencode/launcher.js";
+import { computeSpecHash } from "../src/agent/spec.js";
+import { verifyAgentToken } from "../src/mcp/agent-tokens.js";
+import { authorizationFor, setEndpointAuthorization } from "../src/opencode/endpoint-auth.js";
 import {
   InstanceManager,
   type ManagedApp,
@@ -14,6 +13,7 @@ import {
   verifyAgentModels,
 } from "../src/opencode/manager.js";
 import type { OmoProfileInput, OmoProfileResult } from "../src/opencode/omo-profile.js";
+import type { VerifyPolicyOptions } from "../src/opencode/policy.js";
 import type {
   EffectiveSettings,
   EffectiveValue,
@@ -21,21 +21,12 @@ import type {
 } from "../src/settings/types.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
 import type { WebToolConfig } from "../src/web/types.js";
+import { FakeAgentRuntime } from "./fixtures/fake-runtime.js";
 
 const dirs: string[] = [];
-const servers: Server[] = [];
 const databases: SqliteDatabase[] = [];
 
-afterEach(async () => {
-  await Promise.all(
-    servers.splice(0).map(
-      (server) =>
-        new Promise<void>((resolve) => {
-          server.closeAllConnections();
-          server.close(() => resolve());
-        }),
-    ),
-  );
+afterEach(() => {
   for (const db of databases.splice(0)) {
     try {
       db.close();
@@ -54,63 +45,6 @@ const APP: ManagedApp = {
   appKey: "web",
   appDir: "/srv/apps/web",
 };
-
-class FakeProcess extends EventEmitter {
-  readonly pid = 4242;
-  readonly signals: string[] = [];
-  exitCode: number | null = null;
-  signalCode: NodeJS.Signals | null = null;
-  ignoreTerm = false;
-
-  kill(signal: NodeJS.Signals = "SIGTERM"): boolean {
-    this.signals.push(signal);
-    if (signal === "SIGTERM" && this.ignoreTerm) {
-      return true;
-    }
-    this.exitCode = signal === "SIGKILL" ? null : 0;
-    this.signalCode = signal;
-    this.emit("exit", this.exitCode, signal);
-    return true;
-  }
-}
-
-interface Harness {
-  inputs: LaunchInput[];
-  processes: FakeProcess[];
-  launch: (db: SqliteDatabase, input: LaunchInput) => RunningInstance;
-}
-
-function createHarness(options: { ignoreTerm?: boolean } = {}): Harness {
-  const harness: Harness = {
-    inputs: [],
-    processes: [],
-    launch: () => {
-      throw new Error("harness not initialized");
-    },
-  };
-  harness.launch = (_db, input) => {
-    harness.inputs.push(input);
-    const server = createServer((_incoming, outgoing) => {
-      outgoing.writeHead(200, { "content-type": "application/json" });
-      outgoing.end("[]");
-    });
-    server.listen(input.port, "127.0.0.1");
-    servers.push(server);
-    const fake = new FakeProcess();
-    fake.ignoreTerm = options.ignoreTerm ?? false;
-    fake.once("exit", () => server.close());
-    harness.processes.push(fake);
-    return {
-      id: `run-${harness.inputs.length}`,
-      appId: input.appId,
-      endpoint: endpointFor("127.0.0.1", input.port),
-      pid: fake.pid,
-      bootId: "boot",
-      process: fake as unknown as ChildProcess,
-    };
-  };
-  return harness;
-}
 
 function value<T>(item: T): EffectiveValue<T> {
   return { value: item, state: "set", source: "global", sources: ["global"] };
@@ -151,6 +85,7 @@ function fakeSettings(
 interface FakeProfiles {
   source: OmoProfileSource;
   ensures: OmoProfileInput[];
+  writePaths: (string | undefined)[];
   previews: OmoProfileInput[];
 }
 
@@ -158,6 +93,7 @@ function fakeProfiles(
   options: { applied?: boolean; warning?: string; contentHash?: string } = {},
 ): FakeProfiles {
   const ensures: OmoProfileInput[] = [];
+  const writePaths: (string | undefined)[] = [];
   const previews: OmoProfileInput[] = [];
   const applied = options.applied ?? true;
   const contentHash = options.contentHash ?? "profile-hash";
@@ -169,10 +105,12 @@ function fakeProfiles(
   });
   return {
     ensures,
+    writePaths,
     previews,
     source: {
-      ensure: async (input) => {
+      ensure: async (input, writePath) => {
         ensures.push(input);
+        writePaths.push(writePath);
         return result();
       },
       preview: (input) => {
@@ -185,16 +123,17 @@ function fakeProfiles(
 
 interface Fixture {
   manager: InstanceManager;
+  runtime: FakeAgentRuntime;
   db: SqliteDatabase;
   dir: string;
 }
 
 function fixture(
-  harness: Harness,
+  runtime: FakeAgentRuntime = new FakeAgentRuntime(),
   settings?: SettingsSource,
   profiles?: OmoProfileSource,
-  stopTimeoutMs = 50,
   modelVerifier?: (endpoint: string, expected: string) => Promise<string[]>,
+  verify: (options: VerifyPolicyOptions) => Promise<string[]> = async () => [],
 ): Fixture {
   const dir = mkdtempSync(path.join(tmpdir(), "hanse-manager-"));
   dirs.push(dir);
@@ -208,16 +147,19 @@ function fixture(
   db.prepare(
     "INSERT INTO apps (id,project_id,app_key,path,contract,created_at) VALUES ('p:web','p','web','apps/web','AGENTS.md',?)",
   ).run(now);
-  const manager = new InstanceManager(db, path.join(dir, "coordinator.db"), dir, {
-    launch: harness.launch,
-    verify: async () => [],
+  const manager = new InstanceManager(db, dir, {
+    runtime,
+    verify,
     settings,
     omoProfiles: profiles,
-    stopTimeoutMs,
     modelVerifier,
-    portBase: 5400,
+    workspaceRoot: "/srv",
   });
-  return { manager, db, dir };
+  return { manager, runtime, db, dir };
+}
+
+function overlayOf(spec: { env: Record<string, string> }): Record<string, unknown> {
+  return JSON.parse(spec.env.OPENCODE_CONFIG_CONTENT ?? "{}") as Record<string, unknown>;
 }
 
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
@@ -237,55 +179,309 @@ async function waitFor(predicate: () => boolean, timeoutMs = 2000): Promise<void
 }
 
 describe("InstanceManager lifecycle", () => {
-  it("single-flights concurrent ensure calls for one app", async () => {
-    const harness = createHarness();
+  it("single-flights concurrent ensure calls and builds the runtime spec", async () => {
+    const runtime = new FakeAgentRuntime(() => "http://127.0.0.1:4100");
     const settings = fakeSettings();
     const profiles = fakeProfiles();
-    const { manager } = fixture(harness, settings, profiles.source);
+    const { manager, dir } = fixture(runtime, settings, profiles.source);
 
     const [first, second] = await Promise.all([manager.ensure(APP), manager.ensure(APP)]);
 
-    expect(harness.inputs).toHaveLength(1);
+    expect(runtime.ensured).toHaveLength(1);
     expect(first).toBe(second);
     expect(manager.isRunning(APP.id)).toBe(true);
-    expect(harness.inputs[0]?.model).toBe("deepseek/deepseek-flash");
-    expect(harness.inputs[0]?.auth).toEqual({
-      deepseek: { type: "api", key: "sk-test" },
+    expect(authorizationFor(first)).toMatch(/^Basic /);
+
+    const spec = runtime.ensured[0];
+    if (spec === undefined) throw new Error("missing runtime spec");
+    expect(spec).toMatchObject({
+      appId: "p:web",
+      image: process.env.HANSE_AGENT_IMAGE?.trim() || "agent-default",
+      pathMode: "container",
+      appDir: "/srv/apps/web",
+      stateDir: path.join(dir, "p", "web", "state"),
+      networkName: "agents",
     });
-    expect(harness.inputs[0]?.omoProfile).toBe("hanse-app-test");
+    expect(spec.port).toBeUndefined();
+    expect(spec.resources).toEqual({
+      memoryBytes: 2048 * 1024 * 1024,
+      nanoCpus: 2_000_000_000,
+      pidsLimit: 512,
+    });
+    expect(spec.labels).toMatchObject({
+      "hanse.managed": "true",
+      "hanse.app.id": "p:web",
+    });
+    const { specHash, ...hashable } = spec;
+    expect(computeSpecHash(hashable)).toBe(specHash);
+
+    const overlay = overlayOf(spec);
+    expect(overlay.model).toBe("deepseek/deepseek-flash");
+    expect(spec.env.OMO_PROFILE).toBe("hanse-app-test");
+    expect(spec.env.HANSE_OPENCODE_AUTH_FILE).toBe(
+      path.join(dir, "p", "web", "data", "opencode", "auth.json"),
+    );
     expect(profiles.ensures).toHaveLength(1);
+    expect(profiles.writePaths).toEqual([path.join(dir, "p", "web", "home", ".omo", "omo.jsonc")]);
+    expect(readFileSync(path.join(dir, "p", "web", "data", "opencode", "auth.json"), "utf8")).toBe(
+      JSON.stringify({ deepseek: { type: "api", key: "sk-test" } }),
+    );
   });
 
-  it("waits for an in-flight launch before restarting", async () => {
-    const harness = createHarness();
+  it("keeps the MCP endpoint and token file inside the config overlay", async () => {
+    const runtime = new FakeAgentRuntime();
+    const { manager, db, dir } = fixture(runtime, fakeSettings(), fakeProfiles().source);
+
+    await manager.ensure(APP);
+
+    const spec = runtime.ensured[0];
+    if (spec === undefined) throw new Error("missing runtime spec");
+    const tokenFile = path.join(dir, "p", "web", "mcp-token");
+    const overlay = overlayOf(spec) as {
+      mcp?: { hanse?: { environment?: Record<string, string> } };
+    };
+    expect(overlay.mcp?.hanse?.environment).toEqual({
+      HANSE_MCP_API_BASE: "http://127.0.0.1:8787",
+      HANSE_AGENT_TOKEN_FILE: tokenFile,
+    });
+    for (const key of [
+      "HANSE_DB",
+      "HANSE_PROJECT_ID",
+      "HANSE_APP_KEY",
+      "HANSE_OPERATOR_TOKEN",
+      "HANSE_RUNTIME_TOKEN",
+      "HANSE_DB",
+      "HANSE_STATE_HOME",
+      "OPENCODE_AUTH_CONTENT",
+      "HANSE_AUTH_FILE",
+    ]) {
+      expect(spec.env[key]).toBeUndefined();
+    }
+    expect(existsSync(tokenFile)).toBe(true);
+    expect(statSync(tokenFile).mode & 0o777).toBe(0o600);
+    const token = readFileSync(tokenFile, "utf8");
+    expect(verifyAgentToken(db, token)).toEqual({
+      appId: "p:web",
+      projectId: "p",
+      appKey: "web",
+    });
+  });
+
+  it("mints and reuses a 0600 opencode password file", async () => {
+    const runtime = new FakeAgentRuntime();
+    const { manager, dir } = fixture(runtime, fakeSettings(), fakeProfiles().source);
+
+    await manager.ensure(APP);
+    const passwordFile = path.join(dir, "p", "web", "state", "opencode-password");
+    const spec = runtime.ensured[0];
+    if (spec === undefined) throw new Error("missing runtime spec");
+    expect(spec.env.HANSE_OPENCODE_PASSWORD_FILE).toBe(passwordFile);
+    expect(existsSync(passwordFile)).toBe(true);
+    expect(statSync(passwordFile).mode & 0o777).toBe(0o600);
+    const password = readFileSync(passwordFile, "utf8").trim();
+    expect(password.length).toBeGreaterThan(0);
+
+    await manager.stopApp(APP.id);
+    await manager.ensure(APP);
+
+    expect(readFileSync(passwordFile, "utf8").trim()).toBe(password);
+  });
+
+  it("honors HANSE_AGENT_API_BASE for the MCP endpoint", async () => {
+    const previous = process.env.HANSE_AGENT_API_BASE;
+    process.env.HANSE_AGENT_API_BASE = "http://hanse:8787";
+    try {
+      const runtime = new FakeAgentRuntime();
+      const { manager } = fixture(runtime, fakeSettings(), fakeProfiles().source);
+      await manager.ensure(APP);
+      const spec = runtime.ensured[0];
+      if (spec === undefined) throw new Error("missing runtime spec");
+      const overlay = overlayOf(spec) as {
+        mcp?: { hanse?: { environment?: Record<string, string> } };
+      };
+      expect(overlay.mcp?.hanse?.environment?.HANSE_MCP_API_BASE).toBe("http://hanse:8787");
+    } finally {
+      if (previous === undefined) delete process.env.HANSE_AGENT_API_BASE;
+      else process.env.HANSE_AGENT_API_BASE = previous;
+    }
+  });
+
+  it("uses HANSE_APP_* resources from the environment", async () => {
+    const previous = {
+      memory: process.env.HANSE_APP_MEMORY_MB,
+      cpus: process.env.HANSE_APP_CPUS,
+      pids: process.env.HANSE_APP_PIDS,
+    };
+    process.env.HANSE_APP_MEMORY_MB = "1024";
+    process.env.HANSE_APP_CPUS = "1.5";
+    process.env.HANSE_APP_PIDS = "256";
+    try {
+      const runtime = new FakeAgentRuntime();
+      const { manager } = fixture(runtime);
+      await manager.ensure(APP);
+      expect(runtime.ensured[0]?.resources).toEqual({
+        memoryBytes: 1024 * 1024 * 1024,
+        nanoCpus: 1_500_000_000,
+        pidsLimit: 256,
+      });
+    } finally {
+      if (previous.memory === undefined) delete process.env.HANSE_APP_MEMORY_MB;
+      else process.env.HANSE_APP_MEMORY_MB = previous.memory;
+      if (previous.cpus === undefined) delete process.env.HANSE_APP_CPUS;
+      else process.env.HANSE_APP_CPUS = previous.cpus;
+      if (previous.pids === undefined) delete process.env.HANSE_APP_PIDS;
+      else process.env.HANSE_APP_PIDS = previous.pids;
+    }
+  });
+
+  it("returns an existing running endpoint without re-ensuring", async () => {
+    const runtime = new FakeAgentRuntime();
     const settings = fakeSettings();
     const profiles = fakeProfiles();
+    const { manager } = fixture(runtime, settings, profiles.source);
+
+    const first = await manager.ensure(APP);
+    const second = await manager.ensure(APP);
+
+    expect(second).toBe(first);
+    expect(runtime.ensured).toHaveLength(1);
+    settings.setModel("deepseek/deepseek-pro");
+    expect(manager.pendingRestart(APP.id)).toEqual({
+      pending: true,
+      reasons: ["settings_changed"],
+    });
+    await expect(manager.ensure(APP)).resolves.toBe(first);
+    expect(runtime.ensured).toHaveLength(1);
+  });
+
+  it("reuses the token file when a new manager starts against the same state", async () => {
+    const runtime = new FakeAgentRuntime();
+    const { manager, db, dir } = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    const endpoint = await manager.ensure(APP);
+
+    const tokenFile = path.join(dir, "p", "web", "mcp-token");
+    const token = readFileSync(tokenFile, "utf8");
+    const restarted = new InstanceManager(db, dir, {
+      runtime,
+      verify: async () => [],
+      workspaceRoot: "/srv",
+    });
+    await expect(restarted.ensure(APP)).resolves.toBe(endpoint);
+
+    expect(runtime.ensured).toHaveLength(1);
+    expect(readFileSync(tokenFile, "utf8")).toBe(token);
+    expect(verifyAgentToken(db, token)).toBeDefined();
+    expect(authorizationFor(endpoint)).toMatch(/^Basic /);
+  });
+
+  it("revokes and deletes the token on stop", async () => {
+    const runtime = new FakeAgentRuntime();
+    const { manager, db, dir } = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    const endpoint = await manager.ensure(APP);
+
+    const tokenFile = path.join(dir, "p", "web", "mcp-token");
+    const token = readFileSync(tokenFile, "utf8");
+
+    await expect(manager.stopApp(APP.id)).resolves.toBe(true);
+
+    expect(runtime.deleted).toEqual([APP.id]);
+    expect(authorizationFor(endpoint)).toBeUndefined();
+    expect(manager.isRunning(APP.id)).toBe(false);
+    expect(existsSync(tokenFile)).toBe(false);
+    expect(verifyAgentToken(db, token)).toBeUndefined();
+    const row = db.prepare("SELECT revoked_at FROM agent_tokens WHERE app_id = 'p:web'").get() as
+      | { revoked_at: string | null }
+      | undefined;
+    expect(row?.revoked_at).not.toBeNull();
+  });
+
+  it("recreates a running instance when the token file no longer matches", async () => {
+    const runtime = new FakeAgentRuntime();
+    const { manager, db, dir } = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    const firstEndpoint = await manager.ensure(APP);
+
+    const tokenFile = path.join(dir, "p", "web", "mcp-token");
+    const previousToken = readFileSync(tokenFile, "utf8");
+    writeFileSync(tokenFile, "tampered-token", { mode: 0o600 });
+
+    const endpoint = await manager.ensure(APP);
+
+    expect(endpoint).toBe(firstEndpoint);
+    expect(runtime.ensured).toHaveLength(2);
+    expect(runtime.deleted).toEqual([APP.id]);
+    const token = readFileSync(tokenFile, "utf8");
+    expect(token).not.toBe(previousToken);
+    expect(verifyAgentToken(db, previousToken)).toBeUndefined();
+    expect(verifyAgentToken(db, token)).toBeDefined();
+    expect(manager.isRunning(APP.id)).toBe(true);
+  });
+
+  it("relaunches when the runtime status is not running", async () => {
+    const runtime = new FakeAgentRuntime();
+    const { manager } = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    await manager.ensure(APP);
+    const status = runtime.statuses.get(APP.id);
+    if (status === undefined) throw new Error("missing runtime status");
+    runtime.statuses.set(APP.id, { ...status, state: "stopped", endpoint: null });
+
+    await manager.ensure(APP);
+
+    expect(runtime.ensured).toHaveLength(2);
+    expect(runtime.deleted).toEqual([APP.id]);
+  });
+
+  it("revokes and clears everything on stopAll", async () => {
+    const runtime = new FakeAgentRuntime();
+    const { manager, db, dir } = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    const endpoint = await manager.ensure(APP);
+
+    const tokenFile = path.join(dir, "p", "web", "mcp-token");
+    const token = readFileSync(tokenFile, "utf8");
+    await manager.stopAll();
+
+    expect(runtime.reconcileCalls).toEqual([[]]);
+    expect(authorizationFor(endpoint)).toBeUndefined();
+    expect(existsSync(tokenFile)).toBe(false);
+    expect(verifyAgentToken(db, token)).toBeUndefined();
+    expect(manager.isRunning(APP.id)).toBe(false);
+  });
+
+  it("detach drops in-memory state without stopping hosts or revoking tokens", async () => {
+    const runtime = new FakeAgentRuntime();
+    const { manager, db, dir } = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    const endpoint = await manager.ensure(APP);
+    const tokenFile = path.join(dir, "p", "web", "mcp-token");
+    const token = readFileSync(tokenFile, "utf8");
+
+    manager.detach();
+
+    expect(runtime.deleted).toEqual([]);
+    expect(runtime.reconcileCalls).toEqual([]);
+    expect(authorizationFor(endpoint)).toBeUndefined();
+    expect(existsSync(tokenFile)).toBe(true);
+    expect(verifyAgentToken(db, token)).toBeDefined();
+    expect(manager.isRunning(APP.id)).toBe(false);
+
+    await expect(manager.stopApp(APP.id)).resolves.toBe(true);
+    expect(runtime.deleted).toEqual([APP.id]);
+    expect(existsSync(tokenFile)).toBe(false);
+  });
+
+  it("waits for an in-flight ensure before restarting", async () => {
+    const runtime = new FakeAgentRuntime();
     const gate = deferred<void>();
     let verifyStarted = false;
-    const dir = mkdtempSync(path.join(tmpdir(), "hanse-manager-"));
-    dirs.push(dir);
-    const db = openDatabase(":memory:");
-    databases.push(db);
-    runMigrations(db);
-    const now = new Date().toISOString();
-    db.prepare(
-      "INSERT INTO projects (id,name,base_branch,root_path,created_at,updated_at) VALUES ('p','P','main',?,?,?)",
-    ).run(dir, now, now);
-    db.prepare(
-      "INSERT INTO apps (id,project_id,app_key,path,contract,created_at) VALUES ('p:web','p','web','apps/web','AGENTS.md',?)",
-    ).run(now);
-    const manager = new InstanceManager(db, path.join(dir, "coordinator.db"), dir, {
-      launch: harness.launch,
-      verify: async () => {
+    const { manager } = fixture(
+      runtime,
+      fakeSettings(),
+      fakeProfiles().source,
+      undefined,
+      async () => {
         verifyStarted = true;
         await gate.promise;
         return [];
       },
-      settings,
-      omoProfiles: profiles.source,
-      stopTimeoutMs: 50,
-      portBase: 5400,
-    });
+    );
 
     const ensured = manager.ensure(APP);
     await waitFor(() => verifyStarted);
@@ -302,46 +498,14 @@ describe("InstanceManager lifecycle", () => {
     expect(endpoint).toContain("127.0.0.1");
     await expect(stopping).resolves.toBe(true);
     expect(manager.isRunning(APP.id)).toBe(false);
-    expect(harness.processes[0]?.signalCode).toBe("SIGTERM");
-  });
-
-  it("treats a signal-terminated child as not running", async () => {
-    const harness = createHarness();
-    const settings = fakeSettings();
-    const profiles = fakeProfiles();
-    const { manager } = fixture(harness, settings, profiles.source);
-    await manager.ensure(APP);
-
-    const process = harness.processes[0];
-    if (process === undefined) throw new Error("missing fake process");
-    process.signalCode = "SIGTERM";
-
-    expect(manager.isRunning(APP.id)).toBe(false);
-    await expect(manager.stopApp(APP.id)).resolves.toBe(false);
-    expect(manager.pendingRestart(APP.id)).toEqual({ pending: false, reasons: [] });
-  });
-
-  it("sends SIGKILL after the stop timeout", async () => {
-    const harness = createHarness({ ignoreTerm: true });
-    const settings = fakeSettings();
-    const profiles = fakeProfiles();
-    const { manager } = fixture(harness, settings, profiles.source, 20);
-    await manager.ensure(APP);
-
-    await expect(manager.stopApp(APP.id)).resolves.toBe(true);
-
-    const process = harness.processes[0];
-    if (process === undefined) throw new Error("missing fake process");
-    expect(process.signals).toEqual(["SIGTERM", "SIGKILL"]);
-    expect(process.signalCode).toBe("SIGKILL");
-    expect(manager.isRunning(APP.id)).toBe(false);
+    expect(runtime.deleted).toEqual([APP.id]);
   });
 
   it("reports settings_changed when the snapshot hash changes", async () => {
-    const harness = createHarness();
+    const runtime = new FakeAgentRuntime();
     const settings = fakeSettings({ model: "deepseek/deepseek-flash" });
     const profiles = fakeProfiles();
-    const { manager } = fixture(harness, settings, profiles.source);
+    const { manager } = fixture(runtime, settings, profiles.source);
     await manager.ensure(APP);
     expect(manager.pendingRestart(APP.id)).toEqual({ pending: false, reasons: [] });
 
@@ -355,21 +519,23 @@ describe("InstanceManager lifecycle", () => {
 
     await manager.stopApp(APP.id);
     await manager.ensure(APP);
-    expect(harness.inputs[1]?.model).toBe("deepseek/deepseek-pro");
+    const overlay = overlayOf(runtime.ensured[1] ?? { env: {} });
+    expect(overlay.model).toBe("deepseek/deepseek-pro");
   });
 
   it("reports profile_not_applied when the profile write failed", async () => {
-    const harness = createHarness();
+    const runtime = new FakeAgentRuntime();
     const settings = fakeSettings();
     const profiles = fakeProfiles({
       applied: false,
       warning: "omo_profile_unavailable: parse failure",
     });
-    const { manager } = fixture(harness, settings, profiles.source);
+    const { manager } = fixture(runtime, settings, profiles.source);
 
     await manager.ensure(APP);
 
-    expect(harness.inputs[0]?.omoProfile).toBeUndefined();
+    const spec = runtime.ensured[0];
+    expect(spec?.env.OMO_PROFILE).toBeUndefined();
     expect(manager.profileWarnings(APP.id)).toEqual(["omo_profile_unavailable: parse failure"]);
     expect(manager.pendingRestart(APP.id)).toEqual({
       pending: true,
@@ -378,10 +544,8 @@ describe("InstanceManager lifecycle", () => {
   });
 
   it("has no pending state when stopped or unknown", async () => {
-    const harness = createHarness();
-    const settings = fakeSettings();
-    const profiles = fakeProfiles();
-    const { manager } = fixture(harness, settings, profiles.source);
+    const runtime = new FakeAgentRuntime();
+    const { manager } = fixture(runtime, fakeSettings(), fakeProfiles().source);
 
     expect(manager.pendingRestart("unknown")).toEqual({ pending: false, reasons: [] });
     await manager.ensure(APP);
@@ -391,59 +555,53 @@ describe("InstanceManager lifecycle", () => {
   });
 
   it("registers hanse_web and disables OMO websearch for managed search", async () => {
-    const harness = createHarness();
+    const runtime = new FakeAgentRuntime();
     const settings = fakeSettings({
       search: { driver: "deepseek", options: { provider: "deepseek" } },
     });
     const profiles = fakeProfiles();
-    const { manager, dir } = fixture(harness, settings, profiles.source);
+    const { manager, dir } = fixture(runtime, settings, profiles.source);
 
     await manager.ensure(APP);
 
-    const input = harness.inputs[0];
-    if (input === undefined) throw new Error("missing launch input");
-    expect(input.mcpServers?.hanse_web?.command).toEqual([
+    const spec = runtime.ensured[0];
+    if (spec === undefined) throw new Error("missing runtime spec");
+    const overlay = overlayOf(spec) as {
+      mcp?: Record<string, { command?: string[]; environment?: Record<string, string> }>;
+    };
+    expect(overlay.mcp?.hanse_web?.command).toEqual([
       process.execPath,
       process.argv[1] ?? "",
       "web-mcp",
     ]);
-    expect(input.mcpServers?.hanse_web?.environment).toEqual({
+    expect(overlay.mcp?.hanse_web?.environment).toEqual({
       HANSE_WEB_CONFIG: JSON.stringify({ search: { provider: "deepseek" } }),
-      HANSE_OPENCODE_AUTH_FILE: path.join(
-        dir,
-        "projects",
-        "p",
-        "apps",
-        "web",
-        "data",
-        "opencode",
-        "auth.json",
-      ),
+      HANSE_OPENCODE_AUTH_FILE: path.join(dir, "p", "web", "data", "opencode", "auth.json"),
     });
     expect(profiles.ensures[0]?.disableWebsearch).toBe(true);
   });
 
   it("keeps the existing behavior when settings and profiles are absent", async () => {
-    const harness = createHarness();
-    const { manager } = fixture(harness);
+    const runtime = new FakeAgentRuntime();
+    const { manager, dir } = fixture(runtime);
 
     await manager.ensure(APP);
 
-    const input = harness.inputs[0];
-    if (input === undefined) throw new Error("missing launch input");
-    expect(input.model).toBeUndefined();
-    expect(input.auth).toBeUndefined();
-    expect(input.omoProfile).toBeUndefined();
-    expect(input.mcpServers).toBeUndefined();
-    expect(input.web).toBeUndefined();
+    const spec = runtime.ensured[0];
+    if (spec === undefined) throw new Error("missing runtime spec");
+    const overlay = overlayOf(spec);
+    expect(overlay.model).toBeUndefined();
+    expect(spec.env.OMO_PROFILE).toBeUndefined();
+    expect(spec.env.HANSE_OPENCODE_AUTH_FILE).toBeUndefined();
+    expect(existsSync(path.join(dir, "p", "web", "data", "opencode", "auth.json"))).toBe(false);
     expect(manager.pendingRestart(APP.id)).toEqual({ pending: false, reasons: [] });
   });
 
   it("records model mismatch warnings from the model verifier", async () => {
-    const harness = createHarness();
+    const runtime = new FakeAgentRuntime();
     const warning =
       'model_mismatch: agent "oracle" uses deepseek/other, expected deepseek/deepseek-flash';
-    const { manager } = fixture(harness, fakeSettings(), fakeProfiles().source, 50, async () => [
+    const { manager } = fixture(runtime, fakeSettings(), fakeProfiles().source, async () => [
       warning,
     ]);
 
@@ -452,9 +610,13 @@ describe("InstanceManager lifecycle", () => {
     expect(manager.profileWarnings(APP.id)).toEqual([warning]);
   });
 
-  it("parses /agent model mismatches", async () => {
-    const fetchImpl = async () =>
-      new Response(
+  it("parses /agent model mismatches and sends Basic auth", async () => {
+    const endpoint = "http://127.0.0.1:4101";
+    setEndpointAuthorization(endpoint, "opencode", "hunter2");
+    let authorization: string | undefined;
+    const fetchImpl = async (_input: string | URL | Request, init?: RequestInit) => {
+      authorization = new Headers(init?.headers).get("authorization") ?? undefined;
+      return new Response(
         JSON.stringify([
           { name: "oracle", model: { providerID: "deepseek", modelID: "other" } },
           {
@@ -464,11 +626,13 @@ describe("InstanceManager lifecycle", () => {
         ]),
         { status: 200 },
       );
+    };
 
     await expect(
-      verifyAgentModels("http://127.0.0.1:4100", "deepseek/deepseek-flash", fetchImpl),
+      verifyAgentModels(endpoint, "deepseek/deepseek-flash", fetchImpl),
     ).resolves.toEqual([
       'model_mismatch: agent "oracle" uses deepseek/other, expected deepseek/deepseek-flash',
     ]);
+    expect(authorization).toMatch(/^Basic /);
   });
 });

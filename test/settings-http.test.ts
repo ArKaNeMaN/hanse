@@ -91,6 +91,7 @@ function fixture(options: { hostAuth?: Record<string, unknown> } = {}): Fixture 
           id: "p1",
           name: row?.name ?? "Alpha",
           rootPath: row?.root_path ?? "/tmp/p1",
+          workspaceRoot: "/tmp",
           service: new CoordinatorService(db, "p1"),
         },
       ];

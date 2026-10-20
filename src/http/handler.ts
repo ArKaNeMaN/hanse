@@ -3,12 +3,16 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
+import { ConfigError } from "../config/load.js";
 import { decideApproval } from "../coordinator/approval.js";
-import type { CoordinatorService } from "../coordinator/service.js";
+import { CoordinatorService } from "../coordinator/service.js";
 import type { GitService } from "../git/service.js";
 import { authenticate } from "../identity/auth.js";
 import type { Principal } from "../identity/principals.js";
+import { verifyAgentToken } from "../mcp/agent-tokens.js";
+import { handleRpc } from "../mcp/protocol.js";
 import type { InstanceManager } from "../opencode/manager.js";
+import { resolveAppPath } from "../runtime/app-path.js";
 import type { SettingsService } from "../settings/index.js";
 import type { SqliteDatabase } from "../store/index.js";
 import { renderApplication } from "./application.js";
@@ -29,6 +33,7 @@ export interface ProjectContext {
   id: string;
   name: string;
   rootPath: string;
+  workspaceRoot: string;
   service: CoordinatorService;
 }
 
@@ -227,6 +232,48 @@ function asset(request: HttpRequest): HttpResponse | undefined {
   }
 }
 
+function bearerToken(request: HttpRequest): string | undefined {
+  const match = /^Bearer\s+(.+)$/i.exec(request.headers.authorization?.trim() ?? "");
+  return match?.[1]?.trim();
+}
+
+function agentTokenFor(request: HttpRequest) {
+  const token = bearerToken(request);
+  return token === undefined || token.length === 0 ? undefined : token;
+}
+
+function rpcError(status: number, code: number, message: string): HttpResponse {
+  return json(status, { jsonrpc: "2.0", id: null, error: { code, message } });
+}
+
+/** Internal per-app MCP endpoint. The token alone selects the project/app; the body cannot. */
+function routeInternalMcp(deps: HttpDeps, request: HttpRequest): HttpResponse {
+  const token = agentTokenFor(request);
+  const agent = token === undefined ? undefined : verifyAgentToken(deps.db, token);
+  if (agent === undefined) {
+    return rpcError(401, -32000, "invalid agent token");
+  }
+
+  let payload: unknown;
+  try {
+    payload = JSON.parse(request.body ?? "");
+  } catch {
+    return rpcError(400, -32700, "parse error");
+  }
+  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
+    return rpcError(400, -32700, "parse error");
+  }
+
+  const service = new CoordinatorService(deps.db, agent.projectId);
+  const response = handleRpc(service, payload as Parameters<typeof handleRpc>[1], {
+    fromAppKey: agent.appKey,
+  });
+  if (response === undefined) {
+    return { status: 204, contentType: "application/json; charset=utf-8", body: "" };
+  }
+  return json(200, response);
+}
+
 function pendingApprovalId(db: SqliteDatabase, handoffId: string): string | undefined {
   const row = db
     .prepare("SELECT id FROM approvals WHERE handoff_id = ? AND state = 'pending'")
@@ -331,6 +378,17 @@ function route(deps: HttpDeps, request: HttpRequest): HttpResponse {
   }
   if (request.path.startsWith("/assets/")) {
     return json(404, { error: "not found" });
+  }
+
+  if (request.method === "POST" && request.path === "/internal/mcp") {
+    return routeInternalMcp(deps, request);
+  }
+  const presentedAgentToken = agentTokenFor(request);
+  if (
+    presentedAgentToken !== undefined &&
+    verifyAgentToken(deps.db, presentedAgentToken) !== undefined
+  ) {
+    return json(403, { error: "agent tokens may only call the MCP endpoint" });
   }
 
   if (request.method === "GET" && request.path === "/healthz") {
@@ -471,7 +529,22 @@ function route(deps: HttpDeps, request: HttpRequest): HttpResponse {
           .replace(/[^a-z0-9._-]+/g, "-")
           .replace(/^-+|-+$/g, "") || `app-${Date.now()}`;
       const appPath = (fields.path ?? "").trim() || `apps/${slug}`;
-      const dir = path.resolve(project.rootPath, appPath);
+      let dir: string;
+      try {
+        dir = resolveAppPath({
+          appPath,
+          projectRoot: project.rootPath,
+          workspaceRoot: project.workspaceRoot,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return browser
+          ? redirectWithNotice(returnTo, message, "error")
+          : json(400, {
+              error: message,
+              ...(error instanceof ConfigError ? { code: error.code } : {}),
+            });
+      }
       const remote = (fields.remote ?? "").trim();
       try {
         if (remote.length > 0) {

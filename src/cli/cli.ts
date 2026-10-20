@@ -1,5 +1,7 @@
 import { PACKAGE_NAME, VERSION } from "../version.js";
 import {
+  agentHostCommand,
+  agentSupervisorCommand,
   defaultContext,
   initCommand,
   mcpCommand,
@@ -39,14 +41,17 @@ function buildUsage(): string[] {
     "  serve           Serve the web dashboard and HTTP API",
     "  mcp             Run the coordinator MCP server (stdio)",
     "  web-mcp         Run the managed web tools MCP server (stdio)",
+    "  agent-host      Run a single-app agent host (internal; --spec <file>)",
+    "  agent-supervisor Run the B0 runtime supervisor (internal)",
     "",
     "Options:",
     "  -h, --help            Show this help and exit",
     "  -v, --version         Show the version and exit",
     "      --state-home <p>  Override the coordinator state directory",
     "      --workspace <p>   Workspace of projects (serve; default: cwd)",
-    "      --hostname <h>    Bind host (serve; default: 127.0.0.1)",
-    "      --port <n>        Bind port (serve; default: 8787)",
+    "      --hostname <h>    Bind host (serve/agent-supervisor; default: 127.0.0.1/0.0.0.0)",
+    "      --port <n>        Bind port (serve/agent-supervisor; default: 8787/8789)",
+    "      --spec <p>        Runtime spec file (agent-host)",
   ];
 }
 
@@ -94,6 +99,26 @@ export async function runCli(argv: readonly string[], io: CliIo = defaultIo): Pr
       return mcpCommand(defaultContext(process.cwd(), io, args.flags));
     case "web-mcp":
       return webMcpCommand(defaultContext(process.cwd(), io, args.flags));
+    case "agent-host": {
+      const spec = typeof args.flags.spec === "string" ? args.flags.spec : undefined;
+      if (spec === undefined || spec.length === 0) {
+        io.stderr("agent-host: --spec <file> is required");
+        return 2;
+      }
+      return agentHostCommand(spec, defaultContext(process.cwd(), io, args.flags));
+    }
+    case "agent-supervisor": {
+      const rawPort =
+        typeof args.flags.port === "string"
+          ? args.flags.port
+          : process.env.HANSE_AGENT_SUPERVISOR_PORT;
+      const port = rawPort === undefined || rawPort.length === 0 ? 8789 : Number(rawPort);
+      const hostname = typeof args.flags.hostname === "string" ? args.flags.hostname : "0.0.0.0";
+      return agentSupervisorCommand(
+        { hostname, port },
+        defaultContext(process.cwd(), io, args.flags),
+      );
+    }
     default:
       io.stderr(`Unknown command: ${args.command}`);
       io.stderr(`Run \`${PACKAGE_NAME} --help\` for usage.`);

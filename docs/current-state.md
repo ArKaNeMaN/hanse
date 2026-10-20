@@ -19,18 +19,26 @@ coordinator. The product surface is one web UI (dashboard + chat + handoffs) plu
   Biome. Schemas: zod. YAML: `yaml`. Database: `better-sqlite3`.
 - Public OSS; license not chosen yet.
 
-## Runtime topology (two containers, one exposed port)
+## Runtime topology (three containers, one exposed port)
 
-Both containers use the same multi-arch image (`ghcr.io/arkaneman/hanse`, built from `Dockerfile`).
+Three multi-arch images are built from `Dockerfile`:
+`ghcr.io/arkaneman/hanse` (coordinator), `hanse-agent-default` (agents), and `hanse-agent-ide` (IDE).
 Compose definitions live in `compose.yaml`; `compose.build.yaml` adds a source build, and
 `compose.host-auth.yaml` mounts a host `opencode` auth file.
 
 - **`hanse`** (coordinator): runs `node dist/index.js serve --workspace /data/workspace`. Mounts
-  `./workspace:/data/workspace` and `./state:/data/state`; the host opencode auth file is optional.
-  Runs as uid 1000. `HANSE_IDE=0` means it does **not** spawn code-server itself.
-- **`hanse-ide`** (VS Code): runs bundled code-server. Mounts **only** `./workspace:/data/workspace`
-  (no `state` - `/data/state` does not exist there). Serves on `8080`, reachable only on the compose
-  network.
+  `./workspace:/data/workspace`, `./state:/data/state`, and `./agents:/data/agents`; the host opencode
+  auth file is optional. Talks to the agents supervisor over `http://agents:8789` with
+  `HANSE_RUNTIME_TOKEN`. `HANSE_IDE=0` means it does **not** spawn code-server itself.
+- **`hanse-ide`** (VS Code): runs `agent-ide` with code-server and the default toolchains. Mounts
+  **only** `./workspace:/data/workspace` (no `state` or `agents`). Serves on `8080`, reachable only on
+  the front network.
+- **`hanse-agents`** (agent runtime): runs `hanse agent-supervisor` on `0.0.0.0:8789`, hosting one
+  agent host per app. Mounts the workspace and `./agents:/data/agents`; no `state`, no Docker socket,
+  read-only root, `cap_drop: ALL`, uid 1000. Each app host runs `opencode serve` on `0.0.0.0:4100+`
+  inside this container.
+- **Networks:** `front` contains the coordinator and IDE; `agents` contains the coordinator and
+  agents. The agents container cannot resolve or reach the IDE container.
 - **Exposed port:** `${HANSE_BIND:-127.0.0.1}:${HANSE_PORT:-8787}` (loopback by default; set
   `HANSE_BIND=0.0.0.0` or a LAN IP to expose it). `/healthz` is an unauthenticated liveness endpoint.
   `/` and `/api/*` are our UI; `/ide/*` is reverse-proxied to `ide:8080` (HTTP and WebSocket), with
@@ -95,15 +103,17 @@ Compose definitions live in `compose.yaml`; `compose.build.yaml` adds a source b
 
 ## Agents and chat
 
-- `opencode` (`opencode-ai@1.19.3`) is installed in the image.
-- The coordinator runs **one `opencode serve` per (project, app)**, lazily on first chat use, on
-  `127.0.0.1:4100+`, with isolated `XDG_*` and `OPENCODE_DB` under the project runtime root and a
-  per-instance scratch `TMPDIR` (`/tmp/hanse/<projectId>/<appKey>`). The host `auth.json` is copied
-  into each instance's data dir; model access works (verified with `deepseek`).
+- `opencode` (`opencode-ai@1.19.3`) is installed in the agent and IDE images.
+- The coordinator asks the `agents` supervisor to start **one agent host per (project, app)** lazily
+  on first chat use. Each host runs `opencode serve` on `0.0.0.0:4100+` inside the agents container,
+  with isolated `XDG_*`, `OPENCODE_DB`, and `TMPDIR` under
+  `/data/agents/<projectId>/<appKey>/{home,data,state,config,cache,tmp,mise}`. The host `auth.json`
+  and opencode password are copied into that per-app state; model access works (verified with
+  `deepseek`).
 - Every managed instance also loads the image-baked OMO baseline
-  (`oh-my-openagent@5.1.35`, `/opt/hanse/omo`) through `HANSE_OMO_PLUGIN`. Its config is baked at
-  `/home/coder/.omo/omo.jsonc` and pins OMO agents/categories to `deepseek/deepseek-flash`.
-  Per-project/per-app MCP and plugin inheritance is not implemented yet.
+  (`oh-my-openagent@5.1.35`, `/opt/hanse/omo`) through `HANSE_OMO_PLUGIN`. The coordinator writes a
+  per-app profile at `<app-home>/.omo/omo.jsonc` and pins OMO agents/categories to
+  `deepseek/deepseek-flash`. Per-project/per-app MCP and plugin inheritance is not implemented yet.
 - Every managed instance also gets the codegraph MCP server
   (`@colbymchenry/codegraph@1.6.2`, `/opt/hanse/codegraph`) through `HANSE_CODEGRAPH_BIN`. The
   application must be indexed with `codegraph init` (creates `.codegraph/`) before graph queries
@@ -289,21 +299,24 @@ Host `./state` is mounted at `/data/state` in `hanse` only:
 - `hanse/coordinator.db` (+ `-wal`, `-shm`) - projects, apps, instances, tasks, handoffs, approvals,
   principals, events, secrets, settings, provider keys.
 - `hanse/secret.key` - AES-256-GCM key for the credential store and provider keys (mode `0600`).
-- `hanse/projects/<projectId>/apps/<appKey>/{data,state,config,cache}` - per-instance opencode state
-  (`state/opencode.db`) and the reconciled `data/opencode/auth.json` (mode `0600`). Scratch is not
-  kept under `state`: each instance gets `TMPDIR=/tmp/hanse/<projectId>/<appKey>`, so opencode's
-  pre-approved `<TMPDIR>/opencode` directory is per instance instead of a shared `/tmp/opencode`.
-- `/home/coder/.omo/omo.jsonc` - image-baked OMO baseline plus coordinator-generated per-app profiles;
-  the file and OMO state remain shared by all instances under the same uid.
 
-The IDE container keeps its extensions at `/opt/hanse-ext` and settings at
-`/home/coder/.config/code-server`; it does not see `state`.
+Host `./agents` is mounted at `/data/agents` in `hanse` and `hanse-agents`:
+
+- `<projectId>/<appKey>/{home,data,state,config,cache,tmp,mise}` - per-app HOME/XDG, opencode DB,
+  scratch, and mise toolchains.
+- The reconciled opencode `auth.json`, opencode Basic-auth password, and per-app MCP token live under
+  that app's state (`0600`).
+- The coordinator-generated OMO profile is `<app-home>/.omo/omo.jsonc`; OMO state is per app.
+- The IDE never sees this volume.
 
 ## CLI
 
 - `hanse init [dir]` - scaffold `.hanse/project.yaml`.
 - `hanse status [dir]` - discover/register a project and print its apps.
-- `hanse serve` - run the web UI/API (`--workspace`, `--hostname`, `--port`, `--state-home`).
+- `hanse serve` - run the web UI/API (`--workspace`, `--hostname`, `--port`, `--state-home`); requires
+  `HANSE_RUNTIME_TOKEN` and a reachable agents supervisor.
+- `hanse agent-supervisor` - internal B0 supervisor (`--hostname`, `--port`; default `0.0.0.0:8789`).
+- `hanse agent-host` - internal single-app host (`--spec <file>`), spawned by the supervisor.
 - `hanse mcp` - run the coordinator MCP server bound to an app (used by opencode).
 - `hanse web-mcp` - run the managed web tools MCP server (internal; spawned by opencode when a
   DeepSeek web driver is configured).
@@ -312,9 +325,14 @@ The IDE container keeps its extensions at `/opt/hanse-ext` and settings at
 
 | Variable | Used by | Meaning |
 | --- | --- | --- |
-| `HANSE_OPERATOR_TOKEN` | serve, ide | operator token (UI login + extension API) |
-| `HANSE_STATE_HOME` | serve | state root (default `~/.local/state`) |
-| `HANSE_AUTH_FILE` | serve | host opencode `auth.json`; reconciled with provider-key settings into each instance |
+| `HANSE_OPERATOR_TOKEN` | serve, ide | operator token (UI login + extension API); never given to agents |
+| `HANSE_RUNTIME_TOKEN` | serve, agent-supervisor | shared coordinator/supervisor secret; agents never receive the operator token |
+| `HANSE_STATE_HOME` | serve | coordinator state root (default `~/.local/state`) |
+| `HANSE_AGENTS_HOME` | serve | per-app agent state root (default `~/.local/state/hanse-agents`; Compose sets `/data/agents`) |
+| `HANSE_AGENT_SUPERVISOR_URL` | serve | supervisor base URL (Compose: `http://agents:8789`) |
+| `HANSE_AGENT_API_BASE` | serve | coordinator URL passed to agents as the MCP API base (Compose: `http://hanse:8787`) |
+| `HANSE_AGENT_IMAGE` | serve | image recorded in the runtime spec (B0 supervisor ignores it) |
+| `HANSE_AUTH_FILE` | serve | host opencode `auth.json`; reconciled with provider-key settings into each app state |
 | `HANSE_OMO_PLUGIN` | serve | comma-separated baseline plugin specs injected into every instance |
 | `HANSE_CODEGRAPH_BIN` | serve | path to the codegraph CLI used for the baseline MCP server |
 | `HANSE_IDE_URL` | dashboard | IDE link (set to `/ide/`) |
@@ -330,7 +348,10 @@ coordinator; operators do not set them.
 
 ## Verification
 
-`npm run lint && npm run typecheck && npm test && npm run build` (all green; 561 tests). Chat browser
+`npm run lint && npm run typecheck && npm test && npm run build` (all green; 886 tests). B0 runtime
+smoke: three Compose services healthy, `scripts/agent-runtime-probe.sh b0` passes, and the agent image
+runs Python 3.12, Node 22, PHP 8.3 with mbstring/intl/zip/pdo, uv, Go 1.23, Rust, and Java 21 as uid
+1000. Chat browser
 QA: `node docs/design/chat-qa.mjs` (deterministic fixtures; 3 scenarios, 81 assertions, 10
 screenshots, zero console/page errors). Live smoke against a real deployment: 1
 scenario, 2 assertions, streaming assistant text and a rendered markdown table, zero console/page
@@ -355,26 +376,27 @@ Settings stage verification:
 
 - Single user; no RBAC or multi-tenant isolation.
 - Trust model: trusted repositories; agents execute code.
-- **Agents run in the `hanse` container as the same uid as the coordinator, so they can read
-  `/data/state` (DB, `secret.key`), `/proc/<pid>/environ`, and the unauthenticated loopback
-  `opencode serve` API.** The IDE is isolated, agents are not. "Human-only" prompt routes are a
-  Hanse-route guarantee, not a hard boundary: an agent with `bash` can call the upstream prompt API
-  directly, including a v2 `always` reply that creates a durable project-scoped saved permission.
+- **Agents run in a separate hardened container without `/data/state`, the Docker socket, or the
+  operator token.** B0 still hosts all apps in one `agents` container and one agents network, so
+  apps can reach each other's processes/ports and share a uid; per-app containers and networks are
+  B1. The supervisor's `HANSE_RUNTIME_TOKEN` is visible in the agents container in B0 (accepted; B1
+  removes it from app containers). "Human-only" prompt routes remain a Hanse-route guarantee, not a
+  hard boundary: an agent with `bash` can call the upstream prompt API directly, including a v2
+  `always` reply that creates a durable project-scoped saved permission.
 - The permission overlay is a guardrail, not a sandbox. App-owned `opencode.json`/plugins can widen
   the final ruleset (the `.opencode` edit deny is bypassable with `bash`), verification is
   warning-only by owner decision, `bash` path checks are best-effort, symlinks/bind mounts can
-  escape, and `.env`/network are intentionally allowed. Hard isolation needs a separate design
-  (separate uid/container, authenticated upstream, or a proxy the agent cannot reach).
+  escape, and `.env`/network are intentionally allowed. B1 adds per-app containers and networks;
+  upstream authentication remains a later hardening step.
 - Cross-app handoff delivery to a live sibling session is not automatic (see above).
-- The OMO baseline is image-wide; the selected model is applied through an app-specific profile, but
-  `~/.omo` state and the config file are still shared by every instance under the same uid.
-  Per-instance OMO state is not isolated yet. A project `.omo/omo.jsonc` layer can override profile
-  pins; the post-start `/agent` check is warning-only.
+- The OMO baseline is image-wide; the selected model is applied through a per-app profile under the
+  app's HOME. A project `.omo/omo.jsonc` layer can override profile pins; the post-start `/agent`
+  check is warning-only.
 - Settings live in the coordinator DB, not in the repository; they do not travel with a cloned
-  project. Provider keys are encrypted at rest, but agents run as the same uid and can read the
-  per-instance `auth.json`, the DB, and `secret.key` (known trust-model limit). Ciphertext is not
-  AAD-bound and key rotation is not implemented; clearing is logical (`secure_delete` plus a WAL
-  checkpoint), and physical media/backups may retain old pages.
+  project. Provider keys are encrypted at rest, but each app host can read its own `auth.json`
+  (model credentials) under `/data/agents`; it cannot read the coordinator DB or `secret.key`.
+  Ciphertext is not AAD-bound and key rotation is not implemented; clearing is logical
+  (`secure_delete` plus a WAL checkpoint), and physical media/backups may retain old pages.
 - Settings changes require an explicit restart to update the OMO profile, web tools, and the
   instance config; a restart interrupts an active turn. Chat prompts carry the effective model, so
   the main session adopts a model change on its next message without a restart; OMO subagents keep
@@ -383,7 +405,7 @@ Settings stage verification:
   search tool is available. Managed DeepSeek web tools depend on a usable provider key and on the
   external DeepSeek Search/Fetch API; there is no per-instance cost budget.
 - Codegraph indexes are per application (`<app>/.codegraph/`) and are not built automatically;
-  `~/.codegraph` global state is shared by all instances under the same uid.
+  per-app HOME keeps the global codegraph state separate.
 - No TLS; intended for a trusted LAN (VPN/reverse proxy for remote access).
 - The writer lock is a single-node file lock (`O_EXCL` + pid liveness), not a distributed lock.
 - `git clone` in the add-app endpoint is synchronous (`execFileSync`) and blocks the event loop.
@@ -393,9 +415,12 @@ Settings stage verification:
   staging, diff viewer, or conflict-resolution UI.
 - Git push/fetch use ambient host credentials (SSH/HTTPS); the encrypted credential store is not wired
   into git in this stage. Commit requires a configured `user.name`/`user.email`.
-- Git actions run repository hooks as the coordinator uid; the trust model remains trusted
-  repositories. A per-repository in-memory lock serializes UI actions but does not cover agents or the
-  IDE writing to the same repository.
+- Git actions run with a controlled child environment and command-line config that disables
+  repository hooks, fsmonitor, credential helpers, ext protocols, submodule recursion, and
+  repository SSH commands; remotes are validated (HTTPS/SSH/scp/file inside the app). The git child
+  still runs as the coordinator uid and can use coordinator-provided credentials. A per-repository
+  in-memory lock serializes UI actions but does not cover agents or the IDE writing to the same
+  repository.
 - The IDE chat can be moved to the right sidebar only by a one-time user action (VS Code limitation).
 - Chat loads a 30-message tail and prepends older pages on scroll-up, but the loaded window is not
   virtualized; very large loaded windows remain the scaling limit. The idle `GET /messages` snapshot

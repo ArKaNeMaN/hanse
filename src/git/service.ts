@@ -1,32 +1,26 @@
 import { execFile } from "node:child_process";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { access, realpath } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
+import {
+  GitEnvError,
+  gitChildEnv,
+  gitConfigArgs,
+  isSafeRemoteName,
+  resolveGitAskpass,
+  resolveGitSshCommand,
+  validateRemoteUrl,
+} from "./env.js";
+import { GitError, type GitErrorCode } from "./errors.js";
+
+export { gitChildEnv, validateRemoteUrl } from "./env.js";
+export type { GitErrorCode } from "./errors.js";
+export { GitError } from "./errors.js";
 
 export type GitRepoState = "ok" | "not_git" | "not_root" | "missing";
 export type GitOperation = "merge" | "rebase" | "cherry-pick" | "revert";
 export type FileGroup = "staged" | "unstaged" | "untracked" | "conflicted";
-
-export type GitErrorCode =
-  | "invalid_input"
-  | "outside_workspace"
-  | "not_git"
-  | "not_root"
-  | "missing_path"
-  | "busy"
-  | "git_locked"
-  | "no_upstream"
-  | "detached"
-  | "conflicts"
-  | "operation_in_progress"
-  | "nothing_to_commit"
-  | "branch_not_found"
-  | "diverged"
-  | "worktree_dirty"
-  | "push_rejected"
-  | "auth_failed"
-  | "timeout"
-  | "output_too_large"
-  | "git_failed";
 
 export interface GitFile {
   path: string;
@@ -123,21 +117,11 @@ export interface GitServiceOptions {
   gitBin?: string;
   runner?: GitRunner;
   timeouts?: Partial<GitTimeouts>;
-}
-
-export class GitError extends Error {
-  readonly code: GitErrorCode;
-  readonly stderr?: string;
-  /** Detected repository root, currently only populated for `not_root`. */
-  readonly root?: string;
-
-  constructor(code: GitErrorCode, message: string, options?: { stderr?: string; root?: string }) {
-    super(message);
-    this.name = "GitError";
-    this.code = code;
-    this.stderr = options?.stderr;
-    this.root = options?.root;
-  }
+  /**
+   * Source for the allowlisted child environment. Defaults to `process.env`; tests may inject a
+   * synthetic environment instead of mutating the coordinator's process.
+   */
+  env?: NodeJS.ProcessEnv;
 }
 
 const MAX_BUFFER = 8 * 1024 * 1024;
@@ -151,15 +135,34 @@ const DEFAULT_TIMEOUTS: GitTimeouts = {
   push: 180_000,
 };
 
-const GIT_ENV: NodeJS.ProcessEnv = {
-  GIT_TERMINAL_PROMPT: "0",
-  GCM_INTERACTIVE: "never",
-  LC_ALL: "C",
-  LANG: "C",
-  GIT_EDITOR: ":",
-  GIT_MERGE_AUTOEDIT: "no",
-  GIT_PAGER: "cat",
-};
+interface GitRuntime {
+  env: NodeJS.ProcessEnv;
+  sshCommand: string;
+  askpass?: string;
+}
+
+const TEMP_DIRS = new Set<string>();
+let cleanupRegistered = false;
+
+function createRuntimeDir(): string {
+  const dir = mkdtempSync(path.join(tmpdir(), "hanse-git-"));
+  chmodSync(dir, 0o700);
+  TEMP_DIRS.add(dir);
+  if (!cleanupRegistered) {
+    cleanupRegistered = true;
+    process.once("exit", () => {
+      for (const entry of TEMP_DIRS) {
+        try {
+          rmSync(entry, { recursive: true, force: true });
+        } catch {
+          // Best-effort cleanup during process exit.
+        }
+      }
+      TEMP_DIRS.clear();
+    });
+  }
+  return dir;
+}
 
 const URL_USERINFO = /\b([a-z][a-z0-9+.-]*:\/\/)[^/\s@]+@/gi;
 
@@ -431,13 +434,16 @@ export class GitService {
   readonly #workspaceRoot: string;
   readonly #gitBin: string;
   readonly #runner: GitRunner;
+  readonly #sourceEnv: NodeJS.ProcessEnv;
   readonly #timeouts: GitTimeouts;
   readonly #mutationLocks = new Set<string>();
+  #runtime?: GitRuntime;
 
   constructor(options: GitServiceOptions) {
     this.#workspaceRoot = options.workspaceRoot;
     this.#gitBin = options.gitBin ?? "git";
     this.#runner = options.runner ?? defaultRunner;
+    this.#sourceEnv = options.env ?? process.env;
     this.#timeouts = { ...DEFAULT_TIMEOUTS, ...options.timeouts };
   }
 
@@ -563,11 +569,7 @@ export class GitService {
       branches.push(current);
     }
 
-    const remoteOutput = await this.#run(root, ["remote", "-v"], this.#timeouts.status);
-    if (remoteOutput.code !== 0) {
-      throw failureFromResult("git_failed", remoteOutput);
-    }
-    const remotes = parseRemotes(remoteOutput.stdout);
+    const remotes = await this.#readRemotes(root, resolved.appDir);
 
     const lastCommit = await this.#readLastCommit(root);
 
@@ -616,13 +618,33 @@ export class GitService {
 
   async fetch(resolved: ResolvedRepository): Promise<GitActionResult> {
     return this.#mutate(resolved, async () => {
-      const result = await this.#run(
-        resolved.root,
-        ["fetch", "--all", "--prune"],
-        this.#timeouts.fetch,
-      );
-      if (result.code !== 0) {
-        throw remoteFailure("git_failed", result);
+      const remotes = await this.#safeRemoteNames(resolved);
+      if (remotes.length === 0) {
+        const result = await this.#run(
+          resolved.root,
+          ["fetch", "--all", "--prune"],
+          this.#timeouts.fetch,
+          remotes,
+        );
+        if (result.code !== 0) {
+          throw remoteFailure("git_failed", result);
+        }
+        return this.#finish(resolved, () => "Fetched all remotes.");
+      }
+      let failure: GitCommandResult | undefined;
+      for (const name of remotes) {
+        const result = await this.#run(
+          resolved.root,
+          ["fetch", "--prune", "--upload-pack=git-upload-pack", name],
+          this.#timeouts.fetch,
+          remotes,
+        );
+        if (result.code !== 0 && failure === undefined) {
+          failure = result;
+        }
+      }
+      if (failure !== undefined) {
+        throw remoteFailure("git_failed", failure);
       }
       return this.#finish(resolved, () => "Fetched all remotes.");
     });
@@ -639,7 +661,13 @@ export class GitService {
         throw new GitError("no_upstream", "The current branch has no upstream.");
       }
 
-      const result = await this.#run(resolved.root, ["pull", "--ff-only"], this.#timeouts.update);
+      const remotes = await this.#safeRemoteNames(resolved);
+      const result = await this.#run(
+        resolved.root,
+        ["pull", "--ff-only", "--upload-pack=git-upload-pack"],
+        this.#timeouts.update,
+        remotes,
+      );
       if (result.code !== 0) {
         throw updateFailure(result);
       }
@@ -746,14 +774,15 @@ export class GitService {
         if (!(before.remotes ?? []).some((remote) => remote.name === "origin")) {
           throw new GitError("no_upstream", "The current branch has no upstream.");
         }
-        args = ["push", "-u", "origin", branch.name];
+        args = ["push", "--receive-pack=git-receive-pack", "-u", "origin", branch.name];
         upstreamName = `origin/${branch.name}`;
       } else {
-        args = ["push"];
+        args = ["push", "--receive-pack=git-receive-pack"];
         upstreamName = before.upstream.name;
       }
 
-      const result = await this.#run(resolved.root, args, this.#timeouts.push);
+      const remotes = await this.#safeRemoteNames(resolved);
+      const result = await this.#run(resolved.root, args, this.#timeouts.push, remotes);
       if (result.code !== 0) {
         throw remoteFailure("git_failed", result, "push_rejected");
       }
@@ -761,25 +790,105 @@ export class GitService {
     });
   }
 
-  #run(root: string, args: string[], timeout: number): Promise<GitCommandResult> {
-    const command: GitCommand = {
-      bin: this.#gitBin,
-      args: ["-c", "color.ui=false", ...args],
-      cwd: root,
-      timeout,
-      env: { ...process.env, ...GIT_ENV },
-      maxBuffer: MAX_BUFFER,
-      killSignal: "SIGKILL",
-    };
-    let pending: Promise<GitCommandResult>;
-    try {
-      pending = this.#runner(command);
-    } catch (error) {
-      return Promise.reject(runnerFailure(error));
+  async #readRemotes(root: string, appDir: string): Promise<GitRemote[]> {
+    const result = await this.#run(root, ["remote", "-v"], this.#timeouts.status);
+    if (result.code !== 0) {
+      throw failureFromResult("git_failed", result);
     }
-    return pending.catch((error: unknown) => {
+    for (const line of result.stdout.split("\n")) {
+      if (line.length === 0) {
+        continue;
+      }
+      const match = /^(\S+)\t(.+) \((?:fetch|push)\)$/.exec(line);
+      if (match === null) {
+        throw new GitError(
+          "invalid_remote",
+          `Unparseable git remote entry: ${redactAndTruncate(line)}`,
+        );
+      }
+      const name = match[1] ?? "";
+      const url = match[2] ?? "";
+      if (!isSafeRemoteName(name)) {
+        throw new GitError("invalid_remote", `Unsafe git remote name: ${redactAndTruncate(name)}`);
+      }
+      await validateRemoteUrl(url, appDir);
+    }
+    return parseRemotes(result.stdout);
+  }
+
+  async #remoteNames(root: string): Promise<string[]> {
+    const result = await this.#run(root, ["remote"], this.#timeouts.status);
+    if (result.code !== 0) {
+      throw failureFromResult("git_failed", result);
+    }
+    const names = result.stdout
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+    for (const name of names) {
+      if (!isSafeRemoteName(name)) {
+        throw new GitError("invalid_remote", `Unsafe git remote name: ${redactAndTruncate(name)}`);
+      }
+    }
+    return names;
+  }
+
+  async #safeRemoteNames(resolved: ResolvedRepository): Promise<string[]> {
+    await this.#readRemotes(resolved.root, resolved.appDir);
+    return this.#remoteNames(resolved.root);
+  }
+
+  #gitRuntime(): GitRuntime {
+    if (this.#runtime !== undefined) {
+      return this.#runtime;
+    }
+    const runtimeDir = createRuntimeDir();
+    const home = path.join(runtimeDir, "home");
+    mkdirSync(home, { recursive: true, mode: 0o700 });
+    chmodSync(home, 0o700);
+    const sshCommand = resolveGitSshCommand(this.#sourceEnv);
+    const askpass = resolveGitAskpass(this.#sourceEnv, path.join(runtimeDir, "credential"));
+    const env = gitChildEnv({ source: this.#sourceEnv, home, sshCommand, askpass });
+    this.#runtime = { env, sshCommand, askpass };
+    return this.#runtime;
+  }
+
+  async #run(
+    root: string,
+    args: string[],
+    timeout: number,
+    remotes?: readonly string[],
+  ): Promise<GitCommandResult> {
+    let command: GitCommand;
+    try {
+      const runtime = this.#gitRuntime();
+      command = {
+        bin: this.#gitBin,
+        args: [
+          ...gitConfigArgs({
+            sshCommand: runtime.sshCommand,
+            askpass: runtime.askpass,
+            remotes,
+          }),
+          ...args,
+        ],
+        cwd: root,
+        timeout,
+        env: { ...runtime.env },
+        maxBuffer: MAX_BUFFER,
+        killSignal: "SIGKILL",
+      };
+    } catch (error) {
+      if (error instanceof GitEnvError) {
+        throw new GitError("invalid_input", error.message);
+      }
       throw runnerFailure(error);
-    });
+    }
+    try {
+      return await this.#runner(command);
+    } catch (error) {
+      throw runnerFailure(error);
+    }
   }
 
   async #mutate<T>(resolved: ResolvedRepository, action: () => Promise<T>): Promise<T> {

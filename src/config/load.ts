@@ -11,7 +11,12 @@ export const PROJECT_CONFIG_FILENAME = "project.yaml";
 /** Application descriptor filename inside {@link HANSE_DIR}. */
 export const APP_CONFIG_FILENAME = "app.yaml";
 
-export type ConfigErrorCode = "NOT_FOUND" | "READ_FAILED" | "VALIDATION_FAILED";
+export type ConfigErrorCode =
+  | "NOT_FOUND"
+  | "READ_FAILED"
+  | "VALIDATION_FAILED"
+  | "INVALID_APP_PATH"
+  | "PATH_OUTSIDE_ROOT";
 
 /** Typed error thrown by config loading. */
 export class ConfigError extends Error {

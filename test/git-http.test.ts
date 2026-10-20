@@ -140,7 +140,7 @@ async function fixture(options: { origin?: boolean } = {}): Promise<Fixture> {
   await git(repo, ["commit", "-m", "initial"]);
 
   if (options.origin === true) {
-    const bare = path.join(dir, "remote.git");
+    const bare = path.join(repo, ".git", "remotes", "remote.git");
     mkdirSync(bare, { recursive: true });
     await git(bare, ["init", "--bare", "-b", "main"]);
     await git(repo, ["remote", "add", "origin", pathToFileURL(bare).href]);
@@ -162,7 +162,9 @@ async function fixture(options: { origin?: boolean } = {}): Promise<Fixture> {
     db,
     workspaceRoot: workspace,
     git: gitService,
-    getProjects: () => [{ id: "p", name: "P", rootPath: projectRoot, service }],
+    getProjects: () => [
+      { id: "p", name: "P", rootPath: projectRoot, workspaceRoot: workspace, service },
+    ],
   };
   const token = createPrincipal(db, { kind: "human", name: "operator" }).token;
   const agentToken = createPrincipal(db, { kind: "agent", name: "agent" }).token;

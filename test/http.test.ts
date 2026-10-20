@@ -88,6 +88,7 @@ function deps(f: Fixture): HttpDeps {
           id: "p",
           name: row?.name ?? "P",
           rootPath: row?.root_path ?? f.projectRoot,
+          workspaceRoot: f.workspace,
           service: f.service,
         },
       ];
@@ -567,6 +568,23 @@ describe("http decisions and form mutations", () => {
       .prepare("SELECT app_key FROM apps WHERE project_id = 'p' AND app_key = 'c'")
       .get() as { app_key: string } | undefined;
     expect(row?.app_key).toBe("c");
+  });
+
+  it("rejects an application path that escapes the project", () => {
+    const f = fixture();
+    const token = humanToken(f.db);
+    const response = handleRequest(deps(f), {
+      method: "POST",
+      path: "/api/projects/p/apps",
+      headers: auth(token),
+      body: form({ name: "evil", path: "../../evil" }),
+    });
+    expect(response.status).toBe(400);
+    expect(JSON.parse(response.body)).toMatchObject({ code: "INVALID_APP_PATH" });
+    const row = f.db
+      .prepare("SELECT app_key FROM apps WHERE project_id = 'p' AND app_key = 'evil'")
+      .get() as { app_key: string } | undefined;
+    expect(row).toBeUndefined();
   });
 
   it("redirects an unauthenticated browser decision to login", () => {

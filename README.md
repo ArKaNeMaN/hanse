@@ -15,7 +15,8 @@ and requirements) to each other through the coordinator - like independent teams
 
 - Project/application registry, and creating projects and adding applications from the UI (by path or
   `git clone`).
-- One isolated `opencode` instance per application (own XDG state and DB; model auth copied in).
+- One isolated `opencode` instance per application (own XDG state and DB; model auth copied in),
+  hosted by a separate agent runtime container on the default toolchain image.
 - Global/project/application settings in the coordinator DB, with an encrypted provider-key store, a
   selectable model that also applies to OMO agents/categories, and human-only settings pages.
 - Optional per-tool web drivers: built-in OMO/opencode tools or the DeepSeek standalone Search/Fetch
@@ -30,11 +31,14 @@ and requirements) to each other through the coordinator - like independent teams
 - Embedded web IDE (code-server) at `/ide/`: opened in the selected project/application, GitHub Dark
   Dimmed theme, a bundled "Hanse Agent" chat extension with tabs per app, and a terminal rooted in the
   opened folder.
-- Docker Compose deployment from a multi-arch image, intended for a trusted LAN.
+- Docker Compose deployment from multi-arch coordinator, IDE, and agent images, intended for a
+  trusted LAN.
 
 ## Run it
 
-The published image is `ghcr.io/arkaneman/hanse` for `linux/amd64` and `linux/arm64`:
+The published images are `ghcr.io/arkaneman/hanse` (coordinator),
+`ghcr.io/arkaneman/hanse-agent-ide` (IDE), and `ghcr.io/arkaneman/hanse-agent-default` (agents), for
+`linux/amd64` and `linux/arm64`:
 
 ```bash
 mkdir -p hanse && cd hanse
@@ -42,17 +46,20 @@ curl -fsSLO https://raw.githubusercontent.com/ArKaNeMaN/hanse/main/compose.yaml
 curl -fsSLO https://raw.githubusercontent.com/ArKaNeMaN/hanse/main/.env.example
 cp .env.example .env
 TOKEN=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')
-sed -i.bak "s|^HANSE_OPERATOR_TOKEN=.*|HANSE_OPERATOR_TOKEN=$TOKEN|" .env && rm -f .env.bak
+RUNTIME_TOKEN=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')
+sed -i.bak "s|^HANSE_OPERATOR_TOKEN=.*|HANSE_OPERATOR_TOKEN=$TOKEN|; s|^HANSE_RUNTIME_TOKEN=.*|HANSE_RUNTIME_TOKEN=$RUNTIME_TOKEN|" .env && rm -f .env.bak
 echo "operator token: $TOKEN"
-mkdir -p workspace state
+mkdir -p workspace state agents
+sudo chown -R 1000:1000 workspace state agents
+docker compose pull
 docker compose up -d
 ```
 
 Open <http://127.0.0.1:8787> and sign in with the token. The coordinator binds loopback by default;
 set `HANSE_BIND=0.0.0.0` to expose it on the LAN.
 
-The full guide covers model credentials, LAN/TLS exposure, backups, upgrades, source builds, image
-publishing, and troubleshooting: [`docs/deployment.md`](docs/deployment.md).
+The full guide covers model credentials, LAN/TLS exposure, backups (including `agents`), upgrades,
+source builds, image publishing, and troubleshooting: [`docs/deployment.md`](docs/deployment.md).
 
 ## Read first
 

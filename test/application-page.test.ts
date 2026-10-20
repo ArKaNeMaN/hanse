@@ -61,6 +61,7 @@ function fixture(): Fixture {
         id: "p1",
         name: "Alpha",
         rootPath: "/tmp/p1",
+        workspaceRoot: "/tmp",
         service: new CoordinatorService(db, "p1"),
       },
     ],

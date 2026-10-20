@@ -1,4 +1,5 @@
 import type { RegisteredApp } from "../registry/index.js";
+import { resolveAppPath } from "../runtime/app-path.js";
 import type { HttpDeps, ProjectContext } from "./handler.js";
 
 export interface FoundApp {
@@ -25,11 +26,17 @@ export function findApp(
 }
 
 /**
- * Resolve an application path: absolute paths stay absolute, relative paths are joined to the
- * project root. Kept identical to the historical chat/dashboard rule.
+ * Resolve an application path and re-validate its containment on every use. Relative paths stay
+ * relative to the project root; absolute paths must stay inside the workspace. A stale manifest or
+ * database row therefore cannot launch an agent outside its allowed root.
  */
-export function appDir(project: Pick<ProjectContext, "rootPath">, app: RegisteredApp): string {
-  return app.path.startsWith("/")
-    ? app.path
-    : `${project.rootPath.replace(/\/+$/, "")}/${app.path.replace(/^\/+/, "")}`;
+export function appDir(
+  project: Pick<ProjectContext, "rootPath" | "workspaceRoot">,
+  app: RegisteredApp,
+): string {
+  return resolveAppPath({
+    appPath: app.path,
+    projectRoot: project.rootPath,
+    workspaceRoot: project.workspaceRoot,
+  });
 }

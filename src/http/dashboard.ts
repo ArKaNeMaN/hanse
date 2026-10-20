@@ -28,6 +28,7 @@ export interface ProjectView {
   id: string;
   name: string;
   rootPath: string;
+  workspaceRoot: string;
   baseBranch: string;
   createdAt: string;
   apps: RegisteredApp[];
@@ -63,6 +64,7 @@ export interface DashboardDeps {
     id: string;
     name: string;
     rootPath: string;
+    workspaceRoot: string;
     service: Pick<CoordinatorService, "listApps">;
   }>;
   manager?: Pick<InstanceManager, "pendingRestart">;
@@ -138,6 +140,7 @@ export function buildSite(deps: DashboardDeps): SiteModel {
       id: project.id,
       name: project.name,
       rootPath: project.rootPath,
+      workspaceRoot: project.workspaceRoot,
       baseBranch: details?.baseBranch ?? "main",
       createdAt: details?.createdAt ?? new Date(0).toISOString(),
       apps: projectApps,

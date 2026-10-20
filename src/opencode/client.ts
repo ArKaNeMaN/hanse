@@ -1,3 +1,5 @@
+import { authorizationFor } from "./endpoint-auth.js";
+
 export interface OpencodeSession {
   id: string;
   title?: string;
@@ -126,10 +128,20 @@ export const MESSAGES_RESPONSE_TIMEOUT_MS = 30_000;
 const ERROR_EXCERPT_BYTES = 4_096;
 const ERROR_EXCERPT_CHARS = 300;
 
+function requestHeaders(endpoint: string, init?: RequestInit): Headers {
+  const headers = new Headers(init?.headers);
+  headers.set("content-type", "application/json");
+  const authorization = authorizationFor(endpoint);
+  if (authorization !== undefined) {
+    headers.set("authorization", authorization);
+  }
+  return headers;
+}
+
 async function call<T>(endpoint: string, path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${endpoint}${path}`, {
     ...init,
-    headers: { "content-type": "application/json", ...(init?.headers ?? {}) },
+    headers: requestHeaders(endpoint, init),
   });
   if (!response.ok) {
     const text = await response.text();
@@ -151,7 +163,10 @@ export function createSession(endpoint: string, title?: string): Promise<Opencod
 
 export async function deleteSession(endpoint: string, sessionId: string): Promise<void> {
   const path = `/session/${encodeURIComponent(sessionId)}`;
-  const response = await fetch(`${endpoint}${path}`, { method: "DELETE" });
+  const response = await fetch(`${endpoint}${path}`, {
+    method: "DELETE",
+    headers: requestHeaders(endpoint),
+  });
   if (!response.ok) {
     const text = await response.text();
     throw new Error(`opencode DELETE ${path} -> ${response.status}: ${text.slice(0, 300)}`);
@@ -312,7 +327,7 @@ async function requestResponse(
   try {
     response = await fetch(`${endpoint}${path}`, {
       ...init,
-      headers: { "content-type": "application/json", ...(init.headers ?? {}) },
+      headers: requestHeaders(endpoint, init),
       signal: AbortSignal.timeout(timeout),
     });
   } catch (error) {

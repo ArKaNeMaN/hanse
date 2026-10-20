@@ -1,3 +1,4 @@
+import { ConfigError } from "../config/load.js";
 import { GitError, type GitErrorCode } from "../git/service.js";
 import { appDir, findApp } from "./apps.js";
 import { principalFrom } from "./auth.js";
@@ -63,6 +64,7 @@ function parseJsonBody(body: string | undefined): Record<string, unknown> | unde
 function errorStatus(code: GitErrorCode, action: GitAction): number {
   switch (code) {
     case "invalid_input":
+    case "invalid_remote":
       return 400;
     case "outside_workspace":
       return 403;
@@ -131,7 +133,15 @@ export async function handleGit(deps: HttpDeps, request: HttpRequest): Promise<H
   if (found === undefined) {
     return json(404, { error: "not found", code: "not_found" });
   }
-  const folder = appDir(found.project, found.app);
+  let folder: string;
+  try {
+    folder = appDir(found.project, found.app);
+  } catch (error) {
+    if (error instanceof ConfigError) {
+      return json(403, { error: error.message, code: "outside_workspace" });
+    }
+    throw error;
+  }
 
   if (subpath === "status") {
     if (request.method !== "GET") {

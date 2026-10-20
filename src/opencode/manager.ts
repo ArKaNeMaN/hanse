@@ -1,5 +1,18 @@
-import { connect, createServer } from "node:net";
+import { existsSync, realpathSync, rmSync } from "node:fs";
 import path from "node:path";
+import type { AgentRuntimeClient } from "../agent/client.js";
+import {
+  type AppRuntimeSpec,
+  computeSpecHash,
+  type SpecHashInput,
+  validateAppRuntimeSpec,
+} from "../agent/spec.js";
+import {
+  agentTokenMatches,
+  ensureAgentToken,
+  mcpTokenPath,
+  revokeAgentToken,
+} from "../mcp/agent-tokens.js";
 import { hashValue } from "../settings/hash.js";
 import type {
   EffectiveSettings,
@@ -8,18 +21,28 @@ import type {
 } from "../settings/types.js";
 import type { SqliteDatabase } from "../store/index.js";
 import { buildWebMcpConfig } from "../web/config.js";
-import { type McpLocalServer, resolveInstanceEnv } from "./instance.js";
+import { writeAuthFile } from "./auth.js";
 import {
-  type LaunchInput,
-  launchInstance,
-  type RunningInstance,
-  stopInstance,
-} from "./launcher.js";
+  authorizationFor,
+  clearEndpointAuthorization,
+  OPENCODE_BASIC_USERNAME,
+  setEndpointAuthorization,
+} from "./endpoint-auth.js";
+import {
+  buildConfigOverlay,
+  type IsolatedEnv,
+  type McpLocalServer,
+  resolveInstanceEnv,
+} from "./instance.js";
 import type { OmoProfileInput, OmoProfileResult } from "./omo-profile.js";
+import { ensureOpencodePassword, opencodePasswordPath, readOpencodePassword } from "./password.js";
 import {
+  buildPermissionPolicy,
+  type PermissionAction,
   resolvePermissionPaths,
   type VerifyPolicyOptions,
   verifyInstancePolicy,
+  type WebPermissionOptions,
 } from "./policy.js";
 
 export interface ManagedApp {
@@ -36,12 +59,11 @@ export interface SettingsSource {
 
 /** Injectable subset of `OmoProfileStore` used for profile application and hashing. */
 export interface OmoProfileSource {
-  ensure(input: OmoProfileInput): Promise<OmoProfileResult>;
+  ensure(input: OmoProfileInput, writePath?: string): Promise<OmoProfileResult>;
   preview(input: OmoProfileInput): OmoProfileResult;
 }
 
 interface Entry {
-  run: RunningInstance;
   endpoint: string;
   projectId: string;
   appKey: string;
@@ -53,8 +75,8 @@ interface Entry {
 }
 
 export interface InstanceManagerOptions {
-  /** Injectable launcher for tests. */
-  launch?: (db: SqliteDatabase, input: LaunchInput) => RunningInstance;
+  /** Runtime transport. Production uses the B0.4 supervisor client; tests inject a fake. */
+  runtime: AgentRuntimeClient;
   /** Injectable policy verifier for tests. */
   verify?: (options: VerifyPolicyOptions) => Promise<string[]>;
   verificationTimeoutMs?: number;
@@ -64,14 +86,18 @@ export interface InstanceManagerOptions {
   omoProfiles?: OmoProfileSource;
   /** Injectable model-propagation verifier for tests. */
   modelVerifier?: (endpoint: string, expected: string) => Promise<string[]>;
-  stopTimeoutMs?: number;
-  /** First port probed for a launched instance. Defaults to 4100; tests inject a disjoint range. */
-  portBase?: number;
+  /** Root used to validate `appDir`. Defaults to the application's parent directory. */
+  workspaceRoot?: string;
+  /** Agents root used to validate `stateDir`. Defaults to the manager runtime root. */
+  agentsRoot?: string;
 }
 
-const PORT_BASE = 4100;
-const PORT_COUNT = 100;
 const DEFAULT_MODEL = "deepseek/deepseek-flash";
+const DEFAULT_AGENT_API_BASE = "http://127.0.0.1:8787";
+const DEFAULT_AGENT_IMAGE = "agent-default";
+const DEFAULT_MEMORY_MB = 2048;
+const DEFAULT_CPUS = 2;
+const DEFAULT_PIDS = 512;
 
 function disableWebsearch(web: EffectiveSettings["web"]): boolean {
   return web.search.value === null || web.search.value.driver === "deepseek";
@@ -114,6 +140,49 @@ function modelString(value: unknown): string | undefined {
   return typeof value === "string" && value.includes("/") ? value : undefined;
 }
 
+function webPermissionOptions(web: EffectiveSettings["web"] | undefined): WebPermissionOptions {
+  if (web === undefined) return {};
+  const search = web.search.value;
+  const fetch = web.fetch.value;
+  const managedSearch = search !== null && search.driver === "deepseek";
+  const managedFetch = fetch !== null && fetch.driver === "deepseek";
+  return {
+    websearch: managedSearch || search === null ? ("deny" as PermissionAction) : "allow",
+    webfetch: managedFetch || fetch === null ? ("deny" as PermissionAction) : "allow",
+    managedSearch,
+    managedFetch,
+  };
+}
+
+function realParentDir(appDir: string): string {
+  try {
+    return path.dirname(realpathSync(appDir));
+  } catch {
+    return path.dirname(path.resolve(appDir));
+  }
+}
+
+function positiveNumber(raw: string | undefined, fallback: number): number {
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+/** Build supervisor resources from the documented environment defaults. */
+export function resolveRuntimeResources(env: NodeJS.ProcessEnv = process.env): {
+  memoryBytes: number;
+  nanoCpus: number;
+  pidsLimit: number;
+} {
+  const memoryMb = positiveNumber(env.HANSE_APP_MEMORY_MB, DEFAULT_MEMORY_MB);
+  const cpus = positiveNumber(env.HANSE_APP_CPUS, DEFAULT_CPUS);
+  const pids = Math.floor(positiveNumber(env.HANSE_APP_PIDS, DEFAULT_PIDS));
+  return {
+    memoryBytes: Math.round(memoryMb * 1024 * 1024),
+    nanoCpus: Math.round(cpus * 1_000_000_000),
+    pidsLimit: pids,
+  };
+}
+
 /**
  * Compare the models reported by `/agent` with the selected model. This is
  * warning-only: a project `.omo` layer or a future OMO change may win, but the
@@ -125,7 +194,9 @@ export async function verifyAgentModels(
   fetchImpl: typeof fetch = fetch,
 ): Promise<string[]> {
   try {
+    const authorization = authorizationFor(endpoint);
     const response = await fetchImpl(`${endpoint}/agent`, {
+      headers: authorization === undefined ? {} : { authorization },
       signal: AbortSignal.timeout(2000),
     });
     if (!response.ok) return [];
@@ -146,72 +217,70 @@ export async function verifyAgentModels(
   }
 }
 
-function portFree(port: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    const probe = createServer();
-    probe.once("error", () => resolve(false));
-    probe.once("listening", () => probe.close(() => resolve(true)));
-    probe.listen(port, "127.0.0.1");
-  });
-}
-
-function waitForPort(port: number, timeoutMs: number): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const deadline = Date.now() + timeoutMs;
-    const attempt = (): void => {
-      const socket = connect(port, "127.0.0.1");
-      socket.once("connect", () => {
-        socket.destroy();
-        resolve();
-      });
-      socket.once("error", () => {
-        socket.destroy();
-        if (Date.now() > deadline) {
-          reject(new Error(`opencode instance did not start on port ${port}`));
-        } else {
-          setTimeout(attempt, 200);
-        }
-      });
-    };
-    attempt();
-  });
-}
-
 export class InstanceManager {
   readonly #db: SqliteDatabase;
-  readonly #dbPath: string;
   readonly #runtimeRoot: string;
   readonly #options: InstanceManagerOptions;
   readonly #running = new Map<string, Entry>();
   readonly #locks = new Map<string, Promise<unknown>>();
-  readonly #portBase: number;
-  #nextPort: number;
 
-  constructor(
-    db: SqliteDatabase,
-    dbPath: string,
-    runtimeRoot: string,
-    options: InstanceManagerOptions = {},
-  ) {
+  constructor(db: SqliteDatabase, runtimeRoot: string, options: InstanceManagerOptions) {
     this.#db = db;
-    this.#dbPath = dbPath;
     this.#runtimeRoot = runtimeRoot;
     this.#options = options;
-    this.#portBase = options.portBase ?? PORT_BASE;
-    this.#nextPort = this.#portBase;
   }
 
   async ensure(app: ManagedApp): Promise<string> {
+    if (!path.isAbsolute(app.appDir)) {
+      throw new Error(`application directory must be an absolute resolved path: ${app.appDir}`);
+    }
     return this.#withAppLock(app.id, async () => {
-      const existing = this.#running.get(app.id);
-      if (existing !== undefined && this.#isRunningEntry(existing)) {
-        return existing.endpoint;
-      }
-      const port = await this.#allocatePort();
-      const runtimeRoot = path.join(this.#runtimeRoot, "projects", app.projectId);
-      const baselinePlugins = resolveBaselinePlugins();
-      const launch = this.#options.launch ?? launchInstance;
       const identity = { projectId: app.projectId, app: app.appKey };
+      const tokenFile = mcpTokenPath(this.#runtimeRoot, identity);
+      const isolated = resolveInstanceEnv(this.#runtimeRoot, identity);
+      const passwordFile = opencodePasswordPath(isolated.XDG_STATE_HOME);
+      const existing = this.#running.get(app.id);
+      const current = await this.#options.runtime.status(app.id);
+      const running =
+        current !== undefined && (current.state === "running" || current.state === "starting");
+      const existingPassword = readOpencodePassword(passwordFile);
+      if (
+        running &&
+        existingPassword !== undefined &&
+        agentTokenMatches(this.#db, app.id, tokenFile)
+      ) {
+        // Reconnect after a coordinator restart or a caller retry. Settings/spec changes stay
+        // "restart required" until an explicit stop and restart.
+        const endpoint = current.endpoint ?? existing?.endpoint;
+        if (endpoint !== undefined && endpoint !== null) {
+          setEndpointAuthorization(endpoint, OPENCODE_BASIC_USERNAME, existingPassword);
+          if (existing === undefined) {
+            this.#running.set(app.id, {
+              endpoint,
+              projectId: app.projectId,
+              appKey: app.appKey,
+              policyWarnings: [],
+              settingsHash: this.#currentSettingsHash(app),
+              appliedProfile: true,
+            });
+          } else {
+            if (existing.endpoint !== endpoint) {
+              clearEndpointAuthorization(existing.endpoint);
+            }
+            existing.endpoint = endpoint;
+          }
+          return endpoint;
+        }
+      }
+      if (existing !== undefined) {
+        clearEndpointAuthorization(existing.endpoint);
+        this.#running.delete(app.id);
+        await this.#options.runtime.delete(app.id);
+      } else if (current !== undefined) {
+        await this.#options.runtime.delete(app.id);
+      }
+
+      const baselinePlugins = resolveBaselinePlugins();
       let model: string | undefined;
       let auth: Record<string, unknown> | undefined;
       let omoProfile: string | undefined;
@@ -227,11 +296,14 @@ export class InstanceManager {
         const snapshot = settings.snapshot({ projectId: app.projectId, appKey: app.appKey });
         web = snapshot.resolved.effective.web;
         model = snapshot.resolved.effective.llm.model.value ?? DEFAULT_MODEL;
-        const profile = await omoProfiles.ensure({
-          appId: app.id,
-          model,
-          disableWebsearch: disableWebsearch(web),
-        });
+        const profile = await omoProfiles.ensure(
+          {
+            appId: app.id,
+            model,
+            disableWebsearch: disableWebsearch(web),
+          },
+          path.join(isolated.HOME, ".omo", "omo.jsonc"),
+        );
         auth = snapshot.mergedAuth;
         omoProfile = profile.applied ? profile.name : undefined;
         appliedProfile = profile.applied;
@@ -239,7 +311,6 @@ export class InstanceManager {
         settingsHash = settingsHashFor(snapshot, profile.contentHash);
         const webConfig = buildWebMcpConfig(web);
         if (webConfig !== undefined) {
-          const isolated = resolveInstanceEnv(runtimeRoot, identity);
           mcpServers = {
             hanse_web: {
               type: "local",
@@ -258,29 +329,88 @@ export class InstanceManager {
         }
       }
 
-      const run = launch(this.#db, {
-        appId: app.id,
-        identity,
-        appDir: app.appDir,
-        runtimeRoot,
-        port,
+      const authFile = path.join(isolated.XDG_DATA_HOME, "opencode", "auth.json");
+      if (auth !== undefined) {
+        writeAuthFile(authFile, auth);
+      }
+
+      ensureAgentToken(this.#db, app.id, tokenFile);
+      const password = ensureOpencodePassword(passwordFile);
+
+      const agentApiBase = process.env.HANSE_AGENT_API_BASE?.trim();
+      const coordinatorEnvironment = {
+        HANSE_MCP_API_BASE:
+          agentApiBase !== undefined && agentApiBase.length > 0
+            ? agentApiBase
+            : DEFAULT_AGENT_API_BASE,
+        HANSE_AGENT_TOKEN_FILE: tokenFile,
+      };
+      const permission = buildPermissionPolicy(
+        resolvePermissionPaths({
+          home: isolated.HOME,
+          xdgDataHome: isolated.XDG_DATA_HOME,
+          xdgConfigHome: isolated.XDG_CONFIG_HOME,
+          xdgCacheHome: isolated.XDG_CACHE_HOME,
+          tmpdir: isolated.TMPDIR,
+          baselinePlugins,
+        }),
+        webPermissionOptions(web),
+      );
+      const overlay = buildConfigOverlay({
         coordinatorCommand: [process.execPath, process.argv[1] ?? "", "mcp"],
-        coordinatorEnvironment: {
-          HANSE_DB: this.#dbPath,
-          HANSE_PROJECT_ID: app.projectId,
-          HANSE_APP_KEY: app.appKey,
-        },
-        baselinePlugins,
         codegraphCommand: resolveCodegraphCommand(),
+        environment: coordinatorEnvironment,
+        plugins: baselinePlugins,
+        permission,
         model,
-        auth,
-        omoProfile,
         mcpServers,
-        web,
       });
+      const env: Record<string, string> = {
+        HOME: isolated.HOME,
+        XDG_DATA_HOME: isolated.XDG_DATA_HOME,
+        XDG_STATE_HOME: isolated.XDG_STATE_HOME,
+        XDG_CONFIG_HOME: isolated.XDG_CONFIG_HOME,
+        XDG_CACHE_HOME: isolated.XDG_CACHE_HOME,
+        OPENCODE_DB: isolated.OPENCODE_DB,
+        TMPDIR: isolated.TMPDIR,
+        MISE_DATA_DIR: isolated.MISE_DATA_DIR,
+        OPENCODE_CONFIG_CONTENT: JSON.stringify(overlay),
+        GIT_CEILING_DIRECTORIES: realParentDir(app.appDir),
+        HANSE_OPENCODE_PASSWORD_FILE: passwordFile,
+        ...(omoProfile === undefined ? {} : { OMO_PROFILE: omoProfile }),
+        ...(existsSync(authFile) ? { HANSE_OPENCODE_AUTH_FILE: authFile } : {}),
+      };
+      const hashInput: SpecHashInput = {
+        appId: app.id,
+        image: process.env.HANSE_AGENT_IMAGE?.trim() || DEFAULT_AGENT_IMAGE,
+        pathMode: "container",
+        appDir: app.appDir,
+        stateDir: isolated.XDG_STATE_HOME,
+        networkName: "agents",
+        env,
+        resources: resolveRuntimeResources(),
+        labels: {
+          "hanse.managed": "true",
+          "hanse.app.id": app.id,
+        },
+      };
+      const spec: AppRuntimeSpec = validateAppRuntimeSpec(
+        { ...hashInput, specHash: computeSpecHash(hashInput) },
+        {
+          workspaceRoot: this.#options.workspaceRoot ?? path.dirname(path.resolve(app.appDir)),
+          agentsRoot: this.#options.agentsRoot ?? this.#runtimeRoot,
+        },
+      );
+
+      const status = await this.#options.runtime.ensure(spec);
+      if (status.state !== "running" || status.endpoint === null) {
+        throw new Error(`agent runtime did not start ${app.id}: ${status.error ?? status.state}`);
+      }
+      const endpoint = status.endpoint;
+      setEndpointAuthorization(endpoint, OPENCODE_BASIC_USERNAME, password);
+
       const entry: Entry = {
-        run,
-        endpoint: run.endpoint,
+        endpoint,
         projectId: app.projectId,
         appKey: app.appKey,
         policyWarnings: [],
@@ -289,36 +419,24 @@ export class InstanceManager {
         profileWarning,
       };
       this.#running.set(app.id, entry);
-      await waitForPort(port, 10000);
-      entry.policyWarnings = await this.#verifyPolicy(
-        app,
-        runtimeRoot,
-        baselinePlugins,
-        run.endpoint,
-      );
+      entry.policyWarnings = await this.#verifyPolicy(app, isolated, baselinePlugins, endpoint);
       if (model !== undefined) {
         const verifyModel = this.#options.modelVerifier ?? verifyAgentModels;
-        entry.modelWarnings = await verifyModel(run.endpoint, model);
+        entry.modelWarnings = await verifyModel(endpoint, model);
       }
-      return run.endpoint;
+      return endpoint;
     });
   }
 
   isRunning(appId: string): boolean {
-    const entry = this.#running.get(appId);
-    return entry !== undefined && this.#isRunningEntry(entry);
+    return this.#running.has(appId);
   }
 
   pendingRestart(appId: string): { pending: boolean; reasons: string[] } {
     const entry = this.#running.get(appId);
     const settings = this.#options.settings;
     const omoProfiles = this.#options.omoProfiles;
-    if (
-      entry === undefined ||
-      !this.#isRunningEntry(entry) ||
-      settings === undefined ||
-      omoProfiles === undefined
-    ) {
+    if (entry === undefined || settings === undefined || omoProfiles === undefined) {
       return { pending: false, reasons: [] };
     }
     const reasons: string[] = [];
@@ -346,10 +464,22 @@ export class InstanceManager {
   async stopApp(appId: string): Promise<boolean> {
     return this.#withAppLock(appId, async () => {
       const entry = this.#running.get(appId);
-      if (entry === undefined) return false;
-      const wasRunning = this.#isRunningEntry(entry);
+      let status: Awaited<ReturnType<AgentRuntimeClient["status"]>>;
+      try {
+        status = await this.#options.runtime.status(appId);
+      } catch {
+        status = undefined;
+      }
+      const wasRunning =
+        entry !== undefined ||
+        (status !== undefined && (status.state === "running" || status.state === "starting"));
+      const endpoint = entry?.endpoint ?? status?.endpoint ?? undefined;
       this.#running.delete(appId);
-      await stopInstance(this.#db, entry.run, { timeoutMs: this.#options.stopTimeoutMs });
+      if (endpoint !== undefined && endpoint !== null) {
+        clearEndpointAuthorization(endpoint);
+      }
+      await this.#options.runtime.delete(appId);
+      this.#revokeAgentToken(appId, entry);
       return wasRunning;
     });
   }
@@ -369,8 +499,63 @@ export class InstanceManager {
     ];
   }
 
-  #isRunningEntry(entry: Entry): boolean {
-    return entry.run.process.exitCode === null && entry.run.process.signalCode === null;
+  /**
+   * Explicitly stop every host and revoke every active agent token.
+   *
+   * Coordinator shutdown must use {@link detach}, not this method: healthy agents keep running across
+   * a coordinator restart.
+   */
+  async stopAll(): Promise<void> {
+    await this.#options.runtime.reconcile([]);
+    const appIds = new Set(this.#running.keys());
+    const active = this.#db
+      .prepare("SELECT DISTINCT app_id AS appId FROM agent_tokens WHERE revoked_at IS NULL")
+      .all() as { appId: string }[];
+    for (const row of active) {
+      appIds.add(row.appId);
+    }
+    for (const [appId, entry] of this.#running) {
+      clearEndpointAuthorization(entry.endpoint);
+      this.#revokeAgentToken(appId, entry);
+    }
+    for (const appId of appIds) {
+      if (!this.#running.has(appId)) {
+        this.#revokeAgentToken(appId);
+      }
+    }
+    this.#running.clear();
+  }
+
+  /**
+   * Drop coordinator-side state without stopping hosts or revoking tokens.
+   *
+   * This is the coordinator-shutdown path: agents stay healthy and the next coordinator attaches to
+   * them through the same token files and per-app password.
+   */
+  detach(): void {
+    for (const entry of this.#running.values()) {
+      clearEndpointAuthorization(entry.endpoint);
+    }
+    this.#running.clear();
+  }
+
+  #currentSettingsHash(app: ManagedApp): string | undefined {
+    const settings = this.#options.settings;
+    const omoProfiles = this.#options.omoProfiles;
+    if (settings === undefined || omoProfiles === undefined) return undefined;
+    try {
+      const snapshot = settings.snapshot({ projectId: app.projectId, appKey: app.appKey });
+      const effective = snapshot.resolved.effective;
+      const model = effective.llm.model.value ?? DEFAULT_MODEL;
+      const preview = omoProfiles.preview({
+        appId: app.id,
+        model,
+        disableWebsearch: disableWebsearch(effective.web),
+      });
+      return settingsHashFor(snapshot, preview.contentHash);
+    } catch {
+      return undefined;
+    }
   }
 
   #withAppLock<T>(appId: string, run: () => Promise<T>): Promise<T> {
@@ -388,16 +573,13 @@ export class InstanceManager {
 
   async #verifyPolicy(
     app: ManagedApp,
-    runtimeRoot: string,
+    isolated: IsolatedEnv,
     baselinePlugins: string[],
     endpoint: string,
   ): Promise<string[]> {
     const verify = this.#options.verify ?? verifyInstancePolicy;
-    const isolated = resolveInstanceEnv(runtimeRoot, {
-      projectId: app.projectId,
-      app: app.appKey,
-    });
     const trustedRoots = resolvePermissionPaths({
+      home: isolated.HOME,
       xdgDataHome: isolated.XDG_DATA_HOME,
       xdgConfigHome: isolated.XDG_CONFIG_HOME,
       xdgCacheHome: isolated.XDG_CACHE_HOME,
@@ -418,21 +600,19 @@ export class InstanceManager {
     }
   }
 
-  stopAll(): void {
-    for (const entry of this.#running.values()) {
-      entry.run.process.kill("SIGTERM");
+  #revokeAgentToken(appId: string, identity?: { projectId: string; appKey: string }): void {
+    revokeAgentToken(this.#db, appId);
+    const resolved =
+      identity ??
+      (this.#db
+        .prepare("SELECT project_id AS projectId, app_key AS appKey FROM apps WHERE id = ?")
+        .get(appId) as { projectId: string; appKey: string } | undefined);
+    if (resolved === undefined) {
+      return;
     }
-    this.#running.clear();
-  }
-
-  async #allocatePort(): Promise<number> {
-    for (let attempt = 0; attempt < PORT_COUNT; attempt += 1) {
-      const port = this.#portBase + ((this.#nextPort - this.#portBase + attempt) % PORT_COUNT);
-      if (await portFree(port)) {
-        this.#nextPort = port + 1;
-        return port;
-      }
-    }
-    throw new Error("no free port for an opencode instance");
+    rmSync(
+      mcpTokenPath(this.#runtimeRoot, { projectId: resolved.projectId, app: resolved.appKey }),
+      { force: true },
+    );
   }
 }

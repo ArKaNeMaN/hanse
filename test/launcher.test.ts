@@ -85,8 +85,12 @@ describe("launcher", () => {
       ],
       baselinePlugins: [plugin],
     });
-    expect(env.XDG_DATA_HOME).toBe("/rt/apps/web/data");
-    expect(env.TMPDIR).toBe(path.join(tmpdir(), "hanse", "p", "web"));
+    expect(env.HOME).toBe("/rt/p/web/home");
+    expect(env.XDG_DATA_HOME).toBe("/rt/p/web/data");
+    expect(env.XDG_STATE_HOME).toBe("/rt/p/web/state");
+    expect(env.OPENCODE_DB).toBe("/rt/p/web/state/opencode.db");
+    expect(env.TMPDIR).toBe("/rt/p/web/tmp");
+    expect(env.MISE_DATA_DIR).toBe("/rt/p/web/mise");
     const overlay = JSON.parse(env.OPENCODE_CONFIG_CONTENT ?? "{}") as {
       mcp?: Record<string, unknown>;
       plugin?: string[];
@@ -96,6 +100,8 @@ describe("launcher", () => {
     expect(overlay.mcp?.codegraph).toBeDefined();
     expect(overlay.plugin).toEqual([plugin]);
     expect(overlay.permission?.external_directory?.[`${env.TMPDIR}/opencode/*`]).toBe("allow");
+    expect(overlay.permission?.external_directory?.[`${env.HOME}/.claude/skills/*`]).toBe("allow");
+    expect(overlay.permission?.external_directory?.[`${env.HOME}/.agents/skills/*`]).toBe("allow");
     expect(overlay.permission?.external_directory?.["/tmp/opencode/*"]).toBeUndefined();
   });
 
@@ -116,7 +122,19 @@ describe("launcher", () => {
     };
     expect(started.state).toBe("running");
     expect(started.pid).toBeGreaterThan(0);
-    expect(existsSync(path.join(tmpdir(), "hanse", "p", "web"))).toBe(true);
+    const appRoot = path.join(dir, "rt", "p", "web");
+    for (const directory of [
+      "home",
+      "data",
+      "state",
+      "config",
+      "cache",
+      "tmp",
+      "mise",
+      path.join("data", "opencode"),
+    ]) {
+      expect(existsSync(path.join(appRoot, directory))).toBe(true);
+    }
 
     await stopInstance(db, running);
     const stopped = db.prepare("SELECT state, pid FROM instances WHERE app_id = 'p:web'").get() as {
@@ -176,9 +194,8 @@ describe("launcher", () => {
       launchInput({
         appDir: "/tmp/apps/web",
         coordinatorEnvironment: {
-          HANSE_DB: "/state/coordinator.db",
-          HANSE_PROJECT_ID: "p",
-          HANSE_APP_KEY: "web",
+          HANSE_MCP_API_BASE: "http://127.0.0.1:8787",
+          HANSE_AGENT_TOKEN_FILE: "/rt/p/web/mcp-token",
         },
         instructions: ["shared/AGENTS.md"],
         baselinePlugins: [plugin],
@@ -197,9 +214,8 @@ describe("launcher", () => {
     expect(overlay.plugin).toEqual([plugin]);
     expect(overlay.instructions).toEqual(["shared/AGENTS.md"]);
     expect(overlay.mcp?.hanse?.environment).toEqual({
-      HANSE_DB: "/state/coordinator.db",
-      HANSE_PROJECT_ID: "p",
-      HANSE_APP_KEY: "web",
+      HANSE_MCP_API_BASE: "http://127.0.0.1:8787",
+      HANSE_AGENT_TOKEN_FILE: "/rt/p/web/mcp-token",
     });
     expect(overlay.permission?.external_directory?.["*"]).toBe("deny");
     expect(overlay.permission?.question).toBe("allow");
@@ -328,7 +344,7 @@ describe("launcher", () => {
             command: ["node", "main.js", "web-mcp"],
             environment: {
               HANSE_WEB_CONFIG: '{"search":{"provider":"deepseek"}}',
-              HANSE_OPENCODE_AUTH_FILE: "/rt/apps/web/data/opencode/auth.json",
+              HANSE_OPENCODE_AUTH_FILE: "/rt/p/web/data/opencode/auth.json",
             },
           },
         },
@@ -347,7 +363,7 @@ describe("launcher", () => {
     expect(overlay.model).toBe("deepseek/deepseek-pro");
     expect(overlay.mcp?.hanse_web?.environment).toEqual({
       HANSE_WEB_CONFIG: '{"search":{"provider":"deepseek"}}',
-      HANSE_OPENCODE_AUTH_FILE: "/rt/apps/web/data/opencode/auth.json",
+      HANSE_OPENCODE_AUTH_FILE: "/rt/p/web/data/opencode/auth.json",
     });
     expect(overlay.permission?.websearch).toBe("deny");
     expect(overlay.permission?.webfetch).toBe("deny");

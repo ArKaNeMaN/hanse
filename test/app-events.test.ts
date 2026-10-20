@@ -9,6 +9,7 @@ import { GitService } from "../src/git/service.js";
 import type { HttpDeps } from "../src/http/handler.js";
 import { createHttpServer } from "../src/http/server.js";
 import { createPrincipal } from "../src/identity/principals.js";
+import { setEndpointAuthorization } from "../src/opencode/endpoint-auth.js";
 import { MAX_TYPED_EVENT_BYTES } from "../src/opencode/events.js";
 import type { InstanceManager } from "../src/opencode/manager.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
@@ -80,6 +81,7 @@ async function fixture(): Promise<Fixture> {
         id: row.id,
         name: row.name,
         rootPath: row.root_path,
+        workspaceRoot: "/tmp",
         service: new CoordinatorService(db, row.id),
       })),
   };
@@ -97,6 +99,7 @@ function auth(token: string): Record<string, string> {
 interface EventUpstream {
   endpoint: string;
   requests: string[];
+  authorizations: Array<string | undefined>;
   send(chunk: string): void;
   close(): void;
   closed(): boolean;
@@ -104,10 +107,12 @@ interface EventUpstream {
 
 async function fakeEventUpstream(status = 200): Promise<EventUpstream> {
   const requests: string[] = [];
+  const authorizations: Array<string | undefined> = [];
   let respond: ServerResponse | undefined;
   let closedFlag = false;
   const server = createServer((incoming, outgoing) => {
     requests.push(incoming.url ?? "");
+    authorizations.push(incoming.headers.authorization);
     if (incoming.url !== "/event") {
       outgoing.writeHead(404, { "content-type": "application/json" });
       outgoing.end(JSON.stringify({ error: "not found" }));
@@ -134,6 +139,7 @@ async function fakeEventUpstream(status = 200): Promise<EventUpstream> {
   return {
     endpoint: `http://127.0.0.1:${address.port}`,
     requests,
+    authorizations,
     send(chunk) {
       respond?.write(chunk);
     },
@@ -814,6 +820,26 @@ describe("app event stream", () => {
     } finally {
       if (previous === undefined) delete process.env.HANSE_EVENT_HEARTBEAT_MS;
       else process.env.HANSE_EVENT_HEARTBEAT_MS = previous;
+    }
+  });
+
+  it("sends the registered Basic authorization to the /event stream", async () => {
+    const f = await fixture();
+    const upstream = await fakeEventUpstream();
+    setEndpointAuthorization(upstream.endpoint, "opencode", "hunter2");
+    useUpstream(f.deps, upstream.endpoint);
+
+    const response = await fetch(`${f.base}/api/apps/storefront/events`, {
+      headers: auth(f.token),
+    });
+    const stream = probe(response);
+    try {
+      await stream.waitFor('"stream.ready"');
+      expect(upstream.authorizations[0]).toBe(
+        `Basic ${Buffer.from("opencode:hunter2", "utf8").toString("base64")}`,
+      );
+    } finally {
+      await stream.close();
     }
   });
 

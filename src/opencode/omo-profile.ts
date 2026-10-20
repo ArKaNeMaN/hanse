@@ -184,10 +184,10 @@ export class OmoProfileStore {
     return this.#compute(input, false);
   }
 
-  ensure(input: OmoProfileInput): Promise<OmoProfileResult> {
+  ensure(input: OmoProfileInput, writePath?: string): Promise<OmoProfileResult> {
     const result = this.#queue.then(
-      () => this.#compute(input, true),
-      () => this.#compute(input, true),
+      () => this.#compute(input, true, writePath),
+      () => this.#compute(input, true, writePath),
     );
     this.#queue = result.then(
       () => undefined,
@@ -196,7 +196,7 @@ export class OmoProfileStore {
     return result;
   }
 
-  #compute(input: OmoProfileInput, write: boolean): OmoProfileResult {
+  #compute(input: OmoProfileInput, write: boolean, writePath?: string): OmoProfileResult {
     const name = profileName(input.appId);
     const read = readBase(this.#path);
     if (read.base === undefined) {
@@ -219,7 +219,7 @@ export class OmoProfileStore {
       };
     }
     try {
-      atomicWrite(this.#path, withProfile(read.base, name, built.profile));
+      atomicWrite(writePath ?? this.#path, withProfile(read.base, name, built.profile));
       return {
         name,
         applied: true,

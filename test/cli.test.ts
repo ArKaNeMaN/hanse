@@ -40,4 +40,46 @@ describe("runCli", () => {
     expect(code).toBe(2);
     expect(lines.join("\n")).toContain("Unknown command");
   });
+
+  it("requires --spec for agent-host", async () => {
+    const { lines, io } = collector();
+    const code = await runCli(["agent-host"], io);
+    expect(code).toBe(2);
+    expect(lines.join("\n")).toContain("--spec");
+  });
+
+  it("reports an unreadable agent-host spec without starting anything", async () => {
+    const { lines, io } = collector();
+    const code = await runCli(["agent-host", "--spec", "/nonexistent/spec.json"], io);
+    expect(code).toBe(1);
+    expect(lines.join("\n")).toContain("agent-host:");
+  });
+
+  it("refuses to start the supervisor without HANSE_RUNTIME_TOKEN", async () => {
+    const previous = process.env.HANSE_RUNTIME_TOKEN;
+    delete process.env.HANSE_RUNTIME_TOKEN;
+    try {
+      const { lines, io } = collector();
+      const code = await runCli(["agent-supervisor"], io);
+      expect(code).toBe(2);
+      expect(lines.join("\n")).toContain("HANSE_RUNTIME_TOKEN");
+    } finally {
+      if (previous === undefined) delete process.env.HANSE_RUNTIME_TOKEN;
+      else process.env.HANSE_RUNTIME_TOKEN = previous;
+    }
+  });
+
+  it("rejects an invalid supervisor port before listening", async () => {
+    const previous = process.env.HANSE_RUNTIME_TOKEN;
+    process.env.HANSE_RUNTIME_TOKEN = "test-token";
+    try {
+      const { lines, io } = collector();
+      const code = await runCli(["agent-supervisor", "--port", "70000"], io);
+      expect(code).toBe(2);
+      expect(lines.join("\n")).toContain("--port");
+    } finally {
+      if (previous === undefined) delete process.env.HANSE_RUNTIME_TOKEN;
+      else process.env.HANSE_RUNTIME_TOKEN = previous;
+    }
+  });
 });
