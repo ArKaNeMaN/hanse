@@ -49,6 +49,7 @@ describe("registry", () => {
       expect(app.imageStatus).toBe("missing");
       expect(app.imageError).toBeNull();
       expect(app.buildDockerfile).toBeNull();
+      expect(app.buildConfigured).toBe(false);
       expect(app.buildArgs).toEqual({});
       expect(app.buildSpecHash).toBeNull();
     }
@@ -102,6 +103,7 @@ describe("registry", () => {
     expect(web?.buildArgs).toEqual({ NODE_VERSION: "22" });
     expect(web?.buildSpecHash).toMatch(/^[a-f0-9]{64}$/);
     expect(web?.imageHash).toBe(web?.buildSpecHash);
+    expect(web?.buildConfigured).toBe(true);
 
     const row = db
       .prepare(
@@ -148,7 +150,9 @@ describe("registry", () => {
     expect(web?.imageError).toContain("build.dockerfile");
     expect(web?.imageError?.length).toBeLessThanOrEqual(400);
     expect(web?.buildDockerfile).toBeNull();
+    expect(web?.buildConfigured).toBe(true);
     expect(api?.imageStatus).toBe("missing");
+    expect(api?.buildConfigured).toBe(false);
     db.close();
   });
 
@@ -175,6 +179,7 @@ describe("registry", () => {
     expect(web?.imageStatus).toBe("error");
     expect(web?.imageError).toContain("escapes");
     expect(web?.buildDockerfile).toBeNull();
+    expect(web?.buildConfigured).toBe(true);
     db.close();
   });
 });

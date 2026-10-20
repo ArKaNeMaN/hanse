@@ -79,6 +79,7 @@ function registeredApp(appPath: string): RegisteredApp {
     imageBuiltAt: null,
     imageError: null,
     buildDockerfile: null,
+    buildConfigured: false,
     buildArgs: {},
     buildSpecHash: null,
   };

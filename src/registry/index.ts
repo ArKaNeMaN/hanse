@@ -32,6 +32,8 @@ export interface RegisteredApp {
   imageRollbackBuiltAt?: string | null;
   /** Canonical absolute Dockerfile path, or `null` when the app is not a build app. */
   buildDockerfile: string | null;
+  /** True when the app declares a per-app build, including an invalid one. */
+  buildConfigured: boolean;
   buildArgs: Record<string, string>;
   /** Current image build spec hash; changes only with the Dockerfile, base, or build args. */
   buildSpecHash: string | null;
@@ -176,6 +178,7 @@ export function registerProject(
       contract: "AGENTS.md",
       ...image,
       buildDockerfile: inspection.dockerfile,
+      buildConfigured: inspection.status === "error" || inspection.dockerfile !== null,
       buildArgs: inspection.args,
       buildSpecHash: inspection.specHash,
     });

@@ -84,6 +84,10 @@ export class CoordinatorService {
       imageRollbackRef: row.image_rollback_ref,
       imageRollbackBuiltAt: row.image_rollback_built_at,
       buildDockerfile: null,
+      // image_hash is the manifest build-spec hash, so unlike `image_status` it is non-null for a
+      // build-configured app that has never produced an image. Error rows are also build-configured.
+      buildConfigured:
+        row.image_status !== "missing" || row.image_ref !== null || row.image_hash !== null,
       buildArgs: {},
       buildSpecHash: null,
     }));
