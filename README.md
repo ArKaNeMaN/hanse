@@ -31,15 +31,15 @@ and requirements) to each other through the coordinator - like independent teams
 - Embedded web IDE (code-server) at `/ide/`: opened in the selected project/application, GitHub Dark
   Dimmed theme, a bundled "Hanse Agent" chat extension with tabs per app, and a terminal rooted in the
   opened folder.
-- Docker Compose deployment from coordinator, IDE, and agent images, intended for a trusted LAN.
-  Published images are `linux/amd64`; arm64 is built on demand until it returns to the default
+- Docker Compose deployment from coordinator, IDE, runner, and agent images, intended for a trusted
+  LAN. Published images are `linux/amd64`; arm64 is built on demand until it returns to the default
   publish matrix.
 
 ## Run it
 
 The published images are `ghcr.io/arkaneman/hanse` (coordinator),
-`ghcr.io/arkaneman/hanse-agent-ide` (IDE), and `ghcr.io/arkaneman/hanse-agent-default` (agents), for
-`linux/amd64`:
+`ghcr.io/arkaneman/hanse-agent-ide` (IDE), `ghcr.io/arkaneman/hanse-runner` (runner), and
+`ghcr.io/arkaneman/hanse-agent-default` (per-app agents), for `linux/amd64`:
 
 ```bash
 mkdir -p hanse && cd hanse
@@ -51,8 +51,11 @@ RUNTIME_TOKEN=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')
 sed -i.bak "s|^HANSE_OPERATOR_TOKEN=.*|HANSE_OPERATOR_TOKEN=$TOKEN|; s|^HANSE_RUNTIME_TOKEN=.*|HANSE_RUNTIME_TOKEN=$RUNTIME_TOKEN|" .env && rm -f .env.bak
 echo "operator token: $TOKEN"
 mkdir -p workspace state agents
+ROOT=$(pwd)
+sed -i.bak "s|^# HANSE_HOST_WORKSPACE=.*|HANSE_HOST_WORKSPACE=$ROOT/workspace|; s|^# HANSE_HOST_AGENTS=.*|HANSE_HOST_AGENTS=$ROOT/agents|" .env && rm -f .env.bak
 sudo chown -R 1000:1000 workspace state agents
 docker compose pull
+docker pull "ghcr.io/arkaneman/hanse-agent-default:${HANSE_TAG:-latest}"
 docker compose up -d
 ```
 

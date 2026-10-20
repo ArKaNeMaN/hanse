@@ -19,27 +19,30 @@ coordinator. The product surface is one web UI (dashboard + chat + handoffs) plu
   Biome. Schemas: zod. YAML: `yaml`. Database: `better-sqlite3`.
 - Public OSS; license not chosen yet.
 
-## Runtime topology (three containers, one exposed port)
+## Runtime topology (B1 core: runner + per-app containers)
 
-Three images are built from `Dockerfile`: `ghcr.io/arkaneman/hanse` (coordinator),
-`hanse-agent-default` (agents), and `hanse-agent-ide` (IDE). Publish currently targets
-`linux/amd64`; arm64 is on-demand/backlog.
-Compose definitions live in `compose.yaml`; `compose.build.yaml` adds a source build, and
-`compose.host-auth.yaml` mounts a host `opencode` auth file.
+Four multi-arch images are built from `Dockerfile`: `ghcr.io/arkaneman/hanse` (coordinator),
+`hanse-agent-ide` (IDE), `hanse-runner` (runner), and `hanse-agent-default` (per-app agent).
+Publish currently targets `linux/amd64`; arm64 is on-demand/backlog. Compose definitions live in
+`compose.yaml`; `compose.build.yaml` adds a source build, and `compose.host-auth.yaml` mounts a host
+`opencode` auth file.
 
 - **`hanse`** (coordinator): runs `node dist/index.js serve --workspace /data/workspace`. Mounts
   `./workspace:/data/workspace`, `./state:/data/state`, and `./agents:/data/agents`; the host opencode
-  auth file is optional. Talks to the agents supervisor over `http://agents:8789` with
-  `HANSE_RUNTIME_TOKEN`. `HANSE_IDE=0` means it does **not** spawn code-server itself.
+  auth file is optional. Talks to the runner at `http://runner:8790` with `HANSE_RUNTIME_TOKEN`.
+  `HANSE_IDE=0` means it does **not** spawn code-server itself.
 - **`hanse-ide`** (VS Code): runs `agent-ide` with code-server and the default toolchains. Mounts
   **only** `./workspace:/data/workspace` (no `state` or `agents`). Serves on `8080`, reachable only on
-  the front network.
-- **`hanse-agents`** (agent runtime): runs `hanse agent-supervisor` on `0.0.0.0:8789`, hosting one
-  agent host per app. Mounts the workspace and `./agents:/data/agents`; no `state`, no Docker socket,
-  read-only root, `cap_drop: ALL`, uid 1000. Each app host runs `opencode serve` on `0.0.0.0:4100+`
-  inside this container.
-- **Networks:** `front` contains the coordinator and IDE; `agents` contains the coordinator and
-  agents. The agents container cannot resolve or reach the IDE container.
+  the `front` network.
+- **`hanse-runner`**: the only Docker socket holder. It runs on the internal `control` network, has
+  no `/data/state`, and mounts the host agents volume read-only for per-app passwords. It validates
+  runtime specs and creates one app container per application.
+- **`hanse-app-<project>-<app>`** (dynamic): one `agent-default` container per app, on its own
+  `hanse-app-*` bridge network. It mounts only the app directory and `/data/agents/<project>/<app>`;
+  uid 1000, read-only root, `cap_drop: ALL`, no state, no Docker socket, no operator/runtime token.
+  `opencode serve` listens on `0.0.0.0:4100` inside the app network.
+- **Networks:** `front` contains the coordinator and IDE; `control` contains the coordinator and
+  runner; each app container has its own network. App containers cannot reach the IDE or sibling apps.
 - **Exposed port:** `${HANSE_BIND:-127.0.0.1}:${HANSE_PORT:-8787}` (loopback by default; set
   `HANSE_BIND=0.0.0.0` or a LAN IP to expose it). `/healthz` is an unauthenticated liveness endpoint.
   `/` and `/api/*` are our UI; `/ide/*` is reverse-proxied to `ide:8080` (HTTP and WebSocket), with
@@ -105,12 +108,12 @@ Compose definitions live in `compose.yaml`; `compose.build.yaml` adds a source b
 ## Agents and chat
 
 - `opencode` (`opencode-ai@1.19.3`) is installed in the agent and IDE images.
-- The coordinator asks the `agents` supervisor to start **one agent host per (project, app)** lazily
-  on first chat use. Each host runs `opencode serve` on `0.0.0.0:4100+` inside the agents container,
-  with isolated `XDG_*`, `OPENCODE_DB`, and `TMPDIR` under
-  `/data/agents/<projectId>/<appKey>/{home,data,state,config,cache,tmp,mise}`. The host `auth.json`
-  and opencode password are copied into that per-app state; model access works (verified with
-  `deepseek`).
+- The coordinator asks the runner to **ensure one app container per (project, app)** lazily on first
+  chat use. The runner creates the container, app network, app/agents bind mounts, and coordinator
+  network alias. `opencode serve` listens on `0.0.0.0:4100` inside the app container, with isolated
+  `XDG_*`, `OPENCODE_DB`, and `TMPDIR` under
+  `/data/agents/<projectId>/<appKey>/{home,data,state,config,cache,tmp,mise}`. The app `auth.json`
+  and opencode password live in that per-app state; model access works (verified with `deepseek`).
 - Every managed instance also loads the image-baked OMO baseline
   (`oh-my-openagent@5.1.35`, `/opt/hanse/omo`) through `HANSE_OMO_PLUGIN`. The coordinator writes a
   per-app profile at `<app-home>/.omo/omo.jsonc` and pins OMO agents/categories to
@@ -301,13 +304,14 @@ Host `./state` is mounted at `/data/state` in `hanse` only:
   principals, events, secrets, settings, provider keys.
 - `hanse/secret.key` - AES-256-GCM key for the credential store and provider keys (mode `0600`).
 
-Host `./agents` is mounted at `/data/agents` in `hanse` and `hanse-agents`:
+Host `./agents` is mounted at `/data/agents` read-write in `hanse` and read-only in `hanse-runner`:
 
 - `<projectId>/<appKey>/{home,data,state,config,cache,tmp,mise}` - per-app HOME/XDG, opencode DB,
   scratch, and mise toolchains.
 - The reconciled opencode `auth.json`, opencode Basic-auth password, and per-app MCP token live under
   that app's state (`0600`).
 - The coordinator-generated OMO profile is `<app-home>/.omo/omo.jsonc`; OMO state is per app.
+- Each app container sees only its own `/data/agents/<project>/<app>` root.
 - The IDE never sees this volume.
 
 ## CLI
@@ -315,9 +319,10 @@ Host `./agents` is mounted at `/data/agents` in `hanse` and `hanse-agents`:
 - `hanse init [dir]` - scaffold `.hanse/project.yaml`.
 - `hanse status [dir]` - discover/register a project and print its apps.
 - `hanse serve` - run the web UI/API (`--workspace`, `--hostname`, `--port`, `--state-home`); requires
-  `HANSE_RUNTIME_TOKEN` and a reachable agents supervisor.
-- `hanse agent-supervisor` - internal B0 supervisor (`--hostname`, `--port`; default `0.0.0.0:8789`).
-- `hanse agent-host` - internal single-app host (`--spec <file>`), spawned by the supervisor.
+  `HANSE_RUNTIME_TOKEN` and a reachable B1 runner (`HANSE_RUNNER_URL`).
+- `hanse runner` - internal B1 container runner (`--hostname`, `--port`; default `0.0.0.0:8790`).
+- `hanse agent-supervisor` / `hanse agent-host` - internal B0 compatibility commands, not used by the
+  B1 Compose stack.
 - `hanse mcp` - run the coordinator MCP server bound to an app (used by opencode).
 - `hanse web-mcp` - run the managed web tools MCP server (internal; spawned by opencode when a
   DeepSeek web driver is configured).
@@ -327,12 +332,13 @@ Host `./agents` is mounted at `/data/agents` in `hanse` and `hanse-agents`:
 | Variable | Used by | Meaning |
 | --- | --- | --- |
 | `HANSE_OPERATOR_TOKEN` | serve, ide | operator token (UI login + extension API); never given to agents |
-| `HANSE_RUNTIME_TOKEN` | serve, agent-supervisor | shared coordinator/supervisor secret; agents never receive the operator token |
+| `HANSE_RUNTIME_TOKEN` | serve, runner | shared coordinator/runner secret; app containers never receive the operator token |
 | `HANSE_STATE_HOME` | serve | coordinator state root (default `~/.local/state`) |
 | `HANSE_AGENTS_HOME` | serve | per-app agent state root (default `~/.local/state/hanse-agents`; Compose sets `/data/agents`) |
-| `HANSE_AGENT_SUPERVISOR_URL` | serve | supervisor base URL (Compose: `http://agents:8789`) |
+| `HANSE_RUNNER_URL` | serve | runner base URL (Compose: `http://runner:8790`) |
+| `HANSE_HOST_WORKSPACE` / `HANSE_HOST_AGENTS` | serve, runner | absolute host paths used by the runner for app bind mounts |
 | `HANSE_AGENT_API_BASE` | serve | coordinator URL passed to agents as the MCP API base (Compose: `http://hanse:8787`) |
-| `HANSE_AGENT_IMAGE` | serve | image recorded in the runtime spec (B0 supervisor ignores it) |
+| `HANSE_AGENT_IMAGE` | serve, runner | default per-app image; runner requires it to be in its allowlist |
 | `HANSE_AUTH_FILE` | serve | host opencode `auth.json`; reconciled with provider-key settings into each app state |
 | `HANSE_OMO_PLUGIN` | serve | comma-separated baseline plugin specs injected into every instance |
 | `HANSE_CODEGRAPH_BIN` | serve | path to the codegraph CLI used for the baseline MCP server |
@@ -349,10 +355,11 @@ coordinator; operators do not set them.
 
 ## Verification
 
-`npm run lint && npm run typecheck && npm test && npm run build` (all green; 886 tests). B0 runtime
-smoke: three Compose services healthy, `scripts/agent-runtime-probe.sh b0` passes, and the agent image
-runs Python 3.12, Node 22, PHP 8.3 with mbstring/intl/zip/pdo, uv, Go 1.23, Rust, and Java 21 as uid
-1000. Chat browser
+`npm run lint && npm run typecheck && npm test && npm run build` (all green; 905 tests). B1 core
+live smoke on `deployment-host`: coordinator/IDE/runner healthy, per-app `demo-app` container running,
+`scripts/agent-runtime-probe.sh b1` passes, coordinator recreate reattaches the app network, and the
+app agent has no `/data/state`, Docker socket, operator/runtime token, or sibling app access.
+Chat browser
 QA: `node docs/design/chat-qa.mjs` (deterministic fixtures; 3 scenarios, 81 assertions, 10
 screenshots, zero console/page errors). Live smoke against a real deployment: 1
 scenario, 2 assertions, streaming assistant text and a rendered markdown table, zero console/page
@@ -377,13 +384,14 @@ Settings stage verification:
 
 - Single user; no RBAC or multi-tenant isolation.
 - Trust model: trusted repositories; agents execute code.
-- **Agents run in a separate hardened container without `/data/state`, the Docker socket, or the
-  operator token.** B0 still hosts all apps in one `agents` container and one agents network, so
-  apps can reach each other's processes/ports and share a uid; per-app containers and networks are
-  B1. The supervisor's `HANSE_RUNTIME_TOKEN` is visible in the agents container in B0 (accepted; B1
-  removes it from app containers). "Human-only" prompt routes remain a Hanse-route guarantee, not a
-  hard boundary: an agent with `bash` can call the upstream prompt API directly, including a v2
-  `always` reply that creates a durable project-scoped saved permission.
+- **B1 core runs each app in its own hardened container/network.** App containers have no
+  `/data/state`, Docker socket, operator/runtime token, or sibling mounts. The runner is
+  root-equivalent through the Docker socket and is trusted/operator-only; it is on the control
+  network and holds no coordinator state. B1.4 operator terminal and B1.5 git-in-runner are not yet
+  complete; the app page does not expose a per-app terminal and GitService remains the hardened
+  coordinator implementation. "Human-only" prompt routes remain a Hanse-route guarantee, not a hard
+  boundary: an agent with `bash` can call the upstream prompt API directly, including a v2 `always`
+  reply that creates a durable project-scoped saved permission.
 - The permission overlay is a guardrail, not a sandbox. App-owned `opencode.json`/plugins can widen
   the final ruleset (the `.opencode` edit deny is bypassable with `bash`), verification is
   warning-only by owner decision, `bash` path checks are best-effort, symlinks/bind mounts can

@@ -3,23 +3,30 @@
 > Current architecture and behavior: [`docs/current-state.md`](current-state.md). This file is about
 > running `hanse` with Docker Compose, either from the published image or from source.
 
-`hanse` is a single-operator, self-hosted workbench. It runs as three containers from three images:
+`hanse` is a single-operator, self-hosted workbench. It runs three static containers plus one
+container per application:
 
-- **`hanse`** - the coordinator: web UI, HTTP API, MCP servers, and the runtime supervisor client.
+- **`hanse`** - the coordinator: web UI, HTTP API, MCP servers, and the runtime client.
 - **`hanse-ide`** - code-server with the default toolchains and the bundled Hanse Agent extension.
   It is not published directly; the coordinator proxies it at `/ide/` and enforces the operator login.
-- **`hanse-agents`** - the agent runtime: one `hanse agent-supervisor` process hosting the per-app
-  `opencode` instances, using the default Python/Node/PHP toolchain image.
+- **`hanse-runner`** - the container runner: it owns the Docker socket, validates runtime specs, and
+  creates one app container per application on an isolated app network.
+- **`hanse-app-<project>-<app>`** - the per-app runtime, created lazily on first chat/use from the
+  default agent image. It mounts only that app's directory and `/data/agents/<project>/<app>`.
 
-Only the coordinator publishes a host port. The IDE and agents are reachable only on the Compose
-networks; agents also have a separate network and cannot reach the IDE.
+Only the coordinator publishes a host port. The IDE is on the `front` network, the runner is on the
+`control` network, and app containers live on their own `hanse-app-*` networks; app containers cannot
+reach the IDE.
 
 ## Requirements
 
-- Docker Engine 24+ with Compose v2 (Docker Desktop works on macOS and Windows/WSL2).
+- Docker Engine 24+ with Compose v2 (Docker Desktop works on macOS and Windows/WSL2). The runner
+  needs the Docker socket; a rootful daemon is required for the default B1 Compose stack.
 - A Linux `amd64` host. The default publish workflow builds `linux/amd64`; arm64 is on-demand until
   it returns to the default matrix.
-- About 2 GB of RAM for an idle deployment, plus room for the projects and the agents you run.
+- About 2 GB of RAM for an idle coordinator/IDE/runner, plus room for the per-app containers.
+- Absolute host paths for the workspace and agents volumes, because the runner passes them to the
+  Docker daemon as bind sources.
 - About 8 GB of disk for the coordinator, IDE, and agent images plus the volumes. The images bundle
   code-server, the toolchains, `opencode`, the OMO baseline, and CodeGraph.
 - A model credential for `opencode`: enter a provider key in the settings UI, or reuse a host
@@ -44,10 +51,16 @@ sed -i.bak "s|^HANSE_OPERATOR_TOKEN=.*|HANSE_OPERATOR_TOKEN=$TOKEN|; s|^HANSE_RU
 echo "operator token: $TOKEN"
 
 mkdir -p workspace state agents
+ROOT=$(pwd)
+sed -i.bak "s|^# HANSE_HOST_WORKSPACE=.*|HANSE_HOST_WORKSPACE=$ROOT/workspace|; s|^# HANSE_HOST_AGENTS=.*|HANSE_HOST_AGENTS=$ROOT/agents|" .env && rm -f .env.bak
 sudo chown -R 1000:1000 workspace state agents
 docker compose pull
+docker pull "ghcr.io/arkaneman/hanse-agent-default:${HANSE_TAG:-latest}"
 docker compose up -d
 ```
+
+`docker compose pull` pulls the coordinator, IDE, and runner images. The per-app agent image is not a
+Compose service, so pull it explicitly; the runner creates app containers from that local image.
 
 Open <http://127.0.0.1:8787> and sign in with the token from `.env`.
 
@@ -111,39 +124,41 @@ Compose reads `.env` in the directory containing `compose.yaml`.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `HANSE_OPERATOR_TOKEN` | **required** | The single operator login for the UI, IDE, and extension API. Use a long random value. |
-| `HANSE_RUNTIME_TOKEN` | **required** | Shared secret between the coordinator and the internal agents supervisor. Not exposed publicly. Use a second long random value. |
+| `HANSE_RUNTIME_TOKEN` | **required** | Shared secret between the coordinator and the internal runner. Not exposed publicly. Use a second long random value. |
 | `HANSE_IMAGE` | `ghcr.io/arkaneman/hanse` | Coordinator image repository. Change it for a mirror or a fork. |
 | `HANSE_TAG` | `latest` | Coordinator image tag. Pin a release or `sha-<short>` tag for reproducible deployments. |
-| `HANSE_AGENT_IMAGE` | `ghcr.io/arkaneman/hanse-agent-default` | Agent runtime image repository. |
+| `HANSE_AGENT_IMAGE` | `ghcr.io/arkaneman/hanse-agent-default` | Per-app agent image repository. |
 | `HANSE_IDE_IMAGE` | `ghcr.io/arkaneman/hanse-agent-ide` | IDE image repository. |
-| `HANSE_AGENT_TAG` | `HANSE_TAG` | Agent and IDE image tag; defaults to the coordinator tag. |
+| `HANSE_RUNNER_IMAGE` | `ghcr.io/arkaneman/hanse-runner` | Runner image repository. |
+| `HANSE_AGENT_TAG` | `HANSE_TAG` | Agent, IDE, and runner image tag; defaults to the coordinator tag. |
 | `HANSE_BIND` | `127.0.0.1` | Host address for port 8787. Set `0.0.0.0` (or a LAN IP) to expose it. |
 | `HANSE_PORT` | `8787` | Host port mapped to the coordinator. |
 | `HANSE_WORKSPACE` | `./workspace` | Host path for projects and applications. |
 | `HANSE_STATE` | `./state` | Host path for coordinator state. Keep it private. |
 | `HANSE_AGENTS` | `./agents` | Host path for per-app HOME, XDG, mise, opencode auth/password, and MCP tokens. |
+| `HANSE_HOST_WORKSPACE` | **required** | Absolute host path corresponding to `/data/workspace`. |
+| `HANSE_HOST_AGENTS` | **required** | Absolute host path corresponding to `/data/agents`. |
 | `HANSE_BUILD_IMAGE` | `hanse:dev` | Local coordinator tag used by the source-build overlay. |
 | `HANSE_AGENT_BUILD_IMAGE` | `hanse-agent-default:dev` | Local agent tag used by the source-build overlay. |
 | `HANSE_IDE_BUILD_IMAGE` | `hanse-agent-ide:dev` | Local IDE tag used by the source-build overlay. |
+| `HANSE_RUNNER_BUILD_IMAGE` | `hanse-runner:dev` | Local runner tag used by the source-build overlay. |
 | `HANSE_HOST_AUTH_FILE` | - | Required only by `compose.host-auth.yaml`; path to a host `auth.json`. |
 
 The coordinator also receives `HANSE_STATE_HOME=/data/state`, `HANSE_AGENTS_HOME=/data/agents`,
-`HANSE_AGENT_SUPERVISOR_URL=http://agents:8789`, `HANSE_AGENT_API_BASE=http://hanse:8787`,
-`HANSE_IDE_URL=/ide/`, and the proxy target for the IDE service. These are internal to the Compose
-file and normally do not need to be overridden.
-
-`HANSE_HOST_WORKSPACE` and `HANSE_HOST_AGENTS` are reserved for the B1 per-app runner and are not used
-by the B0 Compose file.
+`HANSE_RUNNER_URL=http://runner:8790`, `HANSE_AGENT_API_BASE=http://hanse:8787`, `HANSE_IDE_URL=/ide/`,
+and the proxy target for the IDE service. These are internal to the Compose file and normally do not
+need to be overridden.
 
 ### Volumes and permissions
 
-- `./workspace` -> `/data/workspace`: projects and applications. Shared by the coordinator, IDE, and
-  agents.
+- `./workspace` -> `/data/workspace`: projects and applications. Shared by the coordinator and IDE.
+  Per-app containers receive only their own app directory as a bind mount.
 - `./state` -> `/data/state`: the coordinator database (`coordinator.db` with WAL/SHM) and the secret
-  key. Mounted into the coordinator only, never into the IDE or agents.
+  key. Mounted into the coordinator only, never into the IDE, runner, or app containers.
 - `./agents` -> `/data/agents`: per-app agent HOME/XDG state, mise data, opencode auth/password, and
-  MCP tokens. Shared by the coordinator and agents; never mounted into the IDE. **Back it up and keep
-  it private** because it contains model credentials.
+  MCP tokens. Mounted read-write into the coordinator and read-only into the runner; each app
+  container gets only its own `/data/agents/<project>/<app>` root. **Back it up and keep it private**
+  because it contains model credentials.
 
 The containers run as uid/gid 1000. Files created by another uid (for example by `sudo`) break
 writes. Repair with `sudo chown -R 1000:1000 workspace state agents`.
@@ -176,18 +191,19 @@ Caddy handles the HTTP and WebSocket upgrade used by `/ide/` automatically. With
 Security model, in short:
 
 - One operator token, no user accounts or per-user isolation.
-- Agents run in a separate hardened container as uid 1000 with a read-only root, `cap_drop: ALL`,
-  `no-new-privileges`, and only the workspace and agents volumes. They have no `/data/state`, no
-  Docker socket, and no operator token. They share one container and one network in B0, so cross-app
-  process/network isolation and per-app containers arrive in B1.
-- The internal agents supervisor is authenticated by `HANSE_RUNTIME_TOKEN`. In B0 the supervisor
-  process can see this token; app containers in B1 will not.
+- Each app runs in its own hardened container as uid 1000 with a read-only root, `cap_drop: ALL`,
+  `no-new-privileges`, and only its app directory and app agents root mounted. App containers have no
+  `/data/state`, no Docker socket, and no operator/runtime token. Each app has its own bridge network;
+  sibling app containers are not reachable by name.
+- The runner is the only socket holder. It is root-equivalent by capability, so it runs on the internal
+  `control` network only, has no coordinator state, and receives the host agents volume read-only for
+  per-app credentials. The coordinator calls it with `HANSE_RUNTIME_TOKEN`.
 - The IDE has only the workspace volume, not coordinator state or the agents volume. It receives the
   operator token because it is operator-trusted; agents never do.
 - The login cookie is `HttpOnly` and `SameSite=Strict`; serve the UI over HTTPS when it is not on
   loopback.
-- `no-new-privileges` is set on all services; the agents service additionally drops all capabilities
-  and uses a read-only root. Do not add host networking or privileged mode.
+- `no-new-privileges` is set on all static services; app containers additionally drop all capabilities
+  and use a read-only root. Do not add host networking or privileged mode.
 - Rotate `HANSE_OPERATOR_TOKEN`/`HANSE_RUNTIME_TOKEN` in `.env` and run `docker compose up -d`; the
   coordinator re-upserts the operator principal on start.
 
@@ -195,6 +211,7 @@ Security model, in short:
 
 ```bash
 docker compose pull
+docker pull "ghcr.io/arkaneman/hanse-agent-default:${HANSE_TAG:-latest}"
 docker compose up -d --remove-orphans
 docker compose ps
 curl -fsS http://127.0.0.1:8787/healthz
@@ -222,9 +239,10 @@ cp .env.example .env
 docker compose -f compose.yaml -f compose.build.yaml up -d --build
 ```
 
-The source-build overlay tags the results as `hanse:dev`, `hanse-agent-default:dev`, and
-`hanse-agent-ide:dev` (override with `HANSE_BUILD_IMAGE`, `HANSE_AGENT_BUILD_IMAGE`, and
-`HANSE_IDE_BUILD_IMAGE`) so it does not overwrite the published tags. The build needs network access
+The source-build overlay tags the results as `hanse:dev`, `hanse-agent-default:dev`,
+`hanse-agent-ide:dev`, and `hanse-runner:dev` (override with `HANSE_BUILD_IMAGE`,
+`HANSE_AGENT_BUILD_IMAGE`, `HANSE_IDE_BUILD_IMAGE`, and `HANSE_RUNNER_BUILD_IMAGE`) so it does not
+overwrite the published tags. The build needs network access
 and several GB of disk. It compiles TypeScript and Tailwind, installs production dependencies for the
 target architecture, then installs `opencode`, the OMO baseline, CodeGraph, Python, PHP, and the
 code-server IDE layer. PHP 8.3 and its extensions come from prebuilt
@@ -255,13 +273,14 @@ npm run build
 | `VERSION`, `REVISION` | `0.1.0`, `unknown` | OCI labels; the publish workflow sets them. |
 
 The runtime image extends the official `codercom/code-server` image and adds a Node 22 binary for the
-coordinator. code-server keeps its own bundled Node for the IDE. This keeps native modules aligned
-with `.nvmrc` and CI while avoiding a hand-copied code-server installation.
+coordinator. code-server keeps its own bundled Node for the IDE. The runner image is a small Node
+image with only the control API and Docker client; it has no coordinator state. This keeps native
+modules aligned with `.nvmrc` and CI while avoiding a hand-copied code-server installation.
 
 ### Multi-arch build
 
 ```bash
-for target in runtime:hanse agent-default:hanse-agent-default agent-ide:hanse-agent-ide; do
+for target in runtime:hanse agent-default:hanse-agent-default agent-ide:hanse-agent-ide runner:hanse-runner; do
   build_target=${target%%:*}
   image=${target#*:}
   docker buildx build \
@@ -284,18 +303,21 @@ curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8787/          # 303 t
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8787/assets/app.css  # 200
 docker compose logs -f --tail=100 hanse
 docker compose logs -f --tail=100 ide
-docker compose logs -f --tail=100 agents
+docker compose logs -f --tail=100 runner
 ```
 
-All three services define health checks. `hanse` is healthy when `/healthz` answers; `hanse-ide` is
-healthy when code-server answers on port 8080; `hanse-agents` is healthy when the supervisor
-`/healthz` answers on port 8789. The coordinator waits for agents; the IDE waits for the coordinator.
+All three static services define health checks. `hanse` is healthy when `/healthz` answers;
+`hanse-ide` is healthy when code-server answers on port 8080; `hanse-runner` is healthy when its
+`/healthz` answers on port 8790. The coordinator waits for the runner; the IDE waits for the
+coordinator. Check per-app containers with
+`docker ps --filter label=hanse.managed=true`.
 
 ## Backup and restore
 
-Back up all three volumes and the deployment files:
+Stop app containers first, then back up all three volumes and the deployment files:
 
 ```bash
+docker compose exec -T runner node -e 'fetch("http://127.0.0.1:8790/v1/stop-all",{method:"POST",headers:{authorization:"Bearer "+process.env.HANSE_RUNTIME_TOKEN}}).then(async r=>{if(!r.ok)process.exit(1)})' || true
 docker compose stop
 files=(workspace state agents .env compose.yaml)
 [ -f compose.override.yaml ] && files+=(compose.override.yaml)
@@ -303,13 +325,16 @@ tar czf "hanse-$(date +%F).tgz" "${files[@]}"
 docker compose start
 ```
 
-Stop the containers first so SQLite and the per-app agent state are consistent. The backup contains:
+`hanse-down.sh` stops managed app containers through the runner before stopping the static stack, so
+SQLite and per-app state are consistent. `docker compose stop` alone does not stop dynamic app
+containers. The backup contains:
 
 - `workspace/` - the projects and applications (git repositories).
 - `state/` - the coordinator DB and `secret.key`. **Keep it private.** Losing `secret.key` makes
   encrypted provider keys undecryptable; restoring an older DB can restore revoked keys.
 - `agents/` - per-app HOME/XDG/mise state, opencode auth/password, and MCP tokens. **Keep it
-  private**; it contains model credentials.
+  private**; it contains model credentials. The runner reads this volume read-only for each app's
+  password; app containers see only their own app root.
 - `.env` and any Compose override files.
 
 Restore:

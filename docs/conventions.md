@@ -67,6 +67,9 @@ Per-app agent state lives outside the coordinator state, under `HANSE_AGENTS_HOM
 ```
 
 The app directory remains under the workspace; only its runtime state lives under the agents root.
-The IDE never sees either the coordinator state or the agents root.
+In B1, the runner mounts the app directory at `/data/workspace/<project>/<app>` and only that app's
+agents root at `/data/agents/<project>/<app>` into its container. The runner reads the host agents
+volume read-only for per-app passwords; the app container never sees coordinator state or the IDE
+volume. The IDE sees the workspace only.
 
 `.hanse-runtime/` (gitignored) may be used as a local override during development.
