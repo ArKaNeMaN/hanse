@@ -120,4 +120,8 @@ deterministic `read` chat-QA scenario (10 scenarios, 211 assertions, 20 screensh
 Deployed to `deployment-host` on 2026-10-20 as `ghcr.io/arkaneman/hanse:sha-4110d51` (index digest
 `sha256:4ae1259cf54039defb17ffd61e007e2ec583b4f7ecf66b084b493fd83beccc1e`), with rollback tag
 `hanse:rollback-20261020-131715` and backup
-`<BACKUP_DIR>/20261020-131715-pre-read-render/`; health checks are green.
+`<BACKUP_DIR>/20261020-131715-pre-read-render/`; health checks are green. Follow-up `8f56c62`
+removed the read-specific `max-content` line-number column so the block reuses write's `3.25rem`
+gutter; deployed as `ghcr.io/arkaneman/hanse:sha-8f56c62` (digest
+`sha256:199ea33a67832ebe4ee436efb1fd3521312c3d79e7770da0400ac3ee8fc5f6e4`), rollback
+`hanse:rollback-20261020-140305`, backup `<BACKUP_DIR>/20261020-140305-pre-read-gutter/`.
