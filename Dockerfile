@@ -141,9 +141,9 @@ FROM python:${PYTHON_VERSION}-slim-bookworm AS python-toolchain
 # Python 3.12 (trixie) for agent-ide, which is based on the Debian 13 code-server image.
 FROM python:${PYTHON_VERSION}-slim-trixie AS python-toolchain-trixie
 
-# The agent runtime: Node 22, opencode, the Hanse CLI, mise, OMO, codegraph, git. No application
-# toolchains and no /data/state. `hanse agent-host` is added in B0.4; the CMD is declared now so the
-# image surface is stable, and the build only validates the CLI itself.
+# The agent runtime: Node 22, opencode, the Hanse CLI, mise, OMO, codegraph, git, OpenSSH client.
+# No application toolchains and no /data/state. `hanse agent-host` is added in B0.4; the CMD is
+# declared now so the image surface is stable, and the build only validates the CLI itself.
 FROM --platform=$TARGETPLATFORM node:${NODE_VERSION}-bookworm-slim AS agent-base
 
 ARG MISE_VERSION
@@ -164,9 +164,10 @@ ENV NODE_ENV=production \
     HANSE_OMO_PLUGIN=file:///opt/hanse/omo/node_modules/oh-my-openagent \
     HANSE_CODEGRAPH_BIN=/opt/hanse/codegraph/node_modules/.bin/codegraph
 
+# `git` only recommends `ssh-client`; `--no-install-recommends` would omit it and break SSH remotes.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      bash ca-certificates curl dumb-init git xz-utils \
+      bash ca-certificates curl dumb-init git openssh-client xz-utils \
  && rm -rf /var/lib/apt/lists/* \
  && if getent passwd 1000 >/dev/null; then userdel -r "$(getent passwd 1000 | cut -d: -f1)" || true; fi \
  && if getent group 1000 >/dev/null; then groupdel "$(getent group 1000 | cut -d: -f1)" || true; fi \
@@ -191,6 +192,7 @@ RUN ln -sf ../lib/node_modules/opencode-ai/bin/opencode.exe /usr/local/bin/openc
  && node --version \
  && opencode --version \
  && mise --version \
+ && ssh -V \
  && hanse --help >/dev/null \
  && chown -R agent:agent /app /home/agent
 
