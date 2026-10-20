@@ -139,6 +139,10 @@ Compose reads `.env` in the directory containing `compose.yaml`.
 | `HANSE_AGENTS` | `./agents` | Host path for per-app HOME, XDG, mise, opencode auth/password, and MCP tokens. |
 | `HANSE_HOST_WORKSPACE` | **required** | Absolute host path corresponding to `/data/workspace`. |
 | `HANSE_HOST_AGENTS` | **required** | Absolute host path corresponding to `/data/agents`. |
+| `HANSE_HOST_GIT_DIR` | `/var/lib/hanse/git` | Absolute host directory mounted read-only into the runner and one-shot git containers as `/run/hanse/git`. May be empty; local git operations still work. |
+| `HANSE_GIT_TOKEN` | - | HTTPS git token used only by runner one-shot git containers. Never passed to app containers. |
+| `HANSE_GIT_SSH_KEY`, `HANSE_GIT_KNOWN_HOSTS` | - | SSH key and known-hosts paths (inside `HANSE_HOST_GIT_DIR` to be visible in the sandbox). |
+| `HANSE_GIT_SSH_COMMAND`, `HANSE_GIT_ASKPASS`, `HANSE_GIT_SSL_CAINFO`, `HANSE_GIT_AUTHOR_*`, `HANSE_GIT_COMMITTER_*` | - | Optional fixed git configuration/identity for runner-executed git. |
 | `HANSE_BUILD_IMAGE` | `hanse:dev` | Local coordinator tag used by the source-build overlay. |
 | `HANSE_AGENT_BUILD_IMAGE` | `hanse-agent-default:dev` | Local agent tag used by the source-build overlay. |
 | `HANSE_IDE_BUILD_IMAGE` | `hanse-agent-ide:dev` | Local IDE tag used by the source-build overlay. |
@@ -160,6 +164,9 @@ need to be overridden.
   MCP tokens. Mounted read-write into the coordinator and read-only into the runner; each app
   container gets only its own `/data/agents/<project>/<app>` root. **Back it up and keep it private**
   because it contains model credentials.
+- `HANSE_HOST_GIT_DIR` -> `/run/hanse/git` in the runner: read-only git credentials/config.
+  The runner mounts the same host directory into one-shot git containers at `/run/hanse/git`; app
+  containers never see it.
 
 The containers run as uid/gid 1000. Files created by another uid (for example by `sudo`) break
 writes. Repair with `sudo chown -R 1000:1000 workspace state agents`.
@@ -368,17 +375,20 @@ docker compose up -d
 
 ## Git workbench credentials
 
-The application page can fetch, update, commit, and push using the coordinator container's ambient
-git configuration. Git is not wired to the encrypted provider-key store.
+The application page can fetch, update, commit, and push. B1.5 runs each operation in a one-shot
+container from the app image, so repository-controlled hooks, fsmonitor, SSH commands, and credential
+helpers never run in the coordinator. Git is not wired to the encrypted provider-key store.
 
-- **Commit identity**: set `user.name`/`user.email` in each repository or in the container's git
-  config, or add `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME`, and
-  `GIT_COMMITTER_EMAIL` to the `hanse` service. Without an identity the Commit action is disabled.
-- **Push/fetch credentials**: mount an SSH key and `known_hosts`, or inject `GIT_ASKPASS` /
-  `GIT_SSH_COMMAND`. Git runs with `GIT_TERMINAL_PROMPT=0`, so a missing credential fails instead of
-  prompting.
+- **Commit identity**: set `HANSE_GIT_AUTHOR_NAME`/`HANSE_GIT_AUTHOR_EMAIL` and
+  `HANSE_GIT_COMMITTER_NAME`/`HANSE_GIT_COMMITTER_EMAIL` in `.env`, or set `user.name`/`user.email`
+  in each repository. Without an identity the Commit action is disabled.
+- **Push/fetch credentials**: set `HANSE_GIT_TOKEN` for HTTPS, or put an SSH key and `known_hosts`
+  under `HANSE_HOST_GIT_DIR` and set `HANSE_GIT_SSH_KEY`/`HANSE_GIT_KNOWN_HOSTS` to their paths inside
+  that directory. `HANSE_GIT_SSH_COMMAND`, `HANSE_GIT_ASKPASS`, and `HANSE_GIT_SSL_CAINFO` are also
+  supported. The values are passed only to the runner's one-shot git container, never to the app.
 - **Trusted remotes only**: `git fetch --all --prune` contacts every remote configured in the
-  application repository. Repository hooks run as uid 1000 on commit/update.
+  application repository. Repository hooks are disabled by command-line config; git runs as uid 1000
+  in the one-shot container with the app directory writable.
 
 ## Troubleshooting
 
@@ -412,8 +422,11 @@ git configuration. Git is not wired to the encrypted provider-key store.
   application repository is indexed with `codegraph init`.
 - **`git clone` fails with a TLS error**: the image includes `git` and CA certificates; a corporate
   proxy may need its CA mounted into the container.
-- **Git push/fetch fails**: check ambient SSH/HTTPS credentials and host-key trust. Inspect the commit
-  identity with `git -C /data/workspace/<project>/<app> var GIT_AUTHOR_IDENT`.
+- **Git push/fetch fails**: check `HANSE_GIT_TOKEN` or the `HANSE_GIT_SSH_*` files under
+  `HANSE_HOST_GIT_DIR`, plus host-key trust, and inspect `docker compose logs runner`. The app
+  container does not receive these credentials. Check the commit identity with
+  `docker compose exec hanse git -C /data/workspace/<project>/<app> var GIT_AUTHOR_IDENT` (local
+  workbench operations use the runner, not the coordinator's ambient git config).
 - **Application page says "Not a repository root"**: the app directory is inside a larger git
   repository. Move the repository root to the app directory or use the IDE.
 - **Old containers after an upgrade**: `docker compose up -d --remove-orphans`.

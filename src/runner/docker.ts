@@ -14,8 +14,17 @@ export interface DockerUpgradedConnection {
   head: Buffer;
 }
 
+export interface DockerRequestOptions {
+  timeoutMs?: number;
+}
+
 export interface DockerTransport {
-  request(method: "GET" | "POST" | "DELETE", path: string, body?: unknown): Promise<DockerResponse>;
+  request(
+    method: "GET" | "POST" | "DELETE",
+    path: string,
+    body?: unknown,
+    options?: DockerRequestOptions,
+  ): Promise<DockerResponse>;
   upgrade?(
     method: "GET" | "POST" | "DELETE",
     path: string,
@@ -57,6 +66,7 @@ export class UnixDockerTransport implements DockerTransport {
     method: "GET" | "POST" | "DELETE",
     requestPath: string,
     body?: unknown,
+    options?: DockerRequestOptions,
   ): Promise<DockerResponse> {
     const payload = body === undefined ? undefined : Buffer.from(JSON.stringify(body), "utf8");
     const path = requestPath.startsWith("/v") ? requestPath : `/${this.#apiVersion}${requestPath}`;
@@ -97,7 +107,7 @@ export class UnixDockerTransport implements DockerTransport {
           response.on("error", reject);
         },
       );
-      request.setTimeout(this.#timeoutMs, () => {
+      request.setTimeout(options?.timeoutMs ?? this.#timeoutMs, () => {
         request.destroy(new DockerError(0, "docker request timed out"));
       });
       request.on("error", (error) => {
@@ -194,6 +204,13 @@ export interface DockerContainerCreateOptions {
   pidsLimit: number;
   networkName: string;
   networkAliases: string[];
+  restartPolicy?: "no" | "unless-stopped";
+  networkMode?: string;
+}
+
+export interface DockerContainerWait {
+  StatusCode?: number;
+  Error?: { Message?: string };
 }
 
 export interface DockerContainerSummary {
@@ -465,6 +482,7 @@ export class DockerClient {
   }
 
   async createContainer(options: DockerContainerCreateOptions): Promise<string> {
+    const networkMode = options.networkMode ?? options.networkName;
     const response = await this.#transport.request(
       "POST",
       `/containers/create?name=${encodeURIComponent(options.name)}`,
@@ -479,7 +497,7 @@ export class DockerClient {
         Labels: options.labels,
         HostConfig: {
           Binds: options.binds,
-          NetworkMode: options.networkName,
+          NetworkMode: networkMode,
           ReadonlyRootfs: true,
           CapDrop: ["ALL"],
           SecurityOpt: ["no-new-privileges:true"],
@@ -488,17 +506,24 @@ export class DockerClient {
           Memory: options.memoryBytes,
           NanoCpus: options.nanoCpus,
           PidsLimit: options.pidsLimit,
-          RestartPolicy: { Name: "unless-stopped", MaximumRetryCount: 0 },
+          RestartPolicy: {
+            Name: options.restartPolicy ?? "unless-stopped",
+            MaximumRetryCount: 0,
+          },
           LogConfig: {
             Type: "json-file",
             Config: { "max-size": "10m", "max-file": "3" },
           },
         },
-        NetworkingConfig: {
-          EndpointsConfig: {
-            [options.networkName]: { Aliases: options.networkAliases },
-          },
-        },
+        ...(networkMode === "none"
+          ? {}
+          : {
+              NetworkingConfig: {
+                EndpointsConfig: {
+                  [networkMode]: { Aliases: options.networkAliases },
+                },
+              },
+            }),
       },
     );
     this.#check(response, `create container ${options.name}`);
@@ -565,6 +590,17 @@ export class DockerClient {
     );
     this.#check(response, `logs for container ${id}`);
     return { logs: demuxDockerStream(response.body), truncated: false };
+  }
+
+  async waitContainer(id: string, timeoutMs = 180_000): Promise<DockerContainerWait> {
+    const response = await this.#transport.request(
+      "POST",
+      `/containers/${encodeURIComponent(id)}/wait?condition=not-running`,
+      undefined,
+      { timeoutMs },
+    );
+    this.#check(response, `wait for container ${id}`);
+    return decodeJson<DockerContainerWait>(response, `wait for container ${id}`);
   }
 
   async createExec(containerId: string, options: DockerExecCreateOptions): Promise<string> {
@@ -636,4 +672,5 @@ export interface DockerRuntime {
   inspectContainer(idOrName: string): Promise<DockerContainerInspect | undefined>;
   listContainers(label?: string): Promise<DockerContainerSummary[]>;
   logs(id: string, tail?: number): Promise<DockerLogs>;
+  waitContainer(id: string, timeoutMs?: number): Promise<DockerContainerWait>;
 }

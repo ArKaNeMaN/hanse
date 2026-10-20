@@ -9,6 +9,16 @@ import { runAgentHost } from "../agent/host.js";
 import { runAgentSupervisor } from "../agent/supervisor.js";
 import { ConfigError } from "../config/load.js";
 import { CoordinatorService } from "../coordinator/service.js";
+import {
+  GIT_SANDBOX_APP_DIR_ENV,
+  GIT_SANDBOX_BRANCH_ENV,
+  GIT_SANDBOX_MESSAGE_ENV,
+  GIT_SANDBOX_OPERATION_ENV,
+  GIT_SANDBOX_WORKSPACE_ROOT,
+  gitOpError,
+  runGitOperation,
+} from "../git/op.js";
+import { validateGitRequest } from "../git/request.js";
 import { GitService } from "../git/service.js";
 import type { ProjectContext } from "../http/handler.js";
 import { createHttpServer } from "../http/server.js";
@@ -253,6 +263,63 @@ export interface RunnerCommandOptions {
   port: number;
 }
 
+/** Run the sandboxed fixed git operation helper inside the one-shot app-image container. */
+export async function gitOpCommand(ctx: CommandContext): Promise<number> {
+  const env = process.env;
+  const raw: Record<string, unknown> = {
+    operation: env[GIT_SANDBOX_OPERATION_ENV],
+  };
+  if (env[GIT_SANDBOX_BRANCH_ENV] !== undefined) {
+    raw.branch = env[GIT_SANDBOX_BRANCH_ENV];
+  }
+  if (env[GIT_SANDBOX_MESSAGE_ENV] !== undefined) {
+    raw.message = env[GIT_SANDBOX_MESSAGE_ENV];
+  }
+
+  let request: ReturnType<typeof validateGitRequest>;
+  try {
+    request = validateGitRequest(raw);
+  } catch (error) {
+    ctx.io.stdout(
+      JSON.stringify({
+        error: error instanceof Error ? error.message : "invalid git request",
+        code: "invalid_input",
+      }),
+    );
+    return 2;
+  }
+
+  const appDir = env[GIT_SANDBOX_APP_DIR_ENV];
+  if (appDir === undefined || appDir.length === 0) {
+    ctx.io.stdout(
+      JSON.stringify({
+        error: `${GIT_SANDBOX_APP_DIR_ENV} is required`,
+        code: "invalid_input",
+      }),
+    );
+    return 2;
+  }
+
+  try {
+    const payload = await runGitOperation({
+      request,
+      workspaceRoot: GIT_SANDBOX_WORKSPACE_ROOT,
+      appDir,
+      env,
+    });
+    ctx.io.stdout(JSON.stringify(payload));
+    return 0;
+  } catch (error) {
+    const payload = gitOpError(error);
+    ctx.io.stdout(
+      JSON.stringify(
+        error instanceof ConfigError ? { ...payload, code: "invalid_input" } : payload,
+      ),
+    );
+    return 1;
+  }
+}
+
 /** Run the B1 runner control API (internal; rootful Docker socket holder). */
 export async function runnerCommand(
   options: RunnerCommandOptions,
@@ -365,7 +432,12 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
       service: new CoordinatorService(db, row.id),
     }));
   };
-  const git = new GitService({ workspaceRoot: workspace });
+  const git = new GitService({
+    workspaceRoot: workspace,
+    ...(runnerUrl === undefined || runnerUrl.length === 0
+      ? {}
+      : { remote: { baseUrl: runnerUrl, token: runtimeToken } }),
+  });
   const server = createHttpServer({
     db,
     workspaceRoot: workspace,

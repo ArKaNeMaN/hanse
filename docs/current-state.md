@@ -102,8 +102,12 @@ Publish currently targets `linux/amd64`; arm64 is on-demand/backlog. Compose def
 - Actions: fetch all remotes; fast-forward update (`pull --ff-only`); switch a local branch; commit
   all tracked, unstaged, and untracked changes with a message; push (setting an upstream when absent
   and `origin` exists).
-- The application directory must be the repository root and inside the workspace; git runs with
-  argument arrays, timeouts, bounded output, and per-repository serialization.
+- The application directory must be the repository root and inside the workspace. In B1 the
+  coordinator delegates every operation to the runner (`POST /v1/apps/:appId/git`); the runner
+  validates the fixed operation set and executes it in a one-shot container from the app image
+  (uid 1000, only the app directory rw plus `/run/hanse/git` read-only, `--network none` for local
+  operations and the app network for fetch/update/push). Repository hooks, fsmonitor, SSH commands,
+  ext protocols, and credential helpers therefore never run in the coordinator.
 
 ## Agents and chat
 
@@ -362,13 +366,16 @@ Host `./agents` is mounted at `/data/agents` read-write in `hanse` and read-only
 | `HANSE_ASSETS` | serve | directory for `app.css`, `app.js`, `chat.js`, `chat-core.js`, `chat-diff.js`, `chat-highlight.js`, `chat-highlight-worker.js`, `git.js`, `settings.js`, `vendor/prism/prism-1.30.0.min.js`, and `favicon.svg` |
 | `HANSE_DB` / `HANSE_PROJECT_ID` / `HANSE_APP_KEY` | `hanse mcp` | MCP server binding |
 | `HANSE_API_BASE` | extension | coordinator base URL (`http://hanse:8787`) |
+| `HANSE_HOST_GIT_DIR` | runner | host directory mounted read-only as `/run/hanse/git` for one-shot git |
+| `HANSE_GIT_TOKEN`, `HANSE_GIT_SSH_KEY`, `HANSE_GIT_KNOWN_HOSTS`, `HANSE_GIT_SSH_COMMAND`, `HANSE_GIT_ASKPASS`, `HANSE_GIT_SSL_CAINFO` | runner | controlled git credentials/config for fetch/push; never passed to app containers |
+| `HANSE_GIT_AUTHOR_NAME`, `HANSE_GIT_AUTHOR_EMAIL`, `HANSE_GIT_COMMITTER_NAME`, `HANSE_GIT_COMMITTER_EMAIL` | runner | commit identity for one-shot git |
 
 `HANSE_WEB_CONFIG` and `HANSE_OPENCODE_AUTH_FILE` are internal `hanse_web` MCP variables set by the
 coordinator; operators do not set them.
 
 ## Verification
 
-`npm run lint && npm run typecheck && npm test && npm run build` (all green; 915 tests). B1 core
+`npm run lint && npm run typecheck && npm test && npm run build` (all green; 932 tests). B1 core
 live smoke on `deployment-host`: coordinator/IDE/runner healthy, per-app `demo-app` container running,
 `scripts/agent-runtime-probe.sh b1` passes, coordinator recreate reattaches the app network, and the
 app agent has no `/data/state`, Docker socket, operator/runtime token, or sibling app access.
@@ -406,8 +413,9 @@ Settings stage verification:
 - **B1 core runs each app in its own hardened container/network.** App containers have no
   `/data/state`, Docker socket, operator/runtime token, or sibling mounts. The runner is
   root-equivalent through the Docker socket and is trusted/operator-only; it is on the control
-  network and holds no coordinator state. B1.5 git-in-runner is not yet complete; GitService remains
-  the hardened coordinator implementation. The B1.4 operator terminal is human-only and scoped to
+  network and holds no coordinator state. B1.5 git runs in a no-secret one-shot container from the
+  app image; the coordinator keeps only the human-only UI/API and a runner client. The B1.4 operator
+  terminal is human-only and scoped to
   managed app containers, but it is a line-oriented console rather than a full xterm (no alternate
   screen, mouse reporting, or full ANSI rendering). "Human-only" prompt routes remain a Hanse-route
   guarantee, not a hard
@@ -443,14 +451,17 @@ Settings stage verification:
   inside a larger repository show a "Not a repository root" state.
 - "Commit all" stages and commits untracked files (ignored files stay out); there is no per-file
   staging, diff viewer, or conflict-resolution UI.
-- Git push/fetch use ambient host credentials (SSH/HTTPS); the encrypted credential store is not wired
-  into git in this stage. Commit requires a configured `user.name`/`user.email`.
-- Git actions run with a controlled child environment and command-line config that disables
-  repository hooks, fsmonitor, credential helpers, ext protocols, submodule recursion, and
-  repository SSH commands; remotes are validated (HTTPS/SSH/scp/file inside the app). The git child
-  still runs as the coordinator uid and can use coordinator-provided credentials. A per-repository
-  in-memory lock serializes UI actions but does not cover agents or the IDE writing to the same
-  repository.
+- Git actions require the app container to be running; a stopped app has no mounted git workbench.
+- Git fetch/push credentials come from the runner's controlled `HANSE_GIT_*` environment and the
+  read-only `HANSE_HOST_GIT_DIR` mount; they are never present in the app container. Without
+  credentials, local status/switch/commit still work and fetch/update/push fail with a credential
+  error. Commit requires a configured `user.name`/`user.email`.
+- The one-shot git helper runs with the same controlled child environment and fixed command-line
+  config as B0.6: repository hooks, fsmonitor, credential helpers, ext protocols, submodule
+  recursion, and repository SSH commands are disabled, and remotes are validated (HTTPS/SSH/scp/file
+  inside the app). The helper ships in the app image, so the app image must match the coordinator's
+  `git-op` command (agent-default does). A per-repository in-memory lock in the coordinator
+  serializes UI actions but does not cover agents or the IDE writing to the same repository.
 - The IDE chat can be moved to the right sidebar only by a one-time user action (VS Code limitation).
 - Chat loads a 30-message tail and prepends older pages on scroll-up, but the loaded window is not
   virtualized; very large loaded windows remain the scaling limit. The idle `GET /messages` snapshot

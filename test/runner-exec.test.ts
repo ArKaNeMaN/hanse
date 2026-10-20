@@ -88,6 +88,10 @@ class FakeDocker implements DockerRuntime {
   async logs(_id: string, _tail?: number): Promise<DockerLogs> {
     return { logs: "", truncated: false };
   }
+
+  async waitContainer(_id: string): Promise<{ StatusCode?: number }> {
+    return { StatusCode: 0 };
+  }
 }
 
 class FakeExecStream implements DockerExecStream {

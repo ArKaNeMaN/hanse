@@ -13,6 +13,7 @@ import {
   validateRemoteUrl,
 } from "./env.js";
 import { GitError, type GitErrorCode } from "./errors.js";
+import { RunnerGitClient, type RunnerGitClientOptions } from "./runner-client.js";
 
 export { gitChildEnv, validateRemoteUrl } from "./env.js";
 export type { GitErrorCode } from "./errors.js";
@@ -69,6 +70,8 @@ export interface GitStatus {
 export interface ResolvedRepository {
   root: string;
   appDir: string;
+  /** Present when the coordinator routes operations through the B1 runner. */
+  appId?: string;
 }
 
 export interface GitCommitInfo {
@@ -122,6 +125,12 @@ export interface GitServiceOptions {
    * synthetic environment instead of mutating the coordinator's process.
    */
   env?: NodeJS.ProcessEnv;
+  /**
+   * Route operations through the B1 runner. When set, no git command runs in the coordinator
+   * process; repository-controlled hooks, fsmonitor, sshCommand, and credential helpers stay inside
+   * the runner's one-shot sandbox container.
+   */
+  remote?: RunnerGitClientOptions;
 }
 
 const MAX_BUFFER = 8 * 1024 * 1024;
@@ -437,6 +446,7 @@ export class GitService {
   readonly #sourceEnv: NodeJS.ProcessEnv;
   readonly #timeouts: GitTimeouts;
   readonly #mutationLocks = new Set<string>();
+  readonly #remote: RunnerGitClient | undefined;
   #runtime?: GitRuntime;
 
   constructor(options: GitServiceOptions) {
@@ -445,9 +455,14 @@ export class GitService {
     this.#runner = options.runner ?? defaultRunner;
     this.#sourceEnv = options.env ?? process.env;
     this.#timeouts = { ...DEFAULT_TIMEOUTS, ...options.timeouts };
+    this.#remote = options.remote === undefined ? undefined : new RunnerGitClient(options.remote);
   }
 
-  async resolveRepository(projectRoot: string, appPath: string): Promise<ResolvedRepository> {
+  async resolveRepository(
+    projectRoot: string,
+    appPath: string,
+    appId?: string,
+  ): Promise<ResolvedRepository> {
     const candidate = path.isAbsolute(appPath) ? appPath : path.resolve(projectRoot, appPath);
     let appReal: string;
     try {
@@ -465,6 +480,13 @@ export class GitService {
 
     if (!isContained(workspaceReal, appReal)) {
       throw new GitError("outside_workspace", "application path is outside the workspace");
+    }
+
+    if (this.#remote !== undefined) {
+      if (appId === undefined || appId.length === 0) {
+        throw new GitError("invalid_input", "app id is required for runner-backed git");
+      }
+      return { root: appReal, appDir: appReal, appId };
     }
 
     const inside = await this.#run(
@@ -510,9 +532,9 @@ export class GitService {
   }
 
   /** Status for a registered application path; maps resolution failures to non-ok states. */
-  async statusFor(projectRoot: string, appPath: string): Promise<GitStatus> {
+  async statusFor(projectRoot: string, appPath: string, appId?: string): Promise<GitStatus> {
     try {
-      const resolved = await this.resolveRepository(projectRoot, appPath);
+      const resolved = await this.resolveRepository(projectRoot, appPath, appId);
       return await this.status(resolved);
     } catch (error) {
       if (error instanceof GitError) {
@@ -531,6 +553,17 @@ export class GitService {
   }
 
   async status(resolved: ResolvedRepository): Promise<GitStatus> {
+    if (this.#remote !== undefined) {
+      const status = await this.#remote.status(resolved);
+      if (status.state !== "ok") {
+        throw new GitError(
+          status.state === "not_git" || status.state === "not_root" ? status.state : "git_failed",
+          status.message ?? "Repository status is unavailable.",
+          { root: status.root ?? resolved.root },
+        );
+      }
+      return status;
+    }
     const root = resolved.root;
     const porcelain = await this.#run(
       root,
@@ -617,6 +650,10 @@ export class GitService {
   }
 
   async fetch(resolved: ResolvedRepository): Promise<GitActionResult> {
+    const remote = this.#remote;
+    if (remote !== undefined) {
+      return this.#mutate(resolved, () => remote.fetch(resolved));
+    }
     return this.#mutate(resolved, async () => {
       const remotes = await this.#safeRemoteNames(resolved);
       if (remotes.length === 0) {
@@ -651,6 +688,10 @@ export class GitService {
   }
 
   async update(resolved: ResolvedRepository): Promise<GitActionResult> {
+    const remote = this.#remote;
+    if (remote !== undefined) {
+      return this.#mutate(resolved, () => remote.update(resolved));
+    }
     return this.#mutate(resolved, async () => {
       const before = await this.status(resolved);
       this.#guardOperation(before);
@@ -679,6 +720,11 @@ export class GitService {
   }
 
   async switchBranch(resolved: ResolvedRepository, branch: string): Promise<GitActionResult> {
+    this.#validateBranchName(branch);
+    const remote = this.#remote;
+    if (remote !== undefined) {
+      return this.#mutate(resolved, () => remote.switchBranch(resolved, branch));
+    }
     return this.#mutate(resolved, async () => {
       const before = await this.status(resolved);
       this.#guardOperation(before);
@@ -705,8 +751,12 @@ export class GitService {
   }
 
   async commitAll(resolved: ResolvedRepository, message: string): Promise<GitActionResult> {
+    const trimmed = this.#validateCommitMessage(message);
+    const remote = this.#remote;
+    if (remote !== undefined) {
+      return this.#mutate(resolved, () => remote.commitAll(resolved, trimmed));
+    }
     return this.#mutate(resolved, async () => {
-      const trimmed = this.#validateCommitMessage(message);
       const before = await this.status(resolved);
       this.#guardOperation(before);
       if (before.branch?.detached === true) {
@@ -761,6 +811,10 @@ export class GitService {
   }
 
   async push(resolved: ResolvedRepository): Promise<GitActionResult> {
+    const remote = this.#remote;
+    if (remote !== undefined) {
+      return this.#mutate(resolved, () => remote.push(resolved));
+    }
     return this.#mutate(resolved, async () => {
       const before = await this.status(resolved);
       const branch = before.branch;
@@ -898,7 +952,9 @@ export class GitService {
     }
     this.#mutationLocks.add(key);
     try {
-      await this.#assertNoIndexLock(resolved.root);
+      if (this.#remote === undefined) {
+        await this.#assertNoIndexLock(resolved.root);
+      }
       return await action();
     } finally {
       this.#mutationLocks.delete(key);

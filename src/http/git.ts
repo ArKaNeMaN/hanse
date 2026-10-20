@@ -148,7 +148,7 @@ export async function handleGit(deps: HttpDeps, request: HttpRequest): Promise<H
       return methodNotAllowed();
     }
     try {
-      const status = await deps.git.statusFor(found.project.rootPath, folder);
+      const status = await deps.git.statusFor(found.project.rootPath, folder, found.app.id);
       return json(200, { status });
     } catch (error) {
       return failed("status", error);
@@ -174,7 +174,7 @@ export async function handleGit(deps: HttpDeps, request: HttpRequest): Promise<H
   }
 
   try {
-    const resolved = await deps.git.resolveRepository(found.project.rootPath, folder);
+    const resolved = await deps.git.resolveRepository(found.project.rootPath, folder, found.app.id);
     if (action === "fetch") {
       return json(200, await deps.git.fetch(resolved));
     }

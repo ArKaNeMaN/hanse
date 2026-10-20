@@ -1,4 +1,4 @@
-import { timingSafeEqual } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import {
   createServer,
@@ -7,6 +7,7 @@ import {
   type ServerResponse,
   STATUS_CODES,
 } from "node:http";
+import path from "node:path";
 import type { Duplex } from "node:stream";
 import {
   type ReconcileResponse,
@@ -19,6 +20,16 @@ import {
 } from "../agent/protocol.js";
 import { isValidAppId } from "../agent/spec.js";
 import { ConfigError } from "../config/load.js";
+import { isGitErrorCode } from "../git/errors.js";
+import {
+  GIT_SANDBOX_APP_DIR_ENV,
+  GIT_SANDBOX_BRANCH_ENV,
+  GIT_SANDBOX_MESSAGE_ENV,
+  GIT_SANDBOX_OPERATION_ENV,
+  type GitOpPayload,
+} from "../git/op.js";
+import { type GitOperation, type GitRequest, validateGitRequest } from "../git/request.js";
+import { isInside, resolveWithinRoot } from "../runtime/app-path.js";
 import { VERSION } from "../version.js";
 import {
   type DockerContainerInspect,
@@ -28,11 +39,11 @@ import {
   type DockerExecStream,
   type DockerRuntime,
 } from "./docker.js";
-import { validateGitRequest } from "./git.js";
 import { appContainerName, appNetworkName } from "./names.js";
 import {
   hostPathForSpecEnv,
   RUNNER_APP_PORT,
+  RUNNER_CONTAINER_WORKSPACE_ROOT,
   type RunnerConfig,
   type RunnerSpec,
   validateRunnerSpec,
@@ -45,6 +56,27 @@ const DEFAULT_LOG_TAIL = 500;
 const RUNNER_ENTRYPOINT = "/usr/local/bin/hanse-agent-entrypoint";
 const EXEC_SHELL = "if [ -x /bin/bash ]; then exec /bin/bash -l; fi; exec /bin/sh -l";
 const MAX_EXEC_DIMENSION = 1000;
+const GIT_CONTAINER_GIT_DIR = "/run/hanse/git";
+const MAX_GIT_OUTPUT_BYTES = 4 * 1024 * 1024;
+const GIT_LOG_TAIL = 10_000;
+const GIT_CONTAINER_MEMORY_BYTES = 1024 * 1024 * 1024;
+const GIT_CONTAINER_NANO_CPUS = 1;
+const GIT_CONTAINER_PIDS_LIMIT = 128;
+const GIT_NETWORK_OPERATIONS: ReadonlySet<GitOperation> = new Set(["fetch", "update", "push"]);
+const GIT_TIMEOUTS: Record<GitOperation, number> = {
+  status: 45_000,
+  fetch: 135_000,
+  update: 135_000,
+  switch: 45_000,
+  commit: 45_000,
+  push: 195_000,
+};
+const GIT_FILE_ENV_KEYS = new Set([
+  "HANSE_GIT_SSH_KEY",
+  "HANSE_GIT_KNOWN_HOSTS",
+  "HANSE_GIT_ASKPASS",
+  "HANSE_GIT_SSL_CAINFO",
+]);
 
 class RunnerError extends Error {
   readonly status: number;
@@ -54,6 +86,34 @@ class RunnerError extends Error {
     this.name = "RunnerError";
     this.status = status;
   }
+}
+
+/** A failure reported by the sandboxed git helper; the wire code is a git error code. */
+class RunnerGitError extends Error {
+  readonly status: number;
+  readonly code: string;
+  readonly root?: string;
+
+  constructor(code: string, status: number, message: string, root?: string) {
+    super(message);
+    this.name = "RunnerGitError";
+    this.code = code;
+    this.status = status;
+    this.root = root;
+  }
+}
+
+interface GitContainerMounts {
+  hostAppDir: string;
+  containerAppDir: string;
+}
+
+interface GitEnvelope {
+  status?: unknown;
+  result?: unknown;
+  error?: string;
+  code?: string;
+  root?: string;
 }
 
 function writeJson(
@@ -159,6 +219,13 @@ function errorBody(error: unknown): RuntimeErrorBody {
   if (error instanceof ConfigError) {
     return { error: error.message, code: error.code };
   }
+  if (error instanceof RunnerGitError) {
+    return {
+      error: error.message,
+      code: error.code,
+      ...(error.root === undefined ? {} : { root: error.root }),
+    };
+  }
   if (error instanceof RunnerError) {
     return { error: error.message };
   }
@@ -169,6 +236,7 @@ function errorBody(error: unknown): RuntimeErrorBody {
 }
 
 function statusFor(error: unknown): number {
+  if (error instanceof RunnerGitError) return error.status;
   if (error instanceof RunnerError) return error.status;
   if (error instanceof ConfigError) return 400;
   if (error instanceof DockerError) return error.status >= 500 ? 502 : 400;
@@ -234,6 +302,192 @@ function containerEnvironment(spec: RunnerSpec): Record<string, string> {
   }
   delete env.HANSE_OPENCODE_PASSWORD_FILE;
   return env;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function gitStatusFor(code: string): number {
+  switch (code) {
+    case "invalid_input":
+    case "invalid_remote":
+      return 400;
+    case "outside_workspace":
+      return 403;
+    case "auth_failed":
+      return 502;
+    case "timeout":
+      return 504;
+    case "output_too_large":
+      return 500;
+    case "git_failed":
+      return 502;
+    default:
+      return 409;
+  }
+}
+
+/**
+ * Derive the app mount from the managed container's bind list.
+ *
+ * Only a bind whose destination is inside the fixed `/data/workspace` root is accepted; the host
+ * source is re-resolved under `HANSE_HOST_WORKSPACE`, so a container with forged labels or binds
+ * cannot point the one-shot git container at an arbitrary host path.
+ */
+function gitContainerMounts(
+  inspect: DockerContainerInspect,
+  config: RunnerConfig,
+): GitContainerMounts | undefined {
+  const marker = `:${RUNNER_CONTAINER_WORKSPACE_ROOT}/`;
+  for (const bind of inspect.HostConfig?.Binds ?? []) {
+    const at = bind.lastIndexOf(marker);
+    if (at <= 0) continue;
+    const source = bind.slice(0, at);
+    const target = bind.slice(at + 1).split(":")[0] ?? "";
+    if (!path.isAbsolute(source)) continue;
+    if (!isInside(RUNNER_CONTAINER_WORKSPACE_ROOT, target)) continue;
+    if (target === RUNNER_CONTAINER_WORKSPACE_ROOT) continue;
+    const hostAppDir = resolveWithinRoot({
+      target: source,
+      root: config.hostWorkspace,
+      label: "git appDir",
+    });
+    return { hostAppDir, containerAppDir: target };
+  }
+  return undefined;
+}
+
+function translateGitPath(key: string, value: string, hostGitDir?: string): string {
+  if (!GIT_FILE_ENV_KEYS.has(key) || !path.isAbsolute(value) || hostGitDir === undefined) {
+    return value;
+  }
+  if (!isInside(hostGitDir, value)) return value;
+  const relative = path.relative(hostGitDir, value);
+  return path.posix.join(GIT_CONTAINER_GIT_DIR, ...relative.split(path.sep));
+}
+
+function gitContainerEnv(
+  request: GitRequest,
+  containerAppDir: string,
+  config: RunnerConfig,
+): Record<string, string> {
+  const env: Record<string, string> = {
+    PATH: "/usr/local/bin:/usr/bin:/bin",
+    HOME: "/tmp/hanse-git-home",
+    TMPDIR: "/tmp",
+    LC_ALL: "C",
+    LANG: "C",
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_TERMINAL_PROMPT: "0",
+    GCM_INTERACTIVE: "never",
+    [GIT_SANDBOX_OPERATION_ENV]: request.operation,
+    [GIT_SANDBOX_APP_DIR_ENV]: containerAppDir,
+  };
+  if (request.branch !== undefined) {
+    env[GIT_SANDBOX_BRANCH_ENV] = request.branch;
+  }
+  if (request.message !== undefined) {
+    env[GIT_SANDBOX_MESSAGE_ENV] = request.message;
+  }
+  for (const [key, value] of Object.entries(config.gitEnv ?? {})) {
+    if (value === undefined || value.length === 0) continue;
+    env[key] = translateGitPath(key, value, config.hostGitDir);
+  }
+  return env;
+}
+
+function hasGitCredentials(config: RunnerConfig): boolean {
+  const env = config.gitEnv ?? {};
+  return [
+    "HANSE_GIT_TOKEN",
+    "HANSE_GIT_SSH_COMMAND",
+    "HANSE_GIT_SSH_KEY",
+    "HANSE_GIT_ASKPASS",
+  ].some((key) => (env[key] ?? "").trim().length > 0);
+}
+
+function parseGitEnvelope(logs: string, exitCode: number, config: RunnerConfig): GitEnvelope {
+  if (logs.length > MAX_GIT_OUTPUT_BYTES) {
+    throw new RunnerGitError(
+      "output_too_large",
+      gitStatusFor("output_too_large"),
+      "sandboxed git output exceeded the 4 MiB limit",
+    );
+  }
+  const text = logs.trim();
+  if (text.length === 0) {
+    const hint =
+      exitCode === 127 ? "; the app image does not provide /usr/local/bin/hanse git-op" : "";
+    throw new RunnerGitError(
+      "git_failed",
+      gitStatusFor("git_failed"),
+      `sandboxed git exited with code ${exitCode} without a result${hint}`,
+    );
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new RunnerGitError(
+      "git_failed",
+      gitStatusFor("git_failed"),
+      `sandboxed git returned an unreadable result (exit code ${exitCode})`,
+    );
+  }
+  if (!isRecord(parsed)) {
+    throw new RunnerGitError(
+      "git_failed",
+      gitStatusFor("git_failed"),
+      "sandboxed git returned an invalid result",
+    );
+  }
+  if (typeof parsed.error === "string") {
+    const code = isGitErrorCode(parsed.code) ? parsed.code : "git_failed";
+    let message = parsed.error;
+    if (
+      code === "auth_failed" &&
+      !hasGitCredentials(config) &&
+      !/credentials are not configured/i.test(message)
+    ) {
+      message = `${message} Git credentials are not configured for the runner.`;
+    }
+    const root = typeof parsed.root === "string" ? hostGitRoot(parsed.root, config) : undefined;
+    throw new RunnerGitError(code, gitStatusFor(code), message, root);
+  }
+  if (exitCode !== 0) {
+    throw new RunnerGitError(
+      "git_failed",
+      gitStatusFor("git_failed"),
+      `sandboxed git exited with code ${exitCode}`,
+    );
+  }
+  return parsed as GitEnvelope;
+}
+
+function hostGitRoot(root: string, config: RunnerConfig): string {
+  if (!isInside(RUNNER_CONTAINER_WORKSPACE_ROOT, root)) return root;
+  const relative = path.posix.relative(RUNNER_CONTAINER_WORKSPACE_ROOT, root);
+  return relative.length === 0
+    ? config.hostWorkspace
+    : path.join(config.hostWorkspace, ...relative.split("/"));
+}
+
+function mapGitPayloadRoots(payload: GitEnvelope, config: RunnerConfig): GitEnvelope {
+  if (isRecord(payload.status) && typeof payload.status.root === "string") {
+    payload.status = { ...payload.status, root: hostGitRoot(payload.status.root, config) };
+  }
+  if (isRecord(payload.result)) {
+    const status = payload.result.status;
+    if (isRecord(status) && typeof status.root === "string") {
+      payload.result = {
+        ...payload.result,
+        status: { ...status, root: hostGitRoot(status.root, config) },
+      };
+    }
+  }
+  return payload;
 }
 
 export interface RunnerServiceOptions {
@@ -409,9 +663,88 @@ export class RunnerService {
     return this.reconcile([]);
   }
 
-  async git(raw: unknown): Promise<never> {
-    validateGitRequest(raw);
-    throw new RunnerError(501, "git execution is not enabled in B1.1");
+  async git(appId: string, raw: unknown): Promise<GitOpPayload> {
+    const request = validateGitRequest(raw);
+    if (!isValidAppId(appId)) {
+      throw new RunnerError(400, "invalid app id");
+    }
+    const inspect = await this.#docker.inspectContainer(appContainerName(appId));
+    const labels = inspect?.Config?.Labels;
+    if (
+      inspect === undefined ||
+      labels?.["hanse.managed"] !== "true" ||
+      labels?.["hanse.app.id"] !== appId
+    ) {
+      throw new RunnerError(404, "unknown app");
+    }
+    if (inspect.State?.Running !== true) {
+      throw new RunnerError(409, "app is not running");
+    }
+    const image = inspect.Config?.Image;
+    if (image === undefined || !this.#config.allowedImages.has(image)) {
+      throw new RunnerError(400, "app image is not allowed by the runner");
+    }
+    const mounts = gitContainerMounts(inspect, this.#config);
+    if (mounts === undefined) {
+      throw new RunnerError(409, "app container has no workspace mount");
+    }
+
+    const network = !GIT_NETWORK_OPERATIONS.has(request.operation) ? "none" : appNetworkName(appId);
+    const timeout = GIT_TIMEOUTS[request.operation];
+    const containerName = `hanse-git-${appId.replace(/[^A-Za-z0-9_.-]+/g, "-").slice(0, 40)}-${randomUUID().slice(0, 8)}`;
+
+    let id: string | undefined;
+    try {
+      id = await this.#docker.createContainer({
+        name: containerName,
+        image,
+        hostname: containerName,
+        user: "1000:1000",
+        entrypoint: ["/usr/local/bin/hanse"],
+        cmd: ["git-op"],
+        workingDir: mounts.containerAppDir,
+        env: gitContainerEnv(request, mounts.containerAppDir, this.#config),
+        labels: { "hanse.git": "true", "hanse.app.id": appId },
+        binds: [
+          `${mounts.hostAppDir}:${mounts.containerAppDir}:rw`,
+          ...(this.#config.hostGitDir === undefined
+            ? []
+            : [`${this.#config.hostGitDir}:${GIT_CONTAINER_GIT_DIR}:ro`]),
+        ],
+        tmpfs: {
+          "/tmp": "rw,nosuid,size=512m",
+          "/run": "rw,nosuid,size=16m",
+        },
+        memoryBytes: GIT_CONTAINER_MEMORY_BYTES,
+        nanoCpus: GIT_CONTAINER_NANO_CPUS,
+        pidsLimit: GIT_CONTAINER_PIDS_LIMIT,
+        networkName: network,
+        networkAliases: [],
+        networkMode: network,
+        restartPolicy: "no",
+      });
+      await this.#docker.startContainer(id);
+      const wait = await this.#docker.waitContainer(id, timeout + 15_000);
+      const logs = await this.#docker.logs(id, GIT_LOG_TAIL);
+      const envelope = parseGitEnvelope(logs.logs, wait.StatusCode ?? 0, this.#config);
+      return mapGitPayloadRoots(envelope, this.#config) as GitOpPayload;
+    } catch (error) {
+      if (error instanceof DockerError && error.status === 413) {
+        throw new RunnerGitError(
+          "output_too_large",
+          gitStatusFor("output_too_large"),
+          "sandboxed git output exceeded the 8 MiB transport limit",
+        );
+      }
+      if (error instanceof DockerError && /timed out/i.test(error.message)) {
+        throw new RunnerGitError("timeout", gitStatusFor("timeout"), "git operation timed out");
+      }
+      throw error;
+    } finally {
+      if (id !== undefined) {
+        await this.#docker.removeContainer(id, true).catch(() => undefined);
+      }
+    }
   }
 
   createServer(): Server {
@@ -533,7 +866,7 @@ export class RunnerService {
         writeJson(response, 405, { error: "method not allowed" }, { Allow: "POST" });
         return;
       }
-      await this.git(await readJson(request));
+      writeJson(response, 200, await this.git(appId, await readJson(request)));
       return;
     }
     if (action === "exec") {

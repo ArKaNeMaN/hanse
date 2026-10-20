@@ -26,7 +26,7 @@ const PASSTHROUGH_ENV = [
 ] as const;
 
 /** Coordinator-controlled git settings; only these `HANSE_GIT_*` keys reach the child. */
-const CONTROLLED_GIT_ENV = [
+export const CONTROLLED_GIT_ENV = [
   "HANSE_GIT_SSH_COMMAND",
   "HANSE_GIT_SSH_KEY",
   "HANSE_GIT_KNOWN_HOSTS",

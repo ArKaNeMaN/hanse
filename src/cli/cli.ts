@@ -3,6 +3,7 @@ import {
   agentHostCommand,
   agentSupervisorCommand,
   defaultContext,
+  gitOpCommand,
   initCommand,
   mcpCommand,
   runnerCommand,
@@ -45,6 +46,7 @@ function buildUsage(): string[] {
     "  agent-host      Run a single-app agent host (internal; --spec <file>)",
     "  agent-supervisor Run the B0 runtime supervisor (internal)",
     "  runner          Run the B1 container runner (internal)",
+    "  git-op          Run a fixed git operation in the sandbox (internal)",
     "",
     "Options:",
     "  -h, --help            Show this help and exit",
@@ -128,6 +130,8 @@ export async function runCli(argv: readonly string[], io: CliIo = defaultIo): Pr
       const hostname = typeof args.flags.hostname === "string" ? args.flags.hostname : "0.0.0.0";
       return runnerCommand({ hostname, port }, defaultContext(process.cwd(), io, args.flags));
     }
+    case "git-op":
+      return gitOpCommand(defaultContext(process.cwd(), io, args.flags));
     default:
       io.stderr(`Unknown command: ${args.command}`);
       io.stderr(`Run \`${PACKAGE_NAME} --help\` for usage.`);

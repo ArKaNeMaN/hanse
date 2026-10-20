@@ -59,6 +59,7 @@ export interface RuntimeHealth {
 export interface RuntimeErrorBody {
   error: string;
   code?: string;
+  root?: string;
 }
 
 /** Status file written by the agent host under `<stateDir>/runtime/host-status.json`. */

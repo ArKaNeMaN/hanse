@@ -101,6 +101,37 @@ describe("DockerClient", () => {
     ]);
   });
 
+  it("creates one-shot containers without networking and waits for the exit code", async () => {
+    const f = fixture((method, path) => {
+      if (method === "POST" && path.startsWith("/containers/create")) {
+        return json(201, { Id: "one-shot" });
+      }
+      if (method === "POST" && path.includes("/wait")) {
+        return json(200, { StatusCode: 0 });
+      }
+      return json(500, { message: "unexpected" });
+    });
+
+    await f.client.createContainer({
+      ...createOptions,
+      name: "hanse-git-app",
+      networkName: "none",
+      networkMode: "none",
+      networkAliases: [],
+      restartPolicy: "no",
+    });
+    const body = f.records[0]?.body as {
+      HostConfig: { NetworkMode: string; RestartPolicy: { Name: string } };
+      NetworkingConfig?: unknown;
+    };
+    expect(body.HostConfig.NetworkMode).toBe("none");
+    expect(body.HostConfig.RestartPolicy.Name).toBe("no");
+    expect(body.NetworkingConfig).toBeUndefined();
+
+    await expect(f.client.waitContainer("one-shot", 1234)).resolves.toEqual({ StatusCode: 0 });
+    expect(f.records[1]?.path).toBe("/containers/one-shot/wait?condition=not-running");
+  });
+
   it("demultiplexes Docker log frames", async () => {
     const payload = Buffer.concat([frame(1, "out"), frame(2, "err")]);
     const f = fixture(() => ({ status: 200, body: payload }));

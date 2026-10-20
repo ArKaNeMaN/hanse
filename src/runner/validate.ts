@@ -1,6 +1,7 @@
 import path from "node:path";
 import { type AppRuntimeSpec, validateAppRuntimeSpec } from "../agent/spec.js";
 import { ConfigError } from "../config/load.js";
+import { CONTROLLED_GIT_ENV } from "../git/env.js";
 import { isInside, resolveWithinRoot } from "../runtime/app-path.js";
 import { appContainerName, appNetworkName, mapToContainerPath, mapToHostPath } from "./names.js";
 
@@ -29,6 +30,10 @@ export interface RunnerConfig {
   readonly coordinatorContainer: string;
   readonly dockerSocket: string;
   readonly dockerApiVersion: string;
+  /** Host directory bind-mounted read-only into one-shot git containers as `/run/hanse/git`. */
+  readonly hostGitDir?: string;
+  /** Controlled `HANSE_GIT_*` credentials passed to the one-shot git container only. */
+  readonly gitEnv?: NodeJS.ProcessEnv;
 }
 
 /** A validated spec with the host/container paths the runner needs to create the container. */
@@ -97,6 +102,17 @@ export function loadRunnerConfig(env: NodeJS.ProcessEnv = process.env): RunnerCo
       `HANSE_DOCKER_API_VERSION must look like v1.41: ${dockerApiVersion}`,
     );
   }
+  const hostGitDir =
+    env.HANSE_HOST_GIT_DIR === undefined || env.HANSE_HOST_GIT_DIR.trim().length === 0
+      ? undefined
+      : absolute(env, "HANSE_HOST_GIT_DIR");
+  const gitEnv: NodeJS.ProcessEnv = {};
+  for (const key of CONTROLLED_GIT_ENV) {
+    const value = env[key];
+    if (value !== undefined) {
+      gitEnv[key] = value;
+    }
+  }
   return {
     token,
     hostWorkspace: absolute(env, "HANSE_HOST_WORKSPACE"),
@@ -105,6 +121,8 @@ export function loadRunnerConfig(env: NodeJS.ProcessEnv = process.env): RunnerCo
     coordinatorContainer,
     dockerSocket: absolute(env, "HANSE_DOCKER_SOCKET", "/var/run/docker.sock"),
     dockerApiVersion,
+    ...(hostGitDir === undefined ? {} : { hostGitDir }),
+    gitEnv,
   };
 }
 

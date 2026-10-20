@@ -201,6 +201,10 @@ class FakeDocker implements DockerRuntime {
     return { logs: `logs:${id}`, truncated: false };
   }
 
+  async waitContainer(_id: string): Promise<{ StatusCode?: number }> {
+    return { StatusCode: 0 };
+  }
+
   #byId(id: string): DockerContainerInspect {
     const container = this.containers.get(id);
     if (container === undefined) throw new Error(`unknown container ${id}`);

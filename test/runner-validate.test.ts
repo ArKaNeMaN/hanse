@@ -128,6 +128,34 @@ describe("runner spec validation", () => {
     expect([...loaded.allowedImages]).toEqual(["agent-default:test"]);
   });
 
+  it("loads an optional git credential directory and only controlled git env", () => {
+    const f = fixture();
+    const gitDir = path.join(f.base, "git");
+    mkdirSync(gitDir, { recursive: true });
+    const loaded = loadRunnerConfig({
+      HANSE_RUNTIME_TOKEN: "t",
+      HANSE_HOST_WORKSPACE: f.hostWorkspace,
+      HANSE_HOST_AGENTS: f.hostAgents,
+      HANSE_AGENT_IMAGE: "agent-default:test",
+      HANSE_HOST_GIT_DIR: gitDir,
+      HANSE_GIT_TOKEN: "git-token",
+      HANSE_OPERATOR_TOKEN: "must-not-cross",
+    });
+    expect(loaded.hostGitDir).toBe(gitDir);
+    expect(loaded.gitEnv).toMatchObject({ HANSE_GIT_TOKEN: "git-token" });
+    expect(loaded.gitEnv?.HANSE_OPERATOR_TOKEN).toBeUndefined();
+
+    expectConfigError(() =>
+      loadRunnerConfig({
+        HANSE_RUNTIME_TOKEN: "t",
+        HANSE_HOST_WORKSPACE: f.hostWorkspace,
+        HANSE_HOST_AGENTS: f.hostAgents,
+        HANSE_AGENT_IMAGE: "agent-default:test",
+        HANSE_HOST_GIT_DIR: "relative/git",
+      }),
+    );
+  });
+
   it("rejects arbitrary images, container path mode, network mismatch, and a non-fixed port", () => {
     const f = fixture();
     expectConfigError(() => validateRunnerSpec(raw(f, { image: "evil:latest" }), config(f)));
