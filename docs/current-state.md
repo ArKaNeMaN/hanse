@@ -374,6 +374,9 @@ live smoke on `deployment-host`: coordinator/IDE/runner healthy, per-app `demo-a
 app agent has no `/data/state`, Docker socket, operator/runtime token, or sibling app access.
 B1.4 terminal live smoke: `/terminal` returns `200`, direct runner exec, coordinator proxy, and the
 LAN WebSocket each returned `B1_*_OK`, and closing the terminal left the app container running.
+B1.6 `hanse-down.sh` live smoke: down removed the static stack and managed app/network; `compose up`
+recreated the static services healthy, the app was lazily recreated, sessions returned `200`, and the
+terminal page remained human-only (`303` anonymous, `200` authenticated).
 Chat browser
 QA: `node docs/design/chat-qa.mjs` (deterministic fixtures; 3 scenarios, 81 assertions, 10
 screenshots, zero console/page errors). Live smoke against a real deployment: 1
