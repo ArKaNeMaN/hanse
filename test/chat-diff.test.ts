@@ -18,6 +18,7 @@ import {
   MAX_INFLIGHT_HIGHLIGHT_STREAMS,
   MAX_PAGE_TOKEN_NODES,
   MAX_PENDING_HIGHLIGHT_FILES,
+  MAX_READ_DISPLAY_BYTES,
   MAX_RENDERED_LINES,
   MAX_TIMEOUTS_PER_LANGUAGE,
   MAX_TOKEN_NODES_PER_FILE,
@@ -99,11 +100,28 @@ function allocFile(path: string, patch: string, extra: Record<string, unknown> =
   };
 }
 
+function readAllocFile(texts: string[]) {
+  return {
+    path: "src/read.py",
+    language: "python",
+    lineStart: 1,
+    lineEnd: texts.length,
+    lineCount: texts.length,
+    totalLines: null,
+    statusLine: "",
+    sourceTruncated: false,
+    truncated: false,
+    content: texts.join("\n"),
+    lines: texts.map((text, index) => ({ number: index + 1, text })),
+  };
+}
+
 describe("constants", () => {
   it("matches the design caps", () => {
     expect(MAX_DIFF_DISPLAY_BYTES).toBe(64 * 1024);
     expect(MAX_DIFF_DISPLAY_TOTAL_BYTES).toBe(128 * 1024);
     expect(MAX_WRITE_DISPLAY_BYTES).toBe(64 * 1024);
+    expect(MAX_READ_DISPLAY_BYTES).toBe(64 * 1024);
     expect(MAX_RENDERED_LINES).toBe(2_000);
     expect(MAX_DIFF_FILES).toBe(50);
     expect(MAX_DIFF_PATH_BYTES).toBe(1_024);
@@ -1063,6 +1081,156 @@ describe("extractToolView", () => {
     );
     expect(view?.diagnostics).toBe("src/a.ts: unused variable");
   });
+
+  it("parses a completed read with line numbers, empty lines, and an end status", () => {
+    const output = [
+      "<path>/workspace/apps/demo-app/tools/analyzer/webui.py</path>",
+      "<type>file</type>",
+      "<content>",
+      "1: #!/usr/bin/env python3",
+      "2: ",
+      "3: def bundle_bytes(data, drop_index, mins=2.0):",
+      "",
+      "(End of file - total 3 lines)",
+      "</content>",
+    ].join("\n");
+    const view = extractToolView(
+      toolData({ tool: "read", input: { filePath: "/workspace/fallback.py" }, output }),
+      "read",
+      "completed",
+    );
+    expect(view).toMatchObject({ kind: "read", field: "read", filesTruncated: false });
+    expect(view?.files[0]).toMatchObject({
+      path: "/workspace/apps/demo-app/tools/analyzer/webui.py",
+      language: "python",
+      lineStart: 1,
+      lineEnd: 3,
+      lineCount: 3,
+      totalLines: 3,
+      statusLine: "End of file - total 3 lines",
+      sourceTruncated: false,
+      truncated: false,
+      content: "#!/usr/bin/env python3\n\ndef bundle_bytes(data, drop_index, mins=2.0):",
+    });
+    expect(view?.files[0].lines[1]).toEqual({ number: 2, text: "" });
+  });
+
+  it("accepts the capped status form without a total", () => {
+    const output = [
+      "<path>/workspace/webui.py</path>",
+      "<content>",
+      "1: alpha",
+      "2: beta",
+      " ",
+      "(Output capped at 50 KB. Showing lines 1-2. Use offset=3 to continue.)",
+      "</content>",
+    ].join("\n");
+    const view = extractToolView(
+      toolData({ tool: "read", input: { filePath: "webui.py" }, output }),
+      "read",
+      "completed",
+    );
+    expect(view?.files[0]).toMatchObject({
+      lineStart: 1,
+      lineEnd: 2,
+      totalLines: null,
+      sourceTruncated: true,
+      statusLine: "Output capped at 50 KB. Showing lines 1-2. Use offset=3 to continue.",
+    });
+  });
+
+  it("captures the total from a showing-lines status", () => {
+    const output = [
+      "<path>/workspace/webui.py</path>",
+      "<content>",
+      "1400: alpha",
+      "1401: beta",
+      "",
+      "(Showing lines 1400-1401 of 5169. Use offset=1402 to continue.)",
+      "</content>",
+    ].join("\n");
+    const view = extractToolView(
+      toolData({ tool: "read", input: { filePath: "webui.py" }, output }),
+      "read",
+      "completed",
+    );
+    expect(view?.files[0]).toMatchObject({
+      lineStart: 1400,
+      lineEnd: 1401,
+      totalLines: 5169,
+      sourceTruncated: true,
+    });
+  });
+
+  it("uses the actual offset line numbers from the XML, not the array index", () => {
+    const output = [
+      "<path>/workspace/webui.py</path>",
+      "<content>",
+      "1418: alpha",
+      "1419: beta",
+      "1420: gamma",
+      "",
+      "(Output capped at 50 KB. Showing lines 1418-1420. Use offset=1421 to continue.)",
+      "</content>",
+    ].join("\n");
+    const view = extractToolView(
+      toolData({
+        tool: "read",
+        input: { filePath: "webui.py", offset: 1418, limit: 3 },
+        output,
+      }),
+      "read",
+      "completed",
+    );
+    expect(view?.files[0].lines.map((line: { number: number }) => line.number)).toEqual([
+      1418, 1419, 1420,
+    ]);
+    expect(view?.files[0]).toMatchObject({ lineStart: 1418, lineEnd: 1420, lineCount: 3 });
+  });
+
+  it("falls back to input.filePath when the output has no path tag", () => {
+    const output = ["<content>", "1: alpha", "2: beta", "</content>"].join("\n");
+    const view = extractToolView(
+      toolData({ tool: "read", input: { filePath: "src/fallback.ts" }, output }),
+      "read",
+      "completed",
+    );
+    expect(view?.files[0]).toMatchObject({
+      path: "src/fallback.ts",
+      language: "typescript",
+      lineCount: 2,
+    });
+  });
+
+  it("returns null for malformed read content, errors, running, and missing output", () => {
+    const malformed = [
+      "<path>/workspace/webui.py</path>",
+      "<content>",
+      "1: alpha",
+      "unexpected free text",
+      "3: gamma",
+      "</content>",
+    ].join("\n");
+    const data = toolData({
+      tool: "read",
+      input: { filePath: "webui.py" },
+      output: malformed,
+    });
+    expect(extractToolView(data, "read", "completed")).toBeNull();
+    expect(
+      extractToolView({ ...data, state: { ...data.state, status: "running" } }, "read", "running"),
+    ).toBeNull();
+    expect(
+      extractToolView({ ...data, state: { ...data.state, status: "error" } }, "read", "error"),
+    ).toBeNull();
+    expect(
+      extractToolView(
+        toolData({ tool: "read", input: { filePath: "webui.py" }, output: "" }),
+        "read",
+        "completed",
+      ),
+    ).toBeNull();
+  });
 });
 
 describe("patchPartView", () => {
@@ -1215,6 +1383,43 @@ describe("allocateView", () => {
     expect(lineAllocated.display.lines).toBe(true);
   });
 
+  it("caps read content at 64 KiB without cutting a line", () => {
+    const texts = Array.from({ length: 900 }, () => "x".repeat(100));
+    const allocated = allocateView({
+      kind: "read",
+      field: "read",
+      files: [readAllocFile(texts)],
+      display: {},
+    });
+    const file = allocated.files[0];
+    expect(allocated.display.write).toBe(true);
+    expect(allocated.display.lines).toBe(false);
+    expect(file.truncated).toBe(true);
+    expect(file.lineCount).toBeLessThan(texts.length);
+    expect(bytes(file.content)).toBeLessThanOrEqual(MAX_READ_DISPLAY_BYTES);
+    expect(file.lines.every((line: { text: string }) => line.text === "x".repeat(100))).toBe(true);
+    expect(file.content).toBe(file.lines.map((line: { text: string }) => line.text).join("\n"));
+  });
+
+  it("caps read content at 2,000 lines and keeps the XML line numbers", () => {
+    const texts = Array.from({ length: MAX_RENDERED_LINES + 50 }, () => "x");
+    const allocated = allocateView({
+      kind: "read",
+      field: "read",
+      files: [readAllocFile(texts)],
+      display: {},
+    });
+    const file = allocated.files[0];
+    expect(allocated.display.lines).toBe(true);
+    expect(allocated.display.write).toBe(false);
+    expect(file.lineCount).toBe(MAX_RENDERED_LINES);
+    expect(file.lines).toHaveLength(MAX_RENDERED_LINES);
+    expect(file.lineStart).toBe(1);
+    expect(file.lineEnd).toBe(MAX_RENDERED_LINES);
+    expect(file.lines.at(-1)).toEqual({ number: MAX_RENDERED_LINES, text: "x" });
+    expect(file.content.split("\n")).toHaveLength(MAX_RENDERED_LINES);
+  });
+
   it("caps a file-list view and its paths", () => {
     const files = Array.from({ length: 60 }, (_value, index) => ({ path: `f${index}.ts` }));
     const allocated = allocateView({ kind: "files", field: "patch", files, display: {} });
@@ -1307,6 +1512,9 @@ describe("truncationNotice", () => {
         display: noDisplay,
       }),
     ).toBe("Output truncated for live view; the full result may load when the turn ends.");
+    expect(
+      truncationNotice({ partial: true }, "running", { field: "read", display: noDisplay }),
+    ).toBe("File content truncated for live view; the full result may load when the turn ends.");
   });
 
   it("uses snapshot notices for completed parts", () => {
@@ -1330,6 +1538,13 @@ describe("truncationNotice", () => {
         display: noDisplay,
       }),
     ).toBe("Full output unavailable; session snapshot exceeds 8 MiB.");
+    expect(
+      truncationNotice({}, "completed", {
+        field: "read",
+        sessionSnapshotTooLarge: true,
+        display: noDisplay,
+      }),
+    ).toBe("Full file content unavailable; session snapshot exceeds 8 MiB.");
   });
 
   it("uses display flags in precedence order", () => {
@@ -1348,6 +1563,18 @@ describe("truncationNotice", () => {
     expect(truncationNotice({}, "completed", { field: "write", display: { lines: true } })).toBe(
       "Content truncated at 2,000 lines.",
     );
+    expect(
+      truncationNotice({}, "completed", {
+        field: "read",
+        display: { write: true },
+      }),
+    ).toBe("File content truncated at 64 KiB.");
+    expect(
+      truncationNotice({}, "completed", {
+        field: "read",
+        display: { lines: true },
+      }),
+    ).toBe("File content truncated at 2,000 lines.");
     expect(truncationNotice({}, "completed", { field: "diff", display: { files: true } })).toBe(
       "Additional files omitted from the view.",
     );

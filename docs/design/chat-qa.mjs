@@ -1216,6 +1216,41 @@ function bigPatchFixture() {
   };
 }
 
+function readFixture() {
+  const start = 1418;
+  const source = [
+    "def bundle_bytes(data, drop_index, mins=2.0):",
+    '    """Return the bundle bytes."""',
+    "    if not data:",
+    '        return b""',
+    "",
+    "    result = []",
+    "    for index, item in enumerate(data):",
+    "        if index == drop_index:",
+    "            continue",
+    "        result.append(item)",
+    "    return bytes(result)",
+  ];
+  const end = start + source.length - 1;
+  const path = "/workspace/example/apps/demo-app/tools/analyzer/webui.py";
+  const statusLine = `Showing lines ${start}-${end} of 5169. Use offset=${end + 1} to continue.`;
+  const output = [
+    `<path>${path}</path>`,
+    "<type>file</type>",
+    "<content>",
+    ...source.map((text, index) => `${start + index}: ${text}`),
+    "",
+    `(${statusLine})`,
+    "</content>",
+  ].join("\n");
+  const part = diffToolPart("prt_read", "read", {
+    input: { filePath: path, offset: start, limit: source.length },
+    output,
+    title: "Read webui.py",
+  });
+  return { messages: diffMessage([part]), path, start, end, statusLine, lineCount: source.length };
+}
+
 function errorFixture() {
   return diffMessage([
     diffToolPart("prt_error", "edit", {
@@ -2660,6 +2695,124 @@ async function scenarioDiffs(browser, target) {
   }
 }
 
+async function scenarioRead(browser, target) {
+  const fixture = readFixture();
+  const { context, page, errors } = await newPage(browser, target, { workerProbe: true });
+  try {
+    await installRoutes(page, { sessionId: THREADS.diffs, messages: fixture.messages });
+    await gotoChat(page, target, THREADS.diffs);
+    await page.waitForSelector('.tool-call[data-part-id="prt_read"] .tool-code', {
+      state: "attached",
+    });
+
+    await page.locator('.tool-call[data-part-id="prt_read"] summary').click();
+    await page.waitForFunction(
+      () => {
+        const node = document.querySelector('[data-part-id="prt_read"] .tool-code');
+        return (
+          node !== null &&
+          node.dataset.highlight !== undefined &&
+          node.dataset.highlight !== "pending"
+        );
+      },
+      undefined,
+      { timeout: 20_000 },
+    );
+    await wait(300);
+
+    const rendered = await page.evaluate(() => {
+      const text = (node) => (node ? (node.textContent ?? "").replace(/\s+/g, " ").trim() : "");
+      const node = document.querySelector('[data-part-id="prt_read"] .tool-code');
+      const scroller = node?.querySelector(".tool-code__scroll") ?? null;
+      const rows = node === null ? [] : Array.from(node.querySelectorAll(".code-line"));
+      return {
+        exists: node !== null,
+        path: text(node?.querySelector(".tool-code__path")),
+        meta: text(node?.querySelector(".tool-code__meta")),
+        language: text(node?.querySelector(".tool-code__lang")),
+        foot: text(node?.querySelector(".tool-code__foot")),
+        lines: rows.length,
+        firstNumber: text(rows[0]?.querySelector(".code-line__num")),
+        lastNumber: text(rows.at(-1)?.querySelector(".code-line__num")),
+        bodyText: text(node),
+        tokens: node === null ? 0 : node.querySelectorAll(".token").length,
+        keyword: node === null ? 0 : node.querySelectorAll(".token.keyword").length,
+        tabIndex: scroller === null ? null : scroller.tabIndex,
+        ariaLabel: scroller === null ? null : scroller.getAttribute("aria-label"),
+        rawXml:
+          node === null
+            ? false
+            : (node.textContent ?? "").includes("<path>") ||
+              (node.textContent ?? "").includes("<content>"),
+      };
+    });
+
+    check(rendered.exists, "completed read renders a .tool-code block");
+    check(rendered.path.includes("webui.py"), `read head shows the file path (${rendered.path})`);
+    check(
+      rendered.meta.includes(`${fixture.start}–${fixture.end} of 5169`),
+      `read head shows the XML line range and total (${rendered.meta})`,
+    );
+    check(rendered.language === "python", `read head shows the language (${rendered.language})`);
+    check(
+      rendered.lines === fixture.lineCount &&
+        rendered.firstNumber === String(fixture.start) &&
+        rendered.lastNumber === String(fixture.end),
+      `read preserves XML line numbers ${fixture.start}..${fixture.end} (${rendered.firstNumber}..${rendered.lastNumber}, ${rendered.lines})`,
+    );
+    check(
+      rendered.foot === fixture.statusLine,
+      `read footer renders the status line (${rendered.foot})`,
+    );
+    check(!rendered.rawXml, "read body never contains raw <path>/<content> XML");
+    check(
+      rendered.bodyText.includes("def bundle_bytes"),
+      "read body renders the parsed source text",
+    );
+    check(
+      rendered.tokens > 0 && rendered.keyword > 0,
+      `read source is syntax highlighted (${rendered.tokens}/${rendered.keyword})`,
+    );
+    check(
+      rendered.tabIndex === 0 &&
+        typeof rendered.ariaLabel === "string" &&
+        rendered.ariaLabel.includes("File content") &&
+        rendered.ariaLabel.includes("scrollable"),
+      `read scroller is tabbable with a descriptive aria-label (${rendered.ariaLabel})`,
+    );
+
+    await shot(page, "read-1440");
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.evaluate(() => {
+      document.querySelector('[data-part-id="prt_read"]')?.scrollIntoView({ block: "center" });
+    });
+    await wait(250);
+    const mobile = await page.evaluate(() => {
+      const node = document.querySelector('[data-part-id="prt_read"] .tool-code');
+      const foot = node?.querySelector(".tool-code__foot") ?? null;
+      return {
+        overflowX: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        foot: foot === null ? "" : (foot.textContent ?? "").replace(/\s+/g, " ").trim(),
+      };
+    });
+    check(
+      mobile.overflowX === 0,
+      `read has no horizontal page overflow at 390 (${mobile.overflowX}px)`,
+    );
+    check(
+      mobile.foot === fixture.statusLine,
+      `read footer wraps without losing text at 390 (${mobile.foot})`,
+    );
+    await shot(page, "read-390");
+
+    checkNoErrors(errors);
+    return rendered;
+  } finally {
+    await context.close();
+  }
+}
+
 async function scenarioDiffError(browser, target) {
   const messages = errorFixture();
   const { context, page, errors } = await newPage(browser, target, { workerProbe: true });
@@ -3286,6 +3439,7 @@ try {
     await runScenario("questions", () => scenarioQuestions(browser, target));
     await runScenario("send", () => scenarioSend(browser, target));
     await runScenario("diffs", () => scenarioDiffs(browser, target));
+    await runScenario("read", () => scenarioRead(browser, target));
     await runScenario("diff-error", () => scenarioDiffError(browser, target));
     await runScenario("diff-lazy", () => scenarioDiffLazy(browser, target));
     await runScenario("diff-streaming", () => scenarioDiffStreaming(browser, target));

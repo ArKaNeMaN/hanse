@@ -337,6 +337,74 @@ function renderWrite(view, context) {
   return container;
 }
 
+function readRange(file, lineCount) {
+  if (lineCount === 0) return "0 lines";
+  const start = numberOf(file.lineStart);
+  const end = numberOf(file.lineEnd);
+  if (start === null || end === null) return `${lineCount} lines`;
+  const range = `${start}–${end}`;
+  const total = numberOf(file.totalLines);
+  return total === null ? range : `${range} of ${total}`;
+}
+
+function renderRead(view, context) {
+  const container = element("div", "tool-code");
+  container.dataset.kind = "read";
+  const files = Array.isArray(view.files) ? view.files : [];
+  const file = files.length > 0 && files[0] !== null && typeof files[0] === "object" ? files[0] : {};
+  const lines = Array.isArray(file.lines) ? file.lines : [];
+  const pathText = pathOf(file);
+
+  const head = element("div", "tool-code__head");
+  const pathEl = element("span", "tool-code__path", pathText);
+  pathEl.title = pathText;
+  head.append(pathEl, element("span", "tool-code__meta", readRange(file, lines.length)));
+  if (typeof file.language === "string") {
+    head.append(element("span", "tool-code__lang", file.language));
+  }
+  container.append(head);
+
+  const scroller = element("div", "tool-code__scroll");
+  scroller.tabIndex = 0;
+  scroller.setAttribute("aria-label", `File content for ${pathText}, scrollable`);
+  const targets = [];
+  for (const line of lines) {
+    const record = line !== null && typeof line === "object" ? line : {};
+    const text = typeof record.text === "string" ? record.text : "";
+    const row = element("div", "code-line");
+    const code = element("span", "code-line__code", text);
+    const value = numberOf(record.number);
+    const lineNumber = element("span", "code-line__num", value === null ? "" : String(value));
+    lineNumber.setAttribute("aria-hidden", "true");
+    row.append(lineNumber, code);
+    scroller.append(row);
+    targets.push({ code, text });
+  }
+  container.append(scroller);
+
+  if (typeof file.statusLine === "string" && file.statusLine.trim().length > 0) {
+    container.append(element("div", "tool-code__foot", file.statusLine));
+  }
+
+  const streams = [];
+  if (lines.length > 0) {
+    streams.push({
+      id: "s0:read",
+      side: "read",
+      text: targets.map((target) => target.text).join("\n"),
+      expectedLines: lines.length,
+      targets,
+      response: null,
+      plan: null,
+      nodes: 0,
+      timer: 0,
+      started: 0,
+    });
+  }
+  context.files.push(createFileState(file, 0, "read", streams));
+  return container;
+}
+
 function renderFileList(view) {
   const container = element("div", "tool-diff");
   container.dataset.mode = "files";
@@ -915,6 +983,8 @@ export function mountToolView(view, options = {}) {
     context.container = renderDiff(view, context);
   } else if (view.kind === "write") {
     context.container = renderWrite(view, context);
+  } else if (view.kind === "read") {
+    context.container = renderRead(view, context);
   } else {
     return null;
   }

@@ -108,3 +108,12 @@ Deployed to `deployment-host` on 2026-10-20 from commit `3e25c46` using the publ
 state/workspace/env backup and rollback tag `hanse:rollback-20261020-035855`. `git archive` delivery,
 `HANSE_TAG`, `docker compose pull`, and `up -d --remove-orphans` completed; `/healthz` is 200, the new
 assets are 200, both containers are healthy, and the local deploy log records the details.
+
+## Addendum - read tool rendering (2026-10-20)
+
+Completed `read` parts no longer show opencode's `<path>/<content>` XML as `<pre>`: the pure extractor
+parses the path, XML line numbers, code, and trailing status line into a `read` view, the same
+allocator applies a 64 KiB / 2,000-line line-aware cap, and the existing `.tool-code` renderer
+highlights it with a `.tool-code__foot` status footer. Errors, running/pending parts, and malformed
+output keep the plain fallback. Verified by the `npm run lint/typecheck/test/build` gates and the
+deterministic `read` chat-QA scenario.

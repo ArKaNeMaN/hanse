@@ -13,11 +13,17 @@
  * - `truncationNotice(part, status, view)`, `diffFilesFromView(view)`.
  *
  * A diff view is `{kind:"diff", field:"diff"|"patch", files: DiffFile[], diagnostics, filesTruncated,
- * display}`. A write view is `{kind:"write", field:"write", files:[WriteFile], ...}`. A file-list
- * view is `{kind:"files", field:"patch", files:[{path}], ...}`. A plain view is
+ * display}`. A write view is `{kind:"write", field:"write", files:[WriteFile], ...}`. A read view is
+ * `{kind:"read", field:"read", files:[ReadFile], ...}`. A file-list view is
+ * `{kind:"files", field:"patch", files:[{path}], ...}`. A plain view is
  * `{kind:"plain", field, text, files:[]}`. Every view exposes `display`
  * `{write, perFile, total, lines, files}`; allocators seed them and `allocateView` applies the
  * remaining display caps.
+ *
+ * ReadFile: `{path, language, lineStart, lineEnd, lineCount, totalLines, statusLine,
+ * sourceTruncated, truncated, content, lines}`. `lines` is `{number, text}[]`; numbers come from the
+ * XML (`N: text`), not from the array index. `content` is the joined text of the parsed lines.
+ * `statusLine` is the exact trailing parenthetical text without its outer `(...)`.
  *
  * DiffFile: `{path, oldPath, newPath, type, language, additions, deletions, statsPartial, binary,
  * headerOnly, truncated, hunks, patch, countsFromMetadata}`. Hunk: `{header, oldStart, oldCount,
@@ -40,6 +46,8 @@ export const MAX_DIFF_DISPLAY_BYTES = 64 * 1024;
 export const MAX_DIFF_DISPLAY_TOTAL_BYTES = 128 * 1024;
 /** `write` content display allocation. */
 export const MAX_WRITE_DISPLAY_BYTES = 64 * 1024;
+/** `read` content display allocation. */
+export const MAX_READ_DISPLAY_BYTES = 64 * 1024;
 /** Per-file render cap. */
 export const MAX_RENDERED_LINES = 2_000;
 /** Maximum file records accepted from any parsed source. */
@@ -1258,12 +1266,127 @@ function writeView(state, input, metadata, status) {
   };
 }
 
+function xmlTagText(source, tag) {
+  const open = source.indexOf(`<${tag}>`);
+  if (open === -1) return null;
+  const start = open + tag.length + 2;
+  const close = source.indexOf(`</${tag}>`, start);
+  if (close === -1) return null;
+  return source.slice(start, close);
+}
+
+function numberedReadLine(value) {
+  let end = 0;
+  while (end < value.length) {
+    const code = value.charCodeAt(end);
+    if (code < 48 || code > 57) break;
+    end += 1;
+  }
+  if (end === 0 || value[end] !== ":") return null;
+  const number = Number.parseInt(value.slice(0, end), 10);
+  if (!Number.isSafeInteger(number)) return null;
+  let start = end + 1;
+  if (value[start] === " ") start += 1;
+  return { number, text: value.slice(start) };
+}
+
+function readStatusLine(value) {
+  let text = value.trim();
+  if (text.startsWith("(") && text.endsWith(")")) text = text.slice(1, -1).trim();
+
+  const eof = /^End of file - total (\d+) lines?$/.exec(text);
+  if (eof !== null) {
+    return { statusLine: text, totalLines: Number.parseInt(eof[1], 10), sourceTruncated: false };
+  }
+  const range = /^(?:Output capped at \d+ KB\.\s+)?Showing lines (\d+)-(\d+)(?: of (\d+))?\.(?:\s+Use offset=\d+ to continue\.)?$/.exec(
+    text,
+  );
+  if (range !== null) {
+    return {
+      statusLine: text,
+      totalLines: range[3] === undefined ? null : Number.parseInt(range[3], 10),
+      sourceTruncated: true,
+    };
+  }
+  return null;
+}
+
+function parseReadFile(output, input) {
+  const content = xmlTagText(output, "content");
+  if (content === null) return null;
+
+  const pathValue = xmlTagText(output, "path");
+  const path = firstString(
+    pathValue === null ? null : pathValue.trim(),
+    input.filePath,
+    input.path,
+  );
+  if (path === null) return null;
+
+  const typeValue = xmlTagText(output, "type");
+  const typeLanguage =
+    typeValue !== null && CANONICAL_LANGUAGES.has(typeValue.trim()) ? typeValue.trim() : null;
+
+  const raw = content.replace(/\r\n/g, "\n").split("\n");
+  while (raw.length > 0 && raw[0].trim() === "") raw.shift();
+  while (raw.length > 0 && raw[raw.length - 1].trim() === "") raw.pop();
+
+  const lines = [];
+  let status = null;
+  let blankCount = 0;
+  for (const value of raw) {
+    if (value.trim() === "") {
+      blankCount += 1;
+      continue;
+    }
+    const numbered = numberedReadLine(value);
+    if (numbered !== null) {
+      if (blankCount > 0 || status !== null) return null;
+      lines.push(numbered);
+      continue;
+    }
+    const parsed = readStatusLine(value);
+    if (parsed === null || status !== null) return null;
+    status = parsed;
+  }
+
+  return {
+    path,
+    language: resolveLanguage(path) ?? typeLanguage,
+    lineStart: lines.length > 0 ? lines[0].number : 0,
+    lineEnd: lines.length > 0 ? lines[lines.length - 1].number : 0,
+    lineCount: lines.length,
+    totalLines: status === null ? null : status.totalLines,
+    statusLine: status === null ? "" : status.statusLine,
+    sourceTruncated: status !== null && status.sourceTruncated,
+    truncated: false,
+    content: lines.map((line) => line.text).join("\n"),
+    lines,
+  };
+}
+
+function readView(state, input, status) {
+  if (status !== "completed") return null;
+  const output = stringValue(state.output);
+  if (output === null) return null;
+  const file = parseReadFile(output, input);
+  if (file === null) return null;
+  return {
+    kind: "read",
+    field: "read",
+    files: [file],
+    diagnostics: "",
+    filesTruncated: false,
+    display: emptyDisplay(),
+  };
+}
+
 /**
  * Build a normalized view from a tool part.
  *
- * Supports standard/hashline `edit`, `apply_patch`, and `write`. Returns `null` when the part has no
- * diff/content source or when the tool status is `error`, so callers keep the existing output `<pre>`
- * fallback.
+ * Supports standard/hashline `edit`, `apply_patch`, `write`, and a completed `read`. Returns `null`
+ * when the part has no usable source or when the tool status is `error`, so callers keep the
+ * existing output `<pre>` fallback.
  *
  * @param {Record<string, unknown>} data
  * @param {string} tool
@@ -1276,6 +1399,7 @@ export function extractToolView(data, tool, status) {
   const input = partInput(state);
   const metadata = partMetadata(state);
 
+  if (tool === "read") return readView(state, input, status);
   if (tool === "edit" || tool === "hashline_edit") {
     return editView(state, input, metadata);
   }
@@ -1430,6 +1554,38 @@ function capHunkLines(file, maxLines, display) {
   display.lines = true;
 }
 
+function capReadContent(file, capBytes, maxLines, display) {
+  const sourceLines = Array.isArray(file.lines) ? file.lines : [];
+  const originalCount = sourceLines.length;
+  const kept = [];
+  let used = 0;
+  let cutByBytes = false;
+  for (const line of sourceLines) {
+    const text = typeof line.text === "string" ? line.text : "";
+    const size = utf8Bytes(text) + (kept.length === 0 ? 0 : 1);
+    if (used + size > capBytes) {
+      cutByBytes = true;
+      break;
+    }
+    kept.push({ ...line, text });
+    used += size;
+  }
+  if (cutByBytes) {
+    file.truncated = true;
+    display.write = true;
+  }
+  if (originalCount > maxLines) {
+    if (kept.length > maxLines) kept.length = maxLines;
+    file.truncated = true;
+    display.lines = true;
+  }
+  file.lines = kept;
+  file.lineCount = kept.length;
+  file.content = kept.map((line) => line.text).join("\n");
+  file.lineStart = kept.length > 0 ? kept[0].number : 0;
+  file.lineEnd = kept.length > 0 ? kept[kept.length - 1].number : 0;
+}
+
 function capWriteContent(file, capBytes, maxLines, display) {
   if (typeof file.content !== "string") return;
   const clipped = clipDisplay(file.content, capBytes);
@@ -1456,8 +1612,8 @@ function capWriteContent(file, capBytes, maxLines, display) {
  * caps. Never clips an individual patch to fit the total. Input is not mutated.
  *
  * @param {Record<string, unknown>} view
- * @param {{ perFileBytes?: number, totalBytes?: number, writeBytes?: number, maxLines?: number,
- *   maxFiles?: number, pathBytes?: number, pathTotalBytes?: number }} [options]
+ * @param {{ perFileBytes?: number, totalBytes?: number, writeBytes?: number, readBytes?: number,
+ *   maxLines?: number, maxFiles?: number, pathBytes?: number, pathTotalBytes?: number }} [options]
  * @returns {Record<string, unknown>}
  */
 export function allocateView(view, options = {}) {
@@ -1471,6 +1627,7 @@ export function allocateView(view, options = {}) {
   const perFileBytes = numberOption(options.perFileBytes, MAX_DIFF_DISPLAY_BYTES);
   const totalBytes = numberOption(options.totalBytes, MAX_DIFF_DISPLAY_TOTAL_BYTES);
   const writeBytes = numberOption(options.writeBytes, MAX_WRITE_DISPLAY_BYTES);
+  const readBytes = numberOption(options.readBytes, MAX_READ_DISPLAY_BYTES);
   const maxLines = numberOption(options.maxLines, MAX_RENDERED_LINES);
   const maxFiles = numberOption(options.maxFiles, MAX_DIFF_FILES);
   const pathBytes = numberOption(options.pathBytes, MAX_DIFF_PATH_BYTES);
@@ -1480,6 +1637,14 @@ export function allocateView(view, options = {}) {
     out.files = out.files.slice(0, maxFiles);
     out.filesTruncated = true;
     out.display.files = true;
+  }
+
+  if (out.kind === "read") {
+    for (const file of out.files) {
+      capReadContent(file, readBytes, maxLines, out.display);
+    }
+    applyPathCaps(out.files, pathBytes, pathTotalBytes);
+    return out;
   }
 
   if (out.kind === "files") {
@@ -1525,6 +1690,7 @@ export function allocateView(view, options = {}) {
 const LIVE_FIELD_TEXT = {
   diff: "Diff",
   write: "Content",
+  read: "File content",
   content: "Content",
   patch: "Diff",
   output: "Output",
@@ -1532,12 +1698,14 @@ const LIVE_FIELD_TEXT = {
 const SNAPSHOT_FIELD_TEXT = {
   diff: "diff",
   write: "content",
+  read: "file content",
   content: "content",
   patch: "diff",
   output: "output",
 };
 
 function noticeField(serverFields, view) {
+  if (view && view.field === "read") return "read";
   if (serverFields.includes("state.input.content")) return "write";
   if (
     serverFields.some(
@@ -1557,6 +1725,7 @@ function noticeField(serverFields, view) {
   if (view && typeof view.field === "string") return view.field;
   const kind = view && typeof view.kind === "string" ? view.kind : "";
   if (kind === "write") return "write";
+  if (kind === "read") return "read";
   if (kind === "diff") return "diff";
   if (kind === "files") return "patch";
   return "output";
@@ -1614,10 +1783,15 @@ export function truncationNotice(part, status, view) {
     display.write || display.total || display.perFile || display.lines || display.files;
   if (!partial && !seeded && serverLimit === undefined) return "";
 
-  if (display.write) return "Content truncated at 64 KiB.";
+  if (display.write) {
+    return field === "read"
+      ? "File content truncated at 64 KiB."
+      : "Content truncated at 64 KiB.";
+  }
   if (display.total) return "Diff truncated at the 128 KiB total limit.";
   if (display.perFile) return "Diff truncated at 64 KiB per file.";
   if (display.lines) {
+    if (field === "read") return "File content truncated at 2,000 lines.";
     return field === "write"
       ? "Content truncated at 2,000 lines."
       : "Diff truncated at 2,000 lines.";
@@ -1631,6 +1805,7 @@ export function truncationNotice(part, status, view) {
     return "Diff truncated at the 128 KiB total limit.";
   }
   if (field === "write" || serverLimit === "content") return "Content truncated at 64 KiB.";
+  if (field === "read") return "File content truncated at 64 KiB.";
   if (field === "patch" || serverLimit === "patch") return "Patch truncated at 64 KiB.";
   if (field === "output" || serverLimit === "output") return "Output truncated at 64 KiB.";
   return "";

@@ -110,8 +110,9 @@ Compose definitions live in `compose.yaml`; `compose.build.yaml` adds a source b
   return data.
 - Our chat UI (`/chat?app=<appKey>&project=<projectId>`) lists/filters sessions, streams assistant
   text and running tool output, renders tool calls (output/error/previews), reasoning, patches,
-  syntax-highlighted `edit`/`apply_patch` diffs and `write` content, GFM pipe tables, and OMO system
-  cards, and sends prompts optimistically. Diff highlighting is lazy and open-only: a checked-in
+  syntax-highlighted `edit`/`apply_patch` diffs, `write` content, and completed `read` output
+  (parsed path, line numbers, code, and status footer), GFM pipe tables, and OMO system cards, and
+  sends prompts optimistically. Diff highlighting is lazy and open-only: a checked-in
   PrismJS 1.30.0 bundle runs in a module Web Worker with a 250 ms per-stream budget, 8/64 KiB
   language-aware stream caps, a 120k-node page budget, and plain fallback. Diffs are capped at
   64 KiB per file / 128 KiB total / 50 files / 2,000 rendered lines; highlighting is hunk-local and

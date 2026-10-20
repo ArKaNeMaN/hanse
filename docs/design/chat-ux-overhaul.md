@@ -1112,8 +1112,11 @@ Body rules:
 - **edit / apply_patch / write:** completed `edit` and `apply_patch` diffs use the
   syntax-highlighted unified-diff renderer; `write` renders syntax-highlighted content with a path
   and line count. If no diff/content source exists, fall back to preview + `<pre>`.
-- **read/grep/glob/webfetch/websearch/generic:** preview + `<pre>` for `state.output`,
-  `state.error`, or the best available string.
+- **read:** a completed `read` with opencode's `<path>/<content>` XML renders as a structured
+  syntax-highlighted block: path, XML line numbers, code, and the status line in a footer. Errors,
+  running parts, and malformed output keep the preview + `<pre>` fallback.
+- **grep/glob/webfetch/websearch/generic:** preview + `<pre>` for `state.output`, `state.error`, or
+  the best available string.
 - **step-start, step-finish, retry, compaction, snapshot, agent:** hidden (internal bookkeeping);
   `retry` is represented by the status model instead.
 - Truncation notices are field-aware and follow

@@ -14,13 +14,13 @@ CHAT_QA_URL=http://127.0.0.1:8792 CHAT_QA_TOKEN=qa-token node docs/design/chat-q
 ```
 
 `report.json` records every scenario, assertion, observation, screenshot path, and the console/page
-error list for the deterministic gate. The last deterministic run reported **9 scenarios, 199
-assertions, 18 screenshots, zero console/page errors**. `report-live.json` records the post-deployment
+error list for the deterministic gate. The last deterministic run reported **10 scenarios, 211
+assertions, 20 screenshots, zero console/page errors**. `report-live.json` records the post-deployment
 `--live` run on `deployment-host`: **1 scenario, 2 assertions, 1 screenshot, zero console/page errors**.
 
 The phase-7 diff scenarios inject a `Worker` probe before page load to count worker creation,
 `tokenize` posts, responses, and terminations. They reuse the same deterministic route/EventSource
-fixtures and add these scenario names to `report.json`: `diffs`, `diff-error`, `diff-lazy`,
+fixtures and add these scenario names to `report.json`: `diffs`, `read`, `diff-error`, `diff-lazy`,
 `diff-streaming`, `diff-adversarial`, and `diff-timeout`.
 
 ## Captures
@@ -30,6 +30,8 @@ fixtures and add these scenario names to `report.json`: `diffs`, `diff-error`, `
 | `main-1440-diff.png` | Dark 1440 diff feed: standard `edit` (`filediff.patch`), hashline `edit` (`metadata.diff`), four-file `apply_patch` (add/update/delete/move), a 40-line TypeScript `write`, a 64 KiB write, unknown/binary/plain/truncated fallbacks, file-list mode, and the 50-file cap. |
 | `main-1440-diff-light.png` | The same feed after `data-theme="light"`: a keyword token's computed color changes while the add-line background still derives from `--success`. |
 | `main-390-diff.png` | Dark 390 diff layout: no page horizontal overflow, narrower diff columns, and the diff/code scrollers are the only horizontal scrollers in the feed. |
+| `read-1440.png` | Completed `read` XML renders as a path/line-number/code block with a status footer and syntax tokens; the raw `<path>`/`<content>` XML is absent. |
+| `read-390.png` | The same read block at 390: no page horizontal overflow, the footer wraps, and XML line numbers stay visible. |
 | `diff-error-1440-dark.png` | A failed `edit` auto-opens the existing error `<pre>` with no diff body, no tokens, and zero worker requests. |
 | `diff-lazy-1440-dark.png` | One open and one closed diff: opening tokenizes only the open file, closing clears its tokens, reopening tokenizes again, and focus/scroll survive a streaming update. |
 | `diff-streaming-1440-dark.png` | A live streaming diff updates running -> completed and then hydrates: the open diff keeps its tokens, the closed diff stays plain, and a MutationObserver/rAF probe sees no colored -> plain -> colored flash. |
@@ -49,8 +51,9 @@ fixtures and add these scenario names to `report.json`: `diffs`, `diff-error`, `
 
 ## Accepted gaps
 
-- The diff scenarios cover 1440 and 390 plus one light diff capture. The remaining screenshots are
-  dark only; 768/1024/1920 and reduced motion are not part of this automated matrix.
+- The diff scenarios cover 1440 and 390 plus one light diff capture; `read` covers 1440 and 390 dark
+  only. The remaining screenshots are dark only; 768/1024/1920 and reduced motion are not part of
+  this automated matrix.
 - The 390 capture is scrolled to the bottom, so the table is present in the DOM and measured but not
   visible in the frame.
 - The deterministic fixtures cover the R1/R15/R16/R17 browser rows (streaming, queue/send, inline

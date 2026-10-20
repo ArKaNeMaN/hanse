@@ -8,8 +8,10 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { gzipSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
+import { allocateView, extractToolView } from "../assets/chat-diff.js";
 import {
   isHighlightEligible,
+  mountToolView,
   reservationFits,
   reservationUnits,
 } from "../assets/chat-highlight.js";
@@ -107,6 +109,35 @@ function fixture(projects = true): Fixture {
       })),
   };
   return { db, deps, token, settings };
+}
+
+class FakeNode {
+  children: FakeNode[] = [];
+  dataset: Record<string, string> = {};
+  attributes: Record<string, string> = {};
+  textContent = "";
+  className = "";
+  title = "";
+  tabIndex = -1;
+
+  constructor(public tagName: string) {}
+
+  append(...nodes: FakeNode[]): void {
+    this.children.push(...nodes);
+  }
+
+  setAttribute(name: string, value: string): void {
+    this.attributes[name] = value;
+  }
+}
+
+function fakeDocument(): { createElement: (tag: string) => FakeNode; activeElement: null } {
+  return { createElement: (tag: string) => new FakeNode(tag), activeElement: null };
+}
+
+function fakeText(node: FakeNode): string {
+  const own = node.children.length === 0 ? node.textContent : "";
+  return [own, ...node.children.map((child) => fakeText(child))].join("\n");
 }
 
 function auth(token: string): Record<string, string> {
@@ -482,6 +513,72 @@ describe("chat page", () => {
     expect(worker).toContain(
       "globalThis.Prism = { manual: true, disableWorkerMessageHandler: true }",
     );
+  });
+
+  it("mounts a completed read part as a structured tool-code block without raw XML", () => {
+    const output = [
+      "<path>/workspace/apps/demo-app/tools/analyzer/webui.py</path>",
+      "<type>file</type>",
+      "<content>",
+      "1418: def bundle_bytes(data, drop_index, mins=2.0):",
+      "1419:     # trim the bundle",
+      "1420:     return data",
+      "",
+      "(Showing lines 1418-1420 of 5169. Use offset=1421 to continue.)",
+      "</content>",
+    ].join("\n");
+    const view = extractToolView(
+      {
+        tool: "read",
+        state: {
+          status: "completed",
+          input: { filePath: "webui.py", offset: 1418, limit: 3 },
+          metadata: {},
+          output,
+        },
+      },
+      "read",
+      "completed",
+    );
+    expect(view?.kind).toBe("read");
+    const allocated = allocateView(view);
+    expect(allocated.kind).toBe("read");
+
+    const globalRecord = globalThis as unknown as { document?: unknown };
+    const previous = globalRecord.document;
+    globalRecord.document = fakeDocument();
+    let mounted: FakeNode | null = null;
+    try {
+      mounted = mountToolView(allocated, {
+        partID: "read-1",
+        viewKey: "read-key",
+      }) as FakeNode | null;
+    } finally {
+      if (previous === undefined) Reflect.deleteProperty(globalRecord, "document");
+      else globalRecord.document = previous;
+    }
+
+    expect(mounted?.className).toBe("tool-code");
+    const head = mounted?.children.find((child) => child.className === "tool-code__head");
+    const scroller = mounted?.children.find((child) => child.className === "tool-code__scroll");
+    const foot = mounted?.children.find((child) => child.className === "tool-code__foot");
+    expect(fakeText(head as FakeNode)).toContain("webui.py");
+    expect(fakeText(head as FakeNode)).toContain("1418–1420 of 5169");
+    expect(fakeText(head as FakeNode)).toContain("python");
+    expect(scroller?.children.map((row) => row.children[0].textContent)).toEqual([
+      "1418",
+      "1419",
+      "1420",
+    ]);
+    expect(scroller?.attributes["aria-label"]).toBe(
+      "File content for /workspace/apps/demo-app/tools/analyzer/webui.py, scrollable",
+    );
+    expect(foot?.textContent).toBe("Showing lines 1418-1420 of 5169. Use offset=1421 to continue.");
+
+    const text = fakeText(mounted as FakeNode);
+    expect(text).toContain("def bundle_bytes");
+    expect(text).not.toContain("<path>");
+    expect(text).not.toContain("<content>");
   });
 
   it("reserves highlight budget all-or-nothing per file", () => {

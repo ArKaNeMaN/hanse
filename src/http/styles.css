@@ -5169,6 +5169,16 @@
     white-space: nowrap;
   }
 
+  .tool-code__foot {
+    padding: var(--space-1) var(--space-3);
+    border-block-start: 1px solid var(--line);
+    color: var(--text-3);
+    font-size: var(--text-micro);
+    line-height: 1.5;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
   .tool-diff__hunks,
   .tool-diff__hunk {
     min-inline-size: 100%;
@@ -5289,6 +5299,10 @@
 
   .code-line > .code-line__code {
     grid-column: 2;
+  }
+
+  .tool-code[data-kind="read"] .code-line {
+    grid-template-columns: max-content minmax(0, 1fr);
   }
 
   .tool-diff__diagnostics {

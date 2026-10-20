@@ -2353,7 +2353,10 @@ function main() {
     const allocated = view === null ? null : allocateView(view);
     const hasViewBody =
       allocated !== null &&
-      (allocated.kind === "diff" || allocated.kind === "write" || allocated.kind === "files");
+      (allocated.kind === "diff" ||
+        allocated.kind === "write" ||
+        allocated.kind === "read" ||
+        allocated.kind === "files");
     const bodyText =
       allocated !== null && allocated.kind === "plain" ? allocated.text : output;
     let bodyKind = "pre";
