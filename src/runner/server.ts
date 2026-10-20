@@ -40,6 +40,7 @@ import {
   type DockerExecStream,
   type DockerRuntime,
 } from "./docker.js";
+import { ImageGcError, ImageGcService } from "./image-gc.js";
 import type { ImageValidationRuntime } from "./image-validation.js";
 import { ImageBuildError, ImageBuildService } from "./images.js";
 import { appContainerName, appNetworkName } from "./names.js";
@@ -220,6 +221,16 @@ async function readJson(request: IncomingMessage): Promise<unknown> {
   }
 }
 
+async function readOptionalJson(request: IncomingMessage): Promise<unknown> {
+  const body = await readBody(request);
+  if (body.trim().length === 0) return {};
+  try {
+    return JSON.parse(body) as unknown;
+  } catch {
+    throw new RunnerError(400, "request body must be valid JSON");
+  }
+}
+
 function errorBody(error: unknown): RuntimeErrorBody {
   if (error instanceof ConfigError) {
     return { error: error.message, code: error.code };
@@ -234,6 +245,9 @@ function errorBody(error: unknown): RuntimeErrorBody {
   if (error instanceof ImageBuildError) {
     return { error: error.message, ...(error.code === undefined ? {} : { code: error.code }) };
   }
+  if (error instanceof ImageGcError) {
+    return { error: error.message, code: error.code };
+  }
   if (error instanceof RunnerError) {
     return { error: error.message, ...(error.code === undefined ? {} : { code: error.code }) };
   }
@@ -246,6 +260,7 @@ function errorBody(error: unknown): RuntimeErrorBody {
 function statusFor(error: unknown): number {
   if (error instanceof RunnerGitError) return error.status;
   if (error instanceof ImageBuildError) return error.status;
+  if (error instanceof ImageGcError) return error.status;
   if (error instanceof RunnerError) return error.status;
   if (error instanceof ConfigError) return 400;
   if (error instanceof DockerError) return error.status >= 500 ? 502 : 400;
@@ -505,6 +520,7 @@ export interface RunnerServiceOptions {
   exec?: DockerExecRuntime;
   build?: DockerBuildRuntime;
   validation?: ImageValidationRuntime;
+  imageGc?: ImageGcService;
 }
 
 /** Per-app container runtime behind the same API shape as the B0 supervisor. */
@@ -513,6 +529,7 @@ export class RunnerService {
   readonly #docker: DockerRuntime;
   readonly #exec: DockerExecRuntime | undefined;
   readonly #images: ImageBuildService;
+  readonly #imageGc: ImageGcService;
 
   constructor(options: RunnerServiceOptions) {
     this.#config = options.config;
@@ -523,6 +540,9 @@ export class RunnerService {
       ...(options.build === undefined ? {} : { build: options.build }),
       ...(options.validation === undefined ? {} : { validation: options.validation }),
     });
+    this.#imageGc =
+      options.imageGc ??
+      new ImageGcService({ docker: options.docker, diskPath: options.config.hostWorkspace });
   }
 
   async health(): Promise<RuntimeHealth> {
@@ -843,6 +863,24 @@ export class RunnerService {
     const provided = bearerToken(request);
     if (provided === undefined || !tokenMatches(provided, this.#config.token)) {
       writeJson(response, 401, { error: "unauthorized" }, { "www-authenticate": "Bearer" });
+      return;
+    }
+
+    if (url.pathname === "/v1/images/usage") {
+      if (method !== "GET") {
+        writeJson(response, 405, { error: "method not allowed" }, { Allow: "GET" });
+        return;
+      }
+      writeJson(response, 200, await this.#imageGc.usage());
+      return;
+    }
+
+    if (url.pathname === "/v1/images/gc") {
+      if (method !== "POST") {
+        writeJson(response, 405, { error: "method not allowed" }, { Allow: "POST" });
+        return;
+      }
+      writeJson(response, 200, await this.#imageGc.gc(await readOptionalJson(request)));
       return;
     }
 

@@ -49,6 +49,22 @@ Publish currently targets `linux/amd64`; arm64 is on-demand/backlog. Compose def
   `/ide` stripped and `?folder` confined to the workspace root. The coordinator is the single front
   door.
 
+## App image usage and GC (B2.5b)
+
+The runner exposes two runtime-token endpoints; the coordinator wraps them as human-only
+`GET /api/images/usage` and `POST /api/images/gc`.
+
+- `GET /v1/images/usage` returns the `HANSE_HOST_WORKSPACE` filesystem total/used/free/percent from
+  `statfs`, plus Docker image/build-cache totals from `GET /system/df`. `level` is `ok` below 75%
+  used, `warning` from 75%, and `critical` from 85%. Docker/statfs failures are reported as bounded
+  errors with partial data. The threshold is advisory: **crossing it never deletes anything**.
+- `POST /v1/images/gc` is explicit and serialized (a concurrent call returns `409`). The coordinator
+  sends the durable keep set (`apps.image_ref`, `app_image_versions.image_ref`, and
+  `instances.image_ref` for `running`/`starting`); the runner additionally protects every image
+  referenced by a Docker container. GC removes only `hanse-app-*` tags or images labelled
+  `hanse.app.id`, skips images that also carry unrelated tags, and prunes build cache only through
+  the Docker build-cache prune API. A Docker error stops the run (fail closed).
+
 ## Auth (one login)
 
 - One operator token (`HANSE_OPERATOR_TOKEN`), stored hashed as a human principal named `operator`.

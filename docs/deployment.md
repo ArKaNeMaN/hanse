@@ -238,6 +238,26 @@ that backup is the reliable rollback path.
 HANSE_TAG=sha-<previous> docker compose up -d
 ```
 
+## Disk usage and app image GC
+
+Use the authenticated coordinator endpoints to inspect disk/image usage and to run garbage
+collection explicitly:
+
+```bash
+curl -fsS -H "Authorization: Bearer $HANSE_OPERATOR_TOKEN" \
+  http://127.0.0.1:8787/api/images/usage
+curl -fsS -X POST -H "Authorization: Bearer $HANSE_OPERATOR_TOKEN" \
+  http://127.0.0.1:8787/api/images/gc
+```
+
+The usage report covers the host workspace filesystem (`statfs`) and Docker image/build-cache totals
+(`docker system df`). `level` is `ok` below 75% used, `warning` from 75%, and `critical` from 85%;
+crossing a threshold only warns, it never deletes. GC is explicit, runs one at a time, and protects
+the current and rollback app images plus every image used by a running/starting instance or Docker
+container. It removes only Hanse app images (`hanse-app-*` / the `hanse.app.id` label), leaves
+unrelated images and images with shared unrelated tags alone, and prunes build cache through Docker's
+build-cache prune API. A Docker error stops the run. Builds and rollbacks are never automatic.
+
 ## Build from source
 
 ```bash

@@ -13,6 +13,7 @@ import type { ImageBuildInput, RunnerImageRecord } from "../src/images/client.js
 import { type ImageRunnerClient, ImageService } from "../src/images/service.js";
 import { InstanceManager } from "../src/opencode/manager.js";
 import { discoverProject, registerProject } from "../src/registry/index.js";
+import type { ImageGcReport, ImageUsageReport } from "../src/runner/image-gc.js";
 import { defaultImageReference } from "../src/runtime/build-spec.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
 import { FakeAgentRuntime } from "./fixtures/fake-runtime.js";
@@ -50,6 +51,7 @@ const APP_YAML = "name: web\nkind: service\nbuild:\n  dockerfile: Dockerfile\n";
 class FakeImageRunner implements ImageRunnerClient {
   readonly records = new Map<string, RunnerImageRecord>();
   readonly builds = new Map<string, RunnerImageRecord>();
+  gcRefs: string[] | undefined;
   nextBuild = 1;
 
   async build(
@@ -89,6 +91,35 @@ class FakeImageRunner implements ImageRunnerClient {
 
   async getBuild(buildId: string): Promise<RunnerImageRecord | undefined> {
     return this.builds.get(buildId);
+  }
+
+  async usage(): Promise<ImageUsageReport> {
+    return {
+      level: "ok",
+      disk: null,
+      docker: null,
+      errors: [],
+      generatedAt: "2026-01-01T00:00:00.000Z",
+    };
+  }
+
+  async gc(protectedRefs: string[]): Promise<ImageGcReport> {
+    this.gcRefs = protectedRefs;
+    return {
+      ok: true,
+      startedAt: "2026-01-01T00:00:00.000Z",
+      finishedAt: "2026-01-01T00:00:00.000Z",
+      durationMs: 0,
+      protectedRefCount: protectedRefs.length,
+      removedImageCount: 0,
+      removedImageIds: [],
+      removedRefs: [],
+      estimatedReclaimedBytes: 0,
+      buildCachePruned: false,
+      buildCacheReclaimedBytes: 0,
+      skipped: [],
+      truncated: false,
+    };
   }
 
   set(appId: string, patch: Partial<RunnerImageRecord>): void {
@@ -383,5 +414,49 @@ describe("app image lifecycle", () => {
     const page = await f.deps.getProjects()[0]?.service.listApps();
     expect(page?.[0]?.imageRef).toBe("hanse-app-p:web:two");
     expect(page?.[0]?.imageRollbackRef).toBe("hanse-app-p:web:one");
+  });
+
+  it("sends the durable current, rollback, and running refs to the runner gc", async () => {
+    const f = await fixture();
+    await readyBuild(f, "hanse-app-p:web:one", "sha256:one", "2026-01-01T00:00:00.000Z");
+    await readyBuild(f, "hanse-app-p:web:two", "sha256:two", "2026-01-02T00:00:00.000Z");
+    f.db
+      .prepare(
+        "INSERT INTO instances (id, app_id, state, image_ref, updated_at) VALUES (?, ?, 'running', ?, ?)",
+      )
+      .run(f.appId, f.appId, "hanse-app-p:web:running", new Date().toISOString());
+
+    const usage = await handleImages(f.deps, {
+      method: "GET",
+      path: "/api/images/usage",
+      headers: auth(f.token),
+    });
+    expect(usage.status).toBe(200);
+    expect((JSON.parse(usage.body) as { level: string }).level).toBe("ok");
+
+    const gc = await handleImages(f.deps, {
+      method: "POST",
+      path: "/api/images/gc",
+      headers: auth(f.token, { "content-type": "application/json" }),
+      body: "{}",
+    });
+    expect(gc.status).toBe(200);
+    expect(f.runner.gcRefs).toEqual([
+      "hanse-app-p:web:one",
+      "hanse-app-p:web:running",
+      "hanse-app-p:web:two",
+    ]);
+
+    f.db
+      .prepare("UPDATE instances SET state = 'stopped', updated_at = ? WHERE app_id = ?")
+      .run(new Date().toISOString(), f.appId);
+    const again = await handleImages(f.deps, {
+      method: "POST",
+      path: "/api/images/gc",
+      headers: auth(f.token, { "content-type": "application/json" }),
+      body: "{}",
+    });
+    expect(again.status).toBe(200);
+    expect(f.runner.gcRefs).toEqual(["hanse-app-p:web:one", "hanse-app-p:web:two"]);
   });
 });

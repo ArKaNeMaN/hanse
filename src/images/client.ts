@@ -6,6 +6,14 @@
  * header and is deliberately excluded from every error message.
  */
 
+import type {
+  DiskUsage,
+  DockerUsage,
+  ImageGcReport,
+  ImageGcSkipped,
+  ImageUsageReport,
+} from "../runner/image-gc.js";
+
 export type RunnerImageStatus = "missing" | "building" | "ready" | "error";
 
 export interface ImageBuildInput {
@@ -47,8 +55,11 @@ export interface RunnerImageClientOptions {
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const BUILD_TIMEOUT_MS = 120_000;
+const GC_TIMEOUT_MS = 120_000;
 const ERROR_EXCERPT_CHARS = 300;
+const MAX_REPORT_ENTRIES = 100;
 const STATUSES: ReadonlySet<string> = new Set(["missing", "building", "ready", "error"]);
+const LEVELS: ReadonlySet<string> = new Set(["ok", "warning", "critical"]);
 
 /** Typed failure from the runner image API. `transport` marks a network/timeout failure. */
 export class ImageClientError extends Error {
@@ -103,6 +114,113 @@ function parseRecord(value: unknown): RunnerImageRecord {
     logs: typeof value.logs === "string" ? value.logs : "",
     error: stringOrNull(value.error),
     updatedAt: stringOrNull(value.updatedAt),
+  };
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function stringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((entry): entry is string => typeof entry === "string").slice(0, 100);
+}
+
+function parseDisk(value: unknown): DiskUsage | null {
+  if (!isRecord(value)) return null;
+  const totalBytes = finiteNumber(value.totalBytes);
+  const usedBytes = finiteNumber(value.usedBytes);
+  const freeBytes = finiteNumber(value.freeBytes);
+  const usedPercent = finiteNumber(value.usedPercent);
+  const level = value.level;
+  if (
+    totalBytes === undefined ||
+    usedBytes === undefined ||
+    freeBytes === undefined ||
+    usedPercent === undefined ||
+    typeof level !== "string" ||
+    !LEVELS.has(level)
+  ) {
+    return null;
+  }
+  return {
+    totalBytes,
+    usedBytes,
+    freeBytes,
+    usedPercent,
+    level: level as DiskUsage["level"],
+  };
+}
+
+function parseDocker(value: unknown): DockerUsage | null {
+  if (!isRecord(value)) return null;
+  const fields = [
+    "imageCount",
+    "imageBytes",
+    "buildCacheCount",
+    "buildCacheBytes",
+    "buildCacheInUseBytes",
+    "layersBytes",
+  ] as const;
+  const parsed: Partial<DockerUsage> = {};
+  for (const field of fields) {
+    const number = finiteNumber(value[field]);
+    if (number === undefined) return null;
+    parsed[field] = number;
+  }
+  return parsed as DockerUsage;
+}
+
+function parseUsage(value: unknown): ImageUsageReport {
+  if (!isRecord(value)) {
+    throw new ImageClientError("image runner returned an invalid usage report");
+  }
+  const level = value.level;
+  if (typeof level !== "string" || !LEVELS.has(level)) {
+    throw new ImageClientError("image runner returned an invalid usage level");
+  }
+  return {
+    level: level as ImageUsageReport["level"],
+    disk: parseDisk(value.disk),
+    docker: parseDocker(value.docker),
+    errors: stringArray(value.errors),
+    generatedAt:
+      typeof value.generatedAt === "string" ? value.generatedAt : new Date().toISOString(),
+  };
+}
+
+const SKIP_REASONS: ReadonlySet<string> = new Set(["protected", "shared_tag", "limit", "timeout"]);
+
+function parseSkipped(value: unknown): ImageGcSkipped[] {
+  if (!Array.isArray(value)) return [];
+  const skipped: ImageGcSkipped[] = [];
+  for (const entry of value.slice(0, MAX_REPORT_ENTRIES)) {
+    if (!isRecord(entry)) continue;
+    if (typeof entry.ref !== "string") continue;
+    if (typeof entry.reason !== "string" || !SKIP_REASONS.has(entry.reason)) continue;
+    skipped.push({ ref: entry.ref, reason: entry.reason as ImageGcSkipped["reason"] });
+  }
+  return skipped;
+}
+
+function parseGc(value: unknown): ImageGcReport {
+  if (!isRecord(value) || value.ok !== true) {
+    throw new ImageClientError("image runner returned an invalid gc report");
+  }
+  return {
+    ok: true,
+    startedAt: typeof value.startedAt === "string" ? value.startedAt : "",
+    finishedAt: typeof value.finishedAt === "string" ? value.finishedAt : "",
+    durationMs: finiteNumber(value.durationMs) ?? 0,
+    protectedRefCount: finiteNumber(value.protectedRefCount) ?? 0,
+    removedImageCount: finiteNumber(value.removedImageCount) ?? 0,
+    removedImageIds: stringArray(value.removedImageIds),
+    removedRefs: stringArray(value.removedRefs),
+    estimatedReclaimedBytes: finiteNumber(value.estimatedReclaimedBytes) ?? 0,
+    buildCachePruned: value.buildCachePruned === true,
+    buildCacheReclaimedBytes: finiteNumber(value.buildCacheReclaimedBytes) ?? 0,
+    skipped: parseSkipped(value.skipped),
+    truncated: value.truncated === true,
   };
 }
 
@@ -171,6 +289,24 @@ export class RunnerImageClient {
       }
       throw error;
     }
+  }
+
+  async usage(): Promise<ImageUsageReport> {
+    const parsed = await this.#request("/v1/images/usage", { method: "GET" }, this.#timeoutMs);
+    return parseUsage(parsed);
+  }
+
+  async gc(protectedRefs: string[]): Promise<ImageGcReport> {
+    const parsed = await this.#request(
+      "/v1/images/gc",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ protectedRefs }),
+      },
+      GC_TIMEOUT_MS,
+    );
+    return parseGc(parsed);
   }
 
   async #request(path: string, init: RequestInit, timeoutMs: number): Promise<unknown> {

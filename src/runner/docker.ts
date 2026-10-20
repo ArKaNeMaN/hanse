@@ -277,6 +277,7 @@ export interface DockerContainerSummary {
   Id: string;
   Names: string[];
   Image: string;
+  ImageID?: string;
   State: string;
   Status: string;
   Labels?: Record<string, string>;
@@ -333,6 +334,54 @@ export interface DockerImageInspect {
     WorkingDir?: string;
     Labels?: Record<string, string>;
   };
+}
+
+/** One image entry from `GET /system/df` (the fields GC needs; Docker returns more). */
+export interface DockerImageUsage {
+  Id: string;
+  RepoTags?: string[] | null;
+  RepoDigests?: string[] | null;
+  Created?: number;
+  Size?: number;
+  SharedSize?: number;
+  Containers?: number;
+  Labels?: Record<string, string> | null;
+}
+
+/** One build-cache entry from `GET /system/df`. */
+export interface DockerBuildCacheUsage {
+  ID?: string;
+  Type?: string;
+  Size?: number;
+  InUse?: boolean;
+  Shared?: boolean;
+  CreatedAt?: string;
+  LastUsedAt?: string | null;
+  UsageCount?: number;
+}
+
+export interface DockerSystemDf {
+  LayersSize?: number;
+  Images?: DockerImageUsage[] | null;
+  Containers?: unknown[] | null;
+  Volumes?: unknown[] | null;
+  BuildCache?: DockerBuildCacheUsage[] | null;
+}
+
+export interface DockerImagePruneResult {
+  ImagesDeleted?: Array<{ Untagged?: string; Deleted?: string }> | null;
+  SpaceReclaimed?: number;
+}
+
+export interface DockerBuildPruneOptions {
+  all?: boolean;
+  keepStorageBytes?: number;
+  filters?: Record<string, string[]>;
+}
+
+export interface DockerBuildPruneResult {
+  CachesDeleted?: string[] | null;
+  SpaceReclaimed?: number;
 }
 
 export interface DockerLogs {
@@ -586,6 +635,52 @@ export class DockerClient {
     if (response.status === 404) return undefined;
     this.#check(response, `inspect image ${reference}`);
     return decodeJson<DockerImageInspect>(response, `inspect image ${reference}`);
+  }
+
+  async systemDf(): Promise<DockerSystemDf> {
+    const response = await this.#transport.request("GET", "/system/df");
+    this.#check(response, "docker system df");
+    return decodeJson<DockerSystemDf>(response, "docker system df");
+  }
+
+  async removeImage(referenceOrId: string, force = false): Promise<void> {
+    const response = await this.#transport.request(
+      "DELETE",
+      `/images/${encodeURIComponent(referenceOrId)}?force=${force ? "1" : "0"}&noprune=1`,
+    );
+    if (response.status === 404) return;
+    this.#check(response, `remove image ${referenceOrId}`);
+  }
+
+  async pruneImages(filters: Record<string, string[]> = {}): Promise<DockerImagePruneResult> {
+    const query =
+      Object.keys(filters).length === 0
+        ? ""
+        : `?filters=${encodeURIComponent(JSON.stringify(filters))}`;
+    const response = await this.#transport.request("POST", `/images/prune${query}`);
+    this.#check(response, "prune images");
+    return decodeJson<DockerImagePruneResult>(response, "prune images");
+  }
+
+  async pruneBuildCache(options: DockerBuildPruneOptions = {}): Promise<DockerBuildPruneResult> {
+    const query = new URLSearchParams();
+    if (options.all !== undefined) {
+      query.set("all", options.all ? "1" : "0");
+    }
+    if (options.keepStorageBytes !== undefined) {
+      query.set("keep-storage", String(options.keepStorageBytes));
+    }
+    if (options.filters !== undefined) {
+      query.set("filters", JSON.stringify(options.filters));
+    }
+    const response = await this.#transport.request(
+      "POST",
+      `/build/prune${query.size === 0 ? "" : `?${query.toString()}`}`,
+      undefined,
+      { timeoutMs: 120_000 },
+    );
+    this.#check(response, "prune build cache");
+    return decodeJson<DockerBuildPruneResult>(response, "prune build cache");
   }
 
   async buildImage(options: DockerBuildOptions): Promise<DockerBuildResult> {
@@ -888,6 +983,10 @@ export interface DockerRuntime {
   removeContainer(id: string, force?: boolean): Promise<void>;
   inspectContainer(idOrName: string): Promise<DockerContainerInspect | undefined>;
   inspectImage?(reference: string): Promise<DockerImageInspect | undefined>;
+  systemDf?(): Promise<DockerSystemDf>;
+  removeImage?(referenceOrId: string, force?: boolean): Promise<void>;
+  pruneImages?(filters?: Record<string, string[]>): Promise<DockerImagePruneResult>;
+  pruneBuildCache?(options?: DockerBuildPruneOptions): Promise<DockerBuildPruneResult>;
   listContainers(label?: string): Promise<DockerContainerSummary[]>;
   logs(id: string, tail?: number): Promise<DockerLogs>;
   waitContainer(id: string, timeoutMs?: number): Promise<DockerContainerWait>;

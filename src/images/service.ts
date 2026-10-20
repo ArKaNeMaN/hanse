@@ -1,6 +1,7 @@
 import { ConfigError } from "../config/load.js";
 import type { AppBuildInspection, AppImageStatus } from "../registry/index.js";
 import { resolveAppBuild } from "../registry/index.js";
+import type { ImageGcReport, ImageUsageReport } from "../runner/image-gc.js";
 import { mapToHostPath } from "../runner/names.js";
 import { resolveAppPath } from "../runtime/app-path.js";
 import { boundedErrorMessage } from "../runtime/build-spec.js";
@@ -24,6 +25,8 @@ export interface ImageRunnerClient {
   build(input: ImageBuildInput): Promise<ImageBuildResult>;
   get(appId: string): Promise<RunnerImageRecord>;
   getBuild(buildId: string): Promise<RunnerImageRecord | undefined>;
+  usage?(): Promise<ImageUsageReport>;
+  gc?(protectedRefs: string[]): Promise<ImageGcReport>;
 }
 
 export interface AppImageStatusView {
@@ -294,6 +297,50 @@ export class ImageService {
       logs: sanitizeLogs(record.logs, [this.#hostWorkspace, this.#workspaceRoot]),
       runnerAvailable: true,
     };
+  }
+
+  /** Disk and Docker usage as reported by the runner (disk thresholds are advisory). */
+  async usage(): Promise<ImageUsageReport> {
+    if (this.#runner.usage === undefined) {
+      throw new ImageServiceError(503, "image usage is not available", "usage_unavailable");
+    }
+    try {
+      return await this.#runner.usage();
+    } catch (error) {
+      throw this.#runnerFailure(error);
+    }
+  }
+
+  /**
+   * Explicit garbage collection.
+   *
+   * The coordinator computes the keep set from durable state so the runner cannot remove the
+   * current or rollback images, or any image a running/starting instance is using.
+   */
+  async gc(): Promise<ImageGcReport> {
+    if (this.#runner.gc === undefined) {
+      throw new ImageServiceError(503, "image gc is not available", "gc_unavailable");
+    }
+    const protectedRefs = this.#protectedImageRefs();
+    try {
+      return await this.#runner.gc(protectedRefs);
+    } catch (error) {
+      throw this.#runnerFailure(error);
+    }
+  }
+
+  #protectedImageRefs(): string[] {
+    const rows = this.#db
+      .prepare(
+        `SELECT image_ref FROM apps WHERE image_ref IS NOT NULL
+         UNION
+         SELECT image_ref FROM app_image_versions WHERE image_ref IS NOT NULL
+         UNION
+         SELECT image_ref FROM instances
+           WHERE state IN ('running', 'starting') AND image_ref IS NOT NULL`,
+      )
+      .all() as { image_ref: string }[];
+    return [...new Set(rows.map((row) => row.image_ref))].sort();
   }
 
   #applyRecord(app: AppRow, inspection: AppBuildInspection, record: RunnerImageRecord): void {

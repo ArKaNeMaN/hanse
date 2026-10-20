@@ -7,6 +7,8 @@ const BUILD_PATH = /^\/api\/apps\/([^/]+)\/build$/;
 const IMAGE_PATH = /^\/api\/apps\/([^/]+)\/image$/;
 const ROLLBACK_PATH = /^\/api\/apps\/([^/]+)\/image\/rollback$/;
 const LOGS_PATH = /^\/api\/apps\/([^/]+)\/image\/logs$/;
+const USAGE_PATH = "/api/images/usage";
+const GC_PATH = "/api/images/gc";
 
 function json(status: number, value: unknown): HttpResponse {
   return { status, contentType: "application/json; charset=utf-8", body: JSON.stringify(value) };
@@ -115,6 +117,40 @@ function invalidMutationContentType(request: HttpRequest): HttpResponse | undefi
   return undefined;
 }
 
+async function handleGlobalImages(deps: HttpDeps, request: HttpRequest): Promise<HttpResponse> {
+  if (deps.images === undefined) {
+    return json(503, { error: "image builds are not configured", code: "images_unavailable" });
+  }
+  if (request.path === USAGE_PATH) {
+    if (request.method !== "GET") {
+      return methodNotAllowed();
+    }
+    try {
+      return json(200, await deps.images.usage());
+    } catch (error) {
+      if (error instanceof ImageServiceError) {
+        return failure(error);
+      }
+      throw error;
+    }
+  }
+  if (request.method !== "POST") {
+    return methodNotAllowed();
+  }
+  const invalid = invalidMutationContentType(request);
+  if (invalid !== undefined) {
+    return invalid;
+  }
+  try {
+    return json(200, await deps.images.gc());
+  } catch (error) {
+    if (error instanceof ImageServiceError) {
+      return failure(error);
+    }
+    throw error;
+  }
+}
+
 /**
  * Human-only coordinator routes for the per-app image lifecycle.
  *
@@ -128,6 +164,10 @@ export async function handleImages(deps: HttpDeps, request: HttpRequest): Promis
   }
   if (principal.kind !== "human") {
     return json(403, { error: "only a human operator may manage app images", code: "forbidden" });
+  }
+
+  if (request.path === USAGE_PATH || request.path === GC_PATH) {
+    return handleGlobalImages(deps, request);
   }
 
   const buildMatch = BUILD_PATH.exec(request.path);

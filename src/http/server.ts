@@ -135,9 +135,10 @@ export function createHttpServer(deps: HttpDeps): Server {
           await streamAppEvents(deps, httpRequest, response);
           return;
         }
-        const isImages = /^\/api\/apps\/[^/]+\/(?:build|image(?:\/(?:logs|rollback))?)$/.test(
-          url.pathname,
-        );
+        const isImages =
+          url.pathname === "/api/images/usage" ||
+          url.pathname === "/api/images/gc" ||
+          /^\/api\/apps\/[^/]+\/(?:build|image(?:\/(?:logs|rollback))?)$/.test(url.pathname);
         const isGit = /^\/api\/projects\/[^/]+\/apps\/[^/]+\/git(?:\/|$)/.test(url.pathname);
         const isPrompts =
           /^\/api\/apps\/[^/]+\/(?:prompts|questions\/[^/]+\/(?:reply|reject)|permissions\/(?:[^/]+\/reply|saved(?:\/[^/]+)?)|sessions\/[^/]+\/todo)$/.test(
