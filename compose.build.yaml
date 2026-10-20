@@ -17,12 +17,6 @@ services:
       context: .
       target: agent-ide
 
-  agents:
-    image: ${HANSE_AGENT_BUILD_IMAGE:-hanse-agent-default:dev}
-    build:
-      context: .
-      target: agent-default
-
   runner:
     image: ${HANSE_RUNNER_BUILD_IMAGE:-hanse-runner:dev}
     build:

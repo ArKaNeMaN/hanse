@@ -151,6 +151,8 @@ function statusFromInspect(
     state,
     specHash,
     version: null,
+    containerId: inspect.Id,
+    containerName,
     ...(inspect.State?.Error === undefined ? {} : { error: inspect.State.Error }),
   };
 }
