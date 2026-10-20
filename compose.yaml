@@ -114,6 +114,7 @@ services:
       HANSE_GIT_SSL_CAINFO: ${HANSE_GIT_SSL_CAINFO:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - ${HANSE_HOST_WORKSPACE:?set HANSE_HOST_WORKSPACE to the absolute host workspace path}:${HANSE_HOST_WORKSPACE:?set HANSE_HOST_WORKSPACE to the absolute host workspace path}:ro
       - ${HANSE_HOST_AGENTS:?set HANSE_HOST_AGENTS to the absolute host agents path}:${HANSE_HOST_AGENTS:?set HANSE_HOST_AGENTS to the absolute host agents path}:ro
       - ${HANSE_HOST_GIT_DIR:-/var/lib/hanse/git}:/run/hanse/git:ro
     networks:

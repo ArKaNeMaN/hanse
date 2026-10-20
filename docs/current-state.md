@@ -35,8 +35,9 @@ Publish currently targets `linux/amd64`; arm64 is on-demand/backlog. Compose def
   **only** `./workspace:/data/workspace` (no `state` or `agents`). Serves on `8080`, reachable only on
   the `front` network.
 - **`hanse-runner`**: the only Docker socket holder. It runs on the internal `control` network, has
-  no `/data/state`, and mounts the host agents volume read-only for per-app passwords. It validates
-  runtime specs and creates one app container per application.
+  no `/data/state`, and mounts the host workspace and agents volumes read-only (workspace for
+  build-context tar/validation, agents for per-app passwords). It validates runtime specs, builds
+  app images, and creates one app container per application.
 - **`hanse-app-<project>-<app>`** (dynamic): one `agent-default` container per app, on its own
   `hanse-app-*` bridge network. It mounts only the app directory and `/data/agents/<project>/<app>`;
   uid 1000, read-only root, `cap_drop: ALL`, no state, no Docker socket, no operator/runtime token.

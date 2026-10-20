@@ -156,8 +156,10 @@ need to be overridden.
 
 ### Volumes and permissions
 
-- `./workspace` -> `/data/workspace`: projects and applications. Shared by the coordinator and IDE.
-  Per-app containers receive only their own app directory as a bind mount.
+- `./workspace` -> `/data/workspace`: projects and applications. Shared by the coordinator and IDE;
+  mounted read-only into the runner at the absolute host path so it can tar build contexts and run
+  image validation without touching coordinator state. Per-app containers receive only their own app
+  directory as a bind mount.
 - `./state` -> `/data/state`: the coordinator database (`coordinator.db` with WAL/SHM) and the secret
   key. Mounted into the coordinator only, never into the IDE, runner, or app containers.
 - `./agents` -> `/data/agents`: per-app agent HOME/XDG state, mise data, opencode auth/password, and
