@@ -81,9 +81,11 @@ Two options, and they can be combined (provider keys set in the UI take preceden
    encrypted at rest in the coordinator state with `state/hanse/secret.key`; they are reconciled into
    each managed instance's `auth.json`.
 2. **Host opencode login.** If `opencode` is already authenticated on the host, reuse its
-   `auth.json` through the optional overlay:
+   `auth.json` through the optional overlay. Download the overlay next to `compose.yaml` if you
+   started from the quick start:
 
    ```bash
+   curl -fsSLO https://raw.githubusercontent.com/ArKaNeMaN/hanse/main/compose.host-auth.yaml
    HANSE_HOST_AUTH_FILE="$HOME/.local/share/opencode/auth.json" \
      docker compose -f compose.yaml -f compose.host-auth.yaml up -d
    ```
