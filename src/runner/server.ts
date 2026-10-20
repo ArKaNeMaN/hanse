@@ -32,6 +32,7 @@ import { type GitOperation, type GitRequest, validateGitRequest } from "../git/r
 import { isInside, resolveWithinRoot } from "../runtime/app-path.js";
 import { VERSION } from "../version.js";
 import {
+  type DockerBuildRuntime,
   type DockerContainerInspect,
   DockerError,
   type DockerExecRuntime,
@@ -39,6 +40,7 @@ import {
   type DockerExecStream,
   type DockerRuntime,
 } from "./docker.js";
+import { ImageBuildError, ImageBuildService } from "./images.js";
 import { appContainerName, appNetworkName } from "./names.js";
 import {
   hostPathForSpecEnv,
@@ -80,11 +82,13 @@ const GIT_FILE_ENV_KEYS = new Set([
 
 class RunnerError extends Error {
   readonly status: number;
+  readonly code: string | undefined;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, code?: string) {
     super(message);
     this.name = "RunnerError";
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -226,8 +230,11 @@ function errorBody(error: unknown): RuntimeErrorBody {
       ...(error.root === undefined ? {} : { root: error.root }),
     };
   }
+  if (error instanceof ImageBuildError) {
+    return { error: error.message, ...(error.code === undefined ? {} : { code: error.code }) };
+  }
   if (error instanceof RunnerError) {
-    return { error: error.message };
+    return { error: error.message, ...(error.code === undefined ? {} : { code: error.code }) };
   }
   if (error instanceof DockerError) {
     return { error: error.message, code: "docker_error" };
@@ -237,6 +244,7 @@ function errorBody(error: unknown): RuntimeErrorBody {
 
 function statusFor(error: unknown): number {
   if (error instanceof RunnerGitError) return error.status;
+  if (error instanceof ImageBuildError) return error.status;
   if (error instanceof RunnerError) return error.status;
   if (error instanceof ConfigError) return 400;
   if (error instanceof DockerError) return error.status >= 500 ? 502 : 400;
@@ -494,6 +502,7 @@ export interface RunnerServiceOptions {
   config: RunnerConfig;
   docker: DockerRuntime;
   exec?: DockerExecRuntime;
+  build?: DockerBuildRuntime;
 }
 
 /** Per-app container runtime behind the same API shape as the B0 supervisor. */
@@ -501,11 +510,16 @@ export class RunnerService {
   readonly #config: RunnerConfig;
   readonly #docker: DockerRuntime;
   readonly #exec: DockerExecRuntime | undefined;
+  readonly #images: ImageBuildService;
 
   constructor(options: RunnerServiceOptions) {
     this.#config = options.config;
     this.#docker = options.docker;
     this.#exec = options.exec;
+    this.#images = new ImageBuildService({
+      config: options.config,
+      ...(options.build === undefined ? {} : { build: options.build }),
+    });
   }
 
   async health(): Promise<RuntimeHealth> {
@@ -798,6 +812,55 @@ export class RunnerService {
       return;
     }
 
+    if (url.pathname === "/v1/images/build") {
+      if (method !== "POST") {
+        writeJson(response, 405, { error: "method not allowed" }, { Allow: "POST" });
+        return;
+      }
+      writeJson(response, 202, await this.#images.start(await readJson(request)));
+      return;
+    }
+
+    const buildMatch = /^\/v1\/images\/builds\/([^/]+)$/.exec(url.pathname);
+    if (buildMatch !== null) {
+      if (method !== "GET") {
+        writeJson(response, 405, { error: "method not allowed" }, { Allow: "GET" });
+        return;
+      }
+      let buildId: string;
+      try {
+        buildId = decodeURIComponent(buildMatch[1] ?? "");
+      } catch {
+        throw new RunnerError(400, "invalid build id");
+      }
+      const record = this.#images.getBuild(buildId);
+      if (record === undefined) {
+        writeJson(response, 404, { error: "unknown build" });
+        return;
+      }
+      writeJson(response, 200, record);
+      return;
+    }
+
+    const imageMatch = /^\/v1\/images\/([^/]+)$/.exec(url.pathname);
+    if (imageMatch !== null) {
+      if (method !== "GET") {
+        writeJson(response, 405, { error: "method not allowed" }, { Allow: "GET" });
+        return;
+      }
+      let appId: string;
+      try {
+        appId = decodeURIComponent(imageMatch[1] ?? "");
+      } catch {
+        throw new RunnerError(400, "invalid app id");
+      }
+      if (!isValidAppId(appId)) {
+        throw new RunnerError(400, "invalid app id");
+      }
+      writeJson(response, 200, this.#images.get(appId));
+      return;
+    }
+
     if (url.pathname === "/v1/reconcile" || url.pathname === "/v1/stop-all") {
       if (method !== "POST") {
         writeJson(response, 405, { error: "method not allowed" }, { Allow: "POST" });
@@ -997,6 +1060,7 @@ export interface RunRunnerOptions {
   config: RunnerConfig;
   docker: DockerRuntime;
   exec?: DockerExecRuntime;
+  build?: DockerBuildRuntime;
   hostname: string;
   port: number;
   onListening?: (address: string) => void;
@@ -1008,6 +1072,7 @@ export async function runRunner(options: RunRunnerOptions): Promise<number> {
     config: options.config,
     docker: options.docker,
     ...(options.exec === undefined ? {} : { exec: options.exec }),
+    ...(options.build === undefined ? {} : { build: options.build }),
   });
   const server = service.createServer();
   await new Promise<void>((resolve, reject) => {

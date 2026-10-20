@@ -342,6 +342,7 @@ export async function runnerCommand(
       config,
       docker,
       exec: docker,
+      build: docker,
       hostname: options.hostname,
       port: options.port,
       onListening: (address) => ctx.io.stdout(`hanse runner listening on ${address}`),

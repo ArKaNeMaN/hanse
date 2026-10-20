@@ -3,6 +3,7 @@ import { type AppRuntimeSpec, validateAppRuntimeSpec } from "../agent/spec.js";
 import { ConfigError } from "../config/load.js";
 import { CONTROLLED_GIT_ENV } from "../git/env.js";
 import { isInside, resolveWithinRoot } from "../runtime/app-path.js";
+import { defaultImageReference } from "../runtime/build-spec.js";
 import { appContainerName, appNetworkName, mapToContainerPath, mapToHostPath } from "./names.js";
 
 export const RUNNER_APP_PORT = 4100;
@@ -27,6 +28,8 @@ export interface RunnerConfig {
   readonly hostWorkspace: string;
   readonly hostAgents: string;
   readonly allowedImages: ReadonlySet<string>;
+  /** Configured default agent image, when `HANSE_AGENT_IMAGE` is set. */
+  readonly defaultImage?: string;
   readonly coordinatorContainer: string;
   readonly dockerSocket: string;
   readonly dockerApiVersion: string;
@@ -113,11 +116,15 @@ export function loadRunnerConfig(env: NodeJS.ProcessEnv = process.env): RunnerCo
       gitEnv[key] = value;
     }
   }
+  const configuredDefaultImage = env.HANSE_AGENT_IMAGE?.trim();
   return {
     token,
     hostWorkspace: absolute(env, "HANSE_HOST_WORKSPACE"),
     hostAgents: absolute(env, "HANSE_HOST_AGENTS"),
     allowedImages: parseAllowedImages(env),
+    ...(configuredDefaultImage === undefined || configuredDefaultImage.length === 0
+      ? {}
+      : { defaultImage: defaultImageReference(env) }),
     coordinatorContainer,
     dockerSocket: absolute(env, "HANSE_DOCKER_SOCKET", "/var/run/docker.sock"),
     dockerApiVersion,

@@ -3,6 +3,8 @@ import http from "node:http";
 import type { Duplex } from "node:stream";
 
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
+const MAX_BUILD_RESPONSE_BYTES = 16 * 1024 * 1024;
+const DEFAULT_BUILD_TIMEOUT_MS = 30 * 60 * 1000;
 
 export interface DockerResponse {
   status: number;
@@ -18,6 +20,30 @@ export interface DockerRequestOptions {
   timeoutMs?: number;
 }
 
+export interface DockerBuildOptions {
+  tag: string;
+  dockerfile: string;
+  tar: Buffer;
+  baseImage: string;
+  buildArgs: Record<string, string>;
+  labels: Record<string, string>;
+  memoryBytes: number;
+  nanoCpus: number;
+  pidsLimit: number;
+  buildkit?: boolean;
+  timeoutMs?: number;
+}
+
+export interface DockerBuildResult {
+  imageId: string | null;
+  logs: string;
+  error: string | null;
+}
+
+export interface DockerBuildRuntime {
+  buildImage(options: DockerBuildOptions): Promise<DockerBuildResult>;
+}
+
 export interface DockerTransport {
   request(
     method: "GET" | "POST" | "DELETE",
@@ -25,6 +51,7 @@ export interface DockerTransport {
     body?: unknown,
     options?: DockerRequestOptions,
   ): Promise<DockerResponse>;
+  build?(path: string, body: Buffer, options?: DockerRequestOptions): Promise<DockerResponse>;
   upgrade?(
     method: "GET" | "POST" | "DELETE",
     path: string,
@@ -69,6 +96,39 @@ export class UnixDockerTransport implements DockerTransport {
     options?: DockerRequestOptions,
   ): Promise<DockerResponse> {
     const payload = body === undefined ? undefined : Buffer.from(JSON.stringify(body), "utf8");
+    return this.#send(
+      method,
+      requestPath,
+      payload,
+      payload === undefined ? undefined : "application/json",
+      options,
+      MAX_RESPONSE_BYTES,
+    );
+  }
+
+  build(
+    requestPath: string,
+    body: Buffer,
+    options?: DockerRequestOptions,
+  ): Promise<DockerResponse> {
+    return this.#send(
+      "POST",
+      requestPath,
+      body,
+      "application/x-tar",
+      { timeoutMs: options?.timeoutMs ?? DEFAULT_BUILD_TIMEOUT_MS },
+      MAX_BUILD_RESPONSE_BYTES,
+    );
+  }
+
+  #send(
+    method: "GET" | "POST" | "DELETE",
+    requestPath: string,
+    payload: Buffer | undefined,
+    contentType: string | undefined,
+    options: DockerRequestOptions | undefined,
+    maxResponseBytes: number,
+  ): Promise<DockerResponse> {
     const path = requestPath.startsWith("/v") ? requestPath : `/${this.#apiVersion}${requestPath}`;
 
     return new Promise((resolve, reject) => {
@@ -79,10 +139,10 @@ export class UnixDockerTransport implements DockerTransport {
           method,
           headers: {
             accept: "application/json",
-            ...(payload === undefined
+            ...(payload === undefined || contentType === undefined
               ? {}
               : {
-                  "content-type": "application/json",
+                  "content-type": contentType,
                   "content-length": String(payload.length),
                 }),
           },
@@ -92,7 +152,7 @@ export class UnixDockerTransport implements DockerTransport {
           let size = 0;
           response.on("data", (chunk: Buffer) => {
             size += chunk.length;
-            if (size > MAX_RESPONSE_BYTES) {
+            if (size > maxResponseBytes) {
               request.destroy(new DockerError(413, "docker response too large"));
               return;
             }
@@ -414,6 +474,73 @@ export function demuxDockerStream(buffer: Buffer): string {
     : buffer.toString("utf8");
 }
 
+interface ParsedBuildOutput {
+  logs: string;
+  imageId: string | null;
+  error: string | null;
+}
+
+function parseBuildOutput(body: Buffer): ParsedBuildOutput {
+  const text = body.toString("utf8");
+  const logs: string[] = [];
+  let imageId: string | null = null;
+  let error: string | null = null;
+
+  for (const rawLine of text.split("\n")) {
+    const line = rawLine.trim();
+    if (line.length === 0) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line) as unknown;
+    } catch {
+      logs.push(rawLine);
+      continue;
+    }
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      logs.push(rawLine);
+      continue;
+    }
+    const event = parsed as {
+      stream?: unknown;
+      status?: unknown;
+      error?: unknown;
+      errorDetail?: unknown;
+      aux?: unknown;
+    };
+    if (typeof event.errorDetail === "object" && event.errorDetail !== null) {
+      const detail = event.errorDetail as { message?: unknown };
+      if (typeof detail.message === "string" && detail.message.length > 0) {
+        error = detail.message;
+      }
+    }
+    if (typeof event.error === "string" && event.error.length > 0) {
+      error = event.error;
+    }
+    if (typeof event.stream === "string") {
+      logs.push(event.stream);
+    } else if (typeof event.status === "string") {
+      logs.push(`${event.status}\n`);
+    }
+    if (typeof event.aux === "object" && event.aux !== null) {
+      const aux = event.aux as { ID?: unknown };
+      if (typeof aux.ID === "string" && aux.ID.length > 0) {
+        imageId = aux.ID;
+      }
+    }
+  }
+
+  return { logs: logs.join(""), imageId, error };
+}
+
+function apiVersionAtLeast(version: string, major: number, minor: number): boolean {
+  const match = /^(\d+)\.(\d+)/.exec(version);
+  if (match === null) return false;
+  const actualMajor = Number.parseInt(match[1] ?? "", 10);
+  const actualMinor = Number.parseInt(match[2] ?? "", 10);
+  if (!Number.isFinite(actualMajor) || !Number.isFinite(actualMinor)) return false;
+  return actualMajor > major || (actualMajor === major && actualMinor >= minor);
+}
+
 /** Typed Docker Engine API facade used by the runner. */
 export class DockerClient {
   readonly #transport: DockerTransport;
@@ -431,6 +558,78 @@ export class DockerClient {
     this.#check(response, "docker version");
     const body = decodeJson<{ ApiVersion?: string; Version?: string }>(response, "docker version");
     return body.ApiVersion ?? body.Version ?? "unknown";
+  }
+
+  async inspectImage(reference: string): Promise<{ Id?: string } | undefined> {
+    const response = await this.#transport.request(
+      "GET",
+      `/images/${encodeURIComponent(reference)}/json`,
+    );
+    if (response.status === 404) return undefined;
+    this.#check(response, `inspect image ${reference}`);
+    return decodeJson<{ Id?: string }>(response, `inspect image ${reference}`);
+  }
+
+  async buildImage(options: DockerBuildOptions): Promise<DockerBuildResult> {
+    if (this.#transport.build === undefined) {
+      throw new DockerError(0, "docker transport does not support image builds");
+    }
+    const buildkit = options.buildkit ?? (await this.#supportsBuildKit());
+    const buildArgs = { ...options.buildArgs, HANSE_BASE: options.baseImage };
+    const cpuPeriod = 100_000;
+    const cpuQuota = Math.max(1, Math.round((options.nanoCpus / 1_000_000_000) * cpuPeriod));
+    const query = new URLSearchParams({
+      t: options.tag,
+      dockerfile: options.dockerfile,
+      buildargs: JSON.stringify(buildArgs),
+      labels: JSON.stringify(options.labels),
+      memory: String(options.memoryBytes),
+      memswap: String(options.memoryBytes),
+      cpuperiod: String(cpuPeriod),
+      cpuquota: String(cpuQuota),
+      pidslimit: String(options.pidsLimit),
+    });
+    if (buildkit) {
+      query.set("version", "2");
+    }
+
+    const response = await this.#transport.build(
+      `/build?${query.toString()}`,
+      options.tar,
+      options.timeoutMs === undefined ? undefined : { timeoutMs: options.timeoutMs },
+    );
+    const parsed = parseBuildOutput(response.body);
+    const logs = parsed.logs;
+
+    if (response.status < 200 || response.status >= 300) {
+      const detail = logs.trim() || responseText(response);
+      return {
+        imageId: null,
+        logs,
+        error:
+          detail.length > 0
+            ? detail.slice(0, 1000)
+            : `docker build failed with HTTP ${response.status}`,
+      };
+    }
+    if (parsed.error !== null) {
+      return { imageId: null, logs, error: parsed.error };
+    }
+
+    let imageId = parsed.imageId;
+    if (imageId === null) {
+      const inspected = await this.inspectImage(options.tag).catch(() => undefined);
+      imageId = inspected?.Id ?? null;
+    }
+    if (imageId === null) {
+      return { imageId: null, logs, error: "docker build completed without an image id" };
+    }
+    return { imageId, logs, error: null };
+  }
+
+  async #supportsBuildKit(): Promise<boolean> {
+    const version = await this.version().catch(() => "unknown");
+    return apiVersionAtLeast(version, 1, 39);
   }
 
   async ensureNetwork(spec: DockerNetworkSpec): Promise<void> {
