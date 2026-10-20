@@ -5301,10 +5301,6 @@
     grid-column: 2;
   }
 
-  .tool-code[data-kind="read"] .code-line {
-    grid-template-columns: max-content minmax(0, 1fr);
-  }
-
   .tool-diff__diagnostics {
     max-block-size: 8rem;
     margin: 0;
