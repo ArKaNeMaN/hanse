@@ -376,7 +376,8 @@ B1.4 terminal live smoke: `/terminal` returns `200`, direct runner exec, coordin
 LAN WebSocket each returned `B1_*_OK`, and closing the terminal left the app container running.
 B1.6 `hanse-down.sh` live smoke: down removed the static stack and managed app/network; `compose up`
 recreated the static services healthy, the app was lazily recreated, sessions returned `200`, and the
-terminal page remained human-only (`303` anonymous, `200` authenticated).
+terminal page remained human-only (`303` anonymous, `200` authenticated). A subsequent
+`up --remove-orphans` preserved the running app.
 Chat browser
 QA: `node docs/design/chat-qa.mjs` (deterministic fixtures; 3 scenarios, 81 assertions, 10
 screenshots, zero console/page errors). Live smoke against a real deployment: 1
