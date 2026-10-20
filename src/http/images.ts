@@ -1,10 +1,11 @@
 import { ImageServiceError } from "../images/service.js";
-import { findApp } from "./apps.js";
+import { findApp, toManagedApp } from "./apps.js";
 import { principalFrom } from "./auth.js";
 import type { HttpDeps, HttpRequest, HttpResponse } from "./handler.js";
 
 const BUILD_PATH = /^\/api\/apps\/([^/]+)\/build$/;
 const IMAGE_PATH = /^\/api\/apps\/([^/]+)\/image$/;
+const ROLLBACK_PATH = /^\/api\/apps\/([^/]+)\/image\/rollback$/;
 const LOGS_PATH = /^\/api\/apps\/([^/]+)\/image\/logs$/;
 
 function json(status: number, value: unknown): HttpResponse {
@@ -100,6 +101,20 @@ function methodNotAllowed(): HttpResponse {
   return json(405, { error: "method not allowed", code: "method_not_allowed" });
 }
 
+function invalidMutationContentType(request: HttpRequest): HttpResponse | undefined {
+  if (
+    !isFormContentType(request.headers["content-type"]) &&
+    !isJsonContentType(request.headers["content-type"]) &&
+    (request.body ?? "").trim().length > 0
+  ) {
+    return json(400, {
+      error: "content-type must be application/json or application/x-www-form-urlencoded",
+      code: "invalid_input",
+    });
+  }
+  return undefined;
+}
+
 /**
  * Human-only coordinator routes for the per-app image lifecycle.
  *
@@ -116,9 +131,10 @@ export async function handleImages(deps: HttpDeps, request: HttpRequest): Promis
   }
 
   const buildMatch = BUILD_PATH.exec(request.path);
+  const rollbackMatch = ROLLBACK_PATH.exec(request.path);
   const imageMatch = IMAGE_PATH.exec(request.path);
   const logsMatch = LOGS_PATH.exec(request.path);
-  const match = buildMatch ?? imageMatch ?? logsMatch;
+  const match = buildMatch ?? rollbackMatch ?? imageMatch ?? logsMatch;
   if (match === null) {
     return unknown();
   }
@@ -149,15 +165,9 @@ export async function handleImages(deps: HttpDeps, request: HttpRequest): Promis
     if (request.method !== "POST") {
       return methodNotAllowed();
     }
-    if (
-      !isFormContentType(request.headers["content-type"]) &&
-      !isJsonContentType(request.headers["content-type"]) &&
-      (body ?? "").trim().length > 0
-    ) {
-      return json(400, {
-        error: "content-type must be application/json or application/x-www-form-urlencoded",
-        code: "invalid_input",
-      });
+    const invalid = invalidMutationContentType(request);
+    if (invalid !== undefined) {
+      return invalid;
     }
     try {
       const result = await deps.images.build(found.app.id, found.app.appKey);
@@ -167,6 +177,58 @@ export async function handleImages(deps: HttpDeps, request: HttpRequest): Promis
         );
       }
       return json(202, result);
+    } catch (error) {
+      if (error instanceof ImageServiceError) {
+        if (wantsHtml(request) || isFormContentType(request.headers["content-type"])) {
+          return redirect(
+            appHrefWithNotice(found.project.id, found.app.appKey, error.message, "error"),
+          );
+        }
+        return failure(error);
+      }
+      throw error;
+    }
+  }
+
+  if (rollbackMatch !== null) {
+    if (request.method !== "POST") {
+      return methodNotAllowed();
+    }
+    const invalid = invalidMutationContentType(request);
+    if (invalid !== undefined) {
+      return invalid;
+    }
+    try {
+      const result = await deps.images.rollback(found.app.id, found.app.appKey);
+      let restarted = false;
+      let restartWarning: string | undefined;
+      if (deps.manager !== undefined) {
+        const refreshed = findApp(deps, found.project.id, found.app.appKey) ?? found;
+        try {
+          restarted = await deps.manager.restartIfRunning(toManagedApp(refreshed));
+        } catch (error) {
+          restartWarning = error instanceof Error ? error.message : String(error);
+        }
+      }
+      if (wantsHtml(request) || isFormContentType(request.headers["content-type"])) {
+        const message =
+          restartWarning === undefined
+            ? "Image rolled back."
+            : `Image rolled back, but the agent did not restart: ${restartWarning}`;
+        return redirect(
+          appHrefWithNotice(
+            found.project.id,
+            found.app.appKey,
+            message,
+            restartWarning === undefined ? "success" : "error",
+          ),
+        );
+      }
+      return json(200, {
+        ...result,
+        restarted,
+        ...(restartWarning === undefined ? {} : { restartWarning }),
+      });
     } catch (error) {
       if (error instanceof ImageServiceError) {
         if (wantsHtml(request) || isFormContentType(request.headers["content-type"])) {

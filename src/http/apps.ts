@@ -1,3 +1,4 @@
+import type { ManagedApp } from "../opencode/manager.js";
 import type { RegisteredApp } from "../registry/index.js";
 import { resolveAppPath } from "../runtime/app-path.js";
 import type { HttpDeps, ProjectContext } from "./handler.js";
@@ -39,4 +40,15 @@ export function appDir(
     projectRoot: project.rootPath,
     workspaceRoot: project.workspaceRoot,
   });
+}
+
+export function toManagedApp(found: FoundApp): ManagedApp {
+  return {
+    id: found.app.id,
+    projectId: found.project.id,
+    appKey: found.app.appKey,
+    appDir: appDir(found.project, found.app),
+    imageStatus: found.app.imageStatus,
+    imageRef: found.app.imageRef,
+  };
 }

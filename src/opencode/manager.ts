@@ -13,6 +13,7 @@ import {
   mcpTokenPath,
   revokeAgentToken,
 } from "../mcp/agent-tokens.js";
+import { type AppImageStatus, resolveAppBuild } from "../registry/index.js";
 import { appNetworkName, mapToHostPath } from "../runner/names.js";
 import { RUNNER_APP_PORT } from "../runner/validate.js";
 import { hashValue } from "../settings/hash.js";
@@ -52,6 +53,8 @@ export interface ManagedApp {
   projectId: string;
   appKey: string;
   appDir: string;
+  imageStatus?: AppImageStatus;
+  imageRef?: string | null;
 }
 
 /** Injectable subset of `SettingsService` used for launch snapshots. */
@@ -123,6 +126,29 @@ function resolveBaselinePlugins(): string[] {
     .split(",")
     .map((spec) => spec.trim())
     .filter((spec) => spec.length > 0);
+}
+
+function resolveAgentImage(app: ManagedApp): string {
+  const inspection = resolveAppBuild(app.appDir);
+  if (inspection.status === "error") {
+    throw new Error(
+      `application image configuration is invalid for ${app.id}: ${inspection.error ?? "unknown error"}`,
+    );
+  }
+  if (inspection.dockerfile === null) {
+    return process.env.HANSE_AGENT_IMAGE?.trim() || DEFAULT_AGENT_IMAGE;
+  }
+  const imageRef = app.imageRef?.trim();
+  if (
+    (app.imageStatus === "ready" || app.imageStatus === "stale") &&
+    imageRef !== undefined &&
+    imageRef.length > 0
+  ) {
+    return imageRef;
+  }
+  throw new Error(
+    `application ${app.id} requires a built image (status: ${app.imageStatus ?? "unknown"}); build the image before starting the agent`,
+  );
 }
 
 function resolveCodegraphCommand(): string[] | undefined {
@@ -278,6 +304,7 @@ export class InstanceManager {
           return endpoint;
         }
       }
+      const image = resolveAgentImage(app);
       if (existing !== undefined) {
         clearEndpointAuthorization(existing.endpoint);
         this.#running.delete(app.id);
@@ -401,7 +428,7 @@ export class InstanceManager {
       const specPort = hostPaths ? RUNNER_APP_PORT : undefined;
       const hashInput: SpecHashInput = {
         appId: app.id,
-        image: process.env.HANSE_AGENT_IMAGE?.trim() || DEFAULT_AGENT_IMAGE,
+        image,
         pathMode: hostPaths ? "host" : "container",
         appDir: specAppDir,
         stateDir: specStateDir,
@@ -423,7 +450,7 @@ export class InstanceManager {
       );
 
       const status = await this.#options.runtime.ensure(spec);
-      this.#recordStatus(app, status);
+      this.#recordStatus(app, status, image);
       if (status.state !== "running" || status.endpoint === null) {
         throw new Error(`agent runtime did not start ${app.id}: ${status.error ?? status.state}`);
       }
@@ -506,6 +533,20 @@ export class InstanceManager {
     });
   }
 
+  async restartIfRunning(app: ManagedApp): Promise<boolean> {
+    let running = this.#running.has(app.id);
+    if (!running) {
+      const status = await this.#options.runtime.status(app.id).catch(() => undefined);
+      running = status?.state === "running" || status?.state === "starting";
+    }
+    if (!running) {
+      return false;
+    }
+    await this.stopApp(app.id);
+    await this.ensure(app);
+    return true;
+  }
+
   /** Policy warnings recorded for an app, or an empty list when it has not been verified. */
   policyWarnings(appId: string): string[] {
     return [...(this.#running.get(appId)?.policyWarnings ?? [])];
@@ -561,14 +602,18 @@ export class InstanceManager {
     this.#running.clear();
   }
 
-  #recordStatus(app: ManagedApp, status: Awaited<ReturnType<AgentRuntimeClient["ensure"]>>): void {
+  #recordStatus(
+    app: ManagedApp,
+    status: Awaited<ReturnType<AgentRuntimeClient["ensure"]>>,
+    image: string,
+  ): void {
     const now = new Date().toISOString();
     const startedAt = status.state === "running" ? now : null;
     this.#db
       .prepare(
         `INSERT INTO instances
-           (id, app_id, endpoint, state, runtime_state, spec_hash, container_id, container_name, started_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           (id, app_id, endpoint, state, runtime_state, spec_hash, container_id, container_name, image_ref, started_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(app_id) DO UPDATE SET
            endpoint = excluded.endpoint,
            state = excluded.state,
@@ -576,6 +621,7 @@ export class InstanceManager {
            spec_hash = excluded.spec_hash,
            container_id = excluded.container_id,
            container_name = excluded.container_name,
+           image_ref = excluded.image_ref,
            started_at = CASE
              WHEN instances.state = 'running' THEN instances.started_at
              ELSE excluded.started_at
@@ -591,6 +637,7 @@ export class InstanceManager {
         status.specHash,
         status.containerId ?? null,
         status.containerName ?? null,
+        image,
         startedAt,
         now,
       );

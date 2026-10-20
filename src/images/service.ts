@@ -39,7 +39,18 @@ export interface AppImageStatusView {
   builtAt: string | null;
   error: string | null;
   updatedAt: string | null;
+  previousImageRef: string | null;
+  previousImageBuiltAt: string | null;
   runnerAvailable: boolean;
+}
+
+export interface AppImageRollbackResult {
+  appId: string;
+  appKey: string;
+  status: AppImageStatus;
+  imageRef: string | null;
+  previousImageRef: string | null;
+  builtAt: string | null;
 }
 
 export interface AppImageLogsView {
@@ -75,6 +86,15 @@ interface AppRow {
   image_base_digest: string | null;
   image_built_at: string | null;
   image_error: string | null;
+}
+
+interface AppImageVersionRow {
+  image_ref: string;
+  image_id: string | null;
+  spec_hash: string | null;
+  base_digest: string | null;
+  built_at: string | null;
+  created_at: string;
 }
 
 interface BuildMeta {
@@ -188,6 +208,61 @@ export class ImageService {
     });
   }
 
+  /** Switch the app back to its previous recorded image version. */
+  async rollback(appId: string, appKey?: string): Promise<AppImageRollbackResult> {
+    const app = this.#getApp(appId);
+    if (appKey !== undefined && app.app_key !== appKey) {
+      throw new ImageServiceError(404, "application not found", "not_found");
+    }
+    if (app.image_ref === null) {
+      throw new ImageServiceError(409, "application has no current image to roll back", "no_image");
+    }
+    const previous = this.#previousVersion(app.id, app.image_ref);
+    if (previous === undefined) {
+      throw new ImageServiceError(
+        409,
+        "no previous image version is available",
+        "no_previous_image",
+      );
+    }
+    const inspection = this.#inspect(app);
+    const matchesCurrentSpec =
+      inspection.specHash !== null &&
+      previous.spec_hash !== null &&
+      inspection.specHash === previous.spec_hash;
+    const status: AppImageStatus = matchesCurrentSpec ? "ready" : "stale";
+    this.#db
+      .prepare(
+        `UPDATE apps SET
+           image_status = @status,
+           image_ref = @image_ref,
+           image_hash = @image_hash,
+           image_base_digest = @image_base_digest,
+           image_built_at = @image_built_at,
+           image_error = NULL
+         WHERE id = @id`,
+      )
+      .run({
+        id: app.id,
+        status,
+        image_ref: previous.image_ref,
+        image_hash: previous.spec_hash,
+        image_base_digest: previous.base_digest,
+        image_built_at: previous.built_at,
+      });
+    const updated = this.#getApp(appId);
+    const next =
+      updated.image_ref === null ? undefined : this.#previousVersion(updated.id, updated.image_ref);
+    return {
+      appId: updated.id,
+      appKey: updated.app_key,
+      status: updated.image_status,
+      imageRef: updated.image_ref,
+      previousImageRef: next?.image_ref ?? null,
+      builtAt: updated.image_built_at,
+    };
+  }
+
   /** Return the bounded build log tail for the app's current (or last) build. */
   async logs(appId: string): Promise<AppImageLogsView> {
     const app = this.#getApp(appId);
@@ -236,30 +311,58 @@ export class ImageService {
     }
 
     if (record.status === "ready") {
-      const builtHash = meta?.specHash ?? app.image_hash ?? inspection.specHash;
+      const adoptImage =
+        record.imageRef === null ||
+        activeBuildId !== undefined ||
+        app.image_status === "building" ||
+        app.image_ref === null ||
+        app.image_ref === record.imageRef;
+      const recorded =
+        record.imageRef === null ? undefined : this.#versionByRef(app.id, record.imageRef);
+      const builtHash =
+        meta?.specHash ??
+        (record.imageRef !== null && record.imageRef === app.image_ref ? app.image_hash : null) ??
+        recorded?.spec_hash ??
+        inspection.specHash;
       const builtBase =
-        meta?.baseDigest ?? app.image_base_digest ?? digestFromReference(this.#defaultImage);
+        meta?.baseDigest ??
+        (record.imageRef !== null && record.imageRef === app.image_ref
+          ? app.image_base_digest
+          : null) ??
+        recorded?.base_digest ??
+        digestFromReference(this.#defaultImage);
+      const builtAt = record.updatedAt ?? recorded?.built_at ?? new Date().toISOString();
+      const selectedHash = adoptImage ? builtHash : app.image_hash;
       const stale =
-        inspection.specHash !== null && builtHash !== null && inspection.specHash !== builtHash;
-      this.#db
-        .prepare(
-          `UPDATE apps SET
-             image_status = @status,
-             image_ref = @image_ref,
-             image_hash = @image_hash,
-             image_base_digest = @image_base_digest,
-             image_built_at = @image_built_at,
-             image_error = NULL
-           WHERE id = @id`,
-        )
-        .run({
-          id: app.id,
-          status: stale ? "stale" : "ready",
-          image_ref: record.imageRef,
-          image_hash: builtHash,
-          image_base_digest: builtBase,
-          image_built_at: record.updatedAt ?? new Date().toISOString(),
-        });
+        inspection.specHash !== null &&
+        selectedHash !== null &&
+        inspection.specHash !== selectedHash;
+      if (adoptImage) {
+        this.#db
+          .prepare(
+            `UPDATE apps SET
+               image_status = @status,
+               image_ref = @image_ref,
+               image_hash = @image_hash,
+               image_base_digest = @image_base_digest,
+               image_built_at = @image_built_at,
+               image_error = NULL
+             WHERE id = @id`,
+          )
+          .run({
+            id: app.id,
+            status: stale ? "stale" : "ready",
+            image_ref: record.imageRef,
+            image_hash: builtHash,
+            image_base_digest: builtBase,
+            image_built_at: builtAt,
+          });
+      } else {
+        this.#db
+          .prepare("UPDATE apps SET image_status = @status, image_error = NULL WHERE id = @id")
+          .run({ id: app.id, status: stale ? "stale" : "ready" });
+      }
+      this.#recordVersion(app.id, record, builtHash, builtBase, builtAt);
       this.#finish(app.id, record.buildId);
       return;
     }
@@ -294,6 +397,92 @@ export class ImageService {
     } else if (this.#active.get(appId) !== "pending") {
       this.#active.delete(appId);
     }
+  }
+
+  #recordVersion(
+    appId: string,
+    record: RunnerImageRecord,
+    specHash: string | null,
+    baseDigest: string,
+    builtAt: string,
+  ): void {
+    if (record.imageRef === null || record.imageRef.length === 0) {
+      return;
+    }
+    const createdAt = new Date().toISOString();
+    const write = this.#db.transaction(() => {
+      this.#db
+        .prepare(
+          `INSERT INTO app_image_versions
+             (app_id, image_ref, image_id, spec_hash, base_digest, built_at, created_at)
+           VALUES (@app_id, @image_ref, @image_id, @spec_hash, @base_digest, @built_at, @created_at)
+           ON CONFLICT(app_id, image_ref) DO UPDATE SET
+             image_id = excluded.image_id,
+             spec_hash = excluded.spec_hash,
+             base_digest = excluded.base_digest,
+             built_at = excluded.built_at`,
+        )
+        .run({
+          app_id: appId,
+          image_ref: record.imageRef,
+          image_id: record.imageId,
+          spec_hash: specHash,
+          base_digest: baseDigest,
+          built_at: builtAt,
+          created_at: createdAt,
+        });
+      const keep = new Set(
+        (
+          this.#db
+            .prepare(
+              `SELECT image_ref FROM app_image_versions
+               WHERE app_id = ? ORDER BY created_at DESC, id DESC LIMIT 2`,
+            )
+            .all(appId) as { image_ref: string }[]
+        ).map((row) => row.image_ref),
+      );
+      const running = this.#db
+        .prepare(
+          `SELECT image_ref FROM instances
+           WHERE app_id = ? AND state IN ('running', 'starting') AND image_ref IS NOT NULL`,
+        )
+        .get(appId) as { image_ref: string } | undefined;
+      if (running !== undefined) {
+        keep.add(running.image_ref);
+      }
+      if (keep.size === 0) {
+        return;
+      }
+      const refs = [...keep];
+      const placeholders = refs.map(() => "?").join(", ");
+      this.#db
+        .prepare(
+          `DELETE FROM app_image_versions
+           WHERE app_id = ? AND image_ref NOT IN (${placeholders})`,
+        )
+        .run(appId, ...refs);
+    });
+    write();
+  }
+
+  #versionByRef(appId: string, imageRef: string): AppImageVersionRow | undefined {
+    return this.#db
+      .prepare(
+        `SELECT image_ref, image_id, spec_hash, base_digest, built_at, created_at
+         FROM app_image_versions WHERE app_id = ? AND image_ref = ?`,
+      )
+      .get(appId, imageRef) as AppImageVersionRow | undefined;
+  }
+
+  #previousVersion(appId: string, currentRef: string): AppImageVersionRow | undefined {
+    return this.#db
+      .prepare(
+        `SELECT image_ref, image_id, spec_hash, base_digest, built_at, created_at
+         FROM app_image_versions
+         WHERE app_id = ? AND image_ref <> ?
+         ORDER BY created_at DESC, id DESC LIMIT 1`,
+      )
+      .get(appId, currentRef) as AppImageVersionRow | undefined;
   }
 
   #runnerFailure(error: unknown): ImageServiceError {
@@ -409,6 +598,8 @@ export class ImageService {
       runnerAvailable: boolean;
     },
   ): AppImageStatusView {
+    const previous =
+      app.image_ref === null ? undefined : this.#previousVersion(app.id, app.image_ref);
     return {
       appId: app.id,
       appKey: app.app_key,
@@ -422,6 +613,8 @@ export class ImageService {
       builtAt: app.image_built_at,
       error: app.image_error,
       updatedAt: extra.updatedAt ?? app.image_built_at,
+      previousImageRef: previous?.image_ref ?? null,
+      previousImageBuiltAt: previous?.built_at ?? null,
       runnerAvailable: extra.runnerAvailable,
     };
   }

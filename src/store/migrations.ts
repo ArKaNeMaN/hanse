@@ -202,4 +202,24 @@ ALTER TABLE apps ADD COLUMN image_built_at TEXT;
 ALTER TABLE apps ADD COLUMN image_error TEXT;
 `,
   },
+  {
+    version: 7,
+    name: "app-image-versions",
+    sql: `
+CREATE TABLE app_image_versions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+  image_ref TEXT NOT NULL,
+  image_id TEXT,
+  spec_hash TEXT,
+  base_digest TEXT,
+  built_at TEXT,
+  created_at TEXT NOT NULL,
+  UNIQUE (app_id, image_ref)
+);
+CREATE INDEX app_image_versions_app_created ON app_image_versions(app_id, created_at DESC, id DESC);
+
+ALTER TABLE instances ADD COLUMN image_ref TEXT;
+`,
+  },
 ];

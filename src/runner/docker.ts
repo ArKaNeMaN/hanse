@@ -887,6 +887,7 @@ export interface DockerRuntime {
   stopContainer(id: string, timeoutSeconds?: number): Promise<void>;
   removeContainer(id: string, force?: boolean): Promise<void>;
   inspectContainer(idOrName: string): Promise<DockerContainerInspect | undefined>;
+  inspectImage?(reference: string): Promise<DockerImageInspect | undefined>;
   listContainers(label?: string): Promise<DockerContainerSummary[]>;
   logs(id: string, tail?: number): Promise<DockerLogs>;
   waitContainer(id: string, timeoutMs?: number): Promise<DockerContainerWait>;

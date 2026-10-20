@@ -530,8 +530,39 @@ export class RunnerService {
     return { ok: true, hanseVersion: VERSION, apps: containers.length };
   }
 
+  async #isBuiltAppImage(appId: string, image: string): Promise<boolean> {
+    if (this.#config.allowedImages.has(image) || image === this.#config.defaultImage) {
+      return true;
+    }
+    const record = this.#images.get(appId);
+    if (record.status === "ready" && record.imageRef === image) {
+      return true;
+    }
+    const inspectImage = this.#docker.inspectImage?.bind(this.#docker);
+    if (inspectImage === undefined) {
+      return false;
+    }
+    const inspected = await inspectImage(image).catch(() => undefined);
+    const labels = inspected?.Config?.Labels;
+    return labels?.["hanse.app.id"] === appId && typeof labels["hanse.image.version"] === "string";
+  }
+
+  async #extraAllowedImages(raw: unknown): Promise<ReadonlySet<string> | undefined> {
+    if (!isRecord(raw)) {
+      return undefined;
+    }
+    const { appId, image } = raw;
+    if (typeof appId !== "string" || typeof image !== "string") {
+      return undefined;
+    }
+    if (this.#config.allowedImages.has(image) || image === this.#config.defaultImage) {
+      return undefined;
+    }
+    return (await this.#isBuiltAppImage(appId, image)) ? new Set([image]) : undefined;
+  }
+
   async ensure(raw: unknown, expectedAppId?: string): Promise<RuntimeAppStatus> {
-    const spec = validateRunnerSpec(raw, this.#config);
+    const spec = validateRunnerSpec(raw, this.#config, await this.#extraAllowedImages(raw));
     if (expectedAppId !== undefined && spec.appId !== expectedAppId) {
       throw new RunnerError(400, "appId in the path does not match the spec");
     }
@@ -698,7 +729,7 @@ export class RunnerService {
       throw new RunnerError(409, "app is not running");
     }
     const image = inspect.Config?.Image;
-    if (image === undefined || !this.#config.allowedImages.has(image)) {
+    if (image === undefined || !(await this.#isBuiltAppImage(appId, image))) {
       throw new RunnerError(400, "app image is not allowed by the runner");
     }
     const mounts = gitContainerMounts(inspect, this.#config);

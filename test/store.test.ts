@@ -27,13 +27,13 @@ describe("store", () => {
     db.close();
   });
 
-  it("migrates to v6 with agent tokens, runner containers, and app image columns", () => {
+  it("migrates to v7 with agent tokens, runner containers, and app image versions", () => {
     const db = openDatabase(tempDbPath());
     runMigrations(db);
     const versions = db.prepare("SELECT version FROM schema_migrations ORDER BY version").all() as {
       version: number;
     }[];
-    expect(versions.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(versions.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7]);
 
     const tokenColumns = (
       db.prepare("PRAGMA table_info(agent_tokens)").all() as {
@@ -51,6 +51,23 @@ describe("store", () => {
     expect(instanceColumns).toContain("runtime_state");
     expect(instanceColumns).toContain("container_id");
     expect(instanceColumns).toContain("container_name");
+    expect(instanceColumns).toContain("image_ref");
+
+    const versionColumns = (
+      db.prepare("PRAGMA table_info(app_image_versions)").all() as {
+        name: string;
+      }[]
+    ).map((row) => row.name);
+    expect(versionColumns).toEqual([
+      "id",
+      "app_id",
+      "image_ref",
+      "image_id",
+      "spec_hash",
+      "base_digest",
+      "built_at",
+      "created_at",
+    ]);
 
     const appColumns = (
       db.prepare("PRAGMA table_info(apps)").all() as {

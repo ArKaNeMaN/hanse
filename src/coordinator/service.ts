@@ -39,9 +39,18 @@ export class CoordinatorService {
   listApps(): RegisteredApp[] {
     const rows = this.#db
       .prepare(
-        `SELECT id, project_id, app_key, path, kind, contract,
-                image_status, image_ref, image_hash, image_base_digest, image_built_at, image_error
-         FROM apps WHERE project_id = ? ORDER BY app_key`,
+        `SELECT a.id, a.project_id, a.app_key, a.path, a.kind, a.contract,
+                a.image_status, a.image_ref, a.image_hash, a.image_base_digest,
+                a.image_built_at, a.image_error,
+                (SELECT v.image_ref FROM app_image_versions v
+                  WHERE v.app_id = a.id AND a.image_ref IS NOT NULL
+                    AND v.image_ref <> a.image_ref
+                  ORDER BY v.created_at DESC, v.id DESC LIMIT 1) AS image_rollback_ref,
+                (SELECT v.built_at FROM app_image_versions v
+                  WHERE v.app_id = a.id AND a.image_ref IS NOT NULL
+                    AND v.image_ref <> a.image_ref
+                  ORDER BY v.created_at DESC, v.id DESC LIMIT 1) AS image_rollback_built_at
+         FROM apps a WHERE a.project_id = ? ORDER BY a.app_key`,
       )
       .all(this.#projectId) as {
       id: string;
@@ -56,6 +65,8 @@ export class CoordinatorService {
       image_base_digest: string | null;
       image_built_at: string | null;
       image_error: string | null;
+      image_rollback_ref: string | null;
+      image_rollback_built_at: string | null;
     }[];
     return rows.map((row) => ({
       id: row.id,
@@ -70,6 +81,8 @@ export class CoordinatorService {
       imageBaseDigest: row.image_base_digest,
       imageBuiltAt: row.image_built_at,
       imageError: row.image_error,
+      imageRollbackRef: row.image_rollback_ref,
+      imageRollbackBuiltAt: row.image_rollback_built_at,
       buildDockerfile: null,
       buildArgs: {},
       buildSpecHash: null,

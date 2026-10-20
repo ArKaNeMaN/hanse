@@ -71,10 +71,13 @@ function imagePanel(
 ): string {
   const status = IMAGE_STATUS[imageStatus] ?? IMAGE_STATUS.missing;
   const buildHref = `/api/apps/${encodeURIComponent(app.appKey)}/build?project=${encodeURIComponent(project.id)}`;
+  const rollbackHref = `/api/apps/${encodeURIComponent(app.appKey)}/image/rollback?project=${encodeURIComponent(project.id)}`;
   const imageUrl = `/api/apps/${encodeURIComponent(app.appKey)}/image?project=${encodeURIComponent(project.id)}`;
   const logsUrl = `/api/apps/${encodeURIComponent(app.appKey)}/image/logs?project=${encodeURIComponent(project.id)}`;
   const appHref = `/projects/${encodeURIComponent(project.id)}/apps/${encodeURIComponent(app.appKey)}`;
   const disabled = imageStatus === "building" ? " disabled" : "";
+  const rollbackRef = app.imageRollbackRef ?? null;
+  const rollbackBuilt = app.imageRollbackBuiltAt ?? null;
   const error = app.imageError
     ? `<p class="small" id="image-error">${escapeHtml(app.imageError)}</p>`
     : '<p class="small" id="image-error" hidden></p>';
@@ -102,6 +105,11 @@ function imagePanel(
       </div>
       <div class="stack--tight"><span class="overline">Reference</span><span class="mono" id="image-ref">${escapeHtml(app.imageRef ?? "Not built")}</span></div>
       <div class="stack--tight"><span class="overline">Built</span><span class="small" id="image-built" data-built-at="${escapeHtml(app.imageBuiltAt ?? "")}">${app.imageBuiltAt ? timeTag(app.imageBuiltAt) : "Never"}</span></div>
+      <div class="stack--tight"><span class="overline">Rollback</span><span class="mono" id="image-rollback-ref">${escapeHtml(rollbackRef ?? "None")}</span><span class="small" id="image-rollback-built" data-built-at="${escapeHtml(rollbackBuilt ?? "")}"${rollbackRef === null ? " hidden" : ""}>${rollbackBuilt ? timeTag(rollbackBuilt) : ""}</span></div>
+      <form method="post" action="${escapeHtml(rollbackHref)}" id="image-rollback-form"${rollbackRef === null ? " hidden" : ""}>
+        <input type="hidden" name="return_to" value="${escapeHtml(appHref)}" />
+        <button class="btn btn-secondary btn-sm" type="submit" id="image-rollback">${icon("refresh")}Roll back to previous image</button>
+      </form>
       ${error}
       <div class="stack--tight">
         <div class="cluster">

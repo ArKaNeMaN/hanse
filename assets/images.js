@@ -8,6 +8,9 @@
   const statusLive = document.getElementById("image-live");
   const refEl = document.getElementById("image-ref");
   const builtEl = document.getElementById("image-built");
+  const rollbackRefEl = document.getElementById("image-rollback-ref");
+  const rollbackBuiltEl = document.getElementById("image-rollback-built");
+  const rollbackForm = document.getElementById("image-rollback-form");
   const errorEl = document.getElementById("image-error");
   const hintEl = document.getElementById("image-hint");
   const logsEl = document.getElementById("image-logs");
@@ -123,6 +126,23 @@
     builtEl.dataset.builtAt = typeof data.builtAt === "string" ? data.builtAt : "";
     builtEl.textContent = formatTime(data.builtAt);
 
+    const previousImageRef =
+      typeof data.previousImageRef === "string" && data.previousImageRef.length > 0
+        ? data.previousImageRef
+        : null;
+    if (rollbackRefEl !== null) {
+      rollbackRefEl.textContent = previousImageRef ?? "None";
+    }
+    if (rollbackBuiltEl !== null) {
+      rollbackBuiltEl.dataset.builtAt =
+        typeof data.previousImageBuiltAt === "string" ? data.previousImageBuiltAt : "";
+      rollbackBuiltEl.textContent = formatTime(data.previousImageBuiltAt);
+      rollbackBuiltEl.hidden = previousImageRef === null;
+    }
+    if (rollbackForm !== null) {
+      rollbackForm.hidden = previousImageRef === null;
+    }
+
     if (errorEl !== null) {
       const message = typeof data.error === "string" ? data.error : "";
       errorEl.textContent = message;
@@ -216,6 +236,11 @@
     status: initial,
     imageRef: refEl.textContent === "Not built" ? null : refEl.textContent,
     builtAt: builtEl.dataset.builtAt || "",
+    previousImageRef:
+      rollbackRefEl !== null && rollbackRefEl.textContent !== "None"
+        ? rollbackRefEl.textContent
+        : null,
+    previousImageBuiltAt: rollbackBuiltEl !== null ? rollbackBuiltEl.dataset.builtAt : "",
     error: errorEl !== null && !errorEl.hidden ? errorEl.textContent : null,
   });
 

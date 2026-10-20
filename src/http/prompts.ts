@@ -23,7 +23,6 @@ import {
   createEventStream,
   type HanseEvent,
 } from "../opencode/events.js";
-import type { ManagedApp } from "../opencode/manager.js";
 import {
   MAX_FEEDBACK_LENGTH,
   MAX_LABEL_LENGTH,
@@ -38,7 +37,7 @@ import {
   normalizeTodos,
   type PromptSource,
 } from "../opencode/prompts.js";
-import { appDir, type FoundApp, findApp } from "./apps.js";
+import { appDir, type FoundApp, findApp, toManagedApp } from "./apps.js";
 import { principalFrom } from "./auth.js";
 import type { HttpDeps, HttpRequest, HttpResponse } from "./handler.js";
 
@@ -172,15 +171,6 @@ function parseBody(request: HttpRequest): ParsedBody {
     return { ok: false, response: errorResponse(400, "request body must be a JSON object") };
   }
   return { ok: true, body };
-}
-
-function managedApp(found: FoundApp): ManagedApp {
-  return {
-    id: found.app.id,
-    projectId: found.project.id,
-    appKey: found.app.appKey,
-    appDir: appDir(found.project, found.app),
-  };
 }
 
 function startFailureMessage(error: unknown): string {
@@ -571,7 +561,7 @@ export async function handlePrompts(deps: HttpDeps, request: HttpRequest): Promi
 
   let endpoint: string;
   try {
-    endpoint = await deps.manager.ensure(managedApp(found));
+    endpoint = await deps.manager.ensure(toManagedApp(found));
   } catch (error) {
     return startFailure(error);
   }
@@ -683,7 +673,7 @@ export async function streamAppEvents(
   }
   let endpoint: string;
   try {
-    endpoint = await deps.manager.ensure(managedApp(found));
+    endpoint = await deps.manager.ensure(toManagedApp(found));
   } catch (error) {
     writeJson(response, 502, { error: startFailureMessage(error) });
     return;

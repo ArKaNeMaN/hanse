@@ -33,18 +33,39 @@ function insertProjectAndApp(db: ReturnType<typeof openDatabase>): void {
 describe("migration v6 app-images", () => {
   it("applies fresh migrations and defaults existing app inserts to missing", () => {
     const db = openDatabase(":memory:");
-    expect(runMigrations(db)).toBe(6);
+    expect(runMigrations(db)).toBe(7);
     expect(runMigrations(db)).toBe(0);
 
     const versions = db.prepare("SELECT version FROM schema_migrations ORDER BY version").all() as {
       version: number;
     }[];
-    expect(versions.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(versions.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7]);
 
     const columns = appColumns(db);
     for (const column of IMAGE_COLUMNS) {
       expect(columns).toContain(column);
     }
+    expect(
+      (
+        db.prepare("PRAGMA table_info(app_image_versions)").all() as Array<{
+          name: string;
+        }>
+      ).map((row) => row.name),
+    ).toEqual([
+      "id",
+      "app_id",
+      "image_ref",
+      "image_id",
+      "spec_hash",
+      "base_digest",
+      "built_at",
+      "created_at",
+    ]);
+    expect(
+      (db.prepare("PRAGMA table_info(instances)").all() as Array<{ name: string }>).map(
+        (row) => row.name,
+      ),
+    ).toContain("image_ref");
 
     insertProjectAndApp(db);
     const row = db
@@ -93,7 +114,7 @@ describe("migration v6 app-images", () => {
     insertProjectAndApp(db);
     expect(appColumns(db)).not.toContain("image_status");
 
-    expect(runMigrations(db)).toBe(1);
+    expect(runMigrations(db)).toBe(2);
 
     const row = db.prepare("SELECT image_status, image_error FROM apps WHERE id = 'a1'").get() as {
       image_status: string;

@@ -7,6 +7,7 @@ import type {
   DockerContainerCreateOptions,
   DockerContainerInspect,
   DockerContainerSummary,
+  DockerImageInspect,
   DockerLogs,
   DockerNetworkSpec,
   DockerRuntime,
@@ -95,6 +96,7 @@ function rawSpec(f: Fixture, appKey: string, overrides: Record<string, unknown> 
 
 class FakeDocker implements DockerRuntime {
   readonly containers = new Map<string, DockerContainerInspect>();
+  readonly images = new Map<string, DockerImageInspect>();
   readonly networks = new Map<string, DockerNetworkSpec>();
   readonly networkContainers = new Map<string, Set<string>>();
   readonly creates: DockerContainerCreateOptions[] = [];
@@ -177,6 +179,10 @@ class FakeDocker implements DockerRuntime {
     return [...this.containers.values()].find((container) => container.Name === `/${idOrName}`);
   }
 
+  async inspectImage(reference: string): Promise<DockerImageInspect | undefined> {
+    return this.images.get(reference);
+  }
+
   async listContainers(label?: string): Promise<DockerContainerSummary[]> {
     const [labelKey, labelValue] = label?.split("=", 2) ?? [];
     return [...this.containers.values()]
@@ -244,6 +250,25 @@ describe("RunnerService per-app containers", () => {
     expect(docker.connects.every((call) => call.aliases.includes("hanse"))).toBe(true);
     expect(docker.creates[0]?.env.OPENCODE_SERVER_PASSWORD).toBe("password");
     expect(docker.creates[0]?.env.HANSE_OPENCODE_PASSWORD_FILE).toBeUndefined();
+  });
+
+  it("allows only a validated per-app image carrying this app's build label", async () => {
+    const { f, docker, service } = await harness();
+    const image = "hanse-app-project-a:build-1";
+    docker.images.set(image, {
+      Id: "sha256:built",
+      Config: { Labels: { "hanse.app.id": "project:a", "hanse.image.version": "hash-1" } },
+    });
+
+    const status = await service.ensure(rawSpec(f, "a", { image }), "project:a");
+    expect(status.state).toBe("running");
+    expect(docker.creates[0]?.image).toBe(image);
+
+    const other = await service
+      .ensure(rawSpec(f, "b", { image }), "project:b")
+      .catch(() => "rejected");
+    expect(other).toBe("rejected");
+    expect(docker.creates).toHaveLength(1);
   });
 
   it("is idempotent for the same spec and recreates a changed spec", async () => {

@@ -143,7 +143,11 @@ function invalid(message: string): ConfigError {
  * The coordinator sends host paths in B1. The runner derives the fixed network/container names and
  * the fixed container paths; it never accepts a caller-selected mount root, network, or port.
  */
-export function validateRunnerSpec(value: unknown, config: RunnerConfig): RunnerSpec {
+export function validateRunnerSpec(
+  value: unknown,
+  config: RunnerConfig,
+  extraAllowedImages?: ReadonlySet<string>,
+): RunnerSpec {
   const spec = validateAppRuntimeSpec(value, {
     workspaceRoot: config.hostWorkspace,
     agentsRoot: config.hostAgents,
@@ -151,7 +155,7 @@ export function validateRunnerSpec(value: unknown, config: RunnerConfig): Runner
   if (spec.pathMode !== "host") {
     throw invalid("runner requires pathMode: host");
   }
-  if (!config.allowedImages.has(spec.image)) {
+  if (!config.allowedImages.has(spec.image) && extraAllowedImages?.has(spec.image) !== true) {
     throw invalid(`image is not allowed by the runner: ${spec.image}`);
   }
   if (spec.port !== RUNNER_APP_PORT) {

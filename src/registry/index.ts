@@ -28,6 +28,8 @@ export interface RegisteredApp {
   imageBaseDigest: string | null;
   imageBuiltAt: string | null;
   imageError: string | null;
+  imageRollbackRef?: string | null;
+  imageRollbackBuiltAt?: string | null;
   /** Canonical absolute Dockerfile path, or `null` when the app is not a build app. */
   buildDockerfile: string | null;
   buildArgs: Record<string, string>;

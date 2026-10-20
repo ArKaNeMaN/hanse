@@ -1,4 +1,12 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -634,5 +642,103 @@ describe("InstanceManager lifecycle", () => {
       'model_mismatch: agent "oracle" uses deepseek/other, expected deepseek/deepseek-flash',
     ]);
     expect(authorization).toMatch(/^Basic /);
+  });
+});
+
+interface ImageFixture {
+  manager: InstanceManager;
+  runtime: FakeAgentRuntime;
+  app: ManagedApp;
+  appDir: string;
+}
+
+function imageFixture(
+  status: ManagedApp["imageStatus"],
+  imageRef: string | null,
+  buildDeclaration = true,
+): ImageFixture {
+  const dir = mkdtempSync(path.join(tmpdir(), "hanse-manager-image-"));
+  dirs.push(dir);
+  const appDir = path.join(dir, "apps", "web");
+  mkdirSync(appDir, { recursive: true });
+  if (buildDeclaration) {
+    mkdirSync(path.join(appDir, ".hanse"), { recursive: true });
+    writeFileSync(
+      path.join(appDir, ".hanse", "app.yaml"),
+      "name: web\nbuild:\n  dockerfile: Dockerfile\n",
+      "utf8",
+    );
+    writeFileSync(path.join(appDir, "Dockerfile"), `FROM \${HANSE_BASE}\n`, "utf8");
+  }
+  const db = openDatabase(":memory:");
+  databases.push(db);
+  runMigrations(db);
+  const now = new Date().toISOString();
+  db.prepare(
+    "INSERT INTO projects (id,name,base_branch,root_path,created_at,updated_at) VALUES ('p','P','main',?,?,?)",
+  ).run(dir, now, now);
+  db.prepare(
+    "INSERT INTO apps (id,project_id,app_key,path,contract,created_at) VALUES ('p:web','p','web','apps/web','AGENTS.md',?)",
+  ).run(now);
+  const runtime = new FakeAgentRuntime(() => "http://127.0.0.1:4100");
+  const manager = new InstanceManager(db, dir, {
+    runtime,
+    verify: async () => [],
+    workspaceRoot: dir,
+  });
+  return {
+    manager,
+    runtime,
+    appDir,
+    app: {
+      id: "p:web",
+      projectId: "p",
+      appKey: "web",
+      appDir,
+      imageStatus: status,
+      imageRef,
+    },
+  };
+}
+
+describe("InstanceManager app image selection", () => {
+  it.each(["ready", "stale"] as const)("uses the built image when status is %s", async (status) => {
+    const f = imageFixture(status, "hanse-app-p:web:build-1");
+    await f.manager.ensure(f.app);
+    expect(f.runtime.ensured[0]?.image).toBe("hanse-app-p:web:build-1");
+  });
+
+  it.each(["missing", "building", "error"] as const)(
+    "refuses to start a build-configured app with status %s",
+    async (status) => {
+      const f = imageFixture(status, null);
+      await expect(f.manager.ensure(f.app)).rejects.toThrow(/requires a built image/);
+      expect(f.runtime.ensured).toHaveLength(0);
+    },
+  );
+
+  it("refuses a ready app without an image reference", async () => {
+    const f = imageFixture("ready", null);
+    await expect(f.manager.ensure(f.app)).rejects.toThrow(/requires a built image/);
+    expect(f.runtime.ensured).toHaveLength(0);
+  });
+
+  it("keeps the default image when the app has no build declaration", async () => {
+    const f = imageFixture("missing", null, false);
+    await f.manager.ensure(f.app);
+    expect(f.runtime.ensured[0]?.image).toBe(
+      process.env.HANSE_AGENT_IMAGE?.trim() || "agent-default",
+    );
+  });
+
+  it("reconnects to a running container instead of replacing it after a failed build", async () => {
+    const f = imageFixture("ready", "hanse-app-p:web:build-1");
+    const endpoint = await f.manager.ensure(f.app);
+    await f.manager.ensure({ ...f.app, imageStatus: "error", imageRef: null });
+    expect(f.runtime.ensured).toHaveLength(1);
+    expect(f.runtime.deleted).toHaveLength(0);
+    expect(await f.manager.ensure({ ...f.app, imageStatus: "error", imageRef: null })).toBe(
+      endpoint,
+    );
   });
 });

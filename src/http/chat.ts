@@ -14,7 +14,7 @@ import {
 } from "../opencode/client.js";
 import { authorizationFor } from "../opencode/endpoint-auth.js";
 import type { RegisteredApp } from "../registry/index.js";
-import { appDir, findApp } from "./apps.js";
+import { appDir, findApp, toManagedApp } from "./apps.js";
 import { humanFrom, principalFrom } from "./auth.js";
 import { buildSite, type PageChrome, renderNotFound, type SiteModel } from "./dashboard.js";
 import type { HttpDeps, HttpRequest, HttpResponse } from "./handler.js";
@@ -414,12 +414,7 @@ export async function streamSessionEvents(
   response.on("close", () => controller.abort());
   let endpoint: string;
   try {
-    endpoint = await deps.manager.ensure({
-      id: found.app.id,
-      projectId: found.project.id,
-      appKey: found.app.appKey,
-      appDir: appDir(found.project, found.app),
-    });
+    endpoint = await deps.manager.ensure(toManagedApp(found));
   } catch {
     response.writeHead(502);
     response.end();
@@ -535,12 +530,7 @@ export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<
   }
   let endpoint: string;
   try {
-    endpoint = await deps.manager.ensure({
-      id: found.app.id,
-      projectId: found.project.id,
-      appKey: found.app.appKey,
-      appDir: appDir(found.project, found.app),
-    });
+    endpoint = await deps.manager.ensure(toManagedApp(found));
   } catch (error) {
     const message = `agent failed to start: ${error instanceof Error ? error.message : String(error)}`;
     return asyncSend
