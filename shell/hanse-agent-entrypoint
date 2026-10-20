@@ -1,0 +1,3 @@
+#!/bin/sh
+set -eu
+exec /usr/local/bin/opencode serve --hostname 0.0.0.0 --port 4100

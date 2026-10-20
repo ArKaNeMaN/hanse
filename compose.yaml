@@ -32,6 +32,7 @@ services:
     networks:
       - front
       - agents
+      - control
     depends_on:
       agents:
         condition: service_healthy
@@ -128,6 +129,38 @@ services:
       retries: 3
       start_period: 30s
 
+  runner:
+    image: ${HANSE_RUNNER_IMAGE:-ghcr.io/arkaneman/hanse-runner}:${HANSE_AGENT_TAG:-${HANSE_TAG:-latest}}
+    container_name: hanse-runner
+    restart: unless-stopped
+    user: "0:0"
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      HANSE_RUNTIME_TOKEN: ${HANSE_RUNTIME_TOKEN:?set HANSE_RUNTIME_TOKEN in .env}
+      HANSE_HOST_WORKSPACE: ${HANSE_HOST_WORKSPACE:?set HANSE_HOST_WORKSPACE to the absolute host workspace path}
+      HANSE_HOST_AGENTS: ${HANSE_HOST_AGENTS:?set HANSE_HOST_AGENTS to the absolute host agents path}
+      HANSE_AGENT_IMAGE: ${HANSE_AGENT_IMAGE:-ghcr.io/arkaneman/hanse-agent-default}:${HANSE_AGENT_TAG:-${HANSE_TAG:-latest}}
+      HANSE_COORDINATOR_CONTAINER: hanse
+      HANSE_DOCKER_SOCKET: /var/run/docker.sock
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - control
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8790/healthz').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
 networks:
   front:
   agents:
+  control:

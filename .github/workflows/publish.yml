@@ -45,6 +45,9 @@ jobs:
           - name: hanse-agent-ide
             target: agent-ide
             suffix: "-agent-ide"
+          - name: hanse-runner
+            target: runner
+            suffix: "-runner"
     steps:
       - uses: actions/checkout@v4
 

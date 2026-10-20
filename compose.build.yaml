@@ -22,3 +22,9 @@ services:
     build:
       context: .
       target: agent-default
+
+  runner:
+    image: ${HANSE_RUNNER_BUILD_IMAGE:-hanse-runner:dev}
+    build:
+      context: .
+      target: runner

@@ -5,6 +5,7 @@ import {
   defaultContext,
   initCommand,
   mcpCommand,
+  runnerCommand,
   serveCommand,
   statusCommand,
   webMcpCommand,
@@ -43,14 +44,15 @@ function buildUsage(): string[] {
     "  web-mcp         Run the managed web tools MCP server (stdio)",
     "  agent-host      Run a single-app agent host (internal; --spec <file>)",
     "  agent-supervisor Run the B0 runtime supervisor (internal)",
+    "  runner          Run the B1 container runner (internal)",
     "",
     "Options:",
     "  -h, --help            Show this help and exit",
     "  -v, --version         Show the version and exit",
     "      --state-home <p>  Override the coordinator state directory",
     "      --workspace <p>   Workspace of projects (serve; default: cwd)",
-    "      --hostname <h>    Bind host (serve/agent-supervisor; default: 127.0.0.1/0.0.0.0)",
-    "      --port <n>        Bind port (serve/agent-supervisor; default: 8787/8789)",
+    "      --hostname <h>    Bind host (serve/agent-supervisor/runner; default: 127.0.0.1/0.0.0.0)",
+    "      --port <n>        Bind port (serve/agent-supervisor/runner; default: 8787/8789/8790)",
     "      --spec <p>        Runtime spec file (agent-host)",
   ];
 }
@@ -118,6 +120,13 @@ export async function runCli(argv: readonly string[], io: CliIo = defaultIo): Pr
         { hostname, port },
         defaultContext(process.cwd(), io, args.flags),
       );
+    }
+    case "runner": {
+      const rawPort =
+        typeof args.flags.port === "string" ? args.flags.port : process.env.HANSE_RUNNER_PORT;
+      const port = rawPort === undefined || rawPort.length === 0 ? 8790 : Number(rawPort);
+      const hostname = typeof args.flags.hostname === "string" ? args.flags.hostname : "0.0.0.0";
+      return runnerCommand({ hostname, port }, defaultContext(process.cwd(), io, args.flags));
     }
     default:
       io.stderr(`Unknown command: ${args.command}`);

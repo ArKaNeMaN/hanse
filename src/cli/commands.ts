@@ -18,6 +18,9 @@ import { runMcpServer } from "../mcp/server.js";
 import { InstanceManager } from "../opencode/manager.js";
 import { OmoProfileStore } from "../opencode/omo-profile.js";
 import { discoverProject, registerProject } from "../registry/index.js";
+import { DockerClient } from "../runner/docker.js";
+import { runRunner } from "../runner/server.js";
+import { loadRunnerConfig } from "../runner/validate.js";
 import {
   agentsHome,
   coordinatorDbPath,
@@ -241,6 +244,42 @@ export async function agentSupervisorCommand(
     });
   } catch (error) {
     ctx.io.stderr(`agent-supervisor: ${error instanceof Error ? error.message : String(error)}`);
+    return 1;
+  }
+}
+
+export interface RunnerCommandOptions {
+  hostname: string;
+  port: number;
+}
+
+/** Run the B1 runner control API (internal; rootful Docker socket holder). */
+export async function runnerCommand(
+  options: RunnerCommandOptions,
+  ctx: CommandContext,
+): Promise<number> {
+  if (!Number.isInteger(options.port) || options.port < 1 || options.port > 65535) {
+    ctx.io.stderr("runner: --port must be an integer between 1 and 65535");
+    return 2;
+  }
+  let config: ReturnType<typeof loadRunnerConfig>;
+  try {
+    config = loadRunnerConfig();
+  } catch (error) {
+    ctx.io.stderr(`runner: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
+  try {
+    const docker = DockerClient.unixSocket(config.dockerSocket, config.dockerApiVersion);
+    return await runRunner({
+      config,
+      docker,
+      hostname: options.hostname,
+      port: options.port,
+      onListening: (address) => ctx.io.stdout(`hanse runner listening on ${address}`),
+    });
+  } catch (error) {
+    ctx.io.stderr(`runner: ${error instanceof Error ? error.message : String(error)}`);
     return 1;
   }
 }

@@ -183,10 +183,11 @@ COPY --from=opencode /usr/local/lib/node_modules/opencode-ai /usr/local/lib/node
 COPY --from=omo /opt/hanse/omo /opt/hanse/omo
 COPY --from=codegraph /opt/hanse/codegraph /opt/hanse/codegraph
 COPY --from=mise /usr/local/bin/mise /usr/local/bin/mise
+COPY shell/hanse-agent-entrypoint /usr/local/bin/hanse-agent-entrypoint
 
 RUN ln -sf ../lib/node_modules/opencode-ai/bin/opencode.exe /usr/local/bin/opencode \
  && printf '%s\n' '#!/bin/sh' 'exec node /app/dist/index.js "$@"' > /usr/local/bin/hanse \
- && chmod 0755 /usr/local/bin/hanse \
+ && chmod 0755 /usr/local/bin/hanse /usr/local/bin/hanse-agent-entrypoint \
  && node --version \
  && opencode --version \
  && mise --version \
@@ -288,11 +289,12 @@ COPY --from=uv /uv /usr/local/bin/uv
 COPY --from=mise /usr/local/bin/mise /usr/local/bin/mise
 COPY extensions ./extensions
 COPY shell/hanse-shell /usr/local/bin/hanse-shell
+COPY shell/hanse-agent-entrypoint /usr/local/bin/hanse-agent-entrypoint
 COPY omo/omo.jsonc /home/coder/.omo/omo.jsonc
 
 RUN ln -sf ../lib/node_modules/opencode-ai/bin/opencode.exe /usr/local/bin/opencode \
  && printf '%s\n' '#!/bin/sh' 'exec node /app/dist/index.js "$@"' > /usr/local/bin/hanse \
- && chmod 0755 /usr/local/bin/hanse /usr/local/bin/hanse-shell \
+ && chmod 0755 /usr/local/bin/hanse /usr/local/bin/hanse-shell /usr/local/bin/hanse-agent-entrypoint \
  && mkdir -p /home/coder/.config/code-server/User /home/coder/.local/share/code-server /data/workspace \
  && printf '%s' '{"workbench.colorTheme":"GitHub Dark Dimmed","workbench.startupEditor":"none","chat.commandCenter.enabled":false,"security.workspace.trust.enabled":true,"security.workspace.trust.startupPrompt":"never","security.workspace.trust.emptyWindow":false,"task.autoDetect":"off","extensions.autoCheckUpdates":false,"extensions.autoUpdate":false,"terminal.integrated.profiles.linux":{"hanse":{"path":"/usr/local/bin/hanse-shell"}},"terminal.integrated.defaultProfile.linux":"hanse"}' > /home/coder/.config/code-server/User/settings.json \
  && code-server --install-extension /app/extensions/hanse-agent.vsix --extensions-dir /opt/hanse-ext --force \
@@ -311,3 +313,40 @@ EXPOSE 8080
 
 ENTRYPOINT ["/usr/bin/dumb-init", "--"]
 CMD ["code-server", "--auth", "none", "--bind-addr", "0.0.0.0:8080", "--disable-telemetry", "--disable-update-check", "--extensions-dir", "/opt/hanse-ext", "--user-data-dir", "/home/coder/.config/code-server", "/data/workspace"]
+
+# Narrow B1/B2 runner: the only process holding the Docker socket. It has no coordinator state and
+# no application data; the Docker Engine API is the only capability it needs.
+FROM --platform=$TARGETPLATFORM node:${NODE_VERSION}-bookworm-slim AS runner
+
+ARG VERSION=0.1.0
+ARG REVISION=unknown
+
+LABEL org.opencontainers.image.title="hanse-runner" \
+      org.opencontainers.image.description="Hanse container runner: validated Docker Engine control API." \
+      org.opencontainers.image.source="https://github.com/ArKaNeMaN/hanse" \
+      org.opencontainers.image.url="https://github.com/ArKaNeMaN/hanse" \
+      org.opencontainers.image.documentation="https://github.com/ArKaNeMaN/hanse/blob/main/docs/deployment.md" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${REVISION}" \
+      org.opencontainers.image.licenses="NOASSERTION"
+
+ENV NODE_ENV=production
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends dumb-init ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
+COPY --from=build /app/dist ./dist
+COPY package.json LICENSE ./
+
+RUN printf '%s\n' '#!/bin/sh' 'exec node /app/dist/index.js "$@"' > /usr/local/bin/hanse \
+ && chmod 0755 /usr/local/bin/hanse \
+ && node --version \
+ && hanse --help >/dev/null
+
+USER root
+
+ENTRYPOINT ["/usr/bin/dumb-init", "--"]
+CMD ["hanse", "runner", "--hostname", "0.0.0.0", "--port", "8790"]
