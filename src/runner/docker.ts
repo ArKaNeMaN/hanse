@@ -859,6 +859,8 @@ export class DockerClient {
     const response = await this.#transport.request(
       "POST",
       `/containers/${encodeURIComponent(id)}/stop?t=${timeoutSeconds}`,
+      undefined,
+      { timeoutMs: Math.max(30_000, (timeoutSeconds + 15) * 1000) },
     );
     if (response.status === 304 || response.status === 404) return;
     this.#check(response, `stop container ${id}`);
@@ -868,6 +870,8 @@ export class DockerClient {
     const response = await this.#transport.request(
       "DELETE",
       `/containers/${encodeURIComponent(id)}?force=${force ? "1" : "0"}&v=0`,
+      undefined,
+      { timeoutMs: 30_000 },
     );
     if (response.status === 404) return;
     this.#check(response, `remove container ${id}`);
