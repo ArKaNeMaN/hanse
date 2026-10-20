@@ -39,6 +39,69 @@ ide_exec() {
   $compose exec -T ide "$@"
 }
 
+if [ "$mode" = "b1" ]; then
+  if ! $compose config >/dev/null; then
+    fail "docker compose config"
+    exit 1
+  fi
+  pass "docker compose config"
+
+  running=$($compose ps --status running --services)
+  for service in hanse ide runner; do
+    if printf '%s\n' "$running" | grep -qx "$service"; then
+      pass "$service is running"
+    else
+      fail "$service is running"
+    fi
+  done
+  if [ -n "$(docker ps -aq --filter name=hanse-agents)" ]; then
+    fail "B0 agents container is absent"
+  else
+    pass "B0 agents container is absent"
+  fi
+
+  check "coordinator health" hanse_exec node -e \
+    "fetch('http://127.0.0.1:8787/healthz').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+  check "runner health" $compose exec -T runner node -e \
+    "fetch('http://127.0.0.1:8790/healthz').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+  check "ide health" ide_exec curl -fsS http://127.0.0.1:8080/
+
+  app=$(docker ps -q --filter label=hanse.managed=true | head -n 1)
+  if [ -z "$app" ]; then
+    printf 'SKIP  no running managed app container\n'
+  else
+    pass "managed app container is running"
+    check "app runs as uid 1000" docker exec "$app" sh -c 'test "$(id -u)" = 1000'
+    check "app root is read-only" sh -c \
+      'test "$(docker inspect --format "{{.HostConfig.ReadonlyRootfs}}" "$1")" = true' sh "$app"
+    check "app drops capabilities" sh -c \
+      'docker inspect --format "{{json .HostConfig.CapDrop}}" "$1" | grep -q ALL' sh "$app"
+    check "app has no coordinator state mount" sh -c \
+      '! docker inspect --format "{{range .Mounts}}{{.Destination}} {{end}}" "$1" | grep -q /data/state' sh "$app"
+    check "app has no Docker socket" docker exec "$app" sh -c 'test ! -e /var/run/docker.sock'
+    check "app has no operator/runtime secret" sh -c \
+      '! docker inspect --format "{{json .Config.Env}}" "$1" | grep -qE "HANSE_(OPERATOR|RUNTIME)_TOKEN|HANSE_DB"' sh "$app"
+    check "app can write its workspace" docker exec "$app" sh -c \
+      'touch .probe && rm -f .probe'
+    check "app has core toolchains" docker exec "$app" sh -c \
+      'command -v python3 node php uv mise opencode hanse git >/dev/null'
+
+    app_net=$(docker inspect --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}' "$app" | tr ' ' '\n' | grep '^hanse-app-' | head -n 1)
+    if [ -n "$app_net" ] && docker inspect hanse --format '{{json .NetworkSettings.Networks}}' | grep -q "$app_net"; then
+      pass "coordinator is attached to the app network"
+    else
+      fail "coordinator is attached to the app network"
+    fi
+  fi
+
+  if [ "$failures" -ne 0 ]; then
+    printf '%s check(s) failed\n' "$failures" >&2
+    exit 1
+  fi
+  printf 'All b1 checks passed\n'
+  exit 0
+fi
+
 if ! $compose config >/dev/null; then
   fail "docker compose config"
   exit 1
