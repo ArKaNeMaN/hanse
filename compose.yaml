@@ -145,6 +145,7 @@ services:
       HANSE_DOCKER_SOCKET: /var/run/docker.sock
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - ${HANSE_HOST_AGENTS:?set HANSE_HOST_AGENTS to the absolute host agents path}:${HANSE_HOST_AGENTS:?set HANSE_HOST_AGENTS to the absolute host agents path}:ro
     networks:
       - control
     healthcheck:
