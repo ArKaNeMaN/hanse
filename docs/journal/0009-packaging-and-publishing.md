@@ -58,7 +58,8 @@ development but not a public deployment story:
 - `ci.yml` now has a Docker job that builds `linux/amd64` on every push/PR.
 - `publish.yml` builds `linux/amd64` and `linux/arm64` on `main`, `v*` tags, and manual dispatch,
   pushes `main`, `sha-<short>`, `latest`, and semver tags to GHCR, and attaches provenance and an
-  SBOM. It also attempts to make the package public.
+  SBOM. Docs-only pushes are ignored. Package visibility is documented as a one-time package
+  setting; `GITHUB_TOKEN` cannot change user-package visibility through `/user/packages`.
 
 ## Decisions
 
@@ -85,10 +86,13 @@ development but not a public deployment story:
   `better-sqlite3`; the amd64 image served `/healthz`, `/login`, `/assets/app.css`, `/settings`, the
   project/application creation API, and the proxied IDE.
 - The source-build overlay (`compose.build.yaml`) builds and tags `hanse:dev`.
-- CI's Docker job built the image in 3m14s. The publish workflow built both architectures in 9m15s,
-  pushed `main`, `sha-3b2c35e`, and `latest`, and made the package public.
+- CI's Docker job built the image in 3m14s on the first run and 1m2s with the cache. The publish
+  workflow built both architectures in 9m15s, pushed `main`, `sha-3b2c35e`, and `latest`, and the
+  package was public for anonymous pulls.
 - Anonymous `docker pull ghcr.io/arkaneman/hanse:sha-3b2c35e` succeeds; the index contains
-  `linux/amd64`, `linux/arm64`, and attestation manifests.
+  `linux/amd64`, `linux/arm64`, and attestation manifests. The follow-up publish at `sha-1f114ea`
+  (`sha256:499197381079009ad21d4ad60da9847633c723b6ec3e01f3d1b372a3a9ccaa64`) carries the corrected
+  `org.opencontainers.image.version=0.1.0` and `revision=1f114ea` labels.
 - The published image was deployed to the reference host, preserving the existing project and
   workspace. Both services are healthy; `/healthz`, login, authenticated pages, assets, the API, and
   `/ide/` return the expected statuses.
@@ -97,8 +101,8 @@ development but not a public deployment story:
 
 - The image remains large because it bundles code-server, `opencode`, OMO, and CodeGraph. Multi-stage
   copies and cache cleanup remove duplication, not the tools themselves.
-- The package is public by package setting, not automatically for every fork. The workflow attempts
-  the visibility change but ignores failure; the guide documents the manual fallback.
+- The package is public by package setting, not automatically for every fork. `GITHUB_TOKEN` cannot
+  change user-package visibility; the guide documents the one-time manual check.
 - `latest` is mutable. Operators who need reproducibility must pin a tag.
 - Database migrations remain forward-only; an image rollback after a migration is not a data
   rollback.

@@ -346,9 +346,12 @@ Tags produced:
 
 The workflow uses `GITHUB_TOKEN` (`packages: write`), so no long-lived registry secret is needed.
 GitHub Packages requires the image name to be lowercase; the workflow computes it from
-`GITHUB_REPOSITORY`. The first publish may create a private package; the workflow tries to make it
-public and ignores failure, so check **Package settings -> Change visibility** once if anonymous pulls
-fail.
+`GITHUB_REPOSITORY`.
+
+Package visibility is a one-time package setting, not a workflow permission. After the first publish,
+check **Package settings -> Change visibility** and make the package public if anonymous pulls fail.
+A package linked to a public repository may already be public; verify with
+`docker pull ghcr.io/<owner>/hanse:latest` without logging in.
 
 Local publish:
 

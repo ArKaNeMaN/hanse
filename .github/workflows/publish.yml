@@ -71,8 +71,5 @@ jobs:
           provenance: mode=max
           sbom: true
 
-      - name: Make the GHCR package public
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh api --method PATCH "/user/packages/container/hanse" -f visibility=public
+# Package visibility is a one-time package setting; GITHUB_TOKEN cannot change it through
+# /user/packages. Document the manual check in docs/deployment.md.
