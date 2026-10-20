@@ -724,6 +724,24 @@ transparent. No bubbles with tails, no avatars on every row.
 - `.tool-call`: `<details>` with a 32px summary row, mono tool name, `.tool-call__path`
   (flex 1, ellipsis for long paths), state badge, and an inset `<pre>` for output. Hover
   `--wash-1`. No accent side stripe.
+- `.tool-diff` / `.tool-code`: inset mono surfaces inside an open `.tool-call`. One
+  `.tool-diff__scroll` / `.tool-code__scroll` owns both axes (`max-block-size: 24rem`,
+  `overscroll-behavior: contain`, `scrollbar-gutter: stable`, inset focus-visible ring) and is the
+  only horizontal scroller at 390px. `.tool-diff__head` / `.tool-code__head` are sticky file
+  headers (ellipsis path, type, line counts); `.tool-diff__hunk-head` is a non-sticky `--wash-1`
+  band. `.diff-line` grids old/new numbers, sign, and code (`3.25rem 3.25rem 1.25rem minmax(0,1fr)`;
+  `2.5rem 2.5rem 1rem minmax(0,1fr)` below 48rem); `.code-line` uses one number column
+  (`3.25rem` / `2.5rem`) plus the remaining width. Code never wraps. Add/delete rows mix
+  `--success`/`--danger` at 9% with visible signs and tabular numbers; `data-kind="meta"` is italic
+  `--text-3`. `.tool-diff__diagnostics` is a capped, pre-wrap footer; `.tool-diff__file-list` is a
+  capped ellipsis list for patch-only parts. No animations or hover-only affordances.
+- **Diff/code token theme:** scoped to `.tool-diff .token` / `.tool-code .token`, so Prism class
+  names never escape into chat prose. comment/prolog/doctype/cdata `--text-3` italic; punctuation
+  `--text-2`; keyword/atrule/selector `--brass`; string/char/attr-value/inserted `--success`;
+  number/boolean/constant/symbol `--warning`; function/class-name/builtin `--info`;
+  property/tag/attr-name/deleted `--danger`; variable/parameter `--text-1`; operator `--info`;
+  regex `--warning`; important `--warning` bold; bold 600, italic italic. The `+`/`-` sign and
+  `data-kind` carry add/delete meaning, never color alone.
 - `.composer`: 1px top hairline, 12px padding, textarea + send button, 8px gap, hint row with
 `Enter to send - Shift+Enter for a new line` in caption. Composer is inside the thread pane and
 never scrolls away.
@@ -979,7 +997,12 @@ spacing value.
 `.chat-context-close`, `.chat-context-toggle`, `.chat-scrim`, `.chat-app-select`, `.chat-runtime`,
 `.chat-action-label`, `.chat-retry`, `.chat-empty`, `.chat-error`, `.chat-pane-head`, `.message`,
 `.message__meta`, `.message__role`, `.message__time`, `.message__body`, `.tool-call`,
-`.tool-call__path`, `.composer`, `.composer__row`, `.composer__hint`. Markdown descendants of
+`.tool-call__path`, `.tool-diff`, `.tool-diff__scroll`, `.tool-diff__file`, `.tool-diff__head`,
+`.tool-diff__hunks`, `.tool-diff__hunk`, `.tool-diff__hunk-head`, `.tool-diff__diagnostics`,
+`.tool-diff__file-list`, `.diff-line`, `.diff-line__num`, `.diff-line__sign`, `.diff-line__code`,
+`.tool-code`, `.tool-code__head`, `.tool-code__scroll`, `.code-line`, `.code-line__num`,
+`.code-line__code`, and the scoped `.tool-diff .token*` / `.tool-code .token*` theme,
+`.composer`, `.composer__row`, `.composer__hint`. Markdown descendants of
 `.message__body` (`p`, `h3`-`h5`, `ul`, `ol`, `li`, `blockquote`, `pre`, `code`, `a`, `hr`, `strong`,
 `em`) are part of the message surface and use existing type/space tokens.
 - Interactive prompts and plan: `.chat-input-needed`, `.chat-input-needed__count`, `.policy-chip`,

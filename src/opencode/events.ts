@@ -27,6 +27,15 @@ export const MAX_TEXT_SNAPSHOT_BYTES = 64 * 1024;
 export const MAX_PART_EVENT_BYTES = 256 * 1024;
 export const MAX_TOOL_OUTPUT_BYTES = 64 * 1024;
 export const MAX_PATCH_BYTES = 64 * 1024;
+export const MAX_DIFF_BYTES = 64 * 1024;
+export const MAX_DIFF_EVENT_BYTES = 128 * 1024;
+export const MAX_WRITE_CONTENT_BYTES = 64 * 1024;
+export const MAX_PATCH_INPUT_BYTES = 64 * 1024;
+export const MAX_DIFF_FILES = 50;
+export const MAX_DIFF_PATH_BYTES = 1024;
+export const MAX_DIFF_PATH_TOTAL_BYTES = 16 * 1024;
+export const MAX_TRUNCATED_FIELDS = 32;
+export const MAX_TRUNCATED_FIELD_BYTES = 8 * 1024;
 export const MAX_PART_STRING_BYTES = 8 * 1024;
 export const MAX_PART_ARRAY_ITEMS = 200;
 export const MAX_STATUS_MESSAGE = 2_000;
@@ -80,10 +89,14 @@ export type PartType =
   | "snapshot"
   | "agent";
 
+export type TruncationLimit = "per-file" | "total" | "content" | "patch" | "output" | "files";
+
 export interface Truncation {
   /** Dotted paths that were shortened, for example `state.metadata.output`. */
   fields: string[];
   omittedBytes: number;
+  /** Most severe budget that was hit; additive to the existing wire shape. */
+  limit?: TruncationLimit;
 }
 
 export type BoundedQuestionRequest = NormalizedQuestionRequest & { summary?: string };
@@ -265,6 +278,26 @@ function tailBytes(value: string, maxBytes: number): string {
 interface Bounds {
   fields: string[];
   omittedBytes: number;
+  limit?: TruncationLimit;
+}
+
+const TRUNCATION_LIMIT_SEVERITY: Record<TruncationLimit, number> = {
+  output: 1,
+  patch: 2,
+  content: 3,
+  files: 4,
+  "per-file": 5,
+  total: 6,
+};
+
+function markLimit(bounds: Bounds, limit: TruncationLimit): void {
+  if (bounds.limit === undefined) {
+    bounds.limit = limit;
+    return;
+  }
+  if (TRUNCATION_LIMIT_SEVERITY[limit] > TRUNCATION_LIMIT_SEVERITY[bounds.limit]) {
+    bounds.limit = limit;
+  }
 }
 
 function markTruncated(bounds: Bounds, path: string, omittedBytes: number): void {
@@ -278,6 +311,65 @@ function boundHeadString(value: string, maxBytes: number, path: string, bounds: 
     markTruncated(bounds, path, utf8Bytes(value) - utf8Bytes(kept));
   }
   return kept;
+}
+
+interface PathBudget {
+  remaining: number;
+}
+
+/** Cap one path to the per-field limit, then to the remaining total path budget. */
+function boundPath(value: string, path: string, bounds: Bounds, budget: PathBudget): string {
+  const fieldCapped = boundHeadString(value, MAX_DIFF_PATH_BYTES, path, bounds);
+  if (budget.remaining <= 0) {
+    if (fieldCapped.length > 0) {
+      markTruncated(bounds, path, utf8Bytes(fieldCapped));
+      return "";
+    }
+    return fieldCapped;
+  }
+  const kept = boundHeadString(fieldCapped, budget.remaining, path, bounds);
+  budget.remaining -= utf8Bytes(kept);
+  return kept;
+}
+
+/** Shorten one diff field and record the matching budget severity. */
+function boundDiffString(
+  value: string,
+  maxBytes: number,
+  path: string,
+  bounds: Bounds,
+  limit: TruncationLimit,
+): string {
+  const kept = headBytes(value, maxBytes);
+  if (kept.length !== value.length) {
+    markTruncated(bounds, path, utf8Bytes(value) - utf8Bytes(kept));
+    markLimit(bounds, limit);
+  }
+  return kept;
+}
+
+function capTruncatedFields(fields: string[]): string[] {
+  if (fields.length <= MAX_TRUNCATED_FIELDS && jsonBytes(fields) <= MAX_TRUNCATED_FIELD_BYTES) {
+    return fields;
+  }
+  const kept: string[] = [];
+  for (const field of fields) {
+    const candidate = [...kept, field, "more"];
+    if (candidate.length > MAX_TRUNCATED_FIELDS) break;
+    if (jsonBytes(candidate) > MAX_TRUNCATED_FIELD_BYTES) break;
+    kept.push(field);
+  }
+  return [...kept, "more"];
+}
+
+function truncationFor(bounds: Bounds): Truncation | undefined {
+  const fields = capTruncatedFields(bounds.fields);
+  if (fields.length === 0 && bounds.limit === undefined) return undefined;
+  return {
+    fields,
+    omittedBytes: bounds.omittedBytes,
+    ...(bounds.limit === undefined ? {} : { limit: bounds.limit }),
+  };
 }
 
 function boundTailString(value: string, maxBytes: number, path: string, bounds: Bounds): string {
@@ -417,6 +509,17 @@ function boundTodos(value: unknown, path: string, bounds: Bounds): unknown {
   });
 }
 
+function preservesDiffString(path: string, tool: string | undefined): boolean {
+  if (path === "state.metadata.diff") {
+    return tool === "edit" || tool === "apply_patch";
+  }
+  if (path === "state.metadata.filediff.patch") return tool === "edit";
+  if (/^state\.metadata\.files\[\d+\]\.patch$/.test(path)) return tool === "apply_patch";
+  if (path === "state.input.content") return tool === "write";
+  if (path === "state.input.patchText") return tool === "apply_patch";
+  return path === "data.patch";
+}
+
 function boundGeneric(
   value: unknown,
   path: string,
@@ -427,6 +530,7 @@ function boundGeneric(
     if (path === "state.metadata.output") {
       return boundTailString(value, MAX_TOOL_OUTPUT_BYTES, path, bounds);
     }
+    if (preservesDiffString(path, tool)) return value;
     return boundHeadString(value, MAX_PART_STRING_BYTES, path, bounds);
   }
   if (Array.isArray(value)) {
@@ -494,14 +598,396 @@ function boundState(
   return output;
 }
 
+type DiffKind = "per-file" | "combined" | "single" | "write" | "patch" | "none";
+
+interface DiffInfo {
+  kind: DiffKind;
+}
+
+const DIFF_TOOLS = new Set(["edit", "apply_patch", "write"]);
+
+function nonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
+function cloneRecord(value: unknown): Record<string, unknown> | undefined {
+  const record = asRecord(value);
+  return record === undefined ? undefined : { ...record };
+}
+
+function sanitizeFileRecord(record: Record<string, unknown>): Record<string, unknown> {
+  const output: Record<string, unknown> = {};
+  for (const key of [
+    "type",
+    "relativePath",
+    "movePath",
+    "filePath",
+    "path",
+    "file",
+    "oldPath",
+    "newPath",
+    "additions",
+    "deletions",
+    "status",
+    "index",
+  ]) {
+    if (record[key] !== undefined) output[key] = record[key];
+  }
+  if (nonEmptyString(record.patch)) output.patch = record.patch;
+  return output;
+}
+
+function sanitizeFilediff(record: Record<string, unknown>): Record<string, unknown> {
+  const output: Record<string, unknown> = {};
+  for (const key of ["file", "path", "filePath", "additions", "deletions", "type", "status"]) {
+    if (record[key] !== undefined) output[key] = record[key];
+  }
+  if (nonEmptyString(record.patch)) output.patch = record.patch;
+  return output;
+}
+
+function selectApplyPatch(metadata: Record<string, unknown>): DiffKind {
+  const rawFiles = Array.isArray(metadata.files) ? metadata.files : [];
+  const records = rawFiles.map(cloneRecord);
+  const everyPatched =
+    records.length > 0 &&
+    records.every((record) => record !== undefined && nonEmptyString(record.patch));
+  const combined = nonEmptyString(metadata.diff);
+  if (everyPatched) {
+    delete metadata.diff;
+  } else if (combined) {
+    for (const record of records) {
+      if (record !== undefined) delete record.patch;
+    }
+  }
+  const files = records
+    .filter((record): record is Record<string, unknown> => record !== undefined)
+    .map(sanitizeFileRecord);
+  if (Array.isArray(metadata.files) || files.length > 0) metadata.files = files;
+  if (everyPatched) return "per-file";
+  if (combined) return "combined";
+  return files.some((record) => nonEmptyString(record.patch)) ? "per-file" : "none";
+}
+
+function selectEdit(metadata: Record<string, unknown>): DiffKind {
+  const filediff = asRecord(metadata.filediff);
+  const patch = filediff !== undefined && nonEmptyString(filediff.patch);
+  const usablePath =
+    filediff !== undefined &&
+    [filediff.file, filediff.path, filediff.filePath].some(nonEmptyString);
+  const combined = nonEmptyString(metadata.diff);
+  if (patch && usablePath) {
+    delete metadata.diff;
+  } else if (combined && filediff !== undefined) {
+    delete filediff.patch;
+  }
+  if (filediff !== undefined) {
+    delete filediff.before;
+    delete filediff.after;
+    const clean = sanitizeFilediff(filediff);
+    if (Object.keys(clean).length === 0) delete metadata.filediff;
+    else metadata.filediff = clean;
+  }
+  const keptPatch = filediff !== undefined && nonEmptyString(filediff.patch);
+  return combined || keptPatch ? "single" : "none";
+}
+
+function sanitizeDiffMetadata(
+  metadata: Record<string, unknown>,
+  tool: string,
+): Record<string, unknown> {
+  const output: Record<string, unknown> = {};
+  for (const key of ["filepath", "filePath"]) {
+    if (typeof metadata[key] === "string") output[key] = metadata[key];
+  }
+  if (typeof metadata.exists === "boolean") output.exists = metadata.exists;
+  if (nonEmptyString(metadata.diff)) output.diff = metadata.diff;
+  if (tool === "edit") {
+    const filediff = asRecord(metadata.filediff);
+    if (filediff !== undefined) {
+      const clean = sanitizeFilediff(filediff);
+      if (Object.keys(clean).length > 0) output.filediff = clean;
+    }
+  }
+  if (tool === "apply_patch") {
+    const files = metadata.files;
+    if (Array.isArray(files)) {
+      output.files = files.map((record) => {
+        const clean = cloneRecord(record);
+        return clean === undefined ? record : sanitizeFileRecord(clean);
+      });
+    }
+  }
+  return output;
+}
+
+function sanitizeDiffInput(
+  input: Record<string, unknown>,
+  tool: string,
+  hasDiff: boolean,
+): Record<string, unknown> {
+  const output: Record<string, unknown> = {};
+  for (const key of ["filePath", "path"]) {
+    if (typeof input[key] === "string") output[key] = input[key];
+  }
+  if (tool === "write" && typeof input.content === "string") output.content = input.content;
+  if (tool === "apply_patch" && !hasDiff && typeof input.patchText === "string") {
+    output.patchText = input.patchText;
+  }
+  if (tool === "edit") {
+    if (input.rename !== undefined) output.rename = input.rename;
+    if (input.delete !== undefined) output.delete = input.delete;
+  }
+  return output;
+}
+
+function boundStatePaths(state: Record<string, unknown>, budget: PathBudget, bounds: Bounds): void {
+  if (typeof state.title === "string") {
+    state.title = boundPath(state.title, "state.title", bounds, budget);
+  }
+  const input = asRecord(state.input);
+  if (input !== undefined) {
+    for (const key of ["filePath", "path", "rename"]) {
+      if (typeof input[key] === "string") {
+        input[key] = boundPath(input[key], `state.input.${key}`, bounds, budget);
+      }
+    }
+  }
+  const metadata = asRecord(state.metadata);
+  if (metadata !== undefined) {
+    for (const key of ["filepath", "filePath"]) {
+      if (typeof metadata[key] === "string") {
+        metadata[key] = boundPath(metadata[key], `state.metadata.${key}`, bounds, budget);
+      }
+    }
+    const filediff = asRecord(metadata.filediff);
+    if (filediff !== undefined) {
+      for (const key of ["file", "path", "filePath"]) {
+        if (typeof filediff[key] === "string") {
+          filediff[key] = boundPath(
+            filediff[key],
+            `state.metadata.filediff.${key}`,
+            bounds,
+            budget,
+          );
+        }
+      }
+    }
+    const files = metadata.files;
+    if (Array.isArray(files)) {
+      files.forEach((raw, index) => {
+        const record = asRecord(raw);
+        if (record === undefined) return;
+        for (const key of [
+          "relativePath",
+          "movePath",
+          "filePath",
+          "path",
+          "file",
+          "oldPath",
+          "newPath",
+        ]) {
+          if (typeof record[key] === "string") {
+            record[key] = boundPath(
+              record[key],
+              `state.metadata.files[${index}].${key}`,
+              bounds,
+              budget,
+            );
+          }
+        }
+      });
+    }
+  }
+}
+
+function applyDiffCaps(
+  state: Record<string, unknown>,
+  kind: DiffKind,
+  tool: string,
+  bounds: Bounds,
+): DiffKind {
+  const metadata = asRecord(state.metadata);
+  const input = asRecord(state.input);
+  if (tool === "apply_patch" && metadata !== undefined) {
+    const rawFiles = metadata.files;
+    let files = Array.isArray(rawFiles) ? rawFiles : [];
+    if (files.length > MAX_DIFF_FILES) {
+      markTruncated(bounds, "state.metadata.files.length", jsonBytes(files.slice(MAX_DIFF_FILES)));
+      files = files.slice(0, MAX_DIFF_FILES);
+      metadata.files = files;
+      markLimit(bounds, "files");
+    }
+    if (kind === "combined") {
+      if (typeof metadata.diff === "string") {
+        metadata.diff = boundDiffString(
+          metadata.diff,
+          MAX_DIFF_EVENT_BYTES,
+          "state.metadata.diff",
+          bounds,
+          "total",
+        );
+      }
+    } else {
+      let sum = 0;
+      files.forEach((raw, index) => {
+        const record = asRecord(raw);
+        if (record === undefined || typeof record.patch !== "string") return;
+        const patch = boundDiffString(
+          record.patch,
+          MAX_DIFF_BYTES,
+          `state.metadata.files[${index}].patch`,
+          bounds,
+          "per-file",
+        );
+        record.patch = patch;
+        sum += utf8Bytes(patch);
+      });
+      if (sum > MAX_DIFF_EVENT_BYTES) {
+        let end = files.length;
+        while (end > 0 && sum > MAX_DIFF_EVENT_BYTES) {
+          const removed = files[end - 1];
+          const record = asRecord(removed);
+          if (record !== undefined && typeof record.patch === "string") {
+            sum -= utf8Bytes(record.patch);
+          }
+          end -= 1;
+          markTruncated(bounds, "state.metadata.files.length", jsonBytes(removed));
+        }
+        if (end < files.length) {
+          metadata.files = files.slice(0, end);
+          markLimit(bounds, "total");
+        }
+      }
+    }
+    if (input !== undefined && typeof input.patchText === "string") {
+      input.patchText = boundDiffString(
+        input.patchText,
+        MAX_PATCH_INPUT_BYTES,
+        "state.input.patchText",
+        bounds,
+        "patch",
+      );
+    }
+  }
+  if (tool === "edit") {
+    if (metadata !== undefined && typeof metadata.diff === "string") {
+      metadata.diff = boundDiffString(
+        metadata.diff,
+        MAX_DIFF_BYTES,
+        "state.metadata.diff",
+        bounds,
+        "per-file",
+      );
+    }
+    const filediff = metadata === undefined ? undefined : asRecord(metadata.filediff);
+    if (filediff !== undefined && typeof filediff.patch === "string") {
+      filediff.patch = boundDiffString(
+        filediff.patch,
+        MAX_DIFF_BYTES,
+        "state.metadata.filediff.patch",
+        bounds,
+        "per-file",
+      );
+    }
+  }
+  if (tool === "write" && input !== undefined && typeof input.content === "string") {
+    input.content = boundDiffString(
+      input.content,
+      MAX_WRITE_CONTENT_BYTES,
+      "state.input.content",
+      bounds,
+      "content",
+    );
+  }
+  if (tool === "apply_patch" && kind === "none" && input !== undefined) {
+    if (typeof input.patchText === "string") return "patch";
+  }
+  return kind;
+}
+
+function normalizeDiffPart(
+  part: Record<string, unknown>,
+  tool: string,
+  bounds: Bounds,
+): { part: Record<string, unknown>; diff: DiffInfo } {
+  const rawState = asRecord(part.state);
+  if (rawState === undefined) return { part, diff: { kind: "none" } };
+  const state: Record<string, unknown> = { ...rawState };
+  const rawMetadata = asRecord(rawState.metadata);
+  const metadata: Record<string, unknown> = rawMetadata === undefined ? {} : { ...rawMetadata };
+  if (rawMetadata !== undefined) {
+    const filediff = asRecord(rawMetadata.filediff);
+    if (filediff !== undefined) metadata.filediff = { ...filediff };
+    if (Array.isArray(rawMetadata.files)) {
+      metadata.files = rawMetadata.files.map((record) => cloneRecord(record));
+    }
+  }
+  let kind: DiffKind = "none";
+  if (tool === "apply_patch") kind = selectApplyPatch(metadata);
+  else if (tool === "edit") kind = selectEdit(metadata);
+  const hasDiff = kind === "per-file" || kind === "combined" || kind === "single";
+  const rawInput = asRecord(rawState.input);
+  if (rawInput !== undefined) {
+    state.input = sanitizeDiffInput(rawInput, tool, hasDiff);
+  }
+  state.metadata = sanitizeDiffMetadata(metadata, tool);
+  if (tool === "write") {
+    const input = asRecord(state.input);
+    kind = input !== undefined && typeof input.content === "string" ? "write" : "none";
+  }
+  const budget: PathBudget = { remaining: MAX_DIFF_PATH_TOTAL_BYTES };
+  boundStatePaths(state, budget, bounds);
+  kind = applyDiffCaps(state, kind, tool, bounds);
+  return { part: { ...part, state }, diff: { kind } };
+}
+
+function normalizePatchPart(
+  part: Record<string, unknown>,
+  bounds: Bounds,
+): { part: Record<string, unknown>; diff: DiffInfo } {
+  let kind: DiffKind = nonEmptyString(part.patch) ? "patch" : "none";
+  const rawData = asRecord(part.data);
+  if (rawData === undefined) return { part, diff: { kind } };
+  const data: Record<string, unknown> = { ...rawData };
+  if (typeof data.patch === "string") {
+    data.patch = boundDiffString(data.patch, MAX_PATCH_BYTES, "data.patch", bounds, "patch");
+    kind = "patch";
+  }
+  if (Array.isArray(data.files)) {
+    const budget: PathBudget = { remaining: MAX_DIFF_PATH_TOTAL_BYTES };
+    let files = data.files;
+    if (files.length > MAX_DIFF_FILES) {
+      markTruncated(bounds, "data.files.length", jsonBytes(files.slice(MAX_DIFF_FILES)));
+      files = files.slice(0, MAX_DIFF_FILES);
+      markLimit(bounds, "files");
+    }
+    data.files = files.map((entry, index) =>
+      typeof entry === "string" ? boundPath(entry, `data.files[${index}]`, bounds, budget) : entry,
+    );
+  }
+  return { part: { ...part, data }, diff: { kind } };
+}
+
 function boundPart(
   part: Record<string, unknown>,
   partType: PartType,
-): { part: Record<string, unknown>; truncated?: Truncation } {
+): { part: Record<string, unknown>; bounds: Bounds; diff: DiffInfo } {
   const tool = asString(part.tool);
   const bounds: Bounds = { fields: [], omittedBytes: 0 };
+  let working = part;
+  let diff: DiffInfo = { kind: "none" };
+  if (partType === "patch") {
+    const normalized = normalizePatchPart(working, bounds);
+    working = normalized.part;
+    diff = normalized.diff;
+  } else if (tool !== undefined && DIFF_TOOLS.has(tool)) {
+    const normalized = normalizeDiffPart(working, tool, bounds);
+    working = normalized.part;
+    diff = normalized.diff;
+  }
   const output: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(part)) {
+  for (const [key, value] of Object.entries(working)) {
     switch (key) {
       case "id":
       case "sessionID":
@@ -524,10 +1010,12 @@ function boundPart(
             : boundGeneric(value, key, bounds, tool);
         break;
       case "patch":
-        output.patch =
-          typeof value === "string"
-            ? boundHeadString(value, MAX_PATCH_BYTES, key, bounds)
-            : boundGeneric(value, key, bounds, tool);
+        if (typeof value === "string") {
+          output.patch = boundHeadString(value, MAX_PATCH_BYTES, key, bounds);
+          if (utf8Bytes(value) > MAX_PATCH_BYTES) markLimit(bounds, "patch");
+        } else {
+          output.patch = boundGeneric(value, key, bounds, tool);
+        }
         break;
       case "synthetic":
       case "ignored":
@@ -545,13 +1033,38 @@ function boundPart(
         output[key] = boundGeneric(value, key, bounds, tool);
     }
   }
-  if (partType === undefined) return { part: output };
-  return bounds.fields.length === 0
-    ? { part: output }
-    : {
-        part: output,
-        truncated: { fields: bounds.fields, omittedBytes: bounds.omittedBytes },
-      };
+  return { part: output, bounds, diff };
+}
+
+function dropDiffOutput(part: Record<string, unknown>, bounds: Bounds): boolean {
+  const state = asRecord(part.state);
+  if (state === undefined) return false;
+  let dropped = false;
+  if (state.output !== undefined) {
+    markTruncated(bounds, "state.output", jsonBytes(state.output));
+    delete state.output;
+    markLimit(bounds, "output");
+    dropped = true;
+  }
+  const metadata = asRecord(state.metadata);
+  if (metadata !== undefined && metadata.output !== undefined) {
+    markTruncated(bounds, "state.metadata.output", jsonBytes(metadata.output));
+    delete metadata.output;
+    markLimit(bounds, "output");
+    dropped = true;
+  }
+  return dropped;
+}
+
+function dropLastFileRecord(part: Record<string, unknown>, bounds: Bounds): boolean {
+  const state = asRecord(part.state);
+  const metadata = state === undefined ? undefined : asRecord(state.metadata);
+  const files = metadata === undefined ? undefined : metadata.files;
+  if (!Array.isArray(files) || files.length === 0) return false;
+  const removed = files.pop();
+  markTruncated(bounds, "state.metadata.files.length", jsonBytes(removed));
+  markLimit(bounds, "total");
+  return true;
 }
 
 function boundedReason(reason: string): string {
@@ -1118,16 +1631,29 @@ export class EventProjector {
     }
     if (!this.shouldForwardSnapshot(part, rawPartType, partID)) return [];
 
-    const { part: boundedPart, truncated } = boundPart(part, rawPartType);
-    const event: HanseEvent = {
-      type: "message.part.updated",
-      sessionID,
-      messageID,
-      partID,
-      partType: rawPartType,
-      part: boundedPart,
-      ...(truncated === undefined ? {} : { truncated }),
+    const bounded = boundPart(part, rawPartType);
+    const buildEvent = (): HanseEvent => {
+      const truncated = truncationFor(bounded.bounds);
+      return {
+        type: "message.part.updated",
+        sessionID,
+        messageID,
+        partID,
+        partType: rawPartType,
+        part: bounded.part,
+        ...(truncated === undefined ? {} : { truncated }),
+      };
     };
+    let event = buildEvent();
+    if (jsonBytes(event) > MAX_PART_EVENT_BYTES && bounded.diff.kind !== "none") {
+      if (dropDiffOutput(bounded.part, bounded.bounds)) event = buildEvent();
+    }
+    if (jsonBytes(event) > MAX_PART_EVENT_BYTES && bounded.diff.kind !== "none") {
+      while (jsonBytes(event) > MAX_PART_EVENT_BYTES) {
+        if (!dropLastFileRecord(bounded.part, bounded.bounds)) break;
+        event = buildEvent();
+      }
+    }
     if (jsonBytes(event) > MAX_PART_EVENT_BYTES) {
       return [
         {

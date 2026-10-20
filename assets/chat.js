@@ -5,6 +5,17 @@ import {
   parseMarkdownTable,
   rekeyOptimistic,
 } from "./chat-core.js";
+import {
+  allocateView,
+  extractToolView,
+  patchPartView,
+  truncationNotice as buildTruncationNotice,
+} from "./chat-diff.js";
+import {
+  mountToolView,
+  resetHighlightController,
+  setToolViewOpen,
+} from "./chat-highlight.js";
 
 const UNKNOWN_ACCEPTANCE_GRACE_MS = 5000;
 const HYDRATION_BUFFER_EVENTS = 200;
@@ -1569,6 +1580,9 @@ function main() {
   function toolPreview(data, tool, status) {
     const state = partState(data);
     const input = partInput(data);
+    const metadata = partMetadata(data);
+    const filediff =
+      metadata.filediff && typeof metadata.filediff === "object" ? metadata.filediff : {};
     const title = stringField(state.title) || stringField(data.title);
     let value = "";
     switch (tool) {
@@ -1576,10 +1590,45 @@ function main() {
         value = stringField(input.command) || title;
         break;
       case "read":
-      case "write":
-      case "edit":
         value = stringField(input.filePath) || stringField(input.path);
         break;
+      case "write":
+      case "edit":
+      case "hashline_edit":
+        value =
+          stringField(input.filePath) ||
+          stringField(input.path) ||
+          stringField(metadata.filepath) ||
+          stringField(filediff.file) ||
+          title;
+        break;
+      case "apply_patch": {
+        const files = Array.isArray(metadata.files) ? metadata.files : [];
+        const first = files.find((file) => file !== null && typeof file === "object");
+        let path =
+          first === undefined
+            ? ""
+            : stringField(first.relativePath) || stringField(first.filePath);
+        if (path.length === 0) {
+          const patchText = stringField(input.patchText);
+          for (const line of patchText.split("\n")) {
+            const match =
+              /^\*\*\* (?:Add|Update|Delete) File: (.+)$/.exec(line) ||
+              /^\*\*\* Move to: (.+)$/.exec(line);
+            if (match !== null) {
+              path = match[1].trim();
+              break;
+            }
+          }
+        }
+        if (path.length > 0) {
+          value = files.length > 1 ? `${path} · ${files.length} files` : path;
+        } else {
+          value = title;
+        }
+        if (value.length === 0) value = tool;
+        break;
+      }
       case "grep": {
         const pattern = stringField(input.pattern);
         const searchPath = stringField(input.path) || stringField(input.filePath);
@@ -1668,6 +1717,8 @@ function main() {
       read: "code",
       write: "code",
       edit: "code",
+      hashline_edit: "code",
+      apply_patch: "code",
       grep: "search",
       glob: "search",
       webfetch: "search",
@@ -1677,17 +1728,6 @@ function main() {
       question: "message",
     };
     return map[tool] || "terminal";
-  }
-
-  function truncationNotice(part, status) {
-    if (part.partial !== true && part.truncated !== true) return "";
-    if (status === "running" || status === "pending") {
-      return "Output truncated for live view; the full result may load when the turn ends.";
-    }
-    if (sessionSnapshotTooLarge) {
-      return "Full output unavailable; session snapshot exceeds 8 MiB.";
-    }
-    return "Output truncated at 64 KiB.";
   }
 
   function detailLabel(part) {
@@ -1959,10 +1999,12 @@ function main() {
     return node;
   }
 
-  function attachOpenTracking(node, part) {
+  function attachOpenTracking(node, part, key) {
     node.addEventListener("toggle", () => {
       if (node.open) store.openParts.add(part.id);
       else store.openParts.delete(part.id);
+      const state = partRenderState.get(key);
+      if (state !== undefined) syncViewOpen(node, part, state);
     });
   }
 
@@ -1983,7 +2025,7 @@ function main() {
       details.dataset.partType = part.type;
       details.dataset.toolKey = key;
       details.append(element("summary"));
-      attachOpenTracking(details, part);
+      attachOpenTracking(details, part, key);
       return details;
     }
     if (
@@ -1998,7 +2040,7 @@ function main() {
       details.dataset.partType = part.type;
       details.dataset.toolKey = key;
       details.append(element("summary"));
-      attachOpenTracking(details, part);
+      attachOpenTracking(details, part, key);
       return details;
     }
     const body = element("div", "message__body");
@@ -2046,7 +2088,21 @@ function main() {
   function renderStateFor(key) {
     let state = partRenderState.get(key);
     if (state === undefined) {
-      state = { rendered: false, text: "", output: "", path: "", status: "", tool: "", at: 0 };
+      state = {
+        rendered: false,
+        text: "",
+        output: "",
+        path: "",
+        status: "",
+        tool: "",
+        at: 0,
+        bodyKind: "",
+        viewKey: "",
+        viewSignature: "",
+        view: null,
+        viewBody: null,
+        viewOpen: false,
+      };
       partRenderState.set(key, state);
     }
     return state;
@@ -2115,6 +2171,19 @@ function main() {
       }
       return pre;
     }
+    if (kind === "view") {
+      let host = directChildByClass(node, "tool-call__view");
+      if (host === null) {
+        host = element("div", "tool-call__view");
+        node.append(host);
+      }
+      return host;
+    }
+    if (kind === "none") {
+      for (const child of Array.from(node.children)) {
+        if (child.tagName !== "SUMMARY") child.remove();
+      }
+    }
     return null;
   }
 
@@ -2130,6 +2199,89 @@ function main() {
     }
     if (note.textContent !== text) note.textContent = text;
     if (node.lastChild !== note) node.append(note);
+  }
+
+  function fnv1aLanes(value) {
+    let first = 0x811c9dc5;
+    let second = (0x811c9dc5 ^ 0x9e3779b9) >>> 0;
+    for (let index = 0; index < value.length; index += 1) {
+      const code = value.charCodeAt(index);
+      first = Math.imul(first ^ code, 0x01000193);
+      second = Math.imul(second ^ code, 0x01000193);
+    }
+    return `${(first >>> 0).toString(36)}-${(second >>> 0).toString(36)}`;
+  }
+
+  function viewKeyFor(part, status, view) {
+    const descriptor = [];
+    let source = "";
+    for (const file of Array.isArray(view.files) ? view.files : []) {
+      const hunks = Array.isArray(file.hunks)
+        ? file.hunks.map((hunk) => (Array.isArray(hunk.lines) ? hunk.lines.length : 0)).join(",")
+        : "";
+      descriptor.push(
+        [
+          file.path ?? "",
+          file.oldPath ?? "",
+          file.newPath ?? "",
+          file.type ?? "",
+          file.additions ?? 0,
+          file.deletions ?? 0,
+          file.language ?? "",
+          file.truncated === true ? 1 : 0,
+          hunks,
+        ].join("~"),
+      );
+      const body = typeof file.patch === "string" ? file.patch : file.content;
+      if (typeof body === "string") {
+        source += `${body.length}\u0000${body}\u0000`;
+      }
+    }
+    descriptor.push(typeof view.diagnostics === "string" ? view.diagnostics : "");
+    const display = view.display && typeof view.display === "object" ? view.display : {};
+    descriptor.push(
+      [display.write, display.perFile, display.total, display.lines, display.files]
+        .map((flag) => (flag === true ? 1 : 0))
+        .join(""),
+    );
+    descriptor.push(source);
+    return `${part.id}:${view.kind}:${fnv1aLanes(descriptor.join("|"))}`;
+  }
+
+  function captureViewBody(host) {
+    const scroller = host.querySelector(".tool-diff__scroll, .tool-code__scroll");
+    return {
+      hadFocus: scroller !== null && scroller.contains(document.activeElement),
+      scrollTop: scroller === null ? 0 : scroller.scrollTop,
+      scrollLeft: scroller === null ? 0 : scroller.scrollLeft,
+    };
+  }
+
+  function restoreViewBody(host, saved) {
+    const scroller = host.querySelector(".tool-diff__scroll, .tool-code__scroll");
+    if (scroller === null) return;
+    scroller.scrollTop = saved.scrollTop;
+    scroller.scrollLeft = saved.scrollLeft;
+    if (saved.hadFocus) scroller.focus();
+  }
+
+  function syncViewOpen(node, part, state) {
+    if (state.bodyKind !== "view" || state.viewKey.length === 0) return;
+    const open = node.open;
+    if (state.viewOpen === open) return;
+    setToolViewOpen(part.id, state.viewKey, state.view, state.viewBody, open);
+    state.viewOpen = open;
+  }
+
+  function clearViewState(part, state) {
+    if (state.viewKey.length > 0 || state.viewBody !== null) {
+      resetHighlightController({ reason: "view-cleared", partID: part.id });
+    }
+    state.viewKey = "";
+    state.viewSignature = "";
+    state.view = null;
+    state.viewBody = null;
+    state.viewOpen = false;
   }
 
   function renderToolTodo(list, todos) {
@@ -2164,6 +2316,30 @@ function main() {
     list.replaceChildren(...rows);
   }
 
+  function applyViewBody(node, part, state, allocated, viewKey) {
+    const body = ensureToolBody(node, state, "view");
+    if (body === null) return;
+    if (state.viewKey === viewKey) return;
+    const saved = captureViewBody(body);
+    const mounted = mountToolView(allocated, { partID: part.id, viewKey });
+    if (mounted === null) {
+      body.replaceChildren();
+      state.viewKey = "";
+      state.viewSignature = "";
+      state.view = null;
+      state.viewBody = null;
+      state.viewOpen = false;
+      return;
+    }
+    body.replaceChildren(mounted);
+    restoreViewBody(body, saved);
+    state.viewKey = viewKey;
+    state.viewSignature = viewKey;
+    state.view = allocated;
+    state.viewBody = mounted;
+    state.viewOpen = false;
+  }
+
   function updateToolPart(node, part, key, force) {
     const state = renderStateFor(key);
     const data = partDataOf(part);
@@ -2173,15 +2349,37 @@ function main() {
     const elapsed = toolElapsedText(data, status);
     const todos = tool === "todowrite" ? todoListFor(data, status) : null;
     const output = todos === null ? toolOutputText(data, tool, status) : "";
-    const notice = truncationNotice(part, status);
+    const view = extractToolView(data, tool, status);
+    const allocated = view === null ? null : allocateView(view);
+    const hasViewBody =
+      allocated !== null &&
+      (allocated.kind === "diff" || allocated.kind === "write" || allocated.kind === "files");
+    const bodyText =
+      allocated !== null && allocated.kind === "plain" ? allocated.text : output;
+    let bodyKind = "pre";
+    if (part.omitted === true) bodyKind = "none";
+    else if (hasViewBody) bodyKind = "view";
+    else if (tool === "todowrite") bodyKind = "todo";
+    else if (tool === "bash") bodyKind = "bash";
+    const viewKey =
+      bodyKind === "view" && allocated !== null ? viewKeyFor(part, status, allocated) : "";
+    const notice = buildTruncationNotice(part, status, {
+      serverFields: part.truncation?.fields,
+      serverLimit: part.truncation?.limit,
+      omitted: part.omitted,
+      display: allocated?.display,
+      sessionSnapshotTooLarge,
+    });
     const signature = [
       tool,
       status,
       preview === null ? "" : `${preview.preview}\n${preview.title}`,
       elapsed,
-      output,
+      bodyKind === "view" || bodyKind === "none" ? "" : bodyText,
       todos === null ? "" : JSON.stringify(todos),
       notice,
+      bodyKind,
+      viewKey,
     ].join("|");
     if (state.rendered && state.signature === signature) return true;
     if (
@@ -2211,15 +2409,22 @@ function main() {
     summary.replaceChildren(...summaryChildren);
     if (hadFocus) summary.focus();
 
-    const bodyKind = tool === "todowrite" ? "todo" : tool === "bash" ? "bash" : "pre";
-    const body = ensureToolBody(node, state, bodyKind);
-    if (body !== null) {
-      if (bodyKind === "todo") {
-        renderToolTodo(body, todos || []);
-      } else {
-        const follow = body.scrollHeight - body.scrollTop - body.clientHeight < 24;
-        if (body.textContent !== output) body.textContent = output;
-        if (follow) body.scrollTop = body.scrollHeight;
+    if (bodyKind === "none") {
+      clearViewState(part, state);
+      ensureToolBody(node, state, "none");
+    } else if (bodyKind === "view" && allocated !== null) {
+      applyViewBody(node, part, state, allocated, viewKey);
+    } else {
+      clearViewState(part, state);
+      const body = ensureToolBody(node, state, bodyKind);
+      if (body !== null) {
+        if (bodyKind === "todo") {
+          renderToolTodo(body, todos || []);
+        } else {
+          const follow = body.scrollHeight - body.scrollTop - body.clientHeight < 24;
+          if (body.textContent !== bodyText) body.textContent = bodyText;
+          if (follow) body.scrollTop = body.scrollHeight;
+        }
       }
     }
     syncTruncationNotice(node, notice);
@@ -2238,6 +2443,7 @@ function main() {
       store.openParts.add(part.id);
       state.errorOpened = true;
     }
+    syncViewOpen(node, part, state);
     state.rendered = true;
     state.tool = tool;
     state.status = status;
@@ -2254,13 +2460,30 @@ function main() {
     const kind = part.type;
     const label = detailLabel(part);
     const preview = detailPreview(kind, data);
-    const text = detailBodyText(kind, data);
-    const notice = truncationNotice(part, "completed");
+    const view = kind === "patch" ? patchPartView(data) : null;
+    const allocated = view === null ? null : allocateView(view);
+    const hasViewBody =
+      allocated !== null && (allocated.kind === "diff" || allocated.kind === "files");
+    const bodyKind = hasViewBody ? "view" : "pre";
+    const text =
+      allocated !== null && allocated.kind === "plain"
+        ? allocated.text
+        : detailBodyText(kind, data);
+    const viewKey = bodyKind === "view" && allocated !== null ? viewKeyFor(part, "completed", allocated) : "";
+    const notice = buildTruncationNotice(part, "completed", {
+      serverFields: part.truncation?.fields,
+      serverLimit: part.truncation?.limit,
+      omitted: part.omitted,
+      display: allocated?.display,
+      sessionSnapshotTooLarge,
+    });
     const signature = [
       label,
       preview === null ? "" : `${preview.preview}\n${preview.title}`,
-      text,
+      bodyKind === "view" ? "" : text,
       notice,
+      bodyKind,
+      viewKey,
     ].join("|");
     if (state.rendered && state.signature === signature) return true;
     if (!force && state.rendered && Date.now() - state.at < MARKDOWN_THROTTLE_MS) return false;
@@ -2277,13 +2500,19 @@ function main() {
       summaryChildren.push(previewEl);
     }
     summary.replaceChildren(...summaryChildren);
-    const body = ensureToolBody(node, state, "pre");
-    if (body !== null) {
-      if (body.textContent !== text) body.textContent = text;
+    if (bodyKind === "view" && allocated !== null) {
+      applyViewBody(node, part, state, allocated, viewKey);
+    } else {
+      clearViewState(part, state);
+      const body = ensureToolBody(node, state, "pre");
+      if (body !== null) {
+        if (body.textContent !== text) body.textContent = text;
+      }
     }
     syncTruncationNotice(node, notice);
     if (hadFocus) summary.focus();
     if (!state.rendered) node.open = store.openParts.has(part.id);
+    syncViewOpen(node, part, state);
     state.rendered = true;
     state.text = text;
     state.signature = signature;
@@ -2323,6 +2552,7 @@ function main() {
     let node = partNodes.get(key);
     if (!isVisibleRecordPart(part)) {
       if (node !== undefined) {
+        resetHighlightController({ reason: "part-removed", partID: part.id });
         node.remove();
         partNodes.delete(key);
         partRenderState.delete(key);
@@ -2330,6 +2560,7 @@ function main() {
       return true;
     }
     if (node !== undefined && node.dataset.partType !== part.type) {
+      resetHighlightController({ reason: "part-removed", partID: part.id });
       node.remove();
       partNodes.delete(key);
       partRenderState.delete(key);
@@ -2338,6 +2569,7 @@ function main() {
     if (node !== undefined) {
       const questionSlot = node.classList.contains("chat-question-slot");
       if (isQuestionToolPart(part) !== questionSlot && part.type === "tool") {
+        resetHighlightController({ reason: "part-removed", partID: part.id });
         node.remove();
         partNodes.delete(key);
         partRenderState.delete(key);
@@ -2367,6 +2599,7 @@ function main() {
         const key = `${record.id}:${partID}`;
         const partNode = partNodes.get(key);
         if (partNode !== undefined) {
+          resetHighlightController({ reason: "part-removed", partID });
           partNode.remove();
           partNodes.delete(key);
           partRenderState.delete(key);
@@ -2410,6 +2643,7 @@ function main() {
     const record = store.messages.get(id);
     if (record !== undefined) {
       for (const partID of record.partOrder) {
+        resetHighlightController({ reason: "part-removed", partID });
         if (partOwner.get(partID) === id) partOwner.delete(partID);
       }
     }
@@ -2749,6 +2983,8 @@ function main() {
         const separator = key.indexOf(":");
         const messageID = separator < 0 ? "" : key.slice(0, separator);
         if (wanted.has(messageID)) continue;
+        const partID = separator < 0 ? key : key.slice(separator + 1);
+        resetHighlightController({ reason: "part-removed", partID });
         node.remove();
         partNodes.delete(key);
         partRenderState.delete(key);
@@ -2761,6 +2997,7 @@ function main() {
           if (!key.startsWith(`${id}:`)) continue;
           const partID = key.slice(id.length + 1);
           if (validParts.has(partID)) continue;
+          resetHighlightController({ reason: "part-removed", partID });
           node.remove();
           partNodes.delete(key);
           partRenderState.delete(key);
@@ -3340,6 +3577,9 @@ function main() {
         part.provisional = false;
       }
       if (payload.truncated !== undefined) part.partial = true;
+      if (payload.truncated !== undefined) part.truncation = payload.truncated;
+      else delete part.truncation;
+      part.omitted = false;
       store.pendingDeltas.delete(payload.partID);
       if (!KNOWN_PART_TYPES.has(partType)) {
         record.needsReconcile = true;
@@ -3422,6 +3662,7 @@ function main() {
         orderDirty = true;
       }
       part.partial = true;
+      part.omitted = true;
       omittedPartIDs.add(payload.partID);
       for (const entry of prompts.values()) {
         if (!isCorrelatedQuestion(entry)) continue;
@@ -6469,6 +6710,7 @@ function main() {
   }
 
   function resetFeedDom() {
+    resetHighlightController({ reason: "feed-reset" });
     clearAllOmoClassifyTimers();
     historyRequest = null;
     messageNodes = new Map();
@@ -6517,6 +6759,7 @@ function main() {
     store.sessionID = id;
     store.connection = "connecting";
     resetFeedDom();
+    resetHighlightController({ reason: "session-switch" });
     resetElapsed();
     sessionSnapshotTooLarge = false;
     setSessionNotice(false);

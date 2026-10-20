@@ -1,10 +1,18 @@
-import { randomBytes } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { createHash, randomBytes } from "node:crypto";
+import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
+import { gzipSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
+import {
+  isHighlightEligible,
+  reservationFits,
+  reservationUnits,
+} from "../assets/chat-highlight.js";
 import { CoordinatorService } from "../src/coordinator/service.js";
 import { GitService } from "../src/git/service.js";
 import { handleChat } from "../src/http/chat.js";
@@ -399,9 +407,14 @@ describe("chat page", () => {
     expect(response.body).toContain("classificationPending");
     expect(response.body).toContain("tool-todo__item");
     expect(response.body).toContain("tool-call__truncated");
+    expect(response.body).toContain("tool-call__view");
     expect(response.body).toContain("message__table-wrap");
-    expect(response.body).toContain("Output truncated for live view");
+    expect(response.body).toContain("apply_patch");
     expect(response.body).toContain('from "./chat-core.js"');
+    expect(response.body).toContain('from "./chat-diff.js"');
+    expect(response.body).toContain('from "./chat-highlight.js"');
+    expect(response.body).toContain("extractToolView");
+    expect(response.body).toContain("mountToolView");
     expect(response.body).not.toContain("innerHTML");
   });
 
@@ -416,6 +429,137 @@ describe("chat page", () => {
     expect(response.contentType).toBe("text/javascript; charset=utf-8");
     expect(response.body).toContain("export function deriveQueue");
     expect(response.body).toContain("export function applySnapshot");
+  });
+
+  it("serves the diff model and highlight worker modules from the asset allowlist", () => {
+    const f = fixture();
+    const assets = [
+      ["/assets/chat-diff.js", "chat-diff.js", "export function extractToolView"],
+      ["/assets/chat-highlight.js", "chat-highlight.js", "export function mountToolView"],
+      [
+        "/assets/chat-highlight-worker.js",
+        "chat-highlight-worker.js",
+        "self.onmessage = onMessage",
+      ],
+    ] as const;
+    for (const [assetPath, file, marker] of assets) {
+      const response = handleRequest(f.deps, {
+        method: "GET",
+        path: assetPath,
+        headers: {},
+      });
+      expect(response.status).toBe(200);
+      expect(response.contentType).toBe("text/javascript; charset=utf-8");
+      expect(response.body).toContain(marker);
+      expect(response.body).toBe(readFileSync(path.join(process.cwd(), "assets", file), "utf8"));
+    }
+    expect(readFileSync(path.join(process.cwd(), "assets", "chat-diff.js"), "utf8")).toContain(
+      "truncated for live view; the full result may load when the turn ends.",
+    );
+  });
+
+  it("keeps client highlighting sources free of HTML sinks and eager worker imports", () => {
+    const source = (file: string) => readFileSync(path.join(process.cwd(), "assets", file), "utf8");
+    const modules = ["chat.js", "chat-diff.js", "chat-highlight.js", "chat-highlight-worker.js"];
+    for (const file of modules) {
+      const text = source(file);
+      expect(text).not.toContain("innerHTML");
+      expect(text).not.toContain("insertAdjacentHTML");
+      expect(text).not.toContain("Prism.highlight");
+      expect(text).not.toContain("highlightElement");
+    }
+
+    const controller = source("chat-highlight.js");
+    expect(controller).not.toMatch(/\bPrism\b/);
+    expect(controller).not.toContain("vendor/prism");
+    expect(controller).not.toMatch(/from\s+["'][^"']*chat-highlight-worker/);
+    expect(controller).not.toMatch(/^\s*await\b/m);
+    expect(controller).toContain('new URL("./chat-highlight-worker.js", import.meta.url)');
+
+    const worker = source("chat-highlight-worker.js");
+    expect(worker).toContain("self.onmessage = onMessage");
+    expect(worker).toContain("Prism.tokenize");
+    expect(worker).toContain(
+      "globalThis.Prism = { manual: true, disableWorkerMessageHandler: true }",
+    );
+  });
+
+  it("reserves highlight budget all-or-nothing per file", () => {
+    expect(reservationUnits(1)).toEqual({ streams: 1, nodes: 10_000 });
+    expect(reservationUnits(2)).toEqual({ streams: 2, nodes: 20_000 });
+    expect(reservationFits(0, 0, 2)).toBe(true);
+    expect(reservationFits(100_000, 10, 2)).toBe(true);
+    expect(reservationFits(100_001, 10, 2)).toBe(false);
+    expect(reservationFits(0, 11, 2)).toBe(false);
+    expect(reservationFits(120_000, 12, 1)).toBe(false);
+    expect(isHighlightEligible("typescript", "diff")).toBe(true);
+    expect(isHighlightEligible("diff", "diff")).toBe(false);
+    expect(isHighlightEligible("diff", "write")).toBe(true);
+    expect(isHighlightEligible("plain", "write")).toBe(false);
+  });
+
+  it("vendors the Prism 1.30.0 bundle with a matching checksum and language set", () => {
+    const vendorDir = path.join(process.cwd(), "assets", "vendor", "prism");
+    const bundlePath = path.join(vendorDir, "prism-1.30.0.min.js");
+    const bytes = readFileSync(bundlePath);
+
+    expect(statSync(bundlePath).size).toBeLessThanOrEqual(88 * 1024);
+    expect(readFileSync(path.join(vendorDir, "VERSION"), "utf8").trim()).toBe("PrismJS 1.30.0");
+
+    const recorded = readFileSync(path.join(vendorDir, "SHA256SUMS"), "utf8").trim().split(/\s+/);
+    expect(recorded).toHaveLength(2);
+    expect(recorded[1]).toBe("prism-1.30.0.min.js");
+    const actual = createHash("sha256").update(bytes).digest("hex");
+    expect(actual).toBe(recorded[0]);
+
+    const source = bytes.toString("utf8");
+    expect(source.startsWith("/*! PrismJS 1.30.0 | MIT |")).toBe(true);
+    expect(source.trimEnd().endsWith("export default Prism;")).toBe(true);
+
+    // Import through a real Node ESM loader: Vitest transforms the bundle and trips its
+    // CommonJS branch (`module.exports = Prism`), which never runs in Node ESM or a worker.
+    const probe = `const { pathToFileURL } = await import("node:url");
+const { default: Prism } = await import(${JSON.stringify(pathToFileURL(bundlePath).href)});
+console.log(JSON.stringify(Object.keys(Prism.languages)));`;
+    const languages = JSON.parse(
+      execFileSync(process.execPath, ["--input-type=module", "-e", probe], { encoding: "utf8" }),
+    ) as string[];
+    const requiredLanguages = [
+      "javascript",
+      "typescript",
+      "jsx",
+      "tsx",
+      "json",
+      "yaml",
+      "bash",
+      "markdown",
+      "css",
+      "markup",
+      "python",
+      "go",
+      "rust",
+      "sql",
+      "docker",
+      "diff",
+    ];
+    for (const language of requiredLanguages) {
+      expect(languages).toContain(language);
+    }
+  });
+
+  it("keeps the new chat modules within the Q1 size budget", () => {
+    const files = ["chat-diff.js", "chat-highlight.js", "chat-highlight-worker.js"];
+    const sizes = files.map((file) => statSync(path.join(process.cwd(), "assets", file)).size);
+    const gzip = files.map(
+      (file) => gzipSync(readFileSync(path.join(process.cwd(), "assets", file))).length,
+    );
+
+    expect(sizes[0] + sizes[1]).toBeLessThanOrEqual(88 * 1024);
+    expect(sizes[2]).toBeLessThanOrEqual(12 * 1024);
+    expect(sizes[0] + sizes[1] + sizes[2]).toBeLessThanOrEqual(96 * 1024);
+    expect(gzip[0] + gzip[1]).toBeLessThanOrEqual(24 * 1024);
+    expect(gzip[2]).toBeLessThanOrEqual(8 * 1024);
+    expect(gzip[0] + gzip[1] + gzip[2]).toBeLessThanOrEqual(32 * 1024);
   });
 
   it("deletes a session through opencode for a human principal", async () => {

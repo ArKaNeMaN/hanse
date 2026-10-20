@@ -15,6 +15,8 @@
 - [Chat UX overhaul](./chat-ux-overhaul.md) - streaming assistant text and tool output, optimistic
   send and upstream queueing, truthful agent status, inline question/Q&A cards with auto-advance,
   OMO system cards, markdown tables, and the feed measure.
+- [Chat diff highlighting](./chat-diff-highlighting.md) - lazy module-worker Prism highlighting for
+  tool diffs and `write` content, the unified-diff parser, language resolver, budgets, and DOM safety.
 - [Chat UX QA harness](./chat-qa.mjs) and [artifacts](./artifacts/chat/README.md) - deterministic
   browser scenarios (streaming, queue/send, inline questions, OMO, tools, tables, width), JSON
   reports, screenshots, and the `--live` real-agent mode.

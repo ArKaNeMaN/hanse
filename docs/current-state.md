@@ -62,12 +62,15 @@ Compose definitions live in `compose.yaml`; `compose.build.yaml` adds a source b
 - Handoff decisions use `POST /api/handoffs/:id/decision` (`decision=approved|rejected`, optional
   `reason`, `return_to`); the legacy `/approve` and `/reject` endpoints still work.
 - Static assets are allowlisted: `/assets/app.css`, `/assets/app.js`, `/assets/chat.js`,
-  `/assets/chat-core.js`, `/assets/git.js`, `/assets/favicon.svg`.
+  `/assets/chat-core.js`, `/assets/chat-diff.js`, `/assets/chat-highlight.js`,
+  `/assets/chat-highlight-worker.js`, `/assets/git.js`, `/assets/settings.js`,
+  `/assets/vendor/prism/prism-1.30.0.min.js`, and `/assets/favicon.svg`.
 - `assets/app.js` adds shell drawer, native-dialog, theme, toast, password-visibility, and
   submit-busy behavior. `assets/chat.js` is an ESM module that owns the chat workspace (sessions,
-  messages, typed SSE, composer, queue, questions, OMO cards, safe markdown/tables) and imports the
-  pure helpers in `assets/chat-core.js`. `assets/git.js` hydrates the application git panel. Pages
-  remain server-rendered; no bundler or client framework is used.
+  messages, typed SSE, composer, queue, questions, OMO cards, safe markdown/tables, syntax-highlighted
+  diffs/write content) and imports the pure helpers in `assets/chat-core.js`, `assets/chat-diff.js`,
+  and the lazy worker controller in `assets/chat-highlight.js`. `assets/git.js` hydrates the
+  application git panel. Pages remain server-rendered; no bundler or client framework is used.
 - The chat workspace is the stage-3 three-pane surface: sessions rail, thread, and context rail.
   Below 1360 the context pane is a drawer; below 768 both rails are drawers. The thread is the only
   scroll owner. `session` is mirrored to the URL, and the optional `project` query disambiguates
@@ -106,9 +109,14 @@ Compose definitions live in `compose.yaml`; `compose.build.yaml` adds a source b
   application must be indexed with `codegraph init` (creates `.codegraph/`) before graph queries
   return data.
 - Our chat UI (`/chat?app=<appKey>&project=<projectId>`) lists/filters sessions, streams assistant
-  text and running tool output, renders tool calls (output/error/previews), reasoning, patches, GFM
-  pipe tables, and OMO system cards, and sends prompts optimistically. The optional `project` query
-  is additive and disambiguates duplicate app keys. API:
+  text and running tool output, renders tool calls (output/error/previews), reasoning, patches,
+  syntax-highlighted `edit`/`apply_patch` diffs and `write` content, GFM pipe tables, and OMO system
+  cards, and sends prompts optimistically. Diff highlighting is lazy and open-only: a checked-in
+  PrismJS 1.30.0 bundle runs in a module Web Worker with a 250 ms per-stream budget, 8/64 KiB
+  language-aware stream caps, a 120k-node page budget, and plain fallback. Diffs are capped at
+  64 KiB per file / 128 KiB total / 50 files / 2,000 rendered lines; highlighting is hunk-local and
+  does not see code before a hunk. The optional `project` query is additive and disambiguates
+  duplicate app keys. API:
   `GET/POST /api/apps/:app/sessions`, `DELETE /api/apps/:app/sessions/:sid`,
   `GET/POST /api/apps/:app/sessions/:sid/messages`; all accept `?project=<projectId>`.
   `GET .../messages` accepts optional `limit` (1..200) and `before` (an opaque upstream cursor);
@@ -124,9 +132,11 @@ Compose definitions live in `compose.yaml`; `compose.build.yaml` adds a source b
   question/permission events, `stream.warning`) enveloped with `seq` and `streamID`. `stream.ready` starts at `seq: 0`;
   the client drops `seq <= lastSeq` per stream, hydrates on a new `streamID`, and schedules one
   reconcile on a gap or `frame_too_large`/`invalid_json`/`delta_too_large` warning. Caps: 8 MiB app
-  SSE frame, 256 KiB typed event, 64 KiB delta/text snapshot/tool output/patch, and an 8 MiB
-  `GET /messages` response (`502 messages_too_large` over cap; the client keeps its last feed and
-  shows the too-large notice).
+  SSE frame, 256 KiB typed event, 64 KiB delta/text snapshot/tool output/patch, 64 KiB per-file
+  diff/write content/patch input, 128 KiB total diff per part, 50 file records, 1 KiB per path /
+  16 KiB total paths, 8 KiB `truncated.fields`, and an 8 MiB `GET /messages` response
+  (`502 messages_too_large` over cap; the client keeps its last feed and shows the too-large notice).
+  `truncated.limit` distinguishes per-file/total/content/patch/output/files cuts.
 - The feed is patched through keyed message/part nodes with one `requestAnimationFrame` flush:
   markdown re-renders at most every 50 ms while streaming (and once on seal/idle), running tool output
   at most every 100 ms (and once on completion), and the feed is never replaced on a token. Snapshot
@@ -310,7 +320,7 @@ The IDE container keeps its extensions at `/opt/hanse-ext` and settings at
 | `HANSE_IDE=0` | serve | do not spawn code-server in the coordinator |
 | `HANSE_IDE_HOST` / `HANSE_IDE_PORT` | serve | proxy target for `/ide` (default `127.0.0.1:8080`) |
 | `HANSE_IDE_BIN` | serve | code-server binary |
-| `HANSE_ASSETS` | serve | directory for `app.css`, `app.js`, `chat.js`, `chat-core.js`, `git.js`, `settings.js`, and `favicon.svg` |
+| `HANSE_ASSETS` | serve | directory for `app.css`, `app.js`, `chat.js`, `chat-core.js`, `chat-diff.js`, `chat-highlight.js`, `chat-highlight-worker.js`, `git.js`, `settings.js`, `vendor/prism/prism-1.30.0.min.js`, and `favicon.svg` |
 | `HANSE_DB` / `HANSE_PROJECT_ID` / `HANSE_APP_KEY` | `hanse mcp` | MCP server binding |
 | `HANSE_API_BASE` | extension | coordinator base URL (`http://hanse:8787`) |
 

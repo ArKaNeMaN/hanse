@@ -670,6 +670,51 @@ describe("http API and assets", () => {
     expect(missing.status).toBe(404);
   });
 
+  it("serves the diff and highlight assets and rejects unknown worker paths", () => {
+    const f = fixture();
+    const paths = [
+      "/assets/chat-diff.js",
+      "/assets/chat-highlight.js",
+      "/assets/chat-highlight-worker.js",
+    ];
+    for (const assetPath of paths) {
+      const response = handleRequest(deps(f), {
+        method: "GET",
+        path: assetPath,
+        headers: {},
+      });
+      expect(response.status).toBe(200);
+      expect(response.contentType).toBe("text/javascript; charset=utf-8");
+      expect(response.body.length).toBeGreaterThan(0);
+    }
+
+    const missing = handleRequest(deps(f), {
+      method: "GET",
+      path: "/assets/chat-highlight-missing.js",
+      headers: {},
+    });
+    expect(missing.status).toBe(404);
+  });
+
+  it("serves the vendored Prism bundle and rejects unknown vendor paths", () => {
+    const f = fixture();
+    const response = handleRequest(deps(f), {
+      method: "GET",
+      path: "/assets/vendor/prism/prism-1.30.0.min.js",
+      headers: {},
+    });
+    expect(response.status).toBe(200);
+    expect(response.contentType).toBe("text/javascript; charset=utf-8");
+    expect(response.body).toContain("export default Prism;");
+
+    const missing = handleRequest(deps(f), {
+      method: "GET",
+      path: "/assets/vendor/prism/prism-9.9.9.min.js",
+      headers: {},
+    });
+    expect(missing.status).toBe(404);
+  });
+
   it("dispatches settings routes before the chat fallback", async () => {
     const f = fixture();
     const token = humanToken(f.db);

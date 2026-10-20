@@ -1106,15 +1106,19 @@ Body rules:
   `Unknown`); only the first `in_progress` item gets `aria-current="step"`. Priority reuses the
   existing 3-tick meter treatment with a visually hidden label.
 - **question:** do not render a generic tool body; section 9.6 owns it.
-- **patch / file / subtask:** generic details with a preview and `<pre>` text.
-- **read/write/edit/grep/glob/webfetch/websearch/generic:** preview + `<pre>` for `state.output`,
+- **patch / file / subtask:** generic details with a preview and `<pre>` text; a `patch` with a diff
+  string or file list uses the syntax-highlighted diff/file-list renderer from
+  [chat-diff-highlighting.md](./chat-diff-highlighting.md).
+- **edit / apply_patch / write:** completed `edit` and `apply_patch` diffs use the
+  syntax-highlighted unified-diff renderer; `write` renders syntax-highlighted content with a path
+  and line count. If no diff/content source exists, fall back to preview + `<pre>`.
+- **read/grep/glob/webfetch/websearch/generic:** preview + `<pre>` for `state.output`,
   `state.error`, or the best available string.
 - **step-start, step-finish, retry, compaction, snapshot, agent:** hidden (internal bookkeeping);
   `retry` is represented by the status model instead.
-- A truncated output renders `.tool-call__truncated` below the `<pre>`: "Output truncated for live
-  view; the full result may load when the turn ends." If the turn has ended and the snapshot still
-  says truncated, say "Output truncated at 64 KiB." If the idle snapshot exceeds the 8 MiB message
-  cap, show "Full output unavailable; session snapshot exceeds 8 MiB." Never promise the full result
+- Truncation notices are field-aware and follow
+  [chat-diff-highlighting.md](./chat-diff-highlighting.md) §5.5. Diff, content, patch, file, line,
+  live, snapshot, and omitted cases use their exact strings; never promise the full result
   unconditionally.
 - Reasoning renders with label `Thinking` (mono summary), collapsed by default, no preview. Its body
   is the reasoning text in `<pre>`; it uses the same `.tool-call` disclosure and open-state keying as
@@ -1862,7 +1866,9 @@ missing local Playwright is a blocked QA gate, not a silent skip. The last run p
 - No server-side OMO classification, OMO persistence, or new OMO SSE fields; classification is
   client-side.
 - No new database table, migration, durable prompt inbox, or server-side chat state.
-- No React/Vue/Svelte, bundler, new runtime dependency, or syntax-highlighting library.
+- No React/Vue/Svelte or JS bundler. No new runtime npm dependency; chat tool diffs and written
+  content use a checked-in, vendored PrismJS 1.30.0 browser build (MIT) loaded as a same-origin asset.
+  See [chat-diff-highlighting.md](./chat-diff-highlighting.md).
 - No changes to permission semantics, saved permissions, the Plan panel, policy warnings, or the
   VS Code extension.
 - No multi-user/RBAC or cross-app prompt inbox changes.

@@ -42,6 +42,7 @@ const THREADS = {
   main: "ses_main",
   questions: "ses_questions",
   send: "ses_send",
+  diffs: "ses_diffs",
 };
 
 process.env.LD_LIBRARY_PATH = [path.join(homedir(), ".local", "lib"), process.env.LD_LIBRARY_PATH]
@@ -379,6 +380,79 @@ function installFakeEventSource() {
   window.EventSource = FakeEventSource;
 }
 
+function installWorkerProbe() {
+  const NativeWorker = window.Worker;
+  const log = {
+    created: 0,
+    tokenize: 0,
+    init: 0,
+    terminated: 0,
+    dispatches: [],
+    responses: [],
+    hung: 0,
+  };
+  window.__qaWorkerLog = log;
+  window.__qaWorkerInstances = [];
+
+  function ProbeWorker(url, options) {
+    const instance = new NativeWorker(url, options);
+    const entry = {
+      posts: [],
+      terminated: false,
+      hung: 0,
+      instance,
+    };
+    window.__qaWorkerInstances.push(entry);
+    log.created += 1;
+
+    const nativePost = instance.postMessage.bind(instance);
+    instance.postMessage = function postMessage(message, transfer) {
+      entry.posts.push(message);
+      if (message !== null && typeof message === "object") {
+        if (message.type === "init") log.init += 1;
+        if (message.type === "tokenize") {
+          if (String(message.text ?? "").includes("__QA_HANG__")) {
+            entry.hung += 1;
+            log.hung += 1;
+            return;
+          }
+          log.tokenize += 1;
+          log.dispatches.push({
+            t: performance.now(),
+            jobID: message.jobID,
+            streamID: message.streamID,
+            bytes: String(message.text ?? "").length,
+          });
+        }
+      }
+      return nativePost(message, transfer);
+    };
+
+    const nativeTerminate = instance.terminate.bind(instance);
+    instance.terminate = function terminate() {
+      entry.terminated = true;
+      log.terminated += 1;
+      return nativeTerminate();
+    };
+
+    instance.addEventListener("message", (event) => {
+      const data = event !== null && typeof event === "object" ? event.data : null;
+      if (data === null || typeof data !== "object") return;
+      if (data.type !== "tokens" && data.type !== "plain" && data.type !== "error") return;
+      log.responses.push({
+        t: performance.now(),
+        type: data.type,
+        jobID: data.jobID,
+        streamID: data.streamID,
+      });
+    });
+
+    return instance;
+  }
+  ProbeWorker.prototype = NativeWorker.prototype;
+  window.Worker = ProbeWorker;
+}
+
 async function newPage(browser, target, options = {}) {
   const context = await browser.newContext({
     viewport: { width: options.width ?? 1440, height: options.height ?? 900 },
@@ -399,6 +473,7 @@ async function newPage(browser, target, options = {}) {
     },
   ]);
   if (!options.live) await context.addInitScript(installFakeEventSource);
+  if (!options.live && options.workerProbe) await context.addInitScript(installWorkerProbe);
 
   const errors = [];
   const page = await context.newPage();
@@ -823,6 +898,459 @@ function sendFixture() {
     },
   ];
   return { messages };
+}
+
+function diffToolPart(id, tool, options = {}) {
+  const part = {
+    id,
+    sessionID: THREADS.diffs,
+    messageID: "msg_diff_a",
+    type: "tool",
+    callID: `call_${id}`,
+    tool,
+    state: {
+      status: options.status ?? "completed",
+      input: options.input ?? {},
+      metadata: options.metadata ?? {},
+      title: options.title ?? tool,
+      time: { start: Date.now() - 2_000, end: Date.now() - 1_000 },
+    },
+  };
+  if (options.output !== undefined) part.state.output = options.output;
+  if (options.error !== undefined) part.state.error = options.error;
+  return part;
+}
+
+function diffDetailPart(id, type, data) {
+  return {
+    id,
+    sessionID: THREADS.diffs,
+    messageID: "msg_diff_a",
+    type,
+    ...data,
+  };
+}
+
+function diffMessage(parts) {
+  const now = Date.now();
+  return [
+    {
+      info: {
+        id: "msg_diff_u",
+        sessionID: THREADS.diffs,
+        role: "user",
+        time: { created: now - 10_000 },
+      },
+      parts: [
+        {
+          id: "prt_diff_u",
+          sessionID: THREADS.diffs,
+          messageID: "msg_diff_u",
+          type: "text",
+          text: "Show every diff shape and the written files.",
+        },
+      ],
+    },
+    {
+      info: {
+        id: "msg_diff_a",
+        sessionID: THREADS.diffs,
+        role: "assistant",
+        parentID: "msg_diff_u",
+        time: { created: now - 9_000, completed: now - 1_000 },
+        finish: "stop",
+      },
+      parts,
+    },
+  ];
+}
+
+function tsSample(lineCount = 40) {
+  const lines = [
+    'import { readFile } from "node:fs/promises";',
+    "",
+    "export interface Config {",
+    "  readonly path: string;",
+    "  readonly retries: number;",
+    "}",
+    "",
+    "export async function load(config: Config) {",
+    "  for (let attempt = 0; attempt < config.retries; attempt += 1) {",
+    "    try {",
+    '      const text = await readFile(config.path, "utf8");',
+    "      return text.trim();",
+    "    } catch (error) {",
+    "      if (attempt === config.retries - 1) throw error;",
+    "    }",
+    "  }",
+    '  return "";',
+    "}",
+  ];
+  while (lines.length < lineCount) {
+    lines.push(`export const value${lines.length} = ${lines.length};`);
+  }
+  return `${lines.slice(0, lineCount).join("\n")}\n`;
+}
+
+function bigCode(bytes = 64 * 1024) {
+  const lines = [];
+  let size = 0;
+  let index = 0;
+  while (size < bytes) {
+    let line = `export const value${index} = "${"x".repeat(32)}";\n`;
+    if (size + line.length > bytes) line = line.slice(0, bytes - size);
+    lines.push(line);
+    size += line.length;
+    index += 1;
+  }
+  return lines.join("");
+}
+
+function addFilePatch(filePath, content, extraHeaders = []) {
+  const lines = content.replace(/\n$/, "").split("\n");
+  return [
+    ...extraHeaders,
+    `--- a/${filePath}`,
+    `+++ b/${filePath}`,
+    `@@ -0,0 +1,${lines.length} @@`,
+    ...lines.map((line) => `+${line}`),
+  ].join("\n");
+}
+
+function longDiffPatch(filePath, lineCount, marker = "line") {
+  const lines = [`--- a/${filePath}`, `+++ b/${filePath}`, `@@ -1,${lineCount} +1,${lineCount} @@`];
+  for (let index = 1; index <= lineCount; index += 1) {
+    lines.push(`+export const ${marker}${index} = "value-${index}-${"y".repeat(60)}";`);
+  }
+  return lines.join("\n");
+}
+
+const STANDARD_EDIT_PATCH = [
+  "--- a/src/app.ts",
+  "+++ b/src/app.ts",
+  "@@ -1,5 +1,6 @@",
+  " export function greet(name: string) {",
+  '-  const message = "Hello " + name;',
+  "-  return message;",
+  "+  const message = 'Hello ' + name;",
+  "+  const shout = message.toUpperCase();",
+  "+  return shout;",
+  " }",
+].join("\n");
+
+const HASHLINE_EDIT_PATCH = [
+  "--- a/src/hash.ts",
+  "+++ b/src/hash.ts",
+  "@@ -1,2 +1,2 @@",
+  '-export const hash = "old";',
+  '+export const hash = "new";',
+  " export const keep = true;",
+].join("\n");
+
+function applyPatchFixture() {
+  const files = [
+    {
+      type: "add",
+      filePath: "src/added.ts",
+      relativePath: "src/added.ts",
+      patch: [
+        "@@ -0,0 +1,3 @@",
+        "+export const added = 1;",
+        "+export const extra = 2;",
+        "+export const more = 3;",
+      ].join("\n"),
+      additions: 3,
+      deletions: 0,
+    },
+    {
+      type: "update",
+      filePath: "src/updated.ts",
+      relativePath: "src/updated.ts",
+      patch: [
+        "@@ -1,2 +1,2 @@",
+        "-export const value = 1;",
+        "+export const value = 2;",
+        " export const keep = true;",
+      ].join("\n"),
+      additions: 1,
+      deletions: 1,
+    },
+    {
+      type: "delete",
+      filePath: "src/deleted.ts",
+      relativePath: "src/deleted.ts",
+      patch: [
+        "@@ -1,2 +0,0 @@",
+        "-export const gone = true;",
+        "-export const alsoGone = false;",
+      ].join("\n"),
+      additions: 0,
+      deletions: 2,
+    },
+    {
+      type: "move",
+      filePath: "src/old-name.ts",
+      relativePath: "src/new-name.ts",
+      movePath: "src/new-name.ts",
+      patch: ["@@ -1 +1 @@", '-export const moved = "old";', '+export const moved = "new";'].join(
+        "\n",
+      ),
+      additions: 1,
+      deletions: 1,
+    },
+  ];
+  return files;
+}
+
+function manyFileDiff(count = 55) {
+  const blocks = [];
+  for (let index = 0; index < count; index += 1) {
+    const filePath = `src/generated/f${index}.ts`;
+    blocks.push(
+      [
+        `diff --git a/${filePath} b/${filePath}`,
+        `--- a/${filePath}`,
+        `+++ b/${filePath}`,
+        "@@ -1 +1 @@",
+        `-export const f${index} = ${index};`,
+        `+export const f${index} = ${index + 1};`,
+      ].join("\n"),
+    );
+  }
+  return blocks.join("\n");
+}
+
+function bigPatchFixture() {
+  const standardPatch = STANDARD_EDIT_PATCH;
+  const hashPatch = HASHLINE_EDIT_PATCH;
+  const parts = [
+    diffToolPart("prt_std_edit", "edit", {
+      input: { filePath: "src/app.ts" },
+      metadata: { filediff: { file: "src/app.ts", patch: standardPatch } },
+    }),
+    diffToolPart("prt_hash_edit", "edit", {
+      input: { filePath: "src/hash.ts" },
+      metadata: {
+        diff: hashPatch,
+        filediff: { file: "src/hash.ts", additions: 1, deletions: 1 },
+      },
+    }),
+    diffToolPart("prt_apply", "apply_patch", {
+      input: { patchText: "*** Begin Patch\n*** End Patch" },
+      metadata: { files: applyPatchFixture() },
+      title: "Apply 4 patches",
+    }),
+    diffToolPart("prt_write40", "write", {
+      input: { filePath: "src/sample.ts", content: tsSample(40) },
+      metadata: { exists: false },
+      title: "Wrote src/sample.ts",
+    }),
+    diffToolPart("prt_write_empty", "write", {
+      input: { filePath: "src/empty.ts", content: "" },
+      metadata: { exists: false },
+      title: "Wrote src/empty.ts",
+    }),
+    diffToolPart("prt_write_big", "write", {
+      input: { filePath: "src/generated.ts", content: bigCode() },
+      metadata: { exists: false },
+      title: "Wrote src/generated.ts",
+    }),
+    diffDetailPart("prt_patch_files", "patch", {
+      title: "patch",
+      files: ["src/app.ts", "docs/notes.md"],
+    }),
+    diffDetailPart("prt_patch_string", "patch", {
+      title: "patch",
+      patch: standardPatch,
+    }),
+    diffDetailPart("prt_patch_text", "patch", {
+      title: "patch",
+      text: standardPatch,
+    }),
+    diffToolPart("prt_unknown", "edit", {
+      input: { filePath: "assets/notes.unknownext" },
+      metadata: {
+        filediff: {
+          file: "assets/notes.unknownext",
+          patch: [
+            "--- a/assets/notes.unknownext",
+            "+++ b/assets/notes.unknownext",
+            "@@ -1 +1 @@",
+            "-alpha beta",
+            "+alpha gamma",
+          ].join("\n"),
+        },
+      },
+    }),
+    diffToolPart("prt_binary", "edit", {
+      input: { filePath: "assets/logo.png" },
+      metadata: {
+        filediff: {
+          file: "assets/logo.png",
+          patch: [
+            "diff --git a/assets/logo.png b/assets/logo.png",
+            "index 1111111..2222222 100644",
+            "Binary files a/assets/logo.png and b/assets/logo.png differ",
+          ].join("\n"),
+        },
+      },
+    }),
+    diffToolPart("prt_trunc", "edit", {
+      input: { filePath: "src/truncated.ts" },
+      metadata: { filediff: { file: "src/truncated.ts", patch: standardPatch } },
+    }),
+    diffToolPart("prt_omit", "edit", {
+      input: { filePath: "src/omitted.ts" },
+      metadata: { filediff: { file: "src/omitted.ts", patch: standardPatch } },
+    }),
+    diffToolPart("prt_many", "apply_patch", {
+      input: { patchText: "" },
+      metadata: { diff: manyFileDiff(55), files: [] },
+      title: "Apply 55 patches",
+    }),
+  ];
+  return {
+    messages: diffMessage(parts),
+    parts,
+    truncatedPart: parts.find((part) => part.id === "prt_trunc"),
+  };
+}
+
+function errorFixture() {
+  return diffMessage([
+    diffToolPart("prt_error", "edit", {
+      status: "error",
+      input: { filePath: "src/broken.ts" },
+      metadata: { filediff: { file: "src/broken.ts", patch: STANDARD_EDIT_PATCH } },
+      error: "Invalid patch: hunk header mismatch.",
+      title: "edit src/broken.ts",
+    }),
+  ]);
+}
+
+function lazyFixture() {
+  const now = Date.now();
+  const openPatch = longDiffPatch("src/open.ts", 220, "open");
+  const closedPatch = longDiffPatch("src/closed.ts", 160, "closed");
+  const parts = [
+    diffToolPart("prt_lazy_open", "edit", {
+      status: "running",
+      input: { filePath: "src/open.ts" },
+      metadata: { filediff: { file: "src/open.ts", patch: openPatch } },
+      title: "edit src/open.ts",
+    }),
+    diffToolPart("prt_lazy_closed", "edit", {
+      input: { filePath: "src/closed.ts" },
+      metadata: { filediff: { file: "src/closed.ts", patch: closedPatch } },
+      title: "edit src/closed.ts",
+    }),
+  ];
+  const message = diffMessage(parts);
+  message[1].info.time = { created: now - 9_000 };
+  return { messages: message, openPatch, closedPatch };
+}
+
+function streamingFixture() {
+  const now = Date.now();
+  const livePatch = longDiffPatch("src/live.ts", 120, "live");
+  const closedPatch = longDiffPatch("src/idle.ts", 80, "idle");
+  const livePart = diffToolPart("prt_stream_live", "edit", {
+    status: "running",
+    input: { filePath: "src/live.ts" },
+    metadata: { filediff: { file: "src/live.ts", patch: livePatch } },
+    title: "edit src/live.ts",
+  });
+  const closedPart = diffToolPart("prt_stream_closed", "edit", {
+    status: "running",
+    input: { filePath: "src/idle.ts" },
+    metadata: { filediff: { file: "src/idle.ts", patch: closedPatch } },
+    title: "edit src/idle.ts",
+  });
+  const message = diffMessage([livePart, closedPart]);
+  message[1].info.time = { created: now - 9_000 };
+  const messages = [...message];
+  return {
+    messages,
+    livePart,
+    closedPart,
+    livePatch,
+    closedPatch,
+    completedLivePart: {
+      ...livePart,
+      state: {
+        ...livePart.state,
+        status: "completed",
+        time: { start: now - 9_000, end: now - 1_000 },
+      },
+    },
+  };
+}
+
+function adversarialFixture() {
+  const markdown = Array.from({ length: 40 }, () => "[".repeat(190)).join("\n");
+  const markup = Array.from(
+    { length: 90 },
+    (_value, index) => `<section data-i="${index}"><a href="#x">link ${index}</a></section>`,
+  ).join("\n");
+  const bash = Array.from(
+    { length: 90 },
+    (_value, index) => `if [ -n "$value_${index}" ]; then echo "\${value_${index}//a/b}"; fi`,
+  ).join("\n");
+  const parts = [
+    diffToolPart("prt_adv_md", "edit", {
+      input: { filePath: "docs/pathological.md" },
+      metadata: {
+        filediff: {
+          file: "docs/pathological.md",
+          patch: addFilePatch("docs/pathological.md", markdown),
+        },
+      },
+    }),
+    diffToolPart("prt_adv_markup", "edit", {
+      input: { filePath: "docs/pathological.html" },
+      metadata: {
+        filediff: {
+          file: "docs/pathological.html",
+          patch: addFilePatch("docs/pathological.html", markup),
+        },
+      },
+    }),
+    diffToolPart("prt_adv_bash", "edit", {
+      input: { filePath: "scripts/pathological.sh" },
+      metadata: {
+        filediff: {
+          file: "scripts/pathological.sh",
+          patch: addFilePatch("scripts/pathological.sh", bash),
+        },
+      },
+    }),
+    diffToolPart("prt_adv_write", "write", {
+      input: { filePath: "src/generated.ts", content: bigCode() },
+      metadata: { exists: false },
+      title: "Wrote src/generated.ts",
+    }),
+  ];
+  return { messages: diffMessage(parts), markdown, markup, bash };
+}
+
+function timeoutFixture() {
+  const markdown = [
+    "--- a/docs/hang.md",
+    "+++ b/docs/hang.md",
+    "@@ -0,0 +1,6 @@",
+    "+# Hang",
+    "+__QA_HANG__",
+    "+[",
+    "+[[[",
+    "+normal",
+    "+tail",
+  ].join("\n");
+  return diffMessage([
+    diffToolPart("prt_timeout", "edit", {
+      input: { filePath: "docs/hang.md" },
+      metadata: { filediff: { file: "docs/hang.md", patch: markdown } },
+    }),
+  ]);
 }
 
 // ---------------------------------------------------------------------------
@@ -1638,6 +2166,1012 @@ async function scenarioSend(browser, target) {
   }
 }
 
+async function scenarioDiffs(browser, target) {
+  const fixture = bigPatchFixture();
+  const { context, page, errors } = await newPage(browser, target, { workerProbe: true });
+  try {
+    const routeState = await installRoutes(page, {
+      sessionId: THREADS.diffs,
+      messages: fixture.messages,
+    });
+    await gotoChat(page, target, THREADS.diffs);
+    await page.waitForSelector(".message");
+    await waitForStableMessageGets(routeState);
+
+    const closed = await page.evaluate(() => {
+      const log = window.__qaWorkerLog;
+      return {
+        workerCreated: log.created,
+        tokenize: log.tokenize,
+        tokenCount: document.querySelectorAll(".tool-diff .token, .tool-code .token").length,
+        diffCount: document.querySelectorAll(".tool-diff").length,
+        codeCount: document.querySelectorAll(".tool-code").length,
+        truncations: Array.from(document.querySelectorAll(".tool-call__truncated")).map(
+          (node) => node.textContent,
+        ),
+      };
+    });
+    check(closed.diffCount > 0 && closed.codeCount > 0, "diff and write skeletons render closed");
+    check(closed.tokenCount === 0, `closed diffs have no token spans (${closed.tokenCount})`);
+    check(
+      closed.workerCreated === 0 && closed.tokenize === 0,
+      `closed diffs schedule no worker work (${closed.workerCreated}/${closed.tokenize})`,
+    );
+
+    const toolCount = await page.locator(".tool-call").count();
+    for (let index = 0; index < toolCount; index += 1) {
+      const summary = page.locator(".tool-call").nth(index).locator("summary");
+      if ((await summary.count()) > 0) await summary.first().click();
+    }
+    await page.waitForFunction(
+      () => {
+        const nodes = Array.from(document.querySelectorAll(".tool-diff, .tool-code"));
+        return (
+          nodes.length > 0 &&
+          nodes.every((node) => node.dataset.highlight && node.dataset.highlight !== "pending")
+        );
+      },
+      undefined,
+      { timeout: 20_000 },
+    );
+    await wait(300);
+
+    const metrics = await page.evaluate(() => {
+      const text = (node) => (node ? (node.textContent ?? "").replace(/\s+/g, " ").trim() : "");
+      const part = (id) => document.querySelector(`.tool-call[data-part-id="${id}"]`);
+      const diff = (id) => part(id)?.querySelector(".tool-diff") ?? null;
+      const code = (id) => part(id)?.querySelector(".tool-code") ?? null;
+      const lines = (node) =>
+        node === null
+          ? []
+          : Array.from(node.querySelectorAll(".diff-line")).map((row) => {
+              const numbers = row.querySelectorAll(".diff-line__num");
+              return {
+                kind: row.dataset.kind,
+                old: text(numbers[0]),
+                next: text(numbers[1]),
+              };
+            });
+      const diffSummary = (id) => {
+        const node = diff(id);
+        if (node === null) return null;
+        const scroller = node.querySelector(".tool-diff__scroll");
+        return {
+          files: node.querySelectorAll(".tool-diff__file").length,
+          mode: node.dataset.mode ?? null,
+          highlight: node.dataset.highlight ?? null,
+          tokens: node.querySelectorAll(".token").length,
+          keyword: node.querySelectorAll(".token.keyword").length,
+          string: node.querySelectorAll(".token.string").length,
+          paths: Array.from(node.querySelectorAll(".tool-diff__path")).map(text),
+          types: Array.from(node.querySelectorAll(".tool-diff__type")).map(text),
+          notes: Array.from(node.querySelectorAll(".tool-diff__note")).map(text),
+          stats: Array.from(node.querySelectorAll(".tool-diff__stat")).map(text),
+          hunks: node.querySelectorAll(".tool-diff__hunk").length,
+          fileItems: Array.from(node.querySelectorAll(".tool-diff__file-list-item")).map(text),
+          add: node.querySelectorAll('.diff-line[data-kind="add"]').length,
+          del: node.querySelectorAll('.diff-line[data-kind="del"]').length,
+          context: node.querySelectorAll('.diff-line[data-kind="context"]').length,
+          lines: lines(node),
+          ariaHidden: Array.from(node.querySelectorAll(".diff-line__num")).every(
+            (number) => number.getAttribute("aria-hidden") === "true",
+          ),
+          tabIndex: scroller === null ? null : scroller.tabIndex,
+          ariaLabel: scroller === null ? null : scroller.getAttribute("aria-label"),
+          liveRegions: node.querySelectorAll('[aria-live], [role="status"], [role="alert"]').length,
+          codeText: Array.from(node.querySelectorAll(".diff-line__code"))
+            .map((line) => line.textContent ?? "")
+            .join("\n"),
+        };
+      };
+      const codeSummary = (id) => {
+        const node = code(id);
+        if (node === null) return null;
+        const scroller = node.querySelector(".tool-code__scroll");
+        const rows = Array.from(node.querySelectorAll(".code-line"));
+        return {
+          lines: rows.length,
+          firstNumber: text(rows[0]?.querySelector(".code-line__num")),
+          lastNumber: text(rows.at(-1)?.querySelector(".code-line__num")),
+          meta: text(node.querySelector(".tool-code__meta")),
+          language: text(node.querySelector(".tool-code__lang")),
+          highlight: node.dataset.highlight ?? null,
+          tokens: node.querySelectorAll(".token").length,
+          keyword: node.querySelectorAll(".token.keyword").length,
+          string: node.querySelectorAll(".token.string").length,
+          ariaHidden: rows.every(
+            (row) => row.querySelector(".code-line__num")?.getAttribute("aria-hidden") === "true",
+          ),
+          tabIndex: scroller === null ? null : scroller.tabIndex,
+          ariaLabel: scroller === null ? null : scroller.getAttribute("aria-label"),
+          liveRegions: node.querySelectorAll('[aria-live], [role="status"], [role="alert"]').length,
+          contentLength: rows.reduce((total, row) => total + (row.textContent ?? "").length, 0),
+        };
+      };
+      return {
+        std: diffSummary("prt_std_edit"),
+        hash: diffSummary("prt_hash_edit"),
+        apply: diffSummary("prt_apply"),
+        write40: codeSummary("prt_write40"),
+        writeEmpty: codeSummary("prt_write_empty"),
+        writeBig: codeSummary("prt_write_big"),
+        patchFiles: diffSummary("prt_patch_files"),
+        patchString: diffSummary("prt_patch_string"),
+        patchText: diffSummary("prt_patch_text"),
+        unknown: diffSummary("prt_unknown"),
+        binary: diffSummary("prt_binary"),
+        many: diffSummary("prt_many"),
+        notices: Array.from(document.querySelectorAll(".tool-call__truncated")).map(text),
+        worker: { ...window.__qaWorkerLog },
+      };
+    });
+
+    check(metrics.std?.files === 1, `standard edit renders one file (${metrics.std?.files})`);
+    check(
+      metrics.std?.paths.some((value) => value.includes("src/app.ts")),
+      `standard edit path is rendered (${metrics.std?.paths.join(" | ")})`,
+    );
+    check(
+      metrics.std?.stats.includes("+3") && metrics.std?.stats.includes("-2"),
+      `standard edit shows +3/-2 (${metrics.std?.stats.join(" ")})`,
+    );
+    check(
+      metrics.std?.add > 0 && metrics.std?.del > 0 && metrics.std?.context > 0,
+      `standard edit marks add/del/context lines (${metrics.std?.add}/${metrics.std?.del}/${metrics.std?.context})`,
+    );
+    const addLine = metrics.std?.lines.find((line) => line.kind === "add");
+    const delLine = metrics.std?.lines.find((line) => line.kind === "del");
+    check(
+      addLine !== undefined && addLine.old === "" && addLine.next.length > 0,
+      `add lines carry only a new number (${JSON.stringify(addLine)})`,
+    );
+    check(
+      delLine !== undefined && delLine.old.length > 0 && delLine.next === "",
+      `del lines carry only an old number (${JSON.stringify(delLine)})`,
+    );
+    check(metrics.std?.ariaHidden === true, "diff line numbers are aria-hidden");
+    check(metrics.std?.tabIndex === 0, `diff scroller is tabbable (${metrics.std?.tabIndex})`);
+    check(
+      typeof metrics.std?.ariaLabel === "string" &&
+        metrics.std.ariaLabel.includes("scrollable") &&
+        metrics.std.ariaLabel.includes("src/app.ts"),
+      `diff scroller has a descriptive aria-label (${metrics.std?.ariaLabel})`,
+    );
+    check(metrics.std?.liveRegions === 0, "diff adds no live region");
+    check(
+      (metrics.std?.keyword ?? 0) > 0 && (metrics.std?.string ?? 0) > 0,
+      `TypeScript edit highlights keywords and strings (${metrics.std?.keyword}/${metrics.std?.string})`,
+    );
+
+    check(metrics.hash?.files === 1, `hashline edit renders one file (${metrics.hash?.files})`);
+    check(
+      metrics.hash?.paths.some((value) => value.includes("src/hash.ts")) &&
+        metrics.hash?.stats.includes("+1") &&
+        metrics.hash?.stats.includes("-1"),
+      `hashline metadata.diff renders its path and +1/-1 (${metrics.hash?.paths.join(" | ")})`,
+    );
+    check(
+      metrics.hash?.highlight === "tokens" && metrics.hash?.tokens > 0,
+      `hashline diff tokenizes (${metrics.hash?.highlight}/${metrics.hash?.tokens})`,
+    );
+
+    check(
+      metrics.apply?.files === 4,
+      `apply_patch renders four file sections (${metrics.apply?.files})`,
+    );
+    assertEqual(
+      metrics.apply?.types,
+      ["Added", "Updated", "Deleted", "Moved"],
+      "apply_patch file type labels",
+    );
+    check(
+      metrics.apply?.paths.includes("src/old-name.ts -> src/new-name.ts"),
+      `move renders old -> new (${metrics.apply?.paths.join(" | ")})`,
+    );
+    check(
+      metrics.apply?.stats.filter((value) => value.startsWith("+")).length >= 4 &&
+        metrics.apply?.stats.filter((value) => value.startsWith("-")).length >= 4,
+      `every apply_patch file carries +N/-N (${metrics.apply?.stats.join(" ")})`,
+    );
+    check(
+      metrics.apply?.highlight === "tokens" && metrics.apply?.tokens > 0,
+      `multi-file diff tokenizes (${metrics.apply?.highlight}/${metrics.apply?.tokens})`,
+    );
+
+    check(metrics.write40?.lines === 40, `write renders 40 lines (${metrics.write40?.lines})`);
+    check(
+      metrics.write40?.firstNumber === "1" && metrics.write40?.lastNumber === "40",
+      `write line numbers run 1..40 (${metrics.write40?.firstNumber}..${metrics.write40?.lastNumber})`,
+    );
+    check(
+      metrics.write40?.meta.startsWith("40 lines") && metrics.write40?.language === "typescript",
+      `write head reports 40 lines and typescript (${metrics.write40?.meta}/${metrics.write40?.language})`,
+    );
+    check(
+      (metrics.write40?.keyword ?? 0) > 0 && (metrics.write40?.string ?? 0) > 0,
+      `write highlights keywords and strings (${metrics.write40?.keyword}/${metrics.write40?.string})`,
+    );
+    check(metrics.write40?.ariaHidden === true, "write line numbers are aria-hidden");
+    check(
+      metrics.write40?.tabIndex === 0 &&
+        typeof metrics.write40?.ariaLabel === "string" &&
+        metrics.write40.ariaLabel.includes("scrollable"),
+      `write scroller is tabbable with an aria-label (${metrics.write40?.ariaLabel})`,
+    );
+    check(metrics.write40?.liveRegions === 0, "write adds no live region");
+
+    check(
+      metrics.writeEmpty?.lines === 0,
+      `empty write renders zero lines (${metrics.writeEmpty?.lines})`,
+    );
+    check(
+      metrics.writeEmpty?.meta.startsWith("0 lines") && metrics.writeEmpty?.highlight === "plain",
+      `empty write is a plain 0-line body (${metrics.writeEmpty?.meta}/${metrics.writeEmpty?.highlight})`,
+    );
+    check(metrics.writeEmpty?.tokens === 0, "empty write creates no tokens");
+
+    check(
+      (metrics.writeBig?.lines ?? 0) > 500,
+      `64 KiB write renders its lines (${metrics.writeBig?.lines})`,
+    );
+    check(
+      ["tokens", "plain", "budget"].includes(metrics.writeBig?.highlight),
+      `64 KiB write finishes as tokens/plain/budget (${metrics.writeBig?.highlight})`,
+    );
+    check(
+      metrics.writeBig?.contentLength > 60_000,
+      `64 KiB write keeps its content on screen (${metrics.writeBig?.contentLength})`,
+    );
+
+    check(
+      metrics.patchFiles?.mode === "files" && metrics.patchFiles?.fileItems.length === 2,
+      `patch files-only mode renders a 2-path file list (${metrics.patchFiles?.fileItems.join(" | ")})`,
+    );
+    check(
+      metrics.patchFiles?.highlight === "plain" && metrics.patchFiles?.tokens === 0,
+      "patch file-list mode never tokenizes",
+    );
+    check(
+      metrics.patchString?.files === 1 && metrics.patchString?.tokens > 0,
+      `legacy patch string renders through the diff renderer (${metrics.patchString?.files}/${metrics.patchString?.tokens})`,
+    );
+    check(
+      metrics.patchText?.files === 1 && metrics.patchText?.tokens > 0,
+      `legacy patch text renders through the diff renderer (${metrics.patchText?.files}/${metrics.patchText?.tokens})`,
+    );
+
+    check(
+      metrics.unknown?.highlight === "plain" && metrics.unknown?.tokens === 0,
+      `unknown extension falls back to plain (${metrics.unknown?.highlight}/${metrics.unknown?.tokens})`,
+    );
+    check(
+      metrics.unknown?.files === 1 && metrics.unknown?.codeText.includes("alpha gamma"),
+      "unknown extension still shows its diff text",
+    );
+
+    check(
+      metrics.binary?.types.includes("Binary") &&
+        metrics.binary?.notes.includes("Binary file changed") &&
+        metrics.binary?.hunks === 0,
+      `binary diff shows the Binary label and no hunks (${metrics.binary?.types.join(" | ")})`,
+    );
+    check(
+      metrics.binary?.highlight === "plain" && metrics.binary?.tokens === 0,
+      "binary diff never tokenizes",
+    );
+
+    check(
+      metrics.many?.files === 50,
+      `combined diff keeps at most 50 files (${metrics.many?.files})`,
+    );
+    check(
+      metrics.notices.includes("Additional files omitted from the view."),
+      `>50-file diff shows the file-cap notice (${metrics.notices.join(" | ")})`,
+    );
+    check(
+      metrics.many?.highlight !== "pending",
+      `>50-file diff settles instead of waiting forever (${metrics.many?.highlight})`,
+    );
+
+    await page.evaluate(() => {
+      document.querySelector('[data-part-id="prt_apply"]')?.scrollIntoView({ block: "center" });
+    });
+    await wait(150);
+    await shot(page, "main-1440-diff");
+
+    const layout1440 = await page.evaluate(() => {
+      const scrollers = Array.from(document.querySelectorAll("#chat-messages *"))
+        .filter((node) => {
+          const style = getComputedStyle(node);
+          return style.overflowX === "auto" || style.overflowX === "scroll";
+        })
+        .map((node) => node.className);
+      const line = document.querySelector(".diff-line");
+      return {
+        overflowX: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        scrollers,
+        columns: line === null ? null : getComputedStyle(line).gridTemplateColumns,
+      };
+    });
+    check(
+      layout1440.overflowX === 0,
+      `no horizontal page overflow at 1440 (${layout1440.overflowX}px)`,
+    );
+    check(layout1440.scrollers.length > 0, "the diff scroller is present at 1440");
+    check(
+      layout1440.scrollers.every(
+        (value) =>
+          value.includes("tool-diff__scroll") ||
+          value.includes("tool-code__scroll") ||
+          value.includes("tool-diff__file-list"),
+      ),
+      `diff scrollers are the only horizontal scrollers (${layout1440.scrollers.join(" | ")})`,
+    );
+    check(layout1440.columns !== null, "diff grid columns resolve at 1440");
+
+    const darkKeyword = await page.evaluate(() => {
+      const token = document.querySelector('[data-part-id="prt_write40"] .token.keyword');
+      return token === null ? null : getComputedStyle(token).color;
+    });
+    check(darkKeyword !== null, "a keyword token is rendered for the theme check");
+
+    await page.evaluate(() => {
+      document.documentElement.dataset.theme = "light";
+    });
+    await wait(150);
+    const theme = await page.evaluate(() => {
+      const token = document.querySelector('[data-part-id="prt_write40"] .token.keyword');
+      const addLine = document.querySelector(
+        '[data-part-id="prt_std_edit"] .diff-line[data-kind="add"]',
+      );
+      const probe = document.createElement("div");
+      probe.style.background = "color-mix(in oklab, var(--success) 9%, transparent)";
+      document.body.append(probe);
+      const result = {
+        keyword: token === null ? null : getComputedStyle(token).color,
+        addBackground: addLine === null ? null : getComputedStyle(addLine).backgroundColor,
+        successMix: getComputedStyle(probe).backgroundColor,
+        success: getComputedStyle(document.documentElement).getPropertyValue("--success").trim(),
+      };
+      probe.remove();
+      return result;
+    });
+    check(
+      theme.keyword !== null && theme.keyword !== darkKeyword,
+      `light theme changes a keyword token color (${darkKeyword} -> ${theme.keyword})`,
+    );
+    check(
+      theme.addBackground !== null && theme.addBackground === theme.successMix,
+      `add-line background derives from --success (${theme.addBackground} vs ${theme.successMix})`,
+    );
+    check(theme.success.length > 0, "the success token resolves in light theme");
+    await shot(page, "main-1440-diff-light");
+
+    await page.evaluate(() => {
+      document.documentElement.dataset.theme = "dark";
+    });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await wait(350);
+    await page.evaluate(() => {
+      document.querySelector('[data-part-id="prt_apply"]')?.scrollIntoView({ block: "center" });
+    });
+    await wait(250);
+
+    const layout390 = await page.evaluate(() => {
+      const scrollers = Array.from(document.querySelectorAll("#chat-messages *"))
+        .filter((node) => {
+          const style = getComputedStyle(node);
+          return style.overflowX === "auto" || style.overflowX === "scroll";
+        })
+        .map((node) => node.className);
+      const line = document.querySelector(".diff-line");
+      return {
+        overflowX: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        scrollers,
+        columns: line === null ? null : getComputedStyle(line).gridTemplateColumns,
+      };
+    });
+    check(
+      layout390.overflowX === 0,
+      `no horizontal page overflow at 390 (${layout390.overflowX}px)`,
+    );
+    check(
+      layout390.scrollers.every(
+        (value) =>
+          value.includes("tool-diff__scroll") ||
+          value.includes("tool-code__scroll") ||
+          value.includes("tool-diff__file-list"),
+      ),
+      `diff scrollers remain the only horizontal scrollers at 390 (${layout390.scrollers.join(" | ")})`,
+    );
+    const desktopFirst = Number.parseFloat(layout1440.columns?.split(" ")[0] ?? "0");
+    const mobileFirst = Number.parseFloat(layout390.columns?.split(" ")[0] ?? "0");
+    check(
+      mobileFirst > 0 && mobileFirst < desktopFirst,
+      `390 diff columns are narrower (${mobileFirst} < ${desktopFirst})`,
+    );
+    await shot(page, "main-390-diff");
+
+    await emit(page, {
+      type: "message.part.updated",
+      seq: 100,
+      streamID: "qa-stream",
+      sessionID: THREADS.diffs,
+      messageID: "msg_diff_a",
+      partID: "prt_trunc",
+      partType: "tool",
+      part: fixture.truncatedPart,
+      truncated: { fields: ["state.metadata.diff"], limit: "per-file" },
+    });
+    await page.waitForFunction(
+      () =>
+        document.querySelector('[data-part-id="prt_trunc"] .tool-call__truncated')?.textContent ===
+        "Diff truncated at 64 KiB per file.",
+      undefined,
+      { timeout: 3_000 },
+    );
+
+    await emit(page, {
+      type: "message.part.omitted",
+      seq: 101,
+      streamID: "qa-stream",
+      sessionID: THREADS.diffs,
+      messageID: "msg_diff_a",
+      partID: "prt_omit",
+      partType: "tool",
+    });
+    await page.waitForFunction(
+      () => {
+        const part = document.querySelector('[data-part-id="prt_omit"]');
+        return (
+          part?.querySelector(".tool-call__truncated")?.textContent ===
+            "Result omitted; it exceeded the 256 KiB stream budget." &&
+          part.querySelector(".tool-diff") === null &&
+          !(part.textContent ?? "").includes("No output")
+        );
+      },
+      undefined,
+      { timeout: 3_000 },
+    );
+
+    const notices = await page.evaluate(() => {
+      const text = (node) => (node ? (node.textContent ?? "").replace(/\s+/g, " ").trim() : "");
+      const part = document.querySelector('[data-part-id="prt_omit"]');
+      return {
+        truncated: text(document.querySelector('[data-part-id="prt_trunc"] .tool-call__truncated')),
+        omitted: text(part?.querySelector(".tool-call__truncated")),
+        omittedBody: part?.querySelector(".tool-diff, .tool-code, pre") !== null,
+        omittedText: text(part),
+      };
+    });
+    assertEqual(notices.truncated, "Diff truncated at 64 KiB per file.", "truncated diff notice");
+    assertEqual(
+      notices.omitted,
+      "Result omitted; it exceeded the 256 KiB stream budget.",
+      "omitted part notice",
+    );
+    check(notices.omittedBody === false, "omitted part renders no body");
+    check(!notices.omittedText.includes("No output"), "omitted part never falls back to No output");
+
+    checkNoErrors(errors);
+    return { metrics, layout1440, layout390, theme, notices };
+  } finally {
+    await context.close();
+  }
+}
+
+async function scenarioDiffError(browser, target) {
+  const messages = errorFixture();
+  const { context, page, errors } = await newPage(browser, target, { workerProbe: true });
+  try {
+    const routeState = await installRoutes(page, { sessionId: THREADS.diffs, messages });
+    await gotoChat(page, target, THREADS.diffs);
+    await page.waitForSelector(".message");
+    await waitForStableMessageGets(routeState);
+    await page.waitForFunction(
+      () => document.querySelector('[data-part-id="prt_error"]')?.open === true,
+      undefined,
+      { timeout: 3_000 },
+    );
+    const state = await page.evaluate(() => {
+      const part = document.querySelector('[data-part-id="prt_error"]');
+      const pre = part?.querySelector("pre");
+      return {
+        open: part?.open ?? null,
+        hasDiff: part?.querySelector(".tool-diff, .tool-code") !== null,
+        preText: (pre?.textContent ?? "").trim(),
+        workerCreated: window.__qaWorkerLog.created,
+        tokenize: window.__qaWorkerLog.tokenize,
+        tokens: part?.querySelectorAll(".token").length ?? 0,
+        notice: (part?.querySelector(".tool-call__truncated")?.textContent ?? "").trim(),
+      };
+    });
+    check(state.open === true, "an error part auto-opens");
+    check(state.hasDiff === false, "an error part renders no diff body");
+    check(
+      state.preText.includes("Invalid patch"),
+      `the error text is in a <pre> (${state.preText})`,
+    );
+    check(
+      state.workerCreated === 0 && state.tokenize === 0,
+      `an error part makes zero highlight requests (${state.workerCreated}/${state.tokenize})`,
+    );
+    check(state.tokens === 0, "an error part has no token spans");
+    check(state.notice.length === 0, "an error part has no truncation notice");
+    await shot(page, "diff-error-1440-dark");
+    checkNoErrors(errors);
+    return state;
+  } finally {
+    await context.close();
+  }
+}
+
+async function scenarioDiffLazy(browser, target) {
+  const fixture = lazyFixture();
+  const { context, page, errors } = await newPage(browser, target, { workerProbe: true });
+  try {
+    const routeState = await installRoutes(page, {
+      sessionId: THREADS.diffs,
+      messages: fixture.messages,
+    });
+    await gotoChat(page, target, THREADS.diffs);
+    await page.waitForSelector(".message");
+    await waitForStableMessageGets(routeState);
+    await wait(200);
+
+    const before = await page.evaluate(() => ({
+      openTokens: document.querySelectorAll('[data-part-id="prt_lazy_open"] .token').length,
+      closedTokens: document.querySelectorAll('[data-part-id="prt_lazy_closed"] .token').length,
+      log: { ...window.__qaWorkerLog },
+    }));
+    check(before.openTokens === 0 && before.closedTokens === 0, "both diffs start plain");
+    check(
+      before.log.created === 0 && before.log.tokenize === 0,
+      "closed diffs start no worker and post no tokenize request",
+    );
+
+    await page.locator('[data-part-id="prt_lazy_open"] summary').first().click();
+    await page.waitForFunction(
+      () =>
+        document.querySelector('[data-part-id="prt_lazy_open"] .tool-diff')?.dataset.highlight ===
+        "tokens",
+      undefined,
+      { timeout: 5_000 },
+    );
+    await wait(150);
+
+    const opened = await page.evaluate(() => ({
+      openTokens: document.querySelectorAll('[data-part-id="prt_lazy_open"] .token').length,
+      closedTokens: document.querySelectorAll('[data-part-id="prt_lazy_closed"] .token').length,
+      streams: window.__qaWorkerLog.dispatches.map((entry) => entry.streamID),
+      created: window.__qaWorkerLog.created,
+      tokenize: window.__qaWorkerLog.tokenize,
+    }));
+    check(opened.openTokens > 0, `opening a diff tokenizes it (${opened.openTokens})`);
+    check(opened.closedTokens === 0, "the closed diff stays plain");
+    check(opened.created >= 1 && opened.tokenize > 0, "opening starts the worker");
+    check(
+      opened.streams.every((stream) => !String(stream).startsWith("s1:")),
+      `the closed file submitted no streams (${opened.streams.join(",")})`,
+    );
+
+    const focusBefore = await page.evaluate(() => {
+      const scroller = document.querySelector('[data-part-id="prt_lazy_open"] .tool-diff__scroll');
+      scroller.scrollTop = 140;
+      scroller.scrollLeft = 50;
+      scroller.focus();
+      return {
+        top: scroller.scrollTop,
+        left: scroller.scrollLeft,
+        active: document.activeElement === scroller,
+        tag: document.activeElement?.tagName ?? null,
+        className: document.activeElement?.className ?? null,
+      };
+    });
+    check(focusBefore.active === true, "the diff scroller can take focus");
+
+    const updatedPatch = longDiffPatch("src/open.ts", 230, "open");
+    const updatedPart = {
+      ...fixture.messages[1].parts[0],
+      state: {
+        ...fixture.messages[1].parts[0].state,
+        status: "completed",
+        metadata: { filediff: { file: "src/open.ts", patch: updatedPatch } },
+        time: { start: Date.now() - 5_000, end: Date.now() },
+      },
+    };
+    await emit(page, {
+      type: "message.part.updated",
+      seq: 2,
+      streamID: "qa-stream",
+      sessionID: THREADS.diffs,
+      messageID: "msg_diff_a",
+      partID: "prt_lazy_open",
+      partType: "tool",
+      part: updatedPart,
+    });
+    await page.waitForFunction(
+      () =>
+        document.querySelector('[data-part-id="prt_lazy_open"] .tool-diff')?.dataset.highlight ===
+        "tokens",
+      undefined,
+      { timeout: 5_000 },
+    );
+    await wait(200);
+
+    const focusAfter = await page.evaluate(() => {
+      const part = document.querySelector('[data-part-id="prt_lazy_open"]');
+      const scroller = part.querySelector(".tool-diff__scroll");
+      return {
+        top: scroller.scrollTop,
+        left: scroller.scrollLeft,
+        active: document.activeElement === scroller,
+        inside: part.contains(document.activeElement),
+        tag: document.activeElement?.tagName ?? null,
+        className: document.activeElement?.className ?? null,
+        tokens: part.querySelectorAll(".token").length,
+        highlight: part.querySelector(".tool-diff")?.dataset.highlight ?? null,
+      };
+    });
+    check(
+      focusAfter.active === true,
+      `focus stays on the scroller after an update (${focusAfter.tag}.${focusAfter.className})`,
+    );
+    check(
+      focusAfter.top === focusBefore.top && focusAfter.left === focusBefore.left,
+      `scroll offsets survive the update (${focusAfter.top}/${focusAfter.left} vs ${focusBefore.top}/${focusBefore.left})`,
+    );
+    check(
+      focusAfter.tokens > 0 && focusAfter.highlight === "tokens",
+      `the updated diff is highlighted again (${focusAfter.highlight}/${focusAfter.tokens})`,
+    );
+
+    await page.locator('[data-part-id="prt_lazy_open"] summary').first().click();
+    await page.waitForFunction(
+      () => {
+        const node = document.querySelector('[data-part-id="prt_lazy_open"] .tool-diff');
+        return node?.dataset.highlight === "plain" && node.querySelectorAll(".token").length === 0;
+      },
+      undefined,
+      { timeout: 3_000 },
+    );
+    const closedAgain = await page.evaluate(async () => ({
+      openTokens: document.querySelectorAll('[data-part-id="prt_lazy_open"] .token').length,
+      closedTokens: document.querySelectorAll('[data-part-id="prt_lazy_closed"] .token').length,
+      highlight: document.querySelector('[data-part-id="prt_lazy_open"] .tool-diff')?.dataset
+        .highlight,
+      stats: (await import("/assets/chat-highlight.js")).getHighlightStats(),
+    }));
+    check(closedAgain.openTokens === 0, "closing clears token spans");
+    check(
+      closedAgain.highlight === "plain",
+      `closing returns the diff to plain (${closedAgain.highlight})`,
+    );
+    check(closedAgain.closedTokens === 0, "the other closed diff still has no tokens");
+
+    await page.locator('[data-part-id="prt_lazy_open"] summary').first().click();
+    await page.waitForFunction(
+      () =>
+        document.querySelector('[data-part-id="prt_lazy_open"] .tool-diff')?.dataset.highlight ===
+        "tokens",
+      undefined,
+      { timeout: 5_000 },
+    );
+    await wait(120);
+    const reopened = await page.evaluate(
+      () => document.querySelectorAll('[data-part-id="prt_lazy_open"] .token').length,
+    );
+    check(reopened > 0, `reopening highlights again (${reopened})`);
+    await shot(page, "diff-lazy-1440-dark");
+
+    checkNoErrors(errors);
+    return { before, opened, focusBefore, focusAfter, closedAgain, reopened };
+  } finally {
+    await context.close();
+  }
+}
+
+async function scenarioDiffStreaming(browser, target) {
+  const fixture = streamingFixture();
+  const { context, page, errors } = await newPage(browser, target, { workerProbe: true });
+  try {
+    const routeState = await installRoutes(page, {
+      sessionId: THREADS.diffs,
+      messages: () => fixture.messages,
+    });
+    await gotoChat(page, target, THREADS.diffs);
+    await page.waitForSelector(".message");
+    await waitForStableMessageGets(routeState);
+    await wait(200);
+
+    await page.locator('[data-part-id="prt_stream_live"] summary').first().click();
+    await page.waitForFunction(
+      () =>
+        document.querySelector('[data-part-id="prt_stream_live"] .tool-diff')?.dataset.highlight ===
+        "tokens",
+      undefined,
+      { timeout: 5_000 },
+    );
+    await wait(150);
+
+    const before = await page.evaluate(() => ({
+      liveTokens: document.querySelectorAll('[data-part-id="prt_stream_live"] .token').length,
+      closedTokens: document.querySelectorAll('[data-part-id="prt_stream_closed"] .token').length,
+      streams: window.__qaWorkerLog.dispatches.map((entry) => entry.streamID),
+      tokenize: window.__qaWorkerLog.tokenize,
+      gets: null,
+    }));
+    check(before.liveTokens > 0, "the open streaming diff tokenizes");
+    check(before.closedTokens === 0, "the closed streaming diff stays plain");
+    check(
+      before.streams.every((stream) => !String(stream).startsWith("s1:")),
+      `only the open file submitted streams (${before.streams.join(",")})`,
+    );
+
+    await page.evaluate(() => {
+      const node = document.querySelector('[data-part-id="prt_stream_live"] .tool-diff');
+      window.__qaFlash = { stop: false, samples: [] };
+      const record = () => {
+        if (window.__qaFlash.stop) return;
+        window.__qaFlash.samples.push({
+          t: performance.now(),
+          tokens: node.querySelectorAll(".token").length,
+          highlight: node.dataset.highlight ?? null,
+        });
+      };
+      const observer = new MutationObserver(record);
+      observer.observe(node, {
+        subtree: true,
+        childList: true,
+        characterData: true,
+        attributes: true,
+      });
+      window.__qaFlash.stopObserver = () => observer.disconnect();
+      const tick = () => {
+        if (window.__qaFlash.stop) return;
+        record();
+        window.requestAnimationFrame(tick);
+      };
+      window.requestAnimationFrame(tick);
+    });
+    const getsBefore = routeState.messageGets.length;
+
+    await emit(page, {
+      type: "message.part.updated",
+      seq: 10,
+      streamID: "qa-stream",
+      sessionID: THREADS.diffs,
+      messageID: "msg_diff_a",
+      partID: "prt_stream_live",
+      partType: "tool",
+      part: fixture.completedLivePart,
+    });
+    await wait(350);
+
+    fixture.messages[1].parts[0] = fixture.completedLivePart;
+    fixture.messages[1].info.finish = "stop";
+    fixture.messages[1].info.time = { created: Date.now() - 9_000, completed: Date.now() };
+    await emit(page, {
+      type: "session.status",
+      seq: 11,
+      streamID: "qa-stream",
+      sessionID: THREADS.diffs,
+      status: { type: "idle" },
+    });
+
+    const deadline = Date.now() + 10_000;
+    while (routeState.messageGets.length <= getsBefore && Date.now() < deadline) {
+      await wait(100);
+    }
+    check(routeState.messageGets.length > getsBefore, "session idle triggers a snapshot hydration");
+    await wait(700);
+
+    const after = await page.evaluate(() => {
+      window.__qaFlash.stop = true;
+      window.__qaFlash.stopObserver();
+      const node = document.querySelector('[data-part-id="prt_stream_live"] .tool-diff');
+      const samples = window.__qaFlash.samples;
+      let first = -1;
+      for (let index = 0; index < samples.length; index += 1) {
+        if (samples[index].tokens > 0) {
+          first = index;
+          break;
+        }
+      }
+      const flashed = first >= 0 && samples.slice(first).some((sample) => sample.tokens === 0);
+      return {
+        liveTokens: node.querySelectorAll(".token").length,
+        liveHighlight: node.dataset.highlight ?? null,
+        closedTokens: document.querySelectorAll('[data-part-id="prt_stream_closed"] .token').length,
+        closedHighlight: document.querySelector('[data-part-id="prt_stream_closed"] .tool-diff')
+          ?.dataset.highlight,
+        tokenize: window.__qaWorkerLog.tokenize,
+        dispatches: window.__qaWorkerLog.dispatches.length,
+        samples: samples.length,
+        firstTokens: first,
+        flashed,
+        warningSamples: samples
+          .slice(Math.max(0, first))
+          .filter((sample) => sample.tokens === 0 || sample.highlight === "pending")
+          .slice(0, 8),
+      };
+    });
+    check(after.liveTokens > 0, "the open diff keeps its tokens after hydration");
+    check(
+      after.liveHighlight === "tokens",
+      `the open diff ends highlighted (${after.liveHighlight})`,
+    );
+    check(after.firstTokens >= 0, "the flash probe observed a tokenized frame");
+    check(
+      after.flashed === false,
+      `hydration never flashes colored -> plain -> colored (${JSON.stringify(after.warningSamples)})`,
+    );
+    check(after.closedTokens === 0, "hydration leaves the closed diff plain");
+    check(after.closedHighlight === "plain", `closed diff stays plain (${after.closedHighlight})`);
+    check(
+      after.tokenize === before.tokenize,
+      `hydration does not re-tokenize unchanged open diffs (${before.tokenize} -> ${after.tokenize})`,
+    );
+    await shot(page, "diff-streaming-1440-dark");
+
+    checkNoErrors(errors);
+    return { before, after };
+  } finally {
+    await context.close();
+  }
+}
+
+async function scenarioDiffAdversarial(browser, target) {
+  const fixture = adversarialFixture();
+  const { context, page, errors } = await newPage(browser, target, { workerProbe: true });
+  try {
+    const routeState = await installRoutes(page, {
+      sessionId: THREADS.diffs,
+      messages: fixture.messages,
+    });
+    await gotoChat(page, target, THREADS.diffs);
+    await page.waitForSelector(".message");
+    await waitForStableMessageGets(routeState);
+    await wait(150);
+
+    const toolCount = await page.locator(".tool-call").count();
+    for (let index = 0; index < toolCount; index += 1) {
+      const summary = page.locator(".tool-call").nth(index).locator("summary");
+      if ((await summary.count()) > 0) await summary.first().click();
+    }
+    const started = Date.now();
+    await page.waitForFunction(
+      () => {
+        const nodes = Array.from(document.querySelectorAll(".tool-diff, .tool-code"));
+        return (
+          nodes.length > 0 &&
+          nodes.every((node) => node.dataset.highlight && node.dataset.highlight !== "pending")
+        );
+      },
+      undefined,
+      { timeout: 6_000 },
+    );
+    const elapsed = Date.now() - started;
+    await wait(250);
+
+    const result = await page.evaluate(() => {
+      const text = (node) => (node ? (node.textContent ?? "").replace(/\s+/g, " ").trim() : "");
+      const parts = {};
+      for (const id of ["prt_adv_md", "prt_adv_markup", "prt_adv_bash", "prt_adv_write"]) {
+        const part = document.querySelector(`[data-part-id="${id}"]`);
+        const node = part?.querySelector(".tool-diff, .tool-code");
+        parts[id] = node
+          ? {
+              highlight: node.dataset.highlight ?? null,
+              tokens: node.querySelectorAll(".token").length,
+              text: text(node),
+            }
+          : null;
+      }
+      const byKey = new Map();
+      for (const dispatch of window.__qaWorkerLog.dispatches) {
+        byKey.set(`${dispatch.jobID}:${dispatch.streamID}`, dispatch.t);
+      }
+      const timings = window.__qaWorkerLog.responses.map((response) => {
+        const dispatched = byKey.get(`${response.jobID}:${response.streamID}`) ?? response.t;
+        return { type: response.type, ms: Math.round(response.t - dispatched) };
+      });
+      return { parts, timings, log: { ...window.__qaWorkerLog } };
+    });
+
+    for (const [id, part] of Object.entries(result.parts)) {
+      check(part !== null, `${id} renders a diff/code body`);
+      check(
+        ["tokens", "plain", "budget", "error"].includes(part.highlight),
+        `${id} finishes within budget (${part.highlight})`,
+      );
+      check(
+        part.tokens > 0 || part.text.length > 0,
+        `${id} keeps readable text after highlighting (${part.tokens} tokens)`,
+      );
+      check(part.highlight !== "pending", `${id} never stays pending`);
+    }
+    check(
+      result.log.dispatches.length >= 3,
+      `adversarial fixtures actually submitted worker streams (${result.log.dispatches.length})`,
+    );
+    const overBudget = result.timings.filter((timing) => timing.ms > 400);
+    check(
+      overBudget.length === 0,
+      `worker responses stay inside the 250 ms budget plus paint (${JSON.stringify(overBudget)})`,
+    );
+    check(
+      elapsed <= 4_000,
+      `adversarial page settles in the worker budget plus paint (${elapsed}ms)`,
+    );
+    await shot(page, "diff-adversarial-1440-dark");
+    checkNoErrors(errors);
+    return { result, elapsed };
+  } finally {
+    await context.close();
+  }
+}
+
+async function scenarioDiffTimeout(browser, target) {
+  const messages = timeoutFixture();
+  const { context, page, errors } = await newPage(browser, target, { workerProbe: true });
+  try {
+    const routeState = await installRoutes(page, { sessionId: THREADS.diffs, messages });
+    await gotoChat(page, target, THREADS.diffs);
+    await page.waitForSelector(".message");
+    await waitForStableMessageGets(routeState);
+    await wait(150);
+
+    const started = Date.now();
+    await page.locator('[data-part-id="prt_timeout"] summary').first().click();
+    await page.waitForFunction(() => window.__qaWorkerLog.hung >= 1, undefined, {
+      timeout: 2_000,
+    });
+    await page.waitForFunction(
+      () => {
+        const node = document.querySelector('[data-part-id="prt_timeout"] .tool-diff');
+        return (
+          window.__qaWorkerLog.terminated >= 1 &&
+          node !== null &&
+          node.dataset.highlight !== "pending"
+        );
+      },
+      undefined,
+      { timeout: 3_000 },
+    );
+    const elapsed = Date.now() - started;
+    await wait(150);
+
+    const result = await page.evaluate(() => {
+      const node = document.querySelector('[data-part-id="prt_timeout"] .tool-diff');
+      return {
+        highlight: node?.dataset.highlight ?? null,
+        tokens: node?.querySelectorAll(".token").length ?? 0,
+        text: (node?.textContent ?? "").trim(),
+        hung: window.__qaWorkerLog.hung,
+        terminated: window.__qaWorkerLog.terminated,
+        dispatches: window.__qaWorkerLog.dispatches.length,
+        responsive: 1 + 1,
+      };
+    });
+    check(result.hung >= 1, "the timeout fixture withheld a worker response");
+    check(result.terminated >= 1, `a timed-out worker is terminated (${result.terminated})`);
+    check(
+      ["error", "plain"].includes(result.highlight),
+      `the timed-out diff falls back to plain text (${result.highlight})`,
+    );
+    check(result.tokens === 0, "the timed-out diff has no token spans");
+    check(result.text.includes("__QA_HANG__"), "the plain fallback keeps the code text");
+    check(result.responsive === 2, "the page stays responsive after worker termination");
+    check(elapsed <= 2_000, `the timeout is enforced without hanging (${elapsed}ms)`);
+    await shot(page, "diff-timeout-1440-dark");
+    checkNoErrors(errors);
+    return { result, elapsed };
+  } finally {
+    await context.close();
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Live smoke (real managed app)
 // ---------------------------------------------------------------------------
@@ -1751,6 +3285,12 @@ try {
     await runScenario("main", () => scenarioMain(browser, target));
     await runScenario("questions", () => scenarioQuestions(browser, target));
     await runScenario("send", () => scenarioSend(browser, target));
+    await runScenario("diffs", () => scenarioDiffs(browser, target));
+    await runScenario("diff-error", () => scenarioDiffError(browser, target));
+    await runScenario("diff-lazy", () => scenarioDiffLazy(browser, target));
+    await runScenario("diff-streaming", () => scenarioDiffStreaming(browser, target));
+    await runScenario("diff-adversarial", () => scenarioDiffAdversarial(browser, target));
+    await runScenario("diff-timeout", () => scenarioDiffTimeout(browser, target));
   }
 } catch (error) {
   report.status = "FAIL";

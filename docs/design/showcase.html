@@ -239,6 +239,10 @@
             <svg class="icon" aria-hidden="true"><use href="#i-message" /></svg>
             Chat
           </a>
+          <a class="nav-item" href="#diff-code">
+            <svg class="icon" aria-hidden="true"><use href="#i-code" /></svg>
+            Diff and code
+          </a>
         </nav>
         <div class="sidebar__foot">
           <span class="avatar avatar--sm">OP</span>
@@ -1877,6 +1881,175 @@
                         <span class="kbd">Esc</span>
                       </div>
                     </div>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <!-- Diff and code ---------------------------------------------------- -->
+            <section class="section" id="diff-code" aria-labelledby="diff-code-title">
+              <div class="section__head">
+                <h2 class="section__title" id="diff-code-title">Diff and code</h2>
+                <p class="section__note">
+                  Inset mono surfaces inside a tool call. The scroll box owns both axes; code never
+                  wraps.
+                </p>
+              </div>
+
+              <div class="grid items-start gap-4 xl:grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)]">
+                <div class="card">
+                  <div class="card__head">
+                    <h3 class="card__title">Edit diff</h3>
+                    <span class="mono">+3 / -2</span>
+                  </div>
+                  <div class="card__body">
+                    <div class="tool-diff" data-highlight="tokens">
+                      <div
+                        class="tool-diff__scroll"
+                        tabindex="0"
+                        aria-label="Diff for apps/gateway/src/invoice/sync.ts, scrollable"
+                      >
+                        <div class="tool-diff__file">
+                          <div class="tool-diff__head">
+                            <span>apps/gateway/src/invoice/sync.ts</span>
+                            <span class="mono">Updated</span>
+                            <span class="mono">+3 -2</span>
+                          </div>
+                          <div class="tool-diff__hunks">
+                            <div class="tool-diff__hunk">
+                              <div class="tool-diff__hunk-head">
+                                @@ -18,7 +18,8 @@ export async function syncInvoice
+                              </div>
+                              <div class="diff-line" data-kind="context">
+                                <span class="diff-line__num" aria-hidden="true">18</span>
+                                <span class="diff-line__num" aria-hidden="true">18</span>
+                                <span class="diff-line__sign"> </span>
+                                <span class="diff-line__code">  <span class="token keyword">const</span> key <span class="token operator">=</span> invoice.<span class="token property">id</span><span class="token punctuation">;</span></span>
+                              </div>
+                              <div class="diff-line" data-kind="del">
+                                <span class="diff-line__num" aria-hidden="true">19</span>
+                                <span class="diff-line__num" aria-hidden="true"></span>
+                                <span class="diff-line__sign">-</span>
+                                <span class="diff-line__code">  <span class="token keyword">await</span> client.<span class="token function">mutate</span><span class="token punctuation">(</span><span class="token punctuation">{</span> body<span class="token punctuation">:</span> invoice <span class="token punctuation">}</span><span class="token punctuation">)</span><span class="token punctuation">;</span></span>
+                              </div>
+                              <div class="diff-line" data-kind="add">
+                                <span class="diff-line__num" aria-hidden="true"></span>
+                                <span class="diff-line__num" aria-hidden="true">19</span>
+                                <span class="diff-line__sign">+</span>
+                                <span class="diff-line__code">  <span class="token keyword">await</span> client.<span class="token function">mutate</span><span class="token punctuation">(</span><span class="token punctuation">{</span> <span class="token property">idempotencyKey</span><span class="token punctuation">:</span> key<span class="token punctuation">,</span> body<span class="token punctuation">:</span> invoice <span class="token punctuation">}</span><span class="token punctuation">)</span><span class="token punctuation">;</span></span>
+                              </div>
+                              <div class="diff-line" data-kind="context">
+                                <span class="diff-line__num" aria-hidden="true">20</span>
+                                <span class="diff-line__num" aria-hidden="true">20</span>
+                                <span class="diff-line__sign"> </span>
+                                <span class="diff-line__code">  <span class="token keyword">return</span> <span class="token punctuation">{</span> ok<span class="token punctuation">:</span> <span class="token boolean">true</span> <span class="token punctuation">}</span><span class="token punctuation">;</span></span>
+                              </div>
+                              <div class="diff-line" data-kind="del">
+                                <span class="diff-line__num" aria-hidden="true">21</span>
+                                <span class="diff-line__num" aria-hidden="true"></span>
+                                <span class="diff-line__sign">-</span>
+                                <span class="diff-line__code">  <span class="token comment">// TODO: retry on conflict</span></span>
+                              </div>
+                              <div class="diff-line" data-kind="add">
+                                <span class="diff-line__num" aria-hidden="true"></span>
+                                <span class="diff-line__num" aria-hidden="true">21</span>
+                                <span class="diff-line__sign">+</span>
+                                <span class="diff-line__code">  <span class="token comment">// Retry is safe: the key makes the mutation idempotent.</span></span>
+                              </div>
+                              <div class="diff-line" data-kind="add">
+                                <span class="diff-line__num" aria-hidden="true"></span>
+                                <span class="diff-line__num" aria-hidden="true">22</span>
+                                <span class="diff-line__sign">+</span>
+                                <span class="diff-line__code">  <span class="token keyword">await</span> ledger.<span class="token function">notify</span><span class="token punctuation">(</span><span class="token punctuation">{</span> <span class="token property">contract</span><span class="token punctuation">:</span> <span class="token string">"invoice.sync.v2"</span><span class="token punctuation">,</span> key<span class="token punctuation">,</span> <span class="token property">trace</span><span class="token punctuation">:</span> request.<span class="token property">id</span> <span class="token punctuation">}</span><span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">// fan-out</span></span>
+                              </div>
+                              <div class="diff-line" data-kind="meta">
+                                <span class="diff-line__code">\ No newline at end of file</span>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="card">
+                  <div class="card__head">
+                    <h3 class="card__title">Write content</h3>
+                    <span class="mono">8 lines</span>
+                  </div>
+                  <div class="card__body">
+                    <div class="tool-code" data-highlight="tokens">
+                      <div class="tool-code__head">
+                        <span>apps/ledger/src/contracts/invoice.ts</span>
+                        <span class="mono">8 lines</span>
+                        <span class="mono">typescript</span>
+                      </div>
+                      <div
+                        class="tool-code__scroll"
+                        tabindex="0"
+                        aria-label="Written content for apps/ledger/src/contracts/invoice.ts, scrollable"
+                      >
+                        <div class="code-line"><span class="code-line__num" aria-hidden="true">1</span><span class="code-line__code"><span class="token keyword">export</span> <span class="token keyword">interface</span> <span class="token class-name">InvoiceSync</span> <span class="token punctuation">{</span></span></div>
+                        <div class="code-line"><span class="code-line__num" aria-hidden="true">2</span><span class="code-line__code">  <span class="token property">contract</span><span class="token punctuation">:</span> <span class="token string">"invoice.sync.v2"</span><span class="token punctuation">;</span></span></div>
+                        <div class="code-line"><span class="code-line__num" aria-hidden="true">3</span><span class="code-line__code">  <span class="token property">idempotencyKey</span><span class="token punctuation">:</span> <span class="token class-name">string</span><span class="token punctuation">;</span></span></div>
+                        <div class="code-line"><span class="code-line__num" aria-hidden="true">4</span><span class="code-line__code">  <span class="token function">notify</span><span class="token punctuation">(</span><span class="token parameter">key</span><span class="token punctuation">:</span> <span class="token class-name">string</span><span class="token punctuation">)</span><span class="token punctuation">:</span> <span class="token class-name">Promise</span>&lt;<span class="token keyword">void</span>&gt;<span class="token punctuation">;</span></span></div>
+                        <div class="code-line"><span class="code-line__num" aria-hidden="true">5</span><span class="code-line__code"><span class="token punctuation">}</span></span></div>
+                        <div class="code-line"><span class="code-line__num" aria-hidden="true">6</span><span class="code-line__code"></span></div>
+                        <div class="code-line"><span class="code-line__num" aria-hidden="true">7</span><span class="code-line__code"><span class="token keyword">const</span> <span class="token constant">MAX_RETRIES</span> <span class="token operator">=</span> <span class="token number">3</span><span class="token punctuation">;</span></span></div>
+                        <div class="code-line"><span class="code-line__num" aria-hidden="true">8</span><span class="code-line__code"><span class="token comment">// Retry only when the ledger returns a conflict.</span></span></div>
+                      </div>
+                      <div class="tool-diff__diagnostics">Import order normalized.
+Trailing newline added.</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="grid items-start gap-4 lg:grid-cols-2">
+                <div class="card">
+                  <div class="card__head">
+                    <h3 class="card__title">Token mapping</h3>
+                    <span class="mono">scoped to diff and code</span>
+                  </div>
+                  <div class="card__body">
+                    <div class="tool-code">
+                      <div class="tool-code__head">
+                        <span>theme tokens</span>
+                        <span class="mono">8 lines</span>
+                        <span class="mono">prism</span>
+                      </div>
+                      <div class="tool-code__scroll" tabindex="0" aria-label="Token mapping, scrollable">
+                        <div class="code-line"><span class="code-line__num" aria-hidden="true">1</span><span class="code-line__code"><span class="token comment">comment</span> / <span class="token prolog">prolog</span> / <span class="token doctype">doctype</span> / <span class="token cdata">cdata</span></span></div>
+                        <div class="code-line"><span class="code-line__num" aria-hidden="true">2</span><span class="code-line__code"><span class="token keyword">keyword</span> / <span class="token atrule">atrule</span> / <span class="token selector">selector</span></span></div>
+                        <div class="code-line"><span class="code-line__num" aria-hidden="true">3</span><span class="code-line__code"><span class="token string">string</span> / <span class="token char">char</span> / <span class="token attr-value">attr-value</span> / <span class="token inserted">inserted</span></span></div>
+                        <div class="code-line"><span class="code-line__num" aria-hidden="true">4</span><span class="code-line__code"><span class="token number">number</span> / <span class="token boolean">boolean</span> / <span class="token constant">constant</span> / <span class="token symbol">symbol</span></span></div>
+                        <div class="code-line"><span class="code-line__num" aria-hidden="true">5</span><span class="code-line__code"><span class="token function">function</span> / <span class="token class-name">class-name</span> / <span class="token builtin">builtin</span></span></div>
+                        <div class="code-line"><span class="code-line__num" aria-hidden="true">6</span><span class="code-line__code"><span class="token property">property</span> / <span class="token tag">tag</span> / <span class="token attr-name">attr-name</span> / <span class="token deleted">deleted</span></span></div>
+                        <div class="code-line"><span class="code-line__num" aria-hidden="true">7</span><span class="code-line__code"><span class="token variable">variable</span> / <span class="token parameter">parameter</span> / <span class="token operator">operator</span> / <span class="token punctuation">punctuation</span></span></div>
+                        <div class="code-line"><span class="code-line__num" aria-hidden="true">8</span><span class="code-line__code"><span class="token regex">regex</span> / <span class="token important">important</span> / <span class="token bold">bold</span> / <span class="token italic">italic</span></span></div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="card">
+                  <div class="card__head">
+                    <h3 class="card__title">Patch file list</h3>
+                    <span class="mono">3 files</span>
+                  </div>
+                  <div class="card__body">
+                    <div class="tool-diff" data-mode="files">
+                      <ul class="tool-diff__file-list">
+                        <li>apps/gateway/src/invoice/sync.ts</li>
+                        <li>apps/ledger/src/contracts/invoice.ts</li>
+                        <li>apps/ledger/src/contracts/invoice.test.ts</li>
+                      </ul>
+                    </div>
+                    <p class="hint mt-3">
+                      File-list mode is for a legacy patch part with paths but no patch text. Paths
+                      ellipsis rather than wrap.
+                    </p>
                   </div>
                 </div>
               </div>

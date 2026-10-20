@@ -66,7 +66,23 @@ const ASSETS: Record<string, { file: string; contentType: string }> = {
     file: "chat-core.js",
     contentType: "text/javascript; charset=utf-8",
   },
+  "/assets/chat-diff.js": {
+    file: "chat-diff.js",
+    contentType: "text/javascript; charset=utf-8",
+  },
+  "/assets/chat-highlight.js": {
+    file: "chat-highlight.js",
+    contentType: "text/javascript; charset=utf-8",
+  },
+  "/assets/chat-highlight-worker.js": {
+    file: "chat-highlight-worker.js",
+    contentType: "text/javascript; charset=utf-8",
+  },
   "/assets/git.js": { file: "git.js", contentType: "text/javascript; charset=utf-8" },
+  "/assets/vendor/prism/prism-1.30.0.min.js": {
+    file: "vendor/prism/prism-1.30.0.min.js",
+    contentType: "text/javascript; charset=utf-8",
+  },
   "/assets/settings.js": {
     file: "settings.js",
     contentType: "text/javascript; charset=utf-8",

@@ -6,6 +6,11 @@ import {
   type HanseEvent,
   IDENTITY_SALVAGE_PREFIX_BYTES,
   MAX_DELTA_BYTES,
+  MAX_DIFF_BYTES,
+  MAX_DIFF_EVENT_BYTES,
+  MAX_DIFF_FILES,
+  MAX_DIFF_PATH_BYTES,
+  MAX_DIFF_PATH_TOTAL_BYTES,
   MAX_MESSAGE_INFO_BYTES,
   MAX_PART_ARRAY_ITEMS,
   MAX_PART_EVENT_BYTES,
@@ -17,7 +22,10 @@ import {
   MAX_TEXT_SNAPSHOT_BYTES,
   MAX_TOOL_OUTPUT_BYTES,
   MAX_TRACKED_PART_IDS,
+  MAX_TRUNCATED_FIELD_BYTES,
+  MAX_TRUNCATED_FIELDS,
   MAX_TYPED_EVENT_BYTES,
+  MAX_WRITE_CONTENT_BYTES,
   SseParser,
 } from "../src/opencode/events.js";
 
@@ -129,6 +137,38 @@ function toolPart(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function diffPart(
+  tool: string,
+  state: Record<string, unknown>,
+  overrides: Record<string, unknown> = {},
+) {
+  return {
+    id: `part_${tool}`,
+    type: "tool",
+    sessionID: "ses_1",
+    messageID: "msg_1",
+    callID: `call_${tool}`,
+    tool,
+    state,
+    ...overrides,
+  };
+}
+
+function fileRecord(index: number, patch: string, path = `dir/file-${index}.ts`) {
+  return {
+    type: "update",
+    relativePath: path,
+    filePath: path,
+    additions: 1,
+    deletions: 0,
+    patch,
+  };
+}
+
+function projectPart(part: Record<string, unknown>, id = `evt_${String(part.id)}`) {
+  return new EventProjector().project(partEvent(part, id))[0];
+}
+
 function bytes(value: unknown): number {
   return Buffer.byteLength(JSON.stringify(value), "utf8");
 }
@@ -207,6 +247,15 @@ describe("SseParser", () => {
     expect(MAX_TEXT_SNAPSHOT_BYTES).toBe(64 * 1024);
     expect(MAX_PART_EVENT_BYTES).toBe(256 * 1024);
     expect(MAX_TOOL_OUTPUT_BYTES).toBe(64 * 1024);
+    expect(MAX_PATCH_BYTES).toBe(64 * 1024);
+    expect(MAX_DIFF_BYTES).toBe(64 * 1024);
+    expect(MAX_DIFF_EVENT_BYTES).toBe(128 * 1024);
+    expect(MAX_WRITE_CONTENT_BYTES).toBe(64 * 1024);
+    expect(MAX_DIFF_FILES).toBe(50);
+    expect(MAX_DIFF_PATH_BYTES).toBe(1024);
+    expect(MAX_DIFF_PATH_TOTAL_BYTES).toBe(16 * 1024);
+    expect(MAX_TRUNCATED_FIELDS).toBe(32);
+    expect(MAX_TRUNCATED_FIELD_BYTES).toBe(8 * 1024);
     expect(MAX_PART_STRING_BYTES).toBe(8 * 1024);
     expect(MAX_PART_ARRAY_ITEMS).toBe(200);
     expect(MAX_STATUS_MESSAGE).toBe(2_000);
@@ -698,7 +747,7 @@ describe("message.part.updated", () => {
         "state.metadata.answers.length",
         "state.metadata.answers[0].length",
         "state.metadata.answers[0][0]",
-        "state.metadata.todos[0].content",
+        "more",
       ]),
     );
   });
@@ -1209,6 +1258,386 @@ describe("prompt and todo event budgets", () => {
     expect(event.todos.length).toBeGreaterThan(0);
     expect(event.todos.length).toBeLessThan(200);
     expect(bytes(event)).toBeLessThanOrEqual(MAX_TYPED_EVENT_BYTES);
+  });
+});
+
+describe("diff event normalization and budget", () => {
+  it("keeps cap-sized diff, content, and patch inputs and clips over-cap heads", () => {
+    const exact = "a".repeat(MAX_DIFF_BYTES);
+    const edit = projectPart(
+      diffPart("edit", { status: "completed", input: {}, metadata: { diff: exact } }),
+    );
+    expect((partOf(edit).state as Record<string, unknown>).metadata).toMatchObject({ diff: exact });
+    expect(edit?.type === "message.part.updated" ? edit.truncated : undefined).toBeUndefined();
+
+    const content = "c".repeat(MAX_WRITE_CONTENT_BYTES);
+    const write = projectPart(
+      diffPart("write", {
+        status: "completed",
+        input: { filePath: "src/a.ts", content },
+        metadata: {},
+      }),
+    );
+    expect(
+      ((partOf(write).state as Record<string, unknown>).input as Record<string, unknown>).content,
+    ).toBe(content);
+    expect(write?.type === "message.part.updated" ? write.truncated : undefined).toBeUndefined();
+
+    const patchText = "p".repeat(MAX_DIFF_BYTES);
+    const running = projectPart(
+      diffPart("apply_patch", {
+        status: "running",
+        input: { patchText },
+        metadata: {},
+      }),
+    );
+    expect(
+      ((partOf(running).state as Record<string, unknown>).input as Record<string, unknown>)
+        .patchText,
+    ).toBe(patchText);
+    expect(
+      running?.type === "message.part.updated" ? running.truncated : undefined,
+    ).toBeUndefined();
+
+    const over = projectPart(
+      diffPart("edit", {
+        status: "completed",
+        input: {},
+        metadata: { diff: "x".repeat(MAX_DIFF_BYTES + 100) },
+      }),
+    );
+    const overState = partOf(over).state as Record<string, unknown>;
+    const overMetadata = overState.metadata as Record<string, unknown>;
+    expect(Buffer.byteLength(overMetadata.diff as string, "utf8")).toBe(MAX_DIFF_BYTES);
+    expect(over?.type === "message.part.updated" ? over.truncated?.fields : []).toContain(
+      "state.metadata.diff",
+    );
+    expect(over?.type === "message.part.updated" ? over.truncated?.limit : undefined).toBe(
+      "per-file",
+    );
+  });
+
+  it("drops the combined apply_patch diff when every file has a patch", () => {
+    const patch = "diff --git a/a.ts b/a.ts\n+one\n";
+    const event = projectPart(
+      diffPart("apply_patch", {
+        status: "completed",
+        input: { patchText: "*** Begin Patch" },
+        metadata: {
+          diff: "combined-diff",
+          files: [fileRecord(0, patch), fileRecord(1, patch)],
+        },
+      }),
+    );
+    const state = partOf(event).state as Record<string, unknown>;
+    const metadata = state.metadata as Record<string, unknown>;
+    const files = metadata.files as Array<Record<string, unknown>>;
+    expect(metadata.diff).toBeUndefined();
+    expect((state.input as Record<string, unknown>).patchText).toBeUndefined();
+    expect(files.map((file) => file.patch)).toEqual([patch, patch]);
+  });
+
+  it("drops the duplicate edit sources and unrendered input", () => {
+    const patch = "--- a/a.ts\n+++ b/a.ts\n@@ -1 +1 @@\n-old\n+new\n";
+    const event = projectPart(
+      diffPart("edit", {
+        status: "completed",
+        input: {
+          filePath: "a.ts",
+          oldString: "old",
+          newString: "new",
+          replaceAll: true,
+          edits: Array.from({ length: 200 }, () => "e".repeat(8_000)),
+        },
+        metadata: {
+          diff: "legacy-diff",
+          filediff: {
+            file: "a.ts",
+            patch,
+            before: "b".repeat(64 * 1024),
+            after: "a".repeat(64 * 1024),
+            additions: 1,
+            deletions: 1,
+          },
+        },
+      }),
+    );
+    const state = partOf(event).state as Record<string, unknown>;
+    const metadata = state.metadata as Record<string, unknown>;
+    const filediff = metadata.filediff as Record<string, unknown>;
+    const input = state.input as Record<string, unknown>;
+    expect(metadata.diff).toBeUndefined();
+    expect(filediff.patch).toBe(patch);
+    expect(filediff.before).toBeUndefined();
+    expect(filediff.after).toBeUndefined();
+    expect(filediff.additions).toBe(1);
+    expect(input.oldString).toBeUndefined();
+    expect(input.newString).toBeUndefined();
+    expect(input.replaceAll).toBeUndefined();
+    expect(input.edits).toBeUndefined();
+  });
+
+  it("drops whole trailing file records over the 128 KiB sum", () => {
+    const patch = "a".repeat(MAX_DIFF_BYTES);
+    const event = projectPart(
+      diffPart("apply_patch", {
+        status: "completed",
+        input: {},
+        metadata: { files: [0, 1, 2].map((index) => fileRecord(index, patch)) },
+      }),
+    );
+    const state = partOf(event).state as Record<string, unknown>;
+    const files = (state.metadata as Record<string, unknown>).files as Array<
+      Record<string, unknown>
+    >;
+    expect(files).toHaveLength(2);
+    expect(
+      files.every((file) => Buffer.byteLength(file.patch as string, "utf8") === MAX_DIFF_BYTES),
+    ).toBe(true);
+    expect(bytes(event)).toBeLessThanOrEqual(MAX_PART_EVENT_BYTES);
+    expect(event?.type === "message.part.updated" ? event.truncated?.limit : undefined).toBe(
+      "total",
+    );
+    expect(event?.type === "message.part.updated" ? event.truncated?.fields : []).toContain(
+      "state.metadata.files.length",
+    );
+  });
+
+  it("keeps 50 of 200 files and does not omit the event", () => {
+    const files = Array.from({ length: 200 }, (_, index) => fileRecord(index, "+x\n"));
+    const event = projectPart(
+      diffPart("apply_patch", {
+        status: "completed",
+        input: {},
+        metadata: { files },
+      }),
+    );
+    expect(event?.type).toBe("message.part.updated");
+    const state = partOf(event).state as Record<string, unknown>;
+    const kept = (state.metadata as Record<string, unknown>).files as unknown[];
+    expect(kept).toHaveLength(MAX_DIFF_FILES);
+    expect(event?.type === "message.part.updated" ? event.truncated?.limit : undefined).toBe(
+      "files",
+    );
+  });
+
+  it("caps adversarial paths and the total path budget without omitting", () => {
+    const longPath = "p".repeat(5_000);
+    const files = Array.from({ length: MAX_DIFF_FILES }, (_, index) =>
+      fileRecord(index, "+x\n", longPath),
+    );
+    const event = projectPart(
+      diffPart("apply_patch", {
+        status: "completed",
+        input: {},
+        metadata: { files },
+      }),
+    );
+    expect(event?.type).toBe("message.part.updated");
+    const state = partOf(event).state as Record<string, unknown>;
+    const kept = (state.metadata as Record<string, unknown>).files as Array<
+      Record<string, unknown>
+    >;
+    const pathBytes = kept.reduce(
+      (total, file) =>
+        total +
+        ["relativePath", "movePath", "filePath"].reduce(
+          (inner, key) =>
+            inner + (typeof file[key] === "string" ? Buffer.byteLength(file[key], "utf8") : 0),
+          0,
+        ),
+      0,
+    );
+    expect(pathBytes).toBeLessThanOrEqual(MAX_DIFF_PATH_TOTAL_BYTES);
+    expect(
+      kept.every((file) =>
+        ["relativePath", "movePath", "filePath"].every(
+          (key) =>
+            typeof file[key] !== "string" ||
+            Buffer.byteLength(file[key], "utf8") <= MAX_DIFF_PATH_BYTES,
+        ),
+      ),
+    ).toBe(true);
+    expect(bytes(event)).toBeLessThanOrEqual(MAX_PART_EVENT_BYTES);
+    expect(
+      event?.type === "message.part.updated" ? event.truncated?.fields.length : 0,
+    ).toBeLessThanOrEqual(MAX_TRUNCATED_FIELDS);
+    expect(event?.type === "message.part.updated" ? event.truncated?.fields : []).toContain("more");
+  });
+
+  it("drops unrendered diagnostics but keeps rendered metadata", () => {
+    const event = projectPart(
+      diffPart("edit", {
+        status: "completed",
+        input: { filePath: "a.ts" },
+        metadata: {
+          filepath: "a.ts",
+          exists: false,
+          diagnostics: "d".repeat(200 * 1024),
+          other: { nested: "x".repeat(50 * 1024) },
+          diff: "--- a/a.ts\n+++ b/a.ts\n@@ -1 +1 @@\n-old\n+new\n",
+          filediff: { file: "a.ts", additions: 4, deletions: 2 },
+        },
+      }),
+    );
+    const metadata = (partOf(event).state as Record<string, unknown>).metadata as Record<
+      string,
+      unknown
+    >;
+    expect(metadata.diagnostics).toBeUndefined();
+    expect(metadata.other).toBeUndefined();
+    expect(metadata.filepath).toBe("a.ts");
+    expect(metadata.exists).toBe(false);
+    expect((metadata.filediff as Record<string, unknown>).additions).toBe(4);
+    expect((metadata.filediff as Record<string, unknown>).deletions).toBe(2);
+    expect(bytes(event)).toBeLessThanOrEqual(MAX_PART_EVENT_BYTES);
+  });
+
+  it("drops 200 hashline edits and keeps the diff", () => {
+    const diff = "--- a/a.ts\n+++ b/a.ts\n@@ -1 +1 @@\n-old\n+new\n";
+    const event = projectPart(
+      diffPart("edit", {
+        status: "completed",
+        input: {
+          filePath: "a.ts",
+          rename: "b.ts",
+          delete: false,
+          replaceAll: true,
+          edits: Array.from({ length: 200 }, () => "e".repeat(8_000)),
+        },
+        metadata: { diff },
+      }),
+    );
+    const state = partOf(event).state as Record<string, unknown>;
+    const input = state.input as Record<string, unknown>;
+    expect((state.metadata as Record<string, unknown>).diff).toBe(diff);
+    expect(input.edits).toBeUndefined();
+    expect(input.replaceAll).toBeUndefined();
+    expect(input.rename).toBe("b.ts");
+    expect(input.delete).toBe(false);
+    expect(bytes(event)).toBeLessThanOrEqual(MAX_PART_EVENT_BYTES);
+  });
+
+  it("caps truncated.fields at 32 entries including more", () => {
+    const longPath = "q".repeat(5_000);
+    const files = Array.from({ length: MAX_DIFF_FILES }, (_, index) =>
+      fileRecord(index, "+x\n", longPath),
+    );
+    const event = projectPart(
+      diffPart("apply_patch", {
+        status: "completed",
+        input: {},
+        metadata: { files },
+      }),
+    );
+    const truncated = event?.type === "message.part.updated" ? event.truncated : undefined;
+    expect(truncated?.fields.length).toBeLessThanOrEqual(MAX_TRUNCATED_FIELDS);
+    expect(truncated?.fields.at(-1)).toBe("more");
+    expect(truncated?.omittedBytes).toBeGreaterThan(0);
+  });
+
+  it("collapses the field list to more when even one long field cannot fit", () => {
+    const key = "k".repeat(MAX_TRUNCATED_FIELD_BYTES + 100);
+    const event = projectPart(
+      toolPart({
+        state: {
+          status: "running",
+          input: { [key]: "v".repeat(MAX_PART_STRING_BYTES + 100) },
+          metadata: {},
+        },
+      }),
+    );
+    expect(event?.type === "message.part.updated" ? event.truncated?.fields : undefined).toEqual([
+      "more",
+    ]);
+  });
+
+  it("keeps 50 combined-diff file headers and caps the combined text at 128 KiB", () => {
+    const files = Array.from({ length: 60 }, (_, index) => ({
+      type: "update",
+      relativePath: `file-${index}.ts`,
+      additions: index,
+      deletions: 0,
+    }));
+    const combined = projectPart(
+      diffPart("apply_patch", {
+        status: "completed",
+        input: {},
+        metadata: { diff: "combined", files },
+      }),
+    );
+    const combinedMetadata = (partOf(combined).state as Record<string, unknown>).metadata as Record<
+      string,
+      unknown
+    >;
+    expect((combinedMetadata.files as unknown[]).length).toBe(MAX_DIFF_FILES);
+    expect(combinedMetadata.diff).toBe("combined");
+    expect(combined?.type === "message.part.updated" ? combined.truncated?.limit : undefined).toBe(
+      "files",
+    );
+
+    const tooLarge = "d".repeat(MAX_DIFF_EVENT_BYTES + 1_000);
+    const clipped = projectPart(
+      diffPart("apply_patch", {
+        status: "completed",
+        input: {},
+        metadata: { diff: tooLarge },
+      }),
+    );
+    const clippedMetadata = (partOf(clipped).state as Record<string, unknown>).metadata as Record<
+      string,
+      unknown
+    >;
+    expect(Buffer.byteLength(clippedMetadata.diff as string, "utf8")).toBe(MAX_DIFF_EVENT_BYTES);
+    expect(clipped?.type === "message.part.updated" ? clipped.truncated?.limit : undefined).toBe(
+      "total",
+    );
+    expect(bytes(clipped)).toBeLessThanOrEqual(MAX_PART_EVENT_BYTES);
+  });
+
+  it("drops output before omitting an otherwise representable diff event", () => {
+    const patch = "a".repeat(MAX_DIFF_BYTES);
+    const event = projectPart(
+      diffPart(
+        "apply_patch",
+        {
+          status: "completed",
+          input: {},
+          output: "o".repeat(MAX_TOOL_OUTPUT_BYTES),
+          metadata: { files: [fileRecord(0, patch), fileRecord(1, patch)] },
+        },
+        { text: "t".repeat(MAX_TEXT_SNAPSHOT_BYTES) },
+      ),
+    );
+    expect(event?.type).toBe("message.part.updated");
+    const state = partOf(event).state as Record<string, unknown>;
+    expect(state.output).toBeUndefined();
+    expect(event?.type === "message.part.updated" ? event.truncated?.limit : undefined).toBe(
+      "output",
+    );
+    expect(event?.type === "message.part.updated" ? event.truncated?.fields : []).toContain(
+      "state.output",
+    );
+    expect(bytes(event)).toBeLessThanOrEqual(MAX_PART_EVENT_BYTES);
+  });
+
+  it("still emits message.part.omitted for an unrepresentable diff payload", () => {
+    const event = projectPart(
+      diffPart(
+        "apply_patch",
+        {
+          status: "completed",
+          input: {},
+          output: "o".repeat(MAX_TOOL_OUTPUT_BYTES),
+          metadata: { diff: "d".repeat(MAX_DIFF_EVENT_BYTES) },
+        },
+        {
+          text: "t".repeat(MAX_TEXT_SNAPSHOT_BYTES),
+          patch: "p".repeat(MAX_PATCH_BYTES),
+        },
+      ),
+    );
+    expect(event?.type).toBe("message.part.omitted");
   });
 });
 

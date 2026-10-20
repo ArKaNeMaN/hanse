@@ -1,0 +1,45 @@
+PrismJS 1.30.0 (vendored)
+=========================
+
+This directory contains a checked-in ESM build of PrismJS 1.30.0 used only by
+assets/chat-highlight-worker.js. It is not an npm dependency, there is no build
+step for it, and it is served from the same origin through the explicit asset
+allowlist in src/http/handler.ts.
+
+Files:
+
+  LICENSE                 upstream MIT license, Copyright (c) 2012 Lea Verou
+  VERSION                 PrismJS 1.30.0
+  SHA256SUMS              sha256 checksum of prism-1.30.0.min.js
+  prism-1.30.0.min.js     concatenated minified components, ESM default export
+
+The bundle is the concatenation of these upstream components, in this exact
+dependency order:
+
+  core, markup, css, clike, javascript, markup-templating, typescript,
+  jsx, tsx, json, yaml, bash, markdown, python, go, rust, sql, docker,
+  diff, toml, ini, java, c, cpp, csharp, ruby, php, kotlin, swift, scala,
+  lua, makefile, graphql, powershell
+
+It starts with a provenance/license header and ends with:
+
+  export default Prism;
+
+Update procedure:
+
+  1. npm pack prismjs@<version> in a temporary directory.
+  2. Verify npm view prismjs@<version> dist.integrity matches the tarball
+     before extracting. Never vendor a tarball from a non-registry URL.
+  3. Extract package/components/prism-<name>.min.js for the component list
+     above; confirm the dependency order is unchanged.
+  4. Concatenate the components in order, prepend the license header, append
+     "export default Prism;", and write prism-<version>.min.js.
+  5. Run sha256sum on the new file, update SHA256SUMS and VERSION, and update
+     the versioned path in src/http/handler.ts and the worker's dynamic import.
+  6. Run npm test (checksum, size, ESM, and asset-serving tests) and
+     npm run lint. Keep LICENSE verbatim.
+
+Source and integrity for 1.30.0:
+
+  tarball:   https://registry.npmjs.org/prismjs/-/prismjs-1.30.0.tgz
+  integrity: sha512-DEvV2ZF2r2/63V+tK8hQvrR2ZGn10srHbXviTlcv7Kpzw8jWiNTqbVgjO3IY8RxrrOUF8VPMQQFysYYYv0YZxw==
