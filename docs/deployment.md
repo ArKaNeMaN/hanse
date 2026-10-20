@@ -94,6 +94,44 @@ docker compose restart hanse
 The workspace is scanned for `.hanse/project.yaml` on startup. See
 [`docs/conventions.md`](conventions.md) for the manifest schemas.
 
+## Per-app images (B2)
+
+An application can opt into a full image environment with `.hanse/app.yaml`:
+
+```yaml
+name: web
+build:
+  dockerfile: Dockerfile
+  args:
+    NODE_VERSION: "22"
+```
+
+The Dockerfile must start from the default agent image so it keeps the Hanse runtime contract:
+
+```dockerfile
+ARG HANSE_BASE
+FROM ${HANSE_BASE}
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends <packages> && rm -rf /var/lib/apt/lists/*
+USER 1000
+```
+
+Builds are explicit: open the application page and use **Build image**, or run
+`hanse images build --app <key>`. The runner tars a contained app context, builds with
+`HANSE_BASE=<HANSE_AGENT_IMAGE>`, and validates the result in a no-network/read-only one-shot
+container. The app image must contain the Hanse entrypoint, `opencode`, the Hanse MCP CLI, and
+`git`; image-declared volumes are rejected. A failed build or validation keeps the previous image
+and container. The app is marked `stale` when its Dockerfile or default base changes; it keeps
+running the last ready image until rebuilt. Starting an app whose image is `missing`, `building`, or
+`error` is refused.
+
+The application page shows image status, build logs, and a rollback action. Only the current and
+previous image versions are retained; explicit GC protects current/rollback/running images and only
+removes Hanse app images. `GET /api/images/usage` reports filesystem/Docker usage and warns at 75%
+used / critical at 85%; crossing the threshold never deletes anything automatically. The runner
+mounts the host workspace read-only for build contexts and validation, and never receives
+`/data/state`.
+
 ## Model credentials
 
 Two options, and they can be combined (provider keys set in the UI take precedence for their scope):

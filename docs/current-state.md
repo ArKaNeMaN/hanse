@@ -19,7 +19,7 @@ coordinator. The product surface is one web UI (dashboard + chat + handoffs) plu
   Biome. Schemas: zod. YAML: `yaml`. Database: `better-sqlite3`.
 - Public OSS; license not chosen yet.
 
-## Runtime topology (B1 core: runner + per-app containers)
+## Runtime topology (B2: runner + per-app images)
 
 Four multi-arch images are built from `Dockerfile`: `ghcr.io/arkaneman/hanse` (coordinator),
 `hanse-agent-ide` (IDE), `hanse-runner` (runner), and `hanse-agent-default` (per-app agent).
@@ -49,6 +49,28 @@ Publish currently targets `linux/amd64`; arm64 is on-demand/backlog. Compose def
   `/` and `/api/*` are our UI; `/ide/*` is reverse-proxied to `ide:8080` (HTTP and WebSocket), with
   `/ide` stripped and `?folder` confined to the workspace root. The coordinator is the single front
   door.
+
+## Per-app images (B2)
+
+- `.hanse/app.yaml` may declare `build.dockerfile` (default `Dockerfile`) and `build.args`. The file
+  is a complete Dockerfile; `ARG HANSE_BASE` / `FROM ${HANSE_BASE}` starts from the default agent
+  image. The Dockerfile and build args are hashed into a stable build spec (app source changes do not
+  change it).
+- The registry reads `.hanse/app.yaml` directly, records image status/ref/hash/base/built-at/error,
+  and marks a previously built app `stale` when the Dockerfile/base digest changes. Invalid manifests
+  or Dockerfile paths mark the app `error` without failing the whole project.
+- A human action (`POST /api/apps/:app/build`, the app page Image panel, or `hanse images build`)
+  asks the runner to build. The runner tars a contained app context (no symlinks, `.git`, state,
+  agents, or caches) and builds from the app image; no build runs at deploy time and nothing
+  auto-builds on file edits.
+- Every built image is validated in a no-network, read-only, cap-drop one-shot container. It must
+  provide the Hanse entrypoint, `opencode`, the `hanse agent-host`/MCP CLI, and `git`; image-declared
+  volumes are rejected. A failed validation/build keeps the previous image and container and marks
+  the app `error`; starting an agent with `missing`, `building`, or `error` is refused, while `stale`
+  keeps using the last ready image.
+- The app container uses `apps.image_ref` when a build is configured. The coordinator keeps the
+  current and previous image versions; the app page can roll back, and an explicit GC protects
+  current/rollback/running images and only removes `hanse-app-*`/Hanse-labelled images.
 
 ## App image usage and GC (B2.5b)
 
@@ -392,10 +414,16 @@ coordinator; operators do not set them.
 
 ## Verification
 
-`npm run lint && npm run typecheck && npm test && npm run build` (all green; 932 tests). B1 core
+`npm run lint && npm run typecheck && npm test && npm run build` (all green; 1035 tests). B1 core
 live smoke on `deployment-host`: coordinator/IDE/runner healthy, per-app `demo-app` container running,
 `scripts/agent-runtime-probe.sh b1` passes, coordinator recreate reattaches the app network, and the
 app agent has no `/data/state`, Docker socket, operator/runtime token, or sibling app access.
+B2 live smoke on `deployment-host`: built a test app from `ARG HANSE_BASE` with an extra `jq` package; the
+builder reached `ready`, image validation passed, the app container used the built `image_ref`, a
+rebuild produced a second version, rollback switched back and restarted the agent, and
+`scripts/agent-runtime-probe.sh b2` plus `GET /api/images/usage` passed. The test app is
+`b2-smoke/apps/web` in the host workspace; its image is `stale` until rebuilt against the current
+default base.
 B1.4 terminal live smoke: `/terminal` returns `200`, direct runner exec, coordinator proxy, and the
 LAN WebSocket each returned `B1_*_OK`, and closing the terminal left the app container running.
 B1.6 `hanse-down.sh` live smoke: down removed the static stack and managed app/network; `compose up`
@@ -431,17 +459,22 @@ Settings stage verification:
 
 - Single user; no RBAC or multi-tenant isolation.
 - Trust model: trusted repositories; agents execute code.
-- **B1 core runs each app in its own hardened container/network.** App containers have no
-  `/data/state`, Docker socket, operator/runtime token, or sibling mounts. The runner is
-  root-equivalent through the Docker socket and is trusted/operator-only; it is on the control
-  network and holds no coordinator state. B1.5 git runs in a no-secret one-shot container from the
-  app image; the coordinator keeps only the human-only UI/API and a runner client. The B1.4 operator
-  terminal is human-only and scoped to
-  managed app containers, but it is a line-oriented console rather than a full xterm (no alternate
-  screen, mouse reporting, or full ANSI rendering). "Human-only" prompt routes remain a Hanse-route
-  guarantee, not a hard
-  boundary: an agent with `bash` can call the upstream prompt API directly, including a v2 `always`
-  reply that creates a durable project-scoped saved permission.
+- **B2 runs each app in its own hardened container/network and optional per-app image.** App
+  containers have no `/data/state`, Docker socket, operator/runtime token, or sibling mounts. The
+  runner is root-equivalent through the Docker socket and is trusted/operator-only; it is on the
+  control network, has no coordinator state, and mounts workspace/agents read-only for build context
+  and per-app passwords. B1.5 git runs in a no-secret one-shot container from the app image; the
+  coordinator keeps only the human-only UI/API and a runner client. The B1.4 operator terminal is
+  human-only and scoped to managed app containers, but it is a line-oriented console rather than a
+  full xterm (no alternate screen, mouse reporting, or full ANSI rendering). "Human-only" prompt
+  routes remain a Hanse-route guarantee, not a hard boundary: an agent with `bash` can call the
+  upstream prompt API directly, including a v2 `always` reply that creates a durable project-scoped
+  saved permission.
+- B2 image builds are explicit and local to the runner; there is no auto-build on file edits and no
+  remote build farm. Builds can use network access to install OS packages. The previous image/container
+  is kept on failure, and image GC is explicit rather than automatic at the 85% warning threshold.
+  Custom images must include the Hanse agent contract (entrypoint, `opencode`, MCP CLI, git) or
+  validation rejects them.
 - The permission overlay is a guardrail, not a sandbox. App-owned `opencode.json`/plugins can widen
   the final ruleset (the `.opencode` edit deny is bypassable with `bash`), verification is
   warning-only by owner decision, `bash` path checks are best-effort, symlinks/bind mounts can

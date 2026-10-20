@@ -25,6 +25,9 @@ and requirements) to each other through the coordinator - like independent teams
 - Integrated chat with agents: sessions, messages, SSE updates, tool-call/diff rendering.
 - Application page with a lightweight git workbench: status, fetch, fast-forward update, local branch
   switch, commit, and push.
+- Optional per-app images from `.hanse/Dockerfile` (`ARG HANSE_BASE`), built on a human action,
+  validated in a locked-down container, with status/logs, stale detection, two-version rollback, and
+  explicit GC.
 - Agent-driven handoffs via MCP tools (`request_sibling_change`, `list_apps`, `handoff_status`,
   `deliver_handoff`) with human approval in the dashboard.
 - A single operator login for the UI and the web IDE (no separate IDE password).
