@@ -108,7 +108,7 @@ if [ "$mode" = "b1" ] || [ "$mode" = "b2" ]; then
     printf '%s check(s) failed\n' "$failures" >&2
     exit 1
   fi
-  printf 'All b1 checks passed\n'
+  printf 'All %s checks passed\n' "$mode"
   exit 0
 fi
 

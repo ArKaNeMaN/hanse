@@ -393,8 +393,17 @@ describe("app image lifecycle", () => {
         },
       );
       expect(response.status).toBe(200);
-      const body = (await response.json()) as { imageRef: string; restarted: boolean };
-      expect(body).toMatchObject({ imageRef: "hanse-app-p:web:one", restarted: true });
+      const body = (await response.json()) as {
+        imageRef: string;
+        restarted: boolean;
+        restartScheduled: boolean;
+      };
+      expect(body).toMatchObject({
+        imageRef: "hanse-app-p:web:one",
+        restarted: false,
+        restartScheduled: true,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 25));
     } finally {
       await new Promise<void>((resolve) => {
         server.closeAllConnections();

@@ -240,34 +240,32 @@ export async function handleImages(deps: HttpDeps, request: HttpRequest): Promis
     }
     try {
       const result = await deps.images.rollback(found.app.id, found.app.appKey);
-      let restarted = false;
-      let restartWarning: string | undefined;
+      // The runner deletes the app network during a stop/start. Do not hold the HTTP response open
+      // across that network churn; schedule the restart after the rollback response is flushed.
+      let restartScheduled = false;
       if (deps.manager !== undefined) {
         const refreshed = findApp(deps, found.project.id, found.app.appKey) ?? found;
-        try {
-          restarted = await deps.manager.restartIfRunning(toManagedApp(refreshed));
-        } catch (error) {
-          restartWarning = error instanceof Error ? error.message : String(error);
-        }
+        const target = toManagedApp(refreshed);
+        const manager = deps.manager;
+        restartScheduled = true;
+        setTimeout(() => {
+          void manager.restartIfRunning(target).catch(() => undefined);
+        }, 0);
       }
       if (wantsHtml(request) || isFormContentType(request.headers["content-type"])) {
-        const message =
-          restartWarning === undefined
-            ? "Image rolled back."
-            : `Image rolled back, but the agent did not restart: ${restartWarning}`;
         return redirect(
           appHrefWithNotice(
             found.project.id,
             found.app.appKey,
-            message,
-            restartWarning === undefined ? "success" : "error",
+            restartScheduled ? "Image rolled back; restarting the agent." : "Image rolled back.",
+            "success",
           ),
         );
       }
       return json(200, {
         ...result,
-        restarted,
-        ...(restartWarning === undefined ? {} : { restartWarning }),
+        restarted: false,
+        restartScheduled,
       });
     } catch (error) {
       if (error instanceof ImageServiceError) {
