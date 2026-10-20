@@ -301,6 +301,12 @@ export class RunnerService {
     const containerName = appContainerName(appId);
     const inspect = await this.#docker.inspectContainer(containerName);
     if (inspect === undefined) return undefined;
+    if (inspect.State?.Running === true) {
+      const network = inspect.Config?.Labels?.["hanse.network.name"];
+      if (network !== undefined) {
+        await this.#connectCoordinator(network).catch(() => undefined);
+      }
+    }
     return statusFromInspect(appId, containerName, inspect);
   }
 
