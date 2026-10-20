@@ -274,6 +274,7 @@ export async function runnerCommand(
     return await runRunner({
       config,
       docker,
+      exec: docker,
       hostname: options.hostname,
       port: options.port,
       onListening: (address) => ctx.io.stdout(`hanse runner listening on ${address}`),
@@ -372,6 +373,9 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
     git,
     manager,
     settings,
+    ...(runnerUrl === undefined || runnerUrl.length === 0
+      ? {}
+      : { runner: { url: runnerUrl, token: runtimeToken } }),
   });
 
   let ide: ChildProcess | null = null;

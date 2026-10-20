@@ -1347,6 +1347,63 @@
     border-block-start: 1px solid var(--line);
   }
 
+  .terminal-card__body {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    padding: 0;
+  }
+
+  .terminal-card__note {
+    margin: 0;
+    padding: var(--space-2) var(--space-4);
+  }
+
+  .terminal-card__note:first-child {
+    padding-block-start: var(--space-4);
+  }
+
+  .terminal {
+    margin: 0;
+    min-block-size: 26rem;
+    max-block-size: 65vh;
+    overflow: auto;
+    padding: var(--space-4);
+    background: var(--inset);
+    color: var(--text-1);
+    font-family: var(--font-mono);
+    font-size: var(--text-mono);
+    line-height: 1.5;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    tab-size: 4;
+    border-block: 1px solid var(--line);
+  }
+
+  .terminal:focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: -2px;
+  }
+
+  .terminal__input {
+    display: block;
+    inline-size: 100%;
+    min-block-size: 2.5rem;
+    resize: vertical;
+    padding: var(--space-2) var(--space-4);
+    border: 0;
+    background: var(--surface-1);
+    color: var(--text-1);
+    font-family: var(--font-mono);
+    font-size: var(--text-mono);
+    line-height: 1.5;
+    outline: none;
+  }
+
+  .terminal__input:focus {
+    box-shadow: inset 0 0 0 1px var(--focus);
+  }
+
   .card--interactive {
     cursor: pointer;
     transition:

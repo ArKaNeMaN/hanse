@@ -7,13 +7,13 @@ import http, {
 import net from "node:net";
 import path from "node:path";
 import type { Duplex } from "node:stream";
-import { authenticate } from "../identity/auth.js";
-import { cookieToken } from "./auth.js";
+import { isHumanCookie } from "./auth.js";
 import { handleChat, streamSessionEvents } from "./chat.js";
 import { handleGit } from "./git.js";
 import { type HttpDeps, handleRequest } from "./handler.js";
 import { handlePrompts, streamAppEvents } from "./prompts.js";
 import { handleSettings, isSettingsRoute } from "./settings.js";
+import { proxyTerminalUpgrade } from "./terminal.js";
 
 const IDE_PORT = Number(process.env.HANSE_IDE_PORT ?? 8080);
 const IDE_HOST = process.env.HANSE_IDE_HOST ?? "127.0.0.1";
@@ -54,18 +54,6 @@ function readBody(request: IncomingMessage): Promise<string> {
       }
     });
   });
-}
-
-function isHumanAuthed(deps: HttpDeps, request: IncomingMessage): boolean {
-  const token = cookieToken(request.headers.cookie);
-  if (token === undefined || token.length === 0) {
-    return false;
-  }
-  try {
-    return authenticate(deps.db, `Bearer ${token}`).kind === "human";
-  } catch {
-    return false;
-  }
 }
 
 function proxyHttp(
@@ -112,7 +100,7 @@ export function createHttpServer(deps: HttpDeps): Server {
     const url = new URL(request.url ?? "/", "http://localhost");
 
     if (url.pathname === "/ide" || url.pathname.startsWith("/ide/")) {
-      if (!isHumanAuthed(deps, request)) {
+      if (!isHumanCookie(deps, request.headers.cookie)) {
         const next = encodeURIComponent(`${url.pathname}${url.search}`);
         response.writeHead(302, { location: `/login?next=${next}` });
         response.end();
@@ -190,7 +178,11 @@ export function createHttpServer(deps: HttpDeps): Server {
 
   server.on("upgrade", (request: IncomingMessage, socket: Duplex, head: Buffer) => {
     const url = request.url ?? "";
-    if (!url.startsWith("/ide") || !isHumanAuthed(deps, request)) {
+    if (/^\/api\/apps\/[^/]+\/terminal(?:\?|$)/.test(url)) {
+      void proxyTerminalUpgrade(deps, request, socket, head).catch(() => socket.destroy());
+      return;
+    }
+    if (!url.startsWith("/ide") || !isHumanCookie(deps, request.headers.cookie)) {
       socket.destroy();
       return;
     }

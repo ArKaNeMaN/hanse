@@ -1,6 +1,13 @@
 import { timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import {
+  createServer,
+  type IncomingMessage,
+  type Server,
+  type ServerResponse,
+  STATUS_CODES,
+} from "node:http";
+import type { Duplex } from "node:stream";
 import {
   type ReconcileResponse,
   type RuntimeAppState,
@@ -13,7 +20,14 @@ import {
 import { isValidAppId } from "../agent/spec.js";
 import { ConfigError } from "../config/load.js";
 import { VERSION } from "../version.js";
-import { type DockerContainerInspect, DockerError, type DockerRuntime } from "./docker.js";
+import {
+  type DockerContainerInspect,
+  DockerError,
+  type DockerExecRuntime,
+  type DockerExecSize,
+  type DockerExecStream,
+  type DockerRuntime,
+} from "./docker.js";
 import { validateGitRequest } from "./git.js";
 import { appContainerName, appNetworkName } from "./names.js";
 import {
@@ -23,11 +37,14 @@ import {
   type RunnerSpec,
   validateRunnerSpec,
 } from "./validate.js";
+import { acceptWebSocket, websocketHandshakeError } from "./ws.js";
 
 const MAX_BODY_BYTES = 64 * 1024;
 const MAX_RECONCILE_APPS = 1000;
 const DEFAULT_LOG_TAIL = 500;
 const RUNNER_ENTRYPOINT = "/usr/local/bin/hanse-agent-entrypoint";
+const EXEC_SHELL = "if [ -x /bin/bash ]; then exec /bin/bash -l; fi; exec /bin/sh -l";
+const MAX_EXEC_DIMENSION = 1000;
 
 class RunnerError extends Error {
   readonly status: number;
@@ -53,6 +70,46 @@ function writeJson(
     ...headers,
   });
   response.end(payload);
+}
+
+function writeSocketResponse(socket: Duplex, status: number, body: unknown): void {
+  if (!socket.writable) {
+    socket.destroy();
+    return;
+  }
+  const payload = JSON.stringify(body);
+  socket.write(
+    [
+      `HTTP/1.1 ${status} ${STATUS_CODES[status] ?? "Error"}`,
+      "content-type: application/json; charset=utf-8",
+      `content-length: ${Buffer.byteLength(payload)}`,
+      "cache-control: no-store",
+      "connection: close",
+      "",
+      payload,
+    ].join("\r\n"),
+  );
+  socket.end();
+}
+
+function parseResizeControl(data: Buffer, type: "text" | "binary"): DockerExecSize | undefined {
+  if (type !== "text") return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(data.toString("utf8")) as unknown;
+  } catch {
+    return undefined;
+  }
+  if (typeof parsed !== "object" || parsed === null) return undefined;
+  const candidate = parsed as { type?: unknown; rows?: unknown; cols?: unknown };
+  if (candidate.type !== "resize") return undefined;
+  if (!Number.isInteger(candidate.rows) || !Number.isInteger(candidate.cols)) return undefined;
+  const rows = candidate.rows as number;
+  const cols = candidate.cols as number;
+  if (rows < 1 || cols < 1 || rows > MAX_EXEC_DIMENSION || cols > MAX_EXEC_DIMENSION) {
+    return undefined;
+  }
+  return { rows, cols };
 }
 
 function bearerToken(request: IncomingMessage): string | undefined {
@@ -182,16 +239,19 @@ function containerEnvironment(spec: RunnerSpec): Record<string, string> {
 export interface RunnerServiceOptions {
   config: RunnerConfig;
   docker: DockerRuntime;
+  exec?: DockerExecRuntime;
 }
 
 /** Per-app container runtime behind the same API shape as the B0 supervisor. */
 export class RunnerService {
   readonly #config: RunnerConfig;
   readonly #docker: DockerRuntime;
+  readonly #exec: DockerExecRuntime | undefined;
 
   constructor(options: RunnerServiceOptions) {
     this.#config = options.config;
     this.#docker = options.docker;
+    this.#exec = options.exec;
   }
 
   async health(): Promise<RuntimeHealth> {
@@ -355,7 +415,7 @@ export class RunnerService {
   }
 
   createServer(): Server {
-    return createServer((request, response) => {
+    const server = createServer((request, response) => {
       void this.#handle(request, response).catch((error: unknown) => {
         const status = statusFor(error);
         if (status >= 500 && !(error instanceof DockerError)) {
@@ -372,6 +432,12 @@ export class RunnerService {
         }
       });
     });
+    server.on("upgrade", (request: IncomingMessage, socket: Duplex, head: Buffer) => {
+      void this.#handleUpgrade(request, socket, head).catch((error: unknown) => {
+        writeSocketResponse(socket, statusFor(error), errorBody(error));
+      });
+    });
+    return server;
   }
 
   async #handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -420,7 +486,7 @@ export class RunnerService {
       return;
     }
 
-    const match = /^\/v1\/apps\/([^/]+)(?:\/(ensure|logs|git))?$/.exec(url.pathname);
+    const match = /^\/v1\/apps\/([^/]+)(?:\/(ensure|logs|git|exec))?$/.exec(url.pathname);
     if (match === null) {
       writeJson(response, 404, { error: "not found" });
       return;
@@ -470,6 +536,13 @@ export class RunnerService {
       await this.git(await readJson(request));
       return;
     }
+    if (action === "exec") {
+      if (method !== "GET") {
+        writeJson(response, 405, { error: "method not allowed" }, { Allow: "GET" });
+        return;
+      }
+      throw new RunnerError(426, "websocket upgrade required");
+    }
     if (method === "GET") {
       const status = await this.status(appId);
       if (status === undefined) {
@@ -486,6 +559,97 @@ export class RunnerService {
     writeJson(response, 405, { error: "method not allowed" }, { Allow: "GET, DELETE" });
   }
 
+  async #handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer): Promise<void> {
+    const url = new URL(request.url ?? "/", "http://localhost");
+    const match = /^\/v1\/apps\/([^/]+)\/exec$/.exec(url.pathname);
+    if (match === null) {
+      writeSocketResponse(socket, 404, { error: "not found" });
+      return;
+    }
+    if ((request.method ?? "GET") !== "GET") {
+      writeSocketResponse(socket, 405, { error: "method not allowed" });
+      return;
+    }
+    const provided = bearerToken(request);
+    if (provided === undefined || !tokenMatches(provided, this.#config.token)) {
+      writeSocketResponse(socket, 401, { error: "unauthorized" });
+      return;
+    }
+
+    let appId: string;
+    try {
+      appId = decodeURIComponent(match[1] ?? "");
+    } catch {
+      writeSocketResponse(socket, 400, { error: "invalid app id" });
+      return;
+    }
+    if (!isValidAppId(appId)) {
+      writeSocketResponse(socket, 400, { error: "invalid app id" });
+      return;
+    }
+
+    const inspect = await this.#docker.inspectContainer(appContainerName(appId));
+    const labels = inspect?.Config?.Labels;
+    if (
+      inspect === undefined ||
+      labels?.["hanse.managed"] !== "true" ||
+      labels?.["hanse.app.id"] !== appId
+    ) {
+      writeSocketResponse(socket, 404, { error: "unknown app" });
+      return;
+    }
+    if (inspect.State?.Running !== true) {
+      writeSocketResponse(socket, 409, { error: "app is not running" });
+      return;
+    }
+
+    const handshakeError = websocketHandshakeError(request);
+    if (handshakeError !== undefined) {
+      writeSocketResponse(socket, 400, { error: handshakeError });
+      return;
+    }
+    if (this.#exec === undefined) {
+      writeSocketResponse(socket, 501, { error: "exec is not enabled" });
+      return;
+    }
+
+    const execId = await this.#exec.createExec(inspect.Id, {
+      cmd: ["/bin/sh", "-lc", EXEC_SHELL],
+    });
+    const stream = await this.#exec.startExec(execId);
+    if (!socket.writable) {
+      stream.close();
+      return;
+    }
+    const peer = acceptWebSocket(request, socket, head);
+    this.#bridgeExec(this.#exec, execId, stream, peer);
+  }
+
+  #bridgeExec(
+    exec: DockerExecRuntime,
+    execId: string,
+    stream: DockerExecStream,
+    peer: ReturnType<typeof acceptWebSocket>,
+  ): void {
+    stream.onData((chunk) => {
+      if (!peer.send(chunk)) {
+        stream.pause();
+        peer.onDrain(() => stream.resume());
+      }
+    });
+    peer.onMessage((data, type) => {
+      const resize = parseResizeControl(data, type);
+      if (resize !== undefined) {
+        void exec.resizeExec(execId, resize).catch(() => undefined);
+        return;
+      }
+      stream.write(data);
+    });
+    stream.onEnd(() => peer.close(1000, "exec ended"));
+    stream.onError(() => peer.close(1011, "exec failed"));
+    peer.onClose(() => stream.close());
+  }
+
   async #connectCoordinator(network: string): Promise<void> {
     await this.#docker.connectNetwork(network, this.#config.coordinatorContainer, ["hanse"]);
   }
@@ -499,6 +663,7 @@ export class RunnerService {
 export interface RunRunnerOptions {
   config: RunnerConfig;
   docker: DockerRuntime;
+  exec?: DockerExecRuntime;
   hostname: string;
   port: number;
   onListening?: (address: string) => void;
@@ -506,7 +671,11 @@ export interface RunRunnerOptions {
 
 /** Start the runner HTTP server and close it on SIGTERM/SIGINT. */
 export async function runRunner(options: RunRunnerOptions): Promise<number> {
-  const service = new RunnerService({ config: options.config, docker: options.docker });
+  const service = new RunnerService({
+    config: options.config,
+    docker: options.docker,
+    ...(options.exec === undefined ? {} : { exec: options.exec }),
+  });
   const server = service.createServer();
   await new Promise<void>((resolve, reject) => {
     const onError = (error: Error): void => {

@@ -1,5 +1,6 @@
 import { Buffer } from "node:buffer";
 import http from "node:http";
+import type { Duplex } from "node:stream";
 
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 
@@ -8,8 +9,18 @@ export interface DockerResponse {
   body: Buffer;
 }
 
+export interface DockerUpgradedConnection {
+  socket: Duplex;
+  head: Buffer;
+}
+
 export interface DockerTransport {
   request(method: "GET" | "POST" | "DELETE", path: string, body?: unknown): Promise<DockerResponse>;
+  upgrade?(
+    method: "GET" | "POST" | "DELETE",
+    path: string,
+    body?: unknown,
+  ): Promise<DockerUpgradedConnection>;
 }
 
 export class DockerError extends Error {
@@ -102,6 +113,63 @@ export class UnixDockerTransport implements DockerTransport {
       request.end();
     });
   }
+
+  upgrade(
+    method: "GET" | "POST" | "DELETE",
+    requestPath: string,
+    body?: unknown,
+  ): Promise<DockerUpgradedConnection> {
+    const payload = body === undefined ? undefined : Buffer.from(JSON.stringify(body), "utf8");
+    const path = requestPath.startsWith("/v") ? requestPath : `/${this.#apiVersion}${requestPath}`;
+
+    return new Promise((resolve, reject) => {
+      const request = http.request({
+        socketPath: this.#socketPath,
+        path,
+        method,
+        headers: {
+          accept: "*/*",
+          connection: "Upgrade",
+          upgrade: "tcp",
+          ...(payload === undefined
+            ? {}
+            : {
+                "content-type": "application/json",
+                "content-length": String(payload.length),
+              }),
+        },
+      });
+      request.on("upgrade", (_response, socket, head) => {
+        resolve({ socket, head });
+      });
+      request.on("response", (response) => {
+        const chunks: Buffer[] = [];
+        response.on("data", (chunk: Buffer) => chunks.push(chunk));
+        response.on("end", () => {
+          const detail = Buffer.concat(chunks).toString("utf8").trim().slice(0, 500);
+          reject(
+            new DockerError(
+              response.statusCode ?? 0,
+              `docker exec upgrade failed with HTTP ${response.statusCode ?? 0}${
+                detail.length > 0 ? `: ${detail}` : ""
+              }`,
+              detail,
+            ),
+          );
+        });
+        response.on("error", reject);
+      });
+      request.on("error", (error) => {
+        reject(
+          error instanceof DockerError
+            ? error
+            : new DockerError(0, `docker exec upgrade failed: ${error.message}`),
+        );
+      });
+      if (payload !== undefined) request.write(payload);
+      request.end();
+    });
+  }
 }
 
 export interface DockerNetworkSpec {
@@ -175,6 +243,120 @@ export interface DockerContainerInspect {
 export interface DockerLogs {
   logs: string;
   truncated: boolean;
+}
+
+export interface DockerExecCreateOptions {
+  cmd: string[];
+  workingDir?: string;
+  env?: Record<string, string>;
+}
+
+export interface DockerExecSize {
+  rows: number;
+  cols: number;
+}
+
+export interface DockerExecStream {
+  write(chunk: Buffer): boolean;
+  close(): void;
+  pause(): void;
+  resume(): void;
+  onData(listener: (chunk: Buffer) => void): void;
+  onEnd(listener: () => void): void;
+  onError(listener: (error: Error) => void): void;
+}
+
+export interface DockerExecRuntime {
+  createExec(containerId: string, options: DockerExecCreateOptions): Promise<string>;
+  startExec(execId: string): Promise<DockerExecStream>;
+  resizeExec(execId: string, size: DockerExecSize): Promise<void>;
+}
+
+const MAX_PENDING_EXEC_BYTES = 1024 * 1024;
+
+class DockerSocketExecStream implements DockerExecStream {
+  readonly #socket: Duplex;
+  #head: Buffer;
+  readonly #dataListeners: Array<(chunk: Buffer) => void> = [];
+  readonly #endListeners: Array<() => void> = [];
+  readonly #errorListeners: Array<(error: Error) => void> = [];
+  readonly #pending: Buffer[] = [];
+  #pendingBytes = 0;
+  #ended = false;
+  #closed = false;
+
+  constructor(socket: Duplex, head: Buffer) {
+    this.#socket = socket;
+    this.#head = head;
+    socket.on("data", (chunk: Buffer) => this.#onData(chunk));
+    socket.on("end", () => this.#onEnd());
+    socket.on("close", () => this.#onEnd());
+    socket.on("error", (error: Error) => {
+      if (this.#closed) return;
+      for (const listener of this.#errorListeners) listener(error);
+      this.#onEnd();
+    });
+  }
+
+  write(chunk: Buffer): boolean {
+    if (this.#closed || !this.#socket.writable) return false;
+    return this.#socket.write(chunk);
+  }
+
+  close(): void {
+    if (this.#closed) return;
+    this.#closed = true;
+    this.#socket.destroy();
+  }
+
+  pause(): void {
+    this.#socket.pause();
+  }
+
+  resume(): void {
+    this.#socket.resume();
+  }
+
+  onData(listener: (chunk: Buffer) => void): void {
+    this.#dataListeners.push(listener);
+    if (this.#head.length > 0) {
+      const head = this.#head;
+      this.#head = Buffer.alloc(0);
+      listener(head);
+    }
+    for (const chunk of this.#pending.splice(0)) {
+      listener(chunk);
+    }
+    this.#pendingBytes = 0;
+  }
+
+  onEnd(listener: () => void): void {
+    if (this.#ended) {
+      listener();
+      return;
+    }
+    this.#endListeners.push(listener);
+  }
+
+  onError(listener: (error: Error) => void): void {
+    this.#errorListeners.push(listener);
+  }
+
+  #onData(chunk: Buffer): void {
+    if (this.#dataListeners.length === 0) {
+      if (this.#pendingBytes + chunk.length > MAX_PENDING_EXEC_BYTES) return;
+      this.#pending.push(chunk);
+      this.#pendingBytes += chunk.length;
+      return;
+    }
+    for (const listener of this.#dataListeners) listener(chunk);
+  }
+
+  #onEnd(): void {
+    if (this.#ended || this.#closed) return;
+    this.#ended = true;
+    for (const listener of this.#endListeners) listener();
+  }
 }
 
 function decodeJson<T>(response: DockerResponse, operation: string): T {
@@ -383,6 +565,50 @@ export class DockerClient {
     );
     this.#check(response, `logs for container ${id}`);
     return { logs: demuxDockerStream(response.body), truncated: false };
+  }
+
+  async createExec(containerId: string, options: DockerExecCreateOptions): Promise<string> {
+    const response = await this.#transport.request(
+      "POST",
+      `/containers/${encodeURIComponent(containerId)}/exec`,
+      {
+        AttachStdin: true,
+        AttachStdout: true,
+        AttachStderr: true,
+        Tty: true,
+        Cmd: options.cmd,
+        ...(options.workingDir === undefined ? {} : { WorkingDir: options.workingDir }),
+        ...(options.env === undefined
+          ? {}
+          : { Env: Object.entries(options.env).map(([key, value]) => `${key}=${value}`) }),
+      },
+    );
+    this.#check(response, `create exec in container ${containerId}`);
+    const body = decodeJson<{ Id?: string }>(response, `create exec in container ${containerId}`);
+    if (body.Id === undefined || body.Id.length === 0) {
+      throw new DockerError(0, `create exec in container ${containerId} returned no id`);
+    }
+    return body.Id;
+  }
+
+  async startExec(execId: string): Promise<DockerExecStream> {
+    if (this.#transport.upgrade === undefined) {
+      throw new DockerError(0, "docker transport does not support exec streams");
+    }
+    const connection = await this.#transport.upgrade(
+      "POST",
+      `/exec/${encodeURIComponent(execId)}/start`,
+      { Detach: false, Tty: true },
+    );
+    return new DockerSocketExecStream(connection.socket, connection.head);
+  }
+
+  async resizeExec(execId: string, size: DockerExecSize): Promise<void> {
+    const response = await this.#transport.request(
+      "POST",
+      `/exec/${encodeURIComponent(execId)}/resize?h=${size.rows}&w=${size.cols}`,
+    );
+    this.#check(response, `resize exec ${execId}`);
   }
 
   #check(response: DockerResponse, operation: string): void {

@@ -51,3 +51,19 @@ export function humanFrom(deps: Pick<HttpDeps, "db">, request: HttpRequest): Pri
   const principal = principalFrom(deps, request);
   return principal?.kind === "human" ? principal : undefined;
 }
+
+/** Human check for cookie-only surfaces such as the IDE and the operator terminal. */
+export function isHumanCookie(
+  deps: Pick<HttpDeps, "db">,
+  cookieHeader: string | undefined,
+): boolean {
+  const token = cookieToken(cookieHeader);
+  if (token === undefined || token.length === 0) {
+    return false;
+  }
+  try {
+    return authenticate(deps.db, `Bearer ${token}`).kind === "human";
+  } catch {
+    return false;
+  }
+}

@@ -296,6 +296,19 @@ Publish currently targets `linux/amd64`; arm64 is on-demand/backlog. Compose def
 - VS Code cannot place an extension view in the Secondary Side Bar programmatically; the
   `Hanse: Move Chat to Secondary Side Bar` command opens the move picker (the layout then persists).
 
+## Operator terminal
+
+- Human-only `/terminal?app=<app>&project=<project>` page, linked from the application page.
+- The coordinator proxies the WebSocket at `/api/apps/<app>/terminal?project=<project>` to the
+  runner's `/v1/apps/<appId>/exec` with the runtime bearer token; the operator cookie is never
+  forwarded and no token appears in URLs or HTML.
+- The runner opens a TTY exec in the managed app container as uid 1000 with a fixed
+  `/bin/bash -l` (or `/bin/sh -l` fallback) and bridges WebSocket frames to the Docker exec stream.
+  Only managed app containers resolved by `appId` are reachable.
+- Closing or reloading the terminal closes only the exec stream; the app container keeps running.
+- The terminal is a plain monospace console, not an xterm emulator. Resize is sent as a JSON control
+  text frame and applied through Docker's `/exec/{id}/resize`.
+
 ## Data and state layout
 
 Host `./state` is mounted at `/data/state` in `hanse` only:
@@ -355,7 +368,7 @@ coordinator; operators do not set them.
 
 ## Verification
 
-`npm run lint && npm run typecheck && npm test && npm run build` (all green; 905 tests). B1 core
+`npm run lint && npm run typecheck && npm test && npm run build` (all green; 915 tests). B1 core
 live smoke on `deployment-host`: coordinator/IDE/runner healthy, per-app `demo-app` container running,
 `scripts/agent-runtime-probe.sh b1` passes, coordinator recreate reattaches the app network, and the
 app agent has no `/data/state`, Docker socket, operator/runtime token, or sibling app access.
@@ -387,9 +400,11 @@ Settings stage verification:
 - **B1 core runs each app in its own hardened container/network.** App containers have no
   `/data/state`, Docker socket, operator/runtime token, or sibling mounts. The runner is
   root-equivalent through the Docker socket and is trusted/operator-only; it is on the control
-  network and holds no coordinator state. B1.4 operator terminal and B1.5 git-in-runner are not yet
-  complete; the app page does not expose a per-app terminal and GitService remains the hardened
-  coordinator implementation. "Human-only" prompt routes remain a Hanse-route guarantee, not a hard
+  network and holds no coordinator state. B1.5 git-in-runner is not yet complete; GitService remains
+  the hardened coordinator implementation. The B1.4 operator terminal is human-only and scoped to
+  managed app containers, but it is a line-oriented console rather than a full xterm (no alternate
+  screen, mouse reporting, or full ANSI rendering). "Human-only" prompt routes remain a Hanse-route
+  guarantee, not a hard
   boundary: an agent with `bash` can call the upstream prompt API directly, including a v2 `always`
   reply that creates a durable project-scoped saved permission.
 - The permission overlay is a guardrail, not a sandbox. App-owned `opencode.json`/plugins can widen

@@ -61,13 +61,14 @@ export function renderApplication(
   const settingsHref = `/projects/${encodeURIComponent(project.id)}/apps/${encodeURIComponent(app.appKey)}/settings`;
   const apiBase = `/api/projects/${encodeURIComponent(project.id)}/apps/${encodeURIComponent(app.appKey)}/git`;
   const ideHref = ideFolderUrl(folder);
+  const terminalHref = `/terminal?app=${encodeURIComponent(app.appKey)}&project=${encodeURIComponent(project.id)}`;
 
   const header = pageHeader({
     overline: "Application",
     title: app.appKey,
     description: "Repository state, branch, and lightweight git actions for this application.",
     meta: [project.name, app.kind ?? "app", app.path],
-    actions: `<a class="btn btn-secondary" href="${escapeHtml(settingsHref)}">${icon("settings")}Settings</a><a class="btn btn-secondary" href="${escapeHtml(chatHref)}">${icon("message")}Open chat</a><a class="btn btn-secondary" href="${escapeHtml(ideHref)}" target="_blank" rel="noreferrer">${icon("external")}Open IDE</a>`,
+    actions: `<a class="btn btn-secondary" href="${escapeHtml(terminalHref)}">${icon("terminal")}Terminal</a><a class="btn btn-secondary" href="${escapeHtml(settingsHref)}">${icon("settings")}Settings</a><a class="btn btn-secondary" href="${escapeHtml(chatHref)}">${icon("message")}Open chat</a><a class="btn btn-secondary" href="${escapeHtml(ideHref)}" target="_blank" rel="noreferrer">${icon("external")}Open IDE</a>`,
   });
 
   const pendingBanner = pending

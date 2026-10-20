@@ -27,6 +27,7 @@ import {
   renderProject,
   renderProjects,
 } from "./dashboard.js";
+import { renderTerminalPage } from "./terminal.js";
 import { loginPage, type Notice, safeLocalPath } from "./ui.js";
 
 export interface ProjectContext {
@@ -44,6 +45,7 @@ export interface HttpDeps {
   git: GitService;
   manager?: InstanceManager;
   settings?: SettingsService;
+  runner?: { url: string; token: string };
 }
 
 export interface HttpRequest {
@@ -90,6 +92,10 @@ const ASSETS: Record<string, { file: string; contentType: string }> = {
   },
   "/assets/settings.js": {
     file: "settings.js",
+    contentType: "text/javascript; charset=utf-8",
+  },
+  "/assets/terminal.js": {
+    file: "terminal.js",
     contentType: "text/javascript; charset=utf-8",
   },
   "/assets/favicon.svg": { file: "favicon.svg", contentType: "image/svg+xml" },
@@ -681,6 +687,19 @@ function route(deps: HttpDeps, request: HttpRequest): HttpResponse {
             chrome,
           }),
         );
+      }
+      if (request.path === "/terminal") {
+        const site = buildSite(deps);
+        const page = renderTerminalPage(
+          site,
+          request.query?.project ?? "",
+          request.query?.app ?? "",
+          chrome,
+        );
+        if (page !== undefined) {
+          return html(200, page);
+        }
+        return html(404, renderNotFound(site, chrome));
       }
       const applicationMatch = /^\/projects\/([^/]+)\/apps\/([^/]+)$/.exec(request.path);
       if (applicationMatch !== null) {
