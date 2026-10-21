@@ -19,4 +19,4 @@ them.
 - `0014-settings-live-save.md` - server-rendered settings fragments, in-place section swaps that preserve open rows/drafts/focus/scroll, Git/provider saves, no-refresh browser QA, and accepted debt.
 - `0015-project-and-application-deletion.md` - human-only app/project deletion, durable markers, runtime/network/image cleanup, manifest/state/DB removal, handoff/events audit, guarded source deletion, HTTP/UI, review fixes, and residual risks.
 - `0016-runtime-state-reconciliation.md` - startup/periodic runner reconciliation for stale `running` rows, persisted not-running restarts, and neutral restart-failure copy.
-- `0017-context-compaction.md` - server-side context usage accounting, provider limits, manual compaction, threshold auto-compaction, chat meter/rail, live settings, tests, browser QA, and deploy status.
+- `0017-context-compaction.md` - server-side context usage accounting, provider limits, manual compaction, threshold auto-compaction, chat meter/rail, live settings, tests, browser QA, and the `sha-50acf4f` deploy.

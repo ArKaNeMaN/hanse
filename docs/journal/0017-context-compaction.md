@@ -1,6 +1,6 @@
 # 0017 - Session context usage, manual compaction, and auto-compaction
 
-Status: implemented and verified; deployment pending.
+Status: implemented, verified, and deployed as `sha-50acf4f` on 2026-10-21.
 
 ## Problem
 
@@ -75,5 +75,19 @@ Deliver a server-authoritative context layer rather than a client-only meter.
 
 ## Deploy
 
-Pending: commit, push, wait for the GHCR `sha-<short>` image, deploy to `deployment-host`, health-check, live
-smoke, and append the result here plus `docs/deploy/deploy-log.md`.
+- Coordinator image `ghcr.io/arkaneman/hanse:sha-50acf4f`, digest
+  `sha256:59933ffad617fd53ff3744ffd64f8f26bf81d7ed3df26658a595b80b06314445`; previous coordinator
+  `sha-98033f5`. The agent/IDE/runner images remained on their current tags because the stage changes
+  only the coordinator and chat assets.
+- Backup: `<BACKUP_DIR>/20261021-184736-pre-deploy/{state,workspace,agents}.tgz`, `.env`, and the
+  compose override.
+- Health: `/healthz`, `/login`, assets, authenticated `/`, `/projects`, `/settings`, `/api/projects`
+  and `/ide/` all 200; anonymous `/` 303; `hanse` healthy; logs `hanse serving 2 project(s)`.
+- Live smoke: `GET .../sessions/<SESSION_ID>/context` returned a ready snapshot
+  (`used: 54248`, `limit: 1048576`, `percent: 5`, deepseek/deepseek-flash). Manual compaction returned
+  `202`; the next snapshots went `compacting` -> `unknown` with `lastCompactedAt` set and no error.
+  Setting `context.auto_compact.enabled=true` and `percent=75` at app scope was reflected live in the
+  snapshot and `/api/settings` with `pendingRestart: []`; inheriting both restored the defaults.
+  A paid auto-compaction turn was not run: the trigger/latch path is covered by the monitor/policy
+  tests and the deterministic browser fixture, and running it live would add an extra paid turn and
+  another compaction. The built-in opencode compaction remains enabled.

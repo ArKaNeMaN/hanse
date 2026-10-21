@@ -1,6 +1,6 @@
 # Plan 0014: Session context usage, manual compaction, and auto-compaction
 
-- Status: implemented and verified (journal 0017); deployment pending
+- Status: implemented, verified, and deployed as `sha-50acf4f` (journal 0017)
 - Design: [`docs/design/context-compaction.md`](../design/context-compaction.md) (oracle PASS after
   three revisions)
 - Design reviewer: `oracle` - PASS

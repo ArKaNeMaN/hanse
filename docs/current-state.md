@@ -579,8 +579,8 @@ files). The UX polish pass deployed as `sha-88faab7`; the settings live-save fol
 2026-10-21. The project/application deletion stage is verified by the four gates; it has not been
 deployed or live-smoked from this checkout. The context usage/compaction stage is verified by the
 four gates and the deterministic chat QA bridge (14 scenarios, zero console/page errors, context
-screenshots under `docs/design/artifacts/chat/`); deployment is recorded in the journal after the
-stage deploy.
+screenshots under `docs/design/artifacts/chat/`). The context stage is deployed as coordinator
+`sha-50acf4f` (journal 0017).
 B1 core live smoke on `deployment-host`: coordinator/IDE/runner healthy, per-app `demo-app` container running,
 `scripts/agent-runtime-probe.sh b1` passes, coordinator recreate reattaches the app network, and the
 app agent has no `/data/state`, Docker socket, operator/runtime token, or sibling app access.
