@@ -99,6 +99,7 @@ export function renderTerminalPage(
     styles: ["/assets/vendor/xterm/xterm-6.0.0.css"],
     body,
     settingsHref: `/projects/${encodeURIComponent(project.id)}/apps/${encodeURIComponent(app.appKey)}/settings`,
+    skillsHref: `/projects/${encodeURIComponent(project.id)}/apps/${encodeURIComponent(app.appKey)}/skills`,
   });
 }
 

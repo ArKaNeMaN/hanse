@@ -286,6 +286,21 @@ function insertSettings(
   ).run(scope, projectId, appKey, now);
 }
 
+function insertSkill(
+  db: SqliteDatabase,
+  scope: "global" | "project" | "app",
+  projectId: string,
+  appKey: string,
+  name: string,
+): void {
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO skills
+       (scope, project_id, app_key, name, description, content, enabled, created_at, updated_at)
+     VALUES (?, ?, ?, ?, 'description', 'content', 1, ?, ?)`,
+  ).run(scope, projectId, appKey, name, now, now);
+}
+
 function insertTask(db: SqliteDatabase, id: string, appIdValue: string): void {
   const now = new Date().toISOString();
   db.prepare(
@@ -472,6 +487,30 @@ describe("DeletionService application deletion", () => {
     expect(f.images.ended).toContain(webId);
   });
 
+  it("removes only the app-scoped skill rows and starts a re-added key clean", async () => {
+    const f = fixture();
+    insertSkill(f.db, "global", "", "", "global-skill");
+    insertSkill(f.db, "project", f.projectId, "", "project-skill");
+    insertSkill(f.db, "app", f.projectId, "web", "web-skill");
+    insertSkill(f.db, "app", f.projectId, "api", "api-skill");
+
+    await f.service.deleteApp(f.projectId, "web", { confirm: "web" });
+
+    expect(
+      count(f.db, "skills", "scope = 'app' AND project_id = ? AND app_key = 'web'", f.projectId),
+    ).toBe(0);
+    expect(
+      count(f.db, "skills", "scope = 'app' AND project_id = ? AND app_key = 'api'", f.projectId),
+    ).toBe(1);
+    expect(count(f.db, "skills", "scope = 'project' AND project_id = ?", f.projectId)).toBe(1);
+    expect(count(f.db, "skills", "scope = 'global'")).toBe(1);
+
+    insertAppRow(f, "web", "apps/web");
+    expect(
+      count(f.db, "skills", "scope = 'app' AND project_id = ? AND app_key = 'web'", f.projectId),
+    ).toBe(0);
+  });
+
   it("removes the app source only when deleteFiles is set", async () => {
     const f = fixture();
     const source = path.join(f.projectRoot, "apps", "web");
@@ -541,6 +580,23 @@ describe("DeletionService project deletion", () => {
     expect(JSON.parse(event.payload)).toEqual({ projectId: f.projectId, apps: [apiId, webId] });
     expect(f.manager.stops.sort()).toEqual([apiId, webId]);
     expect(f.images.purged.sort()).toEqual([apiId, webId]);
+  });
+
+  it("removes project and app skill rows while preserving globals and other projects", async () => {
+    const f = fixture();
+    const other = addOtherProject(f);
+    insertSkill(f.db, "global", "", "", "global-skill");
+    insertSkill(f.db, "project", f.projectId, "", "project-skill");
+    insertSkill(f.db, "app", f.projectId, "web", "web-skill");
+    insertSkill(f.db, "app", f.projectId, "api", "api-skill");
+    insertSkill(f.db, "project", other.id, "", "other-project-skill");
+    insertSkill(f.db, "app", other.id, other.key, "other-app-skill");
+
+    await f.service.deleteProject(f.projectId, { confirm: f.projectName });
+
+    expect(count(f.db, "skills", "project_id = ?", f.projectId)).toBe(0);
+    expect(count(f.db, "skills", "scope = 'global'")).toBe(1);
+    expect(count(f.db, "skills", "project_id = ?", other.id)).toBe(2);
   });
 
   it("removes the project source only when deleteFiles is set", async () => {

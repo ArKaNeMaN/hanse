@@ -17,12 +17,20 @@ import { handleImages } from "./images.js";
 import { handleInternalMcp } from "./internal-mcp.js";
 import { handlePrompts, streamAppEvents } from "./prompts.js";
 import { handleSettings, isSettingsRoute } from "./settings.js";
+import { handleSkills, isSkillsRoute } from "./skills.js";
 import { handleSsh, isSshRoute } from "./ssh.js";
 import { proxyTerminalUpgrade } from "./terminal.js";
 
 const IDE_PORT = Number(process.env.HANSE_IDE_PORT ?? 8080);
 const IDE_HOST = process.env.HANSE_IDE_HOST ?? "127.0.0.1";
 const MAX_BODY_BYTES = 64 * 1024;
+// Skill content is capped at 48,000 characters; URL-encoded forms can expand that
+// several-fold for non-ASCII text, so only the skills routes accept a larger body.
+const MAX_SKILLS_BODY_BYTES = 512 * 1024;
+
+function bodyLimitFor(url: string): number {
+  return url.startsWith("/api/skills") ? MAX_SKILLS_BODY_BYTES : MAX_BODY_BYTES;
+}
 
 class PayloadTooLargeError extends Error {
   constructor() {
@@ -31,7 +39,7 @@ class PayloadTooLargeError extends Error {
   }
 }
 
-function readBody(request: IncomingMessage): Promise<string> {
+function readBody(request: IncomingMessage, maxBytes: number): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
@@ -41,7 +49,7 @@ function readBody(request: IncomingMessage): Promise<string> {
         return;
       }
       size += chunk.length;
-      if (size > MAX_BODY_BYTES) {
+      if (size > maxBytes) {
         rejected = true;
         reject(new PayloadTooLargeError());
         return;
@@ -115,7 +123,7 @@ export function createHttpServer(deps: HttpDeps): Server {
       return;
     }
 
-    void readBody(request)
+    void readBody(request, bodyLimitFor(request.url ?? ""))
       .then(async (body) => {
         const httpRequest = {
           method: request.method ?? "GET",
@@ -165,6 +173,7 @@ export function createHttpServer(deps: HttpDeps): Server {
             url.pathname,
           );
         const isSettings = isSettingsRoute(httpRequest.method, url.pathname);
+        const isSkills = isSkillsRoute(httpRequest.method, url.pathname);
         const isInternalMcp =
           (httpRequest.method ?? "GET") === "POST" && url.pathname === "/internal/mcp";
         const isSsh = isSshRoute(httpRequest.method, url.pathname);
@@ -180,15 +189,17 @@ export function createHttpServer(deps: HttpDeps): Server {
               ? await handlePrompts(deps, httpRequest)
               : isSettings
                 ? await handleSettings(deps, httpRequest)
-                : isInternalMcp
-                  ? await handleInternalMcp(deps, httpRequest)
-                  : isSsh
-                    ? await handleSsh(deps, httpRequest)
-                    : isContext
-                      ? await handleContext(deps, httpRequest)
-                      : isChat
-                        ? await handleChat(deps, httpRequest)
-                        : handleRequest(deps, httpRequest);
+                : isSkills
+                  ? await handleSkills(deps, httpRequest)
+                  : isInternalMcp
+                    ? await handleInternalMcp(deps, httpRequest)
+                    : isSsh
+                      ? await handleSsh(deps, httpRequest)
+                      : isContext
+                        ? await handleContext(deps, httpRequest)
+                        : isChat
+                          ? await handleChat(deps, httpRequest)
+                          : handleRequest(deps, httpRequest);
         response.writeHead(result.status, {
           "content-type": result.contentType,
           ...(result.headers ?? {}),

@@ -778,6 +778,16 @@ describe("http API and assets", () => {
     expect(settingsJs.body).toContain("data-settings-driver");
     expect(settingsJs.body).toContain("data-driver-fields");
 
+    const skillsJs = handleRequest(deps(f), {
+      method: "GET",
+      path: "/assets/skills.js",
+      headers: {},
+    });
+    expect(skillsJs.status).toBe(200);
+    expect(skillsJs.contentType).toContain("text/javascript");
+    expect(skillsJs.body).toContain("x-hanse-fragment");
+    expect(skillsJs.body).toContain("skills-surface");
+
     const missing = handleRequest(deps(f), {
       method: "GET",
       path: "/assets/missing.js",

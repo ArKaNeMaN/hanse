@@ -1,6 +1,6 @@
 # Hanse - Current State (read this first)
 
-> Last updated: 2026-10-21. This is the canonical description of what is **implemented right now**.
+> Last updated: 2026-10-22. This is the canonical description of what is **implemented right now**.
 > If this document and the code disagree, the code wins - update this document.
 > History and rationale: `docs/design/overview.md`, `docs/plans/0001-core.md`,
 > `docs/journal/0001-core.md`. Deployment: `docs/deployment.md`.
@@ -140,8 +140,9 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   sign-out, skip link, notice toasts, and the full status/icon/dialog primitive set.
 - Authenticated pages: `/` fleet overview, `/projects`, `/projects/:id`,
   `/projects/:id/apps/:appKey`, `/settings`, `/projects/:id/settings`,
-  `/projects/:id/apps/:appKey/settings`, `/handoffs`, and the `/chat?app=<key>&project=<id>`
-  workspace.
+  `/projects/:id/apps/:appKey/settings`, `/skills`, `/projects/:id/skills`,
+  `/projects/:id/apps/:appKey/skills`, `/handoffs`, and the
+  `/chat?app=<key>&project=<id>` workspace.
   `/login` is a standalone cover/plate. All HTML pages except `/login` and `/assets/*` require a
   **human** principal; unauthenticated requests redirect to `/login?next=<validated local path>`.
 - Browser forms post to the existing API endpoints and receive a 303 back to a validated `return_to`
@@ -151,7 +152,7 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
 - Static assets are allowlisted: `/assets/app.css`, `/assets/app.js`, `/assets/chat.js`,
   `/assets/chat-core.js`, `/assets/chat-diff.js`, `/assets/chat-highlight.js`,
   `/assets/chat-highlight-worker.js`, `/assets/git.js`, `/assets/git-settings.js`,
-  `/assets/settings.js`, `/assets/vendor/prism/prism-1.30.0.min.js`,
+  `/assets/settings.js`, `/assets/skills.js`, `/assets/vendor/prism/prism-1.30.0.min.js`,
   `/assets/vendor/xterm/xterm-6.0.0.js`, `/assets/vendor/xterm/xterm-6.0.0.css`,
   `/assets/vendor/xterm/addon-fit-0.11.0.js`, and `/assets/favicon.svg`.
 - `assets/app.js` adds shell drawer, native-dialog, theme, toast, password-visibility, and
@@ -241,8 +242,8 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
 - The `hanse` MCP entry carries `timeout: 600000`; existing agents must be restarted (no image
   rebuild) to see the tools and the timeout.
 - Migration v8 (`setting_secrets`, drop legacy `secrets`) and migration v9 (SSH tables) apply in
-  order; migrations v10 (applied settings/profile state) and v11 (deletion markers) follow. The
-  current schema versions are `[1..11]`.
+  order; migrations v10 (applied settings/profile state), v11 (deletion markers), and v12 (skills)
+  follow. The current schema versions are `[1..12]`.
 - Live on `deployment-host` (`sha-e2d89a2`): a temporary SSH target pinned and authenticated, an approval was
   approved, `echo QA_OK` and a 65 s `sleep` succeeded, upload/download round-tripped, a real
   `opencode` turn called `hanse_ssh_exec` and received the result after 65 s, and audit rows survived
@@ -453,6 +454,56 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   values, sources, raw scoped rows, provider statuses (never key material), warnings, and pending
   restarts.
 
+## Agent skills
+
+- Human-only scope pages `/skills`, `/projects/:id/skills`, and
+  `/projects/:id/apps/:appKey/skills`; JSON API under `/api/skills`
+  (`GET /api/skills?project=&app=`, `GET/POST /api/skills/:id`,
+  `POST /api/skills/:id/delete`, `DELETE /api/skills/:id`). Agent principals receive `403`, and
+  every mutation rejects a cross-site `Origin`.
+- Skills live in the coordinator DB table `skills` (migration v12), not in `.hanse/` manifests or
+  repositories. Rows are keyed by `(scope, project_id, app_key, name)` with empty strings for wider
+  scopes. DB `CHECK` constraints enforce the scope shape, name syntax, and description/content
+  lengths; there is no foreign key. App deletion removes app-scope rows, project deletion removes
+  all rows for the project, and global rows (`project_id = ''`) survive.
+- Effective resolution runs global -> project -> application by name, and the narrowest row wins. A
+  disabled narrower row is a tombstone that hides an inherited skill; a narrower enabled row
+  re-enables it. `EffectiveSkill` carries the winning row id, its source scope, and the wider scopes
+  it shadows.
+- Each instance receives
+  `<agents>/<project>/<app>/config/opencode/skills/<name>/SKILL.md` with generated frontmatter; the
+  description is emitted as a JSON string literal. The legacy `config/opencode/skill/` alias is
+  emptied, every effective directory is rebuilt from scratch (nested content, files, and symlinks
+  at that path are removed without being followed), and the `cache/opencode/skills` root is
+  untouched. Repository `.opencode/skills` is never modified.
+- The first apply for an instance moves pre-existing entries outside the effective set in the
+  Hanse-owned roots to `config/opencode/skills-replaced/` and writes
+  `.hanse-skills-initialized`; later applies remove unexpected entries. `skills-replaced/` is not
+  cleaned up automatically.
+- Start order is `probe` (a coordinator-private temporary directory outside the agent-writable
+  tree) before any teardown, then `apply` after `runtime.delete` and before `runtime.ensure`. A
+  probe failure leaves a running container untouched; a post-teardown apply failure persists the
+  instance as `error`. Materialization failures surface as `skills_materialize_failed`. The manager
+  refuses to start an application whose sanitized state segment collides with a sibling, so two
+  apps cannot share a skills root.
+- `/api/skills*` routes accept up to 512 KiB request bodies, while the general server bound stays
+  64 KiB, so a 48,000-character non-ASCII skill fits a URL-encoded form. Per-field limits are
+  unchanged.
+- Skills join the launch hash only when the effective set is non-empty
+  (`settingsHashFor(snapshot, profile, skillsHash?)`). A zero-skill install keeps its previous hash
+  and does not become restart-required. Adding, editing, enabling, disabling, or deleting an
+  effective skill marks affected running apps `Restart required`; editing a shadowed or disabled
+  row does not. Restarts are never automatic.
+- Collision scanning covers the app repository `.opencode/skill` and `.opencode/skills`,
+  `<HOME>/.claude/skills`, `<HOME>/.agents/skills`, `<XDG_CACHE_HOME>/opencode/skills`, and
+  `file://` baseline plugin `<root>/skills`, excluding the Hanse-owned config roots. Results are
+  structured `skill_collision`/`skill_disabled_elsewhere` warnings, bounded to 20 with a
+  `truncated` count. There is no precedence guarantee against those non-managed roots; the managed
+  skill is still written.
+- Scope pages are server-rendered with a scope switcher and save/toggle/override/delete in place
+  through `x-hanse-fragment: skills`, which returns `{ok, surface, counts}`; delete uses a native
+  confirmation dialog. Without JavaScript the same forms post and redirect with a notice.
+
 ## Handoffs (agent-to-agent requests)
 
 - Coordinator MCP server: `hanse mcp` (stdio, bound to one app via `HANSE_DB`, `HANSE_PROJECT_ID`,
@@ -507,13 +558,18 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
 Host `./state` is mounted at `/data/state` in `hanse` only:
 
 - `hanse/coordinator.db` (+ `-wal`, `-shm`) - projects, apps, instances, tasks, handoffs, approvals,
-  principals, events, settings, provider keys, and encrypted git credentials (`setting_secrets`).
+  principals, events, settings, skills, provider keys, and encrypted git credentials
+  (`setting_secrets`).
 - `hanse/secret.key` - AES-256-GCM key for the credential store and provider keys (mode `0600`).
 
 Host `./agents` is mounted at `/data/agents` read-write in `hanse` and read-only in `hanse-runner`:
 
 - `<projectId>/<appKey>/{home,data,state,config,cache,tmp,mise}` - per-app HOME/XDG, opencode DB,
   scratch, and mise toolchains.
+- `<projectId>/<appKey>/config/opencode/skills/<name>/SKILL.md` - coordinator-materialized managed
+  skills, rebuilt at each agent start. `config/opencode/skill/` (legacy alias),
+  `config/opencode/.hanse-skills-initialized`, and `config/opencode/skills-replaced/` are also
+  Hanse-owned per-instance state.
 - `<projectId>/<appKey>/home/.config/hanse/git/` - coordinator-materialized git identity and
   credential files (`config`, `ssh`, `askpass`, and optional `id`, `known_hosts`, `token`, `username`,
   `https_hosts`). The app container can read this directory by design; the runner mounts it read-only
@@ -557,7 +613,7 @@ Host `./agents` is mounted at `/data/agents` read-write in `hanse` and read-only
 | `HANSE_IDE=0` | serve | do not spawn code-server in the coordinator |
 | `HANSE_IDE_HOST` / `HANSE_IDE_PORT` | serve | proxy target for `/ide` (default `127.0.0.1:8080`) |
 | `HANSE_IDE_BIN` | serve | code-server binary |
-| `HANSE_ASSETS` | serve | directory for `app.css`, `app.js`, `chat.js`, `chat-core.js`, `chat-diff.js`, `chat-highlight.js`, `chat-highlight-worker.js`, `git.js`, `git-settings.js`, `settings.js`, `vendor/prism/prism-1.30.0.min.js`, and `favicon.svg` |
+| `HANSE_ASSETS` | serve | directory for `app.css`, `app.js`, `chat.js`, `chat-core.js`, `chat-diff.js`, `chat-highlight.js`, `chat-highlight-worker.js`, `git.js`, `git-settings.js`, `settings.js`, `skills.js`, `vendor/prism/prism-1.30.0.min.js`, and `favicon.svg` |
 | `HANSE_DB` / `HANSE_PROJECT_ID` / `HANSE_APP_KEY` | `hanse mcp` | MCP server binding |
 | `HANSE_API_BASE` | extension | coordinator base URL (`http://hanse:8787`) |
 
@@ -573,14 +629,18 @@ coordinator; operators do not set them.
 
 ## Verification
 
-`npm run lint && npm run typecheck && npm test && npm run build` (all green; 1433 tests in 91
+`npm run lint && npm run typecheck && npm test && npm run build` (all green; 1480 tests in 94
 files). The UX polish pass deployed as `sha-88faab7`; the settings live-save follow-up deployed as
 `sha-d2fcc3b`; the runtime-state reconciliation fix deployed as coordinator `sha-98033f5` on
 2026-10-21. The project/application deletion stage is verified by the four gates; it has not been
 deployed or live-smoked from this checkout. The context usage/compaction stage is verified by the
 four gates and the deterministic chat QA bridge (14 scenarios, zero console/page errors, context
 screenshots under `docs/design/artifacts/chat/`). The context stage is deployed as coordinator
-`sha-50acf4f` (journal 0017).
+`sha-50acf4f` (journal 0017). The managed agent skills stage is verified by the four gates and
+`node docs/design/skills-qa.mjs` (PASS, 49 assertions, zero console/page errors; report and
+screenshots under `docs/design/artifacts/skills/`). An empirical `opencode debug skill` run against
+a materialized root listed the managed names and descriptions (local 1.18.35; deployment pins
+1.19.3). The skills stage has not been deployed from this checkout.
 B1 core live smoke on `deployment-host`: coordinator/IDE/runner healthy, per-app `demo-app` container running,
 `scripts/agent-runtime-probe.sh b1` passes, coordinator recreate reattaches the app network, and the
 app agent has no `/data/state`, Docker socket, operator/runtime token, or sibling app access.
@@ -701,6 +761,16 @@ Settings stage verification:
   instance config; a restart interrupts an active turn. Chat prompts carry the effective model, so
   the main session adopts a model change on its next message without a restart; OMO subagents keep
   the profile from instance start.
+- Skills only establish precedence among Hanse-managed rows. Repository `.opencode/skill(s)`,
+  plugin, `~/.claude/skills`, `~/.agents/skills`, and cache roots are scanned and warned, but Hanse
+  cannot override them, and duplicate winner selection across those roots is not a stable opencode
+  contract.
+- Skills are single-file `SKILL.md` only: no bundles, scripts, binary assets, URL imports, per-agent
+  allowlist, or version history/rollback. They are plaintext operator instructions, not a secret
+  store.
+- Skills are never hot-reloaded; a running agent picks up a changed set only after an explicit
+  restart. `pendingRestart` hashes the effective set per query, and first-deploy
+  `skills-replaced/` directories are not cleaned up automatically.
 - Built-in search requires the OMO baseline; without OMO the settings UI warns and no built-in
   search tool is available. Managed DeepSeek web tools depend on a usable provider key and on the
   external DeepSeek Search/Fetch API; there is no per-instance cost budget.

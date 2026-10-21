@@ -15,6 +15,7 @@ import { verifyAgentToken } from "../mcp/agent-tokens.js";
 import type { InstanceManager } from "../opencode/manager.js";
 import { resolveAppPath } from "../runtime/app-path.js";
 import type { SettingsService } from "../settings/index.js";
+import type { SkillService } from "../skills/index.js";
 import type { SshService } from "../ssh/service.js";
 import type { SqliteDatabase } from "../store/index.js";
 import { renderApplication } from "./application.js";
@@ -49,6 +50,9 @@ export interface HttpDeps {
   manager?: InstanceManager;
   settings?: SettingsService;
   ssh?: SshService;
+  skills?: SkillService;
+  agentsHome?: string;
+  baselinePlugins?: string[];
   runner?: { url: string; token: string };
   /** Present when the coordinator is wired to the runner; image routes 503 otherwise. */
   images?: ImageService;
@@ -120,6 +124,10 @@ const ASSETS: Record<string, { file: string; contentType: string }> = {
   "/assets/ssh.js": { file: "ssh.js", contentType: "text/javascript; charset=utf-8" },
   "/assets/settings.js": {
     file: "settings.js",
+    contentType: "text/javascript; charset=utf-8",
+  },
+  "/assets/skills.js": {
+    file: "skills.js",
     contentType: "text/javascript; charset=utf-8",
   },
   "/assets/terminal.js": {

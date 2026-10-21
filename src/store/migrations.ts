@@ -382,4 +382,36 @@ ALTER TABLE apps ADD COLUMN deleting INTEGER NOT NULL DEFAULT 0 CHECK (deleting 
 ALTER TABLE projects ADD COLUMN deleting INTEGER NOT NULL DEFAULT 0 CHECK (deleting IN (0, 1));
 `,
   },
+  {
+    version: 12,
+    name: "skills",
+    sql: `
+CREATE TABLE skills (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  scope TEXT NOT NULL CHECK (scope IN ('global', 'project', 'app')),
+  project_id TEXT NOT NULL DEFAULT '',
+  app_key TEXT NOT NULL DEFAULT '',
+  name TEXT NOT NULL CHECK (
+    length(name) BETWEEN 1 AND 64
+    AND name GLOB '[a-z0-9]*'
+    AND name NOT GLOB '*[^a-z0-9-]*'
+    AND name NOT GLOB '*-'
+    AND name NOT GLOB '*--*'
+  ),
+  description TEXT NOT NULL CHECK (length(description) BETWEEN 1 AND 1024),
+  content TEXT NOT NULL CHECK (length(content) BETWEEN 1 AND 48000),
+  enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  updated_by TEXT,
+  CHECK (
+    (scope = 'global' AND project_id = '' AND app_key = '') OR
+    (scope = 'project' AND project_id <> '' AND app_key = '') OR
+    (scope = 'app' AND project_id <> '' AND app_key <> '')
+  ),
+  UNIQUE (scope, project_id, app_key, name)
+);
+CREATE INDEX skills_scope ON skills(project_id, app_key);
+`,
+  },
 ];

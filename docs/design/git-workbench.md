@@ -423,7 +423,7 @@ detected via `git rev-parse --git-path` + filesystem checks for `MERGE_HEAD`, `C
   `branch_not_found`, `diverged`, `worktree_dirty`, `push_rejected`, `auth_failed`, `timeout`,
   `output_too_large`, `git_failed`.
 - POST requests must send `Content-Type: application/json` (optional charset); form-encoded requests
-  are rejected. `readBody` is capped at 64 KiB and returns `413` above it.
+  are rejected. `readBody` is capped at 64 KiB and returns `413` above it (only the skills routes accept a larger body).
 - Body validation: `branch` must be a non-empty string present in the live local branch list, must not
   begin with `-`, and must not contain control characters; `message` must be trimmed, 1-4000
   characters, and free of NUL/control characters (newline/tab allowed).

@@ -484,5 +484,6 @@ export function renderApplication(
     scripts: ["/assets/git.js", "/assets/images.js"],
     body,
     settingsHref,
+    skillsHref: `/projects/${encodeURIComponent(project.id)}/apps/${encodeURIComponent(app.appKey)}/skills`,
   });
 }

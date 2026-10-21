@@ -63,6 +63,13 @@ live in `settings`, and per-scope SSH/HTTPS credentials live encrypted in `setti
 (migration v8). They are materialized into the application HOME at start; do not commit them to
 `.hanse/project.yaml`, `.hanse/app.yaml`, a Dockerfile, or a repository `.git/config`.
 
+Agent skills are also Settings, not manifests. They live in the coordinator `skills` table
+(migration v12) at global, project, and application scope, resolve global -> project -> application
+by name, and are materialized into each instance's config root at agent start. Do not add skill
+content to `.hanse/`, and do not treat a repository `.opencode/skills` directory as the managed
+registry: it is user content that the coordinator never reads or modifies, and a same-named entry
+there is reported as a collision rather than overridden.
+
 ## Runtime layout (outside repositories)
 
 Coordinator state lives under `$XDG_STATE_HOME/hanse/` (`coordinator.db`, `secret.key`, and the
@@ -75,11 +82,21 @@ Per-app agent state lives outside the coordinator state, under `HANSE_AGENTS_HOM
 <projectId>/<appKey>/
 ├── home/                  HOME, .omo profile, tool config
 │   └── .config/hanse/git/ coordinator-materialized git identity and credentials
-├── data/ state/ config/ cache/   XDG dirs and opencode DB
+├── data/ state/ cache/    XDG data/state/cache and opencode DB
+├── config/                XDG_CONFIG_HOME
+│   └── opencode/
+│       ├── skills/<name>/SKILL.md   coordinator-materialized managed skills
+│       ├── skill/                   legacy alias, always emptied
+│       ├── .hanse-skills-initialized
+│       └── skills-replaced/         first-materialization preserve area
 ├── tmp/                   per-app TMPDIR
 ├── mise/                  per-app toolchain cache
 └── mcp-token              per-app MCP token (0600)
 ```
+
+The `config/opencode/{skill,skills}` roots are Hanse-owned per-instance state, not user or agent
+workspaces. Every agent start rebuilds the effective set after the old container is gone, and
+materialization recreates an effective `<name>/` subtree rather than trusting existing files.
 
 `home/.config/hanse/git/` is written by the coordinator from the Git settings (`config`, `ssh`,
 `askpass`, and optional `id`, `known_hosts`, `token`, `username`, `https_hosts`). The app can read

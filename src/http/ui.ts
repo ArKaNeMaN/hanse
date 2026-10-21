@@ -310,7 +310,7 @@ export interface NavProject {
 
 export interface ShellOptions {
   title: string;
-  active: "overview" | "projects" | "project" | "handoffs" | "settings" | "ssh" | "none";
+  active: "overview" | "projects" | "project" | "handoffs" | "skills" | "settings" | "ssh" | "none";
   activeProjectId?: string;
   breadcrumb: Crumb[];
   projects: NavProject[];
@@ -327,6 +327,7 @@ export interface ShellOptions {
   notice?: Notice;
   topbarActions?: string;
   settingsHref?: string;
+  skillsHref?: string;
 }
 
 function pageClasses(base: string, extra: string | undefined): string {
@@ -412,6 +413,12 @@ function sidebar(options: ShellOptions): string {
       iconName: "branch",
       active: options.active === "handoffs",
       count: options.pendingCount,
+    }) +
+    navItem({
+      href: options.skillsHref ?? "/skills",
+      label: "Skills",
+      iconName: "code",
+      active: options.active === "skills",
     }) +
     navItem({
       href: options.settingsHref ?? "/settings",

@@ -41,13 +41,13 @@ function insertProjectAndApp(db: ReturnType<typeof openDatabase>): void {
 describe("migration v6 app-images", () => {
   it("applies fresh migrations and defaults existing app inserts to missing", () => {
     const db = openDatabase(":memory:");
-    expect(runMigrations(db)).toBe(11);
+    expect(runMigrations(db)).toBe(12);
     expect(runMigrations(db)).toBe(0);
 
     const versions = db.prepare("SELECT version FROM schema_migrations ORDER BY version").all() as {
       version: number;
     }[];
-    expect(versions.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+    expect(versions.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
     const secretTables = (
       db
         .prepare(
@@ -104,6 +104,35 @@ describe("migration v6 app-images", () => {
     expect(instanceColumns).toContain("applied_settings_hash");
     expect(instanceColumns).toContain("applied_profile");
 
+    const skillColumns = (
+      db.prepare("PRAGMA table_info(skills)").all() as Array<{ name: string }>
+    ).map((row) => row.name);
+    expect(skillColumns).toEqual([
+      "id",
+      "scope",
+      "project_id",
+      "app_key",
+      "name",
+      "description",
+      "content",
+      "enabled",
+      "created_at",
+      "updated_at",
+      "updated_by",
+    ]);
+    const skillsSql = (
+      db
+        .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'skills'")
+        .get() as { sql: string }
+    ).sql;
+    expect(skillsSql).toContain("UNIQUE (scope, project_id, app_key, name)");
+    expect(skillsSql).toContain("scope IN ('global', 'project', 'app')");
+    expect(
+      db
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'skills_scope'")
+        .get(),
+    ).toEqual({ name: "skills_scope" });
+
     insertProjectAndApp(db);
     const row = db
       .prepare(
@@ -151,7 +180,7 @@ describe("migration v6 app-images", () => {
     insertProjectAndApp(db);
     expect(appColumns(db)).not.toContain("image_status");
 
-    expect(runMigrations(db)).toBe(6);
+    expect(runMigrations(db)).toBe(7);
 
     const row = db.prepare("SELECT image_status, image_error FROM apps WHERE id = 'a1'").get() as {
       image_status: string;
@@ -179,7 +208,7 @@ describe("migration v6 app-images", () => {
       "INSERT INTO instances (id, app_id, state, runtime_state, updated_at) VALUES ('a1','a1','running','running',?)",
     ).run(now);
 
-    expect(runMigrations(db)).toBe(2);
+    expect(runMigrations(db)).toBe(3);
 
     const row = db
       .prepare(
@@ -211,7 +240,7 @@ describe("migration v6 app-images", () => {
     expect(appColumns(db)).not.toContain("deleting");
     expect(projectColumns(db)).not.toContain("deleting");
 
-    expect(runMigrations(db)).toBe(1);
+    expect(runMigrations(db)).toBe(2);
 
     const app = db.prepare("SELECT deleting FROM apps WHERE id = 'a1'").get() as {
       deleting: number;
@@ -223,6 +252,56 @@ describe("migration v6 app-images", () => {
     expect(project).toEqual({ deleting: 0 });
     expect(() => db.prepare("UPDATE apps SET deleting = 2 WHERE id = 'a1'").run()).toThrow();
     expect(() => db.prepare("UPDATE projects SET deleting = 2 WHERE id = 'p'").run()).toThrow();
+    db.close();
+  });
+
+  it("upgrades a v11 database to v12 and is idempotent", () => {
+    const db = openDatabase(":memory:");
+    db.exec(
+      "CREATE TABLE schema_migrations (" +
+        "version INTEGER PRIMARY KEY, name TEXT NOT NULL, checksum TEXT NOT NULL, applied_at TEXT NOT NULL)",
+    );
+    const record = db.prepare(
+      "INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?, ?, ?, ?)",
+    );
+    for (const migration of MIGRATIONS.filter((candidate) => candidate.version <= 11)) {
+      db.exec(migration.sql);
+      record.run(migration.version, migration.name, "existing", now);
+    }
+    insertProjectAndApp(db);
+    expect(() => db.prepare("SELECT 1 FROM skills").get()).toThrow();
+
+    expect(runMigrations(db)).toBe(1);
+    expect(runMigrations(db)).toBe(0);
+
+    const columns = (db.prepare("PRAGMA table_info(skills)").all() as Array<{ name: string }>).map(
+      (row) => row.name,
+    );
+    expect(columns).toEqual([
+      "id",
+      "scope",
+      "project_id",
+      "app_key",
+      "name",
+      "description",
+      "content",
+      "enabled",
+      "created_at",
+      "updated_at",
+      "updated_by",
+    ]);
+    const insert = db.prepare(
+      `INSERT INTO skills
+         (scope, project_id, app_key, name, description, content, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    insert.run("global", "", "", "review-code", "Review code", "Body", now, now);
+    expect(() =>
+      insert.run("global", "", "", "Review-Code", "Review code", "Body", now, now),
+    ).toThrow();
+    expect(() =>
+      insert.run("global", "p", "", "second", "Review code", "Body", now, now),
+    ).toThrow();
     db.close();
   });
 });

@@ -39,6 +39,7 @@
 - [Context usage and compaction](./context-compaction.md) - server-side per-session context
   accounting, provider context limits, manual compaction, and threshold-based auto-compaction.
   Status: approved (oracle PASS).
+- [Managed agent skills](./agent-skills.md) - global/project/application skill registry, deterministic per-instance materialization into `opencode`'s config skill roots, restart semantics, human-only API, and scope-aware Web UI. Status: approved (oracle PASS after seven rounds).
 - [Architecture overview](./overview.md) - the coordinator architecture and stage plan.
 - [Agent runtime isolation and per-app toolchains](./agent-runtime.md) - staged B0/B1/B2 runtime split, layered agent images, per-app containers, app image builds, and deployment constraints. Status: proposed, revised after design review.
 

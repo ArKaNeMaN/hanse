@@ -985,6 +985,9 @@ export class DeletionService {
         )
         .run(app.project_id, app.app_key);
       this.#db
+        .prepare("DELETE FROM skills WHERE scope = 'app' AND project_id = ? AND app_key = ?")
+        .run(app.project_id, app.app_key);
+      this.#db
         .prepare(
           "INSERT INTO events (scope, type, payload, created_at) VALUES ('app', 'app.deleted', ?, ?)",
         )
@@ -1027,6 +1030,7 @@ export class DeletionService {
       this.#db.prepare("DELETE FROM settings WHERE project_id = ?").run(project.id);
       this.#db.prepare("DELETE FROM provider_keys WHERE project_id = ?").run(project.id);
       this.#db.prepare("DELETE FROM setting_secrets WHERE project_id = ?").run(project.id);
+      this.#db.prepare("DELETE FROM skills WHERE project_id = ?").run(project.id);
       this.#db
         .prepare(
           "INSERT INTO events (scope, type, payload, created_at) VALUES ('project', 'project.deleted', ?, ?)",

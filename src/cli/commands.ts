@@ -31,7 +31,7 @@ import { RunnerImageClient } from "../images/client.js";
 import { ImageService, ImageServiceError } from "../images/service.js";
 import { runRemoteMcpServer } from "../mcp/remote.js";
 import { runMcpServer } from "../mcp/server.js";
-import { InstanceManager } from "../opencode/manager.js";
+import { InstanceManager, resolveBaselinePlugins } from "../opencode/manager.js";
 import { OmoProfileStore } from "../opencode/omo-profile.js";
 import { discoverProject, registerProject } from "../registry/index.js";
 import { DockerClient } from "../runner/docker.js";
@@ -47,6 +47,7 @@ import {
 } from "../runtime/index.js";
 import { loadOrCreateKey } from "../secrets/index.js";
 import { SettingsService } from "../settings/index.js";
+import { SkillService } from "../skills/index.js";
 import { SshService } from "../ssh/service.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../store/index.js";
 import { parseWebMcpConfig } from "../web/config.js";
@@ -604,10 +605,12 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
     registerProject(db, project, rootPath, workspace);
   }
 
+  const skills = new SkillService({ db });
   const manager = new InstanceManager(db, path.resolve(agentsHome()), {
     runtime,
     settings,
     omoProfiles,
+    skills,
     workspaceRoot: workspace,
     ...(hostWorkspace === undefined ? {} : { hostWorkspace }),
     ...(hostAgents === undefined ? {} : { hostAgents }),
@@ -664,6 +667,9 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
     manager,
     settings,
     ssh,
+    skills,
+    agentsHome: path.resolve(agentsHome()),
+    baselinePlugins: resolveBaselinePlugins(),
     ...(runnerUrl === undefined || runnerUrl.length === 0
       ? {}
       : { runner: { url: runnerUrl, token: runtimeToken } }),

@@ -264,6 +264,7 @@ function shell(
     header: string;
     body: string;
     settingsHref?: string;
+    skillsHref?: string;
   },
 ): string {
   return appShell({
@@ -278,6 +279,7 @@ function shell(
     body: options.body,
     notice: chrome.notice,
     settingsHref: options.settingsHref,
+    skillsHref: options.skillsHref,
   });
 }
 
@@ -695,6 +697,7 @@ export function renderOverview(site: SiteModel, chrome: PageChrome): string {
     breadcrumb: [{ label: "Workbench", href: "/" }, { label: "Overview" }],
     header,
     body,
+    skillsHref: "/skills",
   });
 }
 
@@ -787,6 +790,7 @@ export function renderProjects(
     breadcrumb: [{ label: "Workbench", href: "/" }, { label: "Projects" }],
     header,
     body: `${content}${newProjectDialog()}`,
+    skillsHref: "/skills",
   });
 }
 
@@ -968,6 +972,7 @@ export function renderProject(
     header,
     body,
     settingsHref: `/projects/${encodeURIComponent(project.id)}/settings`,
+    skillsHref: `/projects/${encodeURIComponent(project.id)}/skills`,
   });
 }
 
@@ -1128,6 +1133,7 @@ export function renderHandoffs(
     breadcrumb: [{ label: "Workbench", href: "/" }, { label: "Handoffs" }],
     header,
     body: content,
+    skillsHref: "/skills",
   });
 }
 

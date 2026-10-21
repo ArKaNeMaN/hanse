@@ -9,6 +9,7 @@ import {
   validateAppRuntimeSpec,
 } from "../agent/spec.js";
 import { materializeGitCredentials } from "../git/materialize.js";
+import type { Logger } from "../logging/logger.js";
 import {
   agentTokenMatches,
   ensureAgentToken,
@@ -25,6 +26,7 @@ import type {
   LaunchSettingsSnapshot,
   SettingsTarget,
 } from "../settings/types.js";
+import type { SkillApplyOptions, SkillMaterializeResult, SkillSource } from "../skills/index.js";
 import type { SqliteDatabase } from "../store/index.js";
 import { buildWebMcpConfig } from "../web/config.js";
 import { writeAuthFile } from "./auth.js";
@@ -47,6 +49,7 @@ import {
   type IsolatedEnv,
   type McpLocalServer,
   resolveInstanceEnv,
+  sanitizeAppKey,
 } from "./instance.js";
 import type { OmoProfileInput, OmoProfileResult } from "./omo-profile.js";
 import { ensureOpencodePassword, opencodePasswordPath, readOpencodePassword } from "./password.js";
@@ -115,6 +118,10 @@ export interface InstanceManagerOptions {
   verificationRetryDelayMs?: number;
   settings?: SettingsSource;
   omoProfiles?: OmoProfileSource;
+  /** Injectable skill registry for per-instance materialization. */
+  skills?: SkillSource;
+  /** Optional structured logger; skill warnings are bounded and content-free. */
+  logger?: Logger;
   /** Injectable model-propagation verifier for tests. */
   modelVerifier?: (endpoint: string, expected: string) => Promise<string[]>;
   /** Root used to validate `appDir`. Defaults to the application's parent directory. */
@@ -148,13 +155,18 @@ function disableWebsearch(web: EffectiveSettings["web"]): boolean {
   return web.search.value === null || web.search.value.driver === "deepseek";
 }
 
-function settingsHashFor(snapshot: LaunchSettingsSnapshot, profile: string): string {
+export function settingsHashFor(
+  snapshot: LaunchSettingsSnapshot,
+  profile: string,
+  skillsHash?: string,
+): string {
   return hashValue({
     effective: launchEffectiveSettings(snapshot.resolved.effective),
     providerKeys: snapshot.resolved.providerKeys,
     authHash: snapshot.authHash,
     gitAuthHash: snapshot.gitAuthHash,
     profile,
+    ...(skillsHash === undefined ? {} : { skills: skillsHash }),
   });
 }
 
@@ -163,7 +175,14 @@ function materializeFailure(error: unknown): Error {
   return new Error(`git_credentials_materialize_failed: ${detail.slice(0, 300)}`);
 }
 
-function resolveBaselinePlugins(): string[] {
+function skillsMaterializeFailure(error: unknown): Error {
+  const raw = error instanceof Error ? error.message : "unknown error";
+  const prefix = "skills_materialize_failed:";
+  const detail = raw.startsWith(prefix) ? raw.slice(prefix.length).trim() : raw;
+  return new Error(`${prefix} ${detail.slice(0, 300)}`);
+}
+
+export function resolveBaselinePlugins(): string[] {
   return (process.env.HANSE_OMO_PLUGIN ?? "")
     .split(",")
     .map((spec) => spec.trim())
@@ -325,6 +344,7 @@ export class InstanceManager {
       if (marker !== undefined && (marker.appDeleting === 1 || marker.projectDeleting === 1)) {
         throw new DeletionPendingError(app.id);
       }
+      this.#assertNoStateCollision(app);
       const identity = { projectId: app.projectId, app: app.appKey };
       const tokenFile = mcpTokenPath(this.#runtimeRoot, identity);
       const isolated = resolveInstanceEnv(this.#runtimeRoot, identity);
@@ -380,6 +400,27 @@ export class InstanceManager {
           return endpoint;
         }
       }
+      const baselinePlugins = resolveBaselinePlugins();
+      const skills = this.#options.skills;
+      const skillsTarget = { projectId: app.projectId, appKey: app.appKey };
+      const skillOptions: SkillApplyOptions = {
+        appRoot: path.dirname(isolated.HOME),
+        home: isolated.HOME,
+        xdgCacheHome: isolated.XDG_CACHE_HOME,
+        appDir: app.appDir,
+        baselinePlugins,
+      };
+      let skillsHash: string | undefined;
+      if (skills !== undefined) {
+        try {
+          const probed = skills.probe(skillsTarget, isolated.XDG_CONFIG_HOME, skillOptions);
+          skillsHash = probed.hash;
+          this.#logSkillWarnings(app.id, "probe", probed);
+        } catch (error) {
+          throw skillsMaterializeFailure(error);
+        }
+      }
+
       const image = resolveAgentImage(app);
       if (existing !== undefined) {
         this.#stopMonitor(app.id);
@@ -390,7 +431,17 @@ export class InstanceManager {
         await this.#options.runtime.delete(app.id);
       }
 
-      const baselinePlugins = resolveBaselinePlugins();
+      if (skills !== undefined) {
+        try {
+          const applied = skills.apply(skillsTarget, isolated.XDG_CONFIG_HOME, skillOptions);
+          skillsHash = applied.hash;
+          this.#logSkillWarnings(app.id, "apply", applied);
+        } catch (error) {
+          this.#recordSkillsError(app.id);
+          throw skillsMaterializeFailure(error);
+        }
+      }
+
       let model: string | undefined;
       let auth: Record<string, unknown> | undefined;
       let omoProfile: string | undefined;
@@ -435,7 +486,7 @@ export class InstanceManager {
         omoProfile = profile.applied ? profile.name : undefined;
         appliedProfile = profile.applied;
         profileWarning = profile.warning;
-        settingsHash = settingsHashFor(snapshot, profile.contentHash);
+        settingsHash = settingsHashFor(snapshot, profile.contentHash, skillsHash);
         const webConfig = buildWebMcpConfig(web);
         if (webConfig !== undefined) {
           mcpServers = {
@@ -573,6 +624,24 @@ export class InstanceManager {
     });
   }
 
+  #assertNoStateCollision(app: ManagedApp): void {
+    const projectSegment = sanitizeAppKey(app.projectId);
+    const appSegment = sanitizeAppKey(app.appKey);
+    const sibling = this.#db
+      .prepare("SELECT id, project_id AS projectId, app_key AS appKey FROM apps WHERE id <> ?")
+      .all(app.id) as Array<{ id: string; projectId: string; appKey: string }>;
+    const collision = sibling.find(
+      (candidate) =>
+        sanitizeAppKey(candidate.projectId) === projectSegment &&
+        sanitizeAppKey(candidate.appKey) === appSegment,
+    );
+    if (collision !== undefined) {
+      throw new Error(
+        `state_path_collision: application ${app.appKey} shares its state path with ${collision.appKey}`,
+      );
+    }
+  }
+
   isRunning(appId: string): boolean {
     return this.#running.has(appId);
   }
@@ -663,7 +732,11 @@ export class InstanceManager {
         model,
         disableWebsearch: disableWebsearch(effective.web),
       });
-      if (settingsHashFor(snapshot, preview.contentHash) !== target.settingsHash) {
+      const skillsHash = this.#options.skills?.hash({
+        projectId: target.projectId,
+        appKey: target.appKey,
+      });
+      if (settingsHashFor(snapshot, preview.contentHash, skillsHash) !== target.settingsHash) {
         reasons.push("settings_changed");
       }
     } catch {
@@ -1010,6 +1083,40 @@ export class InstanceManager {
         }
       }),
     );
+  }
+
+  #logSkillWarnings(appId: string, phase: "probe" | "apply", result: SkillMaterializeResult): void {
+    const logger = this.#options.logger;
+    if (logger === undefined || result.warnings.length === 0) {
+      return;
+    }
+    logger.warn("skills_materialize_warnings", {
+      appId,
+      phase,
+      count: result.warnings.length,
+      truncated: result.truncated ?? 0,
+      warnings: result.warnings.slice(0, 5).map((warning) => ({
+        code: warning.code,
+        name: warning.name,
+        root: warning.root,
+        id: warning.id,
+      })),
+    });
+  }
+
+  #recordSkillsError(appId: string): void {
+    this.#db
+      .prepare(
+        `INSERT INTO instances (id, app_id, endpoint, pid, state, runtime_state, updated_at)
+         VALUES (?, ?, NULL, NULL, 'error', 'error', ?)
+         ON CONFLICT(app_id) DO UPDATE SET
+           endpoint = NULL,
+           pid = NULL,
+           state = 'error',
+           runtime_state = 'error',
+           updated_at = excluded.updated_at`,
+      )
+      .run(appId, appId, new Date().toISOString());
   }
 
   #recordStatus(

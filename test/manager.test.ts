@@ -26,6 +26,7 @@ import {
   type ManagedApp,
   type OmoProfileSource,
   type SettingsSource,
+  settingsHashFor,
   verifyAgentModels,
 } from "../src/opencode/manager.js";
 import type { OmoProfileInput, OmoProfileResult } from "../src/opencode/omo-profile.js";
@@ -36,6 +37,14 @@ import type {
   EffectiveValue,
   LaunchSettingsSnapshot,
 } from "../src/settings/types.js";
+import {
+  type ResolvedSkills,
+  type SkillApplyOptions,
+  type SkillMaterializeResult,
+  SkillService,
+  type SkillSource,
+  type SkillTarget,
+} from "../src/skills/index.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
 import type { WebToolConfig } from "../src/web/types.js";
 import { FakeAgentRuntime } from "./fixtures/fake-runtime.js";
@@ -192,6 +201,67 @@ function fakeProfiles(
   };
 }
 
+interface FakeSkills {
+  source: SkillSource;
+  probes: Array<{ target: SkillTarget; xdgConfigHome: string; options: SkillApplyOptions }>;
+  applies: Array<{ target: SkillTarget; xdgConfigHome: string; options: SkillApplyOptions }>;
+  hashes: SkillTarget[];
+  setHash(hash: string | undefined): void;
+  failProbe?: Error;
+  failApply?: Error;
+}
+
+function fakeSkills(initialHash: string | undefined = "skills-hash", order?: string[]): FakeSkills {
+  let hash = initialHash;
+  const probes: FakeSkills["probes"] = [];
+  const applies: FakeSkills["applies"] = [];
+  const hashes: SkillTarget[] = [];
+  const resolved = (target: SkillTarget): ResolvedSkills => ({
+    scope:
+      target.appKey === undefined ? (target.projectId === undefined ? "global" : "project") : "app",
+    effective: [],
+    rows: [],
+    disabled: [],
+    warnings: [],
+  });
+  const result = (): SkillMaterializeResult => ({
+    hash,
+    written: [],
+    removed: [],
+    preserved: [],
+    warnings: [],
+  });
+  const fake: FakeSkills = {
+    probes,
+    applies,
+    hashes,
+    setHash(next) {
+      hash = next;
+    },
+    source: {
+      resolve: (target) => resolved(target),
+      preview: (target) => ({ resolved: resolved(target), warnings: [] }),
+      hash: (target) => {
+        hashes.push(target);
+        return hash;
+      },
+      probe: (target, xdgConfigHome, options) => {
+        order?.push("probe");
+        probes.push({ target, xdgConfigHome, options });
+        if (fake.failProbe !== undefined) throw fake.failProbe;
+        return result();
+      },
+      apply: (target, xdgConfigHome, options) => {
+        order?.push("apply");
+        applies.push({ target, xdgConfigHome, options });
+        if (fake.failApply !== undefined) throw fake.failApply;
+        return result();
+      },
+    },
+  };
+  return fake;
+}
+
 interface Fixture {
   manager: InstanceManager;
   runtime: FakeAgentRuntime;
@@ -210,6 +280,7 @@ function fixture(
     monitorFactory?: (options: ContextMonitorOptions) => ContextMonitorLike;
     enableContextMonitors?: boolean;
   },
+  skills?: SkillSource | ((db: SqliteDatabase) => SkillSource),
 ): Fixture {
   const dir = mkdtempSync(path.join(tmpdir(), "hanse-manager-"));
   dirs.push(dir);
@@ -223,6 +294,7 @@ function fixture(
   db.prepare(
     "INSERT INTO apps (id,project_id,app_key,path,contract,created_at) VALUES ('p:web','p','web','apps/web','AGENTS.md',?)",
   ).run(now);
+  const skillsSource = typeof skills === "function" ? skills(db) : skills;
   const manager = new InstanceManager(db, dir, {
     runtime,
     verify,
@@ -234,6 +306,7 @@ function fixture(
       ? {}
       : { hostWorkspace: hostPaths.hostWorkspace, hostAgents: hostPaths.hostAgents }),
     ...monitorOptions,
+    ...(skillsSource === undefined ? {} : { skills: skillsSource }),
   });
   return { manager, runtime, db, dir };
 }
@@ -530,6 +603,267 @@ describe("InstanceManager lifecycle", () => {
     expect(readFileSync(tokenFile, "utf8")).toBe(token);
     expect(verifyAgentToken(db, token)).toBeDefined();
     expect(authorizationFor(endpoint)).toMatch(/^Basic /);
+  });
+
+  it("probes before teardown and applies after delete before ensure", async () => {
+    const order: string[] = [];
+    class OrderedRuntime extends FakeAgentRuntime {
+      override async ensure(spec: Parameters<FakeAgentRuntime["ensure"]>[0]) {
+        order.push("ensure");
+        return super.ensure(spec);
+      }
+      override async delete(appId: string) {
+        order.push("delete");
+        return super.delete(appId);
+      }
+    }
+    const runtime = new OrderedRuntime();
+    const skills = fakeSkills("skills-one", order);
+    const { manager, dir } = fixture(
+      runtime,
+      fakeSettings(),
+      fakeProfiles().source,
+      undefined,
+      async () => [],
+      undefined,
+      undefined,
+      skills.source,
+    );
+    await manager.ensure(APP);
+    writeFileSync(path.join(dir, "p", "web", "mcp-token"), "tampered-token", { mode: 0o600 });
+    order.length = 0;
+
+    await manager.ensure(APP);
+
+    expect(order).toEqual(["probe", "delete", "apply", "ensure"]);
+    expect(skills.probes).toHaveLength(2);
+    expect(skills.applies).toHaveLength(2);
+  });
+
+  it("does not probe or apply when reconnecting to a running agent", async () => {
+    const order: string[] = [];
+    const skills = fakeSkills("skills-one", order);
+    const { manager } = fixture(
+      new FakeAgentRuntime(),
+      fakeSettings(),
+      fakeProfiles().source,
+      undefined,
+      async () => [],
+      undefined,
+      undefined,
+      skills.source,
+    );
+    await manager.ensure(APP);
+    order.length = 0;
+    skills.probes.length = 0;
+    skills.applies.length = 0;
+
+    await manager.ensure(APP);
+
+    expect(order).toEqual([]);
+    expect(skills.probes).toHaveLength(0);
+    expect(skills.applies).toHaveLength(0);
+  });
+
+  it("aborts before teardown when the skills probe fails", async () => {
+    const order: string[] = [];
+    const skills = fakeSkills("skills-one", order);
+    const runtime = new FakeAgentRuntime();
+    const { manager, dir } = fixture(
+      runtime,
+      fakeSettings(),
+      fakeProfiles().source,
+      undefined,
+      async () => [],
+      undefined,
+      undefined,
+      skills.source,
+    );
+    await manager.ensure(APP);
+    writeFileSync(path.join(dir, "p", "web", "mcp-token"), "tampered-token", { mode: 0o600 });
+    order.length = 0;
+    runtime.deleted.length = 0;
+    skills.failProbe = new Error("staging write failed");
+
+    await expect(manager.ensure(APP)).rejects.toThrow(
+      /^skills_materialize_failed: staging write failed$/,
+    );
+    expect(order).toEqual(["probe"]);
+    expect(runtime.deleted).toEqual([]);
+    expect(manager.isRunning(APP.id)).toBe(true);
+  });
+
+  it("records error and aborts when apply fails after teardown", async () => {
+    const order: string[] = [];
+    class OrderedRuntime extends FakeAgentRuntime {
+      override async ensure(spec: Parameters<FakeAgentRuntime["ensure"]>[0]) {
+        order.push("ensure");
+        return super.ensure(spec);
+      }
+      override async delete(appId: string) {
+        order.push("delete");
+        return super.delete(appId);
+      }
+    }
+    const skills = fakeSkills("skills-one", order);
+    const runtime = new OrderedRuntime();
+    const { manager, db, dir } = fixture(
+      runtime,
+      fakeSettings(),
+      fakeProfiles().source,
+      undefined,
+      async () => [],
+      undefined,
+      undefined,
+      skills.source,
+    );
+    await manager.ensure(APP);
+    writeFileSync(path.join(dir, "p", "web", "mcp-token"), "tampered-token", { mode: 0o600 });
+    order.length = 0;
+    runtime.deleted.length = 0;
+    skills.failApply = new Error("live write failed");
+
+    await expect(manager.ensure(APP)).rejects.toThrow(
+      /^skills_materialize_failed: live write failed$/,
+    );
+    expect(order).toEqual(["probe", "delete", "apply"]);
+    expect(runtime.deleted).toEqual([APP.id]);
+    expect(runtime.ensured).toHaveLength(1);
+    expect(manager.isRunning(APP.id)).toBe(false);
+    expect(
+      db
+        .prepare(
+          "SELECT state, runtime_state AS runtimeState, endpoint, pid FROM instances WHERE app_id = ?",
+        )
+        .get(APP.id),
+    ).toEqual({ state: "error", runtimeState: "error", endpoint: null, pid: null });
+  });
+
+  it("keeps the old launch hash when the skills hash is undefined", () => {
+    const settings = fakeSettings();
+    const snapshot = settings.snapshot({ projectId: "p", appKey: "web" });
+    const preSkillsEffective = {
+      llm: { model: value("deepseek/deepseek-flash") },
+      web: { search: value({ driver: "builtin" }), fetch: value({ driver: "builtin" }) },
+      git: {
+        user: { name: value<string | null>(null), email: value<string | null>(null) },
+      },
+    };
+    const expected = hashValue({
+      effective: preSkillsEffective,
+      providerKeys: {},
+      authHash: "auth-hash",
+      gitAuthHash: "git-auth-hash",
+      profile: "profile-hash",
+    });
+
+    expect(settingsHashFor(snapshot, "profile-hash")).toBe(expected);
+    expect(settingsHashFor(snapshot, "profile-hash", undefined)).toBe(expected);
+  });
+
+  it("does not mark a zero-skill install restart-required", async () => {
+    const runtime = new FakeAgentRuntime();
+    const settings = fakeSettings();
+    const skills = fakeSkills();
+    skills.setHash(undefined);
+    const { manager, db } = fixture(
+      runtime,
+      settings,
+      fakeProfiles().source,
+      undefined,
+      async () => [],
+      undefined,
+      undefined,
+      skills.source,
+    );
+    await manager.ensure(APP);
+    const recorded = db
+      .prepare(
+        "SELECT applied_settings_hash AS appliedSettingsHash FROM instances WHERE app_id = 'p:web'",
+      )
+      .get() as { appliedSettingsHash: string | null };
+
+    expect(recorded.appliedSettingsHash).toBe(
+      settingsHashFor(settings.snapshot({ projectId: "p", appKey: "web" }), "profile-hash"),
+    );
+    expect(manager.pendingRestart(APP.id)).toEqual({ pending: false, reasons: [] });
+  });
+
+  it("marks restart-required when the effective skills hash changes", async () => {
+    const skills = fakeSkills("skills-one");
+    const { manager } = fixture(
+      new FakeAgentRuntime(),
+      fakeSettings(),
+      fakeProfiles().source,
+      undefined,
+      async () => [],
+      undefined,
+      undefined,
+      skills.source,
+    );
+    await manager.ensure(APP);
+    expect(manager.pendingRestart(APP.id)).toEqual({ pending: false, reasons: [] });
+
+    skills.setHash("skills-two");
+    expect(manager.pendingRestart(APP.id)).toEqual({
+      pending: true,
+      reasons: ["settings_changed"],
+    });
+
+    skills.setHash("skills-one");
+    expect(manager.pendingRestart(APP.id)).toEqual({ pending: false, reasons: [] });
+  });
+
+  it("ignores edits to shadowed and disabled skills when the effective hash is unchanged", async () => {
+    let registry: SkillService | undefined;
+    const { manager } = fixture(
+      new FakeAgentRuntime(),
+      fakeSettings(),
+      fakeProfiles().source,
+      undefined,
+      async () => [],
+      undefined,
+      undefined,
+      (db) => {
+        registry = new SkillService({ db });
+        return registry;
+      },
+    );
+    if (registry === undefined) throw new Error("missing skill registry");
+    const target = { projectId: "p", appKey: "web" };
+    const globalAlpha = registry.create(
+      "global",
+      {},
+      { name: "alpha", description: "global alpha", content: "global alpha body" },
+      "test",
+    );
+    registry.create(
+      "app",
+      target,
+      { name: "alpha", description: "app alpha", content: "app alpha body" },
+      "test",
+    );
+    const globalBeta = registry.create(
+      "global",
+      {},
+      { name: "beta", description: "global beta", content: "global beta body" },
+      "test",
+    );
+    const betaTombstone = registry.override(globalBeta.id, "app", target, false, "test");
+    await manager.ensure(APP);
+    expect(manager.pendingRestart(APP.id)).toEqual({ pending: false, reasons: [] });
+
+    registry.update(globalAlpha.id, { content: "edited shadowed body" }, "test");
+    expect(manager.pendingRestart(APP.id)).toEqual({ pending: false, reasons: [] });
+
+    registry.update(betaTombstone.id, { content: "edited disabled body" }, "test");
+    expect(manager.pendingRestart(APP.id)).toEqual({ pending: false, reasons: [] });
+
+    registry.update(betaTombstone.id, { enabled: true }, "test");
+    expect(manager.pendingRestart(APP.id)).toEqual({
+      pending: true,
+      reasons: ["settings_changed"],
+    });
   });
 
   it("persists applied settings across detach and reattach", async () => {
@@ -1554,5 +1888,23 @@ describe("InstanceManager app image selection", () => {
     expect(await f.manager.ensure({ ...f.app, imageStatus: "error", imageRef: null })).toBe(
       endpoint,
     );
+  });
+  it("refuses an application whose sanitized state path collides with a sibling", async () => {
+    const f = fixture();
+    const now = new Date().toISOString();
+    f.db
+      .prepare(
+        "INSERT INTO apps (id,project_id,app_key,path,contract,created_at) VALUES ('p:web:api','p','web:api','apps/web-api-sibling','AGENTS.md',?)",
+      )
+      .run(now);
+    await expect(
+      f.manager.ensure({
+        id: "p:web-api",
+        projectId: "p",
+        appKey: "web-api",
+        appDir: path.join(f.dir, "apps", "web-api"),
+      }),
+    ).rejects.toThrow(/state_path_collision/);
+    expect(f.runtime.ensured).toHaveLength(0);
   });
 });

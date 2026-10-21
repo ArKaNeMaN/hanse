@@ -184,6 +184,7 @@ function renderNoApps(site: SiteModel, chrome: PageChrome): string {
       body: "Add an application to a project before opening a chat. The agent starts when you open its workspace.",
       action: '<a class="btn btn-primary btn-sm" href="/projects">Open projects</a>',
     }),
+    skillsHref: "/skills",
   });
 }
 
@@ -389,6 +390,7 @@ function renderChatPage(
     projects: navProjects(site),
     pendingCount: site.pendingCount,
     settingsHref: `/projects/${encodeURIComponent(project.id)}/apps/${encodeURIComponent(app.appKey)}/settings`,
+    skillsHref: `/projects/${encodeURIComponent(project.id)}/apps/${encodeURIComponent(app.appKey)}/skills`,
     operatorName: principal.name,
     notice: chrome.notice,
     header: "",

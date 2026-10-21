@@ -21,7 +21,9 @@
 - **API authn**: mutating HTTP endpoints require a bearer token; a non-human principal receives 403.
 - **Git workbench**: the application page and `/api/projects/:id/apps/:key/git/*` are human-only;
   agent principals receive 403. Mutations are JSON-only (plus `SameSite=Strict`) and request bodies
-  are capped at 64 KiB. Git runs in the runner one-shot container with argument arrays, no shell,
+  are capped at 64 KiB; the `/api/skills*` routes alone accept 512 KiB for 48,000-character skill
+  bodies, with per-field limits still applied. Git runs in the runner one-shot container with
+  argument arrays, no shell,
   timeouts, bounded output, and per-repository serialization. The application directory must resolve,
   via `realpath`, to the repository toplevel inside the workspace; symlink/nested-repository escapes
   are rejected. Remote URLs and command output are redacted for URL userinfo before leaving the

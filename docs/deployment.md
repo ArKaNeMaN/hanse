@@ -277,6 +277,13 @@ The store uses forward-only migrations. Rolling the image back after a migration
 the older binary may not understand the newer schema. Back up `state` before an upgrade; restoring
 that backup is the reliable rollback path.
 
+On the first start after this upgrade, each application's managed skills are materialized before
+`opencode serve`. If an instance already has entries outside the effective set in its Hanse-owned
+`config/opencode/skills` or `config/opencode/skill` roots, the first apply moves them to
+`config/opencode/skills-replaced/` instead of deleting them; review that directory after the
+upgrade. Skill changes, like settings changes, apply only on an explicit agent restart and are
+never hot-reloaded.
+
 ```bash
 # Pin a previous image without rebuilding
 HANSE_TAG=sha-<previous> docker compose up -d

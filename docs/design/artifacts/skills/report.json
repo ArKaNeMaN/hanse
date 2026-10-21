@@ -1,0 +1,51 @@
+{
+  "tool": "skills-qa",
+  "startedAt": "2026-10-21T22:47:56.743Z",
+  "status": "PASS",
+  "assertions": 49,
+  "screenshots": [
+    "docs/design/artifacts/skills/skills-global-1440-dark.png",
+    "docs/design/artifacts/skills/skills-project-1440-dark.png",
+    "docs/design/artifacts/skills/skills-app-1440-dark.png",
+    "docs/design/artifacts/skills/skills-global-390-dark.png",
+    "docs/design/artifacts/skills/skills-project-390-dark.png",
+    "docs/design/artifacts/skills/skills-app-390-dark.png",
+    "docs/design/artifacts/skills/skills-dialog-1440-dark.png",
+    "docs/design/artifacts/skills/skills-dialog-390-dark.png",
+    "docs/design/artifacts/skills/skills-editor-1440-dark.png"
+  ],
+  "routes": [
+    {
+      "slug": "global",
+      "viewport": "1440",
+      "url": "/skills"
+    },
+    {
+      "slug": "project",
+      "viewport": "1440",
+      "url": "/projects/p/skills"
+    },
+    {
+      "slug": "app",
+      "viewport": "1440",
+      "url": "/projects/p/apps/web/skills"
+    },
+    {
+      "slug": "global",
+      "viewport": "390",
+      "url": "/skills"
+    },
+    {
+      "slug": "project",
+      "viewport": "390",
+      "url": "/projects/p/skills"
+    },
+    {
+      "slug": "app",
+      "viewport": "390",
+      "url": "/projects/p/apps/web/skills"
+    }
+  ],
+  "errors": [],
+  "baseUrl": "http://127.0.0.1:42187"
+}

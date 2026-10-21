@@ -20,3 +20,4 @@ them.
 - `0015-project-and-application-deletion.md` - human-only app/project deletion, durable markers, runtime/network/image cleanup, manifest/state/DB removal, handoff/events audit, guarded source deletion, HTTP/UI, review fixes, and residual risks.
 - `0016-runtime-state-reconciliation.md` - startup/periodic runner reconciliation for stale `running` rows, persisted not-running restarts, and neutral restart-failure copy.
 - `0017-context-compaction.md` - server-side context usage accounting, provider limits, manual compaction, threshold auto-compaction, chat meter/rail, live settings, tests, browser QA, and the `sha-50acf4f` deploy.
+- `0018-agent-skills.md` - global/project/application skill registry in the coordinator DB, tombstone resolution, deterministic per-instance materialization, collision warnings, restart hashing, human-only scope pages, deletion integration, and verification; implemented and verified, not deployed.

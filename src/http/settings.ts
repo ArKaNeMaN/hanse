@@ -2125,6 +2125,12 @@ function renderSettingsPage(options: {
     active: "settings",
     activeProjectId: project?.id,
     settingsHref: options.path,
+    skillsHref:
+      options.scope === "global"
+        ? "/skills"
+        : options.scope === "project"
+          ? `/projects/${encodeURIComponent(options.target.projectId ?? "")}/skills`
+          : `/projects/${encodeURIComponent(options.target.projectId ?? "")}/apps/${encodeURIComponent(options.target.appKey ?? "")}/skills`,
     breadcrumb,
     projects: options.site.projects.map((entry) => ({
       id: entry.id,

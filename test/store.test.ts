@@ -27,13 +27,13 @@ describe("store", () => {
     db.close();
   });
 
-  it("migrates to v11 with agent tokens, runner containers, app image versions, git credentials, SSH tables, applied runtime state, and deletion markers", () => {
+  it("migrates to v12 with agent tokens, runner containers, app image versions, git credentials, SSH tables, applied runtime state, deletion markers, and skills", () => {
     const db = openDatabase(tempDbPath());
     runMigrations(db);
     const versions = db.prepare("SELECT version FROM schema_migrations ORDER BY version").all() as {
       version: number;
     }[];
-    expect(versions.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+    expect(versions.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
     const secretTables = (
       db
         .prepare(
@@ -98,6 +98,37 @@ describe("store", () => {
       }[]
     ).map((row) => row.name);
     expect(projectColumns).toContain("deleting");
+
+    const skillColumns = (
+      db.prepare("PRAGMA table_info(skills)").all() as {
+        name: string;
+      }[]
+    ).map((row) => row.name);
+    expect(skillColumns).toEqual([
+      "id",
+      "scope",
+      "project_id",
+      "app_key",
+      "name",
+      "description",
+      "content",
+      "enabled",
+      "created_at",
+      "updated_at",
+      "updated_by",
+    ]);
+    const skillsSql = (
+      db
+        .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'skills'")
+        .get() as { sql: string }
+    ).sql;
+    expect(skillsSql).toContain("UNIQUE (scope, project_id, app_key, name)");
+    expect(skillsSql).toContain("scope IN ('global', 'project', 'app')");
+    expect(
+      db
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'skills_scope'")
+        .get(),
+    ).toEqual({ name: "skills_scope" });
 
     const now = new Date().toISOString();
     db.prepare(
