@@ -1,6 +1,6 @@
 # 0016 - Runtime state reconciliation
 
-Status: implemented and verified; deployment pending.
+Status: implemented, verified, and deployed as coordinator `sha-98033f5`.
 
 ## Problem
 
@@ -45,6 +45,18 @@ runtime endpoint and the overview counts.
 - An externally stopped container does not revoke its agent token; the token remains valid for a
   future start, consistent with `detach()`.
 
-## Deployment
+## Deployment - 2026-10-21
 
-Pending.
+Deployed commit `98033f5` to `deployment-host`. The coordinator image is
+`ghcr.io/arkaneman/hanse:sha-98033f5` (`sha256:a42642dd...`, ID `573b58a5993e`);
+`HANSE_TAG=sha-98033f5`. `HANSE_AGENT_TAG` remains `sha-d2fcc3b`, so
+`hanse-agent-default`, `hanse-agent-ide`, and `hanse-runner` stay on their previous tag: this
+change is coordinator-only. Pre-deploy backup:
+`<BACKUP_DIR>/20261021-152502-pre-runtime-state-reconcile/`; rollback tags
+`hanse:rollback-20261021-152502` (`81211910fa40`), `hanse-agent-ide:rollback-20261021-152502`,
+and `hanse-runner:rollback-20261021-152502`. Health: static services healthy; `/healthz`, login,
+assets, authenticated pages, `/api/projects`, and `/ide/` passed. Live behavior: the row left
+`running` by the pre-deploy stop-all was reconciled to `stopped` on startup and the settings page
+showed zero `Restart required`; a controlled external `docker stop` was reflected as `error` within
+one 15-second tick and the restart marker disappeared; the app was restarted, sessions returned
+`200`, and B1/B2 probes passed. Deployment record: `docs/deploy/deploy-log.md` (local-only).
