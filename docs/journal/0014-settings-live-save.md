@@ -1,6 +1,6 @@
 # 0014 - Settings saves without a page refresh
 
-Status: implemented and verified; deployment pending.
+Status: implemented, verified, and deployed as `sha-d2fcc3b`.
 
 ## Problem
 
@@ -84,6 +84,21 @@ resolver and create a second source of truth.
   action, not a setting save, and is outside this change.
 - No-JS saves still redirect and lose values.
 
-## Deployment
+## Deployment - 2026-10-21
 
-Pending.
+Deployed commit `d2fcc3b` (rebased on the Git keyfix `47652bc`) to `deployment-host`
+(`<LAN_HOST>:8787`). Images: `hanse:sha-d2fcc3b` (`sha256:0a1c5aca...`, ID
+`81211910fa40`), `hanse-agent-default:sha-d2fcc3b` (`sha256:218b2a8e...`, ID
+`cb31e0eb2de4`), `hanse-agent-ide:sha-d2fcc3b` (`sha256:dfe9b6cf...`, ID `a0d4eecdb465`), and
+`hanse-runner:sha-d2fcc3b` (`sha256:4c87cbb6...`, ID `c5a3f69be370`). `HANSE_TAG` and
+`HANSE_AGENT_TAG` both point at `sha-d2fcc3b`. Pre-deploy backup:
+`<BACKUP_DIR>/20261021-104628-pre-settings-live-save/`; rollback tags:
+`hanse:rollback-20261021-104628` (`0ff352665fa6`, the previous coordinator), IDE/runner
+`*:rollback-20261021-104628`, and the previous `hanse-agent-default:sha-88faab7`
+(`6139d064ac37`). Health: static services healthy; `/healthz`, login, assets, authenticated pages,
+`/api/projects`, and `/ide/` passed; the settings page served `#settings-warnings`, the clear form's
+`data-no-busy`, and both scripts with `x-hanse-fragment`; `demo-app` attached on
+`hanse-agent-default:sha-d2fcc3b` and sessions returned `200`; B1/B2 probes passed. The first
+`ensure` after pulling the agent image created the container but the runner's Docker start call timed
+out; a manual `docker start` followed by the same sessions request returned `200`. Deployment record:
+`docs/deploy/deploy-log.md` (local-only).

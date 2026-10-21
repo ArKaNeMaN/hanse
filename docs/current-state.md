@@ -513,14 +513,19 @@ coordinator; operators do not set them.
 
 ## Verification
 
-`npm run lint && npm run typecheck && npm test && npm run build` (all green; 1210 tests). Deployed on `deployment-host` as `sha-88faab7`; B1 core
+`npm run lint && npm run typecheck && npm test && npm run build` (all green; 1210 tests). The UX
+polish pass deployed as `sha-88faab7`; the settings live-save follow-up deployed as `sha-d2fcc3b`.
+B1 core
 live smoke on `deployment-host`: coordinator/IDE/runner healthy, per-app `demo-app` container running,
 `scripts/agent-runtime-probe.sh b1` passes, coordinator recreate reattaches the app network, and the
 app agent has no `/data/state`, Docker socket, operator/runtime token, or sibling app access.
 B2 live smoke on `deployment-host`: built a test app from `ARG HANSE_BASE` with an extra `jq` package; the
 builder reached `ready`, image validation passed, the app container used the built `image_ref`, a
 rebuild produced a second version, rollback switched back and restarted the agent, and
-`scripts/agent-runtime-probe.sh b2` plus `GET /api/images/usage` passed. The test app is
+`scripts/agent-runtime-probe.sh b2` plus `GET /api/images/usage` passed. The settings live-save
+follow-up was deployed on 2026-10-21 as `sha-d2fcc3b`: all four images use the same tag, the static
+services are healthy, the settings page serves the fragment wrapper and both updated scripts,
+`demo-app` is attached on the new agent image, and B1/B2 probes pass. The test app is
 `b2-smoke/apps/web` in the host workspace; its image is `stale` until rebuilt against the current
 default base.
 B1.4 terminal live smoke: `/terminal` returns `200`, direct runner exec, coordinator proxy, and the
