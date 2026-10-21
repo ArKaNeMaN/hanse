@@ -1,7 +1,7 @@
 # Design - UX/UI polish pass
 
-Status: **design complete; awaiting Oracle review.** This document is a contract for implementation. It
-does not authorize code changes before design review and plan review clear (see
+Status: **design review PASS-WITH-CHANGES; findings folded; ready for plan review.** This document is
+a contract for implementation. It does not authorize code changes before plan review clears (see
 [`docs/process.md`](../process.md)).
 
 Date: 2026-10-21.
@@ -39,7 +39,7 @@ Binding for this design:
 | Image | One rail card with a `.status` pill, one refresh, one build action, an `Image details` disclosure (ref, built, rollback, build logs), and a confirmed rollback. Build never auto-restarts. Rollback is explicitly "Roll back and restart". |
 | Settings IA | Sticky scope/section navigation, four job-based sections (Agent, Web tools, Git, Restart), and one collapsed **setting row** per setting. Scope tables and editors are inside the row disclosure. |
 | Settings actions | At rest: zero submit buttons. One primary `Save` per open row; `Inherit` and `Clear` are secondary in the open row and disabled (with a visible reason) when they are no-ops. Global scope hides `Inherit`. |
-| Settings validation | Forms post via `settings.js` with `Accept: application/json`; errors render inline in the row and keep values/focus. No-JS falls back to the current redirect + toast. |
+| Settings validation | Non-Git forms post via `settings.js` with `Accept: application/json`; errors render inline in the row and keep values/focus. No-JS falls back to the current redirect + toast. Git credential forms are JS-required (existing JSON contract) and carry a `<noscript>` notice. |
 | Terminal | Full-height page on vendored xterm.js 6.0.0 + `@xterm/addon-fit` 0.11.0. Binary input frames, text control frames, `TERM=xterm-256color`, 5000-line scrollback, fit/resize, copy/paste, reconnect backoff, close reasons, stopped-agent state. No tabs, splits, search, or persistence. |
 | Runtime state | One vocabulary: `starting`, `running`, `stopped`, `error`. `error` no longer renders as Stopped; `starting` no longer renders as Stopped; error counts become real. |
 | Restart route | Calls `manager.restartIfRunning()`, never bare `stopApp()`. Reports restart failure instead of claiming success. |
@@ -99,6 +99,7 @@ workbench-grid--detail
   main column          Repository card
                        Changes card
   rail (320px)         Image card
+                       SSH access card
                        Remotes card
                        Last commit card
 noscript               unchanged git fallback
@@ -106,15 +107,19 @@ noscript               unchanged git fallback
 
 Rules:
 
-- The pending banner, the standalone full-width Image card, and the Application rail card are
-  removed.
+- The pending banner, the standalone full-width Image card, the full-width SSH access card, and the
+  Application rail card are removed.
 - The git workbench remains the widest and tallest region at every breakpoint. `Repository` and
   `Changes` keep their current internal design, actions, skeletons, and `assets/git.js` contract.
-- The rail is supporting information only: Image (actionable), Remotes, Last commit. No identity
+- The rail is supporting information only: Image (actionable), SSH access (allowed hosts and pending
+  approvals plus the existing `/ssh?project=&app=` Manage link), Remotes, Last commit. No identity
   repetition (project, kind, path live in the page header meta).
+- `#ssh-panel` and `#ssh-panel-title` stay on the compact rail card so the SSH feature tests and
+  deep links keep working; the card keeps the `sshHostsByApp` / `sshPendingByApp` counts and renders
+  no new controls beyond the Manage link.
 - At `< 1280px` the rail stacks after the main git column; the page remains one column. At `>= 1280px`
-  it is the existing 320px rail. The Image card is therefore below git on tablet/phone, which is
-  correct for a secondary surface.
+  it is the existing 320px rail. The Image and SSH cards are therefore below git on tablet/phone,
+  which is correct for secondary surfaces.
 
 ### 2.2 Page header and action model
 
@@ -123,8 +128,8 @@ Page header content:
 - Overline: `Application`.
 - Title: the application key (serif `h1`).
 - Description: `Repository state and lightweight git actions for this application.`
-- Meta: project name (linked), kind, application path in mono. The project link is the one place the
-  page names its parent; the removed rail card was the duplicate.
+- Meta: project name, kind, application path in mono. `pageHeader.meta` takes escaped plain strings,
+  so the project link stays in the breadcrumb and is not duplicated inside the meta row.
 - Breadcrumb: `Projects / <project> / <appKey>`, unchanged.
 
 Action model:
@@ -143,9 +148,10 @@ Action model:
   Application settings entry on the page. The contextual sidebar Settings link (Section 3.2) is the
   second route and is navigation, not a page action.
 - The menu is a native `<details>` disclosure containing ordinary links. It does not use
-  `role="menu"` or roving tabindex, because it is a short link list, not an application menu. Escape
-  and outside-click close are handled by the shared `assets/app.js`; without JS the links remain
-  reachable by opening the disclosure.
+  `role="menu"` or roving tabindex, because it is a short link list, not an application menu.
+  `assets/app.js` gains one small handler for `details.menu`: outside click and Escape close the open
+  menu and return focus to its summary; without JS the links remain reachable by opening the
+  disclosure.
 - At `< 480px` the existing `.page-header__actions` rule makes the labelled buttons share the row;
   `.page-header__actions .menu { flex: none; }` keeps the overflow icon at its 44px target. No
   wrapping to a second action line.
@@ -178,11 +184,12 @@ dialog `#app-restart-dialog`; the dialog's form posts to the existing restart ro
 is `stopped` or `error`, no restart button is shown: `restartIfRunning()` cannot start a stopped
 agent, and offering a button that lies is worse than offering none.
 
-**Settings cell.** Three states:
+**Settings cell.** Four states:
 
 | Condition | Label | Supporting copy | Action |
 | --- | --- | --- | --- |
-| `site.pendingRestart` is true | `.status data-state="awaiting_approval"` **Restart required** | `The agent is running with older settings.` | None here; the restart control is in the Runtime cell. |
+| `site.pendingRestart` is true (known reason) | `.status data-state="awaiting_approval"` **Restart required** | `The agent is running with older settings.` | None here; the restart control is in the Runtime cell. |
+| `site.pendingRestart` is true (`applied_state_unknown`) | `.status data-state="awaiting_approval"` **Restart required** | `The coordinator cannot confirm which settings this running agent loaded.` | None here; the restart control is in the Runtime cell. |
 | Not pending, manager configured | `.status data-state="delivered"` **Applied** | `Settings match the running agent.` | `Review settings` link. |
 | Manager not configured | `.status data-state="cancelled"` **Unavailable** | `The agent runtime is not configured.` | `Review settings` link. |
 
@@ -291,12 +298,13 @@ cannot collide with chat's agent `Ready`.
   button is `.btn.btn-secondary.btn-sm`; `Commit all` remains the only primary.
 - While `building`: the build button is `disabled` and `aria-busy="true"` with label `Building…`;
   rollback is disabled; the logs disclosure opens automatically and polls every 3s.
-- Build never restarts the agent and never claims to. When the build finishes and runtime is
-  `running`, `images.js` compares the runtime's `imageRef` (added to `/api/apps/:app/runtime`) with
-  the card's `data-image-ref`. If they differ, it shows:
-  `Restart the agent to use the new image.` with no extra restart control (the Runtime cell owns it).
-  If the runtime endpoint has no `imageRef` (legacy instance), the hint is skipped rather than
-  guessed.
+- Build never restarts the agent and never claims to. `images.js` fetches the runtime endpoint on
+  load and after every build/rollback. When the runtime is `running`/`starting`, it compares the
+  runtime's `imageRef` (added to `/api/apps/:app/runtime`) with the card's `data-image-ref`. If they
+  differ, it shows: `Restart the agent to use the new image.` with no extra restart control (the
+  Runtime cell owns it). If the card is the default image, `data-image-ref` is absent, or the
+  runtime endpoint has no `imageRef` (legacy instance), the comparison and hint are skipped rather
+  than guessed.
 - A build error keeps the previous image and renders `#image-error` as `.field-error` with
   `role="alert"`. No `.small` error text.
 
@@ -351,7 +359,21 @@ cannot collide with chat's agent `Ready`.
 - Polling runs only while `building`; otherwise it stops.
 - A 401 redirects to `/login?next=...` as today.
 
-### 2.5 Git workbench preservation
+### 2.5 SSH access card (rail)
+
+The merged SSH feature keeps its application page entry as one compact rail card rather than a
+full-width block above the workbench:
+
+- Keeps `#ssh-panel` and `#ssh-panel-title`; head title `SSH access`, trailing ghost `Manage` link to
+  the existing `/ssh?project=<id>&app=<key>` route.
+- Body: `<n> allowed hosts` and, when non-zero, a `.status data-state="awaiting_approval"` stamp with
+  the clock/stamp glyph and `<m> pending approvals`; zero pending is plain `No pending approvals.`
+  in `.small`.
+- Uses `site.sshHostsByApp` / `site.sshPendingByApp`; no new route or data.
+- No forms, no host list, no approval actions on the application page; those stay on `/ssh`.
+- On `< 1280` it stacks with the rest of the rail after the git workbench.
+
+### 2.6 Git workbench preservation
 
 The git workbench is unchanged in behaviour and keeps its DOM contract:
 
@@ -366,7 +388,7 @@ The git workbench is unchanged in behaviour and keeps its DOM contract:
 Only the surrounding composition changes: `Repository` and `Changes` sit in the main column; Remotes
 and Last commit move below the Image card in the rail; the Application rail card is deleted.
 
-### 2.6 Pending restart, once
+### 2.7 Pending restart, once
 
 - The full-width `#settings-pending` banner is removed.
 - The rail `Restart required` badge is removed.
@@ -377,7 +399,7 @@ and Last commit move below the Image card in the rail; the Application rail card
 - The project application table keeps its per-row `Restart required` badge because each row is a
   different application; it links to that application's settings page as today.
 
-### 2.7 Empty and default states
+### 2.8 Empty and default states
 
 | Surface | State | Rendering |
 | --- | --- | --- |
@@ -387,14 +409,16 @@ and Last commit move below the Image card in the rail; the Application rail card
 | Runtime | stopped | `Stopped` pill, no restart action. |
 | Runtime | error | `Error` pill with alert glyph, no restart action (restart cannot start it). |
 | Settings | manager absent | `Unavailable` pill, `Review settings` link. |
+| SSH | no pending approvals | allowed-host count plus `No pending approvals.`; no stamp. |
+| SSH | pending approvals | `.status data-state="awaiting_approval"` stamp with the count and Manage link. |
 | Git | any | Existing git empty/error states from `git-workbench.md`, unchanged. |
 
-### 2.8 Responsive behaviour
+### 2.9 Responsive behaviour
 
 | Width | Behaviour |
 | --- | --- |
-| `>= 1280` | Header actions inline. State strip two columns. Main git column + 320px rail (Image, Remotes, Last commit). |
-| `1024-1279` | Header actions inline. State strip two columns. Git and rail in one column; Image follows Changes, then Remotes, then Last commit. |
+| `>= 1280` | Header actions inline. State strip two columns. Main git column + 320px rail (Image, SSH access, Remotes, Last commit). |
+| `1024-1279` | Header actions inline. State strip two columns. Git and rail in one column; Image follows Changes, then SSH access, then Remotes, then Last commit. |
 | `768-1023` | Same single column. Header actions remain one row; two labelled buttons plus the overflow icon. No horizontal overflow. |
 | `< 768` | Page gutters `--gutter-sm`; state strip becomes two stacked cells separated by a hairline; labelled actions share the full-width action row; all controls resolve to 44px; image refs/paths wrap (`overflow-wrap: anywhere`). |
 | `< 480` | The two labelled header actions flex-grow; overflow stays icon-sized. No action wraps to a second line. |
@@ -402,7 +426,7 @@ and Last commit move below the Image card in the rail; the Application rail card
 Scroll ownership is unchanged: `.page` is the only vertical scroll container; the new strip and rail
 do not create nested page scrollers.
 
-### 2.9 DOM ids and test impact
+### 2.10 DOM ids and test impact
 
 Kept (required by `git.js` / `images.js` / tests):
 
@@ -411,7 +435,7 @@ Kept (required by `git.js` / `images.js` / tests):
 `#git-change-counts`, `#repository-card`, `#repository-title`, `#changes-card`, `#remotes-title`,
 `#last-commit-title`, `#image-panel`, `#image-status`, `#image-live`, `#image-ref`, `#image-built`,
 `#image-rollback-ref`, `#image-rollback-built`, `#image-rollback-form`, `#image-error`,
-`#image-hint`, `#image-logs`, `#image-build`, `#image-refresh`.
+`#image-hint`, `#image-logs`, `#image-build`, `#image-refresh`, `#ssh-panel`, `#ssh-panel-title`.
 
 New:
 
@@ -435,7 +459,9 @@ Test updates:
     a glyph, and that `#image-logs` is inside `#image-details`.
   - Assert exactly one `Restart required` occurrence when pending.
 - `test/app-image-api.test.ts`: no API change; keep.
-- `test/terminal-http.test.ts`: page ids change as specified in Section 4.9.
+- `test/application-ssh.test.ts`: assert `#ssh-panel` is in the rail, keeps the allowed/pending counts
+  and the Manage link, and is not a full-width block above the workbench.
+- `test/terminal-http.test.ts`: page ids change as specified in Section 4.7.
 
 ---
 
@@ -618,15 +644,23 @@ this scope's row, as today. No server action or endpoint changes.
 
 **Clear confirmation.** `Clear` is a tombstone, not a cosmetic reset, so it is confirmed:
 
-- One shared `#settings-clear-dialog` per settings page. `settings.js` intercepts a submit whose
-  submitter has `data-confirm-clear` and opens the dialog instead of posting.
+- One shared `#settings-clear-dialog` per settings page is used for `/api/settings` and
+  `/api/settings/provider` forms. `settings.js` intercepts a submit whose submitter has
+  `data-confirm-clear` and opens the dialog instead of posting.
+- The dialog contains its own `<form method="post">`; on open, `settings.js` copies the source
+  form's hidden fields (`scope`, `projectId`, `appKey`, `return_to`, `key`) and sets
+  `action=clear`. The confirm button submits that dialog form directly (no `requestSubmit` loop,
+  no double interception), then the normal server redirect/toast applies.
 - Dialog title: `Clear <setting> at this scope?`
 - Body: `Wider scopes will no longer apply. The setting stays disabled until you set it again.`
 - Provider body: `Wider keys and host auth will be suppressed for this application.`
-- Git credential body: `Wider credentials will be suppressed for this application.`
 - Confirm: `.btn.btn-danger` `Clear setting`; Cancel: `.btn.btn-ghost` `Cancel`.
-- The dialog posts the original form with the `clear` submitter. Without JavaScript the clear posts
-  directly (degraded); this is accepted debt.
+- Without JavaScript the clear posts directly (degraded); this is accepted debt.
+- Git credential Clear is **excluded** from the shared dialog because `git-settings.js` posts JSON
+  immediately: that script adds a native confirmation before sending `action=clear` (same pattern as
+  the SSH page's `data-ssh-confirm`). The Git section renders a `<noscript>` notice: `Git credential
+  changes require JavaScript.` Git credential forms are therefore JS-required; all other settings
+  forms keep the redirect/toast fallback.
 
 `Inherit` is not confirmed: it only removes the current scope's row and is undone by `Set`.
 
@@ -653,9 +687,11 @@ this scope's row, as today. No server action or endpoint changes.
 
 **Validation and error placement.**
 
-- Every settings form gets `data-settings-form`, a `[data-settings-error]` slot in its row body, and
-  `data-success-notice` (`Settings saved.` for `/api/settings`, `Provider key updated.` for
-  `/api/settings/provider`).
+- Every non-Git settings form gets `data-settings-form`, `data-no-busy`, a `[data-settings-error]`
+  slot in its row body, and `data-success-notice` (`Settings saved.` for `/api/settings`,
+  `Provider key updated.` for `/api/settings/provider`). `data-no-busy` disables the shared
+  `assets/app.js` submit handler so it cannot leave a stale spinner after a rejected JSON submit;
+  `settings.js` owns `aria-busy` and re-enables the form in `finally`.
 - `assets/settings.js` intercepts submit:
   1. Set the row's error slot hidden, clear `aria-invalid`.
   2. Build the body with the submitting button included:
@@ -673,9 +709,11 @@ this scope's row, as today. No server action or endpoint changes.
      returns to the row. No double submit.
   5. Re-enable the form after failure.
 - Git credential forms keep their existing `assets/git-settings.js` JSON path and inline
-  `[data-git-error]`; the row wrapper must not interfere. `data-git-test` stays.
-- Without JavaScript the forms still submit normally; errors use the current redirect + toast and
-  lose values. This is the only degraded path and is listed as accepted debt.
+  `[data-git-error]`; the row wrapper must not interfere. `data-git-test` stays. They also carry
+  `data-no-busy` (the script already owns `setBusy`) and are not `data-settings-form`.
+- Without JavaScript the non-Git forms still submit normally; errors use the current redirect +
+  toast and lose values. Git credential forms are JS-required and carry the `<noscript>` notice
+  above. This is the only degraded path and is listed as accepted debt.
 
 ### 3.7 Providers
 
@@ -693,9 +731,9 @@ Providers are a subsection of `Agent`, not a standalone card.
   the warning belongs to that provider.
 - The section keeps `id="providers"` and `id="providers-title"` for tests.
 
-### 3.8 Git credential section (parallel, preserved)
+### 3.8 Git credential section (preserved)
 
-The in-progress Git credentials work is preserved exactly at the protocol level:
+The merged Git credentials work (stage 0010, migration 8) is preserved exactly at the protocol level:
 
 - Endpoint: `POST /api/settings/git` with JSON body, `kind` `ssh|https`, actions `set|clear|inherit`.
 - Assets: `assets/git-settings.js`; `data-git-auth`, `data-git-test`, `data-git-error`,
@@ -720,8 +758,8 @@ The in-progress Git credentials work is preserved exactly at the protocol level:
   separate top card.
 - Pending restart renders once in `#settings-restart` as a compact list:
   - Each row: app key link, `Restart required` status, human reason (`Settings changed`,
-    `Agent profile not applied`), and one `Restart agent` form posting to the existing route with
-    this page as `return_to`.
+    `Agent profile not applied`, `Applied state unknown`), and one `Restart agent` form posting to
+    the existing route with this page as `return_to`.
   - Empty: `No running agents are waiting for a restart.`
   - Hint: `Settings changes apply only on an explicit restart. A restart interrupts an active turn;
     sessions are kept.`
@@ -811,26 +849,34 @@ frame.
 
 ```text
 .page--terminal
-  .terminal-toolbar        h1 appKey + "Operator terminal" | runtime pill | connection pill | Copy | Reconnect | Close
-  .terminal-host           xterm canvas, fills remaining height
-  .terminal-banner         in-flow, only on closed/reconnect/stopped states
+  .page__body.page__body--terminal
+    #terminal.terminal-shell
+      .terminal-toolbar        h1 appKey + "Operator terminal" | runtime pill | connection pill | Copy | Reconnect | Close
+      .terminal-banner         in-flow, only on closed/reconnect/stopped states
+      .terminal-host           xterm canvas, fills remaining height
+      .terminal-announcer      visually hidden polite status
 ```
 
-- `renderTerminalPage()` passes `pageClass: "page--terminal"` and
-  `bodyClass: "page__body--terminal"`.
-- `.page--terminal`: `display: grid; grid-template-rows: auto minmax(0, 1fr); overflow: hidden;
+- `renderTerminalPage()` renders `#terminal.terminal-shell` as the only child of the page body and
+  passes `pageClass: "page--terminal"` and `bodyClass: "page__body--terminal"`.
+- `.page--terminal`: `display: grid; grid-template-rows: minmax(0, 1fr); overflow: hidden;
   background-image: none;`
 - `.page__body--terminal`: `display: grid; grid-template-rows: minmax(0, 1fr); padding: 0;
   max-inline-size: none; margin-inline: 0; block-size: 100%; min-block-size: 0;`
-- `.terminal-host`: `min-block-size: 0; background: var(--inset); overflow: hidden;` and hosts the
-  xterm element.
+- `.terminal-shell`: `display: grid; grid-template-rows: auto auto minmax(0, 1fr);
+  block-size: 100%; min-block-size: 0; background: var(--inset);`
+- `.terminal-banner[hidden]` uses `display: none` so its auto row collapses; the host always wins
+  the `minmax(0, 1fr)` row.
+- `.terminal-host`: `min-block-size: 0; overflow: hidden;` and hosts the xterm element.
 - `.terminal-toolbar`: `min-block-size: var(--space-12)` (48px), `--surface-1`, bottom hairline,
   inline padding `--gutter-sm`/`--gutter` by breakpoint. It is the page's `h1` region; the title uses
   the serif display family at `--text-h2` (a full `--text-h1` block would waste terminal height).
 - The runtime pill is the corrected server-rendered runtime pill (Section 5.1). The connection pill
   is client-owned (`#terminal-status`).
 - Actions: `Copy` (ghost icon+label, enabled when selection exists), `Reconnect` (secondary),
-  `Close` (ghost). At `< 640px` labels become visually hidden, icons remain, all controls 44px.
+  `Close` (ghost). At `< 640px` labels become visually hidden, icons remain, all controls 44px, and
+  the toolbar wraps to two rows: title + connection pill on the first, runtime pill + actions on the
+  second. The title truncates with ellipsis; the toolbar never forces horizontal overflow.
 - A `.terminal-banner` sits between toolbar and host only when the connection is not live; it is
   in-flow so it never covers output. It uses surface 2 + hairline, never a colored side stripe.
 
@@ -880,9 +926,9 @@ fit.fit();
   is replaced.
 - No new colors. ANSI 16 mapping:
 
-| ANSI | Token |
+| ANSI / xterm key | Token |
 | --- | --- |
-| black / background | `--inset` / `--ink-950` |
+| black / background | `--text-2` / `--inset` |
 | red | `--status-failed` |
 | green | `--status-delivered` |
 | yellow | `--status-awaiting` |
@@ -890,18 +936,23 @@ fit.fit();
 | magenta | `--status-expired` |
 | cyan | `--status-in-progress` |
 | white | `--text-1` |
-| bright black | `--steel-400` |
+| bright black | `--text-3` |
 | bright red | `--danger` |
 | bright green | `--success` |
 | bright yellow | `--warning` |
 | bright blue | `--info` |
 | bright magenta | `--brass` |
 | bright cyan | `--status-in-progress` |
-| bright white | `--paper-50` |
+| bright white | `--text-1` |
 | cursor | `--brass` |
-| cursor accent | `--inset` |
-| selection | `--selection` |
+| cursorAccent | `--inset` |
+| selectionBackground | `--selection` |
+| selectionForeground | `--text-1` |
 | foreground | `--text-1` |
+
+All entries are theme-aware semantic tokens; no raw primitive that changes meaning between dark and
+light (`--paper-50`, `--ink-*`) is used for terminal text. The same table is re-read when
+`[data-theme]` changes.
 
 - `fontSize` derives from `--text-mono` (0.75rem -> 12px at the default root), never a literal.
 - `screenReaderMode: true` is deliberate: it gives xterm a live row for assistive technology. The
@@ -912,6 +963,12 @@ fit.fit();
 
 ### 4.3 Connection lifecycle and status
 
+Before opening a WebSocket, `terminal.js` fetches `data-runtime-url`
+(`/api/apps/<appKey>/runtime?project=<projectId>`). If the reported state is `stopped` or `error`,
+it renders the stopped empty state and does not open a socket. A runner HTTP 409 on the upgrade is
+not observable to the browser (it surfaces as a generic `1006`), so the runtime endpoint is the only
+reliable preflight; `Reconnect` repeats it.
+
 One WebSocket per page. The status pill (`#terminal-status`) has these states:
 
 | State | Label | Tone | Behaviour |
@@ -921,7 +978,7 @@ One WebSocket per page. The status pill (`#terminal-status`) has these states:
 | `reconnecting` | `Reconnecting in Ns` | `.status data-state="dispatching"` | Banner with countdown; input disabled. |
 | `paused` | `Paused` | `.status data-state="cancelled"` | Manual close of the retry loop; `Reconnect` available. |
 | `stopped` | `Agent stopped` | `.status data-state="queued"` | Runtime endpoint says not running; no socket. |
-| `closed` | `Shell exited` | `.status data-state="cancelled"` | Close code 1000/1001 from the runner; no auto-retry. |
+| `closed` | `Terminal closed` / `Shell exited` | `.status data-state="cancelled"` | Close code 1000/1001 from the runner; no auto-retry. `Terminal closed` is shown only when the local manual-close flag is set. |
 | `failed` | `Connection failed` | `.status data-state="failed"` | Close 1011 or repeated abnormal closes. |
 
 Backoff:
@@ -931,9 +988,10 @@ Backoff:
 - Normal shell exit (`1000` / `1001`) does not auto-retry; the banner says
   `Shell exited. Reconnect to start a new shell.`
 - Runner exec failure (`1011`) retries with the same backoff and shows `Connection failed.`.
-- Manual `Close` sends `1000` with reason `closed by operator`, stops the retry loop, and leaves
-  scrollback readable. Copy: `Terminal closed. The application keeps running.` Closing never stops
-  the container.
+- Manual `Close` sets a local `closedByOperator` flag, sends `1000` with reason
+  `closed by operator`, stops the retry loop, and leaves scrollback readable. The close handler
+  renders `Terminal closed. The application keeps running.` instead of `Shell exited.` Closing never
+  stops the container.
 - On any close, `terminal.js` fetches `/api/apps/:app/runtime` once. If the state is `stopped` or
   `error`, it switches to the stopped state instead of blaming the network.
 - On reconnect, `term.reset()` then `fit()`; a new shell must not inherit stale scrollback from the
@@ -957,9 +1015,11 @@ Backoff:
 
 - Output: binary frames are passed to `term.write(new Uint8Array(event.data))` unchanged. Do not
   text-decode in the client; xterm handles split UTF-8 and escape sequences correctly.
-- Input: `term.onData(data)` encodes to UTF-8 and sends **binary** frames. This removes the protocol
-  collision where pasted text shaped like `{"type":"resize",...}` could be interpreted as a control
-  message. Text frames are reserved for controls.
+- Input: `term.onData(data)` encodes to UTF-8 and sends **binary** frames. `term.onBinary(data)`
+  is also wired: each code unit is sent as one raw byte for the legacy/mouse sequences xterm emits
+  through that event. This removes the protocol collision where pasted text shaped like
+  `{"type":"resize",...}` could be interpreted as a control message. Text frames are reserved for
+  controls.
 - Large paste: chunk encoded input into 16 KiB binary frames so a paste cannot exceed the runner's
   1 MiB WebSocket message cap. Split on a UTF-8 boundary (never between a leading byte and its
   continuation bytes) so multibyte characters survive.
@@ -968,10 +1028,15 @@ Backoff:
     falls through to the browser.
   - Plain `Ctrl+C` always sends `\x03` (SIGINT); it is never intercepted for copy.
   - The `Copy` toolbar button copies the selection; it is disabled when the selection is empty.
+  - `navigator.clipboard` requires a secure context; on plain-HTTP LAN deployments use the
+    hidden-textarea + `document.execCommand("copy")` fallback, and disable the Copy button with
+    `title="Copy is unavailable in this browser"` when neither path exists. Never fail silently.
   - After copy, announce `Copied selection.` in a visually hidden polite status node
     (`#terminal-announcer`), not a toast.
 - Paste:
-  - `Ctrl+Shift+V` and `Cmd+V` paste clipboard text through `term.paste(text)`.
+  - `Ctrl+Shift+V` and `Cmd+V` paste clipboard text through `term.paste(text)` when the Clipboard
+    API is available; otherwise the native xterm textarea and the browser context-menu paste remain
+    the fallback path.
   - The browser context menu paste and xterm's own textarea paste also work.
   - Do not paste on plain `Ctrl+V` (keep it available for shell/readline needs on platforms where
     the browser delivers it); the explicit shortcut is the contract.
@@ -982,7 +1047,7 @@ Backoff:
 
 There is no "start agent" endpoint today. The terminal must not fake one.
 
-- The server renders `data-runtime-state` on `#terminal`.
+- The server renders `data-runtime-state` and `data-runtime-url` on `#terminal`.
 - If the state is `stopped` or `error`, the host is replaced by an in-place empty state:
   - Mark: terminal icon plate.
   - Title: `Agent is not running`.
@@ -1010,8 +1075,9 @@ There is no "start agent" endpoint today. The terminal must not fake one.
   - `/assets/vendor/xterm/xterm-6.0.0.css` -> `text/css; charset=utf-8`
   - `/assets/vendor/xterm/xterm-6.0.0.js` -> `text/javascript; charset=utf-8`
   - `/assets/vendor/xterm/addon-fit-0.11.0.js` -> `text/javascript; charset=utf-8`
-- `src/runner/server.ts` `createExec` options gain:
-  `env: { TERM: "xterm-256color", COLORTERM: "truecolor", LANG: "C.UTF-8" }`.
+- `src/runner/server.ts` currently passes no env to `createExec`; add
+  `env: { TERM: "xterm-256color", COLORTERM: "truecolor", LANG: "C.UTF-8" }`. The runner exec test
+  must assert all three values.
   The container already starts in the app working directory, so no `workingDir` is added.
 - Protocol stays: binary output frames; binary input; text resize JSON; close 1000 exec ended /
   1011 exec failed; message cap 1 MiB; closing the socket only closes the exec.
@@ -1026,8 +1092,9 @@ There is no "start agent" endpoint today. The terminal must not fake one.
 - The terminal is reachable by keyboard: Tab reaches toolbar controls, then the terminal textarea.
 - 44px touch targets at `< 768`; no hover-only affordance.
 - Reduced motion disables cursor blink and uses immediate state changes.
-- At 390 the toolbar stays one row with icon-only actions; the terminal uses the full remaining
-  viewport; opening the soft keyboard refits without horizontal overflow.
+- At 390 the toolbar uses two rows (title + connection pill, then runtime pill + icon actions); the
+  terminal uses the full remaining viewport; opening the soft keyboard refits without horizontal
+  overflow.
 - Contrast is inherited from tokens; ANSI bright colors are checked against `--inset` at
   implementation time and adjusted only by choosing another existing token.
 
@@ -1062,6 +1129,9 @@ Required changes:
 - `src/http/ui.ts`: `RuntimeState` union and `runtimePill` mapping above.
 - `src/http/dashboard.ts` `runtimeMap()`: map all four stored values; normalize legacy `failed` to
   `error`; anything else to `stopped`.
+- `src/http/handler.ts` `routeRuntimeStatus()`: normalize legacy `failed` to `error` and expose
+  `imageRef` from `instances.image_ref` (the image card's restart hint and the chat chip both read
+  this route).
 - `SiteModel`: replace `failedCount` with `errorCount`; add `startingCount`.
 - `renderOverview` runtime card: four rows (`Starting`, `Running`, `Stopped`, `Error`). The project
   table and application/terminal/chat pages use the same pill mapping.
@@ -1110,6 +1180,10 @@ Required behaviour:
 - `assets/chat.js` gets `refreshRuntime()`:
   - `GET` the URL with same-origin credentials and `cache: "no-store"`.
   - Map the response `state` through `runtimeChip()` and replace both chips.
+  - Split the current `statusChip` into `toolStatusChip` (tool rows; unknown -> neutral `Unknown`)
+    and `runtimeChip` (starting -> dispatching `Starting`, running -> in_progress `Running`,
+    stopped -> queued `Stopped`, error/legacy failed -> failed `Error`, unknown -> cancelled
+    `Unknown`). `runtimeChip` never falls back to green `Completed`.
   - On 401, use the existing login redirect.
   - On network/JSON failure, keep the last chip and set `title="Runtime status unavailable"`; never
     convert an unknown result into green.
@@ -1205,7 +1279,7 @@ as applied. Pending restart is therefore lost across coordinator restarts.
 
 Required:
 
-1. Migration v9 (`applied-runtime-state`) adds:
+1. Migration **v10** (`applied-runtime-state`) adds (v8 is git credentials, v9 is SSH hosts):
    - `ALTER TABLE instances ADD COLUMN applied_settings_hash TEXT;`
    - `ALTER TABLE instances ADD COLUMN applied_profile INTEGER;`
 2. `#recordStatus()` persists `applied_settings_hash` and `applied_profile` from the launch that
@@ -1213,13 +1287,22 @@ Required:
    changes.
 3. The reattach branch in `ensure()` reads the persisted values from `instances` and uses them for
    the new `Entry`. It must **not** call `#currentSettingsHash()` as the applied value.
-4. `pendingRestart()` logic stays the same: compare the current settings/profile preview to the
-   entry's persisted applied values.
-5. Legacy rows with `NULL` applied hash: on first reattach only, fall back to the current hash (old
-   behaviour) and record it, so the page does not show a false pending storm after upgrade. This is
-   accepted debt for instances that were already running before v9.
-6. Test: start → change a setting → `detach()` → `ensure()` (reattach) → `pendingRestart()` is true;
-   restart → false.
+4. `pendingRestart()` compares the current settings/profile preview against the entry's persisted
+   applied values. If there is no in-memory entry, it queries the `instances` row for a
+   `running`/`starting` state and compares the persisted columns; a running-but-unattached agent is
+   therefore still reported before the first `ensure()`.
+5. Legacy rows with `NULL` applied hash/profile (pre-v10) return
+   `{pending: true, reasons: ["applied_state_unknown"]}` for a running/starting agent. The UI renders
+   `Restart required` with copy `The coordinator cannot confirm which settings this running agent
+   loaded.` and never shows a confident `Applied`. A restart records both columns and clears the
+   unknown state. This is the accepted one-time upgrade path.
+6. Test: start → change a setting → `detach()` → page/site build reports pending before `ensure()`
+   → `ensure()` reattach reports pending → restart → false; and a legacy NULL row reports
+   `applied_state_unknown`.
+7. `SiteModel.pendingRestart` must carry the reason list (or add a parallel
+   `pendingRestartReasons: Map<string, string[]>`) so the application state strip can choose the
+   known versus `applied_state_unknown` copy. Update `buildSite`, the project table/app page, and
+   their fixtures together.
 
 ### 5.8 In-scope vs accepted debt
 
@@ -1236,7 +1319,8 @@ In scope:
 Accepted debt:
 
 - Runtime polling can lag up to 10s; there is no runtime SSE.
-- Pre-v9 running instances cannot report their applied settings once; first reattach records current.
+- Pre-v10 running instances report `applied_state_unknown` and `Restart required` until the next
+  restart; the UI never claims Applied for them.
 - Chat connection lane is app-scoped, so it does not represent a per-session stream.
 - The image "restart to apply" hint depends on the runtime endpoint exposing `imageRef`; legacy
   instances without it skip the hint rather than guess.
@@ -1316,6 +1400,8 @@ icons already exist (`copy`, `terminal`, `chevron-down`, `refresh`, `external`, 
 
 - `documentPage` / `ShellOptions`: add `styles?: string[]` for the xterm stylesheet.
 - `ShellOptions`: add `settingsHref?: string` for the contextual sidebar Settings link.
+- `assets/app.js`: add one `details.menu` helper (outside-click and Escape close the open menu and
+  return focus to its summary). It is shared shell behaviour, not a client framework.
 - No new tokens, no new radii, no shadows beyond `--shadow-overlay`, no motion beyond the existing
   micro/standard timings.
 
@@ -1334,6 +1420,7 @@ icons already exist (`copy`, `terminal`, `chevron-down`, `refresh`, `external`, 
 | Runtime pills | `Starting` / `Running` / `Stopped` / `Error` |
 | Settings applied | `Applied` / `Settings match the running agent.` / `Review settings` |
 | Settings pending | `Restart required` / `The agent is running with older settings.` |
+| Settings pending unknown | `Restart required` / `The coordinator cannot confirm which settings this running agent loaded.` |
 | Settings unavailable | `Unavailable` / `The agent runtime is not configured.` |
 | Restart button | `Restart agent` |
 | Restart dialog title | `Restart <app>?` |
@@ -1373,7 +1460,7 @@ icons already exist (`copy`, `terminal`, `chevron-down`, `refresh`, `external`, 
 | Pending heading | `Restart & pending` |
 | Pending empty | `No running agents are waiting for a restart.` |
 | Pending hint | `Settings changes apply only on an explicit restart. A restart interrupts an active turn; sessions are kept.` |
-| Pending reason | `Settings changed` / `Agent profile not applied` |
+| Pending reason | `Settings changed` / `Agent profile not applied` / `Applied state unknown` |
 | Validation fallback | server message, unchanged; rendered inline in the row |
 | No-JS remark | existing toast + redirect (degraded) |
 
@@ -1456,30 +1543,35 @@ run two CSS-touching slices in parallel.
 
 ### Slice A - State foundation (no visual changes except runtime labels)
 
-Files: `src/http/ui.ts` (RuntimeState/runtimePill), `src/http/dashboard.ts` (runtimeMap, counts),
-`src/http/settings.ts` (restart route only), `src/opencode/manager.ts` (persisted applied hash),
-`src/store/migrations.ts` (v9), `src/http/handler.ts` (runtime endpoint `imageRef`), tests
-`test/runtime-manager.test.ts`, `test/migrations.test.ts`, `test/settings-http.test.ts`,
-`test/manager.test.ts`.
+Files: `src/http/ui.ts` (RuntimeState/runtimePill), `src/http/dashboard.ts` (runtimeMap, counts,
+pending reasons, SiteModel fixtures), `src/http/settings.ts` (restart route only),
+`src/opencode/manager.ts` (persisted applied hash), `src/store/migrations.ts` (v10),
+`src/http/handler.ts` (runtime endpoint `imageRef`), tests `test/runtime-manager.test.ts`,
+`test/migrations.test.ts` (fresh/latest counts and versions), `test/settings-http.test.ts`,
+`test/manager.test.ts`, and every `SiteModel` fixture that constructs `failedCount`
+(`test/application-ssh.test.ts`, `test/application-page.test.ts` if present).
 
 Exit: `starting/error` render and count correctly; restart route uses `restartIfRunning`; pending
 survives detach/reattach; all existing pages still build.
 
 ### Slice B - Application page
 
-Depends on A. Files: `src/http/application.ts`, `assets/images.js`, `src/http/ui.ts` (`more` icon,
-`settingsHref`), `src/http/styles.css` (state strip, menu, image section), tests
-`test/application-page.test.ts`, `test/app-image-api.test.ts`, `test/http.test.ts` (if shell API is
-touched).
+Depends on A. Files: `src/http/application.ts`, `assets/images.js`, `assets/app.js` (menu close),
+`src/http/ui.ts` (`more` icon, `settingsHref` shell option), and the `settingsHref` callers in
+`src/http/dashboard.ts`, `src/http/terminal.ts`, `src/http/ssh.ts`; `src/http/styles.css` (state
+strip, menu, image section); tests `test/application-page.test.ts`, `test/app-image-api.test.ts`,
+`test/application-ssh.test.ts`, `test/http.test.ts` (if shell API is touched). `src/http/chat.ts` is
+owned by Slice E.
 
-Exit: new hierarchy, single pending surface, image rail card, confirmed rollback, single live region,
-preserved git ids.
+Exit: new hierarchy, single pending surface, image rail card (configured states show build/refresh/
+details; the default state shows only `Default image`, the hint, and `Open application folder`),
+confirmed rollback, single live region, preserved git ids.
 
 ### Slice C - Settings
 
 Depends on B for `styles.css` and `ui.ts` (sidebar href). Files: `src/http/settings.ts` (render
 helpers), `assets/settings.js`, `src/http/styles.css` (settings sections), tests
-`test/settings-http.test.ts`, `test/git-settings-asset.test.ts`.
+`test/settings-http.test.ts` (render + Git markup), `test/git-settings-asset.test.ts` (asset only).
 
 Exit: IA, sticky nav, setting rows, no-op rules, own-scope prefill, inline errors, quantified height
 reduction, Git credentials preserved.
@@ -1488,18 +1580,18 @@ reduction, Git credentials preserved.
 
 Depends on C for `styles.css` and `handler.ts` allowlist coordination. Files: `src/http/terminal.ts`,
 `assets/terminal.js`, `src/http/ui.ts` (`styles` option), `src/http/handler.ts` (three vendor
-assets), `src/runner/server.ts` (`TERM`), `src/http/styles.css` (terminal section), tests
-`test/terminal-http.test.ts`, `test/runner-exec.test.ts`, `test/http.test.ts`, new
-`test/vendor-xterm.test.ts`.
+assets), `src/runner/server.ts` (add `TERM`, `COLORTERM`, `LANG`; the current exec has no env),
+`src/http/styles.css` (terminal section), tests `test/terminal-http.test.ts`,
+`test/runner-exec.test.ts`, `test/http.test.ts`, new `test/vendor-xterm.test.ts`.
 
 Exit: xterm page, full-height layout, fit/resize, binary input, copy/paste, reconnect/close/stopped
-states, asset allowlist and checksums, `TERM` env.
+states, asset allowlist and checksums, `TERM`/`COLORTERM`/`LANG` env.
 
 ### Slice E - Chat state truth
 
-Parallel with B/C/D; touches only chat files. Files: `assets/chat.js`, `src/http/chat.ts`
-(`data-runtime-url`), tests `test/chat-page.test.ts`, `test/chat-core.test.ts` (if applicable), plus
-the browser fixtures.
+Parallel with B/C/D after taking sole ownership of `src/http/chat.ts`. Files: `assets/chat.js`,
+`src/http/chat.ts` (`data-runtime-url` and the contextual `settingsHref`), tests
+`test/chat-page.test.ts`, `test/chat-core.test.ts` (if applicable), plus the browser fixtures.
 
 Exit: runtime endpoint polling, Ready precedence, connection lane single writer, `Unknown` fallback.
 
@@ -1519,7 +1611,9 @@ Exit: all gates green; browser matrix captured; acceptance checklists PASS.
 - `src/http/styles.css`: append-only sections in the order B (application), C (settings), D
   (terminal). Rebase each slice on the previous.
 - `src/http/settings.ts`: A owns the restart route; C owns render helpers. Apply A then C.
-- Tests: each slice updates its own test file; Slice F runs the full suite.
+- `src/http/chat.ts`: E is the only writer; B must not edit it.
+- Tests: each slice updates its own test file; Slice F runs the full suite and the no-JS/accessibility
+  matrix.
 
 ---
 
@@ -1623,7 +1717,7 @@ Chat scenarios (fixture-driven):
 | --- | --- | --- |
 | Settings forms without JavaScript still lose values on validation and use the redirect toast | The page remains functional; the inline path is the product path. | Revisit if no-JS usage is real. |
 | Runtime polling can lag up to 10s | The runtime endpoint is a cheap DB read; no runtime event stream exists. | Add SSE only if agents change state often enough to matter. |
-| Pre-v9 running instances cannot report applied settings once | The applied hash was never persisted before this pass. | One-time; new instances are correct. |
+| Pre-v10 running instances report applied state unknown once | The applied hash was never persisted before this pass. | One-time; the UI shows Restart required until the next restart, then new instances are correct. |
 | Chat connection lane is app-scoped, not per-session | Chat uses one app-scoped SSE stream. | Revisit only if per-session streams are introduced. |
 | Image "restart to apply" hint requires `runtime.imageRef` | Legacy instance rows may not have it. | Backfill/migrate or omit the hint; never guess. |
 | Terminal reconnect starts a new shell | PTYs are ephemeral Docker execs. | Add a persistent session multiplexer only as a separate feature. |
@@ -1644,15 +1738,34 @@ Chat scenarios (fixture-driven):
 
 ---
 
-## 12. Review checklist for Oracle
+## 12. Design review record
 
-- [ ] The application page keeps git as the main job and removes the Image block from above it.
+Oracle review, 2026-10-21: **PASS-WITH-CHANGES**. Findings folded into this document:
+
+- applied-runtime migration renumbered to **v10** (v8 git credentials, v9 SSH hosts).
+- SSH access card placed in the application rail; `#ssh-panel` preserved.
+- terminal wrapper/grid made explicit (`page` -> `page__body` -> `#terminal.terminal-shell`).
+- stopped-agent state uses a runtime preflight, not the unobservable 409.
+- clipboard fallback for insecure LAN HTTP.
+- pending restart is truthful before reattach (`applied_state_unknown`).
+- settings/Git form busy and clear-confirmation coordination with `assets/app.js`.
+- Git Clear confirmation and JS-required `<noscript>`; shared clear dialog limited to non-Git forms.
+- xterm `onBinary` handled; `LANG` added while preserving `TERM`/`COLORTERM`.
+- `details.menu` Escape/outside-click handler specified in `assets/app.js`.
+- light-theme ANSI mapping uses theme-aware semantic tokens (`--text-1`, not `--paper-50`).
+
+---
+
+## 13. Review checklist for implementation
+
+- [ ] The application page keeps git as the main job and removes the Image/SSH blocks from above it.
 - [ ] Every owner complaint has an explicit decision, not an option.
-- [ ] All four state bugs are addressed with exact mappings, call sites, and tests.
-- [ ] Settings keeps every server action/endpoint and the parallel Git credentials section.
+- [ ] All state bugs are addressed with exact mappings, call sites, and tests.
+- [ ] Settings keeps every server action/endpoint and the merged Git credentials section.
 - [ ] No new token is introduced; every new class composes named tokens.
 - [ ] DOM id changes are exhaustive and the affected tests are named.
-- [ ] Terminal asset loading, allowlist, `TERM`, protocol, and out-of-scope list are exact.
+- [ ] Terminal asset loading, allowlist, `TERM`/`COLORTERM`/`LANG`, protocol, and out-of-scope list
+      are exact.
 - [ ] Implementation slices have file ownership and a conflict-free sequence.
 - [ ] Verification covers 390/768/1024/1440, dark/light, and the state/edge scenarios.
 - [ ] Accepted debt is explicit and small.
