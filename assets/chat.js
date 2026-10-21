@@ -177,6 +177,8 @@ function main() {
   let elapsedStartedAt = null;
   let elapsedTimer = null;
   let elapsedText = "";
+  let elapsedPromptID = null;
+  const promptActivation = new Map();
   let workingLabel = "";
 
   const prompts = new Map();
@@ -503,26 +505,62 @@ function main() {
     return map[name] || name;
   }
 
-  function statusSeedTime() {
-    for (let index = store.order.length - 1; index >= 0; index -= 1) {
-      const record = store.messages.get(store.order[index]);
-      if (record === undefined || record.role !== "assistant") continue;
-      for (const partID of record.partOrder) {
-        const part = record.parts.get(partID);
-        if (part === undefined || part.type !== "tool") continue;
-        const data = part.data && typeof part.data === "object" ? part.data : part;
-        const state = data.state && typeof data.state === "object" ? data.state : {};
-        if (state.status === "running") {
-          const start = state.time && typeof state.time === "object" ? state.time.start : undefined;
-          if (typeof start === "number") return start < 1_000_000_000_000 ? start * 1000 : start;
-        }
-      }
-      if (typeof record.time?.created === "number") {
-        const created = record.time.created;
-        return created < 1_000_000_000_000 ? created * 1000 : created;
+  function firstAssistantForPrompt(promptID) {
+    for (const id of store.order) {
+      const record = store.messages.get(id);
+      if (record !== undefined && record.role === "assistant" && record.parentID === promptID) {
+        return record;
       }
     }
     return null;
+  }
+
+  function operatorPromptRecord() {
+    const activeID = store.activePromptID;
+    if (typeof activeID === "string") {
+      const record = store.messages.get(activeID);
+      if (
+        record !== undefined &&
+        record.role === "user" &&
+        record.system == null &&
+        record.optimistic !== "queued"
+      ) {
+        return record;
+      }
+    }
+    for (let index = store.order.length - 1; index >= 0; index -= 1) {
+      const record = store.messages.get(store.order[index]);
+      if (record === undefined || record.role !== "assistant") continue;
+      if (record.time?.completed != null && record.finish !== "tool-calls") return null;
+      if (typeof record.parentID === "string") {
+        const parent = store.messages.get(record.parentID);
+        if (
+          parent !== undefined &&
+          parent.role === "user" &&
+          parent.system == null &&
+          parent.optimistic !== "queued"
+        ) {
+          return parent;
+        }
+      }
+    }
+    return null;
+  }
+
+  function notePromptActivation() {
+    const prompt = operatorPromptRecord();
+    if (prompt === null || promptActivation.has(prompt.id)) return;
+    promptActivation.set(prompt.id, Date.now());
+  }
+
+  function statusSeedTime(prompt) {
+    if (prompt === null) return null;
+    const activated = promptActivation.get(prompt.id);
+    if (typeof activated === "number") return activated;
+    const assistant = firstAssistantForPrompt(prompt.id);
+    const created = assistant?.time?.created;
+    if (typeof created !== "number") return null;
+    return created < 1_000_000_000_000 ? created * 1000 : created;
   }
 
   function activeStatusLabel() {
@@ -595,6 +633,7 @@ function main() {
     elapsedAccumulated = 0;
     elapsedStartedAt = null;
     elapsedText = "";
+    elapsedPromptID = null;
     if (elapsedTimer !== null) {
       window.clearInterval(elapsedTimer);
       elapsedTimer = null;
@@ -604,7 +643,9 @@ function main() {
 
   function startElapsed() {
     if (elapsedStartedAt !== null) return;
-    const seed = statusSeedTime();
+    const prompt = operatorPromptRecord();
+    elapsedPromptID = prompt === null ? null : prompt.id;
+    const seed = statusSeedTime(prompt);
     elapsedStartedAt = seed === null ? Date.now() : seed;
     ensureElapsedTimer();
     tickElapsed();
@@ -627,13 +668,18 @@ function main() {
     const label = activeStatusLabel();
     const waiting = label === "Waiting for you";
     const paused = label === "Paused";
+    const active = !waiting && !paused && label !== "Ready";
+    const prompt = operatorPromptRecord();
+    const promptID = prompt === null ? null : prompt.id;
+    if (active && promptID !== null && promptID !== elapsedPromptID) resetElapsed();
     if (waiting || paused) freezeElapsed();
     else if (label === "Ready") resetElapsed();
-    else if (label === "Sending" || label === "Retrying" || label.startsWith("Running ") || label === "Thinking" || label === "Working") {
-      if (elapsedStartedAt === null) startElapsed();
-      else resumeElapsed();
+    else if (label === "Retrying" || label.startsWith("Running ") || label === "Thinking" || label === "Working") {
+      if (elapsedStartedAt === null) {
+        if (elapsedAccumulated > 0) resumeElapsed();
+        else startElapsed();
+      }
     }
-    const active = !waiting && !paused && label !== "Ready";
     if (generatingEl !== null) generatingEl.hidden = !active;
     if (generatingLabelEl !== null && generatingLabelEl.textContent !== label) {
       generatingLabelEl.textContent = label;
@@ -672,8 +718,11 @@ function main() {
       if (record === undefined || record.optimistic === undefined) continue;
       if (record.optimistic === "sending" || record.optimistic === "unknown") continue;
       if (record.optimistic === "failed") continue;
-      if (id === derived.activeID) record.optimistic = "accepted";
-      else if (derived.queuedIDs.includes(id)) record.optimistic = "queued";
+      const wasQueued = record.optimistic === "queued";
+      if (id === derived.activeID) {
+        if (wasQueued) promptActivation.set(id, Date.now());
+        record.optimistic = "accepted";
+      } else if (derived.queuedIDs.includes(id)) record.optimistic = "queued";
       else record.optimistic = "accepted";
     }
     updateWorkingStatus();
@@ -2867,6 +2916,11 @@ function main() {
     if (record === undefined) return false;
     if (keepUnknown) record.optimistic = "unknown";
     if (record.role === "user") markOptimisticOperator(record);
+    const activatedAt = promptActivation.get(tempID);
+    if (activatedAt !== undefined) {
+      promptActivation.delete(tempID);
+      promptActivation.set(serverID, activatedAt);
+    }
     if (active) {
       store = result.store;
       rekeyMessageDom(tempID, serverID, oldPartIDs, record);
@@ -3404,6 +3458,7 @@ function main() {
     if (nextType !== previous && (nextType === "busy" || nextType === "idle")) {
       store.turnGeneration += 1;
     }
+    if (nextType === "busy" || nextType === "retry") notePromptActivation();
     store.agentStatus = next;
     if (nextType === "idle") {
       flushPendingUserClassifications();
@@ -6764,6 +6819,7 @@ function main() {
     resetFeedDom();
     resetHighlightController({ reason: "session-switch" });
     resetElapsed();
+    if (previous !== id) promptActivation.clear();
     sessionSnapshotTooLarge = false;
     setSessionNotice(false);
     recomputeQueue();
@@ -6826,6 +6882,7 @@ function main() {
     }
     if (countEl !== null) countEl.textContent = plural(0, "message");
     resetElapsed();
+    promptActivation.clear();
     setLive("Ready", "idle");
     renderPromptDock();
     loadTodo(null).catch(() => {});
