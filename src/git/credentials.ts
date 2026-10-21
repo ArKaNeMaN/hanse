@@ -139,6 +139,23 @@ function normalizeNewlines(value: string): string {
   return value.replace(/\r\n/g, "\n");
 }
 
+function normalizeSshPrivateKey(value: string): string {
+  // Pasted keys often carry indentation, trailing spaces, or a BOM. OpenSSH's PEM parser
+  // rejects those with an opaque "error in libcrypto", so normalize the envelope first.
+  const lines = value
+    .replace(/^\uFEFF/, "")
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((line) => line.trim());
+  while (lines[0] === "") {
+    lines.shift();
+  }
+  while (lines[lines.length - 1] === "") {
+    lines.pop();
+  }
+  return `${lines.join("\n")}\n`;
+}
+
 function hasForbiddenControl(value: string, allowNewline: boolean): boolean {
   return allowNewline ? hasControlExceptNewline(value) : hasControlCharacters(value);
 }
@@ -215,7 +232,7 @@ export function validateSshCredential(
       typeof field === "string" ? field : "value",
     );
   }
-  const privateKey = normalizeNewlines(draft.data.privateKey);
+  const privateKey = normalizeSshPrivateKey(draft.data.privateKey);
   const bytes = Buffer.byteLength(privateKey, "utf8");
   if (bytes < 1 || bytes > MAX_SSH_KEY_BYTES) {
     throw invalid(

@@ -90,6 +90,36 @@ describe("validateSshCredential", () => {
     }
   });
 
+  it("normalizes BOM, CRLF, and indented PEM lines for a real ed25519 key", () => {
+    if (!hasSshKeygen) {
+      return;
+    }
+    const dir = tempDir();
+    const keyPath = generateKey(dir, "ed25519");
+    const raw = readFileSync(keyPath, "utf8");
+    const variants = [
+      raw
+        .split("\n")
+        .map((line) => `    ${line}`)
+        .join("\n"),
+      raw
+        .split("\n")
+        .map((line) => `\t${line}`)
+        .join("\n"),
+      raw.replace(/\n/g, " \n"),
+      raw.replace(/\n/g, "\r\n"),
+      `\uFEFF${raw}`,
+      raw.replace(/\n/g, "\u00a0\n"),
+    ];
+
+    for (const privateKey of variants) {
+      const validated = validateSshCredential({ privateKey });
+      expect(validated.publicKey).toMatch(/^ssh-ed25519 /);
+      expect(validated.privateKey).not.toContain("\r");
+      expect(validated.privateKey.startsWith("-----BEGIN OPENSSH PRIVATE KEY-----\n")).toBe(true);
+    }
+  });
+
   it("rejects a real passphrase-protected key with the v1 message", () => {
     if (!hasSshKeygen) {
       return;
