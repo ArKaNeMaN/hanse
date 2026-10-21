@@ -243,6 +243,9 @@ forms.forEach((form) => {
       submitter instanceof HTMLButtonElement && submitter.value.length > 0
         ? submitter.value
         : "set";
+    if (action === "clear" && !window.confirm("Clear this git credential at this scope?")) {
+      return;
+    }
     const payload = buildPayload(form, action);
     setBusy(form, true);
     fetch("/api/settings/git", {

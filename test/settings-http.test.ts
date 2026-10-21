@@ -135,6 +135,15 @@ function form(values: Record<string, string>): string {
   return new URLSearchParams(values).toString();
 }
 
+function rowMarkup(body: string, id: string): string {
+  const start = body.indexOf(`<details class="setting-row" id="${id}"`);
+  if (start < 0) {
+    return "";
+  }
+  const next = body.indexOf('<details class="setting-row"', start + 1);
+  return body.slice(start, next < 0 ? body.length : next);
+}
+
 function fakeManager(
   options: { pending?: (appId: string) => boolean; restart?: (appId: string) => boolean } = {},
 ): InstanceManager & { restarted: string[]; stopped: string[] } {
@@ -624,14 +633,11 @@ describe("provider keys", () => {
 });
 
 describe("settings pages and pending state", () => {
-  it("renders global, project, and app pages with controls and a settings nav entry", async () => {
+  it("renders four section cards, one setting row per setting, and the sticky nav", async () => {
     const f = fixture();
     f.settings.setProviderKey("global", {}, "deepseek", "sk-page-secret", "owner");
-    for (const pathname of [
-      "/settings",
-      "/projects/p1/settings",
-      "/projects/p1/apps/web/settings",
-    ]) {
+    const paths = ["/settings", "/projects/p1/settings", "/projects/p1/apps/web/settings"];
+    for (const pathname of paths) {
       const response = await handleSettings(
         f.deps,
         request({ path: pathname, headers: htmlAuth(f.token) }),
@@ -640,22 +646,162 @@ describe("settings pages and pending state", () => {
       expect(response.contentType).toContain("text/html");
       expect(response.headers?.["cache-control"]).toBe("no-store");
       expect(response.body).toContain('class="app-shell"');
-      expect(response.body).toContain('href="/settings"');
-      expect(response.body).toContain(">Model</h2>");
-      expect(response.body).toContain(">Providers</h2>");
-      expect(response.body).toContain(">Web search</h2>");
-      expect(response.body).toContain(">Web fetch</h2>");
+      expect(response.body).toContain(`href="${pathname}"`);
+      expect(response.body).toContain('class="settings-nav"');
+      expect(response.body).toContain('href="#settings-agent"');
+      expect(response.body).toContain('href="#settings-web"');
+      expect(response.body).toContain('href="#settings-git"');
+      expect(response.body).toContain('href="#settings-restart"');
+      for (const id of ["settings-agent", "settings-web", "settings-git", "settings-restart"]) {
+        expect(response.body).toContain(`id="${id}"`);
+      }
+      expect(response.body).toContain(">Agent</h2>");
+      expect(response.body).toContain(">Web tools</h2>");
+      expect(response.body).toContain(">Git</h2>");
       expect(response.body).toContain(">Restart &amp; pending</h2>");
+      const rows = [
+        ...response.body.matchAll(/<details class="setting-row" id="(setting-[^"]+)"/g),
+      ].map((match) => match[1]);
+      expect(rows).toEqual([
+        "setting-llm-model",
+        "setting-web-search",
+        "setting-web-fetch",
+        "setting-git-user-name",
+        "setting-git-user-email",
+        "setting-git-ssh",
+        "setting-git-https",
+      ]);
       expect(response.body).toContain("data-settings-driver");
+      expect(response.body).toContain("data-settings-form");
       expect(response.body).toContain('autocomplete="new-password"');
       expect(response.body).toContain("/assets/settings.js");
+      expect(response.body).not.toContain("<table");
       expect(response.body).not.toContain("sk-page-secret");
-      const modelStart = response.body.indexOf('id="setting-llm-model"');
-      const providersStart = response.body.indexOf('id="providers"');
-      expect(modelStart).toBeGreaterThan(-1);
-      expect(providersStart).toBeGreaterThan(modelStart);
-      expect(response.body.slice(modelStart, providersStart)).not.toContain('value="clear"');
+      expect(
+        response.body.slice(
+          response.body.indexOf('id="setting-llm-model"'),
+          response.body.indexOf('id="providers"'),
+        ),
+      ).not.toContain('value="clear"');
+      expect(response.body).not.toContain('action="/api/apps/');
+      if (pathname === "/settings") {
+        expect(response.body).not.toContain("settings-nav__scopes");
+        expect(response.body).not.toContain('class="scope-list"');
+      } else {
+        expect(response.body).toContain("settings-nav__scopes");
+        expect(response.body).toContain('class="scope-list"');
+        expect(response.body).toContain('aria-current="page"');
+      }
+      if (pathname === "/projects/p1/settings") {
+        expect(response.body).toContain('href="/settings">Global</a>');
+        expect(response.body).toContain(">Project</span>");
+      }
+      if (pathname === "/projects/p1/apps/web/settings") {
+        expect(response.body).toContain('href="/projects/p1/settings">Project</a>');
+        expect(response.body).toContain(">Application</span>");
+        expect(response.body).toContain(">App</span>");
+      }
     }
+  });
+
+  it("prefills only own-scope values and names the inherited effective value", async () => {
+    const f = fixture();
+    f.settings.set("global", {}, "llm.model", "global/model", "owner");
+    f.settings.set("global", {}, "git.user.name", "Global Agent", "owner");
+    f.settings.set("global", {}, "web.search", { driver: "builtin" }, "owner");
+
+    const project = await handleSettings(
+      f.deps,
+      request({ path: "/projects/p1/settings", headers: htmlAuth(f.token) }),
+    );
+    const modelRow = rowMarkup(project.body, "setting-llm-model");
+    expect(modelRow).toContain('value=""');
+    expect(modelRow).toContain('placeholder="Inherited: global/model"');
+    const searchRow = rowMarkup(project.body, "setting-web-search");
+    expect(searchRow).toContain('<option value="" selected disabled>Choose a driver</option>');
+    expect(searchRow).toContain(
+      "This scope inherits builtin from Global. Saving creates an override.",
+    );
+    const identityRow = rowMarkup(project.body, "setting-git-user-name");
+    expect(identityRow).toContain('value=""');
+    expect(identityRow).toContain('placeholder="Inherited: Global Agent"');
+
+    f.settings.set("app", { projectId: "p1", appKey: "web" }, "llm.model", "app/model", "owner");
+    const app = await handleSettings(
+      f.deps,
+      request({ path: "/projects/p1/apps/web/settings", headers: htmlAuth(f.token) }),
+    );
+    expect(rowMarkup(app.body, "setting-llm-model")).toContain('value="app/model"');
+
+    const globalPage = await handleSettings(
+      f.deps,
+      request({ path: "/settings", headers: htmlAuth(f.token) }),
+    );
+    expect(rowMarkup(globalPage.body, "setting-llm-model")).toContain('value="global/model"');
+
+    const fresh = fixture();
+    const freshGlobal = await handleSettings(
+      fresh.deps,
+      request({ path: "/settings", headers: htmlAuth(fresh.token) }),
+    );
+    expect(rowMarkup(freshGlobal.body, "setting-llm-model")).toContain(
+      'placeholder="Default: deepseek/deepseek-flash"',
+    );
+  });
+
+  it("disables no-op inherit and clear actions with visible reasons", async () => {
+    const f = fixture();
+    f.settings.set("global", {}, "llm.model", "global/model", "owner");
+    f.settings.clear("global", {}, "web.search", "owner");
+
+    const project = await handleSettings(
+      f.deps,
+      request({ path: "/projects/p1/settings", headers: htmlAuth(f.token) }),
+    );
+    const modelRow = rowMarkup(project.body, "setting-llm-model");
+    expect(modelRow).toMatch(
+      /<button class="btn btn-secondary btn-sm"[^>]*disabled>Inherit<\/button>/,
+    );
+    expect(modelRow).toContain("Already inherited from Global.");
+    expect(modelRow).not.toContain(">Clear<");
+
+    const globalPage = await handleSettings(
+      f.deps,
+      request({ path: "/settings", headers: htmlAuth(f.token) }),
+    );
+    const searchRow = rowMarkup(globalPage.body, "setting-web-search");
+    expect(searchRow).toMatch(/<button class="btn btn-danger btn-sm"[^>]*disabled>Clear<\/button>/);
+    expect(searchRow).toContain("Already cleared at this scope.");
+    expect(searchRow).toContain("Clearing here disables this setting for every application.");
+    expect(rowMarkup(globalPage.body, "setting-llm-model")).not.toContain(">Inherit<");
+  });
+
+  it("renders provider clear through the shared dialog with the provider field", async () => {
+    const f = fixture();
+    f.settings.setProviderKey("global", {}, "deepseek", "sk-provider", "owner");
+    const response = await handleSettings(
+      f.deps,
+      request({ path: "/settings", headers: htmlAuth(f.token) }),
+    );
+    const providerRow = rowMarkup(response.body, "provider-0");
+    expect(providerRow).toContain('name="provider" value="deepseek"');
+    expect(providerRow).toMatch(/data-confirm-clear[^>]*data-setting-label="deepseek key"/);
+    expect(providerRow).toContain(">Change key<");
+    expect(response.body).toContain('id="settings-clear-dialog"');
+    expect(response.body).toContain('id="settings-clear-form"');
+    expect(response.body).not.toMatch(/<form[^>]*data-settings-form[^>]*id="settings-clear-form"/);
+  });
+
+  it("renders one compact warnings block when resolution reports warnings", async () => {
+    const f = fixture({ hostAuth: {} });
+    writeFileSync(path.join(f.dir, "host-auth.json"), "{not json");
+    const response = await handleSettings(
+      f.deps,
+      request({ path: "/settings", headers: htmlAuth(f.token) }),
+    );
+    expect(response.body).toContain('class="settings-warning"');
+    expect(response.body).toContain("host auth file is not valid JSON; using empty auth");
+    expect(response.body).not.toContain(">Warnings</h2>");
   });
 
   it("shows a model provider warning when no key or host auth exists", async () => {
@@ -1038,6 +1184,61 @@ describe("git settings API", () => {
       const ids = [...page.body.matchAll(/id="([^"]+)"/g)].map((match) => match[1]);
       expect(new Set(ids).size).toBe(ids.length);
     }
+  });
+
+  it("renders the merged git credential ids and data attributes inside setting rows", async () => {
+    const f = fixture({ runSshKeygen: fakeSshKeygen() });
+    f.settings.setGitAuth("global", {}, "ssh", { privateKey: VALID_SSH_KEY }, "owner");
+    f.settings.setGitAuth(
+      "global",
+      {},
+      "https",
+      { hosts: ["github.com"], username: "x-access-token", token: "token" },
+      "owner",
+    );
+    const page = await handleSettings(
+      f.deps,
+      request({ path: "/projects/p1/apps/web/settings", headers: htmlAuth(f.token) }),
+    );
+    for (const id of [
+      "git",
+      "git-title",
+      "git-identity-name",
+      "git-identity-email",
+      "git-ssh",
+      "git-https",
+      "git-ssh-public-key",
+      "git-ssh-fingerprint",
+      "git-https-allowed-hosts",
+      "git-https-username-value",
+      "git-ssh-private-key",
+      "git-ssh-known-hosts",
+      "git-https-hosts",
+      "git-https-username",
+      "git-https-token",
+      "git-ssh-test-remote",
+      "git-https-test-remote",
+    ]) {
+      expect(page.body).toContain(`id="${id}"`);
+    }
+    for (const attribute of [
+      "data-git-auth",
+      "data-git-test",
+      "data-git-error",
+      "data-git-test-result",
+      "data-git-test-summary",
+      "data-git-test-warnings",
+      "data-git-test-error",
+    ]) {
+      expect(page.body).toContain(attribute);
+    }
+    expect(page.body).toContain("Git credential changes require JavaScript.");
+    const sshRow = rowMarkup(page.body, "setting-git-ssh");
+    expect(sshRow).toContain(">SSH credential<");
+    expect(sshRow).toContain("data-git-auth");
+    expect(sshRow).toContain("data-git-test");
+    expect(sshRow).toContain("Scope details");
+    expect(sshRow).not.toContain("data-settings-form");
   });
 
   it("returns bounded validation errors without echoing the submitted secret", async () => {

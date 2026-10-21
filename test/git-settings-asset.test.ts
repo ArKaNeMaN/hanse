@@ -22,6 +22,10 @@ describe("git settings asset", () => {
     expect(asset).toContain("setBusy(form, false)");
   });
 
+  it("confirms clears natively before submitting the JSON mutation", () => {
+    expect(asset).toContain('action === "clear" && !window.confirm(');
+  });
+
   it("renders errors with textContent and never innerHTML", () => {
     expect(asset).toContain("error.textContent = message");
     expect(asset).not.toContain("innerHTML");
