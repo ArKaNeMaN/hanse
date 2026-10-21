@@ -1,7 +1,8 @@
 # Stage 0011 - SSH host access
 
 - Date: 2026-10-21
-- Status: implemented and verified locally; `deployment-host` deployment pending
+- Status: implemented, verified, and deployed to `deployment-host` as `sha-b844bc3`; deployment record in the
+  local `docs/deploy/deploy-log.md`
 - Design: [`docs/design/ssh-host-access.md`](../design/ssh-host-access.md)
 - Plan: [`docs/plans/0011-ssh-host-access.md`](../plans/0011-ssh-host-access.md)
 - Gate reviews: `oracle` design review (PASS after P0/P1 revisions); `momus` plan review (PASS
@@ -63,6 +64,23 @@ for a single-operator deployment.
 
 ## Deployment
 
-Pending: publish the stage commit to GHCR, deploy to `deployment-host`, verify the migration/health/agent-token
-checks, restart each existing app for the new tools/timeout, run the live SSH QA with a temporary
-target (or record an explicit waiver), and add the local deploy-log entry.
+Deployed to `deployment-host` as `sha-b844bc3`. The coordinator, IDE, runner, and default agent images were
+published by the `Publish container` workflow and pulled with that tag. Pre-deploy backup:
+`<BACKUP_DIR>/20261021-042428-pre-ssh/` (state, workspace, agents, env, compose override);
+rollback tags `hanse:rollback-pre-ssh`, `hanse-agent-ide:rollback-pre-ssh`,
+`hanse-runner:rollback-pre-ssh`; previous agent default `sha-02281c9` remains in GHCR.
+
+Health: all three static services healthy, `/healthz` 200, anonymous `/` 303, `/login` 200, and
+`/ssh`, `/settings`, `/api/projects` with the operator cookie 200. The SSH tables exist; the legacy
+`secrets` table is untouched and `setting_secrets` is absent because stage 0010 is not in this
+commit. An app `mcp-token` gets 403 on `/api/ssh/hosts`; `/internal/mcp` lists all four SSH tools;
+the app overlay reports `mcp.hanse.timeout=600000`.
+
+Live SSH QA used a temporary `linuxserver/openssh-server` on `hanse_front`: Test pinned the host
+key, the approval API approved a pending `exec`, `echo QA_OK` returned exit 0, `sleep 65` with
+`timeout_sec=120` returned `AGENT_LONG_OK` after 65 s, and a 15-byte upload/download round trip
+succeeded. A real `opencode` turn called `hanse_ssh_exec` for `sleep 65` and got the completed result
+after 65 s, confirming the 600 s MCP timeout. Audit rows survived host deletion. The temporary host
+and container were removed.
+
+Gates: `npm run lint`, `npm run typecheck`, `npm test` (1058), and `npm run build` are green.

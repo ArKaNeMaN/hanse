@@ -1,7 +1,7 @@
 # Plan 0011 - SSH host access for agents
 
-Status: **plan gate cleared** (`momus`, 2026-10-21); implemented and verified locally; deployment
-pending.
+Status: **deployed** (`momus` plan gate PASS, 2026-10-21); implemented, verified, and deployed
+to `deployment-host` as `sha-b844bc3`.
 
 Design: [`docs/design/ssh-host-access.md`](../design/ssh-host-access.md). The design review passed
 after revisions: race-free local path handling (P0), pin-after-auth, stored re-pin observation,
@@ -563,4 +563,4 @@ executable without the gitignored runbook:
 ## 13. Plan review
 
 Status: **PASS** (`momus`, 2026-10-21); plan gate cleared after the revisions above. Implementation
-is complete and verified locally; deployment is recorded in the stage journal.
+is complete, verified, and deployed to `deployment-host`; the deployment is recorded in the stage journal.

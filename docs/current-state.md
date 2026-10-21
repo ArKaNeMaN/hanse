@@ -189,6 +189,10 @@ The runner exposes two runtime-token endpoints; the coordinator wraps them as hu
   rebuild) to see the tools and the timeout.
 - Migration v9 creates the SSH tables. Stage 0010 owns v8 (`setting_secrets`); while 0010 is
   uncommitted, a fresh DB applies v1-v7 + v9 (8 migrations, versions `[1..7, 9]`).
+- Live on `deployment-host` (`sha-b844bc3`): a temporary SSH target pinned and authenticated, an approval was
+  approved, `echo QA_OK` and a 65 s `sleep` succeeded, upload/download round-tripped, a real
+  `opencode` turn called `hanse_ssh_exec` and received the result after 65 s, and audit rows survived
+  host deletion.
 
 ## Agents and chat
 
