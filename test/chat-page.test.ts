@@ -262,6 +262,7 @@ describe("chat page", () => {
     expect(response.body).toContain('class="chat-shell chat-shell--workspace"');
     expect(response.body).toContain('data-app-key="storefront"');
     expect(response.body).toContain('data-project-id="p1"');
+    expect(response.body).toContain('data-runtime-url="/api/apps/storefront/runtime?project=p1"');
     expect(response.body).toContain('id="chat-composer"');
     expect(response.body).toContain('id="chat-context"');
     expect(response.body).toContain("data-chat-context-toggle");
@@ -448,6 +449,51 @@ describe("chat page", () => {
     expect(response.body).toContain("extractToolView");
     expect(response.body).toContain("mountToolView");
     expect(response.body).not.toContain("innerHTML");
+  });
+
+  it("polls the runtime endpoint and never guesses the runtime chip", () => {
+    const f = fixture();
+    const response = handleRequest(f.deps, {
+      method: "GET",
+      path: "/assets/chat.js",
+      headers: {},
+    });
+    expect(response.status).toBe(200);
+    expect(response.body).toContain("function refreshRuntime()");
+    expect(response.body).toContain("function runtimeChip(");
+    expect(response.body).toContain("function toolStatusChip(");
+    expect(response.body).toContain('credentials: "same-origin"');
+    expect(response.body).toContain('cache: "no-store"');
+    expect(response.body).toContain("RUNTIME_POLL_MS = 10000");
+    expect(response.body).toContain("Runtime status unavailable");
+    expect(response.body).toContain("syncRuntimePolling");
+    expect(response.body).toContain('setConnection("Starting agent...", "starting")');
+    expect(response.body).not.toContain("setRuntime(");
+    expect(response.body).not.toContain("setLive(");
+  });
+
+  it("keeps runtime and connection untouched by hydration, sends, errors, and session switches", () => {
+    const source = readFileSync(path.join(process.cwd(), "assets", "chat.js"), "utf8");
+    for (const name of [
+      "hydrateMessages",
+      "selectSession",
+      "startDraft",
+      "ensureSession",
+      "sendPrompt",
+      "showThreadError",
+    ]) {
+      const body = source.slice(source.indexOf(`function ${name}(`));
+      const next = body.slice(1).search(/\n {2}(?:async )?function /);
+      const scope = next === -1 ? body : body.slice(0, next + 1);
+      expect(scope, name).not.toContain("setConnection(");
+      expect(scope, name).not.toContain("setRuntime(");
+    }
+    const savedStore = source.slice(source.indexOf("function savedStoreFor("));
+    const savedScope = savedStore.slice(
+      0,
+      savedStore.slice(1).search(/\n {2}(?:async )?function /) + 1,
+    );
+    expect(savedScope).not.toContain("connection:");
   });
 
   it("serves the chat-core module from the asset allowlist", () => {

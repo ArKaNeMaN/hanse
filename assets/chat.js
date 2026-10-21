@@ -4,6 +4,9 @@ import {
   deriveQueue,
   parseMarkdownTable,
   rekeyOptimistic,
+  resolveActiveStatusLabel,
+  runtimeChip as runtimeChipSpec,
+  toolStatusChip as toolStatusChipSpec,
 } from "./chat-core.js";
 import {
   allocateView,
@@ -30,6 +33,8 @@ const OMO_DETAILS_LINE_LIMIT = 8;
 const MESSAGES_PAGE_SIZE = 30;
 const HISTORY_SCROLL_THRESHOLD_PX = 120;
 const HISTORY_MAX_CONTINUE_PAGES = 3;
+const RUNTIME_POLL_MS = 10000;
+const RUNTIME_UNAVAILABLE_TITLE = "Runtime status unavailable";
 
 const KNOWN_PART_TYPES = new Set([
   "text",
@@ -90,6 +95,8 @@ function main() {
   const sessionTitleEl = document.getElementById("chat-session-title");
   const sessionIdEl = document.getElementById("chat-session-id");
   const runtimeEl = document.getElementById("chat-runtime");
+  const contextRuntimeEl = document.getElementById("chat-context-runtime");
+  const runtimeUrl = shell.dataset.runtimeUrl || "";
   const contextClose = document.querySelector("[data-chat-context-close]");
   const sessionsClose = document.querySelector("[data-chat-sessions-close]");
   const contextToggles = Array.from(
@@ -172,7 +179,8 @@ function main() {
   let sessionsSignature = "";
   let sessionsFailed = false;
   let sessionsLoaded = false;
-  let runtimeState = "stopped";
+  let runtimeState = null;
+  let runtimeTimer = null;
   let elapsedAccumulated = 0;
   let elapsedStartedAt = null;
   let elapsedTimer = null;
@@ -255,7 +263,6 @@ function main() {
       currentStreamID: null,
       pendingDeltas: new Map(),
       agentStatus: null,
-      connection: "connecting",
     };
   }
 
@@ -564,27 +571,24 @@ function main() {
   }
 
   function activeStatusLabel() {
-    if (activePromptEntries().length > 0) return "Waiting for you";
-    if (acceptancePosting()) return "Sending";
     const type = currentStatusType();
+    const runningTool = findRunningTool();
     const turnActive =
       type === "busy" ||
       type === "retry" ||
       store.queue.length > 0 ||
       store.activePromptID !== null;
-    if (liveEl !== null && liveEl.dataset.state === "paused" && turnActive) {
-      return "Paused";
-    }
-    if (type === "retry") return "Retrying";
-    if (type === "idle") return "Ready";
-    const runningTool = findRunningTool();
-    if (runningTool !== null) return `Running ${humanizeTool(runningTool.tool)}`;
-    if (lastAssistantHasUnsealed("reasoning")) return "Thinking";
-    if (type === "busy") {
-      return lastAssistantHasUnsealed("text") ? "Working" : "Thinking";
-    }
-    if (store.queue.length > 0 || store.activePromptID !== null) return "Working";
-    return "Ready";
+    return resolveActiveStatusLabel({
+      waiting: activePromptEntries().length > 0,
+      sending: acceptancePosting(),
+      paused: liveEl !== null && liveEl.dataset.state === "paused" && turnActive,
+      statusType: type,
+      runningTool: runningTool === null ? null : humanizeTool(runningTool.tool),
+      unsealedReasoning: lastAssistantHasUnsealed("reasoning"),
+      unsealedText: lastAssistantHasUnsealed("text"),
+      queueLength: store.queue.length,
+      activePromptID: store.activePromptID,
+    });
   }
 
   function queueSuffixAllowed(label) {
@@ -941,7 +945,7 @@ function main() {
       : `Session ${String(session.id).slice(0, 8)}`;
   }
 
-  function setLive(label, state) {
+  function setConnection(label, state) {
     if (liveEl === null) return;
     liveEl.textContent = label;
     liveEl.dataset.state = state;
@@ -1322,7 +1326,6 @@ function main() {
     sessionSnapshotTooLarge = false;
     setSessionNotice(false);
     messagesEl.removeAttribute("aria-busy");
-    setRuntime("error");
     const state = element("div", "error-state chat-error");
     state.setAttribute("role", "alert");
     const mark = element("span", "error-state__mark");
@@ -1340,32 +1343,83 @@ function main() {
     messagesEl.replaceChildren(state);
     if (countEl !== null) countEl.textContent = plural(0, "message");
     if (newMessages !== null) newMessages.hidden = true;
-    setLive("Paused", "paused");
   }
 
-  function setRuntime(state) {
-    runtimeState = state;
-    const contextRuntimeEl = document.getElementById("chat-context-runtime");
-    for (const target of [runtimeEl, contextRuntimeEl]) {
-      if (target !== null) {
-        target.replaceChildren(statusChip(state));
-      }
-    }
-    renderSessions();
-  }
-
-  function statusChip(status) {
-    const map = {
-      running: { state: "in_progress", icon: "activity", label: "Running" },
-      completed: { state: "delivered", icon: "check", label: "Completed" },
-      error: { state: "failed", icon: "alert-triangle", label: "Error" },
-      pending: { state: "queued", icon: "clock", label: "Pending" },
-    };
-    const entry = map[status] || map.completed;
+  function statusChipFrom(entry) {
     const chip = element("span", "status");
     chip.dataset.state = entry.state;
     chip.append(iconNode(entry.icon), document.createTextNode(entry.label));
     return chip;
+  }
+
+  function runtimeChip(state) {
+    return statusChipFrom(runtimeChipSpec(state));
+  }
+
+  function toolStatusChip(status) {
+    return statusChipFrom(toolStatusChipSpec(status));
+  }
+
+  function applyRuntimeState(state) {
+    const normalized = state === "failed" ? "error" : state;
+    runtimeState = normalized;
+    for (const target of [runtimeEl, contextRuntimeEl]) {
+      if (target === null) continue;
+      target.replaceChildren(runtimeChip(normalized));
+      target.removeAttribute("title");
+    }
+    renderSessions();
+  }
+
+  function markRuntimeUnavailable() {
+    for (const target of [runtimeEl, contextRuntimeEl]) {
+      if (target !== null) target.title = RUNTIME_UNAVAILABLE_TITLE;
+    }
+  }
+
+  async function refreshRuntime() {
+    if (runtimeUrl.length === 0) return;
+    try {
+      const response = await fetch(runtimeUrl, {
+        credentials: "same-origin",
+        cache: "no-store",
+        headers: { accept: "application/json" },
+      });
+      if (response.status === 401) {
+        const next = `${window.location.pathname}${window.location.search}`;
+        window.location.assign(`/login?next=${encodeURIComponent(next)}`);
+        return;
+      }
+      if (!response.ok) throw new Error(`runtime status unavailable (${response.status})`);
+      const data = await response.json();
+      const state =
+        data !== null && typeof data === "object" && typeof data.state === "string"
+          ? data.state
+          : null;
+      if (state === null) throw new Error("runtime status unavailable");
+      applyRuntimeState(state);
+    } catch {
+      markRuntimeUnavailable();
+    }
+  }
+
+  function startRuntimePolling() {
+    if (runtimeTimer !== null) return;
+    runtimeTimer = window.setInterval(() => {
+      if (document.hidden) return;
+      refreshRuntime().catch(() => {});
+    }, RUNTIME_POLL_MS);
+  }
+
+  function stopRuntimePolling() {
+    if (runtimeTimer === null) return;
+    window.clearInterval(runtimeTimer);
+    runtimeTimer = null;
+  }
+
+  function syncRuntimePolling() {
+    if (document.hidden) stopRuntimePolling();
+    else startRuntimePolling();
   }
 
   function renderInline(parent, text) {
@@ -2454,7 +2508,7 @@ function main() {
       previewEl.title = preview.title;
       summaryChildren.push(previewEl);
     }
-    summaryChildren.push(statusChip(status));
+    summaryChildren.push(toolStatusChip(status));
     if (elapsed.length > 0) {
       summaryChildren.push(element("span", "tool-call__elapsed mono", elapsed));
     }
@@ -2878,7 +2932,6 @@ function main() {
       currentStreamID: saved.currentStreamID ?? null,
       pendingDeltas: new Map(),
       agentStatus: saved.agentStatus ?? null,
-      connection: "live",
     };
   }
 
@@ -3235,13 +3288,13 @@ function main() {
     closeStream();
     failures = 0;
     if (!("EventSource" in window)) {
-      setLive("Paused", "paused");
+      setConnection("Paused", "paused");
       return;
     }
     eventSource = new EventSource(eventsUrl());
     eventSource.onopen = () => {
       failures = 0;
-      setLive("Live", "live");
+      setConnection("Live", "live");
     };
     eventSource.onmessage = (event) => {
       let payload;
@@ -3257,10 +3310,10 @@ function main() {
       failures += 1;
       if (failures >= 3) {
         closeStream();
-        setLive("Paused", "paused");
+        setConnection("Paused", "paused");
         renderPlan();
       } else {
-        setLive("Reconnecting", "reconnecting");
+        setConnection("Reconnecting", "reconnecting");
       }
     };
   }
@@ -3517,7 +3570,8 @@ function main() {
     }
     if (hasStreamReady) announce("Reconnected.");
     hasStreamReady = true;
-    setLive("Live", "live");
+    setConnection("Live", "live");
+    refreshRuntime().catch(() => {});
     hydrate({ reconnect: true }).catch(() => {});
     hydrateMessages({ reason: changed ? "reconnect" : "ready", silent: true }).catch(() => {});
   }
@@ -6567,8 +6621,6 @@ function main() {
         deferredUnavailable.delete(correlationKey);
       }
       refreshInlineQuestions();
-      if (initial) setLive("Live", "live");
-      setRuntime("running");
       if (turnChanged) requestFollowUpHydration();
       if (settings.reason === "idle" || settings.reason === "reconnect") {
         refreshSessions().catch(() => {});
@@ -6592,9 +6644,11 @@ function main() {
           flushFrame({ full: true });
           announce("Session too large to refresh; showing the last loaded state.");
         }
-      } else if (settings.silent === true && messagesEl !== null && !messagesEl.hasAttribute("aria-busy")) {
-        setLive("Reconnecting", "reconnecting");
-      } else {
+      } else if (
+        settings.silent !== true ||
+        messagesEl === null ||
+        messagesEl.hasAttribute("aria-busy")
+      ) {
         showThreadError(error, () => hydrateMessages({ initial: true }));
       }
     } finally {
@@ -6815,7 +6869,6 @@ function main() {
       historyLoaded = runtime === undefined ? false : runtime.historyLoaded ?? false;
     }
     store.sessionID = id;
-    store.connection = "connecting";
     resetFeedDom();
     resetHighlightController({ reason: "session-switch" });
     resetElapsed();
@@ -6839,7 +6892,6 @@ function main() {
     syncComposer();
     closeSessions(false);
     closeContext(false);
-    setLive("Loading messages", "reconnecting");
     await loadMessages({ initial: true, forceBottom: true });
     if (settings.focusDock === true) {
       refreshInlineQuestions();
@@ -6883,11 +6935,9 @@ function main() {
     if (countEl !== null) countEl.textContent = plural(0, "message");
     resetElapsed();
     promptActivation.clear();
-    setLive("Ready", "idle");
     renderPromptDock();
     loadTodo(null).catch(() => {});
     syncComposer();
-    setRuntime("running");
     closeSessions(false);
     closeContext(false);
     if (settings.focus === true && promptEl instanceof HTMLTextAreaElement) {
@@ -6922,7 +6972,6 @@ function main() {
       renderSessions();
       closeSessions(false);
       showSessionError(null);
-      setLive("Starting agent...", "starting");
       return id;
     } finally {
       creatingSession = false;
@@ -6964,7 +7013,7 @@ function main() {
   }
 
   async function bootSessions() {
-    setLive("Starting agent...", "starting");
+    setConnection("Starting agent...", "starting");
     showSessionsLoading();
     showMessagesLoading();
     showSessionError(null);
@@ -7094,10 +7143,7 @@ function main() {
         clearAcceptanceGrace(state);
         recomputeQueue();
         syncComposer();
-        setRuntime("running");
-        if (eventSource !== null && eventSource.readyState === 1) {
-          setLive("Live", "live");
-        }
+        refreshRuntime().catch(() => {});
         if (sessionId === id && promptEl instanceof HTMLTextAreaElement) promptEl.focus();
         refreshSessions().catch(() => {});
       } catch (error) {
@@ -7161,6 +7207,7 @@ function main() {
           renderSendRecovery();
           scheduleFlush();
         }
+        refreshRuntime().catch(() => {});
       }
     };
     state.chain = state.chain.then(run, run);
@@ -7341,13 +7388,18 @@ function main() {
     });
   }
   document.addEventListener("visibilitychange", () => {
-    if (document.hidden) return;
+    if (document.hidden) {
+      stopRuntimePolling();
+      return;
+    }
     if (flushPending) {
       flushPending = false;
       const prepend = prependPending;
       prependPending = false;
       flushFrame({ full: true, prepend });
     }
+    refreshRuntime().catch(() => {});
+    startRuntimePolling();
   });
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Enter" || !(event.metaKey || event.ctrlKey)) return;
@@ -7420,6 +7472,7 @@ function main() {
   if (streamRetry !== null) {
     streamRetry.addEventListener("click", () => {
       streamRetry.hidden = true;
+      setConnection("Connecting", "reconnecting");
       subscribe();
       hydrate().catch(() => {});
       loadMessages({ silent: true }).catch(() => {});
@@ -7506,6 +7559,8 @@ function main() {
   bootSessions();
   subscribe();
   hydrate().catch(() => {});
+  refreshRuntime().catch(() => {});
+  syncRuntimePolling();
 }
 
 main();

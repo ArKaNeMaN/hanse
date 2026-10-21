@@ -5,6 +5,9 @@ import {
   deriveQueue,
   parseMarkdownTable,
   rekeyOptimistic,
+  resolveActiveStatusLabel,
+  runtimeChip,
+  toolStatusChip,
 } from "../assets/chat-core.js";
 
 interface PartInit {
@@ -1684,5 +1687,111 @@ describe("parseMarkdownTable", () => {
   it("does not start on a line without a separator pipe", () => {
     expect(parseMarkdownTable(["a b", "--- | ---"], 0)).toBeNull();
     expect(parseMarkdownTable(["a \\| b", "---"], 0)).toBeNull();
+  });
+});
+
+describe("runtimeChip", () => {
+  it("maps the four runtime states and legacy failed without a green fallback", () => {
+    expect(runtimeChip("starting")).toEqual({
+      state: "dispatching",
+      icon: "loader",
+      label: "Starting",
+    });
+    expect(runtimeChip("running")).toEqual({
+      state: "in_progress",
+      icon: "activity",
+      label: "Running",
+    });
+    expect(runtimeChip("stopped")).toEqual({ state: "queued", icon: "clock", label: "Stopped" });
+    expect(runtimeChip("error")).toEqual({
+      state: "failed",
+      icon: "alert-triangle",
+      label: "Error",
+    });
+    expect(runtimeChip("failed")).toEqual(runtimeChip("error"));
+    expect(runtimeChip("running").label).not.toBe("Completed");
+  });
+
+  it("renders an unknown or absent state as neutral Unknown", () => {
+    expect(runtimeChip("something-else")).toEqual({
+      state: "cancelled",
+      icon: "slash",
+      label: "Unknown",
+    });
+    expect(runtimeChip(undefined)).toEqual({
+      state: "cancelled",
+      icon: "slash",
+      label: "Unknown",
+    });
+  });
+});
+
+describe("toolStatusChip", () => {
+  it("keeps the known tool statuses and falls back to neutral Unknown", () => {
+    expect(toolStatusChip("running").label).toBe("Running");
+    expect(toolStatusChip("completed").label).toBe("Completed");
+    expect(toolStatusChip("error").label).toBe("Error");
+    expect(toolStatusChip("pending").label).toBe("Pending");
+    expect(toolStatusChip("mystery")).toEqual({
+      state: "cancelled",
+      icon: "slash",
+      label: "Unknown",
+    });
+  });
+});
+
+describe("resolveActiveStatusLabel", () => {
+  it("lets waiting and sending outrank every active state", () => {
+    expect(
+      resolveActiveStatusLabel({
+        waiting: true,
+        statusType: "busy",
+        runningTool: "bash",
+        queueLength: 2,
+      }),
+    ).toBe("Waiting for you");
+    expect(resolveActiveStatusLabel({ sending: true, statusType: "retry", queueLength: 1 })).toBe(
+      "Sending",
+    );
+  });
+
+  it("shows Paused before Retrying only while the turn is active", () => {
+    expect(resolveActiveStatusLabel({ paused: true, statusType: "retry" })).toBe("Paused");
+    expect(resolveActiveStatusLabel({ paused: false, statusType: "retry" })).toBe("Retrying");
+  });
+
+  it("lets a running tool outrank a busy or queued session", () => {
+    expect(
+      resolveActiveStatusLabel({
+        statusType: "busy",
+        runningTool: "bash",
+        queueLength: 3,
+        activePromptID: "msg_2",
+      }),
+    ).toBe("Running bash");
+  });
+
+  it("shows Thinking for unsealed reasoning before the busy branch", () => {
+    expect(
+      resolveActiveStatusLabel({
+        statusType: "busy",
+        unsealedReasoning: true,
+        unsealedText: true,
+      }),
+    ).toBe("Thinking");
+  });
+
+  it("distinguishes Working and Thinking while busy", () => {
+    expect(resolveActiveStatusLabel({ statusType: "busy", unsealedText: true })).toBe("Working");
+    expect(resolveActiveStatusLabel({ statusType: "busy" })).toBe("Thinking");
+  });
+
+  it("never returns Ready with a queued or active prompt", () => {
+    expect(resolveActiveStatusLabel({ statusType: "idle", queueLength: 1 })).toBe("Working");
+    expect(resolveActiveStatusLabel({ statusType: "idle", activePromptID: "msg_1" })).toBe(
+      "Working",
+    );
+    expect(resolveActiveStatusLabel({ statusType: "idle" })).toBe("Ready");
+    expect(resolveActiveStatusLabel({})).toBe("Ready");
   });
 });

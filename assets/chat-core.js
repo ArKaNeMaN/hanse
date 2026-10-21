@@ -1620,3 +1620,59 @@ export function parseMarkdownTable(lines, startIndex) {
 
   return { headers, rows, truncated, nextIndex: index };
 }
+
+function unknownChip() {
+  return { state: "cancelled", icon: "slash", label: "Unknown" };
+}
+
+export function runtimeChip(state) {
+  switch (state === "failed" ? "error" : state) {
+    case "starting":
+      return { state: "dispatching", icon: "loader", label: "Starting" };
+    case "running":
+      return { state: "in_progress", icon: "activity", label: "Running" };
+    case "stopped":
+      return { state: "queued", icon: "clock", label: "Stopped" };
+    case "error":
+      return { state: "failed", icon: "alert-triangle", label: "Error" };
+    default:
+      return unknownChip();
+  }
+}
+
+export function toolStatusChip(status) {
+  switch (status) {
+    case "running":
+      return { state: "in_progress", icon: "activity", label: "Running" };
+    case "completed":
+      return { state: "delivered", icon: "check", label: "Completed" };
+    case "error":
+      return { state: "failed", icon: "alert-triangle", label: "Error" };
+    case "pending":
+      return { state: "queued", icon: "clock", label: "Pending" };
+    default:
+      return unknownChip();
+  }
+}
+
+export function resolveActiveStatusLabel(input) {
+  const state = input === null || typeof input !== "object" ? {} : input;
+  if (state.waiting === true) return "Waiting for you";
+  if (state.sending === true) return "Sending";
+  if (state.paused === true) return "Paused";
+  if (state.statusType === "retry") return "Retrying";
+  if (typeof state.runningTool === "string" && state.runningTool.length > 0) {
+    return `Running ${state.runningTool}`;
+  }
+  if (state.unsealedReasoning === true) return "Thinking";
+  if (state.statusType === "busy") {
+    return state.unsealedText === true ? "Working" : "Thinking";
+  }
+  if (
+    (typeof state.queueLength === "number" && state.queueLength > 0) ||
+    (state.activePromptID !== null && state.activePromptID !== undefined)
+  ) {
+    return "Working";
+  }
+  return "Ready";
+}
