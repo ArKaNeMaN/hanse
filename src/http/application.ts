@@ -180,6 +180,9 @@ export function renderApplication(
   const apiBase = `/api/projects/${encodeURIComponent(project.id)}/apps/${encodeURIComponent(app.appKey)}/git`;
   const ideHref = ideFolderUrl(folder);
   const terminalHref = `/terminal?app=${encodeURIComponent(app.appKey)}&project=${encodeURIComponent(project.id)}`;
+  const sshHref = `/ssh?project=${encodeURIComponent(project.id)}&app=${encodeURIComponent(app.appKey)}`;
+  const sshHosts = site.sshHostsByApp.get(app.id) ?? 0;
+  const sshPending = site.sshPendingByApp.get(app.id) ?? 0;
 
   const header = pageHeader({
     overline: "Application",
@@ -205,7 +208,11 @@ export function renderApplication(
   const image = app.buildConfigured
     ? imagePanel(project, app, app.imageStatus)
     : defaultImagePanel(project, app);
-  const body = `${pendingBanner}${image}<div id="git-panel" data-project-id="${escapeHtml(project.id)}" data-app-key="${escapeHtml(app.appKey)}" data-api-base="${escapeHtml(apiBase)}">
+  const sshPanel = `<section class="card section" id="ssh-panel" aria-labelledby="ssh-panel-title">
+    <div class="card__head"><h2 class="card__title" id="ssh-panel-title">SSH access</h2><a class="btn btn-ghost btn-sm" href="${escapeHtml(sshHref)}">${icon("terminal")}Manage</a></div>
+    <p class="small">${sshHosts} allowed ${sshHosts === 1 ? "host" : "hosts"} · ${sshPending} pending ${sshPending === 1 ? "approval" : "approvals"}</p>
+  </section>`;
+  const body = `${pendingBanner}${image}${sshPanel}<div id="git-panel" data-project-id="${escapeHtml(project.id)}" data-app-key="${escapeHtml(app.appKey)}" data-api-base="${escapeHtml(apiBase)}">
     <p id="git-live" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>
     <div class="workbench-grid workbench-grid--detail section">
       <div class="stack">
@@ -255,6 +262,7 @@ export function renderApplication(
     ],
     projects: navProjects(site),
     pendingCount: site.pendingCount,
+    sshPendingCount: site.sshPendingCount,
     operatorName: chrome.operatorName,
     notice: chrome.notice,
     header,

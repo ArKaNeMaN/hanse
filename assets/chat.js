@@ -7427,6 +7427,82 @@ function main() {
   }
   window.addEventListener("beforeunload", closeStream);
 
+  const sshApprovalSlot = document.getElementById("chat-ssh-approvals");
+  if (sshApprovalSlot instanceof HTMLElement) {
+    let sshTimer = 0;
+    const refreshSshApprovals = async () => {
+      try {
+        const response = await fetch(withProject(`${apiBase()}/ssh/approvals`), {
+          headers: { accept: "application/json" },
+        });
+        if (!response.ok) return;
+        const data = await response.json();
+        const approvals = Array.isArray(data.approvals) ? data.approvals : [];
+        sshApprovalSlot.replaceChildren();
+        if (approvals.length === 0) {
+          sshApprovalSlot.hidden = true;
+          return;
+        }
+        sshApprovalSlot.hidden = false;
+        for (const approval of approvals) {
+          const card = element("section", "card ssh-approval-card");
+          card.dataset.approvalId = String(approval.id);
+          const body = element("div", "card__body stack--tight");
+          body.append(element("p", "overline", "SSH approval required"));
+          body.append(
+            element("h2", "card__title", `${approval.hostName} · ${approval.action}`),
+          );
+          body.append(element("pre", "ssh-command", String(approval.commandPreview ?? "")));
+          body.append(
+            element(
+              "p",
+              "small",
+              `Requested ${approval.requestedAt}; expires ${approval.expiresAt}. Approving grants this application arbitrary command execution on this host while the grant is active.`,
+            ),
+          );
+          const actions = element("div", "cluster");
+          const buttons = [
+            ["Approve", "approve", "btn btn-primary btn-sm"],
+            ["Reject", "reject", "btn btn-ghost btn-sm"],
+          ];
+          for (const [label, decision, className] of buttons) {
+            const button = element("button", className, label);
+            button.type = "button";
+            button.addEventListener("click", async () => {
+              button.disabled = true;
+              try {
+                await fetch(
+                  withProject(
+                    `${apiBase()}/ssh/approvals/${encodeURIComponent(approval.id)}/decision`,
+                  ),
+                  {
+                    method: "POST",
+                    headers: { "content-type": "application/json" },
+                    body: JSON.stringify({ decision }),
+                  },
+                );
+                await refreshSshApprovals();
+              } finally {
+                button.disabled = false;
+              }
+            });
+            actions.append(button);
+          }
+          body.append(actions);
+          card.append(body);
+          sshApprovalSlot.append(card);
+        }
+      } catch {
+        // keep the last rendered approval state
+      }
+    };
+    void refreshSshApprovals();
+    sshTimer = window.setInterval(() => {
+      if (!document.hidden) void refreshSshApprovals();
+    }, 5000);
+    window.addEventListener("beforeunload", () => window.clearInterval(sshTimer));
+  }
+
   bootSessions();
   subscribe();
   hydrate().catch(() => {});

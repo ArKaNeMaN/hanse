@@ -5,16 +5,16 @@ import path from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { ConfigError } from "../config/load.js";
 import { decideApproval } from "../coordinator/approval.js";
-import { CoordinatorService } from "../coordinator/service.js";
+import type { CoordinatorService } from "../coordinator/service.js";
 import type { GitService } from "../git/service.js";
 import { authenticate } from "../identity/auth.js";
 import type { Principal } from "../identity/principals.js";
 import type { ImageService } from "../images/service.js";
 import { verifyAgentToken } from "../mcp/agent-tokens.js";
-import { handleRpc } from "../mcp/protocol.js";
 import type { InstanceManager } from "../opencode/manager.js";
 import { resolveAppPath } from "../runtime/app-path.js";
 import type { SettingsService } from "../settings/index.js";
+import type { SshService } from "../ssh/service.js";
 import type { SqliteDatabase } from "../store/index.js";
 import { renderApplication } from "./application.js";
 import { humanFrom, principalFrom } from "./auth.js";
@@ -46,6 +46,7 @@ export interface HttpDeps {
   git: GitService;
   manager?: InstanceManager;
   settings?: SettingsService;
+  ssh?: SshService;
   runner?: { url: string; token: string };
   /** Present when the coordinator is wired to the runner; image routes 503 otherwise. */
   images?: ImageService;
@@ -94,6 +95,7 @@ const ASSETS: Record<string, { file: string; contentType: string }> = {
     file: "vendor/prism/prism-1.30.0.min.js",
     contentType: "text/javascript; charset=utf-8",
   },
+  "/assets/ssh.js": { file: "ssh.js", contentType: "text/javascript; charset=utf-8" },
   "/assets/settings.js": {
     file: "settings.js",
     contentType: "text/javascript; charset=utf-8",
@@ -250,38 +252,6 @@ function bearerToken(request: HttpRequest): string | undefined {
 function agentTokenFor(request: HttpRequest) {
   const token = bearerToken(request);
   return token === undefined || token.length === 0 ? undefined : token;
-}
-
-function rpcError(status: number, code: number, message: string): HttpResponse {
-  return json(status, { jsonrpc: "2.0", id: null, error: { code, message } });
-}
-
-/** Internal per-app MCP endpoint. The token alone selects the project/app; the body cannot. */
-function routeInternalMcp(deps: HttpDeps, request: HttpRequest): HttpResponse {
-  const token = agentTokenFor(request);
-  const agent = token === undefined ? undefined : verifyAgentToken(deps.db, token);
-  if (agent === undefined) {
-    return rpcError(401, -32000, "invalid agent token");
-  }
-
-  let payload: unknown;
-  try {
-    payload = JSON.parse(request.body ?? "");
-  } catch {
-    return rpcError(400, -32700, "parse error");
-  }
-  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
-    return rpcError(400, -32700, "parse error");
-  }
-
-  const service = new CoordinatorService(deps.db, agent.projectId);
-  const response = handleRpc(service, payload as Parameters<typeof handleRpc>[1], {
-    fromAppKey: agent.appKey,
-  });
-  if (response === undefined) {
-    return { status: 204, contentType: "application/json; charset=utf-8", body: "" };
-  }
-  return json(200, response);
 }
 
 function pendingApprovalId(db: SqliteDatabase, handoffId: string): string | undefined {
@@ -448,9 +418,6 @@ function route(deps: HttpDeps, request: HttpRequest): HttpResponse {
     return json(404, { error: "not found" });
   }
 
-  if (request.method === "POST" && request.path === "/internal/mcp") {
-    return routeInternalMcp(deps, request);
-  }
   const presentedAgentToken = agentTokenFor(request);
   if (
     presentedAgentToken !== undefined &&

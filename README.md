@@ -25,6 +25,8 @@ and requirements) to each other through the coordinator - like independent teams
 - Integrated chat with agents: sessions, messages, SSE updates, tool-call/diff rendering.
 - Application page with a lightweight git workbench: status, fetch, fast-forward update, local branch
   switch, commit, and push.
+- Operator-defined SSH hosts with per-application allowlists, coordinator-held keys, idle-based
+  approvals in chat, arbitrary `ssh_exec`, SFTP upload/download, host-key pinning, and audit.
 - Optional per-app images from `.hanse/Dockerfile` (`ARG HANSE_BASE`), built on a human action,
   validated in a locked-down container, with status/logs, stale detection, two-version rollback, and
   explicit GC.

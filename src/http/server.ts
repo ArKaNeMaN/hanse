@@ -12,8 +12,10 @@ import { handleChat, streamSessionEvents } from "./chat.js";
 import { handleGit } from "./git.js";
 import { type HttpDeps, handleRequest } from "./handler.js";
 import { handleImages } from "./images.js";
+import { handleInternalMcp } from "./internal-mcp.js";
 import { handlePrompts, streamAppEvents } from "./prompts.js";
 import { handleSettings, isSettingsRoute } from "./settings.js";
+import { handleSsh, isSshRoute } from "./ssh.js";
 import { proxyTerminalUpgrade } from "./terminal.js";
 
 const IDE_PORT = Number(process.env.HANSE_IDE_PORT ?? 8080);
@@ -145,6 +147,9 @@ export function createHttpServer(deps: HttpDeps): Server {
             url.pathname,
           );
         const isSettings = isSettingsRoute(httpRequest.method, url.pathname);
+        const isInternalMcp =
+          (httpRequest.method ?? "GET") === "POST" && url.pathname === "/internal/mcp";
+        const isSsh = isSshRoute(httpRequest.method, url.pathname);
         const isRuntime = /^\/api\/apps\/[^/]+\/runtime$/.test(url.pathname);
         const isChat =
           !isRuntime && (url.pathname === "/chat" || url.pathname.startsWith("/api/apps/"));
@@ -156,9 +161,13 @@ export function createHttpServer(deps: HttpDeps): Server {
               ? await handlePrompts(deps, httpRequest)
               : isSettings
                 ? await handleSettings(deps, httpRequest)
-                : isChat
-                  ? await handleChat(deps, httpRequest)
-                  : handleRequest(deps, httpRequest);
+                : isInternalMcp
+                  ? await handleInternalMcp(deps, httpRequest)
+                  : isSsh
+                    ? await handleSsh(deps, httpRequest)
+                    : isChat
+                      ? await handleChat(deps, httpRequest)
+                      : handleRequest(deps, httpRequest);
         response.writeHead(result.status, {
           "content-type": result.contentType,
           ...(result.headers ?? {}),

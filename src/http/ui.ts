@@ -299,11 +299,12 @@ export interface NavProject {
 
 export interface ShellOptions {
   title: string;
-  active: "overview" | "projects" | "project" | "handoffs" | "settings" | "none";
+  active: "overview" | "projects" | "project" | "handoffs" | "settings" | "ssh" | "none";
   activeProjectId?: string;
   breadcrumb: Crumb[];
   projects: NavProject[];
   pendingCount: number;
+  sshPendingCount?: number;
   operatorName: string;
   header: string;
   body: string;
@@ -404,6 +405,13 @@ function sidebar(options: ShellOptions): string {
       label: "Settings",
       iconName: "settings",
       active: options.active === "settings",
+    }) +
+    navItem({
+      href: "/ssh",
+      label: "SSH",
+      iconName: "terminal",
+      active: options.active === "ssh",
+      ...(options.sshPendingCount === undefined ? {} : { count: options.sshPendingCount }),
     });
 
   return `<aside class="sidebar" id="sidebar" aria-label="Primary">

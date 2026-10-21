@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { CoordinatorService } from "../src/coordinator/service.js";
 import { GitService } from "../src/git/service.js";
 import { type HttpDeps, type HttpRequest, handleRequest } from "../src/http/handler.js";
+import { handleInternalMcp } from "../src/http/internal-mcp.js";
 import { createHttpServer } from "../src/http/server.js";
 import { mintAgentToken, revokeAgentToken } from "../src/mcp/agent-tokens.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
@@ -115,11 +116,11 @@ describe("internal MCP over HTTP", () => {
     }
   });
 
-  it("runs a tool with a valid per-app token and scopes it to the token project", () => {
+  it("runs a tool with a valid per-app token and scopes it to the token project", async () => {
     const f = fixture();
     const token = mintAgentToken(f.db, "p:a");
 
-    const response = handleRequest(
+    const response = await handleInternalMcp(
       deps(f),
       rpc(token, {
         jsonrpc: "2.0",
@@ -135,11 +136,11 @@ describe("internal MCP over HTTP", () => {
     expect(apps.apps.every((app) => app.projectId === "p")).toBe(true);
   });
 
-  it("binds request_sibling_change to the token app, ignoring a client-supplied from", () => {
+  it("binds request_sibling_change to the token app, ignoring a client-supplied from", async () => {
     const f = fixture();
     const token = mintAgentToken(f.db, "p:a");
 
-    const response = handleRequest(
+    const response = await handleInternalMcp(
       deps(f),
       rpc(token, {
         jsonrpc: "2.0",
@@ -159,11 +160,11 @@ describe("internal MCP over HTTP", () => {
     expect(row?.fromAppId).toBe("p:a");
   });
 
-  it("cannot act on another project through the token project's service", () => {
+  it("cannot act on another project through the token project's service", async () => {
     const f = fixture();
     const token = mintAgentToken(f.db, "p:a");
 
-    const response = handleRequest(
+    const response = await handleInternalMcp(
       deps(f),
       rpc(token, {
         jsonrpc: "2.0",
@@ -182,30 +183,30 @@ describe("internal MCP over HTTP", () => {
     expect(count.n).toBe(0);
   });
 
-  it("rejects missing, invalid, and revoked tokens with 401", () => {
+  it("rejects missing, invalid, and revoked tokens with 401", async () => {
     const f = fixture();
     const token = mintAgentToken(f.db, "p:a");
     const payload = { jsonrpc: "2.0", id: 4, method: "tools/list" };
 
-    expect(handleRequest(deps(f), rpc(undefined, payload)).status).toBe(401);
-    expect(handleRequest(deps(f), rpc("not-a-token", payload)).status).toBe(401);
+    expect((await handleInternalMcp(deps(f), rpc(undefined, payload))).status).toBe(401);
+    expect((await handleInternalMcp(deps(f), rpc("not-a-token", payload))).status).toBe(401);
 
     revokeAgentToken(f.db, "p:a");
-    expect(handleRequest(deps(f), rpc(token, payload)).status).toBe(401);
+    expect((await handleInternalMcp(deps(f), rpc(token, payload))).status).toBe(401);
   });
 
-  it("returns 204 for notifications and 400 for a parse error", () => {
+  it("returns 204 for notifications and 400 for a parse error", async () => {
     const f = fixture();
     const token = mintAgentToken(f.db, "p:a");
 
-    const notification = handleRequest(
+    const notification = await handleInternalMcp(
       deps(f),
       rpc(token, { jsonrpc: "2.0", method: "notifications/initialized" }),
     );
     expect(notification.status).toBe(204);
     expect(notification.body).toBe("");
 
-    const parseError = handleRequest(deps(f), rpc(token, "{not json"));
+    const parseError = await handleInternalMcp(deps(f), rpc(token, "{not json"));
     expect(parseError.status).toBe(400);
     expect((JSON.parse(parseError.body) as { error?: { code?: number } }).error?.code).toBe(-32700);
   });

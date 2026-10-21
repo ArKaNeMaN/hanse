@@ -450,6 +450,34 @@ helpers never run in the coordinator. Git is not wired to the encrypted provider
   application repository. Repository hooks are disabled by command-line config; git runs as uid 1000
   in the one-shot container with the app directory writable.
 
+## SSH host access
+
+The coordinator can hold operator SSH hosts and expose them to selected applications through the
+`hanse` MCP server. The private keys stay in `state/hanse/coordinator.db` (AES-256-GCM); they are
+never mounted into app containers, and the `hanse mcp` shim only forwards tool calls.
+
+- Open `/ssh` (operator login) and add a host: name, address, port, user, private key, optional
+  remote root, and whether the app must ask for approval. The page shows the derived client public
+  key so it can be installed in the remote `authorized_keys`.
+- Use **Test** to authenticate and pin the host key. A changed host key fails closed; use **Test &
+  prepare re-pin**, compare the old/new fingerprints, and submit the new fingerprint. Changing the
+  address or port clears the pin and requires a fresh test.
+- On the same page, select project/application and check the allowed hosts. A host with approval
+  enabled asks the operator on first use; the request appears in the chat workspace (5-second
+  polling) and on `/ssh`. Approving creates an idle grant (30 min idle, 8 h maximum); the next calls
+  reuse it until it expires or is revoked. Rejecting starts a 60-second cooldown.
+- The agent gets `ssh_list_hosts`, `ssh_exec`, `ssh_upload`, and `ssh_download`. Commands are
+  non-interactive and arbitrary as the SSH user; use a least-privilege deploy user. Upload/download
+  are capped at 50 MiB, use SFTP, and are confined to the app directory and the host's remote root.
+- **Do not target the coordinator host** or any host that can read `/data/state` or the Docker socket
+  with a key that the agent can use: an SSH shell there is equivalent to coordinator/host access.
+- Every operation, host change, test, re-pin, grant revoke, and approval decision is in the SSH audit
+  table. `ssh_audit` is readable from `/ssh`; it is not exposed to agents.
+- No new environment variables are required. The coordinator image includes `ssh-keygen` for key
+  validation; the `ssh2` npm package is used for connections.
+- **Restart each existing app after upgrading** so it refreshes `tools/list` and picks up the 600 s
+  `hanse` MCP timeout. No app image rebuild is needed.
+
 ## Troubleshooting
 
 - **Permission denied under `/data/state`, `/data/workspace`, or `/data/agents`**: the bind mounts
@@ -492,6 +520,14 @@ helpers never run in the coordinator. Git is not wired to the encrypted provider
 - **Old containers after an upgrade**: `docker compose up -d --remove-orphans`.
 - **Settings show "Restart required"**: settings never restart agents. Use the restart action; an
   active turn is interrupted and sessions are kept.
+- **SSH tools missing after upgrade**: restart the application so opencode refreshes `tools/list`
+  and the 600 s MCP timeout. No new agent image is required.
+- **SSH host key mismatch**: the host key changed. Use Test & prepare re-pin, compare the old/new
+  fingerprints, then submit the new fingerprint; never disable host-key checking.
+- **SSH approval not shown in chat**: open `/ssh`; approvals are app-scoped and also listed there.
+  The chat polls every 5 seconds while open.
+- **SSH key validation fails**: the coordinator image must have `/usr/bin/ssh-keygen`; check
+  `docker compose exec hanse which ssh-keygen`. Passphrase-protected keys are rejected in v1.
 
 ## Maintainers: publishing to GHCR
 

@@ -27,13 +27,13 @@ describe("store", () => {
     db.close();
   });
 
-  it("migrates to v7 with agent tokens, runner containers, and app image versions", () => {
+  it("migrates to v9 with agent tokens, runner containers, app image versions, and SSH tables", () => {
     const db = openDatabase(tempDbPath());
     runMigrations(db);
     const versions = db.prepare("SELECT version FROM schema_migrations ORDER BY version").all() as {
       version: number;
     }[];
-    expect(versions.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    expect(versions.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 9]);
 
     const tokenColumns = (
       db.prepare("PRAGMA table_info(agent_tokens)").all() as {

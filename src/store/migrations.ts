@@ -222,4 +222,118 @@ CREATE INDEX app_image_versions_app_created ON app_image_versions(app_id, create
 ALTER TABLE instances ADD COLUMN image_ref TEXT;
 `,
   },
+  {
+    version: 9,
+    name: "ssh-hosts",
+    sql: `
+CREATE TABLE ssh_hosts (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  address TEXT NOT NULL,
+  port INTEGER NOT NULL DEFAULT 22 CHECK (port BETWEEN 1 AND 65535),
+  username TEXT NOT NULL,
+  host_key TEXT,
+  host_key_type TEXT,
+  host_key_bits INTEGER,
+  host_key_fingerprint TEXT,
+  host_key_pinned_at TEXT,
+  pending_host_key TEXT,
+  pending_host_key_type TEXT,
+  pending_host_key_fingerprint TEXT,
+  pending_host_key_at TEXT,
+  host_key_mismatch_at TEXT,
+  require_approval INTEGER NOT NULL DEFAULT 1 CHECK (require_approval IN (0, 1)),
+  approval_idle_sec INTEGER NOT NULL DEFAULT 1800
+    CHECK (approval_idle_sec BETWEEN 300 AND 7200),
+  remote_root TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE ssh_host_credentials (
+  host_id TEXT PRIMARY KEY REFERENCES ssh_hosts(id) ON DELETE CASCADE,
+  cipher TEXT NOT NULL,
+  nonce TEXT NOT NULL,
+  public_key TEXT NOT NULL,
+  public_key_fingerprint TEXT NOT NULL,
+  key_type TEXT NOT NULL,
+  bits INTEGER,
+  validated_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  updated_by TEXT
+);
+
+CREATE TABLE app_ssh_hosts (
+  app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+  host_id TEXT NOT NULL REFERENCES ssh_hosts(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL,
+  created_by TEXT,
+  PRIMARY KEY (app_id, host_id)
+);
+CREATE INDEX app_ssh_hosts_host ON app_ssh_hosts(host_id);
+
+CREATE TABLE ssh_approvals (
+  id TEXT PRIMARY KEY,
+  app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+  host_id TEXT NOT NULL REFERENCES ssh_hosts(id) ON DELETE CASCADE,
+  action TEXT NOT NULL CHECK (action IN ('exec', 'upload', 'download')),
+  command_hash TEXT NOT NULL,
+  command_preview TEXT NOT NULL,
+  command_bytes INTEGER NOT NULL,
+  status TEXT NOT NULL
+    CHECK (status IN ('pending', 'approved', 'rejected', 'expired', 'superseded')),
+  requested_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  decided_at TEXT,
+  decided_by TEXT,
+  grant_id TEXT
+);
+CREATE UNIQUE INDEX ssh_approvals_pending_unique
+  ON ssh_approvals(app_id, host_id, action, command_hash)
+  WHERE status = 'pending';
+CREATE INDEX ssh_approvals_pending ON ssh_approvals(app_id, status, requested_at);
+CREATE INDEX ssh_approvals_expiry ON ssh_approvals(status, expires_at);
+
+CREATE TABLE ssh_grants (
+  id TEXT PRIMARY KEY,
+  app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+  host_id TEXT NOT NULL REFERENCES ssh_hosts(id) ON DELETE CASCADE,
+  approval_id TEXT NOT NULL REFERENCES ssh_approvals(id) ON DELETE CASCADE,
+  granted_by TEXT NOT NULL,
+  granted_at TEXT NOT NULL,
+  last_used_at TEXT NOT NULL,
+  idle_expires_at TEXT NOT NULL,
+  absolute_expires_at TEXT NOT NULL,
+  revoked_at TEXT
+);
+CREATE UNIQUE INDEX ssh_grants_approval ON ssh_grants(approval_id);
+CREATE INDEX ssh_grants_active ON ssh_grants(app_id, host_id, revoked_at, idle_expires_at);
+
+CREATE TABLE ssh_audit (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  app_id TEXT NOT NULL,
+  project_id TEXT NOT NULL,
+  app_key TEXT NOT NULL,
+  host_id TEXT NOT NULL,
+  host_name TEXT NOT NULL,
+  address TEXT NOT NULL,
+  username TEXT NOT NULL,
+  action TEXT NOT NULL,
+  command_hash TEXT,
+  command_preview TEXT,
+  presented_fingerprint TEXT,
+  detail_json TEXT,
+  approval_id TEXT,
+  grant_id TEXT,
+  started_at TEXT NOT NULL,
+  finished_at TEXT,
+  exit_code INTEGER,
+  error_code TEXT,
+  bytes_out INTEGER,
+  truncated INTEGER NOT NULL DEFAULT 0 CHECK (truncated IN (0, 1))
+);
+CREATE INDEX ssh_audit_app_started ON ssh_audit(app_id, started_at DESC, id DESC);
+CREATE INDEX ssh_audit_host_started ON ssh_audit(host_id, started_at DESC, id DESC);
+`,
+  },
 ];

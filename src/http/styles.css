@@ -6021,3 +6021,28 @@
     color: var(--danger);
   }
 }
+
+/* SSH approvals and host registry */
+.ssh-approval-slot {
+  display: grid;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+}
+
+.ssh-approval-card {
+  border-color: var(--line);
+}
+
+.ssh-command {
+  max-height: 12rem;
+  margin: 0;
+  overflow: auto;
+  padding: 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm, 0.375rem);
+  background: var(--surface-2);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.8rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}

@@ -43,6 +43,7 @@ import {
 } from "../runtime/index.js";
 import { loadOrCreateKey } from "../secrets/index.js";
 import { SettingsService } from "../settings/index.js";
+import { SshService } from "../ssh/service.js";
 import { openDatabase, runMigrations } from "../store/index.js";
 import { parseWebMcpConfig } from "../web/config.js";
 import { runWebMcpServer } from "../web/mcp.js";
@@ -508,6 +509,12 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
   const omoProfiles = new OmoProfileStore({
     path: path.join(os.homedir(), ".omo", "omo.jsonc"),
   });
+  const ssh = new SshService({
+    db,
+    secretKey,
+    workspaceRoot: workspace,
+    agentsHome: path.resolve(agentsHome()),
+  });
 
   const token = process.env.HANSE_OPERATOR_TOKEN;
   if (token !== undefined && token.length > 0) {
@@ -564,6 +571,7 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
     git,
     manager,
     settings,
+    ssh,
     ...(runnerUrl === undefined || runnerUrl.length === 0
       ? {}
       : { runner: { url: runnerUrl, token: runtimeToken } }),

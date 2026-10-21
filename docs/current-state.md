@@ -148,6 +148,38 @@ The runner exposes two runtime-token endpoints; the coordinator wraps them as hu
   operations and the app network for fetch/update/push). Repository hooks, fsmonitor, SSH commands,
   ext protocols, and credential helpers therefore never run in the coordinator.
 
+## SSH host access
+
+- Global operator-defined hosts live in `ssh_hosts` with an AES-256-GCM-sealed private key in
+  `ssh_host_credentials`; the private key is never materialized into the app container, its HOME,
+  the runtime spec, `OPENCODE_CONFIG_CONTENT`, logs, or tool results.
+- Access is strictly per application through `app_ssh_hosts` (no project inheritance). The app token
+  selects the app; every call re-checks the allowlist. Hosts are added on the `/ssh` page with a
+  write-only key, a Test connection (which pins the host key after successful authentication), and
+  an optional "ask for approval" switch.
+- The `hanse` MCP server exposes `ssh_list_hosts`, `ssh_exec`, `ssh_upload`, and `ssh_download`.
+  Commands are arbitrary and non-interactive; upload/download use SFTP with a 50 MiB cap, a 300 s
+  transfer deadline, local dirfd-relative path confinement, remote `remote_root`/`realpath`
+  checks, and atomic writes.
+- `require_approval` hosts need an idle-based `(app, host)` grant (30 min idle, 8 h absolute). The
+  first request appears as an app-scoped card in the chat workspace, which polls the approval API
+  every 5 s; the operator can approve or reject there or on `/ssh`. Pending approvals expire after
+  5 minutes; a tool waits 30 s, then returns `ssh_approval_pending`.
+- Host keys are pinned automatically on the first authenticated connection (TOFU); a mismatch fails
+  closed, records `host_key_mismatch_at`, and requires an explicit Test + re-pin. The pending
+  observation lasts 10 minutes. Changing `address`/`port` clears the pin.
+- Every operation is audited in `ssh_audit` (pre-insert, `finally`, orphan `interrupted` on startup);
+  host CRUD, test, re-pin, grant revocation, and approval decisions are audited too. Audit rows
+  survive host/app deletion.
+- Human-only API/UI: `/ssh`, `/api/ssh/hosts`, `/api/ssh/approvals/count`,
+  `/api/projects/:projectId/apps/:appKey/ssh`, `.../grants/:id/revoke`,
+  `/api/apps/:app/ssh/approvals`, `.../decision`, and `/api/apps/:app/ssh/audit`; agent tokens get
+  `403`. The only agent-facing route remains `/internal/mcp`.
+- The `hanse` MCP entry carries `timeout: 600000`; existing agents must be restarted (no image
+  rebuild) to see the tools and the timeout.
+- Migration v9 creates the SSH tables. Stage 0010 owns v8 (`setting_secrets`); while 0010 is
+  uncommitted, a fresh DB applies v1-v7 + v9 (8 migrations, versions `[1..7, 9]`).
+
 ## Agents and chat
 
 - `opencode` (`opencode-ai@1.19.3`) is installed in the agent and IDE images.
@@ -414,7 +446,7 @@ coordinator; operators do not set them.
 
 ## Verification
 
-`npm run lint && npm run typecheck && npm test && npm run build` (all green; 1035 tests). B1 core
+`npm run lint && npm run typecheck && npm test && npm run build` (all green; 1058 tests). B1 core
 live smoke on `deployment-host`: coordinator/IDE/runner healthy, per-app `demo-app` container running,
 `scripts/agent-runtime-probe.sh b1` passes, coordinator recreate reattaches the app network, and the
 app agent has no `/data/state`, Docker socket, operator/runtime token, or sibling app access.
@@ -481,6 +513,20 @@ Settings stage verification:
   escape, and `.env`/network are intentionally allowed. B1 adds per-app containers and networks;
   upstream authentication remains a later hardening step.
 - Cross-app handoff delivery to a live sibling session is not automatic (see above).
+- SSH host keys are coordinator-held; the agent can run arbitrary commands as the configured SSH
+  user on an approved host. The remote user's privileges are the real boundary; use least-privilege
+  deploy users. Do not grant SSH to the coordinator host or a host that can read coordinator state
+  or the Docker socket.
+- SSH host-key pinning is TOFU on first use. After the pin, a mismatch fails closed; re-pin is an
+  explicit human Test + re-pin action. A load-balanced address with multiple host keys is not
+  supported in v1.
+- SSH approval is app-scoped, not chat-session-scoped (the MCP call carries no opencode session id).
+  v1 uses 5-second polling rather than a coordinator-originated SSE frame.
+- SSH grants are not killed in flight on revoke or allowlist removal; new calls fail, a running
+  command continues until its timeout. There is no recursive transfer, jump host, agent forwarding,
+  password auth, or passphrase-protected key support.
+- The SSH feature protects operator host keys and provides an audited managed path; it is not a
+  network egress control. The app can create its own keys and connect directly.
 - The OMO baseline is image-wide; the selected model is applied through a per-app profile under the
   app's HOME. A project `.omo/omo.jsonc` layer can override profile pins; the post-start `/agent`
   check is warning-only.

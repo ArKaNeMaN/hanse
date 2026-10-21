@@ -51,6 +51,9 @@ export interface SiteModel {
   runtime: Map<string, RuntimeState>;
   pendingRestart: Map<string, boolean>;
   pendingCount: number;
+  sshPendingCount: number;
+  sshPendingByApp: Map<string, number>;
+  sshHostsByApp: Map<string, number>;
   runningCount: number;
   failedCount: number;
   stoppedCount: number;
@@ -149,6 +152,29 @@ export function buildSite(deps: DashboardDeps): SiteModel {
   });
 
   let pendingCount = 0;
+  let sshPendingCount = 0;
+  const sshPendingByApp = new Map<string, number>();
+  const sshHostsByApp = new Map<string, number>();
+  try {
+    const now = new Date().toISOString();
+    const pendingRows = deps.db
+      .prepare(
+        "SELECT app_id AS appId, COUNT(*) AS count FROM ssh_approvals WHERE status = 'pending' AND expires_at > ? GROUP BY app_id",
+      )
+      .all(now) as Array<{ appId: string; count: number }>;
+    for (const row of pendingRows) {
+      sshPendingByApp.set(row.appId, row.count);
+      sshPendingCount += row.count;
+    }
+    const hostRows = deps.db
+      .prepare("SELECT app_id AS appId, COUNT(*) AS count FROM app_ssh_hosts GROUP BY app_id")
+      .all() as Array<{ appId: string; count: number }>;
+    for (const row of hostRows) {
+      sshHostsByApp.set(row.appId, row.count);
+    }
+  } catch {
+    // The SSH tables are absent only in pre-migration fixtures; the page still renders.
+  }
   let runningCount = 0;
   let failedCount = 0;
   let stoppedCount = 0;
@@ -181,6 +207,9 @@ export function buildSite(deps: DashboardDeps): SiteModel {
     runtime,
     pendingRestart,
     pendingCount,
+    sshPendingCount,
+    sshPendingByApp,
+    sshHostsByApp,
     runningCount,
     failedCount,
     stoppedCount,

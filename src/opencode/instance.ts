@@ -33,7 +33,11 @@ export interface McpLocalServer {
   command: string[];
   enabled?: boolean;
   environment?: Record<string, string>;
+  timeout?: number;
 }
+
+/** The coordinator MCP server may run an approval wait plus a long SSH command. */
+const COORDINATOR_MCP_TIMEOUT_MS = 600_000;
 
 /** Subset of the opencode config produced as a per-instance overlay. */
 export interface OpencodeOverlay {
@@ -127,6 +131,7 @@ export function buildConfigOverlay(options: BuildOverlayOptions): OpencodeOverla
       command: options.coordinatorCommand,
       enabled: true,
       ...(options.environment === undefined ? {} : { environment: options.environment }),
+      timeout: COORDINATOR_MCP_TIMEOUT_MS,
     };
   }
   if (Object.keys(mcp).length > 0) {

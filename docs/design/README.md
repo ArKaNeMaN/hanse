@@ -23,6 +23,9 @@
 - [Web tools and hierarchical settings](./web-tools-and-settings.md) - global/project/app settings,
   encrypted model-provider keys, builtin/DeepSeek web drivers, per-app OMO model profiles, and the
   explicit restart workflow.
+- [SSH host access](./ssh-host-access.md) - global operator-defined SSH hosts, per-app grants,
+  coordinator-side exec/SFTP through a keyless MCP bridge, idle-based approvals in chat, and
+  automatic host-key pinning.
 - [Chat pagination and generation indicator](./chat-pagination.md) - 30-message session tail,
   cursor-based scroll-up history, overlap-aware snapshot merge, and the in-feed generation row.
 - [Architecture overview](./overview.md) - the coordinator architecture and stage plan.

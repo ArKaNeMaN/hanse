@@ -3,21 +3,21 @@ import { PACKAGE_NAME, VERSION } from "../version.js";
 
 const PROTOCOL_VERSION = "2024-11-05";
 
-interface RpcRequest {
+export interface RpcRequest {
   jsonrpc: "2.0";
   id?: string | number;
   method: string;
   params?: Record<string, unknown>;
 }
 
-interface RpcResponse {
+export interface RpcResponse {
   jsonrpc: "2.0";
   id: string | number;
   result?: unknown;
   error?: { code: number; message: string };
 }
 
-const TOOLS = [
+export const TOOLS = [
   {
     name: "request_sibling_change",
     description: "Request a change in a sibling application. Returns a handoff id immediately.",

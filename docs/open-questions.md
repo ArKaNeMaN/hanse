@@ -1,7 +1,7 @@
 # Open questions
 
-> Stage: `0009-agent-runtime`. Owner decisions were collected interactively on 2026-10-20, before the
-> plan was written. There are no open items for this stage.
+> Stage: `0011-ssh-host-access`. Owner decisions were collected on 2026-10-21, before the plan was
+> written. There are no open items for this stage.
 
 ## Resolved owner decisions
 

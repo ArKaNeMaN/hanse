@@ -281,6 +281,7 @@ function renderChatPage(
       <ol class="chat-queue-strip__list" id="chat-queue-strip-list"></ol>
     </div>
     <p class="chat-session-notice" id="chat-session-notice" role="status" hidden>Session too large to refresh; showing the last loaded state.</p>
+    <div class="ssh-approval-slot" id="chat-ssh-approvals" hidden></div>
     <section class="prompt-dock" id="chat-prompt-dock" aria-label="Agent requests" hidden></section>
     <form class="composer" id="chat-composer" data-no-busy>
       <div class="composer__row">
