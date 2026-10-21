@@ -388,6 +388,16 @@ follows its normal shell behavior.
 7. **Embedded IDE.** Opens in a new tab at `/ide/`; no hanse chrome is injected. GitHub Dark Dimmed
 is the reference; hanse's ink/brass does not clash because it shares the same luminance band and
 avoids bright chrome.
+8. **Application page.** Header with `Open chat`, `Terminal`, and a `More actions` disclosure; a
+two-cell state strip (`Runtime`, `Settings`); the git workbench as the main column (Repository,
+Changes) and a 320px rail (Image, SSH access, Remotes, Last commit). The only page primary is
+`Commit all`; the Image card uses status pills and disclosures, not a full-width block.
+9. **Settings.** A sticky scope/section nav, four section cards (`Agent`, `Web tools`, `Git`,
+`Restart & pending`), and one collapsed `.setting-row` per setting. Only effective value and source
+are visible at rest; editor, scope history, warnings, and actions are inside the row disclosure.
+10. **Operator terminal.** Full-height route with no page header. A 48px toolbar (title, runtime and
+connection pills, Copy/Reconnect/Close), an in-flow banner, and an xterm host that owns the remaining
+viewport and its own scrollback. No chart ground.
 
 ### 4.5 Scroll ownership
 
@@ -836,6 +846,44 @@ These map exactly to Section 3. No other font sizes are allowed in product CSS.
   roving tabindex with `aria-controls`, errors use `role="alert"`, and `#chat-announcer` is the single
   polite live region for arrivals and outcomes. Reduced motion changes opacity only.
 
+### 5.20 UX polish components (application, settings, terminal)
+
+- **Application state strip:** `.state-strip` is a two-column ruled strip
+  (`border-block: 1px solid var(--line)`), `.state-strip__cell`, `.state-strip__label`,
+  `.state-strip__value`, `.state-strip__actions`. Below 768 it stacks with a block-start hairline.
+  The Settings cell is the only pending-restart statement on the page.
+- **Overflow menu:** `<details class="menu">` with a `.btn.btn-ghost.btn-icon` summary, a
+  `.menu__panel` (surface 3, hairline, radius md, overlay shadow, `--z-sticky`), and `.menu__item`
+  links. Outside click/Escape close it and return focus to the summary.
+- **Disclosure:** `.disclosure` is a native `<details>` with a `--space-8` summary row and a
+  `.disclosure__chevron` that rotates when open. Used for Image details, Build logs, provider keys,
+  and scope details. No custom ARIA menu/tab roles.
+- **Settings nav and rows:** `.settings-nav` is sticky under the top bar with
+  `.settings-nav__scopes`, `.settings-nav__sections`, `.settings-nav__link`, and
+  `aria-current="page"` on the current scope. `.settings-section` uses the card shell.
+  `.setting-row` is a native `<details>` separated by hairlines; `.setting-row__summary` is a
+  `minmax(0,1fr) auto` grid (title, effective value + source, optional status, chevron), and
+  `.setting-row__body`, `.setting-row__form`, `.setting-row__actions`, `.setting-row__reason` hold
+  the open editor. `.scope-details`/`.scope-list` replace per-setting tables with a compact
+  definition list (`Set`/`Cleared`/`Inherited`). Disabled Inherit/Clear controls always carry a
+  visible reason.
+- **Terminal:** `.page--terminal`, `.page__body--terminal`, `.terminal-shell`,
+  `.terminal-toolbar`, `.terminal-toolbar__title`, `.terminal-toolbar__meta`,
+  `.terminal-toolbar__status`, `.terminal-toolbar__actions`, `.terminal-banner`, `.terminal-host`,
+  `.terminal-empty`. The xterm viewport background is `--inset`; the terminal theme maps ANSI to the
+  status tokens and updates with `data-theme`.
+- **Runtime vocabulary:** `starting` -> `dispatching`/`Starting`; `running` ->
+  `in_progress`/`Running`; `stopped` -> `queued`/`Stopped`; `error` (legacy `failed`) ->
+  `failed`/`Error`. Every state keeps a glyph and text. Container `Running` is not the same as an
+  active turn or chat `Ready`.
+- **Image vocabulary:** `missing` -> `queued`/`Not built`; `building` -> `in_progress`/`Building`;
+  `ready` -> `delivered`/`Built`; `stale` -> `expired`/`Out of date`; `error` ->
+  `failed`/`Build failed`; `default` -> `cancelled`/`Default image`. Image never uses `Ready`, which
+  is reserved for chat's agent status.
+- **Status rules:** status remains glyph + text + color; no new status colors. Runtime error is
+  `Error`, not `Failed`; image "Built" is not runtime readiness; pending restart is shown once per
+  route.
+
 ---
 
 ## 6. Motion & Interaction
@@ -934,6 +982,12 @@ Enter submits the non-destructive default, dialog focus returns to its trigger.
 | Showcase inline JS is excluded from Biome | `docs/design/showcase.html` | Static documentation harness with inline ES5 toggles, not product code. Product TypeScript and the capture script remain fully linted. | Remove the exclusion if the harness gains a build step. |
 | System display serif varies by OS | Global | DejaVu Serif on this Linux host; Iowan/Palatino/Georgia on macOS/Windows. No webfonts are permitted. | Accepted; the stack is documented and tested on the host. |
 | Theme control is two-state in the product shell | `src/http/ui.ts`, `assets/app.js` | Dark is the default; `data-theme` toggles light/dark and persists in `localStorage["hanse-theme"]`. A system-follow third state is not implemented. | Add only if the owner asks for system-follow. |
+| Settings forms without JS lose values on validation | `src/http/settings.ts`, `assets/settings.js` | Non-Git forms still submit and redirect; inline errors are the product path. Git credential forms are JSON-only and require JS, with a visible `<noscript>`. | Revisit if no-JS usage is real. |
+| Terminal reconnect starts a new shell | `assets/terminal.js` | PTYs are ephemeral Docker execs; there is no persistent multiplexer. | Add only as a separate feature. |
+| No terminal search or web-links addon | `assets/vendor/xterm/` | The base terminal is complete without them; adding them needs a new vendored bundle and licence/checksum review. | Add only with a separate allowlist review. |
+| Pre-v10 running instances show `Applied state unknown` | `src/opencode/manager.ts`, migration v10 | The applied hash was not persisted before this pass; the UI shows `Restart required` instead of guessing. | One-time; a restart records the values. |
+| Chat runtime polling can lag up to 10s | `assets/chat.js` | The runtime endpoint is a cheap DB read; there is no runtime SSE. | Add runtime SSE only if state changes often enough to matter. |
+| Terminal clipboard uses `execCommand` on insecure HTTP | `assets/terminal.js` | `navigator.clipboard` requires a secure context; the fallback keeps copy/paste usable on a LAN. | Revisit when TLS/reverse proxy is standard. |
 
 ### 8.3 Showcase harness and evidence
 
@@ -1030,6 +1084,18 @@ spacing value.
 - Utilities: `.display`, `.h1`, `.h2`, `.h3`, `.body-lg`, `.body`, `.small`, `.caption`,
 `.overline`, `.mono`, `.rule`, `.rule--strong`, `.rule--double`, `.sr-only`, `.skip-link`,
 `.chart-ground`.
+- UX polish: `.state-strip`, `.state-strip__cell`, `.state-strip__label`, `.state-strip__value`,
+`.state-strip__actions`, `.menu`, `.menu__panel`, `.menu__item`, `.disclosure`,
+`.disclosure__chevron`, `.settings-nav`, `.settings-nav__scopes`, `.settings-nav__sections`,
+`.settings-nav__link`, `.settings-section`, `.setting-row`, `.setting-row__summary`,
+`.setting-row__title`, `.setting-row__effective`, `.setting-row__source`, `.setting-row__state`,
+`.setting-row__chevron`, `.setting-row__body`, `.setting-row__form`, `.setting-row__actions`,
+`.setting-row__reason`, `.setting-row__affordance`, `.scope-details`, `.scope-list`,
+`.scope-list__row`, `.scope-list__state`, `.settings-warning`, `.provider-add`,
+`.settings-noscript`, `.page--terminal`, `.page__body--terminal`, `.terminal-shell`,
+`.terminal-toolbar`, `.terminal-toolbar__title`, `.terminal-toolbar__meta`,
+`.terminal-toolbar__status`, `.terminal-toolbar__actions`, `.terminal-banner`, `.terminal-host`,
+`.terminal-empty`.
 
 No product screen may introduce a new hex, px font size, radius, or spacing value. If a new pattern
 is needed twice, add it here and to `styles.css` first.

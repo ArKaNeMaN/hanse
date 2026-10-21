@@ -1,8 +1,8 @@
 # Design - UX/UI polish pass
 
-Status: **design review PASS-WITH-CHANGES; findings folded; ready for plan review.** This document is
-a contract for implementation. It does not authorize code changes before plan review clears (see
-[`docs/process.md`](../process.md)).
+Status: **implemented and verified locally; deployment pending.** Design review: `oracle`,
+PASS-WITH-CHANGES; plan review: `momus`, PASS-WITH-CHANGES; evidence:
+[`artifacts/ux/`](./artifacts/ux/README.md).
 
 Date: 2026-10-21.
 
@@ -404,7 +404,7 @@ and Last commit move below the Image card in the rail; the Application rail card
 | Surface | State | Rendering |
 | --- | --- | --- |
 | Image | default image | Compact rail card with `Default image`, one sentence, `Open application folder`. |
-| Image | missing | `Not built`, build action, no logs/rollback. |
+| Image | missing | `Not built`, build action; `Image details` shows `Built: Never`, no previous/rollback, and an empty build-log disclosure. |
 | Image | no logs | `No build logs yet.` inside the open disclosure. |
 | Runtime | stopped | `Stopped` pill, no restart action. |
 | Runtime | error | `Error` pill with alert glyph, no restart action (restart cannot start it). |

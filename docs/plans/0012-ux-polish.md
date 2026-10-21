@@ -1,6 +1,6 @@
 # Plan 0012 - UX/UI polish pass
 
-Status: **plan review PASS-WITH-CHANGES; findings folded; ready for execution.** Design:
+Status: **implemented and verified locally; deployment pending.** Design:
 [`docs/design/ux-polish.md`](../design/ux-polish.md). Design review: `oracle`, 2026-10-21,
 **PASS-WITH-CHANGES** (findings folded). Plan review: `momus`, 2026-10-21, **PASS-WITH-CHANGES**
 (findings folded). Owner is unavailable and delegated all decisions; no owner questions remain.
@@ -189,7 +189,7 @@ Exit: chat runtime, connection, and agent status are three separate truths.
 
 Files: `docs/design/ux-polish.md` (status/evidence), `docs/design/ux-qa.mjs` (browser harness),
 `docs/design/artifacts/ux/README.md` + captures, `DESIGN.md`, `docs/current-state.md`,
-`docs/journal/0012-ux-polish.md`, `docs/plans/README.md`, `docs/design/README.md`,
+`docs/journal/0013-ux-polish.md`, `docs/plans/README.md`, `docs/design/README.md`,
 `docs/journal/README.md`, `docs/deploy/deploy-log.md` (git-ignored), `README.md` if needed.
 
 Gates: `npm run lint`, `npm run typecheck`, `npm test`, `npm run build`. Browser QA at 390/768/1024/
@@ -247,7 +247,8 @@ and git-credentials stages deploy with the same image.
 
 ## 7. Plan review
 
-Status: **PASS-WITH-CHANGES**, `momus`, 2026-10-21. Folded findings: runner exec env is added, not
+Status: **PASS-WITH-CHANGES**, `momus`, 2026-10-21; implementation complete, see
+[`docs/journal/0013-ux-polish.md`](../journal/0013-ux-polish.md). Folded findings: runner exec env is added, not
 kept; Slice E is the sole writer of `src/http/chat.ts`; default-image controls are state-specific;
 zero resting submits excludes pending-restart forms; Slice A updates all `SiteModel` fixtures and
 migration counts; Git markup assertions move to `test/settings-http.test.ts`; provider clear carries

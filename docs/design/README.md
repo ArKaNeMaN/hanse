@@ -26,6 +26,8 @@
 - [Web tools and hierarchical settings](./web-tools-and-settings.md) - global/project/app settings,
   encrypted model-provider keys, builtin/DeepSeek web drivers, per-app OMO model profiles, and the
   explicit restart workflow.
+- [UX/UI polish](./ux-polish.md) - application-page hierarchy (git first, compact Image/SSH/runtime),
+  compact hierarchical settings, the xterm operator terminal, and truthful runtime/chat state.
 - [SSH host access](./ssh-host-access.md) - global operator-defined SSH hosts, per-app grants,
   coordinator-side exec/SFTP through a keyless MCP bridge, idle-based approvals in chat, and
   automatic host-key pinning.
@@ -61,6 +63,8 @@ Query parameters:
 - `dialog-1440-{dark,light}.png`, `toast-1440-{dark,light}.png`, `tooltip-1440-dark.png`
 - `git/` - Application page and git panel captures at 390/768/1440 plus deterministic state
   captures (see [`artifacts/git/README.md`](./artifacts/git/README.md)).
+- `ux/` - UX polish captures for the application page, settings, and terminal at 390/768/1024/1440,
+  dark and light, plus `report.json` (see [`artifacts/ux/README.md`](./artifacts/ux/README.md)).
 
 ## Chat QA
 
@@ -71,5 +75,9 @@ deterministic fixtures, and writes screenshots plus `report.json` to
 or page error. `--live` runs a real managed-agent smoke when `CHAT_QA_URL`, `CHAT_QA_TOKEN`, and
 `CHAT_QA_LIVE_SESSION` are present.
 
-Both scripts resolve an installed Playwright module and Chromium build; they add no Playwright
+`node docs/design/ux-qa.mjs` is the UX polish browser gate. It targets `UX_QA_URL`/`UX_QA_TOKEN`
+with the seeded fixture described in [`artifacts/ux/README.md`](./artifacts/ux/README.md) and writes
+the same kind of report and screenshots.
+
+All scripts resolve an installed Playwright module and Chromium build; they add no Playwright
 dependency to the product.

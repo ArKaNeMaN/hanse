@@ -115,7 +115,9 @@ The runner exposes two runtime-token endpoints; the coordinator wraps them as hu
 - Static assets are allowlisted: `/assets/app.css`, `/assets/app.js`, `/assets/chat.js`,
   `/assets/chat-core.js`, `/assets/chat-diff.js`, `/assets/chat-highlight.js`,
   `/assets/chat-highlight-worker.js`, `/assets/git.js`, `/assets/git-settings.js`,
-  `/assets/settings.js`, `/assets/vendor/prism/prism-1.30.0.min.js`, and `/assets/favicon.svg`.
+  `/assets/settings.js`, `/assets/vendor/prism/prism-1.30.0.min.js`,
+  `/assets/vendor/xterm/xterm-6.0.0.js`, `/assets/vendor/xterm/xterm-6.0.0.css`,
+  `/assets/vendor/xterm/addon-fit-0.11.0.js`, and `/assets/favicon.svg`.
 - `assets/app.js` adds shell drawer, native-dialog, theme, toast, password-visibility, and
   submit-busy behavior. `assets/chat.js` is an ESM module that owns the chat workspace (sessions,
   messages, typed SSE, composer, queue, questions, OMO cards, safe markdown/tables, syntax-highlighted
@@ -130,8 +132,18 @@ The runner exposes two runtime-token endpoints; the coordinator wraps them as hu
 ## Git workbench
 
 - The Application page (`/projects/:projectId/apps/:appKey`) is human-only and server-rendered; the
-  git panel is hydrated by `assets/git.js`. It is linked from the project application table, the chat
-  context rail, and the chat breadcrumb.
+  git panel is hydrated by `assets/git.js`. The page header has `Open chat`, `Terminal`, and a
+  `More actions` disclosure (`Open IDE in this folder`, `Application settings`); a two-cell state
+  strip (`Runtime`, `Settings`) precedes the git workbench. Repository and Changes occupy the main
+  column; the rail holds Image, SSH access, Remotes, and Last commit. The page's only brass action is
+  `Commit all`. It is linked from the project application table, the chat context rail, and the chat
+  breadcrumb.
+- Runtime state uses one vocabulary from the runner: `starting`, `running`, `stopped`, `error`
+  (legacy `failed` normalizes to `error`). The overview shows all four counts; the app, chat, and
+  terminal surfaces use the same pill mapping. `POST /api/apps/:app/restart` calls
+  `restartIfRunning()` (stop plus ensure) and reports a failure instead of claiming success. Applied
+  settings/profile hashes are persisted on `instances` (migration v10); a running agent whose launch
+  state cannot be confirmed shows `Applied state unknown` and `Restart required`, never `Applied`.
 - Human-only JSON API under `/api/projects/:projectId/apps/:appKey/git`:
   `GET /status`, `POST /fetch`, `/update`, `/push`, `/commit`, `/branches/switch`. Mutations are
   JSON-only and require the operator session; agent principals receive `403`.
@@ -332,6 +344,11 @@ The runner exposes two runtime-token endpoints; the coordinator wraps them as hu
   rows inherit; `null`/`cleared` is an explicit empty override. `llm.model` is a non-clearable scalar
   with default `deepseek/deepseek-flash`; `web.search` and `web.fetch` default to `{driver:"builtin"}`
   and are clearable. `git.user.name`/`git.user.email` are clearable strings (default `null`).
+  Every page uses a sticky scope/section nav, four section cards (Agent, Web tools, Git,
+  Restart & pending), and one collapsed setting row per setting. Rows show effective value and source
+  at rest; editor, scope history (`Scope details`), warnings, and actions are disclosed on demand.
+  Non-Git forms post through `settings.js` for inline errors and keep values; Git credential forms
+  remain JSON-only and JS-required.
 - `settings` and `provider_keys` live in `coordinator.db` (migration v3). Provider API keys are
   entered in the settings UI, AES-256-GCM encrypted, and never returned. At instance start the
   coordinator reconciles the host `auth.json` with effective provider keys into the per-instance
@@ -409,8 +426,17 @@ The runner exposes two runtime-token endpoints; the coordinator wraps them as hu
   `/bin/bash -l` (or `/bin/sh -l` fallback) and bridges WebSocket frames to the Docker exec stream.
   Only managed app containers resolved by `appId` are reachable.
 - Closing or reloading the terminal closes only the exec stream; the app container keeps running.
-- The terminal is a plain monospace console, not an xterm emulator. Resize is sent as a JSON control
-  text frame and applied through Docker's `/exec/{id}/resize`.
+- The page is a full-height xterm.js 6.0.0 terminal (vendored, fit addon) with ANSI/alternate-screen
+  rendering, 5000-line scrollback, a light/dark theme from the design tokens, copy/paste, and
+  FitAddon/ResizeObserver sizing. Output is binary frames; keyboard/paste input is sent as binary
+  UTF-8 frames, while resize is a JSON control text frame applied through Docker's
+  `/exec/{id}/resize`. The runner sets `TERM=xterm-256color`, `COLORTERM=truecolor`, and
+  `LANG=C.UTF-8` for the exec.
+- The client preflights `/api/apps/:app/runtime` before connecting and on Reconnect. A stopped/error
+  agent renders an in-place `Agent is not running` state with Open chat/Reconnect; a runner 409 is not
+  observable to the browser. Abnormal closes retry with 1/2/4/8/15s backoff; a normal shell exit does
+  not auto-retry; manual Close keeps scrollback and never stops the container. Reconnect starts a new
+  shell (the PTY is ephemeral), not a reattach to the old one.
 
 ## Data and state layout
 
@@ -483,7 +509,7 @@ coordinator; operators do not set them.
 
 ## Verification
 
-`npm run lint && npm run typecheck && npm test && npm run build` (all green; 1152 tests). B1 core
+`npm run lint && npm run typecheck && npm test && npm run build` (all green; 1194 tests). B1 core
 live smoke on `deployment-host`: coordinator/IDE/runner healthy, per-app `demo-app` container running,
 `scripts/agent-runtime-probe.sh b1` passes, coordinator recreate reattaches the app network, and the
 app agent has no `/data/state`, Docker socket, operator/runtime token, or sibling app access.
@@ -544,8 +570,9 @@ Settings stage verification:
   control network, has no coordinator state, and mounts workspace/agents read-only for build context
   and per-app passwords. B1.5 git runs in a no-secret one-shot container from the app image; the
   coordinator keeps only the human-only UI/API and a runner client. The B1.4 operator terminal is
-  human-only and scoped to managed app containers, but it is a line-oriented console rather than a
-  full xterm (no alternate screen, mouse reporting, or full ANSI rendering). "Human-only" prompt
+  human-only and scoped to managed app containers; it now uses a real xterm.js renderer (ANSI,
+  alternate screen, 5000-line scrollback, resize, IME, copy/paste). Reconnect starts a new ephemeral
+  shell; there is no search/web-links addon or persistent session multiplexer. "Human-only" prompt
   routes remain a Hanse-route guarantee, not a hard boundary: an agent with `bash` can call the
   upstream prompt API directly, including a v2 `always` reply that creates a durable project-scoped
   saved permission.
@@ -618,6 +645,14 @@ Settings stage verification:
   `git-op` command (agent-default does). A per-repository in-memory lock in the coordinator
   serializes UI actions but does not cover agents or the IDE writing to the same repository.
 - The IDE chat can be moved to the right sidebar only by a one-time user action (VS Code limitation).
+- Settings without JavaScript submit non-Git forms and fall back to the redirect/toast path; inline
+  errors and preserved values need the script. Git credential forms are JSON-only and require JS.
+- Applied settings/profile hashes were not persisted before migration v10. A running instance from an
+  older deployment shows `Applied state unknown` and `Restart required` until it is restarted; the UI
+  does not guess that the current settings are applied.
+- Chat runtime chips poll `/api/apps/:app/runtime` every 10s while visible, so an externally stopped
+  container can take up to 10s to appear; there is no runtime SSE. Runtime `Running` means the
+  container is up, not that a turn is active.
 - Chat loads a 30-message tail and prepends older pages on scroll-up, but the loaded window is not
   virtualized; very large loaded windows remain the scaling limit. The idle `GET /messages` snapshot
   is capped at 8 MiB (`messages_too_large`); the running tool output shown live is capped to a 64 KiB

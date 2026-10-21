@@ -15,3 +15,4 @@ them.
 - `0010-chat-diff-highlighting.md` - vendored Prism worker, lazy open-only syntax-highlighted `edit`/`apply_patch`/`write` diffs, server caps, CSS/theme, unit + browser QA, and accepted debt.
 - `0011-ssh-host-access.md` - coordinator-held SSH hosts, per-app grants, idle approvals, keyless MCP exec/SFTP, host-key pinning, audit, and deploy notes.
 - `0012-git-credentials.md` - per-app SSH/HTTPS credentials in hierarchical settings, encrypted storage, agent-readable materialization, read-only workbench reuse, draft Test connection, and deployment notes.
+- `0013-ux-polish.md` - application-page hierarchy, compact settings, xterm terminal, truthful runtime/chat state, migration v10, browser QA, and accepted debt.
