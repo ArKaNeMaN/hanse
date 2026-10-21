@@ -1,4 +1,4 @@
-# 0016 - Session context usage, manual compaction, and auto-compaction
+# 0017 - Session context usage, manual compaction, and auto-compaction
 
 Status: implemented and verified; deployment pending.
 
@@ -45,7 +45,7 @@ Deliver a server-authoritative context layer rather than a client-only meter.
 
 ## Verification
 
-- `npm run lint`, `npm run typecheck`, `npm test`, `npm run build` pass (1429 tests in 91 files).
+- `npm run lint`, `npm run typecheck`, `npm test`, `npm run build` pass (1433 tests in 91 files).
 - New unit/HTTP coverage: context tracker/policy/hydration/limit cache (41 tests), context monitor
   and lifecycle/resume (23), context HTTP routes (24), usage-enabled projector/client (including
   provider limits and summarize), and the settings/chat additions.

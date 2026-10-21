@@ -180,6 +180,11 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   `restartIfRunning()` (stop plus ensure) and reports a failure instead of claiming success. Applied
   settings/profile hashes are persisted on `instances` (migration v10); a running agent whose launch
   state cannot be confirmed shows `Applied state unknown` and `Restart required`, never `Applied`.
+- The coordinator reconciles persisted `running`/`starting` rows with the runner at startup and
+  every 15 seconds. Out-of-band stops become `stopped`/`error`; a restart that finds a stopped agent
+  persists `stopped` before showing `Agent is not running; settings apply on next start.`; a status
+  transport failure leaves the last known state unchanged. This prevents stale `Restart required`
+  markers after a deployment or coordinator restart.
 - Human-only JSON API under `/api/projects/:projectId/apps/:appKey/git`:
   `GET /status`, `POST /fetch`, `/update`, `/push`, `/commit`, `/branches/switch`. Mutations are
   JSON-only and require the operator session; agent principals receive `403`.
@@ -568,15 +573,15 @@ coordinator; operators do not set them.
 
 ## Verification
 
-`npm run lint && npm run typecheck && npm test && npm run build` (all green; 1429 tests in 91
+`npm run lint && npm run typecheck && npm test && npm run build` (all green; 1433 tests in 91
 files). The UX polish pass deployed as `sha-88faab7`; the settings live-save follow-up deployed as
-`sha-d2fcc3b`. The project/application deletion stage is verified by the four gates; it has not been
+`sha-d2fcc3b`; the runtime-state reconciliation fix deployed as coordinator `sha-98033f5` on
+2026-10-21. The project/application deletion stage is verified by the four gates; it has not been
 deployed or live-smoked from this checkout. The context usage/compaction stage is verified by the
 four gates and the deterministic chat QA bridge (14 scenarios, zero console/page errors, context
 screenshots under `docs/design/artifacts/chat/`); deployment is recorded in the journal after the
 stage deploy.
-B1 core
-live smoke on `deployment-host`: coordinator/IDE/runner healthy, per-app `demo-app` container running,
+B1 core live smoke on `deployment-host`: coordinator/IDE/runner healthy, per-app `demo-app` container running,
 `scripts/agent-runtime-probe.sh b1` passes, coordinator recreate reattaches the app network, and the
 app agent has no `/data/state`, Docker socket, operator/runtime token, or sibling app access.
 B2 live smoke on `deployment-host`: built a test app from `ARG HANSE_BASE` with an extra `jq` package; the
@@ -585,7 +590,10 @@ rebuild produced a second version, rollback switched back and restarted the agen
 `scripts/agent-runtime-probe.sh b2` plus `GET /api/images/usage` passed. The settings live-save
 follow-up was deployed on 2026-10-21 as `sha-d2fcc3b`: all four images use the same tag, the static
 services are healthy, the settings page serves the fragment wrapper and both updated scripts,
-`demo-app` is attached on the new agent image, and B1/B2 probes pass. The test app is
+`demo-app` is attached on the new agent image, and B1/B2 probes pass. The new coordinator
+(`sha-98033f5`, agent images unchanged on `sha-d2fcc3b`) reconciled a stale running row on startup
+and reflected an external `docker stop` within 15 seconds; no `Restart required` marker survived,
+the app restarted, sessions returned `200`, and B1/B2 passed. The test app is
 `b2-smoke/apps/web` in the host workspace; its image is `stale` until rebuilt against the current
 default base.
 B1.4 terminal live smoke: `/terminal` returns `200`, direct runner exec, coordinator proxy, and the

@@ -1,6 +1,6 @@
 # Plan 0014: Session context usage, manual compaction, and auto-compaction
 
-- Status: implemented and verified (journal 0016); deployment pending
+- Status: implemented and verified (journal 0017); deployment pending
 - Design: [`docs/design/context-compaction.md`](../design/context-compaction.md) (oracle PASS after
   three revisions)
 - Design reviewer: `oracle` - PASS
@@ -17,7 +17,7 @@
 | Plan artifact | `docs/plans/0014-context-compaction.md` |
 | Design index | `docs/design/README.md` |
 | Plan index | `docs/plans/README.md` |
-| Journal | `docs/journal/0016-context-compaction.md`; index `docs/journal/README.md` |
+| Journal | `docs/journal/0017-context-compaction.md`; index `docs/journal/README.md` |
 | Open questions | none open; record resolved decisions in `docs/open-questions.md` |
 | Verification | `npm run lint && npm run typecheck && npm test && npm run build` |
 | Browser QA | `node docs/design/chat-qa.mjs` (extend fixtures/scenarios); settings save QA for the Context section |
@@ -415,7 +415,7 @@ captures at 390/768/1440.
 ## Phase 7 - Documentation, gates, deploy
 
 Boundaries: `docs/current-state.md`, `README.md`, `docs/design/README.md`,
-`docs/plans/README.md`, `docs/journal/README.md`, `docs/journal/0016-context-compaction.md`,
+`docs/plans/README.md`, `docs/journal/README.md`, `docs/journal/0017-context-compaction.md`,
 `docs/open-questions.md`.
 
 Work:
@@ -424,7 +424,7 @@ Work:
    settings, monitor/auto behavior, lazy hydration, no DB migration, known limits (one extra SSE
    connection, child-session exclusion, opencode auto may compact first).
 2. Update `README.md` feature list (context meter, manual/auto compaction).
-3. Update indexes and write journal 0016: context, decisions, files, verification, residual risks.
+3. Update indexes and write journal 0017: context, decisions, files, verification, residual risks.
    The deploy result is appended after deployment (step 7).
 4. Record resolved owner decisions in `docs/open-questions.md` for stage `0014`.
 5. Run all gates:

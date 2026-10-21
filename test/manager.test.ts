@@ -238,6 +238,13 @@ function fixture(
   return { manager, runtime, db, dir };
 }
 
+function instanceState(db: SqliteDatabase): string | undefined {
+  const row = db
+    .prepare("SELECT COALESCE(runtime_state, state) AS state FROM instances WHERE app_id = 'p:web'")
+    .get() as { state: string } | undefined;
+  return row?.state;
+}
+
 function overlayOf(spec: { env: Record<string, string> }): Record<string, unknown> {
   return JSON.parse(spec.env.OPENCODE_CONFIG_CONTENT ?? "{}") as Record<string, unknown>;
 }
@@ -711,6 +718,76 @@ describe("InstanceManager lifecycle", () => {
       deleting: number;
     };
     expect(stopped.deleting).toBe(1);
+  });
+
+  it("reconciles a stale running row after the container disappears", async () => {
+    const runtime = new FakeAgentRuntime();
+    const settings = fakeSettings();
+    const profiles = fakeProfiles();
+    const { manager, db } = fixture(runtime, settings, profiles.source);
+    await manager.ensure(APP);
+    settings.setModel("deepseek/deepseek-pro");
+    expect(manager.pendingRestart(APP.id)).toEqual({
+      pending: true,
+      reasons: ["settings_changed"],
+    });
+
+    runtime.statuses.delete(APP.id);
+    expect(instanceState(db)).toBe("running");
+
+    await manager.reconcileStatuses();
+
+    expect(instanceState(db)).toBe("stopped");
+    expect(manager.isRunning(APP.id)).toBe(false);
+    expect(manager.pendingRestart(APP.id)).toEqual({ pending: false, reasons: [] });
+  });
+
+  it("keeps the last known state when a status probe fails", async () => {
+    const runtime = new FakeAgentRuntime();
+    const { manager, db } = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    await manager.ensure(APP);
+    runtime.status = async () => {
+      throw new Error("runner unavailable");
+    };
+
+    await manager.reconcileStatuses();
+
+    expect(instanceState(db)).toBe("running");
+    expect(manager.isRunning(APP.id)).toBe(true);
+  });
+
+  it("persists stopped when restart finds a stopped agent", async () => {
+    const runtime = new FakeAgentRuntime();
+    const settings = fakeSettings();
+    const { manager, db } = fixture(runtime, settings, fakeProfiles().source);
+    await manager.ensure(APP);
+    settings.setModel("deepseek/deepseek-pro");
+    manager.detach();
+    runtime.statuses.delete(APP.id);
+
+    expect(instanceState(db)).toBe("running");
+    expect(manager.pendingRestart(APP.id)).toEqual({
+      pending: true,
+      reasons: ["settings_changed"],
+    });
+
+    await expect(manager.restartIfRunning(APP)).resolves.toBe(false);
+
+    expect(instanceState(db)).toBe("stopped");
+    expect(manager.pendingRestart(APP.id)).toEqual({ pending: false, reasons: [] });
+  });
+
+  it("starts a reconciler that clears a stale row", async () => {
+    const runtime = new FakeAgentRuntime();
+    const { manager, db } = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    await manager.ensure(APP);
+    runtime.statuses.delete(APP.id);
+
+    manager.startStatusReconciler(20);
+    await waitFor(() => instanceState(db) === "stopped");
+    manager.detach();
+
+    expect(instanceState(db)).toBe("stopped");
   });
 
   it("revokes and deletes the token on stop", async () => {

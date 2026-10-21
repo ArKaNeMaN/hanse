@@ -1151,7 +1151,7 @@ if manager missing -> existing 503
 try:
   restarted = await manager.restartIfRunning(toManagedApp(found))
 catch error:
-  browser -> redirectNotice(returnTo, "Restart failed. The agent is stopped; check the runtime log and retry.", "error")
+  browser -> redirectNotice(returnTo, "Restart failed. Check the runtime log and retry.", "error")
   json -> 502 { error: "restart failed" }
 browser:
   restarted -> "Agent restarted."

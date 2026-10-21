@@ -655,6 +655,7 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
           manager,
           images,
         });
+  manager.startStatusReconciler();
   const server = createHttpServer({
     db,
     workspaceRoot: workspace,
