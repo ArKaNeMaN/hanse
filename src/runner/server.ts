@@ -1,5 +1,13 @@
 import { randomUUID, timingSafeEqual } from "node:crypto";
-import { readFileSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+} from "node:fs";
 import {
   createServer,
   type IncomingMessage,
@@ -20,15 +28,26 @@ import {
 } from "../agent/protocol.js";
 import { isValidAppId } from "../agent/spec.js";
 import { ConfigError } from "../config/load.js";
-import { isGitErrorCode } from "../git/errors.js";
+import { shellQuote } from "../git/env.js";
+import { GitError, isGitErrorCode } from "../git/errors.js";
+import { writeGitCredentialFiles } from "../git/materialize.js";
 import {
   GIT_SANDBOX_APP_DIR_ENV,
   GIT_SANDBOX_BRANCH_ENV,
   GIT_SANDBOX_MESSAGE_ENV,
   GIT_SANDBOX_OPERATION_ENV,
+  GIT_SANDBOX_TEST_KIND_ENV,
+  GIT_SANDBOX_TEST_REMOTE_ENV,
   type GitOpPayload,
 } from "../git/op.js";
-import { type GitOperation, type GitRequest, validateGitRequest } from "../git/request.js";
+import {
+  type GitOperation,
+  type GitRequest,
+  type GitTestRequest,
+  type GitTestResult,
+  validateGitRequest,
+  validateGitTestRequest,
+} from "../git/request.js";
 import { isInside, resolveWithinRoot } from "../runtime/app-path.js";
 import { VERSION } from "../version.js";
 import {
@@ -60,7 +79,8 @@ const DEFAULT_LOG_TAIL = 500;
 const RUNNER_ENTRYPOINT = "/usr/local/bin/hanse-agent-entrypoint";
 const EXEC_SHELL = "if [ -x /bin/bash ]; then exec /bin/bash -l; fi; exec /bin/sh -l";
 const MAX_EXEC_DIMENSION = 1000;
-const GIT_CONTAINER_GIT_DIR = "/run/hanse/git";
+const GIT_CONTAINER_APP_CREDENTIAL_DIR = "/run/hanse/git/app";
+const GIT_TEST_TIMEOUT_MS = 75_000;
 const MAX_GIT_OUTPUT_BYTES = 4 * 1024 * 1024;
 const GIT_LOG_TAIL = 10_000;
 const GIT_CONTAINER_MEMORY_BYTES = 1024 * 1024 * 1024;
@@ -75,12 +95,6 @@ const GIT_TIMEOUTS: Record<GitOperation, number> = {
   commit: 45_000,
   push: 195_000,
 };
-const GIT_FILE_ENV_KEYS = new Set([
-  "HANSE_GIT_SSH_KEY",
-  "HANSE_GIT_KNOWN_HOSTS",
-  "HANSE_GIT_ASKPASS",
-  "HANSE_GIT_SSL_CAINFO",
-]);
 
 class RunnerError extends Error {
   readonly status: number;
@@ -117,6 +131,7 @@ interface GitContainerMounts {
 interface GitEnvelope {
   status?: unknown;
   result?: unknown;
+  test?: unknown;
   error?: string;
   code?: string;
   root?: string;
@@ -336,6 +351,8 @@ function gitStatusFor(code: string): number {
   switch (code) {
     case "invalid_input":
     case "invalid_remote":
+    case "credential_scheme_mismatch":
+    case "host_not_allowed":
       return 400;
     case "outside_workspace":
       return 403;
@@ -347,6 +364,12 @@ function gitStatusFor(code: string): number {
       return 500;
     case "git_failed":
       return 502;
+    case "runner_required":
+      return 503;
+    case "not_running":
+    case "restart_required":
+    case "missing_remote":
+      return 409;
     default:
       return 409;
   }
@@ -382,57 +405,127 @@ function gitContainerMounts(
   return undefined;
 }
 
-function translateGitPath(key: string, value: string, hostGitDir?: string): string {
-  if (!GIT_FILE_ENV_KEYS.has(key) || !path.isAbsolute(value) || hostGitDir === undefined) {
-    return value;
-  }
-  if (!isInside(hostGitDir, value)) return value;
-  const relative = path.relative(hostGitDir, value);
-  return path.posix.join(GIT_CONTAINER_GIT_DIR, ...relative.split(path.sep));
+interface ManagedGitDirectory {
+  hostAgentsRoot: string;
+  credentialDirHost: string;
 }
 
-function gitContainerEnv(
-  request: GitRequest,
-  containerAppDir: string,
+function restartRequired(message: string): RunnerError {
+  return new RunnerError(409, message, "restart_required");
+}
+
+function realDirectory(directory: string): boolean {
+  const info = lstatSync(directory, { throwIfNoEntry: false });
+  return info !== undefined && !info.isSymbolicLink() && info.isDirectory();
+}
+
+function managedGitDirectory(
+  inspect: DockerContainerInspect,
   config: RunnerConfig,
-): Record<string, string> {
-  const env: Record<string, string> = {
+): ManagedGitDirectory {
+  const label = inspect.Config?.Labels?.["hanse.agents.root"];
+  if (label === undefined || label.trim().length === 0) {
+    throw restartRequired("Restart the agent to materialize git credentials.");
+  }
+  let hostAgentsRoot: string;
+  try {
+    hostAgentsRoot = resolveWithinRoot({
+      target: label,
+      root: config.hostAgents,
+      label: "hanse.agents.root",
+    });
+  } catch {
+    throw restartRequired("Restart the agent to materialize git credentials.");
+  }
+  const relative = path.relative(config.hostAgents, hostAgentsRoot);
+  if (relative.length === 0 || relative.split(path.sep).length !== 2) {
+    throw restartRequired("Restart the agent to materialize git credentials.");
+  }
+
+  const home = path.join(hostAgentsRoot, "home");
+  let realAgentsRoot: string;
+  let realHome: string;
+  try {
+    realAgentsRoot = realpathSync(hostAgentsRoot);
+    realHome = realpathSync(home);
+  } catch {
+    throw restartRequired("Restart the agent to materialize git credentials.");
+  }
+  if (realHome !== path.join(realAgentsRoot, "home")) {
+    throw restartRequired(
+      "The application home is not a real directory; repair it and restart the agent.",
+    );
+  }
+  let current = home;
+  for (const segment of [".config", "hanse", "git"]) {
+    current = path.join(current, segment);
+    if (!realDirectory(current)) {
+      throw restartRequired(
+        "The application home is not a real directory; repair it and restart the agent.",
+      );
+    }
+  }
+  const credentialDirHost = current;
+  for (const file of ["config", "ssh", "askpass"]) {
+    if (!existsSync(path.join(credentialDirHost, file))) {
+      throw restartRequired("Restart the agent to materialize git credentials.");
+    }
+  }
+  return { hostAgentsRoot, credentialDirHost };
+}
+
+function managedGitEnv(operation?: GitRequest, test?: GitTestRequest): Record<string, string> {
+  return {
     PATH: "/usr/local/bin:/usr/bin:/bin",
     HOME: "/tmp/hanse-git-home",
     TMPDIR: "/tmp",
     LC_ALL: "C",
     LANG: "C",
     GIT_CONFIG_NOSYSTEM: "1",
-    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_GLOBAL: `${GIT_CONTAINER_APP_CREDENTIAL_DIR}/config`,
     GIT_TERMINAL_PROMPT: "0",
     GCM_INTERACTIVE: "never",
-    [GIT_SANDBOX_OPERATION_ENV]: request.operation,
+    GIT_SSH_COMMAND: shellQuote(`${GIT_CONTAINER_APP_CREDENTIAL_DIR}/ssh`),
+    GIT_ASKPASS: `${GIT_CONTAINER_APP_CREDENTIAL_DIR}/askpass`,
+    GIT_ASKPASS_REQUIRE: "force",
+    HANSE_CREDENTIALS_DIR: GIT_CONTAINER_APP_CREDENTIAL_DIR,
+    HANSE_CREDENTIALS_READONLY: "1",
+    ...(operation === undefined ? {} : { [GIT_SANDBOX_OPERATION_ENV]: operation.operation }),
+    ...(operation?.branch === undefined ? {} : { [GIT_SANDBOX_BRANCH_ENV]: operation.branch }),
+    ...(operation?.message === undefined ? {} : { [GIT_SANDBOX_MESSAGE_ENV]: operation.message }),
+    ...(test === undefined
+      ? {}
+      : {
+          [GIT_SANDBOX_OPERATION_ENV]: "test",
+          [GIT_SANDBOX_TEST_KIND_ENV]: test.kind,
+          ...(test.remote === undefined ? {} : { [GIT_SANDBOX_TEST_REMOTE_ENV]: test.remote }),
+        }),
+  };
+}
+
+function gitContainerEnv(request: GitRequest, containerAppDir: string): Record<string, string> {
+  return {
+    ...managedGitEnv(request),
     [GIT_SANDBOX_APP_DIR_ENV]: containerAppDir,
   };
-  if (request.branch !== undefined) {
-    env[GIT_SANDBOX_BRANCH_ENV] = request.branch;
-  }
-  if (request.message !== undefined) {
-    env[GIT_SANDBOX_MESSAGE_ENV] = request.message;
-  }
-  for (const [key, value] of Object.entries(config.gitEnv ?? {})) {
-    if (value === undefined || value.length === 0) continue;
-    env[key] = translateGitPath(key, value, config.hostGitDir);
-  }
-  return env;
 }
 
-function hasGitCredentials(config: RunnerConfig): boolean {
-  const env = config.gitEnv ?? {};
-  return [
-    "HANSE_GIT_TOKEN",
-    "HANSE_GIT_SSH_COMMAND",
-    "HANSE_GIT_SSH_KEY",
-    "HANSE_GIT_ASKPASS",
-  ].some((key) => (env[key] ?? "").trim().length > 0);
+function gitTestContainerEnv(
+  request: GitTestRequest,
+  containerAppDir: string,
+): Record<string, string> {
+  return {
+    ...managedGitEnv(undefined, request),
+    [GIT_SANDBOX_APP_DIR_ENV]: containerAppDir,
+  };
 }
 
-function parseGitEnvelope(logs: string, exitCode: number, config: RunnerConfig): GitEnvelope {
+function parseGitEnvelope(
+  logs: string,
+  exitCode: number,
+  credentialsMaterialized: boolean,
+  config: RunnerConfig,
+): GitEnvelope {
   if (logs.length > MAX_GIT_OUTPUT_BYTES) {
     throw new RunnerGitError(
       "output_too_large",
@@ -472,10 +565,10 @@ function parseGitEnvelope(logs: string, exitCode: number, config: RunnerConfig):
     let message = parsed.error;
     if (
       code === "auth_failed" &&
-      !hasGitCredentials(config) &&
+      !credentialsMaterialized &&
       !/credentials are not configured/i.test(message)
     ) {
-      message = `${message} Git credentials are not configured for the runner.`;
+      message = `${message} Git credentials are not configured for this application. Configure SSH or HTTPS in Settings.`;
     }
     const root = typeof parsed.root === "string" ? hostGitRoot(parsed.root, config) : undefined;
     throw new RunnerGitError(code, gitStatusFor(code), message, root);
@@ -628,6 +721,7 @@ export class RunnerService {
         "hanse.image": spec.image,
         "hanse.spec.hash": spec.specHash,
         "hanse.network.name": spec.networkName,
+        "hanse.agents.root": spec.hostAgentsRoot,
       },
       binds: [
         `${spec.hostAppDir}:${spec.containerAppDir}:rw`,
@@ -731,8 +825,12 @@ export class RunnerService {
     return this.reconcile([]);
   }
 
-  async git(appId: string, raw: unknown): Promise<GitOpPayload> {
-    const request = validateGitRequest(raw);
+  async #gitTarget(appId: string): Promise<{
+    inspect: DockerContainerInspect;
+    image: string;
+    mounts: GitContainerMounts;
+    managed: ManagedGitDirectory;
+  }> {
     if (!isValidAppId(appId)) {
       throw new RunnerError(400, "invalid app id");
     }
@@ -746,7 +844,7 @@ export class RunnerService {
       throw new RunnerError(404, "unknown app");
     }
     if (inspect.State?.Running !== true) {
-      throw new RunnerError(409, "app is not running");
+      throw new RunnerError(409, "app is not running", "not_running");
     }
     const image = inspect.Config?.Image;
     if (image === undefined || !(await this.#isBuiltAppImage(appId, image))) {
@@ -756,10 +854,20 @@ export class RunnerService {
     if (mounts === undefined) {
       throw new RunnerError(409, "app container has no workspace mount");
     }
+    const managed = managedGitDirectory(inspect, this.#config);
+    return { inspect, image, mounts, managed };
+  }
+
+  async git(appId: string, raw: unknown): Promise<GitOpPayload> {
+    const request = validateGitRequest(raw);
+    const { image, mounts, managed } = await this.#gitTarget(appId);
 
     const network = !GIT_NETWORK_OPERATIONS.has(request.operation) ? "none" : appNetworkName(appId);
     const timeout = GIT_TIMEOUTS[request.operation];
     const containerName = `hanse-git-${appId.replace(/[^A-Za-z0-9_.-]+/g, "-").slice(0, 40)}-${randomUUID().slice(0, 8)}`;
+    const credentialsMaterialized =
+      existsSync(path.join(managed.credentialDirHost, "id")) ||
+      existsSync(path.join(managed.credentialDirHost, "token"));
 
     let id: string | undefined;
     try {
@@ -771,13 +879,11 @@ export class RunnerService {
         entrypoint: ["/usr/local/bin/hanse"],
         cmd: ["git-op"],
         workingDir: mounts.containerAppDir,
-        env: gitContainerEnv(request, mounts.containerAppDir, this.#config),
+        env: gitContainerEnv(request, mounts.containerAppDir),
         labels: { "hanse.git": "true", "hanse.app.id": appId },
         binds: [
           `${mounts.hostAppDir}:${mounts.containerAppDir}:rw`,
-          ...(this.#config.hostGitDir === undefined
-            ? []
-            : [`${this.#config.hostGitDir}:${GIT_CONTAINER_GIT_DIR}:ro`]),
+          `${managed.credentialDirHost}:${GIT_CONTAINER_APP_CREDENTIAL_DIR}:ro`,
         ],
         tmpfs: {
           "/tmp": "rw,nosuid,size=512m",
@@ -794,7 +900,12 @@ export class RunnerService {
       await this.#docker.startContainer(id);
       const wait = await this.#docker.waitContainer(id, timeout + 15_000);
       const logs = await this.#docker.logs(id, GIT_LOG_TAIL);
-      const envelope = parseGitEnvelope(logs.logs, wait.StatusCode ?? 0, this.#config);
+      const envelope = parseGitEnvelope(
+        logs.logs,
+        wait.StatusCode ?? 0,
+        credentialsMaterialized,
+        this.#config,
+      );
       return mapGitPayloadRoots(envelope, this.#config) as GitOpPayload;
     } catch (error) {
       if (error instanceof DockerError && error.status === 413) {
@@ -811,6 +922,106 @@ export class RunnerService {
     } finally {
       if (id !== undefined) {
         await this.#docker.removeContainer(id, true).catch(() => undefined);
+      }
+    }
+  }
+
+  async test(appId: string, raw: unknown): Promise<{ test: GitTestResult }> {
+    let request: GitTestRequest;
+    try {
+      request = await validateGitTestRequest(raw);
+    } catch (error) {
+      if (error instanceof GitError) {
+        throw new RunnerGitError(error.code, gitStatusFor(error.code), error.message);
+      }
+      throw error;
+    }
+    const { image, mounts } = await this.#gitTarget(appId);
+
+    mkdirSync(this.#config.hostRunnerTmp, { recursive: true, mode: 0o700 });
+    const tempRoot = path.join(this.#config.hostRunnerTmp, `git-test-${randomUUID()}`);
+    mkdirSync(tempRoot, { mode: 0o700 });
+    const credentialDir = path.join(tempRoot, "git");
+    mkdirSync(credentialDir, { mode: 0o700 });
+    try {
+      writeGitCredentialFiles(credentialDir, {
+        identity: {},
+        auth: request.kind === "ssh" ? { ssh: request.ssh } : { https: request.https },
+        visibleDir: GIT_CONTAINER_APP_CREDENTIAL_DIR,
+        ownership:
+          typeof process.getuid === "function" && process.getuid() === 0
+            ? { uid: 1000, gid: 1000 }
+            : null,
+      });
+    } catch (error) {
+      rmSync(tempRoot, { recursive: true, force: true });
+      throw error;
+    }
+
+    const containerName = `hanse-git-test-${appId.replace(/[^A-Za-z0-9_.-]+/g, "-").slice(0, 40)}-${randomUUID().slice(0, 8)}`;
+    const network = appNetworkName(appId);
+
+    let id: string | undefined;
+    try {
+      id = await this.#docker.createContainer({
+        name: containerName,
+        image,
+        hostname: containerName,
+        user: "1000:1000",
+        entrypoint: ["/usr/local/bin/hanse"],
+        cmd: ["git-op"],
+        workingDir: mounts.containerAppDir,
+        env: gitTestContainerEnv(request, mounts.containerAppDir),
+        labels: { "hanse.git": "true", "hanse.app.id": appId, "hanse.git.test": "true" },
+        binds: [
+          `${mounts.hostAppDir}:${mounts.containerAppDir}:ro`,
+          `${credentialDir}:${GIT_CONTAINER_APP_CREDENTIAL_DIR}:ro`,
+        ],
+        tmpfs: {
+          "/tmp": "rw,nosuid,size=512m",
+          "/run": "rw,nosuid,size=16m",
+        },
+        memoryBytes: GIT_CONTAINER_MEMORY_BYTES,
+        nanoCpus: GIT_CONTAINER_NANO_CPUS,
+        pidsLimit: GIT_CONTAINER_PIDS_LIMIT,
+        networkName: network,
+        networkAliases: [],
+        networkMode: network,
+        restartPolicy: "no",
+      });
+      await this.#docker.startContainer(id);
+      const wait = await this.#docker.waitContainer(id, GIT_TEST_TIMEOUT_MS);
+      const logs = await this.#docker.logs(id, GIT_LOG_TAIL);
+      const envelope = parseGitEnvelope(logs.logs, wait.StatusCode ?? 0, true, this.#config);
+      const test = envelope.test;
+      if (!isRecord(test)) {
+        throw new RunnerGitError(
+          "git_failed",
+          gitStatusFor("git_failed"),
+          "sandboxed git test returned no result",
+        );
+      }
+      return { test: test as unknown as GitTestResult };
+    } catch (error) {
+      if (error instanceof DockerError && error.status === 413) {
+        throw new RunnerGitError(
+          "output_too_large",
+          gitStatusFor("output_too_large"),
+          "sandboxed git output exceeded the 8 MiB transport limit",
+        );
+      }
+      if (error instanceof DockerError && /timed out/i.test(error.message)) {
+        throw new RunnerGitError("timeout", gitStatusFor("timeout"), "git test timed out");
+      }
+      throw error;
+    } finally {
+      if (id !== undefined) {
+        await this.#docker.removeContainer(id, true).catch(() => undefined);
+      }
+      try {
+        rmSync(tempRoot, { recursive: true, force: true });
+      } catch {
+        process.stderr.write(`hanse runner: failed to remove git test dir ${tempRoot}\n`);
       }
     }
   }
@@ -951,6 +1162,25 @@ export class RunnerService {
         throw new RunnerError(400, 'body must be {"appIds": [...]}');
       }
       writeJson(response, 200, await this.reconcile((body as { appIds: unknown[] }).appIds));
+      return;
+    }
+
+    const gitTestMatch = /^\/v1\/apps\/([^/]+)\/git\/test$/.exec(url.pathname);
+    if (gitTestMatch !== null) {
+      if (method !== "POST") {
+        writeJson(response, 405, { error: "method not allowed" }, { Allow: "POST" });
+        return;
+      }
+      let appId: string;
+      try {
+        appId = decodeURIComponent(gitTestMatch[1] ?? "");
+      } catch {
+        throw new RunnerError(400, "invalid app id");
+      }
+      if (!isValidAppId(appId)) {
+        throw new RunnerError(400, "invalid app id");
+      }
+      writeJson(response, 200, await this.test(appId, await readJson(request)));
       return;
     }
 
@@ -1139,8 +1369,34 @@ export interface RunRunnerOptions {
   onListening?: (address: string) => void;
 }
 
+export function sweepStaleGitTestDirs(root: string, now = Date.now()): void {
+  let entries: string[];
+  try {
+    entries = readdirSync(root);
+  } catch {
+    return;
+  }
+  const cutoff = now - 60 * 60 * 1000;
+  for (const name of entries) {
+    if (!name.startsWith("git-test-")) {
+      continue;
+    }
+    const target = path.join(root, name);
+    try {
+      const info = lstatSync(target);
+      if (info.isSymbolicLink() || !info.isDirectory() || info.mtimeMs >= cutoff) {
+        continue;
+      }
+      rmSync(target, { recursive: true, force: true });
+    } catch {
+      /* skip unreadable or concurrently removed entries */
+    }
+  }
+}
+
 /** Start the runner HTTP server and close it on SIGTERM/SIGINT. */
 export async function runRunner(options: RunRunnerOptions): Promise<number> {
+  sweepStaleGitTestDirs(options.config.hostRunnerTmp);
   const service = new RunnerService({
     config: options.config,
     docker: options.docker,

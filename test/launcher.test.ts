@@ -163,6 +163,30 @@ describe("launcher", () => {
             HANSE_AUTH_FILE: "/state/auth.json",
             HANSE_DB: "/state/coordinator.db",
             HANSE_STATE_HOME: "/state",
+            GIT_CONFIG_GLOBAL: "/host/git/config",
+            GIT_CONFIG_SYSTEM: "/host/git/system",
+            GIT_CONFIG_NOSYSTEM: "1",
+            GIT_CONFIG_COUNT: "1",
+            GIT_CONFIG_KEY_0: "core.sshCommand",
+            GIT_CONFIG_VALUE_0: "/host/git/evil-ssh",
+            GIT_SSH_COMMAND: "/host/git/evil-ssh",
+            GIT_SSH: "/host/git/evil-ssh",
+            GIT_ASKPASS: "/host/git/askpass",
+            GIT_ASKPASS_REQUIRE: "force",
+            GIT_TERMINAL_PROMPT: "1",
+            GIT_SSL_CAINFO: "/host/git/ca.pem",
+            GIT_DIR: "/host/git/repo",
+            GIT_WORK_TREE: "/host/git/tree",
+            GIT_CEILING_DIRECTORIES: "/host/git",
+            HANSE_CREDENTIALS_DIR: "/host/git",
+            HANSE_CREDENTIALS_READONLY: "1",
+            HANSE_GIT_TOKEN: "legacy-token",
+            HANSE_GIT_SSH_KEY: "/host/legacy/key",
+            HANSE_GIT_AUTHOR_NAME: "Legacy",
+            HANSE_GIT_OP: "status",
+            HANSE_GIT_APP_DIR: "/app",
+            HANSE_GIT_BRANCH: "main",
+            HANSE_GIT_MESSAGE: "message",
             HANSE_KEEP: "kept",
           },
         }),
@@ -178,9 +202,33 @@ describe("launcher", () => {
         "HANSE_AUTH_FILE",
         "HANSE_DB",
         "HANSE_STATE_HOME",
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_SYSTEM",
+        "GIT_CONFIG_NOSYSTEM",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_KEY_0",
+        "GIT_CONFIG_VALUE_0",
+        "GIT_SSH_COMMAND",
+        "GIT_SSH",
+        "GIT_ASKPASS",
+        "GIT_ASKPASS_REQUIRE",
+        "GIT_TERMINAL_PROMPT",
+        "GIT_SSL_CAINFO",
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "HANSE_CREDENTIALS_DIR",
+        "HANSE_CREDENTIALS_READONLY",
+        "HANSE_GIT_TOKEN",
+        "HANSE_GIT_SSH_KEY",
+        "HANSE_GIT_AUTHOR_NAME",
       ]) {
         expect(env[key]).toBeUndefined();
       }
+      expect(env.GIT_CEILING_DIRECTORIES).not.toBe("/host/git");
+      expect(env.HANSE_GIT_OP).toBe("status");
+      expect(env.HANSE_GIT_APP_DIR).toBe("/app");
+      expect(env.HANSE_GIT_BRANCH).toBe("main");
+      expect(env.HANSE_GIT_MESSAGE).toBe("message");
       expect(env.HANSE_KEEP).toBe("kept");
     } finally {
       if (previous === undefined) delete process.env.HANSE_OPERATOR_TOKEN;

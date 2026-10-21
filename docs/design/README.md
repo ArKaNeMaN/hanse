@@ -10,6 +10,9 @@
   decisions, accepted debt, and the stage-4 handoff.
 - [Git workbench](./git-workbench.md) - the application page and human-only git status/actions
   design.
+- [Git credentials](./git-credentials.md) - per-app SSH/HTTPS credentials in hierarchical settings,
+  encrypted at rest and materialized into the agent HOME, with a read-only workbench mount and Test
+  connection.
 - [Interactive prompts](./interactive-prompts.md) - question/permission docks, the session Todo
   panel, and the app-scoped permission policy.
 - [Chat UX overhaul](./chat-ux-overhaul.md) - streaming assistant text and tool output, optimistic

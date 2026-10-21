@@ -1,4 +1,4 @@
-import { existsSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync, rmSync } from "node:fs";
 import path from "node:path";
 import type { AgentRuntimeClient } from "../agent/client.js";
 import {
@@ -7,6 +7,7 @@ import {
   type SpecHashInput,
   validateAppRuntimeSpec,
 } from "../agent/spec.js";
+import { materializeGitCredentials } from "../git/materialize.js";
 import {
   agentTokenMatches,
   ensureAgentToken,
@@ -117,8 +118,14 @@ function settingsHashFor(snapshot: LaunchSettingsSnapshot, profile: string): str
     effective: snapshot.resolved.effective,
     providerKeys: snapshot.resolved.providerKeys,
     authHash: snapshot.authHash,
+    gitAuthHash: snapshot.gitAuthHash,
     profile,
   });
+}
+
+function materializeFailure(error: unknown): Error {
+  const detail = error instanceof Error ? error.message : "unknown error";
+  return new Error(`git_credentials_materialize_failed: ${detail.slice(0, 300)}`);
 }
 
 function resolveBaselinePlugins(): string[] {
@@ -270,6 +277,8 @@ export class InstanceManager {
       const identity = { projectId: app.projectId, app: app.appKey };
       const tokenFile = mcpTokenPath(this.#runtimeRoot, identity);
       const isolated = resolveInstanceEnv(this.#runtimeRoot, identity);
+      mkdirSync(path.dirname(isolated.HOME), { recursive: true, mode: 0o700 });
+      mkdirSync(isolated.HOME, { recursive: true, mode: 0o700 });
       const passwordFile = opencodePasswordPath(isolated.XDG_STATE_HOME);
       const existing = this.#running.get(app.id);
       const current = await this.#options.runtime.status(app.id);
@@ -319,6 +328,7 @@ export class InstanceManager {
       let omoProfile: string | undefined;
       let mcpServers: Record<string, McpLocalServer> | undefined;
       let web: EffectiveSettings["web"] | undefined;
+      let gitEnv: Record<string, string> = {};
       let settingsHash: string | undefined;
       let appliedProfile = true;
       let profileWarning: string | undefined;
@@ -329,6 +339,22 @@ export class InstanceManager {
         const snapshot = settings.snapshot({ projectId: app.projectId, appKey: app.appKey });
         web = snapshot.resolved.effective.web;
         model = snapshot.resolved.effective.llm.model.value ?? DEFAULT_MODEL;
+        try {
+          gitEnv = materializeGitCredentials({
+            agentsRoot: this.#runtimeRoot,
+            appRoot: path.dirname(isolated.HOME),
+            home: isolated.HOME,
+            projectId: app.projectId,
+            appKey: app.appKey,
+            identity: {
+              name: snapshot.resolved.effective.git.user.name.value,
+              email: snapshot.resolved.effective.git.user.email.value,
+            },
+            auth: snapshot.gitAuth,
+          });
+        } catch (error) {
+          throw materializeFailure(error);
+        }
         const profile = await omoProfiles.ensure(
           {
             appId: app.id,
@@ -410,6 +436,7 @@ export class InstanceManager {
         OPENCODE_CONFIG_CONTENT: JSON.stringify(overlay),
         GIT_CEILING_DIRECTORIES: realParentDir(app.appDir),
         HANSE_OPENCODE_PASSWORD_FILE: passwordFile,
+        ...gitEnv,
         ...(omoProfile === undefined ? {} : { OMO_PROFILE: omoProfile }),
         ...(existsSync(authFile) ? { HANSE_OPENCODE_AUTH_FILE: authFile } : {}),
       };
@@ -439,6 +466,7 @@ export class InstanceManager {
         labels: {
           "hanse.managed": "true",
           "hanse.app.id": app.id,
+          ...(hostPaths ? { "hanse.agents.root": path.dirname(specStateDir) } : {}),
         },
       };
       const spec: AppRuntimeSpec = validateAppRuntimeSpec(

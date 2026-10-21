@@ -183,7 +183,6 @@ describe("GitService child environment", () => {
       "HANSE_AUTH_FILE",
       "OPENCODE_SERVER_PASSWORD",
       "HANSE_AGENT_TOKEN_FILE",
-      "GIT_ASKPASS",
       "SSH_AUTH_SOCK",
       "GIT_CONFIG_COUNT",
       "GIT_DIR",
@@ -197,13 +196,14 @@ describe("GitService child environment", () => {
     expect(command.env.GIT_TERMINAL_PROMPT).toBe("0");
     expect(command.env.GIT_PAGER).toBe("cat");
     expect(command.env.GIT_SSH_COMMAND).toBe("ssh");
+    expect(command.env.GIT_ASKPASS).toBe("");
     expect(command.env.HTTPS_PROXY).toBe("http://proxy.example:3128");
-    expect(command.env.GIT_AUTHOR_NAME).toBe("Env Author");
-    expect(command.env.GIT_AUTHOR_EMAIL).toBe("env@example.com");
-    expect(command.env.GIT_COMMITTER_NAME).toBe("Env Committer");
-    expect(command.env.GIT_COMMITTER_EMAIL).toBe("committer@example.com");
-    expect(command.env.GIT_SSL_CAINFO).toBe("/run/hanse/git/ca.pem");
-    expect(command.env.HANSE_GIT_AUTHOR_NAME).toBe("Env Author");
+    expect(command.env.GIT_AUTHOR_NAME).toBeUndefined();
+    expect(command.env.GIT_AUTHOR_EMAIL).toBeUndefined();
+    expect(command.env.GIT_COMMITTER_NAME).toBeUndefined();
+    expect(command.env.GIT_COMMITTER_EMAIL).toBeUndefined();
+    expect(command.env.GIT_SSL_CAINFO).toBeUndefined();
+    expect(command.env.HANSE_GIT_AUTHOR_NAME).toBeUndefined();
 
     const home = command.env.HOME ?? "";
     expect(path.isAbsolute(home)).toBe(true);
@@ -228,48 +228,19 @@ describe("GitService child environment", () => {
       "-c",
       "core.sshCommand=ssh",
     ]);
+    expect(command.args).toContain("core.askpass=");
     expect(repo).toBeDefined();
   });
 
-  it("generates a 0700 askpass helper for HANSE_GIT_TOKEN", async () => {
+  it("uses the managed credential directory when HANSE_CREDENTIALS_DIR is set", async () => {
     const root = workspace();
     await setupOrigin(root);
-    const commands: GitCommand[] = [];
-    const runner: GitRunner = (command) => {
-      commands.push(command);
-      return realRunner(command);
-    };
-    const token = 'tok\'en $HOME "quoted"';
-    const service = new GitService({
-      workspaceRoot: root,
-      runner,
-      env: { PATH: process.env.PATH, HANSE_GIT_TOKEN: token },
-    });
-
-    await service.status(await service.resolveRepository(root, "repo"));
-    const command = commands.at(-1);
-    if (command === undefined) {
-      throw new Error("no git command was captured");
+    const credentials = path.join(root, "credentials");
+    mkdirSync(credentials, { recursive: true });
+    for (const file of ["config", "ssh", "askpass"]) {
+      writeFileSync(path.join(credentials, file), "x");
     }
-    const askpass = command.env.GIT_ASKPASS ?? "";
-    expect(path.isAbsolute(askpass)).toBe(true);
-    expect(statSync(askpass).mode & 0o777).toBe(0o700);
-    expect(command.args).toContain(`core.askpass=${askpass}`);
-
-    const username = spawnSync(askpass, ["Username for 'https://example.com':"], {
-      encoding: "utf8",
-    });
-    expect(username.stdout).toBe("x-access-token\n");
-    const password = spawnSync(askpass, ["Password for 'https://example.com':"], {
-      encoding: "utf8",
-    });
-    expect(password.stdout).toBe(`${token}\n`);
-    expect(readFileSync(askpass, "utf8")).toContain("x-access-token");
-  });
-
-  it("builds a fixed ssh command from HANSE_GIT_SSH_KEY and known hosts", async () => {
-    const root = workspace();
-    await setupOrigin(root);
+    writeFileSync(path.join(credentials, "config"), "[core]\n");
     const commands: GitCommand[] = [];
     const runner: GitRunner = (command) => {
       commands.push(command);
@@ -280,8 +251,8 @@ describe("GitService child environment", () => {
       runner,
       env: {
         PATH: process.env.PATH,
-        HANSE_GIT_SSH_KEY: "/run/hanse/git/id_ed25519",
-        HANSE_GIT_KNOWN_HOSTS: "/run/hanse/git/known_hosts",
+        HANSE_CREDENTIALS_DIR: credentials,
+        HANSE_CREDENTIALS_READONLY: "1",
       },
     });
 
@@ -290,13 +261,14 @@ describe("GitService child environment", () => {
     if (command === undefined) {
       throw new Error("no git command was captured");
     }
-    const ssh = command.env.GIT_SSH_COMMAND ?? "";
-    expect(ssh).toContain("ssh -i '/run/hanse/git/id_ed25519'");
-    expect(ssh).toContain("IdentitiesOnly=yes");
-    expect(ssh).toContain("BatchMode=yes");
-    expect(ssh).toContain("UserKnownHostsFile=/run/hanse/git/known_hosts");
-    expect(ssh).toContain("StrictHostKeyChecking=yes");
-    expect(command.args).toContain(`core.sshCommand=${ssh}`);
+    expect(command.env.GIT_CONFIG_GLOBAL).toBe(path.join(credentials, "config"));
+    expect(command.env.GIT_SSH_COMMAND).toBe(`'${path.join(credentials, "ssh")}'`);
+    expect(command.env.GIT_ASKPASS).toBe(path.join(credentials, "askpass"));
+    expect(command.env.GIT_ASKPASS_REQUIRE).toBe("force");
+    expect(command.env.HANSE_CREDENTIALS_DIR).toBe(credentials);
+    expect(command.env.HANSE_CREDENTIALS_READONLY).toBe("1");
+    expect(command.args).toContain(`core.sshCommand='${path.join(credentials, "ssh")}'`);
+    expect(command.args).toContain(`core.askpass=${path.join(credentials, "askpass")}`);
   });
 });
 
@@ -365,9 +337,16 @@ describe("GitService repository-controlled execution", () => {
     await git(repo, ["config", "core.sshCommand", repository.script]);
     await git(repo, ["remote", "add", "sshremote", "ssh://git@example.invalid/repo.git"]);
 
+    const credentials = path.join(root, "credentials");
+    mkdirSync(credentials, { recursive: true });
+    writeFileSync(path.join(credentials, "ssh"), readFileSync(controlled.script), {
+      mode: 0o755,
+    });
+    writeFileSync(path.join(credentials, "askpass"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+    writeFileSync(path.join(credentials, "config"), "[core]\n");
     const service = new GitService({
       workspaceRoot: root,
-      env: { PATH: process.env.PATH, HANSE_GIT_SSH_COMMAND: controlled.script },
+      env: { PATH: process.env.PATH, HANSE_CREDENTIALS_DIR: credentials },
     });
     const resolved = await service.resolveRepository(root, "repo");
     await expect(service.fetch(resolved)).rejects.toMatchObject({
@@ -487,22 +466,16 @@ describe("validateRemoteUrl", () => {
 });
 
 describe("GitService identity", () => {
-  it("uses HANSE_GIT_* identity variables for commits", async () => {
+  it("uses repository-local identity and ignores legacy identity env", async () => {
     const root = workspace();
     const repo = path.join(root, "repo");
     mkdirSync(repo, { recursive: true });
     await git(repo, ["init", "-b", "main"]);
+    await git(repo, ["config", "user.name", "Repo Author"]);
+    await git(repo, ["config", "user.email", "repo@example.com"]);
     writeFileSync(path.join(repo, "a.txt"), "one\n");
     await git(repo, ["add", "a.txt"]);
-    await git(repo, [
-      "-c",
-      "user.name=Seed",
-      "-c",
-      "user.email=seed@example.com",
-      "commit",
-      "-m",
-      "seed",
-    ]);
+    await git(repo, ["commit", "-m", "seed"]);
     writeFileSync(path.join(repo, "a.txt"), "two\n");
 
     const service = new GitService({
@@ -515,12 +488,10 @@ describe("GitService identity", () => {
         HANSE_GIT_COMMITTER_EMAIL: "committer@example.com",
       },
     });
-    const result = await service.commitAll(resolve(repo), "env identity");
-    expect(result.commit).toMatchObject({ subject: "env identity" });
+    const result = await service.commitAll(resolve(repo), "repo identity");
+    expect(result.commit).toMatchObject({ subject: "repo identity" });
 
     const log = await git(repo, ["log", "-1", "--format=%an <%ae>|%cn <%ce>"]);
-    expect(log.stdout.trim()).toBe(
-      "Env Author <author@example.com>|Env Committer <committer@example.com>",
-    );
+    expect(log.stdout.trim()).toBe("Repo Author <repo@example.com>|Repo Author <repo@example.com>");
   });
 });

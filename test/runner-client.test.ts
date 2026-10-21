@@ -1,5 +1,7 @@
 import { Buffer } from "node:buffer";
 import { describe, expect, it } from "vitest";
+import { GitError } from "../src/git/errors.js";
+import { RunnerGitClient } from "../src/git/runner-client.js";
 import {
   DockerClient,
   DockerError,
@@ -175,5 +177,97 @@ describe("DockerClient", () => {
 
     const failing = fixture(() => json(500, { message: "boom" }));
     await expect(failing.client.startContainer("id")).rejects.toBeInstanceOf(DockerError);
+  });
+});
+
+describe("RunnerGitClient.test", () => {
+  const resolved = { root: "/tmp/app", appDir: "/tmp/app", appId: "project:app" };
+
+  it("posts a draft test request and parses the result", async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const client = new RunnerGitClient({
+      baseUrl: "http://runner:8790",
+      token: "runtime-token",
+      fetchImpl: async (url, init) => {
+        calls.push({ url: String(url), init: init ?? {} });
+        return new Response(
+          JSON.stringify({
+            test: {
+              ok: true,
+              kind: "ssh",
+              remote: "ssh://git@example.com/repo.git",
+              refs: 2,
+              head: "abc",
+              warnings: ["tofu"],
+            },
+          }),
+          { status: 200 },
+        );
+      },
+    });
+
+    const result = await client.test(resolved, {
+      kind: "ssh",
+      remote: "ssh://git@example.com/repo.git",
+    });
+
+    expect(result).toMatchObject({ ok: true, kind: "ssh", refs: 2, head: "abc" });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toBe("http://runner:8790/v1/apps/project%3Aapp/git/test");
+    expect(JSON.parse(String(calls[0]?.init.body))).toEqual({
+      kind: "ssh",
+      remote: "ssh://git@example.com/repo.git",
+    });
+    expect((calls[0]?.init.signal as AbortSignal | undefined)?.aborted).toBe(false);
+  });
+
+  it("maps runner error codes including the new test failures", async () => {
+    const cases: Array<{ status: number; code: string }> = [
+      { status: 409, code: "not_running" },
+      { status: 409, code: "restart_required" },
+      { status: 409, code: "missing_remote" },
+      { status: 400, code: "credential_scheme_mismatch" },
+      { status: 400, code: "host_not_allowed" },
+      { status: 503, code: "runner_required" },
+      { status: 504, code: "timeout" },
+      { status: 502, code: "auth_failed" },
+    ];
+
+    for (const entry of cases) {
+      const client = new RunnerGitClient({
+        baseUrl: "http://runner:8790",
+        token: "runtime-token",
+        fetchImpl: async () =>
+          new Response(JSON.stringify({ error: entry.code, code: entry.code }), {
+            status: entry.status,
+          }),
+      });
+      await expect(client.test(resolved, { kind: "https" })).rejects.toMatchObject({
+        code: entry.code,
+      });
+    }
+  });
+
+  it("maps a timeout and rejects an invalid result", async () => {
+    const timeout = new RunnerGitClient({
+      baseUrl: "http://runner:8790",
+      token: "runtime-token",
+      fetchImpl: async () => {
+        throw new DOMException("timed out", "AbortError");
+      },
+    });
+    await expect(timeout.test(resolved, { kind: "https" })).rejects.toBeInstanceOf(GitError);
+    await expect(timeout.test(resolved, { kind: "https" })).rejects.toMatchObject({
+      code: "timeout",
+    });
+
+    const invalid = new RunnerGitClient({
+      baseUrl: "http://runner:8790",
+      token: "runtime-token",
+      fetchImpl: async () => new Response(JSON.stringify({ test: { ok: false } }), { status: 200 }),
+    });
+    await expect(invalid.test(resolved, { kind: "https" })).rejects.toMatchObject({
+      code: "git_failed",
+    });
   });
 });

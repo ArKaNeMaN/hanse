@@ -5,6 +5,7 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -61,13 +62,22 @@ function value<T>(item: T): EffectiveValue<T> {
 interface FakeSettings extends SettingsSource {
   setModel(model: string): void;
   setSearch(search: WebToolConfig | null): void;
+  setGitAuthHash(hash: string): void;
 }
 
 function fakeSettings(
-  options: { model?: string; search?: WebToolConfig | null } = {},
+  options: {
+    model?: string;
+    search?: WebToolConfig | null;
+    gitAuth?: LaunchSettingsSnapshot["gitAuth"];
+    gitAuthHash?: string;
+    gitIdentity?: { name?: string | null; email?: string | null };
+  } = {},
 ): FakeSettings {
   let model = options.model ?? "deepseek/deepseek-flash";
   let search: WebToolConfig | null = options.search ?? { driver: "builtin" };
+  const gitAuth = options.gitAuth ?? {};
+  let gitAuthHash = options.gitAuthHash ?? "git-auth-hash";
   return {
     setModel(next) {
       model = next;
@@ -75,16 +85,40 @@ function fakeSettings(
     setSearch(next) {
       search = next;
     },
+    setGitAuthHash(next) {
+      gitAuthHash = next;
+    },
     snapshot: (_target): LaunchSettingsSnapshot => {
       const effective: EffectiveSettings = {
         llm: { model: value(model) },
         web: { search: value(search), fetch: value({ driver: "builtin" }) },
+        git: {
+          user: {
+            name: value(options.gitIdentity?.name ?? null),
+            email: value(options.gitIdentity?.email ?? null),
+          },
+        },
       };
       return {
-        resolved: { effective, scoped: {}, providerKeys: {}, warnings: [] },
+        resolved: {
+          effective,
+          scoped: {},
+          providerKeys: {},
+          gitAuth: {
+            ssh: { state: "missing", kind: "ssh" },
+            https: { state: "missing", kind: "https" },
+          },
+          gitAuthScoped: {
+            ssh: { global: "absent", project: "absent", app: "absent" },
+            https: { global: "absent", project: "absent", app: "absent" },
+          },
+          warnings: [],
+        },
         mergedAuth: { deepseek: { type: "api", key: "sk-test" } },
         authHash: "auth-hash",
         providerKeys: new Map(),
+        gitAuth,
+        gitAuthHash,
       };
     },
   };
@@ -142,6 +176,7 @@ function fixture(
   profiles?: OmoProfileSource,
   modelVerifier?: (endpoint: string, expected: string) => Promise<string[]>,
   verify: (options: VerifyPolicyOptions) => Promise<string[]> = async () => [],
+  hostPaths?: { hostWorkspace: string; hostAgents: string; workspaceRoot: string },
 ): Fixture {
   const dir = mkdtempSync(path.join(tmpdir(), "hanse-manager-"));
   dirs.push(dir);
@@ -161,7 +196,10 @@ function fixture(
     settings,
     omoProfiles: profiles,
     modelVerifier,
-    workspaceRoot: "/srv",
+    workspaceRoot: hostPaths?.workspaceRoot ?? "/srv",
+    ...(hostPaths === undefined
+      ? {}
+      : { hostWorkspace: hostPaths.hostWorkspace, hostAgents: hostPaths.hostAgents }),
   });
   return { manager, runtime, db, dir };
 }
@@ -234,6 +272,28 @@ describe("InstanceManager lifecycle", () => {
     expect(readFileSync(path.join(dir, "p", "web", "data", "opencode", "auth.json"), "utf8")).toBe(
       JSON.stringify({ deepseek: { type: "api", key: "sk-test" } }),
     );
+  });
+
+  it("labels the runtime spec with the per-app host agents root", async () => {
+    const base = mkdtempSync(path.join(tmpdir(), "hanse-manager-host-"));
+    dirs.push(base);
+    const workspace = path.join(base, "workspace");
+    const hostAgents = path.join(base, "agents");
+    const appDir = path.join(workspace, "apps", "web");
+    mkdirSync(appDir, { recursive: true });
+    const runtime = new FakeAgentRuntime();
+    const f = fixture(runtime, fakeSettings(), fakeProfiles().source, undefined, async () => [], {
+      hostWorkspace: workspace,
+      hostAgents,
+      workspaceRoot: workspace,
+    });
+
+    await f.manager.ensure({ ...APP, appDir });
+
+    const spec = runtime.ensured[0];
+    if (spec === undefined) throw new Error("missing runtime spec");
+    expect(spec.pathMode).toBe("host");
+    expect(spec.labels["hanse.agents.root"]).toBe(path.join(hostAgents, "p", "web"));
   });
 
   it("keeps the MCP endpoint and token file inside the config overlay", async () => {
@@ -531,6 +591,103 @@ describe("InstanceManager lifecycle", () => {
     expect(overlay.model).toBe("deepseek/deepseek-pro");
   });
 
+  it("materializes managed git credentials and exposes only paths in the app env", async () => {
+    const runtime = new FakeAgentRuntime();
+    const privateKey =
+      "-----BEGIN OPENSSH PRIVATE KEY-----\nkey-material\n-----END OPENSSH PRIVATE KEY-----\n";
+    const token = "https-token-material";
+    const settings = fakeSettings({
+      gitIdentity: { name: 'Ada "Lovelace"', email: "ada@example.com" },
+      gitAuth: {
+        ssh: {
+          privateKey,
+          knownHosts: "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA",
+        },
+        https: { hosts: ["github.com"], username: "x-access-token", token },
+      },
+    });
+    const profiles = fakeProfiles();
+    const { manager, runtime: fakeRuntime, dir } = fixture(runtime, settings, profiles.source);
+
+    await manager.ensure(APP);
+
+    const home = path.join(dir, "p", "web", "home");
+    const managed = path.join(home, ".config", "hanse", "git");
+    for (const file of [
+      "config",
+      "ssh",
+      "askpass",
+      "id",
+      "known_hosts",
+      "token",
+      "username",
+      "https_hosts",
+    ]) {
+      expect(existsSync(path.join(managed, file)), file).toBe(true);
+    }
+    expect(statSync(path.join(managed, "config")).mode & 0o777).toBe(0o600);
+    expect(statSync(path.join(managed, "ssh")).mode & 0o777).toBe(0o700);
+    expect(statSync(path.join(managed, "askpass")).mode & 0o777).toBe(0o700);
+    const config = readFileSync(path.join(managed, "config"), "utf8");
+    expect(config).toContain('name = "Ada \\"Lovelace\\""');
+    expect(config).toContain('email = "ada@example.com"');
+    expect(config).toContain("helper =");
+
+    const spec = fakeRuntime.ensured[0];
+    if (spec === undefined) throw new Error("missing runtime spec");
+    expect(spec.env.GIT_CONFIG_GLOBAL).toBe(path.join(managed, "config"));
+    expect(spec.env.GIT_SSH_COMMAND).toBe(`'${path.join(managed, "ssh")}'`);
+    expect(spec.env.GIT_ASKPASS).toBe(path.join(managed, "askpass"));
+    expect(spec.env.GIT_ASKPASS_REQUIRE).toBe("force");
+    expect(spec.env.GIT_CONFIG_NOSYSTEM).toBe("1");
+    expect(spec.env.GIT_TERMINAL_PROMPT).toBe("0");
+    expect(spec.env.HANSE_CREDENTIALS_DIR).toBe(managed);
+    expect(spec.env.LC_ALL).toBe("C");
+    expect(spec.env.LANG).toBe("C");
+    expect(spec.env.GIT_CEILING_DIRECTORIES).toBe("/srv/apps");
+    const serialized = JSON.stringify(spec);
+    expect(serialized).not.toContain("key-material");
+    expect(serialized).not.toContain(token);
+  });
+
+  it("creates a fresh app root and home before materializing", async () => {
+    const runtime = new FakeAgentRuntime();
+    const { manager, dir } = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    const appRoot = path.join(dir, "p", "web");
+
+    expect(existsSync(appRoot)).toBe(false);
+    await manager.ensure(APP);
+
+    expect(existsSync(path.join(appRoot, "home", ".config", "hanse", "git", "config"))).toBe(true);
+  });
+
+  it("treats a git credential hash change as a pending restart", async () => {
+    const runtime = new FakeAgentRuntime();
+    const settings = fakeSettings();
+    const { manager } = fixture(runtime, settings, fakeProfiles().source);
+    await manager.ensure(APP);
+    expect(manager.pendingRestart(APP.id)).toEqual({ pending: false, reasons: [] });
+
+    settings.setGitAuthHash("changed-git-auth-hash");
+
+    expect(manager.pendingRestart(APP.id)).toEqual({
+      pending: true,
+      reasons: ["settings_changed"],
+    });
+  });
+
+  it("fails the start when the app HOME is a symlink", async () => {
+    const runtime = new FakeAgentRuntime();
+    const { manager, dir } = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    const appRoot = path.join(dir, "p", "web");
+    const otherHome = path.join(dir, "other-home");
+    mkdirSync(appRoot, { recursive: true });
+    mkdirSync(otherHome, { recursive: true });
+    symlinkSync(otherHome, path.join(appRoot, "home"));
+
+    await expect(manager.ensure(APP)).rejects.toThrow(/git_credentials_materialize_failed/);
+    expect(runtime.ensured).toHaveLength(0);
+  });
   it("reports profile_not_applied when the profile write failed", async () => {
     const runtime = new FakeAgentRuntime();
     const settings = fakeSettings();
@@ -602,6 +759,12 @@ describe("InstanceManager lifecycle", () => {
     expect(spec.env.OMO_PROFILE).toBeUndefined();
     expect(spec.env.HANSE_OPENCODE_AUTH_FILE).toBeUndefined();
     expect(existsSync(path.join(dir, "p", "web", "data", "opencode", "auth.json"))).toBe(false);
+    expect(
+      existsSync(path.join(dir, "p", "web", "home", ".config", "hanse", "git", "config")),
+    ).toBe(false);
+    expect(spec.env.GIT_CONFIG_GLOBAL).toBeUndefined();
+    expect(spec.env.GIT_ASKPASS).toBeUndefined();
+    expect(spec.env.HANSE_CREDENTIALS_DIR).toBeUndefined();
     expect(manager.pendingRestart(APP.id)).toEqual({ pending: false, reasons: [] });
   });
 

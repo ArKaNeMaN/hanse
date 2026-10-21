@@ -1,3 +1,4 @@
+import { GitCredentialValidationError } from "../git/credentials.js";
 import {
   type EffectiveValue,
   type PendingRestart,
@@ -6,7 +7,14 @@ import {
   type SettingsService,
   SettingsValidationError,
 } from "../settings/index.js";
-import type { SettingsScope, SettingsTarget } from "../settings/types.js";
+import type {
+  GitAuthKind,
+  GitAuthScoped,
+  GitAuthScopedState,
+  GitAuthStatus,
+  SettingsScope,
+  SettingsTarget,
+} from "../settings/types.js";
 import { DEEPSEEK_FIELDS, webDriverDefinitions } from "../web/registry.js";
 import type { WebToolConfig } from "../web/types.js";
 import { findApp } from "./apps.js";
@@ -199,6 +207,18 @@ function settingsPagePath(scope: SettingsScope, target: SettingsTarget): string 
   )}/settings`;
 }
 
+function firstAppSettingsPath(site: SiteModel, projectId?: string): string | undefined {
+  const project =
+    projectId === undefined
+      ? site.projects.find((entry) => entry.apps.length > 0)
+      : site.projects.find((entry) => entry.id === projectId);
+  const app = project?.apps[0];
+  if (project === undefined || app === undefined) {
+    return undefined;
+  }
+  return `/projects/${encodeURIComponent(project.id)}/apps/${encodeURIComponent(app.appKey)}/settings`;
+}
+
 function parseTarget(source: Record<string, unknown>): {
   scope: SettingsScope;
   target: SettingsTarget;
@@ -290,7 +310,7 @@ function settingValue(
   payload: Record<string, unknown>,
   json: boolean,
 ): unknown {
-  if (json || key === "llm.model") {
+  if (json || (key !== "web.search" && key !== "web.fetch")) {
     return payload.value;
   }
   if (action === "set") {
@@ -309,6 +329,23 @@ function mutationError(browser: boolean, returnTo: string, error: unknown): Http
   throw error;
 }
 
+function gitAuthMutationError(error: unknown): HttpResponse {
+  if (error instanceof GitCredentialValidationError) {
+    return json(400, {
+      error: error.message,
+      code: "invalid_git_credential",
+      ...(error.field === undefined ? {} : { field: error.field }),
+    });
+  }
+  if (error instanceof SettingsValidationError) {
+    return json(400, { error: error.message, code: "invalid_git_credential" });
+  }
+  if (error instanceof BodyValidationError) {
+    return json(400, { error: error.message, code: "invalid_request" });
+  }
+  throw error;
+}
+
 /* ------------------------------------------------------------------------- */
 /* Dispatch                                                                  */
 /* ------------------------------------------------------------------------- */
@@ -319,6 +356,9 @@ export function isSettingsRoute(method: string, pathname: string): boolean {
   }
   if (pathname === "/api/settings" || pathname === "/api/settings/provider") {
     return true;
+  }
+  if (pathname === "/api/settings/git") {
+    return method === "POST";
   }
   if (/^\/projects\/[^/]+\/settings$/.test(pathname)) {
     return method === "GET";
@@ -399,6 +439,41 @@ export async function handleSettings(deps: HttpDeps, request: HttpRequest): Prom
     return browser
       ? redirectNotice(returnTo, "Settings saved.", "success")
       : json(200, settingsResponse(settings, deps, scope, target));
+  }
+
+  if (request.path === "/api/settings/git" && request.method === "POST") {
+    try {
+      if (!isJsonRequest(request)) {
+        throw new BodyValidationError("Git credential requests must use a JSON body.");
+      }
+      const payload = parseObjectBody(request);
+      const { scope, target } = parseTarget(payload);
+      const kind = stringValue(payload.kind);
+      if (kind !== "ssh" && kind !== "https") {
+        throw new SettingsValidationError("kind must be ssh or https");
+      }
+      const action = stringValue(payload.action) ?? "";
+      if (action === "set") {
+        if (payload.value === undefined) {
+          throw new SettingsValidationError("value is required for set");
+        }
+        settings.setGitAuth(scope, target, kind, payload.value, actor);
+      } else if (action === "clear" || action === "inherit") {
+        if (payload.value !== undefined) {
+          throw new SettingsValidationError("value is not allowed for clear or inherit");
+        }
+        if (action === "clear") {
+          settings.clearGitAuth(scope, target, kind, actor);
+        } else {
+          settings.inheritGitAuth(scope, target, kind);
+        }
+      } else {
+        throw new SettingsValidationError("action must be set, clear, or inherit");
+      }
+      return json(200, settingsResponse(settings, deps, scope, target));
+    } catch (error) {
+      return gitAuthMutationError(error);
+    }
   }
 
   if (request.path === "/api/settings/provider" && request.method === "POST") {
@@ -898,6 +973,264 @@ function profileWarningsSection(warnings: string[]): string {
   </section>`;
 }
 
+function gitAuthStatusText(status: GitAuthStatus): string {
+  switch (status.state) {
+    case "set":
+      return `Set at ${status.source}`;
+    case "cleared":
+      return `Cleared at ${status.source}`;
+    case "error":
+      return "Error";
+    default:
+      return "Missing";
+  }
+}
+
+function gitAuthStatusTone(status: GitAuthStatus): string {
+  switch (status.state) {
+    case "set":
+      return "badge-success";
+    case "cleared":
+      return "badge-warning";
+    case "error":
+      return "badge-error";
+    default:
+      return "badge-ghost";
+  }
+}
+
+function gitAuthScopedRows(
+  scoped: Record<SettingsScope, GitAuthScopedState>,
+  scope: SettingsScope,
+): string {
+  const rows = applicableScopes(scope)
+    .map((entry) => {
+      const state = scoped[entry] ?? "absent";
+      const label = state === "absent" ? "Inherited" : state === "cleared" ? "Cleared" : "Set";
+      return `<tr>
+        <td data-label="Scope"><span class="mono">${escapeHtml(scopeLabel(entry))}</span></td>
+        <td data-label="State"><span class="badge ${stateTone(state)}">${escapeHtml(label)}</span></td>
+      </tr>`;
+    })
+    .join("");
+  return `<div class="table-wrap">
+    <table class="table table--stack">
+      <thead><tr><th scope="col">Scope</th><th scope="col">State</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </div>`;
+}
+
+function gitAuthDetails(status: GitAuthStatus): string {
+  if (status.state === "set" && status.kind === "ssh") {
+    return `<div class="stack--tight">
+      <span class="overline">Public key</span>
+      <span class="mono small" id="git-ssh-public-key">${escapeHtml(status.publicKey)}</span>
+      <span class="overline">Fingerprint</span>
+      <span class="mono small" id="git-ssh-fingerprint">${escapeHtml(status.fingerprint)}</span>
+      <span class="overline">known_hosts</span>
+      <span class="small">${status.hasKnownHosts ? "Set — strict host checking." : "Not set — accept-new (TOFU) on first connection."}</span>
+    </div>`;
+  }
+  if (status.state === "set" && status.kind === "https") {
+    return `<div class="stack--tight">
+      <span class="overline">Allowed hosts</span>
+      <span class="mono small" id="git-https-allowed-hosts">${escapeHtml(status.hosts.join(", "))}</span>
+      <span class="overline">Username</span>
+      <span class="mono small" id="git-https-username-value">${escapeHtml(status.username)}</span>
+    </div>`;
+  }
+  if (status.state === "error") {
+    return `<p class="field-error" role="alert">${icon("alert-triangle")}${escapeHtml(status.message)}</p>`;
+  }
+  if (status.state === "cleared") {
+    return '<p class="hint">A tombstone at this scope suppresses wider credentials; nothing is materialized for the app.</p>';
+  }
+  return '<p class="hint">No credential is set or inherited; git operations that need a remote credential fail closed.</p>';
+}
+
+function gitAuthForm(options: {
+  kind: GitAuthKind;
+  scope: SettingsScope;
+  target: SettingsTarget;
+  returnTo: string;
+  allowTest: boolean;
+}): string {
+  const prefix = `git-${options.kind}`;
+  const fields =
+    options.kind === "ssh"
+      ? `<div class="field">
+          <label class="label" for="${prefix}-private-key">SSH private key</label>
+          <textarea class="textarea" id="${prefix}-private-key" name="privateKey" rows="6" autocomplete="off" spellcheck="false" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea>
+        </div>
+        <div class="field">
+          <label class="label" for="${prefix}-known-hosts">known_hosts (optional)</label>
+          <textarea class="textarea" id="${prefix}-known-hosts" name="knownHosts" rows="4" autocomplete="off" spellcheck="false" placeholder="github.com ssh-ed25519 AAAA..."></textarea>
+        </div>`
+      : `<div class="field">
+          <label class="label" for="${prefix}-hosts">Allowed hosts</label>
+          <textarea class="textarea" id="${prefix}-hosts" name="hosts" rows="3" autocomplete="off" spellcheck="false" placeholder="github.com&#10;gitlab.com"></textarea>
+        </div>
+        <div class="field">
+          <label class="label" for="${prefix}-username">Username</label>
+          <input class="input" id="${prefix}-username" name="username" type="text" autocomplete="off" placeholder="x-access-token" />
+        </div>
+        <div class="field">
+          <label class="label" for="${prefix}-token">Token</label>
+          <input class="input" id="${prefix}-token" name="token" type="password" autocomplete="new-password" placeholder="Not shown" />
+        </div>`;
+  const testFields = options.allowTest
+    ? `<div class="field">
+          <label class="label" for="${prefix}-test-remote">Remote (optional)</label>
+          <input class="input" id="${prefix}-test-remote" name="testRemote" type="text" autocomplete="off" spellcheck="false" placeholder="Defaults to origin" />
+        </div>`
+    : "";
+  const testButton = options.allowTest
+    ? '<button class="btn btn-secondary btn-sm" type="submit" data-git-test>Test connection</button>'
+    : "";
+  return `<form class="stack--tight" data-git-auth method="post" action="/api/settings/git">
+    ${hiddenTarget(options.scope, options.target, options.returnTo)}
+    <input type="hidden" name="kind" value="${escapeHtml(options.kind)}" />
+    ${fields}
+    ${testFields}
+    <div class="cluster">
+      <button class="btn btn-primary btn-sm" type="submit" name="action" value="set">Set credential</button>
+      <button class="btn btn-secondary btn-sm" type="submit" name="action" value="inherit">Inherit</button>
+      <button class="btn btn-danger btn-sm" type="submit" name="action" value="clear">Clear</button>
+      ${testButton}
+    </div>
+    ${
+      options.allowTest
+        ? `<div class="stack--tight" data-git-test-result hidden>
+      <p class="small" data-git-test-summary role="status" aria-live="polite"></p>
+      <ul class="small" data-git-test-warnings hidden></ul>
+      <p class="field-error" role="alert" data-git-test-error hidden></p>
+    </div>`
+        : ""
+    }
+    <p class="field-error" role="alert" data-git-error hidden></p>
+  </form>`;
+}
+
+function gitIdentityBlock(options: {
+  key: "git.user.name" | "git.user.email";
+  title: string;
+  placeholder: string;
+  effective: EffectiveValue<string>;
+  scope: SettingsScope;
+  target: SettingsTarget;
+  returnTo: string;
+  resolved: ResolvedSettings;
+}): string {
+  const suffix = options.key === "git.user.name" ? "name" : "email";
+  const inputId = `git-user-${suffix}`;
+  const display =
+    options.effective.value === null
+      ? options.effective.state === "default"
+        ? "Not set"
+        : "Cleared"
+      : options.effective.value;
+  return `<div class="stack--tight" id="git-identity-${suffix}">
+    <div class="cluster">
+      <span class="overline">${escapeHtml(options.title)}</span>
+      ${effectiveBadge(options.effective as EffectiveValue<unknown>)}
+      <span class="mono small">${escapeHtml(display)}</span>
+    </div>
+    ${scopedRows(options.resolved, options.scope, options.key)}
+    <form class="stack--tight" method="post" action="/api/settings">
+      ${hiddenTarget(options.scope, options.target, options.returnTo)}
+      <input type="hidden" name="key" value="${escapeHtml(options.key)}" />
+      <div class="field">
+        <label class="label" for="${inputId}">${escapeHtml(options.title)}</label>
+        <input class="input" id="${inputId}" name="value" type="text" autocomplete="off" placeholder="${escapeHtml(options.placeholder)}" />
+      </div>
+      <div class="cluster">
+        <button class="btn btn-primary btn-sm" type="submit" name="action" value="set">Set</button>
+        <button class="btn btn-secondary btn-sm" type="submit" name="action" value="inherit">Inherit</button>
+        <button class="btn btn-danger btn-sm" type="submit" name="action" value="clear">Clear</button>
+      </div>
+    </form>
+  </div>`;
+}
+
+function gitSection(options: {
+  resolved: ResolvedSettings;
+  scope: SettingsScope;
+  target: SettingsTarget;
+  returnTo: string;
+  testAppPath?: string;
+}): string {
+  const gitAuth: ResolvedSettings["gitAuth"] = options.resolved.gitAuth;
+  const scoped: GitAuthScoped = options.resolved.gitAuthScoped;
+  const kinds: Array<{ kind: GitAuthKind; title: string; status: GitAuthStatus }> = [
+    { kind: "ssh", title: "SSH", status: gitAuth.ssh },
+    { kind: "https", title: "HTTPS", status: gitAuth.https },
+  ];
+  const credentials = kinds
+    .map(
+      ({ kind, title, status }) => `<div class="stack--tight" id="git-${kind}">
+        <div class="cluster">
+          <h3 class="card__title">${escapeHtml(title)}</h3>
+          <span class="badge ${gitAuthStatusTone(status)}">${escapeHtml(gitAuthStatusText(status))}</span>
+        </div>
+        ${gitAuthScopedRows(scoped[kind], options.scope)}
+        ${gitAuthDetails(status)}
+        ${gitAuthForm({
+          kind,
+          scope: options.scope,
+          target: options.target,
+          returnTo: options.returnTo,
+          allowTest: options.scope === "app",
+        })}
+      </div>`,
+    )
+    .join("");
+  return `<section class="card" id="git" aria-labelledby="git-title">
+    <div class="card__head"><h2 class="card__title" id="git-title">Git</h2><span class="badge">Identity and credentials</span></div>
+    <div class="card__body stack--tight">
+      <p class="hint">Credentials are encrypted at rest with the coordinator secret key and are never shown again. Saving validates the value locally; it does not contact the remote. Changes apply only after an explicit agent restart.</p>
+      ${gitIdentityBlock({
+        key: "git.user.name",
+        title: "User name",
+        placeholder: "Hanse Agent",
+        effective: options.resolved.effective.git.user.name,
+        scope: options.scope,
+        target: options.target,
+        returnTo: options.returnTo,
+        resolved: options.resolved,
+      })}
+      ${gitIdentityBlock({
+        key: "git.user.email",
+        title: "User email",
+        placeholder: "agent@example.com",
+        effective: options.resolved.effective.git.user.email,
+        scope: options.scope,
+        target: options.target,
+        returnTo: options.returnTo,
+        resolved: options.resolved,
+      })}
+      ${credentials}
+      ${
+        options.scope === "app"
+          ? '<p class="hint">Test connection checks the draft values against the remote without saving them. The agent must be running.</p>'
+          : `<div class="stack--tight">
+        <span class="overline">Credential check</span>
+        <p class="hint">Run the remote check from an application settings page.</p>
+        ${
+          options.testAppPath === undefined
+            ? ""
+            : `<a class="btn btn-ghost btn-sm" href="${escapeHtml(options.testAppPath)}">Application settings</a>`
+        }
+      </div>`
+      }
+      <div class="stack--tight">
+        <span class="overline">Security notes</span>
+        <p class="hint">Passphrase-protected SSH keys are not supported in v1; use an unencrypted deploy key. Without known_hosts, SSH uses accept-new (TOFU) on first connection. HTTPS hosts are mandatory and matched exactly; remote URLs with a different host fail closed. Use scoped deploy keys or fine-grained tokens with the least privilege — the agent can read its own materialized credentials.</p>
+      </div>
+    </div>
+  </section>`;
+}
+
 function renderSettingsPage(options: {
   site: SiteModel;
   scope: SettingsScope;
@@ -1046,6 +1379,15 @@ function renderSettingsPage(options: {
           clearable: true,
         }),
       })}
+      ${gitSection({
+        resolved: options.resolved,
+        scope: options.scope,
+        target: options.target,
+        returnTo,
+        ...(options.scope === "app"
+          ? {}
+          : { testAppPath: firstAppSettingsPath(options.site, project?.id) }),
+      })}
       ${pendingSection({ pending: options.resolved.pendingRestart, returnTo })}
       ${
         options.scope === "app" && app !== undefined
@@ -1068,7 +1410,7 @@ function renderSettingsPage(options: {
     operatorName: options.chrome.operatorName,
     notice: options.chrome.notice,
     header,
-    scripts: ["/assets/settings.js"],
+    scripts: ["/assets/settings.js", "/assets/git-settings.js"],
     body,
   });
 }

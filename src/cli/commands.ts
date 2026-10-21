@@ -14,9 +14,12 @@ import {
   GIT_SANDBOX_BRANCH_ENV,
   GIT_SANDBOX_MESSAGE_ENV,
   GIT_SANDBOX_OPERATION_ENV,
+  GIT_SANDBOX_TEST_KIND_ENV,
+  GIT_SANDBOX_TEST_REMOTE_ENV,
   GIT_SANDBOX_WORKSPACE_ROOT,
   gitOpError,
   runGitOperation,
+  runGitTest,
 } from "../git/op.js";
 import { validateGitRequest } from "../git/request.js";
 import { GitService } from "../git/service.js";
@@ -371,9 +374,49 @@ export interface RunnerCommandOptions {
   port: number;
 }
 
+async function gitTestCommand(ctx: CommandContext): Promise<number> {
+  const env = process.env;
+  const kind = env[GIT_SANDBOX_TEST_KIND_ENV];
+  if (kind !== "ssh" && kind !== "https") {
+    ctx.io.stdout(
+      JSON.stringify({
+        error: `${GIT_SANDBOX_TEST_KIND_ENV} must be ssh or https`,
+        code: "invalid_input",
+      }),
+    );
+    return 1;
+  }
+  const appDir = env[GIT_SANDBOX_APP_DIR_ENV];
+  if (appDir === undefined || appDir.length === 0) {
+    ctx.io.stdout(
+      JSON.stringify({ error: `${GIT_SANDBOX_APP_DIR_ENV} is required`, code: "invalid_input" }),
+    );
+    return 1;
+  }
+  try {
+    const test = await runGitTest({
+      workspaceRoot: GIT_SANDBOX_WORKSPACE_ROOT,
+      appDir,
+      env,
+      kind,
+      ...(env[GIT_SANDBOX_TEST_REMOTE_ENV] === undefined
+        ? {}
+        : { remote: env[GIT_SANDBOX_TEST_REMOTE_ENV] }),
+    });
+    ctx.io.stdout(JSON.stringify({ test }));
+    return 0;
+  } catch (error) {
+    ctx.io.stdout(JSON.stringify(gitOpError(error)));
+    return 1;
+  }
+}
+
 /** Run the sandboxed fixed git operation helper inside the one-shot app-image container. */
 export async function gitOpCommand(ctx: CommandContext): Promise<number> {
   const env = process.env;
+  if (env[GIT_SANDBOX_OPERATION_ENV] === "test") {
+    return gitTestCommand(ctx);
+  }
   const raw: Record<string, unknown> = {
     operation: env[GIT_SANDBOX_OPERATION_ENV],
   };

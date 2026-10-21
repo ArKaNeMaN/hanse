@@ -1,4 +1,3 @@
-import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { realpath } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,27 +22,7 @@ const PASSTHROUGH_ENV = [
   "SSL_CERT_DIR",
   "CURL_CA_BUNDLE",
   "NODE_EXTRA_CA_CERTS",
-] as const;
-
-/** Coordinator-controlled git settings; only these `HANSE_GIT_*` keys reach the child. */
-export const CONTROLLED_GIT_ENV = [
-  "HANSE_GIT_SSH_COMMAND",
-  "HANSE_GIT_SSH_KEY",
-  "HANSE_GIT_KNOWN_HOSTS",
-  "HANSE_GIT_ASKPASS",
-  "HANSE_GIT_TOKEN",
-  "HANSE_GIT_AUTHOR_NAME",
-  "HANSE_GIT_AUTHOR_EMAIL",
-  "HANSE_GIT_COMMITTER_NAME",
-  "HANSE_GIT_COMMITTER_EMAIL",
-  "HANSE_GIT_SSL_CAINFO",
-] as const;
-
-const IDENTITY_ENV = [
-  ["HANSE_GIT_AUTHOR_NAME", "GIT_AUTHOR_NAME"],
-  ["HANSE_GIT_AUTHOR_EMAIL", "GIT_AUTHOR_EMAIL"],
-  ["HANSE_GIT_COMMITTER_NAME", "GIT_COMMITTER_NAME"],
-  ["HANSE_GIT_COMMITTER_EMAIL", "GIT_COMMITTER_EMAIL"],
+  "HANSE_CREDENTIALS_READONLY",
 ] as const;
 
 const SAFE_REMOTE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
@@ -80,13 +59,6 @@ export function gitChildEnv(options: GitChildEnvOptions): NodeJS.ProcessEnv {
       env[key] = value;
     }
   }
-  for (const key of CONTROLLED_GIT_ENV) {
-    const value = source[key];
-    if (value !== undefined) {
-      env[key] = value;
-    }
-  }
-
   // Reproducible git output regardless of the coordinator's locale.
   env.LC_ALL = "C";
   env.LANG = "C";
@@ -103,16 +75,6 @@ export function gitChildEnv(options: GitChildEnvOptions): NodeJS.ProcessEnv {
   env.GIT_SSH_COMMAND = options.sshCommand;
   if (options.askpass !== undefined) {
     env.GIT_ASKPASS = options.askpass;
-  }
-
-  for (const [hanseKey, gitKey] of IDENTITY_ENV) {
-    const value = source[hanseKey];
-    if (value !== undefined && value.length > 0) {
-      env[gitKey] = value;
-    }
-  }
-  if (source.HANSE_GIT_SSL_CAINFO !== undefined) {
-    env.GIT_SSL_CAINFO = source.HANSE_GIT_SSL_CAINFO;
   }
   return env;
 }
@@ -164,80 +126,8 @@ export function isSafeRemoteName(name: string): boolean {
   return SAFE_REMOTE_NAME.test(name);
 }
 
-function shellQuote(value: string): string {
+export function shellQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
-}
-
-function requireAbsolute(value: string, key: string): void {
-  if (!path.isAbsolute(value)) {
-    throw new GitEnvError(`${key} must be an absolute path.`);
-  }
-}
-
-/**
- * Resolve the controlled SSH command.
- *
- * An explicit `HANSE_GIT_SSH_COMMAND` wins; otherwise a key builds a fixed `ssh` invocation;
- * otherwise the fixed command is plain `ssh`. The value is always passed as `core.sshCommand`, so a
- * repository cannot substitute its own command.
- */
-export function resolveGitSshCommand(source: NodeJS.ProcessEnv): string {
-  const explicit = source.HANSE_GIT_SSH_COMMAND?.trim();
-  if (explicit !== undefined && explicit.length > 0) {
-    return explicit;
-  }
-
-  const key = source.HANSE_GIT_SSH_KEY?.trim();
-  if (key === undefined || key.length === 0) {
-    return "ssh";
-  }
-  requireAbsolute(key, "HANSE_GIT_SSH_KEY");
-
-  const parts = ["ssh", "-i", shellQuote(key), "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes"];
-  const knownHosts = source.HANSE_GIT_KNOWN_HOSTS?.trim();
-  if (knownHosts !== undefined && knownHosts.length > 0) {
-    requireAbsolute(knownHosts, "HANSE_GIT_KNOWN_HOSTS");
-    parts.push("-o", shellQuote(`UserKnownHostsFile=${knownHosts}`));
-    parts.push("-o", "StrictHostKeyChecking=yes");
-  } else {
-    parts.push("-o", "StrictHostKeyChecking=accept-new");
-  }
-  return parts.join(" ");
-}
-
-/**
- * Resolve the askpass helper. An explicit `HANSE_GIT_ASKPASS` wins; otherwise a token is written to
- * a generated 0700 helper so no ambient askpass is ever inherited.
- */
-export function resolveGitAskpass(
-  source: NodeJS.ProcessEnv,
-  directory: string,
-): string | undefined {
-  const explicit = source.HANSE_GIT_ASKPASS?.trim();
-  if (explicit !== undefined && explicit.length > 0) {
-    requireAbsolute(explicit, "HANSE_GIT_ASKPASS");
-    return explicit;
-  }
-
-  const token = source.HANSE_GIT_TOKEN;
-  if (token === undefined || token.length === 0) {
-    return undefined;
-  }
-
-  mkdirSync(directory, { recursive: true, mode: 0o700 });
-  chmodSync(directory, 0o700);
-  const helper = path.join(directory, "askpass.sh");
-  const script = [
-    "#!/bin/sh",
-    'case "$1" in',
-    "  *sername*) printf '%s\\n' 'x-access-token' ;;",
-    `  *) printf '%s\\n' ${shellQuote(token)} ;;`,
-    "esac",
-    "",
-  ].join("\n");
-  writeFileSync(helper, script, { mode: 0o700 });
-  chmodSync(helper, 0o700);
-  return helper;
 }
 
 function hasControlChars(value: string): boolean {

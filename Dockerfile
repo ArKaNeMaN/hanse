@@ -113,6 +113,13 @@ RUN ln -sf ../lib/node_modules/opencode-ai/bin/opencode.exe /usr/local/bin/openc
  && code-server --version \
  && chown -R coder:coder /home/coder /opt/hanse-ext /data /app/extensions
 
+# Save-time git credential validation shells out to ssh-keygen; keep it an explicit
+# coordinator dependency instead of relying on the code-server base package set.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends openssh-client \
+ && rm -rf /var/lib/apt/lists/* \
+ && command -v ssh-keygen >/dev/null
+
 USER coder
 
 EXPOSE 8787

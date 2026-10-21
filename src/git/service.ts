@@ -1,5 +1,5 @@
-import { execFile } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { execFile, spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { access, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -8,11 +8,11 @@ import {
   gitChildEnv,
   gitConfigArgs,
   isSafeRemoteName,
-  resolveGitAskpass,
-  resolveGitSshCommand,
+  shellQuote,
   validateRemoteUrl,
 } from "./env.js";
 import { GitError, type GitErrorCode } from "./errors.js";
+import type { GitTestRequest, GitTestResult } from "./request.js";
 import { RunnerGitClient, type RunnerGitClientOptions } from "./runner-client.js";
 
 export { gitChildEnv, validateRemoteUrl } from "./env.js";
@@ -143,6 +143,11 @@ const DEFAULT_TIMEOUTS: GitTimeouts = {
   update: 120_000,
   push: 180_000,
 };
+
+const TEST_LS_REMOTE_TIMEOUT = 45_000;
+const HOST_KEY_TOFU_WARNING =
+  "No known_hosts was supplied; a new host key is trusted on first use. Add known_hosts to pin it.";
+const MAX_TEST_WARNINGS = 20;
 
 interface GitRuntime {
   env: NodeJS.ProcessEnv;
@@ -844,6 +849,95 @@ export class GitService {
     });
   }
 
+  async testConnection(
+    resolved: ResolvedRepository,
+    request: Pick<GitTestRequest, "kind" | "remote">,
+  ): Promise<GitTestResult> {
+    if (this.#remote !== undefined) {
+      return this.#remote.test(resolved, request);
+    }
+    return this.#testConnectionLocal(resolved, request);
+  }
+
+  async #testConnectionLocal(
+    resolved: ResolvedRepository,
+    request: Pick<GitTestRequest, "kind" | "remote">,
+  ): Promise<GitTestResult> {
+    let remote = request.remote;
+    if (remote === undefined) {
+      const result = await this.#run(
+        resolved.root,
+        ["remote", "get-url", "origin"],
+        this.#timeouts.status,
+      );
+      remote = result.stdout.trim();
+      if (result.code !== 0 || remote.length === 0) {
+        throw new GitError("missing_remote", "No remote is configured and no remote was given.");
+      }
+    }
+    await validateRemoteUrl(remote, resolved.appDir);
+    if (!remoteMatchesKind(remote, request.kind)) {
+      throw new GitError(
+        "credential_scheme_mismatch",
+        "The remote scheme does not match the selected credential type.",
+      );
+    }
+    const result = await this.#run(resolved.root, ["ls-remote", remote], TEST_LS_REMOTE_TIMEOUT);
+    if (result.code !== 0) {
+      throw remoteFailure("git_failed", result);
+    }
+    const parsed = parseLsRemote(result.stdout);
+    const warnings = this.#testWarnings(request.kind);
+    return {
+      ok: true,
+      kind: request.kind,
+      remote: redactUserinfo(remote),
+      refs: parsed.refs,
+      ...(parsed.head === undefined ? {} : { head: parsed.head }),
+      warnings,
+    };
+  }
+
+  #testWarnings(kind: GitTestRequest["kind"]): string[] {
+    if (kind !== "ssh") {
+      return [];
+    }
+    const warnings: string[] = [];
+    const credentialsDir = this.#sourceEnv.HANSE_CREDENTIALS_DIR?.trim();
+    const knownHosts =
+      credentialsDir === undefined ? undefined : path.join(credentialsDir, "known_hosts");
+    const configured =
+      knownHosts !== undefined && existsSync(knownHosts) && statSync(knownHosts).size > 0;
+    if (!configured) {
+      warnings.push(HOST_KEY_TOFU_WARNING);
+    }
+    const tmpdirPath = this.#sourceEnv.TMPDIR?.trim() || "/tmp";
+    const learned = path.join(tmpdirPath, "hanse-known_hosts");
+    if (!existsSync(learned)) {
+      return warnings;
+    }
+    const fingerprints = spawnSync("ssh-keygen", ["-lf", learned], {
+      encoding: "utf8",
+      timeout: 5000,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { PATH: this.#sourceEnv.PATH ?? process.env.PATH ?? "/usr/bin:/bin" },
+    });
+    if (fingerprints.status !== 0) {
+      return warnings;
+    }
+    for (const line of fingerprints.stdout.split("\n")) {
+      const fingerprint = line.trim();
+      if (fingerprint.length === 0) {
+        continue;
+      }
+      warnings.push(fingerprint.slice(0, 300));
+      if (warnings.length >= MAX_TEST_WARNINGS) {
+        break;
+      }
+    }
+    return warnings;
+  }
+
   async #readRemotes(root: string, appDir: string): Promise<GitRemote[]> {
     const result = await this.#run(root, ["remote", "-v"], this.#timeouts.status);
     if (result.code !== 0) {
@@ -900,10 +994,27 @@ export class GitService {
     const home = path.join(runtimeDir, "home");
     mkdirSync(home, { recursive: true, mode: 0o700 });
     chmodSync(home, 0o700);
-    const sshCommand = resolveGitSshCommand(this.#sourceEnv);
-    const askpass = resolveGitAskpass(this.#sourceEnv, path.join(runtimeDir, "credential"));
-    const env = gitChildEnv({ source: this.#sourceEnv, home, sshCommand, askpass });
-    this.#runtime = { env, sshCommand, askpass };
+
+    const credentialsDir = this.#sourceEnv.HANSE_CREDENTIALS_DIR?.trim();
+    if (credentialsDir !== undefined && credentialsDir.length > 0) {
+      if (!path.isAbsolute(credentialsDir)) {
+        throw new GitEnvError("HANSE_CREDENTIALS_DIR must be an absolute path.");
+      }
+      const sshCommand = shellQuote(path.join(credentialsDir, "ssh"));
+      const askpass = path.join(credentialsDir, "askpass");
+      const env = gitChildEnv({ source: this.#sourceEnv, home, sshCommand, askpass });
+      env.GIT_CONFIG_GLOBAL = path.join(credentialsDir, "config");
+      env.GIT_ASKPASS_REQUIRE = "force";
+      env.HANSE_CREDENTIALS_DIR = credentialsDir;
+      this.#runtime = { env, sshCommand, askpass };
+      return this.#runtime;
+    }
+
+    // Fail closed without managed credentials: no ambient askpass or global config.
+    const env = gitChildEnv({ source: this.#sourceEnv, home, sshCommand: "ssh", askpass: "" });
+    env.GIT_CONFIG_GLOBAL = "/dev/null";
+    env.GIT_ASKPASS = "";
+    this.#runtime = { env, sshCommand: "ssh", askpass: "" };
     return this.#runtime;
   }
 
@@ -1116,6 +1227,33 @@ function commitFromOutput(output: string, message: string): GitCommitInfo {
   const match = summary === undefined ? null : /\[[^\]]*?([0-9a-f]{7,40})\]/.exec(summary);
   const shortHash = match?.[1] ?? "";
   return { hash: shortHash, shortHash, subject: message.split("\n")[0] ?? "" };
+}
+
+const SCP_LIKE_REMOTE = /^[^@\s:/]+@[^:\s/]+:\S+$/;
+
+function remoteMatchesKind(remote: string, kind: GitTestRequest["kind"]): boolean {
+  const lower = remote.toLowerCase();
+  if (kind === "https") {
+    return lower.startsWith("https://");
+  }
+  return lower.startsWith("ssh://") || SCP_LIKE_REMOTE.test(remote);
+}
+
+function parseLsRemote(output: string): { refs: number; head?: string } {
+  let refs = 0;
+  let head: string | undefined;
+  for (const line of output.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) {
+      continue;
+    }
+    refs += 1;
+    const tab = trimmed.indexOf("\t");
+    if (tab > 0 && trimmed.slice(tab + 1) === "HEAD") {
+      head = trimmed.slice(0, tab);
+    }
+  }
+  return { refs, ...(head === undefined ? {} : { head }) };
 }
 
 function remoteFailure(

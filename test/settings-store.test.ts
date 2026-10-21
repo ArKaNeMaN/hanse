@@ -42,7 +42,7 @@ function providerLocation(
 describe("migration v3", () => {
   it("applies once and creates the settings tables", () => {
     const db = openDatabase(":memory:");
-    expect(runMigrations(db)).toBe(8);
+    expect(runMigrations(db)).toBe(9);
     expect(runMigrations(db)).toBe(0);
 
     const tables = (
@@ -52,6 +52,8 @@ describe("migration v3", () => {
     ).map((row) => row.name);
     expect(tables).toContain("settings");
     expect(tables).toContain("provider_keys");
+    expect(tables).toContain("setting_secrets");
+    expect(tables).not.toContain("secrets");
     db.close();
   });
 

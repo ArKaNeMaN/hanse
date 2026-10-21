@@ -103,8 +103,8 @@ export function buildInstanceEnv(input: LaunchInput): NodeJS.ProcessEnv {
     ...input.baseEnv,
     ...isolated,
     OPENCODE_CONFIG_CONTENT: JSON.stringify(overlay),
-    GIT_CEILING_DIRECTORIES: realParentDir(input.appDir),
   });
+  env.GIT_CEILING_DIRECTORIES = realParentDir(input.appDir);
   if (input.omoProfile !== undefined) {
     env.OMO_PROFILE = input.omoProfile;
   }

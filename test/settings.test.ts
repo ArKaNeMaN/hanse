@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { z } from "zod";
+import type { RunSshKeygen } from "../src/git/credentials.js";
 import {
   hashValue,
   resolveEffectiveValue,
@@ -31,8 +32,31 @@ interface Fixture {
   service: SettingsService;
 }
 
+function fakeSshKeygen(): RunSshKeygen {
+  return (args) => {
+    if (args[0] === "-y") {
+      return {
+        status: 0,
+        stdout: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFake fake@test\n",
+        stderr: "",
+      };
+    }
+    if (args[0] === "-lf") {
+      return { status: 0, stdout: "256 SHA256:fakefingerprint fake@test (ED25519)\n", stderr: "" };
+    }
+    return { status: 0, stdout: "", stderr: "" };
+  };
+}
+
+const VALID_SSH_KEY =
+  "-----BEGIN OPENSSH PRIVATE KEY-----\nfake-private-key-body\n-----END OPENSSH PRIVATE KEY-----\n";
+
 function fixture(
-  options: { hostAuth?: Record<string, unknown>; hostAuthRaw?: string } = {},
+  options: {
+    hostAuth?: Record<string, unknown>;
+    hostAuthRaw?: string;
+    runSshKeygen?: RunSshKeygen;
+  } = {},
 ): Fixture {
   const dir = mkdtempSync(path.join(tmpdir(), "hanse-settings-"));
   dirs.push(dir);
@@ -54,6 +78,7 @@ function fixture(
     secretKey: key,
     hostAuthFile: useHostFile ? hostAuthFile : undefined,
     now: () => now,
+    runSshKeygen: options.runSshKeygen,
   });
   return { db, key, hostAuthFile, service };
 }
@@ -501,5 +526,209 @@ describe("hashing", () => {
     expect(snapshot.authHash).not.toContain(sentinel);
     expect(service.effectiveHash(appTarget)).not.toContain(sentinel);
     expect(JSON.stringify(snapshot.resolved)).not.toContain(sentinel);
+  });
+});
+
+describe("git identity", () => {
+  it("defaults to null and resolves global -> project -> app with clear and inherit", () => {
+    const { service } = fixture();
+    const initial = service.resolve({});
+    expect(initial.effective.git.user.name).toEqual({
+      value: null,
+      state: "default",
+      source: "default",
+      sources: ["default"],
+    });
+    expect(initial.effective.git.user.email.state).toBe("default");
+    expect(initial.scoped["global:git.user.name"]).toEqual({ state: "absent", value: null });
+    expect(initial.scoped["global:git.user.email"]).toEqual({ state: "absent", value: null });
+
+    service.set("global", {}, "git.user.name", "Global Agent", "owner");
+    service.set("global", {}, "git.user.email", "global@example.com", "owner");
+    service.set("project", projectTarget, "git.user.name", "Project Agent", "owner");
+    service.set("app", appTarget, "git.user.email", "app@example.com", "owner");
+
+    const app = service.resolve(appTarget);
+    expect(app.effective.git.user.name).toMatchObject({
+      value: "Project Agent",
+      state: "set",
+      source: "project",
+    });
+    expect(app.effective.git.user.email).toMatchObject({
+      value: "app@example.com",
+      state: "set",
+      source: "app",
+      sources: ["app"],
+    });
+    expect(app.scoped["app:git.user.email"]).toEqual({
+      state: "set",
+      value: "app@example.com",
+    });
+
+    service.clear("project", projectTarget, "git.user.name", "owner");
+    const cleared = service.resolve(appTarget);
+    expect(cleared.effective.git.user.name).toEqual({
+      value: null,
+      state: "cleared",
+      source: "project",
+      sources: ["project"],
+    });
+    expect(cleared.scoped["project:git.user.name"]).toEqual({ state: "cleared", value: null });
+
+    service.set("app", appTarget, "git.user.name", "App Agent", "owner");
+    expect(service.resolve(appTarget).effective.git.user.name.value).toBe("App Agent");
+    service.inherit("app", appTarget, "git.user.name");
+    expect(service.resolve(appTarget).effective.git.user.name.state).toBe("cleared");
+  });
+
+  it("trims and validates user name and email", () => {
+    const { service } = fixture();
+    service.set("global", {}, "git.user.name", "  Alice Agent  ", "owner");
+    service.set("global", {}, "git.user.email", "  alice@example.com  ", "owner");
+    expect(service.resolve({}).effective.git.user.name.value).toBe("Alice Agent");
+    expect(service.resolve({}).effective.git.user.email.value).toBe("alice@example.com");
+
+    expect(() => service.set("global", {}, "git.user.name", "   ", "owner")).toThrow(
+      SettingsValidationError,
+    );
+    expect(() => service.set("global", {}, "git.user.name", "bad\u0000name", "owner")).toThrow(
+      SettingsValidationError,
+    );
+    expect(() => service.set("global", {}, "git.user.name", "x".repeat(257), "owner")).toThrow(
+      SettingsValidationError,
+    );
+    for (const email of ["no-at-sign", "two@at@signs.com", "has space@example.com", "a@b c"]) {
+      expect(() => service.set("global", {}, "git.user.email", email, "owner")).toThrow(
+        SettingsValidationError,
+      );
+    }
+    expect(() => service.set("global", {}, "git.user.email", "x".repeat(321), "owner")).toThrow(
+      SettingsValidationError,
+    );
+  });
+});
+
+describe("git credentials", () => {
+  it("stores HTTPS status without plaintext and resolves it wide to narrow", () => {
+    const { service } = fixture();
+    service.setGitAuth(
+      "global",
+      {},
+      "https",
+      {
+        hosts: ["GitHub.com", "github.com", "gitlab.com"],
+        username: " x-access-token ",
+        token: "s3cret",
+      },
+      "owner",
+    );
+
+    const resolved = service.resolve(appTarget);
+    expect(resolved.gitAuth.https).toEqual({
+      state: "set",
+      kind: "https",
+      source: "global",
+      hosts: ["github.com", "gitlab.com"],
+      username: "x-access-token",
+    });
+    expect(resolved.gitAuth.ssh).toEqual({ state: "missing", kind: "ssh" });
+    expect(resolved.gitAuthScoped.https).toEqual({
+      global: "set",
+      project: "absent",
+      app: "absent",
+    });
+    expect(resolved.gitAuthScoped.ssh).toEqual({
+      global: "absent",
+      project: "absent",
+      app: "absent",
+    });
+    expect("gitAuthHash" in resolved).toBe(false);
+    expect(JSON.stringify(resolved)).not.toContain("s3cret");
+
+    const snapshot = service.snapshot(appTarget);
+    expect(snapshot.gitAuth.https).toEqual({
+      hosts: ["github.com", "gitlab.com"],
+      username: "x-access-token",
+      token: "s3cret",
+    });
+    expect(snapshot.gitAuth.ssh).toBeUndefined();
+    expect(JSON.stringify(snapshot.resolved)).not.toContain("s3cret");
+    expect(snapshot.gitAuthHash).not.toContain("s3cret");
+
+    service.clearGitAuth("app", appTarget, "https", "owner");
+    expect(service.resolve(appTarget).gitAuth.https).toEqual({
+      state: "cleared",
+      kind: "https",
+      source: "app",
+    });
+    service.inheritGitAuth("app", appTarget, "https");
+    expect(service.resolve(appTarget).gitAuth.https).toMatchObject({
+      state: "set",
+      source: "global",
+    });
+  });
+
+  it("keeps SSH and HTTPS independent and derives SSH metadata", () => {
+    const { service } = fixture({ runSshKeygen: fakeSshKeygen() });
+    service.setGitAuth("global", {}, "ssh", { privateKey: VALID_SSH_KEY }, "owner");
+    service.setGitAuth(
+      "project",
+      projectTarget,
+      "https",
+      { hosts: ["github.com"], username: "x-access-token", token: "token-value" },
+      "owner",
+    );
+
+    const resolved = service.resolve(appTarget);
+    expect(resolved.gitAuth.ssh).toEqual({
+      state: "set",
+      kind: "ssh",
+      source: "global",
+      publicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFake fake@test",
+      fingerprint: "SHA256:fakefingerprint",
+      hasKnownHosts: false,
+    });
+    expect(resolved.gitAuth.https).toMatchObject({ state: "set", source: "project" });
+    expect(JSON.stringify(resolved)).not.toContain(VALID_SSH_KEY);
+
+    const snapshot = service.snapshot(appTarget);
+    expect(snapshot.gitAuth.ssh?.privateKey).toBe(VALID_SSH_KEY);
+    expect(JSON.stringify(snapshot.resolved)).not.toContain("fake-private-key-body");
+  });
+
+  it("changes gitAuthHash when either credential is set, changed, or cleared", () => {
+    const { service } = fixture({ runSshKeygen: fakeSshKeygen() });
+    const base = service.effectiveHash(appTarget);
+    const baseHash = service.snapshot(appTarget).gitAuthHash;
+
+    service.setGitAuth(
+      "global",
+      {},
+      "https",
+      { hosts: ["github.com"], username: "x-access-token", token: "one" },
+      "owner",
+    );
+    const httpsHash = service.snapshot(appTarget).gitAuthHash;
+    expect(httpsHash).not.toBe(baseHash);
+    expect(service.effectiveHash(appTarget)).not.toBe(base);
+
+    service.setGitAuth("global", {}, "ssh", { privateKey: VALID_SSH_KEY }, "owner");
+    const bothHash = service.snapshot(appTarget).gitAuthHash;
+    expect(bothHash).not.toBe(httpsHash);
+    expect(service.effectiveHash(appTarget)).not.toBe(base);
+
+    service.setGitAuth(
+      "global",
+      {},
+      "https",
+      { hosts: ["github.com"], username: "x-access-token", token: "two" },
+      "owner",
+    );
+    expect(service.snapshot(appTarget).gitAuthHash).not.toBe(bothHash);
+
+    service.clearGitAuth("global", {}, "https", "owner");
+    expect(service.snapshot(appTarget).gitAuthHash).not.toBe(bothHash);
+    expect(service.snapshot(appTarget).gitAuthHash).not.toContain("one");
+    expect(service.snapshot(appTarget).gitAuthHash).not.toContain("two");
   });
 });

@@ -54,6 +54,9 @@ const ENV_PATH_KEYS = new Set([
   "MISE_DATA_DIR",
   "HANSE_OPENCODE_AUTH_FILE",
   "HANSE_OPENCODE_PASSWORD_FILE",
+  "GIT_CONFIG_GLOBAL",
+  "GIT_ASKPASS",
+  "HANSE_CREDENTIALS_DIR",
 ]);
 
 /** Environment keys that would expose coordinator state or secrets to an agent. */
@@ -121,7 +124,57 @@ function isCredentialKey(key: string): boolean {
   return CREDENTIAL_KEY_PATTERN.test(key) || PROVIDER_PREFIX_PATTERN.test(key);
 }
 
-function parseEnv(value: unknown): Record<string, string> {
+export interface GitSshCommandRoots {
+  agentsRoot: string;
+  appDir: string;
+}
+
+/**
+ * Unwrap the managed single-quoted `GIT_SSH_COMMAND` form and reject anything else.
+ *
+ * `GIT_SSH_COMMAND` is shell-interpreted, so it must never be treated as a plain path or accept
+ * arbitrary shell syntax. Only the coordinator-generated `shellQuote(<absolute path>)` value is
+ * allowed, and when roots are supplied the path must stay inside the application's mounts.
+ */
+export function parseGitSshCommand(value: string, roots?: GitSshCommandRoots): string {
+  if (value.length < 2 || !value.startsWith("'") || !value.endsWith("'")) {
+    throw invalid("GIT_SSH_COMMAND must be a single-quoted absolute path");
+  }
+  let unwrapped = "";
+  let index = 1;
+  const end = value.length - 1;
+  while (index < end) {
+    const character = value.charAt(index);
+    if (character !== "'") {
+      unwrapped += character;
+      index += 1;
+      continue;
+    }
+    if (value.slice(index, index + 4) !== "'\\''") {
+      throw invalid("GIT_SSH_COMMAND must be a single-quoted absolute path");
+    }
+    unwrapped += "'";
+    index += 4;
+  }
+  if (unwrapped.includes("\0") || /[\r\n]/.test(unwrapped)) {
+    throw invalid("GIT_SSH_COMMAND must be a single-quoted absolute path");
+  }
+  if (!path.isAbsolute(unwrapped)) {
+    throw invalid("GIT_SSH_COMMAND must be a single-quoted absolute path");
+  }
+  if (isInside(FORBIDDEN_AGENT_STATE_ROOT, path.resolve(unwrapped))) {
+    throw invalid(`GIT_SSH_COMMAND must never point at ${FORBIDDEN_AGENT_STATE_ROOT}`);
+  }
+  if (roots !== undefined) {
+    const target = path.resolve(unwrapped);
+    if (!isInside(roots.agentsRoot, target) && !isInside(roots.appDir, target)) {
+      throw invalid("GIT_SSH_COMMAND must stay inside the application's mounts");
+    }
+  }
+  return unwrapped;
+}
+
+function parseEnv(value: unknown, roots?: GitSshCommandRoots): Record<string, string> {
   if (value === undefined) {
     return {};
   }
@@ -142,12 +195,21 @@ function parseEnv(value: unknown): Record<string, string> {
     if (isCredentialKey(key)) {
       throw invalid(`provider credentials must not be passed in the runtime spec: ${key}`);
     }
+    if (key === "GIT_SSH_COMMAND") {
+      parseGitSshCommand(item, roots);
+    }
     if (ENV_PATH_KEYS.has(key)) {
       if (!path.isAbsolute(item)) {
         throw invalid(`${key} must be an absolute path`);
       }
       if (isInside(FORBIDDEN_AGENT_STATE_ROOT, path.resolve(item))) {
         throw invalid(`${key} must never point at ${FORBIDDEN_AGENT_STATE_ROOT}`);
+      }
+      if (roots !== undefined) {
+        const target = path.resolve(item);
+        if (!isInside(roots.agentsRoot, target) && !isInside(roots.appDir, target)) {
+          throw invalid(`${key} must stay inside the application's mounts`);
+        }
       }
     }
     env[key] = item;
@@ -248,15 +310,18 @@ export function validateAppRuntimeSpec(
   }
 
   const port = parsePort(value.port);
+  const appDir = parsePath(value.appDir, "appDir", workspaceRoot);
+  const stateDir = parsePath(value.stateDir, "stateDir", agentsRoot);
+  const envRoots = pathMode === "container" ? { agentsRoot, appDir } : undefined;
   const base: SpecHashInput = {
     appId,
     image,
     pathMode,
-    appDir: parsePath(value.appDir, "appDir", workspaceRoot),
-    stateDir: parsePath(value.stateDir, "stateDir", agentsRoot),
+    appDir,
+    stateDir,
     networkName,
     ...(port === undefined ? {} : { port }),
-    env: parseEnv(value.env),
+    env: parseEnv(value.env, envRoots),
     resources: parseResources(value.resources),
     labels: parseLabels(value.labels),
   };

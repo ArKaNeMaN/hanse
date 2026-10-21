@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs";
+import type { RunSshKeygen } from "../git/credentials.js";
 import type { SqliteDatabase } from "../store/index.js";
 import type { WebToolConfig } from "../web/types.js";
+import { type GitAuthResolution, GitAuthStore } from "./git-auth.js";
 import { hashValue } from "./hash.js";
 import {
   type ProviderKeyLocation,
@@ -17,6 +19,7 @@ import {
 import type {
   EffectiveSettings,
   EffectiveValue,
+  GitAuthKind,
   LaunchSettingsSnapshot,
   ProviderKeyState,
   ProviderKeyStatus,
@@ -31,6 +34,7 @@ export interface SettingsServiceOptions {
   secretKey: Buffer;
   hostAuthFile?: string;
   now?: () => Date;
+  runSshKeygen?: RunSshKeygen;
 }
 
 /** A settings input validation failure that HTTP callers should map to 400. */
@@ -68,6 +72,7 @@ interface HostAuthRead {
 interface InternalResolution {
   resolved: ResolvedSettings;
   providerStates: Map<string, ProviderKeyState>;
+  gitAuth: GitAuthResolution;
 }
 
 function optionalId(value: unknown, name: string): string | undefined {
@@ -157,6 +162,13 @@ function validateProviderKey(key: unknown): string {
   return key;
 }
 
+function requireGitAuthKind(kind: unknown): GitAuthKind {
+  if (kind === "ssh" || kind === "https") {
+    return kind;
+  }
+  throw new SettingsValidationError("kind must be ssh or https");
+}
+
 function effectiveFor<T>(
   values: ReadonlyMap<string, EffectiveValue<unknown>>,
   key: string,
@@ -177,12 +189,16 @@ export class SettingsService {
   readonly #hostAuthFile: string | undefined;
   readonly #now: (() => Date) | undefined;
   readonly #providerKeys: ProviderKeyStore;
+  readonly #gitAuth: GitAuthStore;
 
   constructor(options: SettingsServiceOptions) {
     this.#db = options.db;
     this.#hostAuthFile = options.hostAuthFile;
     this.#now = options.now;
     this.#providerKeys = new ProviderKeyStore(options.db, options.secretKey);
+    this.#gitAuth = new GitAuthStore(options.db, options.secretKey, {
+      runSshKeygen: options.runSshKeygen,
+    });
   }
 
   /** Effective settings plus raw scoped rows, provider statuses, and warnings. */
@@ -194,7 +210,7 @@ export class SettingsService {
   /** One host-auth read shared by the written auth file and the auth hash. */
   snapshot(target: SettingsTarget): LaunchSettingsSnapshot {
     const host = this.#readHostAuth();
-    const { resolved, providerStates } = this.#resolve(target, host);
+    const { resolved, providerStates, gitAuth } = this.#resolve(target, host);
 
     const merged = new Map(Object.entries(host.auth));
     for (const [provider, status] of Object.entries(resolved.providerKeys)) {
@@ -215,6 +231,8 @@ export class SettingsService {
       mergedAuth,
       authHash: hashValue(mergedAuth),
       providerKeys: providerStates,
+      gitAuth: gitAuth.gitAuth,
+      gitAuthHash: gitAuth.gitAuthHash,
     };
   }
 
@@ -225,6 +243,7 @@ export class SettingsService {
       effective: snapshot.resolved.effective,
       providerKeys: snapshot.resolved.providerKeys,
       authHash: snapshot.authHash,
+      gitAuthHash: snapshot.gitAuthHash,
     });
   }
 
@@ -295,6 +314,32 @@ export class SettingsService {
     const location = scopeLocation(scope, target);
     const safeProvider = validateProvider(provider);
     this.#providerKeys.inherit(location, safeProvider);
+  }
+
+  setGitAuth(
+    scope: SettingsScope,
+    target: SettingsTarget,
+    kind: GitAuthKind,
+    value: unknown,
+    actor: string,
+  ): void {
+    const location = scopeLocation(scope, target);
+    this.#gitAuth.set(location, requireGitAuthKind(kind), value, actor, this.#timestamp());
+  }
+
+  clearGitAuth(
+    scope: SettingsScope,
+    target: SettingsTarget,
+    kind: GitAuthKind,
+    actor: string,
+  ): void {
+    const location = scopeLocation(scope, target);
+    this.#gitAuth.clear(location, requireGitAuthKind(kind), actor, this.#timestamp());
+  }
+
+  inheritGitAuth(scope: SettingsScope, target: SettingsTarget, kind: GitAuthKind): void {
+    const location = scopeLocation(scope, target);
+    this.#gitAuth.inherit(location, requireGitAuthKind(kind));
   }
 
   #timestamp(): Date {
@@ -427,6 +472,12 @@ export class SettingsService {
         search: effectiveFor<WebToolConfig>(values, "web.search"),
         fetch: effectiveFor<WebToolConfig>(values, "web.fetch"),
       },
+      git: {
+        user: {
+          name: effectiveFor<string>(values, "git.user.name"),
+          email: effectiveFor<string>(values, "git.user.email"),
+        },
+      },
     };
 
     const providerRows = this.#providerKeys.listFor(normalized.projectId, normalized.appKey);
@@ -442,14 +493,27 @@ export class SettingsService {
       }
     }
 
+    const gitAuth = this.#gitAuth.resolve(
+      this.#gitAuth.listFor(normalized.projectId, normalized.appKey),
+    );
+
     return {
       resolved: {
         effective,
         scoped,
         providerKeys: Object.fromEntries(statuses),
+        gitAuth: {
+          ssh: gitAuth.ssh.status,
+          https: gitAuth.https.status,
+        },
+        gitAuthScoped: {
+          ssh: gitAuth.ssh.scoped,
+          https: gitAuth.https.scoped,
+        },
         warnings,
       },
       providerStates,
+      gitAuth,
     };
   }
 

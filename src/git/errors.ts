@@ -19,7 +19,13 @@ export type GitErrorCode =
   | "auth_failed"
   | "timeout"
   | "output_too_large"
-  | "git_failed";
+  | "git_failed"
+  | "not_running"
+  | "restart_required"
+  | "missing_remote"
+  | "credential_scheme_mismatch"
+  | "host_not_allowed"
+  | "runner_required";
 
 export const GIT_ERROR_CODES: readonly GitErrorCode[] = [
   "invalid_input",
@@ -43,6 +49,12 @@ export const GIT_ERROR_CODES: readonly GitErrorCode[] = [
   "timeout",
   "output_too_large",
   "git_failed",
+  "not_running",
+  "restart_required",
+  "missing_remote",
+  "credential_scheme_mismatch",
+  "host_not_allowed",
+  "runner_required",
 ];
 
 /** Narrow an unknown wire value to a known git error code. */

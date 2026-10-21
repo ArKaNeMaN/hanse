@@ -27,13 +27,21 @@ describe("store", () => {
     db.close();
   });
 
-  it("migrates to v9 with agent tokens, runner containers, app image versions, and SSH tables", () => {
+  it("migrates to v9 with agent tokens, runner containers, app image versions, git credentials, and SSH tables", () => {
     const db = openDatabase(tempDbPath());
     runMigrations(db);
     const versions = db.prepare("SELECT version FROM schema_migrations ORDER BY version").all() as {
       version: number;
     }[];
-    expect(versions.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 9]);
+    expect(versions.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    const secretTables = (
+      db
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('setting_secrets', 'secrets') ORDER BY name",
+        )
+        .all() as { name: string }[]
+    ).map((row) => row.name);
+    expect(secretTables).toEqual(["setting_secrets"]);
 
     const tokenColumns = (
       db.prepare("PRAGMA table_info(agent_tokens)").all() as {

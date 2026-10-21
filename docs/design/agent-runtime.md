@@ -147,7 +147,7 @@ Every requirement has an ID; the plan and acceptance criteria trace back to thes
 | R14 | Runtime invariants are enforced regardless of what the app image declares: fixed user, fixed entrypoint, `cap_drop: ALL`, `no-new-privileges`, read-only root with writable per-app volumes/tmpfs, no privileged, no host network, no Docker socket, no `/data/state`. |
 | R15 | Existing behavior is preserved: chat/SSE, questions/permissions, handoffs, git workbench, settings/restart, IDE proxy, and `opencode` 1.19.3 compatibility. Agent host and coordinator versions handshake. |
 | R16 | B0, B1, and B2 are independently deployable. After each stage: gates pass, deploy to `deployment-host`, agent-run checks, then owner manual verification. The next stage starts only on owner approval. |
-| R17 | Repository-controlled git execution never runs with coordinator secrets. B0 hardens in place and proves it; B1 moves app-repo git to a no-secret context. |
+| R17 | Repository-controlled git execution never runs with coordinator secrets. B0 hardens in place and proves it; B1 moves app-repo git to a no-secret context. Per-app fetch/push credentials are now first-class Settings (`setting_secrets`) materialized into the application HOME; the agent-readable model is accepted and scoped by deploy keys/fine-grained tokens. See [`git-credentials.md`](./git-credentials.md) and [ADR-0009](../decisions/0010-agent-readable-git-credentials.md). |
 | R18 | B0 exposes the same agent-runtime API as B1 (`ensure/delete/status/logs/reconcile`); the coordinator client is identical. Only the implementation changes from an in-container supervisor to the runner. |
 | R19 | Built app images are validated: the entrypoint, `opencode`, `agent-host`, and MCP bridge exist and their versions match the labels. A Dockerfile that produces an incompatible image is marked `error` and agent deployment is refused; image `USER`, `ENTRYPOINT`, `CMD`, and `VOLUME` declarations are overridden or rejected. |
 | R20 | The IDE does not expose the operator token to agent-controlled startup or auto-run paths: controlled `HOME`, `bash --norc --noprofile`, a restricted/untrusted workspace, no task auto-detection or automatic extension activation, and no agents on the front network. The IDE remains operator-trusted; the operator can still run repository code. A scoped IDE principal is a later alternative. |
@@ -478,7 +478,7 @@ the isolation stage. The owner must accept this explicitly (open question 2).
 | Agent vs container runtime | Runner is the only socket holder; coordinator never has it | Runner socket is root-equivalent if Docker rootful |
 | App image vs runtime envelope | Runner overrides user/entrypoint/caps/mounts/network; post-build validation | Image can contain malicious binaries the agent runs |
 | Build vs host | Runner builds; no secrets; no host socket inside the build; explicit/opt-in trigger | Build consumes CPU/disk/network |
-| Git workbench | B0 hardening; B1 no-secret git context | B0 hardening must be proven; B1 credential injection is a new surface |
+| Git workbench | B0 hardening; B1 no-secret git context | B0 hardening must be proven; repo-controlled execution stays out of the coordinator. Fetch/push credentials are per-app, encrypted, and agent-readable (accepted; see [`git-credentials.md`](./git-credentials.md)). |
 | IDE | Operator-trusted container, safe shell, no front-network agents | Agent-writable workspace can still trick the operator |
 | Egress | Model API allowed; per-app network; metadata/link-local block later | Exfiltration to allowed destinations remains possible |
 
@@ -492,7 +492,9 @@ the isolation stage. The owner must accept this explicitly (open question 2).
   coordinator/agent split precedes toolchains.
 - The git workbench is an execution surface. Repository-controlled hooks, `core.fsmonitor`,
   `core.sshCommand`, credential helpers, and protocol extensions must not run with coordinator
-  secrets (R17).
+  secrets (R17). App-repo git runs in the runner one-shot with fixed command-line config; its
+  per-app credentials are encrypted settings materialized into the app HOME, and the agent can read
+  its own credentials by design (accepted in [`git-credentials.md`](./git-credentials.md)).
 - A rootful Docker runner is root-equivalent. If B is adopted for security, use whole-stack rootless
   or a minimal broker.
 - The coordinator and IDE hold the operator token; agents never do. The IDE opens an agent-writable

@@ -1,5 +1,5 @@
 import { GitError, isGitErrorCode } from "./errors.js";
-import type { GitRequest } from "./request.js";
+import type { GitRequest, GitTestRequest, GitTestResult } from "./request.js";
 import type { GitActionResult, GitStatus, ResolvedRepository } from "./service.js";
 
 export interface RunnerGitClientOptions {
@@ -22,6 +22,7 @@ const GIT_TIMEOUTS: Record<GitRequest["operation"], number> = {
   update: 150_000,
   push: 210_000,
 };
+const GIT_TEST_TIMEOUT_MS = 75_000;
 const ERROR_EXCERPT_CHARS = 300;
 
 function transportMessage(error: unknown): string {
@@ -90,6 +91,32 @@ export class RunnerGitClient {
     return this.#action(resolved, { operation: "push" });
   }
 
+  async test(
+    resolved: ResolvedRepository,
+    request: Pick<GitTestRequest, "kind" | "remote">,
+  ): Promise<GitTestResult> {
+    const body = await this.#post(
+      resolved,
+      "test",
+      request,
+      this.#timeoutMs ?? GIT_TEST_TIMEOUT_MS,
+      "git test",
+    );
+    const test = body.test;
+    if (
+      !isRecord(test) ||
+      test.ok !== true ||
+      (test.kind !== "ssh" && test.kind !== "https") ||
+      typeof test.remote !== "string" ||
+      typeof test.refs !== "number" ||
+      !Array.isArray(test.warnings) ||
+      test.warnings.some((warning) => typeof warning !== "string")
+    ) {
+      throw new GitError("git_failed", "git runner returned an invalid test result");
+    }
+    return test as unknown as GitTestResult;
+  }
+
   async #action(resolved: ResolvedRepository, request: GitRequest): Promise<GitActionResult> {
     const response = await this.#call(resolved, request);
     if (response.result === undefined) {
@@ -99,11 +126,30 @@ export class RunnerGitClient {
   }
 
   async #call(resolved: ResolvedRepository, request: GitRequest): Promise<RunnerGitResponse> {
+    return (await this.#post(
+      resolved,
+      "git",
+      request,
+      this.#timeoutMs ?? GIT_TIMEOUTS[request.operation],
+      "git runner",
+    )) as RunnerGitResponse;
+  }
+
+  async #post(
+    resolved: ResolvedRepository,
+    action: "git" | "test",
+    body: unknown,
+    timeoutMs: number,
+    label: string,
+  ): Promise<Record<string, unknown>> {
     const appId = resolved.appId;
     if (appId === undefined || appId.length === 0) {
       throw new GitError("invalid_input", "app id is required for runner-backed git");
     }
-    const path = `/v1/apps/${encodeURIComponent(appId)}/git`;
+    const path =
+      action === "test"
+        ? `/v1/apps/${encodeURIComponent(appId)}/git/test`
+        : `/v1/apps/${encodeURIComponent(appId)}/git`;
     let response: Response;
     try {
       response = await this.#fetch(`${this.#baseUrl}${path}`, {
@@ -112,8 +158,8 @@ export class RunnerGitClient {
           authorization: `Bearer ${this.#token}`,
           "content-type": "application/json",
         },
-        body: JSON.stringify(request),
-        signal: AbortSignal.timeout(this.#timeoutMs ?? GIT_TIMEOUTS[request.operation]),
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (error) {
       if (
@@ -122,7 +168,7 @@ export class RunnerGitClient {
       ) {
         throw new GitError("timeout", "git runner request timed out");
       }
-      throw new GitError("git_failed", `git runner request failed: ${transportMessage(error)}`);
+      throw new GitError("git_failed", `${label} request failed: ${transportMessage(error)}`);
     }
 
     const text = await response.text().catch(() => "");
@@ -143,7 +189,7 @@ export class RunnerGitClient {
       }
       throw new GitError(
         "git_failed",
-        `git runner rejected the request with HTTP ${response.status}: ${text.slice(
+        `${label} rejected the request with HTTP ${response.status}: ${text.slice(
           0,
           ERROR_EXCERPT_CHARS,
         )}`,
@@ -151,17 +197,17 @@ export class RunnerGitClient {
     }
 
     if (text.trim().length === 0) {
-      throw new GitError("git_failed", "git runner returned an empty response");
+      throw new GitError("git_failed", `${label} returned an empty response`);
     }
     let parsed: unknown;
     try {
       parsed = JSON.parse(text);
     } catch {
-      throw new GitError("git_failed", "git runner returned invalid JSON");
+      throw new GitError("git_failed", `${label} returned invalid JSON`);
     }
     if (!isRecord(parsed)) {
-      throw new GitError("git_failed", "git runner returned an invalid result");
+      throw new GitError("git_failed", `${label} returned an invalid result`);
     }
-    return parsed as RunnerGitResponse;
+    return parsed;
   }
 }

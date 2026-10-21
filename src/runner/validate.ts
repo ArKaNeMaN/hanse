@@ -1,7 +1,6 @@
 import path from "node:path";
-import { type AppRuntimeSpec, validateAppRuntimeSpec } from "../agent/spec.js";
+import { type AppRuntimeSpec, parseGitSshCommand, validateAppRuntimeSpec } from "../agent/spec.js";
 import { ConfigError } from "../config/load.js";
-import { CONTROLLED_GIT_ENV } from "../git/env.js";
 import { isInside, resolveWithinRoot } from "../runtime/app-path.js";
 import { defaultImageReference } from "../runtime/build-spec.js";
 import { appContainerName, appNetworkName, mapToContainerPath, mapToHostPath } from "./names.js";
@@ -21,6 +20,9 @@ const ENV_PATH_KEYS = new Set([
   "MISE_DATA_DIR",
   "HANSE_OPENCODE_AUTH_FILE",
   "HANSE_OPENCODE_PASSWORD_FILE",
+  "GIT_CONFIG_GLOBAL",
+  "GIT_ASKPASS",
+  "HANSE_CREDENTIALS_DIR",
 ]);
 
 export interface RunnerConfig {
@@ -33,10 +35,8 @@ export interface RunnerConfig {
   readonly coordinatorContainer: string;
   readonly dockerSocket: string;
   readonly dockerApiVersion: string;
-  /** Host directory bind-mounted read-only into one-shot git containers as `/run/hanse/git`. */
-  readonly hostGitDir?: string;
-  /** Controlled `HANSE_GIT_*` credentials passed to the one-shot git container only. */
-  readonly gitEnv?: NodeJS.ProcessEnv;
+  /** Absolute host directory for ephemeral Test-connection credential dirs, mounted at the same path. */
+  readonly hostRunnerTmp: string;
 }
 
 /** A validated spec with the host/container paths the runner needs to create the container. */
@@ -105,22 +105,25 @@ export function loadRunnerConfig(env: NodeJS.ProcessEnv = process.env): RunnerCo
       `HANSE_DOCKER_API_VERSION must look like v1.41: ${dockerApiVersion}`,
     );
   }
-  const hostGitDir =
-    env.HANSE_HOST_GIT_DIR === undefined || env.HANSE_HOST_GIT_DIR.trim().length === 0
-      ? undefined
-      : absolute(env, "HANSE_HOST_GIT_DIR");
-  const gitEnv: NodeJS.ProcessEnv = {};
-  for (const key of CONTROLLED_GIT_ENV) {
-    const value = env[key];
-    if (value !== undefined) {
-      gitEnv[key] = value;
+  const hostWorkspace = absolute(env, "HANSE_HOST_WORKSPACE");
+  const hostAgents = absolute(env, "HANSE_HOST_AGENTS");
+  const hostRunnerTmp = absolute(env, "HANSE_HOST_RUNNER_TMP", "/var/lib/hanse/tmp");
+  for (const [label, root] of [
+    ["HANSE_HOST_WORKSPACE", hostWorkspace],
+    ["HANSE_HOST_AGENTS", hostAgents],
+  ] as const) {
+    if (overlaps(hostRunnerTmp, root)) {
+      throw new ConfigError(
+        "VALIDATION_FAILED",
+        `HANSE_HOST_RUNNER_TMP must not overlap ${label}: ${hostRunnerTmp}`,
+      );
     }
   }
   const configuredDefaultImage = env.HANSE_AGENT_IMAGE?.trim();
   return {
     token,
-    hostWorkspace: absolute(env, "HANSE_HOST_WORKSPACE"),
-    hostAgents: absolute(env, "HANSE_HOST_AGENTS"),
+    hostWorkspace,
+    hostAgents,
     allowedImages: parseAllowedImages(env),
     ...(configuredDefaultImage === undefined || configuredDefaultImage.length === 0
       ? {}
@@ -128,9 +131,12 @@ export function loadRunnerConfig(env: NodeJS.ProcessEnv = process.env): RunnerCo
     coordinatorContainer,
     dockerSocket: absolute(env, "HANSE_DOCKER_SOCKET", "/var/run/docker.sock"),
     dockerApiVersion,
-    ...(hostGitDir === undefined ? {} : { hostGitDir }),
-    gitEnv,
+    hostRunnerTmp,
   };
+}
+
+function overlaps(left: string, right: string): boolean {
+  return isInside(left, right) || isInside(right, left);
 }
 
 function invalid(message: string): ConfigError {
@@ -205,6 +211,13 @@ export function validateRunnerSpec(
     if (!ENV_PATH_KEYS.has(key)) continue;
     if (!isInside(containerAgentsRoot, value) && !isInside(containerAppDir, value)) {
       throw invalid(`${key} must stay inside the application's container mounts: ${value}`);
+    }
+  }
+  const sshCommand = spec.env.GIT_SSH_COMMAND;
+  if (sshCommand !== undefined) {
+    const sshPath = parseGitSshCommand(sshCommand);
+    if (!isInside(containerAgentsRoot, sshPath) && !isInside(containerAppDir, sshPath)) {
+      throw invalid(`GIT_SSH_COMMAND must stay inside the application's container mounts`);
     }
   }
 

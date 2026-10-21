@@ -223,6 +223,36 @@ ALTER TABLE instances ADD COLUMN image_ref TEXT;
 `,
   },
   {
+    version: 8,
+    name: "git-credentials",
+    sql: `
+CREATE TABLE setting_secrets (
+  scope TEXT NOT NULL CHECK (scope IN ('global', 'project', 'app')),
+  project_id TEXT NOT NULL DEFAULT '',
+  app_key TEXT NOT NULL DEFAULT '',
+  key TEXT NOT NULL CHECK (length(key) > 0),
+  cipher TEXT,
+  nonce TEXT,
+  meta_json TEXT NOT NULL CHECK (json_valid(meta_json)),
+  cleared INTEGER NOT NULL DEFAULT 0 CHECK (cleared IN (0, 1)),
+  updated_at TEXT NOT NULL,
+  updated_by TEXT,
+  PRIMARY KEY (scope, project_id, app_key, key),
+  CHECK (
+    (scope = 'global' AND project_id = '' AND app_key = '') OR
+    (scope = 'project' AND project_id <> '' AND app_key = '') OR
+    (scope = 'app' AND project_id <> '' AND app_key <> '')
+  ),
+  CHECK (
+    (cleared = 0 AND cipher IS NOT NULL AND nonce IS NOT NULL) OR
+    (cleared = 1 AND cipher IS NULL AND nonce IS NULL)
+  )
+);
+
+DROP TABLE IF EXISTS secrets;
+`,
+  },
+  {
     version: 9,
     name: "ssh-hosts",
     sql: `

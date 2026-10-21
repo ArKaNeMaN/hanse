@@ -1,6 +1,6 @@
 # Hanse - Current State (read this first)
 
-> Last updated: 2026-10-20. This is the canonical description of what is **implemented right now**.
+> Last updated: 2026-10-21. This is the canonical description of what is **implemented right now**.
 > If this document and the code disagree, the code wins - update this document.
 > History and rationale: `docs/design/overview.md`, `docs/plans/0001-core.md`,
 > `docs/journal/0001-core.md`. Deployment: `docs/deployment.md`.
@@ -114,8 +114,8 @@ The runner exposes two runtime-token endpoints; the coordinator wraps them as hu
   `reason`, `return_to`); the legacy `/approve` and `/reject` endpoints still work.
 - Static assets are allowlisted: `/assets/app.css`, `/assets/app.js`, `/assets/chat.js`,
   `/assets/chat-core.js`, `/assets/chat-diff.js`, `/assets/chat-highlight.js`,
-  `/assets/chat-highlight-worker.js`, `/assets/git.js`, `/assets/settings.js`,
-  `/assets/vendor/prism/prism-1.30.0.min.js`, and `/assets/favicon.svg`.
+  `/assets/chat-highlight-worker.js`, `/assets/git.js`, `/assets/git-settings.js`,
+  `/assets/settings.js`, `/assets/vendor/prism/prism-1.30.0.min.js`, and `/assets/favicon.svg`.
 - `assets/app.js` adds shell drawer, native-dialog, theme, toast, password-visibility, and
   submit-busy behavior. `assets/chat.js` is an ESM module that owns the chat workspace (sessions,
   messages, typed SSE, composer, queue, questions, OMO cards, safe markdown/tables, syntax-highlighted
@@ -144,9 +144,19 @@ The runner exposes two runtime-token endpoints; the coordinator wraps them as hu
 - The application directory must be the repository root and inside the workspace. In B1 the
   coordinator delegates every operation to the runner (`POST /v1/apps/:appId/git`); the runner
   validates the fixed operation set and executes it in a one-shot container from the app image
-  (uid 1000, only the app directory rw plus `/run/hanse/git` read-only, `--network none` for local
-  operations and the app network for fetch/update/push). Repository hooks, fsmonitor, SSH commands,
-  ext protocols, and credential helpers therefore never run in the coordinator.
+  (uid 1000, the app directory rw, and the application's managed credential directory
+  `<app>/home/.config/hanse/git` read-only at `/run/hanse/git/app`; `--network none` for local
+  operations and the app network for fetch/update/push/test). Repository hooks, fsmonitor, SSH
+  commands, ext protocols, and credential helpers therefore never run in the coordinator.
+- Git identity (`git.user.name`/`git.user.email`) and per-scope SSH/HTTPS credentials are configured
+  in Settings -> Git and materialized into the application HOME; see
+  [`docs/design/git-credentials.md`](design/git-credentials.md). Fetch/push use the effective
+  credential, not a runner environment variable.
+- `POST /api/projects/:projectId/apps/:appKey/git/test` tests **draft** SSH/HTTPS values in the same
+  runner one-shot sandbox (`git ls-remote`) without saving settings or touching the managed directory.
+  It is app-page-only, supports an optional remote (defaults to `origin`), and returns ref counts plus
+  redacted warnings. A stopped app is `409 not_running`; a container or managed directory that predates
+  the feature is `409 restart_required`.
 
 ## SSH host access
 
@@ -317,12 +327,26 @@ The runner exposes two runtime-token endpoints; the coordinator wraps them as hu
   `/projects/:id/apps/:appKey/settings`. Values resolve global -> project -> application. Missing
   rows inherit; `null`/`cleared` is an explicit empty override. `llm.model` is a non-clearable scalar
   with default `deepseek/deepseek-flash`; `web.search` and `web.fetch` default to `{driver:"builtin"}`
-  and are clearable.
+  and are clearable. `git.user.name`/`git.user.email` are clearable strings (default `null`).
 - `settings` and `provider_keys` live in `coordinator.db` (migration v3). Provider API keys are
   entered in the settings UI, AES-256-GCM encrypted, and never returned. At instance start the
   coordinator reconciles the host `auth.json` with effective provider keys into the per-instance
   `auth.json` (mode 0600), scrubs inherited `OPENCODE_AUTH_CONTENT`/profile env, and removes stale
   entries.
+- Git credentials live in `setting_secrets` (migration v8), AES-256-GCM encrypted with the same
+  `secret.key`. One SSH credential (`privateKey` plus optional `knownHosts`) and one HTTPS credential
+  (`hosts`, `username`, `token`) may be set per scope; a narrower scope replaces the whole credential
+  object. `POST /api/settings/git` handles set/clear/inherit, returns status metadata only (public
+  key/fingerprint/hosts/username, never the private key, token, or known-hosts body), and `GET
+  /api/settings` and the settings pages expose the same status-only view. `cleared` is a tombstone
+  that stops inheritance. The legacy `secrets` table and its unused helper were dropped.
+- On instance start the coordinator materializes the effective identity and credentials into
+  `<app>/home/.config/hanse/git/` (`config`, `ssh`, `askpass`, and, when configured, `id`,
+  `known_hosts`, `token`, `username`, `https_hosts`; dirs 0700, secrets 0600, wrappers 0700). The app
+  env contains paths only (`GIT_CONFIG_GLOBAL`, `GIT_SSH_COMMAND`, `GIT_ASKPASS`,
+  `GIT_ASKPASS_REQUIRE=force`, `HANSE_CREDENTIALS_DIR`). A settings change is applied on an explicit
+  agent restart; the existing `pendingRestart` marker covers secret-only changes because
+  `settingsHashFor` includes `gitAuthHash`.
 - Web drivers are selectable per tool: `builtin` (OMO `websearch` MCP for search, opencode
   `webfetch` for fetch) and `deepseek` (standalone `/v1/tools/search` and `/v1/tools/fetch`). A
   managed driver disables the corresponding built-in: search adds `websearch` to the OMO profile's
@@ -389,13 +413,17 @@ The runner exposes two runtime-token endpoints; the coordinator wraps them as hu
 Host `./state` is mounted at `/data/state` in `hanse` only:
 
 - `hanse/coordinator.db` (+ `-wal`, `-shm`) - projects, apps, instances, tasks, handoffs, approvals,
-  principals, events, secrets, settings, provider keys.
+  principals, events, settings, provider keys, and encrypted git credentials (`setting_secrets`).
 - `hanse/secret.key` - AES-256-GCM key for the credential store and provider keys (mode `0600`).
 
 Host `./agents` is mounted at `/data/agents` read-write in `hanse` and read-only in `hanse-runner`:
 
 - `<projectId>/<appKey>/{home,data,state,config,cache,tmp,mise}` - per-app HOME/XDG, opencode DB,
   scratch, and mise toolchains.
+- `<projectId>/<appKey>/home/.config/hanse/git/` - coordinator-materialized git identity and
+  credential files (`config`, `ssh`, `askpass`, and optional `id`, `known_hosts`, `token`, `username`,
+  `https_hosts`). The app container can read this directory by design; the runner mounts it read-only
+  into one-shot git containers.
 - The reconciled opencode `auth.json`, opencode Basic-auth password, and per-app MCP token live under
   that app's state (`0600`).
 - The coordinator-generated OMO profile is `<app-home>/.omo/omo.jsonc`; OMO state is per app.
@@ -425,6 +453,7 @@ Host `./agents` is mounted at `/data/agents` read-write in `hanse` and read-only
 | `HANSE_AGENTS_HOME` | serve | per-app agent state root (default `~/.local/state/hanse-agents`; Compose sets `/data/agents`) |
 | `HANSE_RUNNER_URL` | serve | runner base URL (Compose: `http://runner:8790`) |
 | `HANSE_HOST_WORKSPACE` / `HANSE_HOST_AGENTS` | serve, runner | absolute host paths used by the runner for app bind mounts |
+| `HANSE_HOST_RUNNER_TMP` | runner | absolute writable host path for ephemeral Test-connection credential dirs, mounted at the same path; must not overlap workspace/agents (default `/var/lib/hanse/tmp`) |
 | `HANSE_AGENT_API_BASE` | serve | coordinator URL passed to agents as the MCP API base (Compose: `http://hanse:8787`) |
 | `HANSE_AGENT_IMAGE` | serve, runner | default per-app image; runner requires it to be in its allowlist |
 | `HANSE_AUTH_FILE` | serve | host opencode `auth.json`; reconciled with provider-key settings into each app state |
@@ -434,19 +463,23 @@ Host `./agents` is mounted at `/data/agents` read-write in `hanse` and read-only
 | `HANSE_IDE=0` | serve | do not spawn code-server in the coordinator |
 | `HANSE_IDE_HOST` / `HANSE_IDE_PORT` | serve | proxy target for `/ide` (default `127.0.0.1:8080`) |
 | `HANSE_IDE_BIN` | serve | code-server binary |
-| `HANSE_ASSETS` | serve | directory for `app.css`, `app.js`, `chat.js`, `chat-core.js`, `chat-diff.js`, `chat-highlight.js`, `chat-highlight-worker.js`, `git.js`, `settings.js`, `vendor/prism/prism-1.30.0.min.js`, and `favicon.svg` |
+| `HANSE_ASSETS` | serve | directory for `app.css`, `app.js`, `chat.js`, `chat-core.js`, `chat-diff.js`, `chat-highlight.js`, `chat-highlight-worker.js`, `git.js`, `git-settings.js`, `settings.js`, `vendor/prism/prism-1.30.0.min.js`, and `favicon.svg` |
 | `HANSE_DB` / `HANSE_PROJECT_ID` / `HANSE_APP_KEY` | `hanse mcp` | MCP server binding |
 | `HANSE_API_BASE` | extension | coordinator base URL (`http://hanse:8787`) |
-| `HANSE_HOST_GIT_DIR` | runner | host directory mounted read-only as `/run/hanse/git` for one-shot git |
-| `HANSE_GIT_TOKEN`, `HANSE_GIT_SSH_KEY`, `HANSE_GIT_KNOWN_HOSTS`, `HANSE_GIT_SSH_COMMAND`, `HANSE_GIT_ASKPASS`, `HANSE_GIT_SSL_CAINFO` | runner | controlled git credentials/config for fetch/push; never passed to app containers |
-| `HANSE_GIT_AUTHOR_NAME`, `HANSE_GIT_AUTHOR_EMAIL`, `HANSE_GIT_COMMITTER_NAME`, `HANSE_GIT_COMMITTER_EMAIL` | runner | commit identity for one-shot git |
+
+`HANSE_HOST_GIT_DIR` and the credential/config `HANSE_GIT_*` variables (`HANSE_GIT_TOKEN`,
+`HANSE_GIT_SSH_KEY`, `HANSE_GIT_KNOWN_HOSTS`, `HANSE_GIT_SSH_COMMAND`, `HANSE_GIT_ASKPASS`,
+`HANSE_GIT_SSL_CAINFO`, `HANSE_GIT_AUTHOR_*`, `HANSE_GIT_COMMITTER_*`) were removed with no fallback;
+Compose no longer passes them and the coordinator no longer reads them. The four non-secret sandbox
+operation variables (`HANSE_GIT_OP`, `HANSE_GIT_APP_DIR`, `HANSE_GIT_BRANCH`, `HANSE_GIT_MESSAGE`)
+remain internal to the git one-shot.
 
 `HANSE_WEB_CONFIG` and `HANSE_OPENCODE_AUTH_FILE` are internal `hanse_web` MCP variables set by the
 coordinator; operators do not set them.
 
 ## Verification
 
-`npm run lint && npm run typecheck && npm test && npm run build` (all green; 1058 tests). B1 core
+`npm run lint && npm run typecheck && npm test && npm run build` (all green; 1152 tests). B1 core
 live smoke on `deployment-host`: coordinator/IDE/runner healthy, per-app `demo-app` container running,
 `scripts/agent-runtime-probe.sh b1` passes, coordinator recreate reattaches the app network, and the
 app agent has no `/data/state`, Docker socket, operator/runtime token, or sibling app access.
@@ -552,10 +585,18 @@ Settings stage verification:
 - "Commit all" stages and commits untracked files (ignored files stay out); there is no per-file
   staging, diff viewer, or conflict-resolution UI.
 - Git actions require the app container to be running; a stopped app has no mounted git workbench.
-- Git fetch/push credentials come from the runner's controlled `HANSE_GIT_*` environment and the
-  read-only `HANSE_HOST_GIT_DIR` mount; they are never present in the app container. Without
-  credentials, local status/switch/commit still work and fetch/update/push fail with a credential
-  error. Commit requires a configured `user.name`/`user.email`.
+- Git fetch/push credentials are per-application, encrypted in `setting_secrets`, and materialized
+  into the app HOME before start. The **agent can read its own credentials** (accepted Variant A);
+  scope each SSH deploy key to one repository and each HTTPS token to the minimum permissions and an
+  expiry. There is no ambient `HANSE_GIT_*`/`HANSE_HOST_GIT_DIR` fallback. Without a credential, local
+  status/switch/commit still work and fetch/update/push fail with a credential error. Commit requires
+  an effective `git.user.name`/`git.user.email` or a repository-local identity.
+- Git settings apply on the next agent restart. Fetch/push from the workbench before that restart use
+  the previously materialized files. Passphrase-protected SSH keys are rejected in v1; HTTPS hosts
+  must be allowlisted exactly; without `known_hosts` SSH uses `accept-new` with a TOFU warning and a
+  learned host key lasts only until the next materialization. Custom CA (`HANSE_GIT_SSL_CAINFO`) is
+  not supported; use the app image trust store. The web IDE terminal does not receive these
+  credentials.
 - The one-shot git helper runs with the same controlled child environment and fixed command-line
   config as B0.6: repository hooks, fsmonitor, credential helpers, ext protocols, submodule
   recursion, and repository SSH commands are disabled, and remotes are validated (HTTPS/SSH/scp/file

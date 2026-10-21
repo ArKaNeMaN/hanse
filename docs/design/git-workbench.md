@@ -65,7 +65,10 @@ In scope:
 - merge, rebase, cherry-pick, stash, reset, branch create/delete/rename, tags, submodules, remotes
   management, force-push;
 - monorepo/path-scoped git operations (the app must be the repository root in this pass);
-- credential management or wiring the existing encrypted credential store into git;
+- credential management or wiring the encrypted credential store into git; superseded by stage
+  `0010-git-credentials` ([`git-credentials.md`](./git-credentials.md)), which adds per-app
+  SSH/HTTPS credentials in Settings, materializes them into the app HOME, and mounts the managed
+  directory read-only into the workbench one-shot;
 - background polling, auto-fetch, webhooks, or multi-repository views;
 - server-side rendering of live git status (the page shell is server-rendered; status hydrates);
 - no-JS git actions (a `<noscript>` fallback explains this).

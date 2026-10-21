@@ -177,10 +177,7 @@ Compose reads `.env` in the directory containing `compose.yaml`.
 | `HANSE_AGENTS` | `./agents` | Host path for per-app HOME, XDG, mise, opencode auth/password, and MCP tokens. |
 | `HANSE_HOST_WORKSPACE` | **required** | Absolute host path corresponding to `/data/workspace`. |
 | `HANSE_HOST_AGENTS` | **required** | Absolute host path corresponding to `/data/agents`. |
-| `HANSE_HOST_GIT_DIR` | `/var/lib/hanse/git` | Absolute host directory mounted read-only into the runner and one-shot git containers as `/run/hanse/git`. May be empty; local git operations still work. |
-| `HANSE_GIT_TOKEN` | - | HTTPS git token used only by runner one-shot git containers. Never passed to app containers. |
-| `HANSE_GIT_SSH_KEY`, `HANSE_GIT_KNOWN_HOSTS` | - | SSH key and known-hosts paths (inside `HANSE_HOST_GIT_DIR` to be visible in the sandbox). |
-| `HANSE_GIT_SSH_COMMAND`, `HANSE_GIT_ASKPASS`, `HANSE_GIT_SSL_CAINFO`, `HANSE_GIT_AUTHOR_*`, `HANSE_GIT_COMMITTER_*` | - | Optional fixed git configuration/identity for runner-executed git. |
+| `HANSE_HOST_RUNNER_TMP` | `/var/lib/hanse/tmp` | Absolute writable host path for ephemeral Test-connection credential dirs. Mounted into the runner at the same absolute path; must not overlap the workspace or agents roots. Do not place it on a shared or backed-up volume. |
 | `HANSE_BUILD_IMAGE` | `hanse:dev` | Local coordinator tag used by the source-build overlay. |
 | `HANSE_AGENT_BUILD_IMAGE` | `hanse-agent-default:dev` | Local agent tag used by the source-build overlay. |
 | `HANSE_IDE_BUILD_IMAGE` | `hanse-agent-ide:dev` | Local IDE tag used by the source-build overlay. |
@@ -200,13 +197,20 @@ need to be overridden.
   directory as a bind mount.
 - `./state` -> `/data/state`: the coordinator database (`coordinator.db` with WAL/SHM) and the secret
   key. Mounted into the coordinator only, never into the IDE, runner, or app containers.
-- `./agents` -> `/data/agents`: per-app agent HOME/XDG state, mise data, opencode auth/password, and
-  MCP tokens. Mounted read-write into the coordinator and read-only into the runner; each app
-  container gets only its own `/data/agents/<project>/<app>` root. **Back it up and keep it private**
-  because it contains model credentials.
-- `HANSE_HOST_GIT_DIR` -> `/run/hanse/git` in the runner: read-only git credentials/config.
-  The runner mounts the same host directory into one-shot git containers at `/run/hanse/git`; app
-  containers never see it.
+- `./agents` -> `/data/agents`: per-app agent HOME/XDG state, mise data, opencode auth/password, MCP
+  tokens, and the materialized git identity/credential files under
+  `home/.config/hanse/git/`. Mounted read-write into the coordinator and read-only into the runner;
+  each app container gets only its own `/data/agents/<project>/<app>` root. **Back it up and keep it
+  private** because it contains model and git credentials.
+- `HANSE_HOST_RUNNER_TMP` -> the same absolute path in the runner: writable host space for ephemeral
+  Test-connection credential directories. The runner creates a `0700` `git-test-<uuid>` directory,
+  mounts it read-only into the one-shot container, and deletes it in `finally`; a startup sweep
+  removes stale `git-test-*` directories. It is not a credential store and must not overlap
+  `HANSE_HOST_WORKSPACE`/`HANSE_HOST_AGENTS`.
+
+The old `HANSE_HOST_GIT_DIR` -> `/run/hanse/git` mount and the credential/config `HANSE_GIT_*`
+variables were removed. Remove them from an existing `.env`; Compose no longer passes them and there
+is no fallback.
 
 The containers run as uid/gid 1000. Files created by another uid (for example by `sudo`) break
 writes. Repair with `sudo chown -R 1000:1000 workspace state agents`.
@@ -415,10 +419,12 @@ containers. The backup contains:
 
 - `workspace/` - the projects and applications (git repositories).
 - `state/` - the coordinator DB and `secret.key`. **Keep it private.** Losing `secret.key` makes
-  encrypted provider keys undecryptable; restoring an older DB can restore revoked keys.
-- `agents/` - per-app HOME/XDG/mise state, opencode auth/password, and MCP tokens. **Keep it
-  private**; it contains model credentials. The runner reads this volume read-only for each app's
-  password; app containers see only their own app root.
+  encrypted provider keys and git credentials undecryptable; restoring an older DB can restore
+  revoked keys.
+- `agents/` - per-app HOME/XDG/mise state, opencode auth/password, MCP tokens, and materialized git
+  credential files. **Keep it private**; it contains model and git credentials. The runner reads this
+  volume read-only for each app's password and git credential directory; app containers see only
+  their own app root.
 - `.env` and any Compose override files.
 
 Restore:
@@ -433,22 +439,44 @@ sudo chown -R 1000:1000 workspace state agents
 docker compose up -d
 ```
 
-## Git workbench credentials
+## Git credentials
 
-The application page can fetch, update, commit, and push. B1.5 runs each operation in a one-shot
-container from the app image, so repository-controlled hooks, fsmonitor, SSH commands, and credential
-helpers never run in the coordinator. Git is not wired to the encrypted provider-key store.
+Git identity and fetch/push credentials are first-class settings, not deployment environment
+variables. Configure them in the web UI under **Settings -> Git** at the global, project, or
+application scope; the design and threat model are in
+[`docs/design/git-credentials.md`](design/git-credentials.md).
 
-- **Commit identity**: set `HANSE_GIT_AUTHOR_NAME`/`HANSE_GIT_AUTHOR_EMAIL` and
-  `HANSE_GIT_COMMITTER_NAME`/`HANSE_GIT_COMMITTER_EMAIL` in `.env`, or set `user.name`/`user.email`
-  in each repository. Without an identity the Commit action is disabled.
-- **Push/fetch credentials**: set `HANSE_GIT_TOKEN` for HTTPS, or put an SSH key and `known_hosts`
-  under `HANSE_HOST_GIT_DIR` and set `HANSE_GIT_SSH_KEY`/`HANSE_GIT_KNOWN_HOSTS` to their paths inside
-  that directory. `HANSE_GIT_SSH_COMMAND`, `HANSE_GIT_ASKPASS`, and `HANSE_GIT_SSL_CAINFO` are also
-  supported. The values are passed only to the runner's one-shot git container, never to the app.
-- **Trusted remotes only**: `git fetch --all --prune` contacts every remote configured in the
-  application repository. Repository hooks are disabled by command-line config; git runs as uid 1000
-  in the one-shot container with the app directory writable.
+- **Identity**: set `git.user.name` and `git.user.email`. Missing rows inherit; clear at a narrower
+  scope to suppress a wider value. Without an effective (or repository-local) identity the Commit
+  action is disabled.
+- **SSH (recommended)**: paste an unencrypted private key and, optionally, a `known_hosts` file. The
+  page shows the derived public key and `SHA256:` fingerprint for a deploy-key entry. With
+  `known_hosts`, host checking is strict; without it, SSH uses `accept-new` and the UI shows a TOFU
+  warning. Passphrase-protected keys are rejected in v1. Use a per-repository deploy key, read-only
+  unless push is required.
+- **HTTPS**: provide one or more allowed hosts, a username, and a token/PAT. The askpass helper
+  releases the token only for an exact host match and only over `https://`; a changed remote or a
+  non-allowlisted host fails closed. Use a fine-grained token with the smallest permissions and an
+  expiry.
+- **Apply**: Git settings apply on an explicit agent restart (the settings page shows "Restart
+  required"). Fetch/push from the workbench before the restart use the previously materialized files.
+  The web IDE terminal does not receive these credentials.
+- **Test connection** is available on the application settings page. It runs the draft values through
+  the runner's network-enabled one-shot sandbox (`git ls-remote`), defaults to `origin`, and does not
+  save settings or write the app's managed directory. It requires a running app.
+- **Image prerequisite**: SSH needs `git` and `openssh-client` in the app image. `agent-default` and
+  images built from `ARG HANSE_BASE` on the current base include them; a custom image that does not
+  inherit the base must install `openssh-client`. The coordinator/runtime image also needs
+  `ssh-keygen` for save validation.
+- **Materialized files**: each app gets `<agents>/<project>/<app>/home/.config/hanse/git/` (`config`,
+  `ssh`, `askpass`, plus optional `id`, `known_hosts`, `token`, `username`, `https_hosts`). The agent
+  can read its own credentials by design; scope keys and tokens accordingly.
+- **No ambient credential**: there is no runner/global git credential fallback and no custom CA
+  setting. A private CA belongs in the app image trust store. Local status/switch/commit work without
+  a network credential; fetch/update/push fail with a clear configuration message.
+- **Trusted remotes only**: repository hooks are disabled by command-line config in the one-shot
+  container, but `git fetch --all --prune` still contacts every remote configured in the application
+  repository. Agents run repository code under the trusted-repository model.
 
 ## SSH host access
 
@@ -510,11 +538,12 @@ never mounted into app containers, and the `hanse mcp` shim only forwards tool c
   application repository is indexed with `codegraph init`.
 - **`git clone` fails with a TLS error**: the image includes `git` and CA certificates; a corporate
   proxy may need its CA mounted into the container.
-- **Git push/fetch fails**: check `HANSE_GIT_TOKEN` or the `HANSE_GIT_SSH_*` files under
-  `HANSE_HOST_GIT_DIR`, plus host-key trust, and inspect `docker compose logs runner`. The app
-  container does not receive these credentials. Check the commit identity with
-  `docker compose exec hanse git -C /data/workspace/<project>/<app> var GIT_AUTHOR_IDENT` (local
-  workbench operations use the runner, not the coordinator's ambient git config).
+- **Git push/fetch fails**: configure SSH or HTTPS in Settings -> Git at the app/project/global
+  scope (or use Test connection on the app page), confirm a restart was applied, and check host-key
+  trust and the token's repository/permissions. Inspect `docker compose logs runner`; there is no
+  `HANSE_GIT_*`/`HANSE_HOST_GIT_DIR` environment to check. Confirm the app image provides
+  `openssh-client` for SSH. Check the effective commit identity with
+  `docker compose exec <app-container> git -C <app-dir> var GIT_AUTHOR_IDENT`.
 - **Application page says "Not a repository root"**: the app directory is inside a larger git
   repository. Move the repository root to the app directory or use the IDE.
 - **Old containers after an upgrade**: `docker compose up -d --remove-orphans`.

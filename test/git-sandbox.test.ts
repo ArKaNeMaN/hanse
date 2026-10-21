@@ -18,6 +18,7 @@ import {
   GIT_SANDBOX_OPERATION_ENV,
   gitOpError,
   runGitOperation,
+  runGitTest,
 } from "../src/git/op.js";
 import {
   type GitCommand,
@@ -246,11 +247,52 @@ describe("sandboxed git helper hardening", () => {
       expect(command.env.HANSE_OPERATOR_TOKEN).toBeUndefined();
       expect(command.env.HANSE_RUNTIME_TOKEN).toBeUndefined();
       expect(command.env.OPENCODE_SERVER_PASSWORD).toBeUndefined();
-      expect(command.env.HANSE_GIT_TOKEN).toBe("git-token");
+      expect(command.env.HANSE_GIT_TOKEN).toBeUndefined();
+      expect(command.env.GIT_AUTHOR_NAME).toBeUndefined();
       expect(command.env.GIT_CONFIG_NOSYSTEM).toBe("1");
       expect(command.env.GIT_CONFIG_GLOBAL).toBe("/dev/null");
       expect(command.env.GIT_TERMINAL_PROMPT).toBe("0");
     }
+  });
+
+  it("runs the Test connection helper with the hardened git pipeline", async () => {
+    const workspace = tempDir("hanse-git-sandbox-test-");
+    const repo = await initRepo(workspace);
+    const temp = tempDir("hanse-git-sandbox-test-tmp-");
+    const runner: GitRunner = async (command) => {
+      if (command.args.includes("--is-inside-work-tree")) {
+        return { stdout: "true\n", stderr: "", code: 0 };
+      }
+      if (command.args.includes("--show-toplevel")) {
+        return { stdout: `${repo}\n`, stderr: "", code: 0 };
+      }
+      if (command.args.includes("ls-remote")) {
+        return {
+          stdout: "abc123\tHEAD\nabc123\trefs/heads/main\n",
+          stderr: "",
+          code: 0,
+        };
+      }
+      return { stdout: "", stderr: "", code: 1 };
+    };
+
+    const result = await runGitTest({
+      workspaceRoot: workspace,
+      appDir: repo,
+      env: { PATH: process.env.PATH, TMPDIR: temp },
+      kind: "https",
+      remote: "https://example.com/acme/repo.git",
+      runnerImpl: runner,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      kind: "https",
+      remote: "https://example.com/acme/repo.git",
+      refs: 2,
+      head: "abc123",
+      warnings: [],
+    });
   });
 
   it("emits a bounded machine-readable error envelope", () => {
@@ -361,6 +403,49 @@ describe("coordinator GitService runner delegation", () => {
     expect(JSON.parse(String(calls[4]?.init.body))).toEqual({
       operation: "commit",
       message: "test commit",
+    });
+  });
+
+  it("delegates Test connection to the runner test endpoint", async () => {
+    const workspace = tempDir("hanse-git-delegation-test-");
+    const appDir = path.join(workspace, "project", "app");
+    mkdirSync(appDir, { recursive: true });
+    const calls: RecordedCall[] = [];
+    const git = new GitService({
+      workspaceRoot: workspace,
+      remote: {
+        baseUrl: "http://runner:8790",
+        token: "runtime-token",
+        fetchImpl: async (input, init) => {
+          const url = typeof input === "string" ? input : String(input);
+          calls.push({ url, init: init ?? {} });
+          return new Response(
+            JSON.stringify({
+              test: {
+                ok: true,
+                kind: "ssh",
+                remote: "ssh://git@example.com/acme/repo.git",
+                refs: 2,
+                warnings: [],
+              },
+            }),
+            { status: 200 },
+          );
+        },
+      },
+    });
+    const resolved = await git.resolveRepository(workspace, appDir, "project:app");
+    const result = await git.testConnection(resolved, {
+      kind: "ssh",
+      remote: "ssh://git@example.com/acme/repo.git",
+    });
+
+    expect(result).toMatchObject({ ok: true, kind: "ssh", refs: 2 });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toBe("http://runner:8790/v1/apps/project%3Aapp/git/test");
+    expect(JSON.parse(String(calls[0]?.init.body))).toEqual({
+      kind: "ssh",
+      remote: "ssh://git@example.com/acme/repo.git",
     });
   });
 

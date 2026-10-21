@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import type { Server } from "node:http";
 import { tmpdir } from "node:os";
@@ -7,6 +8,7 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { CoordinatorService } from "../src/coordinator/service.js";
+import type { GitTestResult } from "../src/git/request.js";
 import {
   type GitActionResult,
   GitError,
@@ -18,7 +20,9 @@ import {
 import { handleGit } from "../src/http/git.js";
 import type { HttpDeps, HttpRequest } from "../src/http/handler.js";
 import { createHttpServer } from "../src/http/server.js";
+import { handleSettings } from "../src/http/settings.js";
 import { createPrincipal } from "../src/identity/principals.js";
+import { SettingsService } from "../src/settings/index.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
 
 const execFileAsync = promisify(execFile);
@@ -162,6 +166,7 @@ async function fixture(options: { origin?: boolean } = {}): Promise<Fixture> {
     db,
     workspaceRoot: workspace,
     git: gitService,
+    runner: { url: "http://runner:8790", token: "runtime-token" },
     getProjects: () => [
       { id: "p", name: "P", rootPath: projectRoot, workspaceRoot: workspace, service },
     ],
@@ -238,6 +243,30 @@ class FailingGitService extends GitService {
 
   override async commitAll(): Promise<GitActionResult> {
     throw this.#failure;
+  }
+
+  override async testConnection(): Promise<GitTestResult> {
+    throw this.#failure;
+  }
+}
+
+class StubTestGitService extends GitService {
+  readonly requests: unknown[] = [];
+
+  constructor(private readonly result: GitTestResult) {
+    super({ workspaceRoot: "/tmp" });
+  }
+
+  override async resolveRepository(): Promise<ResolvedRepository> {
+    return { root: "/tmp", appDir: "/tmp" };
+  }
+
+  override async testConnection(
+    _resolved: ResolvedRepository,
+    request: unknown,
+  ): Promise<GitTestResult> {
+    this.requests.push(request);
+    return this.result;
   }
 }
 
@@ -519,7 +548,7 @@ describe("git HTTP API", () => {
         error: new GitError("timeout", "timed out"),
         mode: "status",
         request: (data) => get(data, "/status"),
-        status: 500,
+        status: 504,
       },
       {
         error: new GitError("git_failed", "failed"),
@@ -561,7 +590,7 @@ describe("git HTTP API", () => {
         error: new GitError("timeout", "timed out"),
         mode: "action",
         request: (data) => post(data, "/commit", { message: "x" }),
-        status: 500,
+        status: 504,
       },
       {
         error: new GitError("not_git", "not git"),
@@ -577,5 +606,231 @@ describe("git HTTP API", () => {
       expect(response.status, entry.error.code).toBe(entry.status);
       expect(parse(response)).toEqual({ error: entry.error.message, code: entry.error.code });
     }
+  });
+});
+
+const TEST_SSH_KEY =
+  "-----BEGIN OPENSSH PRIVATE KEY-----\nbody\n-----END OPENSSH PRIVATE KEY-----\n";
+
+function testBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    kind: "https",
+    https: { hosts: ["github.com"], username: "x-access-token", token: "token" },
+    ...overrides,
+  };
+}
+
+describe("git test HTTP API", () => {
+  it("returns a GitTestResult for a human and never saves the draft", async () => {
+    const f = await fixture();
+    const result: GitTestResult = {
+      ok: true,
+      kind: "https",
+      remote: "https://github.com/acme/repo.git",
+      refs: 4,
+      head: "abc123",
+      warnings: ["No known_hosts was supplied"],
+    };
+    const service = new StubTestGitService(result);
+    const response = await handleGit(
+      { ...f.deps, git: service },
+      post(f, "/test", testBody({ remote: "https://github.com/acme/repo.git" })),
+    );
+
+    expect(response.status).toBe(200);
+    expect(parse(response)).toEqual(result);
+    expect(service.requests).toHaveLength(1);
+    expect(service.requests[0]).toMatchObject({
+      kind: "https",
+      remote: "https://github.com/acme/repo.git",
+      https: { hosts: ["github.com"], username: "x-access-token", token: "token" },
+    });
+  });
+
+  it("requires a human, POST, and a JSON body", async () => {
+    const f = await fixture();
+    const anonymous = await handleGit(f.deps, {
+      method: "POST",
+      path: `${BASE}/test`,
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(testBody()),
+    });
+    expect(anonymous.status).toBe(401);
+
+    const agent = await handleGit(f.deps, {
+      method: "POST",
+      path: `${BASE}/test`,
+      headers: {
+        authorization: `Bearer ${f.agentToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(testBody()),
+    });
+    expect(agent.status).toBe(403);
+
+    expect((await handleGit(f.deps, get(f, "/test"))).status).toBe(405);
+    expect((await handleGit(f.deps, post(f, "/test", testBody(), "text/plain"))).status).toBe(400);
+    const malformed = await handleGit(f.deps, {
+      method: "POST",
+      path: `${BASE}/test`,
+      headers: {
+        authorization: `Bearer ${f.token}`,
+        "content-type": "application/json",
+      },
+      body: "{not json",
+    });
+    expect(malformed.status).toBe(400);
+    expect(parse(malformed)).toMatchObject({ code: "invalid_input" });
+  });
+
+  it("validates the draft, scheme, host allowlist, and embedded passwords", async () => {
+    const f = await fixture();
+    const cases: Array<{ body: Record<string, unknown>; code: string }> = [
+      {
+        body: testBody({ kind: "https", remote: "ssh://git@github.com/acme/repo.git" }),
+        code: "credential_scheme_mismatch",
+      },
+      {
+        body: testBody({
+          remote: "https://user:password@github.com/acme/repo.git",
+        }),
+        code: "invalid_remote",
+      },
+      {
+        body: testBody({ remote: "https://gitlab.com/acme/repo.git" }),
+        code: "host_not_allowed",
+      },
+      {
+        body: {
+          kind: "ssh",
+          remote: "https://github.com/acme/repo.git",
+          ssh: { privateKey: TEST_SSH_KEY },
+        },
+        code: "credential_scheme_mismatch",
+      },
+      {
+        body: testBody({ extra: true }),
+        code: "invalid_input",
+      },
+      {
+        body: { kind: "ssh" },
+        code: "invalid_input",
+      },
+      {
+        body: testBody({ kind: "ssh", ssh: { privateKey: TEST_SSH_KEY } }),
+        code: "invalid_input",
+      },
+    ];
+
+    for (const entry of cases) {
+      const response = await handleGit(f.deps, post(f, "/test", entry.body));
+      expect(response.status, entry.code).toBe(400);
+      expect(parse(response)).toMatchObject({ code: entry.code });
+      expect(response.body).not.toContain("password@");
+    }
+  });
+
+  it("rejects an invalid SSH draft with a bounded credential error", async () => {
+    const f = await fixture();
+    const response = await handleGit(
+      f.deps,
+      post(f, "/test", { kind: "ssh", ssh: { privateKey: TEST_SSH_KEY } }),
+    );
+    expect(response.status).toBe(400);
+    expect(parse(response)).toMatchObject({
+      code: "invalid_git_credential",
+      field: "privateKey",
+    });
+    expect(response.body).not.toContain("body");
+  });
+
+  it("maps stopped, restart-required, missing-remote, auth, timeout, and runner errors", async () => {
+    const f = await fixture();
+    const cases: Array<{ error: GitError; status: number }> = [
+      { error: new GitError("not_running", "stopped"), status: 409 },
+      { error: new GitError("restart_required", "restart"), status: 409 },
+      { error: new GitError("missing_remote", "no origin"), status: 409 },
+      { error: new GitError("auth_failed", "bad credentials"), status: 502 },
+      { error: new GitError("git_failed", "network down"), status: 502 },
+      { error: new GitError("timeout", "timed out"), status: 504 },
+      { error: new GitError("invalid_remote", "bad remote"), status: 400 },
+      { error: new GitError("runner_required", "no runner"), status: 503 },
+    ];
+
+    for (const entry of cases) {
+      const deps: HttpDeps = { ...f.deps, git: new FailingGitService(entry.error, "action") };
+      const response = await handleGit(deps, post(f, "/test", testBody()));
+      expect(response.status, entry.error.code).toBe(entry.status);
+      expect(parse(response)).toEqual({ error: entry.error.message, code: entry.error.code });
+    }
+
+    const noRunner = await handleGit(
+      {
+        ...f.deps,
+        runner: undefined,
+        git: new StubTestGitService({
+          ok: true,
+          kind: "https",
+          remote: "https://github.com/acme/repo.git",
+          refs: 1,
+          warnings: [],
+        }),
+      },
+      post(f, "/test", testBody()),
+    );
+    expect(noRunner.status).toBe(503);
+    expect(parse(noRunner)).toMatchObject({ code: "runner_required" });
+  });
+
+  it("returns 404 for an unknown project or application", async () => {
+    const f = await fixture();
+    for (const pathname of [
+      "/api/projects/nope/apps/repo/git/test",
+      "/api/projects/p/apps/nope/git/test",
+    ]) {
+      const response = await handleGit(f.deps, {
+        method: "POST",
+        path: pathname,
+        headers: {
+          authorization: `Bearer ${f.token}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(testBody()),
+      });
+      expect(response.status).toBe(404);
+    }
+  });
+
+  it("renders the Test connection controls only on the application settings page", async () => {
+    const f = await fixture();
+    const settings = new SettingsService({ db: f.db, secretKey: randomBytes(32) });
+    const deps: HttpDeps = { ...f.deps, settings };
+    const html = (pathname: string): HttpRequest => ({
+      method: "GET",
+      path: pathname,
+      headers: {
+        authorization: `Bearer ${f.token}`,
+        accept: "text/html",
+      },
+    });
+
+    const global = await handleSettings(deps, html("/settings"));
+    expect(global.status).toBe(200);
+    expect(global.body).toContain("Application settings");
+    expect(global.body).not.toContain("data-git-test");
+    expect(global.body).not.toContain("Test connection");
+
+    const project = await handleSettings(deps, html("/projects/p/settings"));
+    expect(project.status).toBe(200);
+    expect(project.body).not.toContain("data-git-test");
+
+    const app = await handleSettings(deps, html("/projects/p/apps/repo/settings"));
+    expect(app.status).toBe(200);
+    expect(app.body).toContain("data-git-test");
+    expect(app.body).toContain("Test connection");
+    expect(app.body).toContain("data-git-test-result");
+    expect(app.body).toContain("data-git-test-summary");
+    expect(app.body).toContain('role="status"');
+    expect(app.body).toContain('role="alert"');
   });
 });

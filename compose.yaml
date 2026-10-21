@@ -101,22 +101,12 @@ services:
       HANSE_AGENT_IMAGE: ${HANSE_AGENT_IMAGE:-ghcr.io/arkaneman/hanse-agent-default}:${HANSE_AGENT_TAG:-${HANSE_TAG:-latest}}
       HANSE_COORDINATOR_CONTAINER: hanse
       HANSE_DOCKER_SOCKET: /var/run/docker.sock
-      HANSE_HOST_GIT_DIR: ${HANSE_HOST_GIT_DIR:-/var/lib/hanse/git}
-      HANSE_GIT_TOKEN: ${HANSE_GIT_TOKEN:-}
-      HANSE_GIT_SSH_COMMAND: ${HANSE_GIT_SSH_COMMAND:-}
-      HANSE_GIT_SSH_KEY: ${HANSE_GIT_SSH_KEY:-}
-      HANSE_GIT_KNOWN_HOSTS: ${HANSE_GIT_KNOWN_HOSTS:-}
-      HANSE_GIT_ASKPASS: ${HANSE_GIT_ASKPASS:-}
-      HANSE_GIT_AUTHOR_NAME: ${HANSE_GIT_AUTHOR_NAME:-}
-      HANSE_GIT_AUTHOR_EMAIL: ${HANSE_GIT_AUTHOR_EMAIL:-}
-      HANSE_GIT_COMMITTER_NAME: ${HANSE_GIT_COMMITTER_NAME:-}
-      HANSE_GIT_COMMITTER_EMAIL: ${HANSE_GIT_COMMITTER_EMAIL:-}
-      HANSE_GIT_SSL_CAINFO: ${HANSE_GIT_SSL_CAINFO:-}
+      HANSE_HOST_RUNNER_TMP: ${HANSE_HOST_RUNNER_TMP:-/var/lib/hanse/tmp}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${HANSE_HOST_WORKSPACE:?set HANSE_HOST_WORKSPACE to the absolute host workspace path}:${HANSE_HOST_WORKSPACE:?set HANSE_HOST_WORKSPACE to the absolute host workspace path}:ro
       - ${HANSE_HOST_AGENTS:?set HANSE_HOST_AGENTS to the absolute host agents path}:${HANSE_HOST_AGENTS:?set HANSE_HOST_AGENTS to the absolute host agents path}:ro
-      - ${HANSE_HOST_GIT_DIR:-/var/lib/hanse/git}:/run/hanse/git:ro
+      - ${HANSE_HOST_RUNNER_TMP:-/var/lib/hanse/tmp}:${HANSE_HOST_RUNNER_TMP:-/var/lib/hanse/tmp}
     networks:
       - control
     healthcheck:

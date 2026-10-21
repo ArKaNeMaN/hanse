@@ -74,6 +74,10 @@ function raw(f: Fixture, overrides: Record<string, unknown> = {}): Record<string
       MISE_DATA_DIR: "/data/agents/project/app/mise",
       HANSE_OPENCODE_AUTH_FILE: "/data/agents/project/app/data/opencode/auth.json",
       HANSE_OPENCODE_PASSWORD_FILE: "/data/agents/project/app/state/opencode-password",
+      GIT_CONFIG_GLOBAL: "/data/agents/project/app/home/.config/hanse/git/config",
+      GIT_ASKPASS: "/data/agents/project/app/home/.config/hanse/git/askpass",
+      GIT_SSH_COMMAND: "'/data/agents/project/app/home/.config/hanse/git/ssh'",
+      HANSE_CREDENTIALS_DIR: "/data/agents/project/app/home/.config/hanse/git",
     },
     resources: { memoryBytes: 1024, nanoCpus: 1, pidsLimit: 128 },
     labels: { "hanse.managed": "true" },
@@ -128,31 +132,45 @@ describe("runner spec validation", () => {
     expect([...loaded.allowedImages]).toEqual(["agent-default:test"]);
   });
 
-  it("loads an optional git credential directory and only controlled git env", () => {
+  it("ignores the removed legacy git credential env", () => {
     const f = fixture();
-    const gitDir = path.join(f.base, "git");
-    mkdirSync(gitDir, { recursive: true });
     const loaded = loadRunnerConfig({
       HANSE_RUNTIME_TOKEN: "t",
       HANSE_HOST_WORKSPACE: f.hostWorkspace,
       HANSE_HOST_AGENTS: f.hostAgents,
       HANSE_AGENT_IMAGE: "agent-default:test",
-      HANSE_HOST_GIT_DIR: gitDir,
+      HANSE_HOST_GIT_DIR: "relative/git",
       HANSE_GIT_TOKEN: "git-token",
       HANSE_OPERATOR_TOKEN: "must-not-cross",
     });
-    expect(loaded.hostGitDir).toBe(gitDir);
-    expect(loaded.gitEnv).toMatchObject({ HANSE_GIT_TOKEN: "git-token" });
-    expect(loaded.gitEnv?.HANSE_OPERATOR_TOKEN).toBeUndefined();
+    expect(loaded).not.toHaveProperty("hostGitDir");
+    expect(loaded).not.toHaveProperty("gitEnv");
+    expect(loaded.hostRunnerTmp).toBe("/var/lib/hanse/tmp");
+  });
 
+  it("validates the runner temp root as absolute and non-overlapping", () => {
+    const f = fixture();
+    const base = {
+      HANSE_RUNTIME_TOKEN: "t",
+      HANSE_HOST_WORKSPACE: f.hostWorkspace,
+      HANSE_HOST_AGENTS: f.hostAgents,
+      HANSE_AGENT_IMAGE: "agent-default:test",
+    };
+    expect(loadRunnerConfig(base).hostRunnerTmp).toBe("/var/lib/hanse/tmp");
+    expect(
+      loadRunnerConfig({ ...base, HANSE_HOST_RUNNER_TMP: path.join(f.base, "runner-tmp") })
+        .hostRunnerTmp,
+    ).toBe(path.join(f.base, "runner-tmp"));
+
+    expectConfigError(() => loadRunnerConfig({ ...base, HANSE_HOST_RUNNER_TMP: "relative" }));
     expectConfigError(() =>
-      loadRunnerConfig({
-        HANSE_RUNTIME_TOKEN: "t",
-        HANSE_HOST_WORKSPACE: f.hostWorkspace,
-        HANSE_HOST_AGENTS: f.hostAgents,
-        HANSE_AGENT_IMAGE: "agent-default:test",
-        HANSE_HOST_GIT_DIR: "relative/git",
-      }),
+      loadRunnerConfig({ ...base, HANSE_HOST_RUNNER_TMP: path.join(f.hostWorkspace, "tmp") }),
+    );
+    expectConfigError(() =>
+      loadRunnerConfig({ ...base, HANSE_HOST_RUNNER_TMP: path.dirname(f.hostWorkspace) }),
+    );
+    expectConfigError(() =>
+      loadRunnerConfig({ ...base, HANSE_HOST_RUNNER_TMP: path.join(f.hostAgents, "sys", "tmp") }),
     );
   });
 
@@ -198,6 +216,47 @@ describe("runner spec validation", () => {
 
     expect(hostPathForSpecEnv(spec, "HANSE_OPENCODE_PASSWORD_FILE")).toBe(password);
     expect(hostPathForSpecEnv(spec, "HOME")).toBe(path.join(f.agentsRoot, "home"));
+    expect(hostPathForSpecEnv(spec, "GIT_CONFIG_GLOBAL")).toBe(
+      path.join(f.agentsRoot, "home", ".config", "hanse", "git", "config"),
+    );
     expect(hostPathForSpecEnv(spec, "MISSING")).toBeUndefined();
+  });
+
+  it("accepts only the quoted GIT_SSH_COMMAND inside the app mounts", () => {
+    const f = fixture();
+    const base = raw(f);
+    const env = base.env as Record<string, string>;
+    expect(() => validateRunnerSpec(raw(f), config(f))).not.toThrow();
+
+    expectConfigError(() =>
+      validateRunnerSpec(
+        raw(f, {
+          env: { ...env, GIT_SSH_COMMAND: "/data/agents/project/app/home/git/ssh" },
+        }),
+        config(f),
+      ),
+    );
+    expectConfigError(() =>
+      validateRunnerSpec(
+        raw(f, { env: { ...env, GIT_SSH_COMMAND: "'/etc/evil-ssh'" } }),
+        config(f),
+      ),
+    );
+    expectConfigError(() =>
+      validateRunnerSpec(
+        raw(f, { env: { ...env, GIT_SSH_COMMAND: "'/data/agents/project/app/../other/ssh'" } }),
+        config(f),
+      ),
+    );
+  });
+
+  it("rejects managed git path keys outside the app mounts", () => {
+    const f = fixture();
+    const env = raw(f).env as Record<string, string>;
+    for (const key of ["GIT_CONFIG_GLOBAL", "GIT_ASKPASS", "HANSE_CREDENTIALS_DIR"]) {
+      expectConfigError(() =>
+        validateRunnerSpec(raw(f, { env: { ...env, [key]: "/etc/credentials" } }), config(f)),
+      );
+    }
   });
 });

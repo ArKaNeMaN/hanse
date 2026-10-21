@@ -78,7 +78,8 @@ export interface VerifyPolicyOptions {
   fetch?: PolicyFetch;
 }
 
-const SCRUBBED_ENV_KEYS = [
+/** Coordinator-only and inherited git environment keys that must never reach a managed agent. */
+export const SCRUBBED_ENV_KEYS = [
   "HANSE_OPERATOR_TOKEN",
   "OPENCODE_PERMISSION",
   "OPENCODE_AUTH_CONTENT",
@@ -89,7 +90,30 @@ const SCRUBBED_ENV_KEYS = [
   "HANSE_AUTH_FILE",
   "HANSE_DB",
   "HANSE_STATE_HOME",
+  "GIT_CONFIG_GLOBAL",
+  "GIT_CONFIG_SYSTEM",
+  "GIT_CONFIG_NOSYSTEM",
+  "GIT_CONFIG_COUNT",
+  "GIT_SSH_COMMAND",
+  "GIT_SSH",
+  "GIT_ASKPASS",
+  "GIT_ASKPASS_REQUIRE",
+  "GIT_TERMINAL_PROMPT",
+  "GIT_SSL_CAINFO",
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_CEILING_DIRECTORIES",
+  "HANSE_CREDENTIALS_DIR",
+  "HANSE_CREDENTIALS_READONLY",
 ] as const;
+
+/** Sandbox operation variables that are not credentials and must survive scrubbing. */
+const RETAINED_GIT_OPERATION_KEYS = new Set([
+  "HANSE_GIT_OP",
+  "HANSE_GIT_APP_DIR",
+  "HANSE_GIT_BRANCH",
+  "HANSE_GIT_MESSAGE",
+]);
 
 function toPosix(value: string): string {
   return value.replaceAll("\\", "/");
@@ -197,6 +221,15 @@ export function buildPermissionPolicy(
 /** Coordinator-only environment keys that must never reach a managed agent. */
 export function scrubInstanceEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   for (const key of SCRUBBED_ENV_KEYS) delete env[key];
+  for (const key of Object.keys(env)) {
+    if (key.startsWith("GIT_CONFIG_KEY_") || key.startsWith("GIT_CONFIG_VALUE_")) {
+      delete env[key];
+      continue;
+    }
+    if (key.startsWith("HANSE_GIT_") && !RETAINED_GIT_OPERATION_KEYS.has(key)) {
+      delete env[key];
+    }
+  }
   return env;
 }
 

@@ -7,9 +7,11 @@ import {
   computeSpecHash,
   isValidAppId,
   parseAppRuntimeSpecJson,
+  parseGitSshCommand,
   type SpecHashInput,
   validateAppRuntimeSpec,
 } from "../src/agent/spec.js";
+import { shellQuote } from "../src/git/materialize.js";
 
 const dirs: string[] = [];
 
@@ -194,6 +196,68 @@ describe("AppRuntimeSpec validation", () => {
         options(roots),
       ),
     ).toThrow(/\/data\/state/);
+  });
+
+  it("accepts the managed git path keys and the quoted SSH command", () => {
+    const roots = fixture();
+    const appRoot = path.join(roots.agents, "p", "app");
+    const managed = path.join(appRoot, "home", ".config", "hanse", "git");
+    const env = {
+      ...(rawSpec(roots).env as Record<string, string>),
+      GIT_CONFIG_GLOBAL: path.join(managed, "config"),
+      GIT_ASKPASS: path.join(managed, "askpass"),
+      HANSE_CREDENTIALS_DIR: managed,
+      GIT_SSH_COMMAND: shellQuote(path.join(managed, "ssh")),
+    };
+    const spec = validateAppRuntimeSpec(rawSpec(roots, { env }), options(roots));
+    expect(spec.env.GIT_CONFIG_GLOBAL).toBe(path.join(managed, "config"));
+    expect(spec.env.GIT_SSH_COMMAND).toBe(shellQuote(path.join(managed, "ssh")));
+    expect(parseGitSshCommand(spec.env.GIT_SSH_COMMAND ?? "")).toBe(path.join(managed, "ssh"));
+  });
+
+  it("rejects malformed or out-of-root GIT_SSH_COMMAND values", () => {
+    const roots = fixture();
+    const appRoot = path.join(roots.agents, "p", "app");
+    const env = (value: string) => ({
+      ...(rawSpec(roots).env as Record<string, string>),
+      GIT_SSH_COMMAND: value,
+    });
+    const ssh = path.join(appRoot, "home", ".config", "hanse", "git", "ssh");
+    expect(() => validateAppRuntimeSpec(rawSpec(roots, { env: env(ssh) }), options(roots))).toThrow(
+      /single-quoted/,
+    );
+    expect(() =>
+      validateAppRuntimeSpec(rawSpec(roots, { env: env("'relative/ssh'") }), options(roots)),
+    ).toThrow(/absolute/);
+    expect(() =>
+      validateAppRuntimeSpec(rawSpec(roots, { env: env("'/data/state/app/ssh'") }), options(roots)),
+    ).toThrow(/\/data\/state/);
+    expect(() =>
+      validateAppRuntimeSpec(rawSpec(roots, { env: env(`'/tmp/evil'`) }), options(roots)),
+    ).toThrow(/inside/);
+    expect(parseGitSshCommand(shellQuote("/tmp/a'b/ssh"))).toBe("/tmp/a'b/ssh");
+  });
+
+  it("rejects non-absolute and state-root managed git path keys", () => {
+    const roots = fixture();
+    const env = (key: string, value: string) => ({
+      ...(rawSpec(roots).env as Record<string, string>),
+      [key]: value,
+    });
+    for (const key of ["GIT_CONFIG_GLOBAL", "GIT_ASKPASS", "HANSE_CREDENTIALS_DIR"]) {
+      expect(() =>
+        validateAppRuntimeSpec(rawSpec(roots, { env: env(key, "relative/path") }), options(roots)),
+      ).toThrow(/absolute/);
+      expect(() =>
+        validateAppRuntimeSpec(
+          rawSpec(roots, { env: env(key, "/data/state/credentials") }),
+          options(roots),
+        ),
+      ).toThrow(/\/data\/state/);
+      expect(() =>
+        validateAppRuntimeSpec(rawSpec(roots, { env: env(key, "/tmp/outside") }), options(roots)),
+      ).toThrow(/inside/);
+    }
   });
 
   it("rejects unsafe app ids, ports, resources, and malformed JSON", () => {

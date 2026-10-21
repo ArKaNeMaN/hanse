@@ -21,12 +21,15 @@
 - **API authn**: mutating HTTP endpoints require a bearer token; a non-human principal receives 403.
 - **Git workbench**: the application page and `/api/projects/:id/apps/:key/git/*` are human-only;
   agent principals receive 403. Mutations are JSON-only (plus `SameSite=Strict`) and request bodies
-  are capped at 64 KiB. Git runs with argument arrays, no shell, timeouts, bounded output, and
-  per-repository serialization. The application directory must resolve, via `realpath`, to the
-  repository toplevel inside the workspace; symlink/nested-repository escapes are rejected. Remote
-  URLs and command output are redacted for URL userinfo before leaving the server.
-- **Secrets at rest**: git credentials are encrypted with AES-256-GCM; the key file lives outside the
-  ciphertext (mode `0600`); tokens are never written into managed repositories.
+  are capped at 64 KiB. Git runs in the runner one-shot container with argument arrays, no shell,
+  timeouts, bounded output, and per-repository serialization. The application directory must resolve,
+  via `realpath`, to the repository toplevel inside the workspace; symlink/nested-repository escapes
+  are rejected. Remote URLs and command output are redacted for URL userinfo before leaving the
+  server.
+- **Secrets at rest**: provider keys and git credentials are encrypted with AES-256-GCM; the key file
+  lives outside the ciphertext (mode `0600`); tokens and private keys are never written into managed
+  repositories. Git credential status responses and pages contain metadata only (public key,
+  fingerprint, hosts, username).
 - **SQL**: all statements use bound parameters.
 - **Spawn safety**: the launcher spawns processes with argument arrays, never a shell string.
 
@@ -43,17 +46,54 @@
 - Replace the local file lock with a fenced, kernel-backed lock if moving to multi-process coordination.
 - Add a managed key store (OS keyring) for the secret key.
 
-## Current deployment (stages 8-19)
+## Historical: pre-B1/B2 deployment (stages 8-19)
+
+These findings describe the earlier single-container deployment. They are retained for history and
+are **superseded** by the per-app container/runner model and by stage `0010-git-credentials`.
 
 - Single operator login (operator token -> `hanse_token` cookie); no separate IDE password.
 - The IDE runs in a separate `ide` container mounting only the workspace, so `/data/state` (DB,
   `secret.key`) is not present there. `/ide/?folder=` is confined to the workspace root at the proxy.
 - The terminal's `HOME` is the opened folder (`shell/hanse-shell`).
-- **Residual risk:** the `opencode` agents run in the `hanse` container as the same uid as the
-  coordinator and can read `/data/state` (DB, `secret.key`). Untrusted applications remain out of scope.
-- **Git workbench risks:** repository hooks execute as the coordinator; `git fetch --all --prune`
-  contacts every configured remote with ambient credentials; the in-memory mutation lock does not
-  cover agents/IDE writing to the same repository; `realpath`-then-exec is TOCTOU in a writable
-  workspace; "Commit all" can include untracked files. These are accepted under the trusted-repository
-  model. Push/fetch credentials are ambient and are not managed by this stage.
+- **Residual risk (historical):** `opencode` agents ran in the `hanse` container as the same uid as
+  the coordinator and could read `/data/state` (DB, `secret.key`). Untrusted applications remained out
+  of scope.
+- **Git workbench risks (historical):** repository hooks executed as the coordinator;
+  `git fetch --all --prune` contacted every configured remote with ambient credentials; the in-memory
+  mutation lock did not cover agents/IDE writing to the same repository; `realpath`-then-exec was
+  TOCTOU in a writable workspace; "Commit all" can include untracked files. These are superseded:
+  app-repo git now runs in the runner one-shot sandbox, and credentials are per-app settings.
+
+## Git credentials (stage 0010-git-credentials)
+
+The authoritative design and threat model are
+[`docs/design/git-credentials.md`](../design/git-credentials.md); the accepted decision is
+[ADR-0009](../decisions/0010-agent-readable-git-credentials.md).
+
+- **No ambient git credential.** `HANSE_GIT_*` credential/config variables, `HANSE_HOST_GIT_DIR`, and
+  `HANSE_GIT_SSL_CAINFO` are removed. Fetch/push use the effective per-scope credential materialized
+  into the app HOME; the one-shot workbench mounts that directory read-only and has no secret
+  environment.
+- **Agent-readable by design (accepted).** Each app can read its own
+  `<home>/.config/hanse/git/{id,token,known_hosts}`. A compromised agent can use or copy its own
+  credential. Mitigations: repository-scoped deploy keys (read-only unless push is required),
+  fine-grained tokens with minimal permissions and an expiry, per-app isolation, and a documented
+  rotation path.
+- **HTTPS host allowlist.** The askpass releases the token only for an exact host in `https_hosts` and
+  only for `https://` prompts; a changed remote or non-allowlisted host fails closed. This is not an
+  egress control: the agent can read the token directly.
+- **SSH.** The private key signs locally and is never sent to the remote. `-F /dev/null`,
+  `IdentitiesOnly=yes`, `IdentityAgent=none`, `BatchMode=yes`, and no forwarding prevent ambient key
+  or agent use. Optional `known_hosts` enables strict host pinning; without it, `accept-new` warns on
+  first use and still rejects a changed key.
+- **Test connection.** Draft credentials are written to an ephemeral `0700` directory under
+  `HANSE_HOST_RUNNER_TMP`, mounted read-only, and removed in `finally`; a startup sweep handles stale
+  directories. The test never writes settings or the managed app directory. A crash can leave a
+  `0600` secret in the temp root until the sweep, so the temp root must not be shared or backed up.
+- **Accepted residuals.** No AAD binding or key rotation (same as provider keys); `secure_delete` plus
+  a WAL checkpoint cannot erase physical media/backups; the runner's path check is not atomic against
+  a running app (the app owns its own credential directory); the web IDE terminal is out of scope.
+
+## Current deployment (stages 8-19)
+
 - No TLS; LAN-only.

@@ -11,8 +11,8 @@ export const DEFAULT_WEB_TOOL_CONFIG: WebToolConfig = { driver: "builtin" };
 export interface SettingsKeyDefinition<T = unknown> {
   /** Stable key used in the database and the settings API. */
   key: string;
-  /** Validates a stored or submitted value. */
-  schema: z.ZodType<T>;
+  /** Validates a stored or submitted value; a null tombstone is handled before this schema. */
+  schema: z.ZodType<T> | z.ZodType<NonNullable<T>>;
   /** How values from wider scopes combine with narrower scopes. */
   merge: MergeStrategy;
   /** Whether an explicit `null` (clear) row is allowed for this key. */
@@ -71,11 +71,57 @@ export const webFetchDefinition: SettingsKeyDefinition<WebToolConfig> = {
   defaultValue: DEFAULT_WEB_TOOL_CONFIG,
 };
 
+function hasControlCharacters(value: string): boolean {
+  for (const character of value) {
+    const code = character.codePointAt(0) ?? 0;
+    if (code < 0x20 || (code >= 0x7f && code <= 0x9f)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export const gitUserNameSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(256)
+  .refine((value) => !hasControlCharacters(value), "name must not contain control characters");
+
+export const gitUserEmailSchema = z
+  .string()
+  .trim()
+  .min(3)
+  .max(320)
+  .refine((value) => !hasControlCharacters(value), "email must not contain control characters")
+  .refine(
+    (value) => /^[^@\s]+@[^@\s]+$/.test(value),
+    "email must contain exactly one @ and no whitespace",
+  );
+
+export const gitUserNameDefinition: SettingsKeyDefinition<string | null> = {
+  key: "git.user.name",
+  schema: gitUserNameSchema,
+  merge: "replace",
+  clearable: true,
+  defaultValue: null,
+};
+
+export const gitUserEmailDefinition: SettingsKeyDefinition<string | null> = {
+  key: "git.user.email",
+  schema: gitUserEmailSchema,
+  merge: "replace",
+  clearable: true,
+  defaultValue: null,
+};
+
 /** Production key registry. */
 export const KEY_DEFINITIONS: readonly SettingsKeyDefinition[] = [
   llmModelDefinition,
   webSearchDefinition,
   webFetchDefinition,
+  gitUserNameDefinition,
+  gitUserEmailDefinition,
 ];
 
 const DEFINITIONS_BY_KEY = new Map(

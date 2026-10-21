@@ -1,3 +1,4 @@
+import type { GitHttpsCredential, GitSshCredential } from "../git/credentials.js";
 import type { WebToolConfig } from "../web/types.js";
 
 export type SettingsScope = "global" | "project" | "app";
@@ -7,7 +8,41 @@ export interface SettingsTarget {
   appKey?: string;
 }
 
-export type SettingsKey = "llm.model" | "web.search" | "web.fetch";
+export type SettingsKey =
+  | "llm.model"
+  | "web.search"
+  | "web.fetch"
+  | "git.user.name"
+  | "git.user.email";
+
+export type GitAuthKind = "ssh" | "https";
+
+export type GitAuthScopedState = "absent" | "cleared" | "set";
+
+export type GitAuthStatus =
+  | {
+      state: "set";
+      kind: "ssh";
+      source: SettingsScope;
+      publicKey: string;
+      fingerprint: string;
+      hasKnownHosts: boolean;
+    }
+  | {
+      state: "set";
+      kind: "https";
+      source: SettingsScope;
+      hosts: string[];
+      username: string;
+    }
+  | { state: "cleared"; kind: GitAuthKind; source: SettingsScope }
+  | { state: "error"; kind: GitAuthKind; message: string }
+  | { state: "missing"; kind: GitAuthKind };
+
+export interface GitAuthScoped {
+  ssh: Record<SettingsScope, GitAuthScopedState>;
+  https: Record<SettingsScope, GitAuthScopedState>;
+}
 
 export type MergeStrategy = "replace" | "append";
 
@@ -31,6 +66,12 @@ export interface EffectiveSettings {
     search: EffectiveValue<WebToolConfig>;
     fetch: EffectiveValue<WebToolConfig>;
   };
+  git: {
+    user: {
+      name: EffectiveValue<string>;
+      email: EffectiveValue<string>;
+    };
+  };
 }
 
 export interface PendingRestart {
@@ -51,6 +92,9 @@ export interface ResolvedSettings {
   effective: EffectiveSettings;
   scoped: Record<string, ScopedValue<unknown>>;
   providerKeys: Record<string, ProviderKeyStatus>;
+  /** Status-only credential metadata; never contains private keys, tokens, or known-hosts content. */
+  gitAuth: { ssh: GitAuthStatus; https: GitAuthStatus };
+  gitAuthScoped: GitAuthScoped;
   warnings: string[];
 }
 
@@ -65,4 +109,7 @@ export interface LaunchSettingsSnapshot {
   mergedAuth: Record<string, unknown>;
   authHash: string;
   providerKeys: Map<string, ProviderKeyState>;
+  /** Plaintext credentials for materialization only; never exposed on ResolvedSettings or HTTP. */
+  gitAuth: { ssh?: GitSshCredential; https?: GitHttpsCredential };
+  gitAuthHash: string;
 }

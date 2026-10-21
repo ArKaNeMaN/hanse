@@ -5,10 +5,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { CoordinatorService } from "../src/coordinator/service.js";
+import type { RunSshKeygen } from "../src/git/credentials.js";
 import { GitService } from "../src/git/service.js";
 import type { HttpDeps, HttpRequest } from "../src/http/handler.js";
 import { createHttpServer } from "../src/http/server.js";
-import { handleSettings } from "../src/http/settings.js";
+import { handleSettings, isSettingsRoute } from "../src/http/settings.js";
 import { createPrincipal } from "../src/identity/principals.js";
 import type { InstanceManager } from "../src/opencode/manager.js";
 import { SettingsService } from "../src/settings/index.js";
@@ -48,7 +49,24 @@ interface Fixture {
   dir: string;
 }
 
-function fixture(options: { hostAuth?: Record<string, unknown> } = {}): Fixture {
+const VALID_SSH_KEY =
+  "-----BEGIN OPENSSH PRIVATE KEY-----\nsentinel-private-body\n-----END OPENSSH PRIVATE KEY-----\n";
+
+function fakeSshKeygen(): RunSshKeygen {
+  return (args) => {
+    if (args[0] === "-y") {
+      return { status: 0, stdout: "ssh-ed25519 AAAAC3NzaFake fake@test\n", stderr: "" };
+    }
+    if (args[0] === "-lf") {
+      return { status: 0, stdout: "256 SHA256:fakefingerprint fake@test (ED25519)\n", stderr: "" };
+    }
+    return { status: 0, stdout: "", stderr: "" };
+  };
+}
+
+function fixture(
+  options: { hostAuth?: Record<string, unknown>; runSshKeygen?: RunSshKeygen } = {},
+): Fixture {
   const dir = mkdtempSync(path.join(tmpdir(), "hanse-settings-http-"));
   dirs.push(dir);
   const db = openDatabase(path.join(dir, "coordinator.db"));
@@ -74,6 +92,7 @@ function fixture(options: { hostAuth?: Record<string, unknown> } = {}): Fixture 
     db,
     secretKey: randomBytes(32),
     hostAuthFile,
+    runSshKeygen: options.runSshKeygen,
   });
   const token = createPrincipal(db, { kind: "human", name: "alice" }).token;
   const agent = createPrincipal(db, { kind: "agent", name: "bot" });
@@ -805,5 +824,323 @@ describe("restart route", () => {
     expect(browser.status).toBe(303);
     expect(browser.headers?.location).toContain("/projects/p1");
     expect(browser.headers?.location).toContain("notice=Agent+restarted.");
+  });
+});
+
+describe("git settings API", () => {
+  it("advertises the git route and includes identity plus credential statuses on reads", async () => {
+    const f = fixture();
+    expect(isSettingsRoute("POST", "/api/settings/git")).toBe(true);
+    expect(isSettingsRoute("GET", "/api/settings/git")).toBe(false);
+
+    const response = await handleSettings(
+      f.deps,
+      request({ headers: auth(f.token), query: { scope: "app", project: "p1", app: "web" } }),
+    );
+    expect(response.status).toBe(200);
+    const payload = JSON.parse(response.body) as {
+      effective: {
+        git: { user: { name: { value: unknown; state: string }; email: { value: unknown } } };
+      };
+      gitAuth: unknown;
+      gitAuthScoped: unknown;
+    };
+    expect(payload.effective.git.user.name).toEqual({
+      value: null,
+      state: "default",
+      source: "default",
+      sources: ["default"],
+    });
+    expect(payload.effective.git.user.email.value).toBeNull();
+    expect(payload.gitAuth).toEqual({
+      ssh: { state: "missing", kind: "ssh" },
+      https: { state: "missing", kind: "https" },
+    });
+    expect(payload.gitAuthScoped).toEqual({
+      ssh: { global: "absent", project: "absent", app: "absent" },
+      https: { global: "absent", project: "absent", app: "absent" },
+    });
+    expect(response.body).not.toContain("gitAuthHash");
+    expect(response.body).not.toContain("privateKey");
+    expect(response.body).not.toContain("knownHosts");
+  });
+
+  it("sets, clears, and inherits HTTPS credentials without echoing the token", async () => {
+    const f = fixture();
+    const token = "sentinel-http-token";
+    const set = await handleSettings(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/settings/git",
+        headers: auth(f.token, { "content-type": "application/json" }),
+        body: JSON.stringify({
+          scope: "global",
+          kind: "https",
+          action: "set",
+          value: {
+            hosts: ["GitHub.com", "github.com"],
+            username: "x-access-token",
+            token,
+          },
+        }),
+      }),
+    );
+    expect(set.status).toBe(200);
+    expect(set.body).not.toContain(token);
+    expect(set.body).not.toContain("gitAuthHash");
+    const payload = JSON.parse(set.body) as {
+      gitAuth: { https: { state: string; hosts: string[]; username: string } };
+    };
+    expect(payload.gitAuth.https).toEqual({
+      state: "set",
+      kind: "https",
+      source: "global",
+      hosts: ["github.com"],
+      username: "x-access-token",
+    });
+
+    const read = await handleSettings(
+      f.deps,
+      request({ headers: auth(f.token), query: { scope: "global" } }),
+    );
+    expect(read.body).not.toContain(token);
+    expect(JSON.parse(read.body).gitAuthScoped.https.global).toBe("set");
+
+    const clear = await handleSettings(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/settings/git",
+        headers: auth(f.token, { "content-type": "application/json" }),
+        body: JSON.stringify({ scope: "global", kind: "https", action: "clear" }),
+      }),
+    );
+    expect(clear.status).toBe(200);
+    expect(JSON.parse(clear.body).gitAuth.https).toEqual({
+      state: "cleared",
+      kind: "https",
+      source: "global",
+    });
+
+    const inherit = await handleSettings(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/settings/git",
+        headers: auth(f.token, { "content-type": "application/json" }),
+        body: JSON.stringify({ scope: "global", kind: "https", action: "inherit" }),
+      }),
+    );
+    expect(inherit.status).toBe(200);
+    expect(JSON.parse(inherit.body).gitAuth.https).toEqual({ state: "missing", kind: "https" });
+    expect(f.db.prepare("SELECT COUNT(*) AS count FROM setting_secrets").get()).toEqual({
+      count: 0,
+    });
+  });
+
+  it("sets SSH credentials with metadata only in the response and pages", async () => {
+    const f = fixture({ runSshKeygen: fakeSshKeygen() });
+    const set = await handleSettings(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/settings/git",
+        headers: auth(f.token, { "content-type": "application/json" }),
+        body: JSON.stringify({
+          scope: "global",
+          kind: "ssh",
+          action: "set",
+          value: { privateKey: VALID_SSH_KEY },
+        }),
+      }),
+    );
+    expect(set.status).toBe(200);
+    expect(set.body).not.toContain("sentinel-private-body");
+    expect(JSON.parse(set.body).gitAuth.ssh).toEqual({
+      state: "set",
+      kind: "ssh",
+      source: "global",
+      publicKey: "ssh-ed25519 AAAAC3NzaFake fake@test",
+      fingerprint: "SHA256:fakefingerprint",
+      hasKnownHosts: false,
+    });
+
+    for (const pathname of [
+      "/settings",
+      "/projects/p1/settings",
+      "/projects/p1/apps/web/settings",
+    ]) {
+      const page = await handleSettings(
+        f.deps,
+        request({ path: pathname, headers: htmlAuth(f.token) }),
+      );
+      expect(page.status).toBe(200);
+      expect(page.body).toContain(">Git</h2>");
+      expect(page.body).toContain(">User name</label>");
+      expect(page.body).toContain("ssh-ed25519 AAAAC3NzaFake fake@test");
+      expect(page.body).toContain("SHA256:fakefingerprint");
+      expect(page.body).toContain("known_hosts");
+      expect(page.body).toContain("/assets/git-settings.js");
+      expect(page.body).toContain("data-git-auth");
+      expect(page.body).not.toContain("sentinel-private-body");
+      expect(page.body).not.toContain("gitAuthHash");
+      if (pathname.includes("/apps/")) {
+        expect(page.body).toContain("Test connection");
+      } else {
+        expect(page.body).not.toContain("Test connection");
+      }
+      const ids = [...page.body.matchAll(/id="([^"]+)"/g)].map((match) => match[1]);
+      expect(new Set(ids).size).toBe(ids.length);
+    }
+  });
+
+  it("returns bounded validation errors without echoing the submitted secret", async () => {
+    const f = fixture();
+    const token = "sentinel-bad-token";
+    const invalidHosts = await handleSettings(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/settings/git",
+        headers: auth(f.token, { "content-type": "application/json" }),
+        body: JSON.stringify({
+          scope: "global",
+          kind: "https",
+          action: "set",
+          value: { hosts: ["https://github.com"], username: "u", token },
+        }),
+      }),
+    );
+    expect(invalidHosts.status).toBe(400);
+    const error = JSON.parse(invalidHosts.body) as {
+      code: string;
+      field?: string;
+      error: string;
+    };
+    expect(error.code).toBe("invalid_git_credential");
+    expect(error.field).toBe("hosts");
+    expect(invalidHosts.body).not.toContain(token);
+
+    const missingValue = await handleSettings(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/settings/git",
+        headers: auth(f.token, { "content-type": "application/json" }),
+        body: JSON.stringify({ scope: "global", kind: "https", action: "set" }),
+      }),
+    );
+    expect(missingValue.status).toBe(400);
+
+    const clearWithValue = await handleSettings(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/settings/git",
+        headers: auth(f.token, { "content-type": "application/json" }),
+        body: JSON.stringify({
+          scope: "global",
+          kind: "https",
+          action: "clear",
+          value: { token: "should-not-be-used" },
+        }),
+      }),
+    );
+    expect(clearWithValue.status).toBe(400);
+    expect(clearWithValue.body).not.toContain("should-not-be-used");
+
+    const badKind = await handleSettings(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/settings/git",
+        headers: auth(f.token),
+        body: JSON.stringify({ scope: "global", kind: "gpg", action: "clear" }),
+      }),
+    );
+    expect(badKind.status).toBe(400);
+
+    const formBody = await handleSettings(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/settings/git",
+        headers: auth(f.token, { "content-type": "application/x-www-form-urlencoded" }),
+        body: form({ scope: "global", kind: "https", action: "clear" }),
+      }),
+    );
+    expect(formBody.status).toBe(400);
+    expect(JSON.parse(formBody.body).code).toBe("invalid_request");
+
+    const agent = await handleSettings(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/settings/git",
+        headers: auth(f.agentToken, { "content-type": "application/json" }),
+        body: JSON.stringify({ scope: "global", kind: "https", action: "clear" }),
+      }),
+    );
+    expect(agent.status).toBe(403);
+  });
+
+  it("keeps identity mutations on the normal settings route", async () => {
+    const f = fixture();
+    const set = await handleSettings(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/settings",
+        headers: auth(f.token),
+        body: form({
+          scope: "global",
+          key: "git.user.name",
+          action: "set",
+          value: "Hanse Agent",
+        }),
+      }),
+    );
+    expect(set.status).toBe(200);
+    expect(f.settings.resolve({}).effective.git.user.name.value).toBe("Hanse Agent");
+
+    const read = await handleSettings(
+      f.deps,
+      request({ headers: auth(f.token), query: { scope: "global" } }),
+    );
+    expect(JSON.parse(read.body).effective.git.user.name).toMatchObject({
+      value: "Hanse Agent",
+      source: "global",
+    });
+    expect(JSON.parse(read.body).scoped["global:git.user.name"]).toEqual({
+      state: "set",
+      value: "Hanse Agent",
+    });
+  });
+
+  it("accepts a 32 KiB SSH key plus known_hosts within the 64 KiB body limit", async () => {
+    const f = fixture({ runSshKeygen: fakeSshKeygen() });
+    const server = createHttpServer(f.deps);
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    const port = typeof address === "object" && address !== null ? address.port : 0;
+    const paddedKey = `-----BEGIN OPENSSH PRIVATE KEY-----\n${"a".repeat(31 * 1024)}\n-----END OPENSSH PRIVATE KEY-----\n`;
+    const response = await fetch(`http://127.0.0.1:${port}/api/settings/git`, {
+      method: "POST",
+      headers: { ...auth(f.token), "content-type": "application/json" },
+      body: JSON.stringify({
+        scope: "global",
+        kind: "ssh",
+        action: "set",
+        value: {
+          privateKey: paddedKey,
+          knownHosts: `${"#".repeat(8 * 1024)}\nexample.com ssh-ed25519 AAAA`,
+        },
+      }),
+    });
+    expect(response.status).toBe(200);
+    const payload = (await response.json()) as { code?: string };
+    expect(payload.code).toBeUndefined();
   });
 });

@@ -58,6 +58,11 @@ encrypted model-provider keys live in the coordinator SQLite database (`settings
 `provider_keys` migrations). Missing rows inherit; `null`/`cleared` is an explicit empty override.
 Provider keys are never written to YAML, the project repository, or the opencode config overlay.
 
+Git identity and git credentials are also Settings, not manifests: `git.user.name`/`git.user.email`
+live in `settings`, and per-scope SSH/HTTPS credentials live encrypted in `setting_secrets`
+(migration v8). They are materialized into the application HOME at start; do not commit them to
+`.hanse/project.yaml`, `.hanse/app.yaml`, a Dockerfile, or a repository `.git/config`.
+
 ## Runtime layout (outside repositories)
 
 Coordinator state lives under `$XDG_STATE_HOME/hanse/` (`coordinator.db`, `secret.key`, and the
@@ -69,11 +74,16 @@ Per-app agent state lives outside the coordinator state, under `HANSE_AGENTS_HOM
 ```text
 <projectId>/<appKey>/
 ├── home/                  HOME, .omo profile, tool config
+│   └── .config/hanse/git/ coordinator-materialized git identity and credentials
 ├── data/ state/ config/ cache/   XDG dirs and opencode DB
 ├── tmp/                   per-app TMPDIR
 ├── mise/                  per-app toolchain cache
 └── mcp-token              per-app MCP token (0600)
 ```
+
+`home/.config/hanse/git/` is written by the coordinator from the Git settings (`config`, `ssh`,
+`askpass`, and optional `id`, `known_hosts`, `token`, `username`, `https_hosts`). The app can read
+it; the runner mounts it read-only for one-shot git.
 
 The app directory remains under the workspace; only its runtime state lives under the agents root.
 In B1, the runner mounts the app directory at `/data/workspace/<project>/<app>` and only that app's

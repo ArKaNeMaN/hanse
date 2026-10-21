@@ -899,3 +899,113 @@ describe("GitService injected runner", () => {
     });
   });
 });
+
+describe("GitService test connection", () => {
+  it("defaults to origin, parses refs/HEAD, and redacts username userinfo", async () => {
+    const root = workspace();
+    const repo = await initRepo(root);
+    const temp = path.join(root, "tmp");
+    mkdirSync(temp, { recursive: true });
+    const runner: GitRunner = async (command) => {
+      if (command.args.includes("remote") && command.args.includes("get-url")) {
+        return { stdout: "https://user@example.com/acme/repo.git\n", stderr: "", code: 0 };
+      }
+      if (command.args.includes("ls-remote")) {
+        return {
+          stdout: "abc123\tHEAD\nabc123\trefs/heads/main\ndef456\trefs/heads/feature\n",
+          stderr: "",
+          code: 0,
+        };
+      }
+      return { stdout: "", stderr: "", code: 1 };
+    };
+    const service = new GitService({
+      workspaceRoot: root,
+      runner,
+      env: { PATH: process.env.PATH, TMPDIR: temp },
+    });
+
+    const result = await service.testConnection(resolve(repo), { kind: "https" });
+    expect(result).toEqual({
+      ok: true,
+      kind: "https",
+      remote: "https://***@example.com/acme/repo.git",
+      refs: 3,
+      head: "abc123",
+      warnings: [],
+    });
+  });
+
+  it("maps missing origin, scheme mismatch, and auth failures", async () => {
+    const root = workspace();
+    const repo = await initRepo(root);
+    const missing: GitRunner = async () => ({ stdout: "", stderr: "no such remote", code: 2 });
+    const missingService = new GitService({ workspaceRoot: root, runner: missing });
+    await expect(
+      missingService.testConnection(resolve(repo), { kind: "ssh" }),
+    ).rejects.toMatchObject({ code: "missing_remote" });
+
+    const mismatch = new GitService({
+      workspaceRoot: root,
+      runner: async () => ({ stdout: "", stderr: "", code: 0 }),
+    });
+    await expect(
+      mismatch.testConnection(resolve(repo), {
+        kind: "ssh",
+        remote: "https://example.com/acme/repo.git",
+      }),
+    ).rejects.toMatchObject({ code: "credential_scheme_mismatch" });
+
+    const auth: GitRunner = async (command) => {
+      if (command.args.includes("ls-remote")) {
+        return {
+          stdout: "",
+          stderr: "fatal: Authentication failed for 'https://example.com/acme/repo.git/'",
+          code: 128,
+        };
+      }
+      return { stdout: "", stderr: "", code: 0 };
+    };
+    const authService = new GitService({ workspaceRoot: root, runner: auth });
+    await expect(
+      authService.testConnection(resolve(repo), {
+        kind: "https",
+        remote: "https://example.com/acme/repo.git",
+      }),
+    ).rejects.toMatchObject({ code: "auth_failed" });
+  });
+
+  it("adds the TOFU warning and host-key fingerprints from ssh-keygen", async () => {
+    const root = workspace();
+    const repo = await initRepo(root);
+    const temp = path.join(root, "tmp");
+    const bin = path.join(root, "bin");
+    mkdirSync(temp, { recursive: true });
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(
+      path.join(bin, "ssh-keygen"),
+      "#!/bin/sh\nprintf '%s\\n' 'example.com ssh-ed25519 SHA256:fakefingerprint'\n",
+      { mode: 0o755 },
+    );
+    chmodSync(path.join(bin, "ssh-keygen"), 0o755);
+    writeFileSync(path.join(temp, "hanse-known_hosts"), "example.com ssh-ed25519 AAAA\n");
+    const runner: GitRunner = async (command) => {
+      if (command.args.includes("ls-remote")) {
+        return { stdout: "abc123\tHEAD\n", stderr: "", code: 0 };
+      }
+      return { stdout: "", stderr: "", code: 0 };
+    };
+    const service = new GitService({
+      workspaceRoot: root,
+      runner,
+      env: { PATH: `${bin}:${process.env.PATH ?? ""}`, TMPDIR: temp },
+    });
+
+    const result = await service.testConnection(resolve(repo), {
+      kind: "ssh",
+      remote: "ssh://git@example.com/acme/repo.git",
+    });
+    expect(result.warnings[0]).toContain("No known_hosts was supplied");
+    expect(result.warnings.join("\n")).toContain("SHA256:fakefingerprint");
+  });
+});

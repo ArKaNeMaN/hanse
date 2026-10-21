@@ -1,10 +1,12 @@
 import { ConfigError } from "../config/load.js";
+import { GitCredentialValidationError, validateSshCredential } from "../git/credentials.js";
+import { validateGitTestRequest } from "../git/request.js";
 import { GitError, type GitErrorCode } from "../git/service.js";
 import { appDir, findApp } from "./apps.js";
 import { principalFrom } from "./auth.js";
 import type { HttpDeps, HttpRequest, HttpResponse } from "./handler.js";
 
-type GitAction = "status" | "fetch" | "update" | "push" | "commit" | "switch";
+type GitAction = "status" | "fetch" | "update" | "push" | "commit" | "switch" | "test";
 
 const GIT_PATH = /^\/api\/projects\/([^/]+)\/apps\/([^/]+)\/git(?:\/(.*))?$/;
 
@@ -65,6 +67,8 @@ function errorStatus(code: GitErrorCode, action: GitAction): number {
   switch (code) {
     case "invalid_input":
     case "invalid_remote":
+    case "credential_scheme_mismatch":
+    case "host_not_allowed":
       return 400;
     case "outside_workspace":
       return 403;
@@ -82,14 +86,22 @@ function errorStatus(code: GitErrorCode, action: GitAction): number {
     case "diverged":
     case "worktree_dirty":
     case "push_rejected":
+    case "not_running":
+    case "restart_required":
+    case "missing_remote":
       return 409;
     case "auth_failed":
       return 502;
     case "timeout":
+      return 504;
     case "output_too_large":
       return 500;
+    case "runner_required":
+      return 503;
     case "git_failed":
-      return action === "fetch" || action === "update" || action === "push" ? 502 : 500;
+      return action === "fetch" || action === "update" || action === "push" || action === "test"
+        ? 502
+        : 500;
   }
 }
 
@@ -141,6 +153,53 @@ export async function handleGit(deps: HttpDeps, request: HttpRequest): Promise<H
       return json(403, { error: error.message, code: "outside_workspace" });
     }
     throw error;
+  }
+
+  if (subpath === "test") {
+    if (request.method !== "POST") {
+      return methodNotAllowed();
+    }
+    if (!isJsonContentType(request.headers["content-type"])) {
+      return json(400, {
+        error: "content-type must be application/json",
+        code: "invalid_input",
+      });
+    }
+    const body = parseJsonBody(request.body);
+    if (body === undefined) {
+      return json(400, { error: "invalid JSON body", code: "invalid_input" });
+    }
+    try {
+      const testRequest = await validateGitTestRequest(body);
+      if (testRequest.kind === "ssh" && testRequest.ssh !== undefined) {
+        try {
+          validateSshCredential(testRequest.ssh);
+        } catch (error) {
+          if (error instanceof GitCredentialValidationError) {
+            return json(400, {
+              error: error.message,
+              code: "invalid_git_credential",
+              ...(error.field === undefined ? {} : { field: error.field }),
+            });
+          }
+          throw error;
+        }
+      }
+      const resolved = await deps.git.resolveRepository(
+        found.project.rootPath,
+        folder,
+        found.app.id,
+      );
+      if (deps.runner === undefined) {
+        throw new GitError(
+          "runner_required",
+          "Test connection requires the runner; configure HANSE_RUNNER_URL.",
+        );
+      }
+      return json(200, await deps.git.testConnection(resolved, testRequest));
+    } catch (error) {
+      return failed("test", error);
+    }
   }
 
   if (subpath === "status") {

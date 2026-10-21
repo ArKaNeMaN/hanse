@@ -47,3 +47,30 @@
 
 Previous stage decisions are recorded in
 [`docs/journal/0010-chat-diff-highlighting.md`](./journal/0010-chat-diff-highlighting.md).
+
+## Previous stage: `0010-git-credentials`
+
+> No open items for `0010-git-credentials`; the nine owner decisions are recorded in [`docs/design/git-credentials.md`](design/git-credentials.md) section 4.
+
+## Resolved owner decisions
+
+1. **Variant A: native git inside the app container with per-app materialized credentials.** The agent
+   can read its own credentials; this is accepted. Mitigate with repository-scoped deploy keys or
+   fine-grained tokens and operator documentation.
+2. **SSH first, HTTPS also required.** GPG signing is out of scope. Passphrase-protected SSH keys are
+   rejected on save in v1; the derived public key and fingerprint are shown for the deploy-key
+   workflow.
+3. **`known_hosts` is optional.** When provided, SSH uses `StrictHostKeyChecking=yes` with the managed
+   file; when absent, `accept-new` plus a TOFU warning.
+4. **The application directory is the repository root for v1.** Monorepo/project-root repositories are
+   out of scope; `GIT_CEILING_DIRECTORIES` stays.
+5. **The web IDE is out of scope** and its terminal does not receive these credentials.
+6. **Git settings apply on an explicit agent restart.** The web workbench reads the same materialized
+   files; Test connection tests draft values without saving.
+7. **One SSH credential and one HTTPS credential per scope.** The schema and wrappers leave a seam for
+   host-keyed credentials later.
+8. **Remove the entire credential/config `HANSE_GIT_*` mechanism, `HANSE_HOST_GIT_DIR`, and
+   `HANSE_GIT_SSL_CAINFO` with no fallback**, plus the unused legacy `secrets` table/helper. `deployment-host`
+   had no rows, so no data migration is required.
+9. **Test connection** runs draft values through the runner's network-enabled one-shot sandbox and is
+   app-page-only.
