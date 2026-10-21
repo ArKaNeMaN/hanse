@@ -3,7 +3,7 @@ import type { Duplex } from "node:stream";
 import { cookieToken, isHumanCookie } from "./auth.js";
 import type { PageChrome, SiteModel } from "./dashboard.js";
 import type { HttpDeps } from "./handler.js";
-import { appShell, escapeHtml, icon, pageHeader, runtimePill } from "./ui.js";
+import { appShell, escapeHtml, icon, runtimePill } from "./ui.js";
 
 function navProjects(site: SiteModel): Array<{ id: string; name: string; appCount: number }> {
   return site.projects.map((project) => ({
@@ -56,30 +56,22 @@ export function renderTerminalPage(
   const runtime = site.runtime.get(app.id) ?? "stopped";
   const appHref = `/projects/${encodeURIComponent(project.id)}/apps/${encodeURIComponent(app.appKey)}`;
   const wsPath = `/api/apps/${encodeURIComponent(app.appKey)}/terminal?project=${encodeURIComponent(project.id)}`;
-  const header = pageHeader({
-    overline: "Operator terminal",
-    title: app.appKey,
-    description: "Interactive shell attached to this application's managed container.",
-    meta: [project.name, app.kind ?? "app", app.path],
-    actions: `<a class="btn btn-secondary" href="${escapeHtml(appHref)}">${icon("terminal")}Application</a>`,
-  });
+  const runtimeUrl = `/api/apps/${encodeURIComponent(app.appKey)}/runtime?project=${encodeURIComponent(project.id)}`;
 
-  const body = `<section class="card terminal-card" id="terminal" data-terminal-ws="${escapeHtml(wsPath)}" data-app-key="${escapeHtml(app.appKey)}" data-project-id="${escapeHtml(project.id)}">
-    <div class="card__head">
-      <h2 class="card__title" id="terminal-title">Terminal</h2>
-      <div class="cluster">
-        ${runtimePill(runtime)}
-        <span class="badge" id="terminal-status" role="status" aria-live="polite">Connecting</span>
-        <button class="btn btn-secondary btn-sm" type="button" id="terminal-reconnect">${icon("refresh")}Reconnect</button>
-        <button class="btn btn-ghost btn-sm" type="button" id="terminal-close">${icon("x")}Close</button>
+  const body = `<section class="terminal-shell" id="terminal" aria-labelledby="terminal-title" data-terminal-ws="${escapeHtml(wsPath)}" data-app-key="${escapeHtml(app.appKey)}" data-project-id="${escapeHtml(project.id)}" data-runtime-state="${escapeHtml(runtime)}" data-runtime-url="${escapeHtml(runtimeUrl)}">
+    <div class="terminal-toolbar">
+      <h1 class="terminal-toolbar__title" id="terminal-title">${escapeHtml(app.appKey)} / Operator terminal</h1>
+      <span class="terminal-toolbar__meta">${runtimePill(runtime)}</span>
+      <span class="terminal-toolbar__status"><span class="status" data-state="queued" id="terminal-status" role="status" aria-live="polite">${icon("clock")}Connecting</span></span>
+      <div class="terminal-toolbar__actions">
+        <button class="btn btn-ghost btn-sm" type="button" id="terminal-copy" aria-label="Copy selection" title="Select terminal text to copy" disabled>${icon("copy")}<span class="btn__label">Copy</span></button>
+        <button class="btn btn-secondary btn-sm" type="button" id="terminal-reconnect" aria-label="Reconnect terminal" title="Reconnect terminal">${icon("refresh")}<span class="btn__label">Reconnect</span></button>
+        <button class="btn btn-ghost btn-sm" type="button" id="terminal-close" aria-label="Close terminal" title="Close terminal">${icon("x")}<span class="btn__label">Close</span></button>
       </div>
     </div>
-    <div class="card__body terminal-card__body">
-      <p class="small terminal-card__note">Operator shell in <span class="mono">${escapeHtml(app.appKey)}</span>. Closing this terminal does not stop the application.</p>
-      <pre class="terminal" id="terminal-output" role="log" aria-live="polite" aria-label="Terminal output" tabindex="0"></pre>
-      <textarea class="terminal__input" id="terminal-input" rows="1" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Terminal input" placeholder="Type to send input to the shell"></textarea>
-      <p class="small terminal-card__note">Keys are sent to the shell. Use Ctrl+C to interrupt; resizing the window updates the PTY size.</p>
-    </div>
+    <div class="terminal-banner" id="terminal-banner" hidden></div>
+    <div class="terminal-host" id="terminal-host"></div>
+    <p class="sr-only" id="terminal-announcer" role="status" aria-live="polite" aria-atomic="true"></p>
   </section>`;
 
   return appShell({
@@ -96,8 +88,15 @@ export function renderTerminalPage(
     pendingCount: site.pendingCount,
     operatorName: chrome.operatorName,
     notice: chrome.notice,
-    header,
-    scripts: ["/assets/terminal.js"],
+    header: "",
+    pageClass: "page--terminal",
+    bodyClass: "page__body--terminal",
+    scripts: [
+      "/assets/vendor/xterm/xterm-6.0.0.js",
+      "/assets/vendor/xterm/addon-fit-0.11.0.js",
+      "/assets/terminal.js",
+    ],
+    styles: ["/assets/vendor/xterm/xterm-6.0.0.css"],
     body,
     settingsHref: `/projects/${encodeURIComponent(project.id)}/apps/${encodeURIComponent(app.appKey)}/settings`,
   });

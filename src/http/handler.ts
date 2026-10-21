@@ -99,6 +99,18 @@ const ASSETS: Record<string, { file: string; contentType: string }> = {
     file: "vendor/prism/prism-1.30.0.min.js",
     contentType: "text/javascript; charset=utf-8",
   },
+  "/assets/vendor/xterm/xterm-6.0.0.css": {
+    file: "vendor/xterm/xterm-6.0.0.css",
+    contentType: "text/css; charset=utf-8",
+  },
+  "/assets/vendor/xterm/xterm-6.0.0.js": {
+    file: "vendor/xterm/xterm-6.0.0.js",
+    contentType: "text/javascript; charset=utf-8",
+  },
+  "/assets/vendor/xterm/addon-fit-0.11.0.js": {
+    file: "vendor/xterm/addon-fit-0.11.0.js",
+    contentType: "text/javascript; charset=utf-8",
+  },
   "/assets/ssh.js": { file: "ssh.js", contentType: "text/javascript; charset=utf-8" },
   "/assets/settings.js": {
     file: "settings.js",

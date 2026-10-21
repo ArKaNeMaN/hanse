@@ -179,9 +179,41 @@ describe("operator terminal page", () => {
     });
     expect(terminal.status).toBe(200);
     expect(terminal.contentType).toContain("text/html");
+    expect(terminal.body).toContain('class="page page--terminal"');
+    expect(terminal.body).toContain('class="page__body page__body--terminal"');
+    expect(terminal.body).toContain('class="terminal-shell" id="terminal"');
     expect(terminal.body).toContain('data-terminal-ws="/api/apps/a/terminal?project=p"');
-    expect(terminal.body).toContain("/assets/terminal.js");
-    expect(terminal.body).toContain("Operator shell");
+    expect(terminal.body).toContain('data-app-key="a"');
+    expect(terminal.body).toContain('data-project-id="p"');
+    expect(terminal.body).toContain('data-runtime-state="stopped"');
+    expect(terminal.body).toContain('data-runtime-url="/api/apps/a/runtime?project=p"');
+
+    expect(terminal.body).toContain('class="terminal-toolbar"');
+    expect(terminal.body).toContain("a / Operator terminal");
+    expect(terminal.body).toContain('id="terminal-status"');
+    expect(terminal.body).toContain('role="status"');
+    expect(terminal.body).toContain('aria-live="polite"');
+    expect(terminal.body).toContain('id="terminal-copy"');
+    expect(terminal.body).toContain('id="terminal-reconnect"');
+    expect(terminal.body).toContain('id="terminal-close"');
+    expect(terminal.body).toContain('id="terminal-banner"');
+    expect(terminal.body).toContain('id="terminal-host"');
+    expect(terminal.body).toContain('id="terminal-announcer"');
+    expect(terminal.body).not.toContain('id="terminal-output"');
+    expect(terminal.body).not.toContain('id="terminal-input"');
+
+    const xtermCss = terminal.body.indexOf("/assets/vendor/xterm/xterm-6.0.0.css");
+    const appCss = terminal.body.indexOf("/assets/app.css");
+    expect(xtermCss).toBeGreaterThan(-1);
+    expect(appCss).toBeGreaterThan(-1);
+    expect(xtermCss).toBeLessThan(appCss);
+
+    const xtermScript = terminal.body.indexOf("/assets/vendor/xterm/xterm-6.0.0.js");
+    const fitScript = terminal.body.indexOf("/assets/vendor/xterm/addon-fit-0.11.0.js");
+    const terminalScript = terminal.body.indexOf("/assets/terminal.js");
+    expect(xtermScript).toBeGreaterThan(-1);
+    expect(fitScript).toBeGreaterThan(xtermScript);
+    expect(terminalScript).toBeGreaterThan(fitScript);
     expect(terminal.body).not.toContain(RUNTIME_TOKEN);
 
     const application = handleRequest(f.deps, {

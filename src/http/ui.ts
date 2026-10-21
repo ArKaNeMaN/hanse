@@ -258,6 +258,7 @@ export function documentPage(options: {
   title: string;
   body: string;
   scripts?: string[];
+  styles?: string[];
   moduleScripts?: string[];
 }): string {
   return `<!doctype html>
@@ -278,6 +279,7 @@ export function documentPage(options: {
       })();
     </script>
     <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml" />
+    ${(options.styles ?? []).map((style) => `<link rel="stylesheet" href="${escapeHtml(style)}" />`).join("")}
     <link rel="stylesheet" href="/assets/app.css" />
     <script src="/assets/app.js" defer></script>
     ${(options.scripts ?? []).map((script) => `<script src="${escapeHtml(script)}" defer></script>`).join("")}
@@ -315,6 +317,7 @@ export interface ShellOptions {
   pageClass?: string;
   bodyClass?: string;
   scripts?: string[];
+  styles?: string[];
   moduleScripts?: string[];
   notice?: Notice;
   topbarActions?: string;
@@ -454,6 +457,7 @@ export function appShell(options: ShellOptions): string {
   return documentPage({
     title: `${options.title} - hanse`,
     scripts: options.scripts,
+    styles: options.styles,
     moduleScripts: options.moduleScripts,
     body: `<a class="skip-link" href="#main">Skip to content</a>
     <div class="app-shell" data-nav="closed" id="shell">

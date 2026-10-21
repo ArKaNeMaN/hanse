@@ -1313,6 +1313,7 @@ export class RunnerService {
 
     const execId = await this.#exec.createExec(inspect.Id, {
       cmd: ["/bin/sh", "-lc", EXEC_SHELL],
+      env: { TERM: "xterm-256color", COLORTERM: "truecolor", LANG: "C.UTF-8" },
     });
     const stream = await this.#exec.startExec(execId);
     if (!socket.writable) {

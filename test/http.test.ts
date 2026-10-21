@@ -766,6 +766,50 @@ describe("http API and assets", () => {
     expect(missing.status).toBe(404);
   });
 
+  it("serves the vendored xterm assets and rejects unknown xterm paths", () => {
+    const f = fixture();
+    const assets = [
+      {
+        path: "/assets/vendor/xterm/xterm-6.0.0.css",
+        contentType: "text/css; charset=utf-8",
+        marker: ".xterm",
+      },
+      {
+        path: "/assets/vendor/xterm/xterm-6.0.0.js",
+        contentType: "text/javascript; charset=utf-8",
+        marker: "Terminal",
+      },
+      {
+        path: "/assets/vendor/xterm/addon-fit-0.11.0.js",
+        contentType: "text/javascript; charset=utf-8",
+        marker: "FitAddon",
+      },
+    ];
+    for (const asset of assets) {
+      const response = handleRequest(deps(f), {
+        method: "GET",
+        path: asset.path,
+        headers: {},
+      });
+      expect(response.status).toBe(200);
+      expect(response.contentType).toBe(asset.contentType);
+      expect(response.body).toContain(asset.marker);
+    }
+
+    for (const assetPath of [
+      "/assets/vendor/xterm/xterm-9.9.9.js",
+      "/assets/vendor/xterm/addon-fit-9.9.9.js",
+      "/assets/vendor/xterm/unknown.css",
+    ]) {
+      const missing = handleRequest(deps(f), {
+        method: "GET",
+        path: assetPath,
+        headers: {},
+      });
+      expect(missing.status).toBe(404);
+    }
+  });
+
   it("dispatches settings routes before the chat fallback", async () => {
     const f = fixture();
     const token = humanToken(f.db);

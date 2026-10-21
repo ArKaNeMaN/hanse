@@ -284,6 +284,11 @@ describe("runner operator terminal exec", () => {
     expect(exec.created[0]?.containerId).toBe("container-1");
     expect(exec.created[0]?.options.cmd[0]).toBe("/bin/sh");
     expect(exec.created[0]?.options.cmd.join(" ")).toContain("exec /bin/bash -l");
+    expect(exec.created[0]?.options.env).toEqual({
+      TERM: "xterm-256color",
+      COLORTERM: "truecolor",
+      LANG: "C.UTF-8",
+    });
     expect(exec.started).toEqual(["exec-1"]);
 
     client.send("echo hi\r");
