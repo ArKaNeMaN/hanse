@@ -3,6 +3,7 @@ import {
   MAX_KNOWN_HOSTS_BYTES,
   MAX_REMOTE_CHARS,
   MAX_SSH_KEY_BYTES,
+  normalizeSshPrivateKey,
   validateHttpsCredential,
 } from "./credentials.js";
 import { validateRemoteUrl } from "./env.js";
@@ -150,7 +151,7 @@ function sshDraft(value: unknown): GitSshTestDraft {
   if (typeof value.privateKey !== "string") {
     throw invalidTest("ssh.privateKey must be a string");
   }
-  const privateKey = value.privateKey.replace(/\r\n/g, "\n");
+  const privateKey = normalizeSshPrivateKey(value.privateKey);
   const bytes = Buffer.byteLength(privateKey, "utf8");
   if (bytes < 1 || bytes > MAX_SSH_KEY_BYTES) {
     throw invalidTest(`ssh.privateKey must be between 1 and ${MAX_SSH_KEY_BYTES} bytes`);

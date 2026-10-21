@@ -14,6 +14,7 @@ import {
   validateRemoteUrl,
   validateSshCredential,
 } from "../src/git/credentials.js";
+import { validateGitTestRequest } from "../src/git/request.js";
 
 const dirs: string[] = [];
 const hasSshKeygen = spawnSync("ssh-keygen", ["-V"], { encoding: "utf8" }).error === undefined;
@@ -118,6 +119,17 @@ describe("validateSshCredential", () => {
       expect(validated.privateKey).not.toContain("\r");
       expect(validated.privateKey.startsWith("-----BEGIN OPENSSH PRIVATE KEY-----\n")).toBe(true);
     }
+  });
+
+  it("normalizes indented SSH drafts in git test requests", async () => {
+    const indented = VALID_SSH_KEY.split("\n")
+      .map((line) => `  ${line}`)
+      .join("\n");
+    const request = await validateGitTestRequest({
+      kind: "ssh",
+      ssh: { privateKey: indented },
+    });
+    expect(request.ssh?.privateKey).toBe(VALID_SSH_KEY);
   });
 
   it("rejects a real passphrase-protected key with the v1 message", () => {

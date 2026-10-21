@@ -139,7 +139,7 @@ function normalizeNewlines(value: string): string {
   return value.replace(/\r\n/g, "\n");
 }
 
-function normalizeSshPrivateKey(value: string): string {
+export function normalizeSshPrivateKey(value: string): string {
   // Pasted keys often carry indentation, trailing spaces, or a BOM. OpenSSH's PEM parser
   // rejects those with an opaque "error in libcrypto", so normalize the envelope first.
   const lines = value
