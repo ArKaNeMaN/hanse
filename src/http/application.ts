@@ -201,6 +201,7 @@ function settingsState(
   pending: boolean,
   reasons: string[],
   runtimeConfigured: boolean,
+  runtime: string,
   settingsHref: string,
 ): string {
   if (pending) {
@@ -210,10 +211,13 @@ function settingsState(
       : "The agent is running with older settings.";
     return `<div class="state-strip__value"><span class="status" data-state="awaiting_approval">${icon("stamp")}Restart required</span></div><p class="small">${copy}</p>`;
   }
-  if (runtimeConfigured) {
-    return `<div class="state-strip__value"><span class="status" data-state="delivered">${icon("check")}Applied</span></div><p class="small">Settings match the running agent.</p><div class="state-strip__actions"><a class="btn btn-ghost btn-sm" href="${escapeHtml(settingsHref)}">Review settings</a></div>`;
+  if (!runtimeConfigured) {
+    return `<div class="state-strip__value"><span class="status" data-state="cancelled">${icon("slash")}Unavailable</span></div><p class="small">The agent runtime is not configured.</p><div class="state-strip__actions"><a class="btn btn-ghost btn-sm" href="${escapeHtml(settingsHref)}">Review settings</a></div>`;
   }
-  return `<div class="state-strip__value"><span class="status" data-state="cancelled">${icon("slash")}Unavailable</span></div><p class="small">The agent runtime is not configured.</p><div class="state-strip__actions"><a class="btn btn-ghost btn-sm" href="${escapeHtml(settingsHref)}">Review settings</a></div>`;
+  if (runtime === "stopped" || runtime === "error") {
+    return `<div class="state-strip__value"><span class="status" data-state="queued">${icon("clock")}Saved</span></div><p class="small">Settings apply when the agent starts.</p><div class="state-strip__actions"><a class="btn btn-ghost btn-sm" href="${escapeHtml(settingsHref)}">Review settings</a></div>`;
+  }
+  return `<div class="state-strip__value"><span class="status" data-state="delivered">${icon("check")}Applied</span></div><p class="small">Settings match the running agent.</p><div class="state-strip__actions"><a class="btn btn-ghost btn-sm" href="${escapeHtml(settingsHref)}">Review settings</a></div>`;
 }
 
 /** Render the application page shell; repository state is hydrated by assets/git.js. */
@@ -292,7 +296,7 @@ export function renderApplication(
     </div>
     <div class="state-strip__cell" id="settings-state">
       <span class="state-strip__label">Settings</span>
-      ${settingsState(pending, pendingReasons, runtimeConfigured, settingsHref)}
+      ${settingsState(pending, pendingReasons, runtimeConfigured, runtime, settingsHref)}
     </div>
   </section>${restartDialog}`;
 

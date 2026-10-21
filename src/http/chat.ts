@@ -368,6 +368,7 @@ function renderChatPage(
     breadcrumb,
     projects: navProjects(site),
     pendingCount: site.pendingCount,
+    settingsHref: `/projects/${encodeURIComponent(project.id)}/apps/${encodeURIComponent(app.appKey)}/settings`,
     operatorName: principal.name,
     notice: chrome.notice,
     header: "",

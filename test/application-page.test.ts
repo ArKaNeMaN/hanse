@@ -358,8 +358,9 @@ describe("application page", () => {
     expect(body).not.toContain("The agent is running with older settings.");
   });
 
-  it("renders Applied when a manager is configured and settings are current", () => {
+  it("renders Applied when a manager is configured, the agent is running, and settings are current", () => {
     const f = fixture();
+    setRuntime(f, "running");
     f.deps.manager = {
       pendingRestart: () => ({ pending: false, reasons: [] }),
     } as unknown as InstanceManager;
@@ -371,6 +372,19 @@ describe("application page", () => {
     expect(body).toContain("Review settings");
     expect(body).not.toContain("Unavailable");
     expect(body).not.toContain("Restart required");
+  });
+
+  it("renders Saved when the agent is stopped and settings are current", () => {
+    const f = fixture();
+    setRuntime(f, "stopped");
+    f.deps.manager = {
+      pendingRestart: () => ({ pending: false, reasons: [] }),
+    } as unknown as InstanceManager;
+
+    const body = page(f);
+    expect(body).toContain("Saved");
+    expect(body).toContain("Settings apply when the agent starts.");
+    expect(body).not.toContain("Settings match the running agent.");
   });
 
   it("renders Unavailable when the runtime is not configured", () => {
