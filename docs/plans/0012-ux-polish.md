@@ -1,6 +1,6 @@
 # Plan 0012 - UX/UI polish pass
 
-Status: **implemented and verified locally; deployment pending.** Design:
+Status: **implemented, verified, and deployed as `sha-88faab7`.** Design:
 [`docs/design/ux-polish.md`](../design/ux-polish.md). Design review: `oracle`, 2026-10-21,
 **PASS-WITH-CHANGES** (findings folded). Plan review: `momus`, 2026-10-21, **PASS-WITH-CHANGES**
 (findings folded). Owner is unavailable and delegated all decisions; no owner questions remain.

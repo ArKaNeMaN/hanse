@@ -1,6 +1,6 @@
 # Design - UX/UI polish pass
 
-Status: **implemented and verified locally; deployment pending.** Design review: `oracle`,
+Status: **implemented, verified, and deployed as `sha-88faab7`.** Design review: `oracle`,
 PASS-WITH-CHANGES; plan review: `momus`, PASS-WITH-CHANGES; evidence:
 [`artifacts/ux/`](./artifacts/ux/README.md).
 

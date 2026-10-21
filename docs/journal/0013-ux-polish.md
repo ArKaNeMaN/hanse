@@ -58,7 +58,17 @@ Status: implemented and verified locally; deployment pending. Design:
 - Chat runtime polling can lag up to 10s; there is no runtime SSE.
 - Terminal copy/paste uses `document.execCommand` on insecure HTTP.
 
-## Deployment
+## Deployment - 2026-10-21
 
-Pending. Deploy the commit with the SSH and git-credentials stages per
-[`docs/deploy/host.md`](../deploy/deployment-host.md); migration v10 is additive.
+Deployed commit `88faab7` to `deployment-host` (`<LAN_HOST>:8787`) on top of the SSH
+(`b844bc3`) and git-credentials (`e2d89a2`) stages. Images:
+`hanse:sha-88faab7` (`2c1bef452b46`), `hanse-agent-default:sha-88faab7`
+(`6139d064ac37`), `hanse-agent-ide:sha-88faab7` (`41035bdcb9e8`), and
+`hanse-runner:sha-88faab7` (`0d0927587cf6`). `HANSE_AGENT_TAG` was updated so all three static
+services and the lazily recreated app containers use the same tag. Pre-deploy backup:
+`<BACKUP_DIR>/20261021-054829-pre-ux/`; rollback tags are prefixed
+`hanse*:rollback-20261021-054829-pre-ux`. Health: `/healthz`, login, assets (including the three
+xterm files), authenticated pages, `/api/projects`, and `/ide/` passed; `agent-runtime-probe.sh b1`
+and `b2` passed; `demo-app` recreated on the new agent image; a live terminal WebSocket returned
+`UX_OK` through the coordinator/runner/Docker path. Deployment record:
+`docs/deploy/deploy-log.md` (local-only).

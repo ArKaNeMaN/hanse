@@ -509,7 +509,7 @@ coordinator; operators do not set them.
 
 ## Verification
 
-`npm run lint && npm run typecheck && npm test && npm run build` (all green; 1194 tests). B1 core
+`npm run lint && npm run typecheck && npm test && npm run build` (all green; 1194 tests). Deployed on `deployment-host` as `sha-88faab7`; B1 core
 live smoke on `deployment-host`: coordinator/IDE/runner healthy, per-app `demo-app` container running,
 `scripts/agent-runtime-probe.sh b1` passes, coordinator recreate reattaches the app network, and the
 app agent has no `/data/state`, Docker socket, operator/runtime token, or sibling app access.
