@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, realpathSync, rmSync } from "node:fs";
 import path from "node:path";
 import type { AgentRuntimeClient } from "../agent/client.js";
+import { stoppedStatus } from "../agent/protocol.js";
 import {
   type AppRuntimeSpec,
   computeSpecHash,
@@ -262,6 +263,8 @@ export class InstanceManager {
   readonly #options: InstanceManagerOptions;
   readonly #running = new Map<string, Entry>();
   readonly #locks = new Map<string, Promise<unknown>>();
+  #statusReconcile: Promise<void> | undefined;
+  #statusTimer: ReturnType<typeof setInterval> | undefined;
 
   constructor(db: SqliteDatabase, runtimeRoot: string, options: InstanceManagerOptions) {
     this.#db = db;
@@ -639,13 +642,51 @@ export class InstanceManager {
     });
   }
 
-  async restartIfRunning(app: ManagedApp): Promise<boolean> {
-    let running = this.#running.has(app.id);
-    if (!running) {
-      const status = await this.#options.runtime.status(app.id).catch(() => undefined);
-      running = status?.state === "running" || status?.state === "starting";
+  /**
+   * Reconcile persisted `instances` state with the runtime after a coordinator restart or an
+   * out-of-band container stop. Only rows that still claim to be running/starting are probed;
+   * transport failures leave the last known state untouched so a temporarily unavailable runner
+   * cannot turn a live agent into a stopped one.
+   */
+  reconcileStatuses(): Promise<void> {
+    if (this.#statusReconcile !== undefined) {
+      return this.#statusReconcile;
     }
+    const run = this.#reconcileStatuses().finally(() => {
+      this.#statusReconcile = undefined;
+    });
+    this.#statusReconcile = run;
+    return run;
+  }
+
+  /** Start the best-effort background reconciler; safe to call more than once. */
+  startStatusReconciler(intervalMs = 15_000): void {
+    if (this.#statusTimer !== undefined) {
+      return;
+    }
+    const tick = (): void => {
+      void this.reconcileStatuses().catch(() => undefined);
+    };
+    tick();
+    const timer = setInterval(tick, intervalMs);
+    timer.unref();
+    this.#statusTimer = timer;
+  }
+
+  stopStatusReconciler(): void {
+    if (this.#statusTimer === undefined) {
+      return;
+    }
+    clearInterval(this.#statusTimer);
+    this.#statusTimer = undefined;
+  }
+
+  async restartIfRunning(app: ManagedApp): Promise<boolean> {
+    const status = await this.#options.runtime.status(app.id);
+    const running = status?.state === "running" || status?.state === "starting";
     if (!running) {
+      this.#forgetRunning(app.id);
+      this.#recordStatusById(app.id, status ?? stoppedStatus(app.id));
       return false;
     }
     await this.stopApp(app.id);
@@ -702,10 +743,52 @@ export class InstanceManager {
    * them through the same token files and per-app password.
    */
   detach(): void {
+    this.stopStatusReconciler();
     for (const entry of this.#running.values()) {
       clearEndpointAuthorization(entry.endpoint);
     }
     this.#running.clear();
+  }
+
+  #forgetRunning(appId: string): void {
+    const entry = this.#running.get(appId);
+    if (entry === undefined) {
+      return;
+    }
+    clearEndpointAuthorization(entry.endpoint);
+    this.#running.delete(appId);
+  }
+
+  async #reconcileStatuses(): Promise<void> {
+    const rows = this.#db
+      .prepare(
+        `SELECT app_id AS appId FROM instances
+         WHERE COALESCE(runtime_state, state) <> 'stopped'`,
+      )
+      .all() as { appId: string }[];
+    await Promise.all(
+      rows.map(async ({ appId }) => {
+        try {
+          await this.#withAppLock(appId, async () => {
+            let status: Awaited<ReturnType<AgentRuntimeClient["status"]>>;
+            try {
+              status = await this.#options.runtime.status(appId);
+            } catch {
+              return;
+            }
+            if (
+              status === undefined ||
+              (status.state !== "running" && status.state !== "starting")
+            ) {
+              this.#forgetRunning(appId);
+            }
+            this.#recordStatusById(appId, status ?? stoppedStatus(appId));
+          });
+        } catch {
+          // A DB or lock failure must not stop the background reconciler.
+        }
+      }),
+    );
   }
 
   #recordStatus(

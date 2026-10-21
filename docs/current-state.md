@@ -144,6 +144,11 @@ The runner exposes two runtime-token endpoints; the coordinator wraps them as hu
   `restartIfRunning()` (stop plus ensure) and reports a failure instead of claiming success. Applied
   settings/profile hashes are persisted on `instances` (migration v10); a running agent whose launch
   state cannot be confirmed shows `Applied state unknown` and `Restart required`, never `Applied`.
+- The coordinator reconciles persisted `running`/`starting` rows with the runner at startup and
+  every 15 seconds. Out-of-band stops become `stopped`/`error`; a restart that finds a stopped agent
+  persists `stopped` before showing `Agent is not running; settings apply on next start.`; a status
+  transport failure leaves the last known state unchanged. This prevents stale `Restart required`
+  markers after a deployment or coordinator restart.
 - Human-only JSON API under `/api/projects/:projectId/apps/:appKey/git`:
   `GET /status`, `POST /fetch`, `/update`, `/push`, `/commit`, `/branches/switch`. Mutations are
   JSON-only and require the operator session; agent principals receive `403`.
@@ -513,7 +518,7 @@ coordinator; operators do not set them.
 
 ## Verification
 
-`npm run lint && npm run typecheck && npm test && npm run build` (all green; 1210 tests). The UX
+`npm run lint && npm run typecheck && npm test && npm run build` (all green; 1,214 tests). The UX
 polish pass deployed as `sha-88faab7`; the settings live-save follow-up deployed as `sha-d2fcc3b`.
 B1 core
 live smoke on `deployment-host`: coordinator/IDE/runner healthy, per-app `demo-app` container running,

@@ -680,11 +680,7 @@ export async function handleSettings(deps: HttpDeps, request: HttpRequest): Prom
       restarted = await deps.manager.restartIfRunning(toManagedApp(found));
     } catch {
       return browser
-        ? redirectNotice(
-            returnTo,
-            "Restart failed. The agent is stopped; check the runtime log and retry.",
-            "error",
-          )
+        ? redirectNotice(returnTo, "Restart failed. Check the runtime log and retry.", "error")
         : json(502, { error: "restart failed" });
     }
     if (browser) {

@@ -607,6 +607,7 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
           defaultImage: defaultImageReference(),
           runner: new RunnerImageClient({ baseUrl: runnerUrl, token: runtimeToken }),
         });
+  manager.startStatusReconciler();
   const server = createHttpServer({
     db,
     workspaceRoot: workspace,
