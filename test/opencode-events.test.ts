@@ -1776,3 +1776,225 @@ describe("createEventStream", () => {
     expect(end.done).toBe(true);
   });
 });
+
+describe("message.updated usage mode", () => {
+  const usageInfo = {
+    id: "msg_usage",
+    role: "assistant",
+    sessionID: "ses_1",
+    providerID: "deepseek",
+    modelID: "deepseek-flash",
+    summary: true,
+    tokens: {
+      input: 12_345,
+      output: 678,
+      reasoning: 90,
+      cache: { read: 1_000, write: 250 },
+    },
+  };
+
+  it("adds the exact bounded usage, model, and summary fields", () => {
+    const projector = new EventProjector({ includeUsage: true });
+    const events = projector.project({
+      id: "evt_usage",
+      type: "message.updated",
+      properties: { sessionID: "ses_1", info: usageInfo },
+    });
+    expect(events[0]).toEqual({
+      type: "message.updated",
+      sessionID: "ses_1",
+      messageID: "msg_usage",
+      role: "assistant",
+      usage: {
+        input: 12_345,
+        output: 678,
+        reasoning: 90,
+        cacheRead: 1_000,
+        cacheWrite: 250,
+      },
+      model: { providerID: "deepseek", modelID: "deepseek-flash" },
+      summary: true,
+    });
+    expect(events[1]).toEqual({
+      type: "session.activity",
+      sessionID: "ses_1",
+      cause: "message",
+    });
+  });
+
+  it("omits usage, model, and summary in the default mode", () => {
+    const projector = new EventProjector();
+    const event = projector.project({
+      id: "evt_usage_default",
+      type: "message.updated",
+      properties: { sessionID: "ses_1", info: usageInfo },
+    })[0];
+    expect(event).toEqual({
+      type: "message.updated",
+      sessionID: "ses_1",
+      messageID: "msg_usage",
+      role: "assistant",
+    });
+    expect(event).not.toHaveProperty("usage");
+    expect(event).not.toHaveProperty("model");
+    expect(event).not.toHaveProperty("summary");
+  });
+
+  it("omits malformed usage and model fields while keeping valid ones", () => {
+    const projector = new EventProjector({ includeUsage: true });
+    const event = projector.project({
+      id: "evt_usage_bad",
+      type: "message.updated",
+      properties: {
+        sessionID: "ses_1",
+        info: {
+          id: "msg_bad",
+          role: "assistant",
+          sessionID: "ses_1",
+          providerID: 42,
+          modelID: "",
+          summary: "yes",
+          tokens: {
+            input: "12",
+            output: 1,
+            reasoning: 0,
+            cache: { read: 0, write: 0 },
+          },
+        },
+      },
+    })[0];
+    expect(event).toEqual({
+      type: "message.updated",
+      sessionID: "ses_1",
+      messageID: "msg_bad",
+      role: "assistant",
+    });
+  });
+
+  it("omits negative or non-finite token counts", () => {
+    const projector = new EventProjector({ includeUsage: true });
+    const event = projector.project({
+      id: "evt_usage_negative",
+      type: "message.updated",
+      properties: {
+        sessionID: "ses_1",
+        info: {
+          id: "msg_neg",
+          role: "assistant",
+          sessionID: "ses_1",
+          providerID: "deepseek",
+          modelID: "deepseek-flash",
+          tokens: {
+            input: -1,
+            output: Number.POSITIVE_INFINITY,
+            reasoning: 0,
+            cache: { read: 0, write: 0 },
+          },
+        },
+      },
+    })[0];
+    expect(event).not.toHaveProperty("usage");
+    expect(event).toMatchObject({
+      model: { providerID: "deepseek", modelID: "deepseek-flash" },
+    });
+  });
+
+  it("bounds the model identifiers", () => {
+    const projector = new EventProjector({ includeUsage: true });
+    const event = projector.project({
+      id: "evt_usage_long_model",
+      type: "message.updated",
+      properties: {
+        sessionID: "ses_1",
+        info: {
+          id: "msg_long",
+          role: "assistant",
+          sessionID: "ses_1",
+          providerID: "p".repeat(300),
+          modelID: "m".repeat(300),
+        },
+      },
+    })[0];
+    expect(event).toMatchObject({
+      model: { providerID: "p".repeat(200), modelID: "m".repeat(200) },
+    });
+  });
+
+  it("is threaded through createEventStream when requested", async () => {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(
+          encoder.encode(
+            sseEvent({
+              id: "evt_usage_stream",
+              type: "message.updated",
+              properties: { sessionID: "ses_1", info: usageInfo },
+            }),
+          ),
+        );
+        controller.close();
+      },
+    });
+    const events = await collect(createEventStream(body, { includeUsage: true }).events);
+    expect(events[0]).toMatchObject({
+      type: "message.updated",
+      usage: {
+        input: 12_345,
+        output: 678,
+        reasoning: 90,
+        cacheRead: 1_000,
+        cacheWrite: 250,
+      },
+      model: { providerID: "deepseek", modelID: "deepseek-flash" },
+      summary: true,
+    });
+  });
+});
+
+describe("session.compacted", () => {
+  it("projects the compacted event with a status activity and dedupes by envelope id", () => {
+    const projector = new EventProjector();
+    const raw = {
+      id: "evt_compacted",
+      type: "session.compacted",
+      properties: { sessionID: "ses_1" },
+    };
+    expect(projector.project(raw)).toEqual([
+      { type: "session.compacted", sessionID: "ses_1" },
+      { type: "session.activity", sessionID: "ses_1", cause: "status" },
+    ]);
+    expect(projector.project(raw)).toEqual([]);
+  });
+
+  it("accepts info.sessionID as the session id", () => {
+    const projector = new EventProjector();
+    expect(
+      projector.project({
+        id: "evt_compacted_info",
+        type: "session.compacted",
+        properties: { info: { sessionID: "ses_info" } },
+      }),
+    ).toEqual([
+      { type: "session.compacted", sessionID: "ses_info" },
+      { type: "session.activity", sessionID: "ses_info", cause: "status" },
+    ]);
+  });
+
+  it("falls back to an unknown-cause activity when sessionID is missing", () => {
+    const projector = new EventProjector();
+    expect(
+      projector.project({
+        id: "evt_compacted_fallback",
+        type: "session.compacted",
+        properties: { info: { id: "ses_fallback" } },
+      }),
+    ).toEqual([{ type: "session.activity", sessionID: "ses_fallback", cause: "unknown" }]);
+    expect(
+      projector.project({
+        id: "evt_compacted_none",
+        type: "session.compacted",
+        properties: {},
+      }),
+    ).toEqual([]);
+  });
+});

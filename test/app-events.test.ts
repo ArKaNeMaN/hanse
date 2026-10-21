@@ -886,4 +886,45 @@ describe("app event stream", () => {
     expect(response.status).toBe(502);
     expect(((await response.json()) as { error: string }).error).toContain("did not start");
   });
+
+  it("forwards session.compacted without changing existing frames", async () => {
+    const f = await fixture();
+    const upstream = await fakeEventUpstream();
+    useUpstream(f.deps, upstream.endpoint);
+    const response = await fetch(`${f.base}/api/apps/storefront/events`, {
+      headers: auth(f.token),
+    });
+    const stream = probe(response);
+
+    try {
+      const ready = readyOf(await stream.waitFor('"type":"stream.ready"'));
+      upstream.send(
+        jsonFrame({
+          id: "evt_compacted",
+          type: "session.compacted",
+          properties: { sessionID: "ses_1" },
+        }),
+      );
+      await stream.waitFor('"type":"session.compacted"');
+      const projected = frames(stream.text());
+      expect(projected).toEqual([
+        ready,
+        {
+          type: "session.compacted",
+          sessionID: "ses_1",
+          streamID: ready.streamID,
+          seq: 1,
+        },
+        {
+          type: "session.activity",
+          sessionID: "ses_1",
+          cause: "status",
+          streamID: ready.streamID,
+          seq: 2,
+        },
+      ]);
+    } finally {
+      await stream.close();
+    }
+  });
 });

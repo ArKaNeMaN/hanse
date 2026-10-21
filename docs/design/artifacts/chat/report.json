@@ -1,16 +1,16 @@
 {
   "tool": "chat-qa",
   "mode": "deterministic",
-  "startedAt": "2026-10-20T10:54:45.455Z",
+  "startedAt": "2026-10-21T15:36:19.621Z",
   "status": "PASS",
-  "baseUrl": "http://127.0.0.1:33767",
+  "baseUrl": "http://127.0.0.1:36991",
   "app": "web",
   "project": "11111111-1111-4111-8111-111111111111",
   "scenarios": [
     {
       "name": "main",
       "status": "PASS",
-      "ms": 3116,
+      "ms": 3112,
       "checks": [
         "feed is rendered",
         "composer row is rendered",
@@ -34,7 +34,7 @@
         "status label is visible",
         "status label is a Running label (Running plan)",
         "status carries the queued suffix (· 2 queued)",
-        "status shows elapsed time (46s)",
+        "status shows elapsed time (51s)",
         "tool disclosures rendered (3)",
         "all tool disclosures expand",
         "bash tool disclosure is present",
@@ -60,7 +60,7 @@
           "status": {
             "hidden": false,
             "label": "Running plan",
-            "elapsed": "46s",
+            "elapsed": "51s",
             "queued": "· 2 queued"
           },
           "queue": {
@@ -83,9 +83,9 @@
           "systems": 1,
           "omo": 1,
           "todos": 3,
-          "systemText": "OMOTask result01:54 PM[BACKGROUND TASK RESULT READY]Task result`task_42`ID: task_42Description: inspect the chat layoutDuration: 12sBackground work finished; the result is ready.",
+          "systemText": "OMOTask result06:36 PM[BACKGROUND TASK RESULT READY]Task result`task_42`ID: task_42Description: inspect the chat layoutDuration: 12sBackground work finished; the result is ready.",
           "assistantText": "I'll run the suite and then summarize.CheckResulttypecheckpasstests396 passbuildpassThe tool output is visible below.Lint is queued next.",
-          "bodyText": "OPoperator01:53 PMPlease run the test suite, show a table, and keep the working output visible.WEweb01:53 PMThinkingI should run the tests and inspect the output before summarizing. The table will make the result easy to scan.I'll run the suite and then summarize.CheckResulttypecheckpasstests396 passbuildpassThe tool output is visible below.Lint is queued next.bashnpm testRunning45s✓ test/chat-core.test.ts (70 tests) ✓ test/chat-page.test.ts (25 tests) todowrite1 of 3 done · 1 nowRunning41sDoneRun typecheckPriority: highNowRun vitestPriority: highPendingCheck buildPriority: mediumOPoperator01:54 PMAlso check the build.OPoperator01:54 PMAnd run lint after that.OMOTask result01:54 PM[BACKGROUND TASK RESULT READY]Task result`task_42`ID: task_42Description: inspect the chat layoutDuration: 12sBackground work finished; the result is ready."
+          "bodyText": "OPoperator06:35 PMPlease run the test suite, show a table, and keep the working output visible.WEweb06:35 PMThinkingI should run the tests and inspect the output before summarizing. The table will make the result easy to scan.I'll run the suite and then summarize.CheckResulttypecheckpasstests396 passbuildpassThe tool output is visible below.Lint is queued next.bashnpm testRunning46s✓ test/chat-core.test.ts (70 tests) ✓ test/chat-page.test.ts (25 tests) todowrite1 of 3 done · 1 nowRunning41sDoneRun typecheckPriority: highNowRun vitestPriority: highPendingCheck buildPriority: mediumOPoperator06:35 PMAlso check the build.OPoperator06:35 PMAnd run lint after that.OMOTask result06:36 PM[BACKGROUND TASK RESULT READY]Task result`task_42`ID: task_42Description: inspect the chat layoutDuration: 12sBackground work finished; the result is ready."
         },
         "tools": {
           "details": [
@@ -97,7 +97,7 @@
             },
             {
               "open": true,
-              "text": "bashnpm testRunning45s✓ test/chat-core.test.ts (70 tests) ✓ test/chat-page.test.ts (25 tests)",
+              "text": "bashnpm testRunning46s✓ test/chat-core.test.ts (70 tests) ✓ test/chat-page.test.ts (25 tests)",
               "output": "✓ test/chat-core.test.ts (70 tests) ✓ test/chat-page.test.ts (25 tests)",
               "todoItems": 0
             },
@@ -131,7 +131,7 @@
     {
       "name": "questions",
       "status": "PASS",
-      "ms": 4199,
+      "ms": 4236,
       "checks": [
         "one inline question card (1)",
         "inline question is pending (pending)",
@@ -189,10 +189,10 @@
     {
       "name": "send",
       "status": "PASS",
-      "ms": 4412,
+      "ms": 4409,
       "checks": [
         "one optimistic row appears before the 202",
-        "optimistic row is local and sending (local_d838b062-316b-426a-8c8a-5f5c073fea22:sending)",
+        "optimistic row is local and sending (local_053cba87-41bc-4b7b-a245-d1c6a906eb6d:sending)",
         "optimistic row shows the submitted text",
         "composer clears optimistically",
         "the optimistic row is rekeyed, not duplicated",
@@ -219,7 +219,7 @@
         "sending": {
           "optimistic": [
             {
-              "id": "local_d838b062-316b-426a-8c8a-5f5c073fea22",
+              "id": "local_053cba87-41bc-4b7b-a245-d1c6a906eb6d",
               "state": "sending",
               "text": "OPoperatorSending…Please stream the answer."
             }
@@ -243,11 +243,11 @@
           "users": [
             {
               "id": "msg_su",
-              "text": "OPoperator01:54 PMSummarize the last run."
+              "text": "OPoperator06:36 PMSummarize the last run."
             },
             {
               "id": "msg_new",
-              "text": "OPoperator01:54 PMPlease stream the answer."
+              "text": "OPoperator06:36 PMPlease stream the answer."
             }
           ],
           "assistants": [
@@ -295,9 +295,954 @@
       }
     },
     {
+      "name": "context-states",
+      "status": "PASS",
+      "ms": 3388,
+      "checks": [
+        "ready context chip is visible",
+        "ready chip label: expected \"Context 62%\", got \"Context 62%\"",
+        "ready chip accessible detail: expected \"124,000 / 200,000 tokens · deepseek/deepseek-flash\", got \"124,000 / 200,000 tokens · deepseek/deepseek-flash\"",
+        "ready chip state: expected \"ok\", got \"ok\"",
+        "ready chip title carries the detail (124,000 / 200,000 tokens · deepseek/deepseek-flash)",
+        "ready chip meter exposes the true percentage and detail",
+        "the context chip opens the context rail",
+        "the context rail section is visible",
+        "ready rail state: expected \"ok\", got \"ok\"",
+        "ready rail summary: expected \"62% of 200k\", got \"62% of 200k\"",
+        "ready rail detail: expected \"124,000 / 200,000 tokens · deepseek/deepseek-flash\", got \"124,000 / 200,000 tokens · deepseek/deepseek-flash\"",
+        "ready auto-compact line: expected \"Auto-compact at 80%\", got \"Auto-compact at 80%\"",
+        "ready auto-compact source title: expected \"Enabled by application; threshold from global.\", got \"Enabled by application; threshold from global.\"",
+        "the context settings link points at settings (/projects/11111111-1111-4111-8111-111111111111/apps/web/settings)",
+        "ready rail meter has role/meter ARIA and the true percentage",
+        "Compact now is enabled for a ready session",
+        "ready compact button state: expected \"ready\", got \"ready\"",
+        "ready compact button has no disabled reason ()",
+        "the inline confirm starts hidden",
+        "no context error is shown for a ready session",
+        "no horizontal page overflow at 390 (0px)",
+        "the context chip and rail survive the 390 layout",
+        "the context rail renders in light theme",
+        "tokens-only chip label: expected \"Context 124k\", got \"Context 124k\"",
+        "tokens-only accessible detail: expected \"124,000 tokens · deepseek/deepseek-flash\", got \"124,000 tokens · deepseek/deepseek-flash\"",
+        "tokens-only chip state: expected \"unknown\", got \"unknown\"",
+        "tokens-only chip meter stays visible with a 0% fill and token text",
+        "tokens-only rail summary: expected \"124k tokens\", got \"124k tokens\"",
+        "tokens-only rail detail: expected \"124,000 tokens · deepseek/deepseek-flash\", got \"124,000 tokens · deepseek/deepseek-flash\"",
+        "tokens-only auto-compact line: expected \"Auto-compact at 70%\", got \"Auto-compact at 70%\"",
+        "tokens-only auto-compact source: expected \"Enabled by project.\", got \"Enabled by project.\"",
+        "manual compaction works without a known limit",
+        "unknown chip label: expected \"Context —\", got \"Context —\"",
+        "unknown chip state: expected \"unknown\", got \"unknown\"",
+        "unknown chip hides the meter",
+        "unknown rail summary: expected \"—\", got \"—\"",
+        "unknown rail detail: expected \"—\", got \"—\"",
+        "unknown auto-compact line: expected \"Auto-compact off\", got \"Auto-compact off\"",
+        "unknown auto-compact title: expected \"Auto-compact is off.\", got \"Auto-compact is off.\"",
+        "unknown snapshot disables Compact now with a reason (No model is known for this session.)",
+        "ineffective chip label: expected \"Context 95%\", got \"Context 95%\"",
+        "ineffective chip state: expected \"danger\", got \"danger\"",
+        "ineffective rail state: expected \"danger\", got \"danger\"",
+        "ineffective rail summary: expected \"95% of 200k\", got \"95% of 200k\"",
+        "ineffective compaction surfaces the fixed error (Compaction failed. Try again.)",
+        "ineffective auto-compact line: expected \"Auto-compact at 80%\", got \"Auto-compact at 80%\"",
+        "a recorded compaction failure does not block a manual retry"
+      ],
+      "data": {
+        "ready": {
+          "session": "ses_main",
+          "title": "Ready",
+          "chip": {
+            "hidden": false,
+            "label": "Context 62%",
+            "exact": "124,000 / 200,000 tokens · deepseek/deepseek-flash",
+            "state": "ok",
+            "title": "124,000 / 200,000 tokens · deepseek/deepseek-flash",
+            "meterHidden": false,
+            "meterRole": "meter",
+            "meterNow": "62",
+            "meterText": "62%; 124,000 / 200,000 tokens · deepseek/deepseek-flash"
+          },
+          "rail": {
+            "open": "open",
+            "usageHidden": false,
+            "state": "ok",
+            "summary": "62% of 200k",
+            "detail": "124,000 / 200,000 tokens · deepseek/deepseek-flash",
+            "auto": "Auto-compact at 80%",
+            "autoTitle": "Enabled by application; threshold from global.",
+            "settingsHref": "/projects/11111111-1111-4111-8111-111111111111/apps/web/settings",
+            "meterHidden": false,
+            "meterRole": "meter",
+            "meterMin": "0",
+            "meterMax": "100",
+            "meterNow": "62",
+            "meterText": "62%; 124,000 / 200,000 tokens · deepseek/deepseek-flash"
+          },
+          "compact": {
+            "disabled": false,
+            "state": "ready",
+            "busy": null,
+            "reason": "",
+            "reasonHidden": true
+          },
+          "confirm": {
+            "hidden": true,
+            "text": "Summarization replaces the session history and can lose detail. Compact now Cancel",
+            "active": "context-usage-title"
+          },
+          "error": {
+            "hidden": true,
+            "text": "",
+            "role": "alert"
+          },
+          "toasts": []
+        },
+        "mobile": {
+          "session": "ses_main",
+          "title": "Ready",
+          "chip": {
+            "hidden": false,
+            "label": "Context 62%",
+            "exact": "124,000 / 200,000 tokens · deepseek/deepseek-flash",
+            "state": "ok",
+            "title": "124,000 / 200,000 tokens · deepseek/deepseek-flash",
+            "meterHidden": false,
+            "meterRole": "meter",
+            "meterNow": "62",
+            "meterText": "62%; 124,000 / 200,000 tokens · deepseek/deepseek-flash"
+          },
+          "rail": {
+            "open": "open",
+            "usageHidden": false,
+            "state": "ok",
+            "summary": "62% of 200k",
+            "detail": "124,000 / 200,000 tokens · deepseek/deepseek-flash",
+            "auto": "Auto-compact at 80%",
+            "autoTitle": "Enabled by application; threshold from global.",
+            "settingsHref": "/projects/11111111-1111-4111-8111-111111111111/apps/web/settings",
+            "meterHidden": false,
+            "meterRole": "meter",
+            "meterMin": "0",
+            "meterMax": "100",
+            "meterNow": "62",
+            "meterText": "62%; 124,000 / 200,000 tokens · deepseek/deepseek-flash"
+          },
+          "compact": {
+            "disabled": false,
+            "state": "ready",
+            "busy": null,
+            "reason": "",
+            "reasonHidden": true
+          },
+          "confirm": {
+            "hidden": true,
+            "text": "Summarization replaces the session history and can lose detail. Compact now Cancel",
+            "active": "context-usage-title"
+          },
+          "error": {
+            "hidden": true,
+            "text": "",
+            "role": "alert"
+          },
+          "toasts": []
+        },
+        "light": {
+          "session": "ses_main",
+          "title": "Ready",
+          "chip": {
+            "hidden": false,
+            "label": "Context 62%",
+            "exact": "124,000 / 200,000 tokens · deepseek/deepseek-flash",
+            "state": "ok",
+            "title": "124,000 / 200,000 tokens · deepseek/deepseek-flash",
+            "meterHidden": false,
+            "meterRole": "meter",
+            "meterNow": "62",
+            "meterText": "62%; 124,000 / 200,000 tokens · deepseek/deepseek-flash"
+          },
+          "rail": {
+            "open": "open",
+            "usageHidden": false,
+            "state": "ok",
+            "summary": "62% of 200k",
+            "detail": "124,000 / 200,000 tokens · deepseek/deepseek-flash",
+            "auto": "Auto-compact at 80%",
+            "autoTitle": "Enabled by application; threshold from global.",
+            "settingsHref": "/projects/11111111-1111-4111-8111-111111111111/apps/web/settings",
+            "meterHidden": false,
+            "meterRole": "meter",
+            "meterMin": "0",
+            "meterMax": "100",
+            "meterNow": "62",
+            "meterText": "62%; 124,000 / 200,000 tokens · deepseek/deepseek-flash"
+          },
+          "compact": {
+            "disabled": false,
+            "state": "ready",
+            "busy": null,
+            "reason": "",
+            "reasonHidden": true
+          },
+          "confirm": {
+            "hidden": true,
+            "text": "Summarization replaces the session history and can lose detail. Compact now Cancel",
+            "active": "context-usage-title"
+          },
+          "error": {
+            "hidden": true,
+            "text": "",
+            "role": "alert"
+          },
+          "toasts": []
+        },
+        "tokens": {
+          "session": "ses_cont",
+          "title": "Tokens only",
+          "chip": {
+            "hidden": false,
+            "label": "Context 124k",
+            "exact": "124,000 tokens · deepseek/deepseek-flash",
+            "state": "unknown",
+            "title": "124,000 tokens · deepseek/deepseek-flash",
+            "meterHidden": false,
+            "meterRole": "meter",
+            "meterNow": "0",
+            "meterText": "124,000 tokens · deepseek/deepseek-flash"
+          },
+          "rail": {
+            "open": "open",
+            "usageHidden": false,
+            "state": "unknown",
+            "summary": "124k tokens",
+            "detail": "124,000 tokens · deepseek/deepseek-flash",
+            "auto": "Auto-compact at 70%",
+            "autoTitle": "Enabled by project.",
+            "settingsHref": "/projects/11111111-1111-4111-8111-111111111111/apps/web/settings",
+            "meterHidden": false,
+            "meterRole": "meter",
+            "meterMin": "0",
+            "meterMax": "100",
+            "meterNow": "0",
+            "meterText": "124,000 tokens · deepseek/deepseek-flash"
+          },
+          "compact": {
+            "disabled": false,
+            "state": "ready",
+            "busy": null,
+            "reason": "",
+            "reasonHidden": true
+          },
+          "confirm": {
+            "hidden": true,
+            "text": "Summarization replaces the session history and can lose detail. Compact now Cancel",
+            "active": "context-usage-title"
+          },
+          "error": {
+            "hidden": true,
+            "text": "",
+            "role": "alert"
+          },
+          "toasts": []
+        },
+        "unknown": {
+          "session": "ses_cont",
+          "title": "Unknown",
+          "chip": {
+            "hidden": false,
+            "label": "Context —",
+            "exact": "—",
+            "state": "unknown",
+            "title": null,
+            "meterHidden": true,
+            "meterRole": "meter",
+            "meterNow": "0",
+            "meterText": "Unknown"
+          },
+          "rail": {
+            "open": "open",
+            "usageHidden": false,
+            "state": "unknown",
+            "summary": "—",
+            "detail": "—",
+            "auto": "Auto-compact off",
+            "autoTitle": "Auto-compact is off.",
+            "settingsHref": "/projects/11111111-1111-4111-8111-111111111111/apps/web/settings",
+            "meterHidden": true,
+            "meterRole": "meter",
+            "meterMin": "0",
+            "meterMax": "100",
+            "meterNow": "0",
+            "meterText": "Unknown"
+          },
+          "compact": {
+            "disabled": true,
+            "state": "disabled",
+            "busy": null,
+            "reason": "No model is known for this session.",
+            "reasonHidden": false
+          },
+          "confirm": {
+            "hidden": true,
+            "text": "Summarization replaces the session history and can lose detail. Compact now Cancel",
+            "active": "context-usage-title"
+          },
+          "error": {
+            "hidden": true,
+            "text": "",
+            "role": "alert"
+          },
+          "toasts": []
+        },
+        "ineffective": {
+          "session": "ses_cont",
+          "title": "Ineffective",
+          "chip": {
+            "hidden": false,
+            "label": "Context 95%",
+            "exact": "190,000 / 200,000 tokens · deepseek/deepseek-flash",
+            "state": "danger",
+            "title": "190,000 / 200,000 tokens · deepseek/deepseek-flash",
+            "meterHidden": false,
+            "meterRole": "meter",
+            "meterNow": "95",
+            "meterText": "95%; 190,000 / 200,000 tokens · deepseek/deepseek-flash"
+          },
+          "rail": {
+            "open": "open",
+            "usageHidden": false,
+            "state": "danger",
+            "summary": "95% of 200k",
+            "detail": "190,000 / 200,000 tokens · deepseek/deepseek-flash",
+            "auto": "Auto-compact at 80%",
+            "autoTitle": "Enabled by application; threshold from global.",
+            "settingsHref": "/projects/11111111-1111-4111-8111-111111111111/apps/web/settings",
+            "meterHidden": false,
+            "meterRole": "meter",
+            "meterMin": "0",
+            "meterMax": "100",
+            "meterNow": "95",
+            "meterText": "95%; 190,000 / 200,000 tokens · deepseek/deepseek-flash"
+          },
+          "compact": {
+            "disabled": false,
+            "state": "ready",
+            "busy": null,
+            "reason": "",
+            "reasonHidden": true
+          },
+          "confirm": {
+            "hidden": true,
+            "text": "Summarization replaces the session history and can lose detail. Compact now Cancel",
+            "active": "context-usage-title"
+          },
+          "error": {
+            "hidden": false,
+            "text": "Compaction failed. Try again.",
+            "role": "alert"
+          },
+          "toasts": []
+        }
+      }
+    },
+    {
+      "name": "context-compact",
+      "status": "PASS",
+      "ms": 4439,
+      "checks": [
+        "Compact now opens the inline confirm",
+        "the inline confirm explains the risk (Summarization replaces the session history and can lose detail. Compact now Cancel)",
+        "focus moves to the confirm action: expected \"chat-context-confirm-compact\", got \"chat-context-confirm-compact\"",
+        "exactly one compact POST for one confirm: expected 1, got 1",
+        "compact POST targets the session: expected \"ses_main\", got \"ses_main\"",
+        "compact POST returns 202: expected 202, got 202",
+        "compact POST sends an empty body: expected \"{}\", got \"{}\"",
+        "compacting chip label: expected \"Compacting\", got \"Compacting\"",
+        "compacting chip state: expected \"compacting\", got \"compacting\"",
+        "Compact now is disabled while compacting (Compaction in progress.)",
+        "the confirm closes after acceptance",
+        "acceptance shows the started toast (Compaction started.)",
+        "a compacting snapshot starts the 2s context poll (3 -> 4)",
+        "session.compacted shows the compacted toast (Compaction started. | Session compacted.)",
+        "the refreshed snapshot returns to ready: expected \"ok\", got \"ok\"",
+        "the refreshed usage is rendered: expected \"6% of 200k\", got \"6% of 200k\"",
+        "Compact now is enabled again when ready",
+        "the compacted snapshot clears the error line",
+        "session.compacted never POSTs a second compaction: expected 1, got 1",
+        "the 409 path still issues one compact POST: expected 1, got 1",
+        "the compact POST returns 409: expected 409, got 409",
+        "the fixed 409 message is shown inline: expected \"Compaction is already in progress.\", got \"Compaction is already in progress.\"",
+        "the inline error is an alert: expected \"alert\", got \"alert\"",
+        "the 409 path shows an error toast (Compaction is already in progress.)",
+        "a rejected compaction re-enables the button",
+        "the confirm stays closed after a 409",
+        "a 409 never renders a compacting chip: expected \"Context 62%\", got \"Context 62%\""
+      ],
+      "data": {
+        "first": {
+          "confirm": {
+            "session": "ses_main",
+            "title": "Chat QA",
+            "chip": {
+              "hidden": false,
+              "label": "Context 62%",
+              "exact": "124,000 / 200,000 tokens · deepseek/deepseek-flash",
+              "state": "ok",
+              "title": "124,000 / 200,000 tokens · deepseek/deepseek-flash",
+              "meterHidden": false,
+              "meterRole": "meter",
+              "meterNow": "62",
+              "meterText": "62%; 124,000 / 200,000 tokens · deepseek/deepseek-flash"
+            },
+            "rail": {
+              "open": "open",
+              "usageHidden": false,
+              "state": "ok",
+              "summary": "62% of 200k",
+              "detail": "124,000 / 200,000 tokens · deepseek/deepseek-flash",
+              "auto": "Auto-compact at 80%",
+              "autoTitle": "Enabled by application; threshold from global.",
+              "settingsHref": "/projects/11111111-1111-4111-8111-111111111111/apps/web/settings",
+              "meterHidden": false,
+              "meterRole": "meter",
+              "meterMin": "0",
+              "meterMax": "100",
+              "meterNow": "62",
+              "meterText": "62%; 124,000 / 200,000 tokens · deepseek/deepseek-flash"
+            },
+            "compact": {
+              "disabled": false,
+              "state": "ready",
+              "busy": null,
+              "reason": "",
+              "reasonHidden": true
+            },
+            "confirm": {
+              "hidden": false,
+              "text": "Summarization replaces the session history and can lose detail. Compact now Cancel",
+              "active": "chat-context-confirm-compact"
+            },
+            "error": {
+              "hidden": true,
+              "text": "",
+              "role": "alert"
+            },
+            "toasts": []
+          },
+          "compactingUi": {
+            "session": "ses_main",
+            "title": "Chat QA",
+            "chip": {
+              "hidden": false,
+              "label": "Compacting",
+              "exact": "124,000 / 200,000 tokens · deepseek/deepseek-flash",
+              "state": "compacting",
+              "title": "124,000 / 200,000 tokens · deepseek/deepseek-flash",
+              "meterHidden": false,
+              "meterRole": "meter",
+              "meterNow": "62",
+              "meterText": "62%; 124,000 / 200,000 tokens · deepseek/deepseek-flash"
+            },
+            "rail": {
+              "open": "open",
+              "usageHidden": false,
+              "state": "compacting",
+              "summary": "62% of 200k",
+              "detail": "124,000 / 200,000 tokens · deepseek/deepseek-flash",
+              "auto": "Auto-compact at 80%",
+              "autoTitle": "Enabled by application; threshold from global.",
+              "settingsHref": "/projects/11111111-1111-4111-8111-111111111111/apps/web/settings",
+              "meterHidden": false,
+              "meterRole": "meter",
+              "meterMin": "0",
+              "meterMax": "100",
+              "meterNow": "62",
+              "meterText": "62%; 124,000 / 200,000 tokens · deepseek/deepseek-flash"
+            },
+            "compact": {
+              "disabled": true,
+              "state": "disabled",
+              "busy": null,
+              "reason": "Compaction in progress.",
+              "reasonHidden": false
+            },
+            "confirm": {
+              "hidden": true,
+              "text": "Summarization replaces the session history and can lose detail. Compact now Cancel",
+              "active": ""
+            },
+            "error": {
+              "hidden": true,
+              "text": "",
+              "role": "alert"
+            },
+            "toasts": [
+              {
+                "text": "Compaction started.",
+                "tone": "success",
+                "role": "status"
+              }
+            ]
+          },
+          "compactedUi": {
+            "session": "ses_main",
+            "title": "Chat QA",
+            "chip": {
+              "hidden": false,
+              "label": "Context 6%",
+              "exact": "12,000 / 200,000 tokens · deepseek/deepseek-flash",
+              "state": "ok",
+              "title": "12,000 / 200,000 tokens · deepseek/deepseek-flash",
+              "meterHidden": false,
+              "meterRole": "meter",
+              "meterNow": "6",
+              "meterText": "6%; 12,000 / 200,000 tokens · deepseek/deepseek-flash"
+            },
+            "rail": {
+              "open": "open",
+              "usageHidden": false,
+              "state": "ok",
+              "summary": "6% of 200k",
+              "detail": "12,000 / 200,000 tokens · deepseek/deepseek-flash",
+              "auto": "Auto-compact at 80%",
+              "autoTitle": "Enabled by application; threshold from global.",
+              "settingsHref": "/projects/11111111-1111-4111-8111-111111111111/apps/web/settings",
+              "meterHidden": false,
+              "meterRole": "meter",
+              "meterMin": "0",
+              "meterMax": "100",
+              "meterNow": "6",
+              "meterText": "6%; 12,000 / 200,000 tokens · deepseek/deepseek-flash"
+            },
+            "compact": {
+              "disabled": false,
+              "state": "ready",
+              "busy": null,
+              "reason": "",
+              "reasonHidden": true
+            },
+            "confirm": {
+              "hidden": true,
+              "text": "Summarization replaces the session history and can lose detail. Compact now Cancel",
+              "active": ""
+            },
+            "error": {
+              "hidden": true,
+              "text": "",
+              "role": "alert"
+            },
+            "toasts": [
+              {
+                "text": "Compaction started.",
+                "tone": "success",
+                "role": "status"
+              },
+              {
+                "text": "Session compacted.",
+                "tone": "success",
+                "role": "status"
+              }
+            ]
+          },
+          "routeState": {
+            "postCalls": 0,
+            "postBodies": [],
+            "replyBody": null,
+            "replyCount": 0,
+            "promptQuestions": [],
+            "messageGets": [
+              1792596995229,
+              1792596995237
+            ],
+            "contextGets": [
+              {
+                "sessionID": "ses_main",
+                "at": 1792596995227,
+                "callIndex": 1,
+                "sessionCallIndex": 1,
+                "status": 200,
+                "code": null
+              },
+              {
+                "sessionID": "ses_main",
+                "at": 1792596995235,
+                "callIndex": 2,
+                "sessionCallIndex": 2,
+                "status": 200,
+                "code": null
+              },
+              {
+                "sessionID": "ses_main",
+                "at": 1792596996219,
+                "callIndex": 3,
+                "sessionCallIndex": 3,
+                "status": 200,
+                "code": null
+              },
+              {
+                "sessionID": "ses_main",
+                "at": 1792596998219,
+                "callIndex": 4,
+                "sessionCallIndex": 4,
+                "status": 200,
+                "code": null
+              },
+              {
+                "sessionID": "ses_main",
+                "at": 1792596998292,
+                "callIndex": 5,
+                "sessionCallIndex": 5,
+                "status": 200,
+                "code": null
+              }
+            ],
+            "compactCalls": [
+              {
+                "sessionID": "ses_main",
+                "at": 1792596996206,
+                "body": "{}",
+                "status": 202
+              }
+            ]
+          }
+        },
+        "conflict": {
+          "session": "ses_main",
+          "title": "Chat QA",
+          "chip": {
+            "hidden": false,
+            "label": "Context 62%",
+            "exact": "124,000 / 200,000 tokens · deepseek/deepseek-flash",
+            "state": "ok",
+            "title": "124,000 / 200,000 tokens · deepseek/deepseek-flash",
+            "meterHidden": false,
+            "meterRole": "meter",
+            "meterNow": "62",
+            "meterText": "62%; 124,000 / 200,000 tokens · deepseek/deepseek-flash"
+          },
+          "rail": {
+            "open": "open",
+            "usageHidden": false,
+            "state": "ok",
+            "summary": "62% of 200k",
+            "detail": "124,000 / 200,000 tokens · deepseek/deepseek-flash",
+            "auto": "Auto-compact at 80%",
+            "autoTitle": "Enabled by application; threshold from global.",
+            "settingsHref": "/projects/11111111-1111-4111-8111-111111111111/apps/web/settings",
+            "meterHidden": false,
+            "meterRole": "meter",
+            "meterMin": "0",
+            "meterMax": "100",
+            "meterNow": "62",
+            "meterText": "62%; 124,000 / 200,000 tokens · deepseek/deepseek-flash"
+          },
+          "compact": {
+            "disabled": false,
+            "state": "ready",
+            "busy": null,
+            "reason": "",
+            "reasonHidden": true
+          },
+          "confirm": {
+            "hidden": true,
+            "text": "Summarization replaces the session history and can lose detail. Compact now Cancel",
+            "active": ""
+          },
+          "error": {
+            "hidden": false,
+            "text": "Compaction is already in progress.",
+            "role": "alert"
+          },
+          "toasts": [
+            {
+              "text": "Compaction is already in progress.",
+              "tone": "error",
+              "role": "alert"
+            }
+          ]
+        },
+        "conflictState": {
+          "postCalls": 0,
+          "postBodies": [],
+          "replyBody": null,
+          "replyCount": 0,
+          "promptQuestions": [],
+          "messageGets": [
+            1792596998498,
+            1792596998502
+          ],
+          "contextGets": [
+            {
+              "sessionID": "ses_main",
+              "at": 1792596998495,
+              "callIndex": 1,
+              "sessionCallIndex": 1,
+              "status": 200,
+              "code": null
+            },
+            {
+              "sessionID": "ses_main",
+              "at": 1792596998500,
+              "callIndex": 2,
+              "sessionCallIndex": 2,
+              "status": 200,
+              "code": null
+            }
+          ],
+          "compactCalls": [
+            {
+              "sessionID": "ses_main",
+              "at": 1792596999422,
+              "body": "{}",
+              "status": 409
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "context-switch-race",
+      "status": "PASS",
+      "ms": 3327,
+      "checks": [
+        "the delayed session A context request was issued (3)",
+        "the delayed session A response was delivered",
+        "session A never overwrites session B after the switch (Context 30% | Context 30% | Context 30% | Context 30% | Context 30% | Context 30% | Context 30% | Context 30% | Context 30% | Context 30% | Context 30% | Context 30% | Context 30% | Context 30% | Context 30%)",
+        "the selected session keeps its own chip: expected \"Context 30%\", got \"Context 30%\"",
+        "the selected session keeps its own rail state: expected \"ok\", got \"ok\"",
+        "the selected session id stays on B: expected \"ses_cont\", got \"ses_cont\""
+      ],
+      "data": {
+        "samples": [
+          "Context 30%",
+          "Context 30%",
+          "Context 30%",
+          "Context 30%",
+          "Context 30%",
+          "Context 30%",
+          "Context 30%",
+          "Context 30%",
+          "Context 30%",
+          "Context 30%",
+          "Context 30%",
+          "Context 30%",
+          "Context 30%",
+          "Context 30%",
+          "Context 30%"
+        ],
+        "late": {
+          "session": "ses_cont",
+          "title": "Other",
+          "chip": {
+            "hidden": false,
+            "label": "Context 30%",
+            "exact": "60,000 / 200,000 tokens · deepseek/deepseek-flash",
+            "state": "ok",
+            "title": "60,000 / 200,000 tokens · deepseek/deepseek-flash",
+            "meterHidden": false,
+            "meterRole": "meter",
+            "meterNow": "30",
+            "meterText": "30%; 60,000 / 200,000 tokens · deepseek/deepseek-flash"
+          },
+          "rail": {
+            "open": "closed",
+            "usageHidden": false,
+            "state": "ok",
+            "summary": "30% of 200k",
+            "detail": "60,000 / 200,000 tokens · deepseek/deepseek-flash",
+            "auto": "Auto-compact at 80%",
+            "autoTitle": "Enabled by application; threshold from global.",
+            "settingsHref": "/projects/11111111-1111-4111-8111-111111111111/apps/web/settings",
+            "meterHidden": false,
+            "meterRole": "meter",
+            "meterMin": "0",
+            "meterMax": "100",
+            "meterNow": "30",
+            "meterText": "30%; 60,000 / 200,000 tokens · deepseek/deepseek-flash"
+          },
+          "compact": {
+            "disabled": false,
+            "state": "ready",
+            "busy": null,
+            "reason": "",
+            "reasonHidden": true
+          },
+          "confirm": {
+            "hidden": true,
+            "text": "Summarization replaces the session history and can lose detail. Compact now Cancel",
+            "active": "chat-prompt"
+          },
+          "error": {
+            "hidden": true,
+            "text": "",
+            "role": "alert"
+          },
+          "toasts": []
+        },
+        "aCalls": [
+          {
+            "sessionID": "ses_main",
+            "at": 1792596999663,
+            "callIndex": 1,
+            "sessionCallIndex": 1,
+            "status": 200,
+            "code": null
+          },
+          {
+            "sessionID": "ses_main",
+            "at": 1792596999670,
+            "callIndex": 2,
+            "sessionCallIndex": 2,
+            "status": 200,
+            "code": null
+          },
+          {
+            "sessionID": "ses_main",
+            "at": 1792597001254,
+            "callIndex": 4,
+            "sessionCallIndex": 3,
+            "status": 200,
+            "code": null
+          }
+        ]
+      }
+    },
+    {
+      "name": "context-retry",
+      "status": "PASS",
+      "ms": 1518,
+      "checks": [
+        "the 503 hides the chip until recovery",
+        "the 503 shows the context-unavailable detail: expected \"Context unavailable\", got \"Context unavailable\"",
+        "the 503 retry issued a second context GET (2)",
+        "the retry sequence is 503 then 200: expected [503,200], got [503,200]",
+        "the first 503 carries agent_not_running: expected \"agent_not_running\", got \"agent_not_running\"",
+        "the retry waits for the 750ms backoff (752ms)",
+        "the chip appears after the retry succeeds",
+        "the retried snapshot renders: expected \"Context 62%\", got \"Context 62%\""
+      ],
+      "data": {
+        "unavailable": {
+          "session": "ses_main",
+          "title": "Chat QA",
+          "chip": {
+            "hidden": true,
+            "label": "Context —",
+            "exact": "",
+            "state": "unknown",
+            "title": null,
+            "meterHidden": true,
+            "meterRole": "meter",
+            "meterNow": "0",
+            "meterText": "Unknown"
+          },
+          "rail": {
+            "open": "closed",
+            "usageHidden": false,
+            "state": "unknown",
+            "summary": "—",
+            "detail": "Context unavailable",
+            "auto": "Auto-compact off",
+            "autoTitle": "",
+            "settingsHref": "/projects/11111111-1111-4111-8111-111111111111/apps/web/settings",
+            "meterHidden": true,
+            "meterRole": "meter",
+            "meterMin": "0",
+            "meterMax": "100",
+            "meterNow": "0",
+            "meterText": "Unknown"
+          },
+          "compact": {
+            "disabled": true,
+            "state": "disabled",
+            "busy": null,
+            "reason": "Context unavailable",
+            "reasonHidden": false
+          },
+          "confirm": {
+            "hidden": true,
+            "text": "Summarization replaces the session history and can lose detail. Compact now Cancel",
+            "active": ""
+          },
+          "error": {
+            "hidden": true,
+            "text": "",
+            "role": "alert"
+          },
+          "toasts": []
+        },
+        "recovered": {
+          "session": "ses_main",
+          "title": "Chat QA",
+          "chip": {
+            "hidden": false,
+            "label": "Context 62%",
+            "exact": "124,000 / 200,000 tokens · deepseek/deepseek-flash",
+            "state": "ok",
+            "title": "124,000 / 200,000 tokens · deepseek/deepseek-flash",
+            "meterHidden": false,
+            "meterRole": "meter",
+            "meterNow": "62",
+            "meterText": "62%; 124,000 / 200,000 tokens · deepseek/deepseek-flash"
+          },
+          "rail": {
+            "open": "closed",
+            "usageHidden": false,
+            "state": "ok",
+            "summary": "62% of 200k",
+            "detail": "124,000 / 200,000 tokens · deepseek/deepseek-flash",
+            "auto": "Auto-compact at 80%",
+            "autoTitle": "Enabled by application; threshold from global.",
+            "settingsHref": "/projects/11111111-1111-4111-8111-111111111111/apps/web/settings",
+            "meterHidden": false,
+            "meterRole": "meter",
+            "meterMin": "0",
+            "meterMax": "100",
+            "meterNow": "62",
+            "meterText": "62%; 124,000 / 200,000 tokens · deepseek/deepseek-flash"
+          },
+          "compact": {
+            "disabled": false,
+            "state": "ready",
+            "busy": null,
+            "reason": "",
+            "reasonHidden": true
+          },
+          "confirm": {
+            "hidden": true,
+            "text": "Summarization replaces the session history and can lose detail. Compact now Cancel",
+            "active": ""
+          },
+          "error": {
+            "hidden": true,
+            "text": "",
+            "role": "alert"
+          },
+          "toasts": []
+        },
+        "retryCalls": [
+          {
+            "sessionID": "ses_main",
+            "at": 1792597003529,
+            "callIndex": 3,
+            "sessionCallIndex": 3,
+            "status": 503,
+            "code": "agent_not_running"
+          },
+          {
+            "sessionID": "ses_main",
+            "at": 1792597004281,
+            "callIndex": 4,
+            "sessionCallIndex": 4,
+            "status": 200,
+            "code": null
+          }
+        ]
+      }
+    },
+    {
       "name": "diffs",
       "status": "PASS",
-      "ms": 3571,
+      "ms": 3383,
       "checks": [
         "diff and write skeletons render closed",
         "closed diffs have no token spans (0)",
@@ -1581,181 +2526,181 @@
             "terminated": 0,
             "dispatches": [
               {
-                "t": 1188.5999999642372,
+                "t": 1157,
                 "jobID": "hj1",
                 "streamID": "s0:new",
                 "bytes": 129
               },
               {
-                "t": 1188.5999999642372,
+                "t": 1157,
                 "jobID": "hj1",
                 "streamID": "s0:old",
                 "bytes": 92
               },
               {
-                "t": 1188.699999988079,
+                "t": 1157,
                 "jobID": "hj2",
                 "streamID": "s0:new",
                 "bytes": 52
               },
               {
-                "t": 1188.699999988079,
+                "t": 1157.1000000238419,
                 "jobID": "hj2",
                 "streamID": "s0:old",
                 "bytes": 52
               },
               {
-                "t": 1235,
+                "t": 1189.7000000476837,
                 "jobID": "hj3",
                 "streamID": "s0:new",
                 "bytes": 70
               },
               {
-                "t": 1235.199999988079,
+                "t": 1189.9000000357628,
                 "jobID": "hj4",
                 "streamID": "s1:new",
                 "bytes": 49
               },
               {
-                "t": 1235.199999988079,
+                "t": 1189.9000000357628,
                 "jobID": "hj4",
                 "streamID": "s1:old",
                 "bytes": 49
               },
               {
-                "t": 1235.199999988079,
+                "t": 1189.9000000357628,
                 "jobID": "hj5",
                 "streamID": "s2:old",
                 "bytes": 56
               },
               {
-                "t": 1235.2999999523163,
+                "t": 1190,
                 "jobID": "hj6",
                 "streamID": "s3:new",
                 "bytes": 27
               },
               {
-                "t": 1235.3999999761581,
+                "t": 1190,
                 "jobID": "hj6",
                 "streamID": "s3:old",
                 "bytes": 27
               },
               {
-                "t": 1268.7999999523163,
+                "t": 1223.7000000476837,
                 "jobID": "hj7",
                 "streamID": "s0:write",
                 "bytes": 1026
               },
               {
-                "t": 1357.2999999523163,
+                "t": 1294.300000011921,
                 "jobID": "hj8",
                 "streamID": "s0:write",
                 "bytes": 65536
               },
               {
-                "t": 1569.8999999761581,
+                "t": 1474.300000011921,
                 "jobID": "hj9",
                 "streamID": "s0:new",
                 "bytes": 129
               },
               {
-                "t": 1569.8999999761581,
+                "t": 1474.300000011921,
                 "jobID": "hj9",
                 "streamID": "s0:old",
                 "bytes": 92
               },
               {
-                "t": 1620,
+                "t": 1526.6000000238419,
                 "jobID": "hj10",
                 "streamID": "s0:new",
                 "bytes": 129
               },
               {
-                "t": 1620,
+                "t": 1526.6000000238419,
                 "jobID": "hj10",
                 "streamID": "s0:old",
                 "bytes": 92
               },
               {
-                "t": 1771.2999999523163,
+                "t": 1678.7000000476837,
                 "jobID": "hj11",
                 "streamID": "s0:new",
                 "bytes": 129
               },
               {
-                "t": 1771.3999999761581,
+                "t": 1678.7000000476837,
                 "jobID": "hj11",
                 "streamID": "s0:old",
                 "bytes": 92
               },
               {
-                "t": 1836.5999999642372,
+                "t": 1725.800000011921,
                 "jobID": "hj12",
                 "streamID": "s0:new",
                 "bytes": 129
               },
               {
-                "t": 1836.699999988079,
+                "t": 1725.800000011921,
                 "jobID": "hj12",
                 "streamID": "s0:old",
                 "bytes": 92
               },
               {
-                "t": 1908.8999999761581,
+                "t": 1776.7000000476837,
                 "jobID": "hj13",
                 "streamID": "s0:new",
                 "bytes": 20
               },
               {
-                "t": 1909.0999999642372,
+                "t": 1776.7000000476837,
                 "jobID": "hj13",
                 "streamID": "s0:old",
                 "bytes": 20
               },
               {
-                "t": 1909.0999999642372,
+                "t": 1776.7000000476837,
                 "jobID": "hj14",
                 "streamID": "s1:new",
                 "bytes": 20
               },
               {
-                "t": 1909.0999999642372,
+                "t": 1776.7000000476837,
                 "jobID": "hj14",
                 "streamID": "s1:old",
                 "bytes": 20
               },
               {
-                "t": 1909.0999999642372,
+                "t": 1776.800000011921,
                 "jobID": "hj15",
                 "streamID": "s2:new",
                 "bytes": 20
               },
               {
-                "t": 1909.0999999642372,
+                "t": 1776.9000000357628,
                 "jobID": "hj15",
                 "streamID": "s2:old",
                 "bytes": 20
               },
               {
-                "t": 1909.199999988079,
+                "t": 1776.9000000357628,
                 "jobID": "hj16",
                 "streamID": "s3:new",
                 "bytes": 20
               },
               {
-                "t": 1909.199999988079,
+                "t": 1776.9000000357628,
                 "jobID": "hj16",
                 "streamID": "s3:old",
                 "bytes": 20
               },
               {
-                "t": 1909.199999988079,
+                "t": 1776.9000000357628,
                 "jobID": "hj17",
                 "streamID": "s4:new",
                 "bytes": 20
               },
               {
-                "t": 1909.199999988079,
+                "t": 1776.9000000357628,
                 "jobID": "hj17",
                 "streamID": "s4:old",
                 "bytes": 20
@@ -1763,181 +2708,181 @@
             ],
             "responses": [
               {
-                "t": 1191.2999999523163,
+                "t": 1159.2000000476837,
                 "type": "tokens",
                 "jobID": "hj1",
                 "streamID": "s0:new"
               },
               {
-                "t": 1191.5,
+                "t": 1159.4000000357628,
                 "type": "tokens",
                 "jobID": "hj1",
                 "streamID": "s0:old"
               },
               {
-                "t": 1193.0999999642372,
+                "t": 1160.4000000357628,
                 "type": "tokens",
                 "jobID": "hj2",
                 "streamID": "s0:new"
               },
               {
-                "t": 1193.0999999642372,
+                "t": 1160.4000000357628,
                 "type": "tokens",
                 "jobID": "hj2",
                 "streamID": "s0:old"
               },
               {
-                "t": 1235.3999999761581,
+                "t": 1190,
                 "type": "tokens",
                 "jobID": "hj3",
                 "streamID": "s0:new"
               },
               {
-                "t": 1237.5999999642372,
+                "t": 1191.300000011921,
                 "type": "tokens",
                 "jobID": "hj4",
                 "streamID": "s1:new"
               },
               {
-                "t": 1237.5999999642372,
+                "t": 1191.300000011921,
                 "type": "tokens",
                 "jobID": "hj4",
                 "streamID": "s1:old"
               },
               {
-                "t": 1238.199999988079,
+                "t": 1191.800000011921,
                 "type": "tokens",
                 "jobID": "hj5",
                 "streamID": "s2:old"
               },
               {
-                "t": 1238.699999988079,
+                "t": 1192.4000000357628,
                 "type": "tokens",
                 "jobID": "hj6",
                 "streamID": "s3:new"
               },
               {
-                "t": 1238.7999999523163,
+                "t": 1192.4000000357628,
                 "type": "tokens",
                 "jobID": "hj6",
                 "streamID": "s3:old"
               },
               {
-                "t": 1270.199999988079,
+                "t": 1225.6000000238419,
                 "type": "tokens",
                 "jobID": "hj7",
                 "streamID": "s0:write"
               },
               {
-                "t": 1394.7999999523163,
+                "t": 1325.4000000357628,
                 "type": "tokens",
                 "jobID": "hj8",
                 "streamID": "s0:write"
               },
               {
-                "t": 1573.8999999761581,
+                "t": 1477.4000000357628,
                 "type": "tokens",
                 "jobID": "hj9",
                 "streamID": "s0:new"
               },
               {
-                "t": 1573.8999999761581,
+                "t": 1477.5,
                 "type": "tokens",
                 "jobID": "hj9",
                 "streamID": "s0:old"
               },
               {
-                "t": 1623.2999999523163,
+                "t": 1530.300000011921,
                 "type": "tokens",
                 "jobID": "hj10",
                 "streamID": "s0:new"
               },
               {
-                "t": 1623.3999999761581,
+                "t": 1530.4000000357628,
                 "type": "tokens",
                 "jobID": "hj10",
                 "streamID": "s0:old"
               },
               {
-                "t": 1772.8999999761581,
+                "t": 1682,
                 "type": "tokens",
                 "jobID": "hj11",
                 "streamID": "s0:new"
               },
               {
-                "t": 1772.8999999761581,
+                "t": 1682,
                 "type": "tokens",
                 "jobID": "hj11",
                 "streamID": "s0:old"
               },
               {
-                "t": 1837.0999999642372,
+                "t": 1726.6000000238419,
                 "type": "tokens",
                 "jobID": "hj12",
                 "streamID": "s0:new"
               },
               {
-                "t": 1837.199999988079,
+                "t": 1726.6000000238419,
                 "type": "tokens",
                 "jobID": "hj12",
                 "streamID": "s0:old"
               },
               {
-                "t": 1909.5999999642372,
+                "t": 1778.4000000357628,
                 "type": "tokens",
                 "jobID": "hj13",
                 "streamID": "s0:new"
               },
               {
-                "t": 1909.699999988079,
+                "t": 1778.4000000357628,
                 "type": "tokens",
                 "jobID": "hj13",
                 "streamID": "s0:old"
               },
               {
-                "t": 1913.5999999642372,
+                "t": 1780.7000000476837,
                 "type": "tokens",
                 "jobID": "hj14",
                 "streamID": "s1:new"
               },
               {
-                "t": 1913.699999988079,
+                "t": 1780.7000000476837,
                 "type": "tokens",
                 "jobID": "hj14",
                 "streamID": "s1:old"
               },
               {
-                "t": 1914.3999999761581,
+                "t": 1781.2000000476837,
                 "type": "tokens",
                 "jobID": "hj15",
                 "streamID": "s2:new"
               },
               {
-                "t": 1914.3999999761581,
+                "t": 1781.2000000476837,
                 "type": "tokens",
                 "jobID": "hj15",
                 "streamID": "s2:old"
               },
               {
-                "t": 1915.0999999642372,
+                "t": 1781.6000000238419,
                 "type": "tokens",
                 "jobID": "hj16",
                 "streamID": "s3:new"
               },
               {
-                "t": 1915.0999999642372,
+                "t": 1781.6000000238419,
                 "type": "tokens",
                 "jobID": "hj16",
                 "streamID": "s3:old"
               },
               {
-                "t": 1915.8999999761581,
+                "t": 1782,
                 "type": "tokens",
                 "jobID": "hj17",
                 "streamID": "s4:new"
               },
               {
-                "t": 1915.8999999761581,
+                "t": 1782,
                 "type": "tokens",
                 "jobID": "hj17",
                 "streamID": "s4:old"
@@ -2003,7 +2948,7 @@
     {
       "name": "read",
       "status": "PASS",
-      "ms": 1401,
+      "ms": 1380,
       "checks": [
         "completed read renders a .tool-code block",
         "read head shows the file path (/workspace/example/apps/demo-app/tools/analyzer/webui.py)",
@@ -2038,7 +2983,7 @@
     {
       "name": "diff-error",
       "status": "PASS",
-      "ms": 1302,
+      "ms": 1253,
       "checks": [
         "an error part auto-opens",
         "an error part renders no diff body",
@@ -2060,7 +3005,7 @@
     {
       "name": "diff-lazy",
       "status": "PASS",
-      "ms": 2263,
+      "ms": 2210,
       "checks": [
         "both diffs start plain",
         "closed diffs start no worker and post no tokenize request",
@@ -2136,7 +3081,7 @@
     {
       "name": "diff-streaming",
       "status": "PASS",
-      "ms": 3131,
+      "ms": 3068,
       "checks": [
         "the open streaming diff tokenizes",
         "the closed streaming diff stays plain",
@@ -2177,7 +3122,7 @@
     {
       "name": "diff-adversarial",
       "status": "PASS",
-      "ms": 2157,
+      "ms": 2088,
       "checks": [
         "prt_adv_md renders a diff/code body",
         "prt_adv_md finishes within budget (tokens)",
@@ -2197,7 +3142,7 @@
         "prt_adv_write never stays pending",
         "adversarial fixtures actually submitted worker streams (4)",
         "worker responses stay inside the 250 ms budget plus paint ([])",
-        "adversarial page settles in the worker budget plus paint (277ms)"
+        "adversarial page settles in the worker budget plus paint (224ms)"
       ],
       "data": {
         "result": {
@@ -2226,19 +3171,19 @@
           "timings": [
             {
               "type": "tokens",
-              "ms": 230
+              "ms": 189
             },
             {
               "type": "tokens",
-              "ms": 236
+              "ms": 195
             },
             {
               "type": "tokens",
-              "ms": 214
+              "ms": 183
             },
             {
               "type": "tokens",
-              "ms": 220
+              "ms": 163
             }
           ],
           "log": {
@@ -2248,25 +3193,25 @@
             "terminated": 0,
             "dispatches": [
               {
-                "t": 1328.9000000357628,
+                "t": 1396,
                 "jobID": "hj1",
                 "streamID": "s0:new",
                 "bytes": 7639
               },
               {
-                "t": 1329.1000000238419,
+                "t": 1396.199999988079,
                 "jobID": "hj2",
                 "streamID": "s0:new",
                 "bytes": 5019
               },
               {
-                "t": 1378.9000000357628,
+                "t": 1429.300000011921,
                 "jobID": "hj3",
                 "streamID": "s0:new",
                 "bytes": 5019
               },
               {
-                "t": 1417.1000000238419,
+                "t": 1465.199999988079,
                 "jobID": "hj4",
                 "streamID": "s0:write",
                 "bytes": 65536
@@ -2274,25 +3219,25 @@
             ],
             "responses": [
               {
-                "t": 1559,
+                "t": 1584.5,
                 "type": "tokens",
                 "jobID": "hj1",
                 "streamID": "s0:new"
               },
               {
-                "t": 1565,
+                "t": 1590.800000011921,
                 "type": "tokens",
                 "jobID": "hj2",
                 "streamID": "s0:new"
               },
               {
-                "t": 1592.800000011921,
+                "t": 1612.199999988079,
                 "type": "tokens",
                 "jobID": "hj3",
                 "streamID": "s0:new"
               },
               {
-                "t": 1636.9000000357628,
+                "t": 1628.199999988079,
                 "type": "tokens",
                 "jobID": "hj4",
                 "streamID": "s0:write"
@@ -2301,13 +3246,13 @@
             "hung": 0
           }
         },
-        "elapsed": 277
+        "elapsed": 224
       }
     },
     {
       "name": "diff-timeout",
       "status": "PASS",
-      "ms": 1951,
+      "ms": 1869,
       "checks": [
         "the timeout fixture withheld a worker response",
         "a timed-out worker is terminated (1)",
@@ -2315,7 +3260,7 @@
         "the timed-out diff has no token spans",
         "the plain fallback keeps the code text",
         "the page stays responsive after worker termination",
-        "the timeout is enforced without hanging (330ms)"
+        "the timeout is enforced without hanging (321ms)"
       ],
       "data": {
         "result": {
@@ -2327,7 +3272,7 @@
           "dispatches": 0,
           "responsive": 2
         },
-        "elapsed": 330
+        "elapsed": 321
       }
     }
   ],
@@ -2342,6 +3287,18 @@
     "docs/design/artifacts/chat/send-sending-1440-dark.png",
     "docs/design/artifacts/chat/send-streaming-1440-dark.png",
     "docs/design/artifacts/chat/send-queued-1440-dark.png",
+    "docs/design/artifacts/chat/context-ready-1440-dark.png",
+    "docs/design/artifacts/chat/context-ready-390-dark.png",
+    "docs/design/artifacts/chat/context-ready-768-light.png",
+    "docs/design/artifacts/chat/context-tokens-only-1440-dark.png",
+    "docs/design/artifacts/chat/context-unknown-1440-dark.png",
+    "docs/design/artifacts/chat/context-ineffective-1440-dark.png",
+    "docs/design/artifacts/chat/context-confirm-1440-dark.png",
+    "docs/design/artifacts/chat/context-compacting-1440-dark.png",
+    "docs/design/artifacts/chat/context-compacted-1440-dark.png",
+    "docs/design/artifacts/chat/context-compact-409-1440-dark.png",
+    "docs/design/artifacts/chat/context-switch-race-1440-dark.png",
+    "docs/design/artifacts/chat/context-retry-1440-dark.png",
     "docs/design/artifacts/chat/main-1440-diff.png",
     "docs/design/artifacts/chat/main-1440-diff-light.png",
     "docs/design/artifacts/chat/main-390-diff.png",
@@ -2354,5 +3311,5 @@
     "docs/design/artifacts/chat/diff-timeout-1440-dark.png"
   ],
   "consoleErrors": [],
-  "finishedAt": "2026-10-20T10:55:13.430Z"
+  "finishedAt": "2026-10-21T15:36:59.730Z"
 }

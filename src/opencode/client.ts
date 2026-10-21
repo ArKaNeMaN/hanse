@@ -29,6 +29,29 @@ export interface OpencodeModel {
   modelID: string;
 }
 
+export interface OpencodeModelLimit {
+  context?: number;
+  input?: number;
+  output?: number;
+}
+
+export interface OpencodeProviderModel {
+  id?: string;
+  limit?: OpencodeModelLimit;
+  [key: string]: unknown;
+}
+
+export interface OpencodeProvider {
+  id: string;
+  models: Record<string, OpencodeProviderModel>;
+  [key: string]: unknown;
+}
+
+export interface OpencodeProviders {
+  providers: OpencodeProvider[];
+  default?: Record<string, string>;
+}
+
 export interface OpencodeQuestionOption {
   label: string;
   description?: string;
@@ -125,6 +148,11 @@ export const OPENCODE_REPLY_TIMEOUT_MS = 10_000;
 export const OPENCODE_MAX_BODY_BYTES = 1024 * 1024;
 export const MESSAGES_RESPONSE_MAX_BYTES = 8 * 1024 * 1024;
 export const MESSAGES_RESPONSE_TIMEOUT_MS = 30_000;
+export const PROVIDERS_RESPONSE_MAX_BYTES = 4 * 1024 * 1024;
+export const PROVIDERS_RESPONSE_TIMEOUT_MS = 10_000;
+export const SESSIONS_RESPONSE_MAX_BYTES = 2 * 1024 * 1024;
+export const SESSIONS_RESPONSE_TIMEOUT_MS = 5_000;
+export const SUMMARIZE_RESPONSE_TIMEOUT_MS = 600_000;
 const ERROR_EXCERPT_BYTES = 4_096;
 const ERROR_EXCERPT_CHARS = 300;
 
@@ -152,6 +180,79 @@ async function call<T>(endpoint: string, path: string, init?: RequestInit): Prom
 
 export function listSessions(endpoint: string): Promise<OpencodeSession[]> {
   return call<OpencodeSession[]>(endpoint, "/session");
+}
+
+export async function listSessionsBounded(endpoint: string): Promise<OpencodeSession[]> {
+  const path = "/session";
+  const options: OpencodeRequestOptions = {
+    maxBytes: SESSIONS_RESPONSE_MAX_BYTES,
+    timeoutMs: SESSIONS_RESPONSE_TIMEOUT_MS,
+  };
+  const response = await requestResponse(
+    endpoint,
+    path,
+    { method: "GET" },
+    SESSIONS_RESPONSE_TIMEOUT_MS,
+    options,
+  );
+  return readJson<OpencodeSession[]>(response, path, options);
+}
+
+export async function listProviders(endpoint: string): Promise<OpencodeProviders> {
+  const body = await getJson<unknown>(endpoint, "/config/providers", {
+    maxBytes: PROVIDERS_RESPONSE_MAX_BYTES,
+    timeoutMs: PROVIDERS_RESPONSE_TIMEOUT_MS,
+  });
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    return { providers: [] };
+  }
+  const record = body as Record<string, unknown>;
+  const result: OpencodeProviders = {
+    providers: Array.isArray(record.providers) ? (record.providers as OpencodeProvider[]) : [],
+  };
+  const catalogDefault = record.default;
+  if (
+    typeof catalogDefault === "object" &&
+    catalogDefault !== null &&
+    !Array.isArray(catalogDefault)
+  ) {
+    result.default = catalogDefault as Record<string, string>;
+  }
+  return result;
+}
+
+export async function summarizeSession(
+  endpoint: string,
+  sessionId: string,
+  model: OpencodeModel,
+  options?: { signal?: AbortSignal; timeoutMs?: number },
+): Promise<boolean> {
+  const path = `/session/${encodeURIComponent(sessionId)}/summarize`;
+  const timeout = options?.timeoutMs ?? SUMMARIZE_RESPONSE_TIMEOUT_MS;
+  const requestOptions: OpencodeRequestOptions = {
+    maxBytes: OPENCODE_MAX_BODY_BYTES,
+    timeoutMs: timeout,
+  };
+  const response = await requestResponse(
+    endpoint,
+    path,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        providerID: model.providerID,
+        modelID: model.modelID,
+        auto: false,
+      }),
+    },
+    timeout,
+    requestOptions,
+    options?.signal,
+  );
+  const body = await readJson<unknown>(response, path, requestOptions);
+  if (typeof body !== "boolean") {
+    throw new OpencodeHttpError(path, 0, "response body is not a boolean");
+  }
+  return body;
 }
 
 export function createSession(endpoint: string, title?: string): Promise<OpencodeSession> {
@@ -315,12 +416,29 @@ async function readCapped(
   };
 }
 
+function timeoutSignal(timeoutMs: number, signal?: AbortSignal): AbortSignal {
+  const timeout = AbortSignal.timeout(timeoutMs);
+  if (signal === undefined) return timeout;
+  if (typeof AbortSignal.any === "function") return AbortSignal.any([timeout, signal]);
+  const controller = new AbortController();
+  const abort = (reason: unknown): void => {
+    if (!controller.signal.aborted) controller.abort(reason);
+  };
+  if (signal.aborted) abort(signal.reason);
+  else signal.addEventListener("abort", () => abort(signal.reason), { once: true });
+  if (!controller.signal.aborted) {
+    timeout.addEventListener("abort", () => abort(timeout.reason), { once: true });
+  }
+  return controller.signal;
+}
+
 async function requestResponse(
   endpoint: string,
   path: string,
   init: RequestInit,
   timeoutMs: number,
   options: OpencodeRequestOptions | undefined,
+  signal?: AbortSignal,
 ): Promise<Response> {
   const timeout = options?.timeoutMs ?? timeoutMs;
   let response: Response;
@@ -328,10 +446,14 @@ async function requestResponse(
     response = await fetch(`${endpoint}${path}`, {
       ...init,
       headers: requestHeaders(endpoint, init),
-      signal: AbortSignal.timeout(timeout),
+      signal: timeoutSignal(timeout, signal),
     });
   } catch (error) {
-    throw new OpencodeHttpError(path, 0, transportExcerpt(error, timeout));
+    throw new OpencodeHttpError(
+      path,
+      0,
+      signal?.aborted === true ? "request aborted" : transportExcerpt(error, timeout),
+    );
   }
   if (!response.ok) {
     const excerpt = await readCapped(response, ERROR_EXCERPT_BYTES);

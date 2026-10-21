@@ -18,6 +18,7 @@ import { type AppImageStatus, resolveAppBuild } from "../registry/index.js";
 import { appNetworkName, mapToHostPath } from "../runner/names.js";
 import { RUNNER_APP_PORT } from "../runner/validate.js";
 import { hashValue } from "../settings/hash.js";
+import { launchEffectiveSettings } from "../settings/service.js";
 import type {
   EffectiveSettings,
   LaunchSettingsSnapshot,
@@ -26,6 +27,14 @@ import type {
 import type { SqliteDatabase } from "../store/index.js";
 import { buildWebMcpConfig } from "../web/config.js";
 import { writeAuthFile } from "./auth.js";
+import {
+  AgentNotRunningError,
+  ContextMonitor,
+  type ContextMonitorLike,
+  type ContextMonitorOptions,
+  type ContextPolicy,
+  type ContextSnapshot,
+} from "./context.js";
 import {
   authorizationFor,
   clearEndpointAuthorization,
@@ -72,9 +81,10 @@ export interface ManagedApp {
   imageRef?: string | null;
 }
 
-/** Injectable subset of `SettingsService` used for launch snapshots. */
+/** Injectable subset of `SettingsService` used for launch snapshots and live context policy. */
 export interface SettingsSource {
   snapshot(target: SettingsTarget): LaunchSettingsSnapshot;
+  contextPolicy?(target: SettingsTarget): ContextPolicy;
 }
 
 /** Injectable subset of `OmoProfileStore` used for profile application and hashing. */
@@ -114,6 +124,16 @@ export interface InstanceManagerOptions {
   hostWorkspace?: string;
   /** Absolute host agents path for the B1 runner. Enables host-path specs. */
   hostAgents?: string;
+  /** Injectable monitor factory; production constructs a `ContextMonitor`. */
+  monitorFactory?: (options: ContextMonitorOptions) => ContextMonitorLike;
+  /** Set false to disable background context monitors regardless of settings support. */
+  enableContextMonitors?: boolean;
+}
+
+interface MonitorEntry {
+  monitor: ContextMonitorLike;
+  endpoint: string;
+  generation: number;
 }
 
 const DEFAULT_MODEL = "deepseek/deepseek-flash";
@@ -129,7 +149,7 @@ function disableWebsearch(web: EffectiveSettings["web"]): boolean {
 
 function settingsHashFor(snapshot: LaunchSettingsSnapshot, profile: string): string {
   return hashValue({
-    effective: snapshot.resolved.effective,
+    effective: launchEffectiveSettings(snapshot.resolved.effective),
     providerKeys: snapshot.resolved.providerKeys,
     authHash: snapshot.authHash,
     gitAuthHash: snapshot.gitAuthHash,
@@ -275,7 +295,9 @@ export class InstanceManager {
   readonly #runtimeRoot: string;
   readonly #options: InstanceManagerOptions;
   readonly #running = new Map<string, Entry>();
+  readonly #monitors = new Map<string, MonitorEntry>();
   readonly #locks = new Map<string, Promise<unknown>>();
+  #monitorGeneration = 0;
 
   constructor(db: SqliteDatabase, runtimeRoot: string, options: InstanceManagerOptions) {
     this.#db = db;
@@ -331,7 +353,7 @@ export class InstanceManager {
               .get(app.id) as
               | { appliedSettingsHash: string | null; appliedProfile: number | null }
               | undefined;
-            this.#running.set(app.id, {
+            const entry: Entry = {
               endpoint,
               projectId: app.projectId,
               appKey: app.appKey,
@@ -341,18 +363,23 @@ export class InstanceManager {
                 persisted?.appliedProfile === null || persisted?.appliedProfile === undefined
                   ? undefined
                   : persisted.appliedProfile !== 0,
-            });
+            };
+            this.#running.set(app.id, entry);
+            this.#startMonitor(app, entry);
           } else {
             if (existing.endpoint !== endpoint) {
+              this.#stopMonitor(app.id);
               clearEndpointAuthorization(existing.endpoint);
+              existing.endpoint = endpoint;
             }
-            existing.endpoint = endpoint;
+            this.#startMonitor(app, existing);
           }
           return endpoint;
         }
       }
       const image = resolveAgentImage(app);
       if (existing !== undefined) {
+        this.#stopMonitor(app.id);
         clearEndpointAuthorization(existing.endpoint);
         this.#running.delete(app.id);
         await this.#options.runtime.delete(app.id);
@@ -533,6 +560,7 @@ export class InstanceManager {
         profileWarning,
       };
       this.#running.set(app.id, entry);
+      this.#startMonitor(app, entry);
       entry.policyWarnings = await this.#verifyPolicy(app, isolated, baselinePlugins, endpoint);
       if (model !== undefined) {
         const verifyModel = this.#options.modelVerifier ?? verifyAgentModels;
@@ -682,6 +710,7 @@ export class InstanceManager {
       await this.#options.runtime.status(appId).catch(() => undefined);
       throw error;
     }
+    this.#stopMonitor(appId);
     this.#running.delete(appId);
     if (endpoint !== undefined && endpoint !== null) {
       clearEndpointAuthorization(endpoint);
@@ -727,6 +756,7 @@ export class InstanceManager {
    * a coordinator restart.
    */
   async stopAll(): Promise<void> {
+    this.#stopAllMonitors();
     await this.#options.runtime.reconcile([]);
     const appIds = new Set(this.#running.keys());
     const active = this.#db
@@ -754,10 +784,148 @@ export class InstanceManager {
    * them through the same token files and per-app password.
    */
   detach(): void {
+    this.#stopAllMonitors();
     for (const entry of this.#running.values()) {
       clearEndpointAuthorization(entry.endpoint);
     }
     this.#running.clear();
+  }
+
+  /**
+   * Best-effort reattachment after a coordinator restart.
+   *
+   * Only instances the runtime already reports as `running`/`starting` are attached; stopped apps
+   * are never started, and every failure is isolated to its app.
+   */
+  async resumeRunning(
+    apps: Array<{ id: string; projectId: string; appKey: string }>,
+  ): Promise<void> {
+    for (const app of apps) {
+      try {
+        await this.#withAppLock(app.id, () => this.#resumeOne(app));
+      } catch {
+        process.stderr.write(`hanse: context monitor resume failed for ${app.id}\n`);
+      }
+    }
+  }
+
+  async #resumeOne(app: { id: string; projectId: string; appKey: string }): Promise<void> {
+    if (!this.#monitorsEnabled()) return;
+    const marker = this.#db
+      .prepare(
+        `SELECT a.deleting AS appDeleting, p.deleting AS projectDeleting
+         FROM apps a
+         JOIN projects p ON p.id = a.project_id
+         WHERE a.id = ?`,
+      )
+      .get(app.id) as { appDeleting: number; projectDeleting: number } | undefined;
+    if (marker === undefined || marker.appDeleting === 1 || marker.projectDeleting === 1) return;
+    const status = await this.#options.runtime.status(app.id);
+    if (
+      status === undefined ||
+      (status.state !== "running" && status.state !== "starting") ||
+      status.endpoint === undefined ||
+      status.endpoint === null
+    ) {
+      return;
+    }
+    const identity = { projectId: app.projectId, app: app.appKey };
+    const isolated = resolveInstanceEnv(this.#runtimeRoot, identity);
+    const password = readOpencodePassword(opencodePasswordPath(isolated.XDG_STATE_HOME));
+    const tokenFile = mcpTokenPath(this.#runtimeRoot, identity);
+    if (password === undefined || !agentTokenMatches(this.#db, app.id, tokenFile)) return;
+    const endpoint = status.endpoint;
+    setEndpointAuthorization(endpoint, OPENCODE_BASIC_USERNAME, password);
+    const existing = this.#running.get(app.id);
+    if (existing !== undefined) {
+      if (existing.endpoint !== endpoint) {
+        this.#stopMonitor(app.id);
+        clearEndpointAuthorization(existing.endpoint);
+        existing.endpoint = endpoint;
+      }
+      this.#startMonitor(app, existing);
+      return;
+    }
+    const persisted = this.#db
+      .prepare(
+        `SELECT applied_settings_hash AS appliedSettingsHash,
+                applied_profile AS appliedProfile
+         FROM instances WHERE app_id = ?`,
+      )
+      .get(app.id) as
+      | { appliedSettingsHash: string | null; appliedProfile: number | null }
+      | undefined;
+    const entry: Entry = {
+      endpoint,
+      projectId: app.projectId,
+      appKey: app.appKey,
+      policyWarnings: [],
+      settingsHash: persisted?.appliedSettingsHash ?? undefined,
+      appliedProfile:
+        persisted?.appliedProfile === null || persisted?.appliedProfile === undefined
+          ? undefined
+          : persisted.appliedProfile !== 0,
+    };
+    this.#running.set(app.id, entry);
+    this.#startMonitor(app, entry);
+  }
+
+  async contextSnapshot(appId: string, sessionId: string): Promise<ContextSnapshot> {
+    const monitor = this.#running.has(appId) ? this.#monitors.get(appId)?.monitor : undefined;
+    if (monitor === undefined) throw new AgentNotRunningError();
+    return monitor.snapshot(sessionId);
+  }
+
+  async compactSession(appId: string, sessionId: string): Promise<{ accepted: true }> {
+    const monitor = this.#running.has(appId) ? this.#monitors.get(appId)?.monitor : undefined;
+    if (monitor === undefined) throw new AgentNotRunningError();
+    return monitor.compact(sessionId);
+  }
+
+  #monitorsEnabled(): boolean {
+    return (
+      this.#options.enableContextMonitors !== false &&
+      this.#options.settings?.contextPolicy !== undefined
+    );
+  }
+
+  #startMonitor(app: { id: string; projectId: string; appKey: string }, entry: Entry): void {
+    const settings = this.#options.settings;
+    const contextPolicy = settings?.contextPolicy;
+    if (this.#options.enableContextMonitors === false || contextPolicy === undefined) return;
+    const existing = this.#monitors.get(app.id);
+    if (existing !== undefined && existing.endpoint === entry.endpoint) return;
+    if (existing !== undefined) {
+      existing.monitor.stop();
+      this.#monitors.delete(app.id);
+    }
+    const generation = this.#monitorGeneration + 1;
+    this.#monitorGeneration = generation;
+    const options: ContextMonitorOptions = {
+      endpoint: entry.endpoint,
+      appId: app.id,
+      projectId: app.projectId,
+      appKey: entry.appKey,
+      isCurrent: () =>
+        this.#monitors.get(app.id)?.generation === generation &&
+        this.#running.get(app.id)?.endpoint === entry.endpoint,
+      settings: { contextPolicy: (target) => contextPolicy.call(settings, target) },
+    };
+    const monitor = this.#options.monitorFactory?.(options) ?? new ContextMonitor(options);
+    this.#monitors.set(app.id, { monitor, endpoint: entry.endpoint, generation });
+    monitor.start();
+  }
+
+  #stopMonitor(appId: string): void {
+    const entry = this.#monitors.get(appId);
+    if (entry === undefined) return;
+    entry.monitor.stop();
+    this.#monitors.delete(appId);
+  }
+
+  #stopAllMonitors(): void {
+    for (const entry of this.#monitors.values()) entry.monitor.stop();
+    this.#monitors.clear();
   }
 
   #recordStatus(

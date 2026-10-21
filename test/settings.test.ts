@@ -7,6 +7,7 @@ import { z } from "zod";
 import type { RunSshKeygen } from "../src/git/credentials.js";
 import {
   hashValue,
+  launchEffectiveSettings,
   resolveEffectiveValue,
   type SettingsKeyDefinition,
   SettingsService,
@@ -122,8 +123,28 @@ describe("settings defaults and precedence", () => {
       source: "default",
       sources: ["default"],
     });
+    expect(resolved.effective.context.autoCompact.enabled).toEqual({
+      value: false,
+      state: "default",
+      source: "default",
+      sources: ["default"],
+    });
+    expect(resolved.effective.context.autoCompact.percent).toEqual({
+      value: 80,
+      state: "default",
+      source: "default",
+      sources: ["default"],
+    });
     expect(resolved.scoped["global:llm.model"]).toEqual({ state: "absent", value: null });
     expect(resolved.scoped["global:web.search"]).toEqual({ state: "absent", value: null });
+    expect(resolved.scoped["global:context.auto_compact.enabled"]).toEqual({
+      state: "absent",
+      value: null,
+    });
+    expect(resolved.scoped["global:context.auto_compact.percent"]).toEqual({
+      state: "absent",
+      value: null,
+    });
     expect(resolved.warnings).toEqual([]);
   });
 
@@ -181,6 +202,197 @@ describe("settings defaults and precedence", () => {
     service.clear("global", {}, "web.fetch", "owner");
     service.set("project", projectTarget, "web.fetch", { driver: "builtin" }, "owner");
     expect(service.resolve(projectTarget).effective.web.fetch.state).toBe("set");
+  });
+});
+
+describe("context auto-compaction settings", () => {
+  it("resolves global -> project -> app and inherits narrower overrides", () => {
+    const { service } = fixture();
+    service.set("global", {}, "context.auto_compact.enabled", true, "owner");
+    service.set("global", {}, "context.auto_compact.percent", 90, "owner");
+    service.set("project", projectTarget, "context.auto_compact.percent", 70, "owner");
+    service.set("app", appTarget, "context.auto_compact.enabled", false, "owner");
+    service.set("app", appTarget, "context.auto_compact.percent", 60, "owner");
+
+    const global = service.resolve({});
+    expect(global.effective.context.autoCompact.enabled).toEqual({
+      value: true,
+      state: "set",
+      source: "global",
+      sources: ["global"],
+    });
+    expect(global.effective.context.autoCompact.percent).toEqual({
+      value: 90,
+      state: "set",
+      source: "global",
+      sources: ["global"],
+    });
+
+    const project = service.resolve(projectTarget);
+    expect(project.effective.context.autoCompact.enabled.value).toBe(true);
+    expect(project.effective.context.autoCompact.enabled.source).toBe("global");
+    expect(project.effective.context.autoCompact.percent).toEqual({
+      value: 70,
+      state: "set",
+      source: "project",
+      sources: ["project"],
+    });
+
+    const app = service.resolve(appTarget);
+    expect(app.effective.context.autoCompact.enabled).toEqual({
+      value: false,
+      state: "set",
+      source: "app",
+      sources: ["app"],
+    });
+    expect(app.effective.context.autoCompact.percent.value).toBe(60);
+    expect(app.scoped["app:context.auto_compact.percent"]).toEqual({
+      state: "set",
+      value: 60,
+    });
+
+    service.inherit("app", appTarget, "context.auto_compact.percent");
+    expect(service.resolve(appTarget).effective.context.autoCompact.percent).toEqual({
+      value: 70,
+      state: "set",
+      source: "project",
+      sources: ["project"],
+    });
+  });
+
+  it("validates booleans and integer percentages and refuses clears", () => {
+    const { service } = fixture();
+
+    for (const invalid of ["true", 1, null, "on"] as unknown[]) {
+      expect(() =>
+        service.set("global", {}, "context.auto_compact.enabled", invalid, "owner"),
+      ).toThrow(SettingsValidationError);
+    }
+    for (const invalid of [0, 100, 1.5, "80", null] as unknown[]) {
+      expect(() =>
+        service.set("global", {}, "context.auto_compact.percent", invalid, "owner"),
+      ).toThrow(SettingsValidationError);
+    }
+
+    service.set("global", {}, "context.auto_compact.percent", 1, "owner");
+    service.set("global", {}, "context.auto_compact.percent", 99, "owner");
+    expect(service.resolve({}).effective.context.autoCompact.percent.value).toBe(99);
+
+    expect(() => service.clear("global", {}, "context.auto_compact.enabled", "owner")).toThrow(
+      /not clearable/,
+    );
+    expect(() => service.clear("global", {}, "context.auto_compact.percent", "owner")).toThrow(
+      /not clearable/,
+    );
+  });
+});
+
+describe("context policy and launch projection", () => {
+  it("returns the three-key policy with effective sources", () => {
+    const { db, service } = fixture();
+    expect(service.contextPolicy({})).toEqual({
+      enabled: false,
+      percent: 80,
+      model: "deepseek/deepseek-flash",
+      enabledSource: "default",
+      percentSource: "default",
+    });
+
+    service.set("global", {}, "llm.model", "global/model", "owner");
+    service.set("global", {}, "context.auto_compact.enabled", true, "owner");
+    service.set("project", projectTarget, "context.auto_compact.percent", 65, "owner");
+
+    expect(service.contextPolicy({})).toEqual({
+      enabled: true,
+      percent: 80,
+      model: "global/model",
+      enabledSource: "global",
+      percentSource: "default",
+    });
+    expect(service.contextPolicy(projectTarget)).toEqual({
+      enabled: true,
+      percent: 65,
+      model: "global/model",
+      enabledSource: "global",
+      percentSource: "project",
+    });
+
+    insertSetting(db, "app", "p", "web", "context.auto_compact.percent", '"66"');
+    expect(service.contextPolicy(appTarget)).toEqual({
+      enabled: true,
+      percent: 65,
+      model: "global/model",
+      enabledSource: "global",
+      percentSource: "project",
+    });
+  });
+
+  it("omits context from the launch projection while the full hash includes it", () => {
+    const { service } = fixture();
+    const preChangeEffective = {
+      llm: {
+        model: {
+          value: "deepseek/deepseek-flash",
+          state: "default",
+          source: "default",
+          sources: ["default"],
+        },
+      },
+      web: {
+        search: {
+          value: { driver: "builtin" },
+          state: "default",
+          source: "default",
+          sources: ["default"],
+        },
+        fetch: {
+          value: { driver: "builtin" },
+          state: "default",
+          source: "default",
+          sources: ["default"],
+        },
+      },
+      git: {
+        user: {
+          name: {
+            value: null,
+            state: "default",
+            source: "default",
+            sources: ["default"],
+          },
+          email: {
+            value: null,
+            state: "default",
+            source: "default",
+            sources: ["default"],
+          },
+        },
+      },
+    };
+
+    const projected = launchEffectiveSettings(service.resolve({}).effective);
+    expect("context" in projected).toBe(false);
+    expect(projected).toEqual(preChangeEffective);
+    expect(hashValue(projected)).toBe(hashValue(preChangeEffective));
+
+    const baseHash = service.effectiveHash(appTarget);
+    service.set("global", {}, "context.auto_compact.enabled", true, "owner");
+    const enabledHash = service.effectiveHash(appTarget);
+    expect(enabledHash).not.toBe(baseHash);
+    expect(hashValue(launchEffectiveSettings(service.resolve(appTarget).effective))).toBe(
+      hashValue(preChangeEffective),
+    );
+
+    service.set("global", {}, "context.auto_compact.percent", 55, "owner");
+    expect(service.effectiveHash(appTarget)).not.toBe(enabledHash);
+    expect(hashValue(launchEffectiveSettings(service.resolve(appTarget).effective))).toBe(
+      hashValue(preChangeEffective),
+    );
+
+    service.set("global", {}, "llm.model", "changed/model", "owner");
+    expect(hashValue(launchEffectiveSettings(service.resolve(appTarget).effective))).not.toBe(
+      hashValue(preChangeEffective),
+    );
   });
 });
 

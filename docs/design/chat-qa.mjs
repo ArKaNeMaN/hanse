@@ -147,6 +147,33 @@ function json(route, value, status = 200) {
   });
 }
 
+function sessionIDFromPath(pathname, suffix) {
+  const pattern = new RegExp(`/sessions/([^/]+)/${suffix}$`);
+  const match = pattern.exec(pathname);
+  return match === null ? null : decodeURIComponent(match[1]);
+}
+
+/**
+ * D4 snapshot used by every scenario that does not override the context route. Existing scenarios
+ * issue context GETs after `stream.ready` and session selection, so the fallback `{}` must never be
+ * used for `/context`.
+ */
+function defaultContextSnapshot(sessionID) {
+  return {
+    sessionID,
+    state: "ready",
+    used: 124000,
+    limit: 200000,
+    percent: 62,
+    model: { providerID: "deepseek", modelID: "deepseek-flash" },
+    status: "idle",
+    updatedAt: "2026-10-21T12:00:00.000Z",
+    lastCompactedAt: null,
+    lastError: null,
+    autoCompact: { enabled: true, percent: 80, source: "app", percentSource: "global" },
+  };
+}
+
 async function emit(page, payload) {
   await page.evaluate((event) => {
     const source = window.__qaEventSource;
@@ -255,6 +282,7 @@ async function startServer() {
   const env = {
     ...process.env,
     HANSE_OPERATOR_TOKEN: token,
+    HANSE_RUNTIME_TOKEN: process.env.HANSE_RUNTIME_TOKEN ?? "qa-runtime-token",
     HANSE_IDE: "0",
     HANSE_ASSETS: path.join(ROOT, "assets"),
   };
@@ -493,6 +521,19 @@ function checkNoErrors(errors) {
   }
 }
 
+/**
+ * A deliberate non-2xx API response makes Chromium log one resource error. Scenarios that assert a
+ * fixed HTTP error still require every other console/page error to be absent.
+ */
+function checkExpectedHttpError(errors, status) {
+  const pattern = new RegExp(`Failed to load resource.*status of ${status}`);
+  const unexpected = errors.filter((entry) => !pattern.test(entry));
+  if (unexpected.length > 0) {
+    report.consoleErrors.push(...unexpected);
+    throw new Error(`console/page errors:\n${unexpected.join("\n")}`);
+  }
+}
+
 async function waitForStableMessageGets(routeState, quietMs = 1000, timeout = 10_000) {
   const deadline = Date.now() + timeout;
   for (;;) {
@@ -520,6 +561,8 @@ async function installRoutes(page, config) {
     replyCount: 0,
     promptQuestions: config.promptQuestions ?? [],
     messageGets: [],
+    contextGets: [],
+    compactCalls: [],
   };
 
   const messages = typeof config.messages === "function" ? config.messages : () => config.messages;
@@ -570,6 +613,58 @@ async function installRoutes(page, config) {
     }
     if (pathname.endsWith("/todo") && method === "GET") {
       return json(route, { todos: config.todos ?? [], truncated: false });
+    }
+    if (pathname.endsWith("/context") && method === "GET") {
+      const sessionID = sessionIDFromPath(pathname, "context");
+      const call = {
+        sessionID,
+        at: Date.now(),
+        callIndex: state.contextGets.length + 1,
+        sessionCallIndex:
+          state.contextGets.filter((entry) => entry.sessionID === sessionID).length + 1,
+        status: 200,
+        code: null,
+      };
+      state.contextGets.push(call);
+      const override =
+        typeof config.context === "function"
+          ? await config.context({ sessionID, state, call })
+          : config.context;
+      if (
+        override !== null &&
+        typeof override === "object" &&
+        typeof override.status === "number"
+      ) {
+        call.status = override.status;
+        call.code = override.body?.code ?? null;
+        if (override.delayMs) await wait(override.delayMs);
+        return json(route, override.body ?? {}, override.status);
+      }
+      return json(route, override ?? defaultContextSnapshot(sessionID));
+    }
+    if (pathname.endsWith("/compact") && method === "POST") {
+      const sessionID = sessionIDFromPath(pathname, "compact");
+      const call = {
+        sessionID,
+        at: Date.now(),
+        body: request.postData(),
+        status: 202,
+      };
+      state.compactCalls.push(call);
+      const override =
+        typeof config.compact === "function"
+          ? await config.compact({ sessionID, state, call })
+          : config.compact;
+      if (
+        override !== null &&
+        typeof override === "object" &&
+        typeof override.status === "number"
+      ) {
+        call.status = override.status;
+        if (override.delayMs) await wait(override.delayMs);
+        return json(route, override.body ?? {}, override.status);
+      }
+      return json(route, override ?? { accepted: true, sessionID }, 202);
     }
     if (pathname.includes("/messages") && method === "GET") {
       state.messageGets.push(Date.now());
@@ -1388,9 +1483,668 @@ function timeoutFixture() {
   ]);
 }
 
+function contextMessages(sessionID) {
+  const now = Date.now();
+  return [
+    {
+      info: { id: "msg_ctx_u", sessionID, role: "user", time: { created: now - 5_000 } },
+      parts: [
+        {
+          id: "prt_ctx_u",
+          sessionID,
+          messageID: "msg_ctx_u",
+          type: "text",
+          text: "Show the context usage for this session.",
+        },
+      ],
+    },
+    {
+      info: {
+        id: "msg_ctx_a",
+        sessionID,
+        role: "assistant",
+        parentID: "msg_ctx_u",
+        time: { created: now - 4_000, completed: now - 3_000 },
+        finish: "stop",
+      },
+      parts: [
+        {
+          id: "prt_ctx_a",
+          sessionID,
+          messageID: "msg_ctx_a",
+          type: "text",
+          text: "The context rail is ready.",
+        },
+      ],
+    },
+  ];
+}
+
+async function waitForChipLabel(page, label, timeout = 5_000) {
+  await page.waitForFunction(
+    (expected) => document.getElementById("chat-context-chip-label")?.textContent === expected,
+    label,
+    { timeout },
+  );
+}
+
+async function openContextRail(page) {
+  await page.locator("#chat-context-chip").click();
+  await page.waitForFunction(
+    () => document.getElementById("chat-shell")?.dataset.chatContext === "open",
+    undefined,
+    { timeout: 2_000 },
+  );
+  await wait(300);
+}
+
+async function clickSession(page, id) {
+  await page.evaluate((sessionID) => {
+    const button = Array.from(document.querySelectorAll(".session-item")).find(
+      (node) => node.dataset.sessionId === sessionID,
+    );
+    if (!(button instanceof HTMLElement)) throw new Error(`session ${sessionID} is not rendered`);
+    button.click();
+  }, id);
+}
+
+async function contextUi(page) {
+  return page.evaluate(() => {
+    const text = (node) => (node ? (node.textContent ?? "").replace(/\s+/g, " ").trim() : "");
+    const chip = document.getElementById("chat-context-chip");
+    const chipMeter = chip?.querySelector(".chat-context-chip__meter") ?? null;
+    const meter = document.getElementById("chat-context-meter");
+    const compact = document.getElementById("chat-context-compact");
+    const reason = document.getElementById("chat-context-compact-reason");
+    const confirm = document.getElementById("chat-context-confirm");
+    const error = document.getElementById("chat-context-error");
+    const settings = document.getElementById("chat-context-settings");
+    return {
+      session: text(document.getElementById("chat-session-id")),
+      title: text(document.getElementById("chat-session-title")),
+      chip: {
+        hidden: chip?.hidden ?? null,
+        label: text(document.getElementById("chat-context-chip-label")),
+        exact: text(document.getElementById("chat-context-chip-exact")),
+        state: chip?.dataset.state ?? null,
+        title: chip?.getAttribute("title") ?? null,
+        meterHidden: chipMeter?.hidden ?? null,
+        meterRole: chipMeter?.getAttribute("role") ?? null,
+        meterNow: chipMeter?.getAttribute("aria-valuenow") ?? null,
+        meterText: chipMeter?.getAttribute("aria-valuetext") ?? null,
+      },
+      rail: {
+        open: document.getElementById("chat-shell")?.dataset.chatContext ?? null,
+        usageHidden: document.getElementById("chat-context-usage")?.hidden ?? null,
+        state: document.getElementById("chat-context-usage")?.dataset.state ?? null,
+        summary: text(document.getElementById("chat-context-summary")),
+        detail: text(document.getElementById("chat-context-detail")),
+        auto: text(document.getElementById("chat-context-auto")),
+        autoTitle: document.getElementById("chat-context-auto")?.getAttribute("title") ?? null,
+        settingsHref: settings?.getAttribute("href") ?? null,
+        meterHidden: meter?.hidden ?? null,
+        meterRole: meter?.getAttribute("role") ?? null,
+        meterMin: meter?.getAttribute("aria-valuemin") ?? null,
+        meterMax: meter?.getAttribute("aria-valuemax") ?? null,
+        meterNow: meter?.getAttribute("aria-valuenow") ?? null,
+        meterText: meter?.getAttribute("aria-valuetext") ?? null,
+      },
+      compact: {
+        disabled: compact?.disabled ?? null,
+        state: compact?.dataset.state ?? null,
+        busy: compact?.getAttribute("aria-busy") ?? null,
+        reason: text(reason),
+        reasonHidden: reason?.hidden ?? null,
+      },
+      confirm: {
+        hidden: confirm?.hidden ?? null,
+        text: text(confirm),
+        active: document.activeElement?.id ?? null,
+      },
+      error: {
+        hidden: error?.hidden ?? null,
+        text: text(error),
+        role: error?.getAttribute("role") ?? null,
+      },
+      toasts: Array.from(document.querySelectorAll("#toast-region .toast")).map((node) => ({
+        text: text(node.querySelector(".toast__copy")),
+        tone: node.dataset.tone ?? null,
+        role: node.getAttribute("role"),
+      })),
+    };
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Scenarios
 // ---------------------------------------------------------------------------
+
+async function scenarioContextStates(browser, target) {
+  const readySession = THREADS.main;
+  const tokensSession = "ses_context_tokens";
+  const unknownSession = "ses_context_unknown";
+  const ineffectiveSession = "ses_context_ineffective";
+  const snapshots = {
+    [readySession]: defaultContextSnapshot(readySession),
+    [tokensSession]: {
+      ...defaultContextSnapshot(tokensSession),
+      used: 124000,
+      limit: null,
+      percent: null,
+      autoCompact: { enabled: true, percent: 70, source: "project", percentSource: "project" },
+    },
+    [unknownSession]: {
+      ...defaultContextSnapshot(unknownSession),
+      state: "unknown",
+      used: null,
+      limit: null,
+      percent: null,
+      model: null,
+      autoCompact: { enabled: false, percent: 80, source: "default", percentSource: "default" },
+    },
+    [ineffectiveSession]: {
+      ...defaultContextSnapshot(ineffectiveSession),
+      used: 190000,
+      percent: 95,
+      lastError: "compaction_failed",
+    },
+  };
+  const sessionIDs = [readySession, tokensSession, unknownSession, ineffectiveSession];
+  const titles = ["Ready", "Tokens only", "Unknown", "Ineffective"];
+  const { context, page, errors } = await newPage(browser, target);
+  try {
+    await installRoutes(page, {
+      sessionId: readySession,
+      messages: contextMessages(readySession),
+      sessions: () =>
+        sessionIDs.map((id, index) => ({
+          id,
+          title: titles[index],
+          time: { updated: Date.now() - index * 1_000 },
+        })),
+      context: ({ sessionID }) => snapshots[sessionID] ?? snapshots[readySession],
+    });
+    await gotoChat(page, target, readySession);
+    await waitForChipLabel(page, "Context 62%");
+    await openContextRail(page);
+
+    const ready = await contextUi(page);
+    check(ready.chip.hidden === false, "ready context chip is visible");
+    assertEqual(ready.chip.label, "Context 62%", "ready chip label");
+    assertEqual(
+      ready.chip.exact,
+      "124,000 / 200,000 tokens · deepseek/deepseek-flash",
+      "ready chip accessible detail",
+    );
+    assertEqual(ready.chip.state, "ok", "ready chip state");
+    check(
+      ready.chip.title === "124,000 / 200,000 tokens · deepseek/deepseek-flash",
+      `ready chip title carries the detail (${ready.chip.title})`,
+    );
+    check(
+      ready.chip.meterHidden === false &&
+        ready.chip.meterRole === "meter" &&
+        ready.chip.meterNow === "62" &&
+        ready.chip.meterText === "62%; 124,000 / 200,000 tokens · deepseek/deepseek-flash",
+      "ready chip meter exposes the true percentage and detail",
+    );
+    check(ready.rail.open === "open", "the context chip opens the context rail");
+    check(ready.rail.usageHidden === false, "the context rail section is visible");
+    assertEqual(ready.rail.state, "ok", "ready rail state");
+    assertEqual(ready.rail.summary, "62% of 200k", "ready rail summary");
+    assertEqual(
+      ready.rail.detail,
+      "124,000 / 200,000 tokens · deepseek/deepseek-flash",
+      "ready rail detail",
+    );
+    assertEqual(ready.rail.auto, "Auto-compact at 80%", "ready auto-compact line");
+    assertEqual(
+      ready.rail.autoTitle,
+      "Enabled by application; threshold from global.",
+      "ready auto-compact source title",
+    );
+    check(
+      ready.rail.settingsHref?.includes("/settings"),
+      `the context settings link points at settings (${ready.rail.settingsHref})`,
+    );
+    check(
+      ready.rail.meterHidden === false &&
+        ready.rail.meterRole === "meter" &&
+        ready.rail.meterMin === "0" &&
+        ready.rail.meterMax === "100" &&
+        ready.rail.meterNow === "62" &&
+        ready.rail.meterText === "62%; 124,000 / 200,000 tokens · deepseek/deepseek-flash",
+      "ready rail meter has role/meter ARIA and the true percentage",
+    );
+    check(ready.compact.disabled === false, "Compact now is enabled for a ready session");
+    assertEqual(ready.compact.state, "ready", "ready compact button state");
+    check(
+      ready.compact.reasonHidden === true && ready.compact.reason === "",
+      `ready compact button has no disabled reason (${ready.compact.reason})`,
+    );
+    check(ready.confirm.hidden === true, "the inline confirm starts hidden");
+    check(ready.error.hidden === true, "no context error is shown for a ready session");
+
+    await shot(page, "context-ready-1440-dark");
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await wait(350);
+    const mobile = await contextUi(page);
+    const mobileOverflow = await page.evaluate(
+      () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    );
+    check(mobileOverflow === 0, `no horizontal page overflow at 390 (${mobileOverflow}px)`);
+    check(
+      mobile.chip.label === "Context 62%" && mobile.rail.open === "open",
+      "the context chip and rail survive the 390 layout",
+    );
+    await shot(page, "context-ready-390-dark");
+
+    await page.setViewportSize({ width: 768, height: 900 });
+    await page.evaluate(() => {
+      document.documentElement.dataset.theme = "light";
+    });
+    await wait(350);
+    const light = await contextUi(page);
+    check(light.rail.summary === "62% of 200k", "the context rail renders in light theme");
+    await shot(page, "context-ready-768-light");
+    await page.evaluate(() => {
+      document.documentElement.dataset.theme = "dark";
+    });
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await wait(300);
+
+    await clickSession(page, tokensSession);
+    await waitForChipLabel(page, "Context 124k");
+    await openContextRail(page);
+    const tokens = await contextUi(page);
+    assertEqual(tokens.chip.label, "Context 124k", "tokens-only chip label");
+    assertEqual(
+      tokens.chip.exact,
+      "124,000 tokens · deepseek/deepseek-flash",
+      "tokens-only accessible detail",
+    );
+    assertEqual(tokens.chip.state, "unknown", "tokens-only chip state");
+    check(
+      tokens.chip.meterHidden === false &&
+        tokens.chip.meterNow === "0" &&
+        tokens.chip.meterText === "124,000 tokens · deepseek/deepseek-flash",
+      "tokens-only chip meter stays visible with a 0% fill and token text",
+    );
+    assertEqual(tokens.rail.summary, "124k tokens", "tokens-only rail summary");
+    assertEqual(
+      tokens.rail.detail,
+      "124,000 tokens · deepseek/deepseek-flash",
+      "tokens-only rail detail",
+    );
+    assertEqual(tokens.rail.auto, "Auto-compact at 70%", "tokens-only auto-compact line");
+    assertEqual(tokens.rail.autoTitle, "Enabled by project.", "tokens-only auto-compact source");
+    check(tokens.compact.disabled === false, "manual compaction works without a known limit");
+    await shot(page, "context-tokens-only-1440-dark");
+
+    await clickSession(page, unknownSession);
+    await waitForChipLabel(page, "Context —");
+    await openContextRail(page);
+    const unknown = await contextUi(page);
+    assertEqual(unknown.chip.label, "Context —", "unknown chip label");
+    assertEqual(unknown.chip.state, "unknown", "unknown chip state");
+    check(unknown.chip.meterHidden === true, "unknown chip hides the meter");
+    assertEqual(unknown.rail.summary, "—", "unknown rail summary");
+    assertEqual(unknown.rail.detail, "—", "unknown rail detail");
+    assertEqual(unknown.rail.auto, "Auto-compact off", "unknown auto-compact line");
+    assertEqual(unknown.rail.autoTitle, "Auto-compact is off.", "unknown auto-compact title");
+    check(
+      unknown.compact.disabled === true &&
+        unknown.compact.reason === "No model is known for this session." &&
+        unknown.compact.reasonHidden === false,
+      `unknown snapshot disables Compact now with a reason (${unknown.compact.reason})`,
+    );
+    await shot(page, "context-unknown-1440-dark");
+
+    await clickSession(page, ineffectiveSession);
+    await waitForChipLabel(page, "Context 95%");
+    await openContextRail(page);
+    const ineffective = await contextUi(page);
+    assertEqual(ineffective.chip.label, "Context 95%", "ineffective chip label");
+    assertEqual(ineffective.chip.state, "danger", "ineffective chip state");
+    assertEqual(ineffective.rail.state, "danger", "ineffective rail state");
+    assertEqual(ineffective.rail.summary, "95% of 200k", "ineffective rail summary");
+    check(
+      ineffective.error.hidden === false &&
+        ineffective.error.text === "Compaction failed. Try again." &&
+        ineffective.error.role === "alert",
+      `ineffective compaction surfaces the fixed error (${ineffective.error.text})`,
+    );
+    assertEqual(ineffective.rail.auto, "Auto-compact at 80%", "ineffective auto-compact line");
+    check(
+      ineffective.compact.disabled === false,
+      "a recorded compaction failure does not block a manual retry",
+    );
+    await shot(page, "context-ineffective-1440-dark");
+
+    checkNoErrors(errors);
+    return { ready, mobile, light, tokens, unknown, ineffective };
+  } finally {
+    await context.close();
+  }
+}
+
+async function scenarioContextCompact(browser, target) {
+  const sessionID = THREADS.main;
+  const ready = defaultContextSnapshot(sessionID);
+  const compacting = { ...ready, state: "compacting" };
+  const compacted = { ...ready, used: 12000, percent: 6 };
+  let phase = "ready";
+  const { context, page, errors } = await newPage(browser, target);
+  let first;
+  try {
+    const routeState = await installRoutes(page, {
+      sessionId: sessionID,
+      messages: contextMessages(sessionID),
+      context: () => {
+        if (phase === "compacting") return compacting;
+        if (phase === "compacted") return compacted;
+        return ready;
+      },
+      compact: () => {
+        phase = "compacting";
+        return { accepted: true, sessionID };
+      },
+    });
+    await gotoChat(page, target, sessionID);
+    await waitForChipLabel(page, "Context 62%");
+    await openContextRail(page);
+    await page.locator("#chat-context-compact").click();
+    await page.waitForFunction(
+      () => document.getElementById("chat-context-confirm")?.hidden === false,
+      undefined,
+      { timeout: 2_000 },
+    );
+    const confirm = await contextUi(page);
+    check(confirm.confirm.hidden === false, "Compact now opens the inline confirm");
+    check(
+      confirm.confirm.text.includes("Summarization replaces the session history"),
+      `the inline confirm explains the risk (${confirm.confirm.text})`,
+    );
+    assertEqual(
+      confirm.confirm.active,
+      "chat-context-confirm-compact",
+      "focus moves to the confirm action",
+    );
+    await shot(page, "context-confirm-1440-dark");
+
+    await page.locator("#chat-context-confirm-compact").click();
+    await waitForChipLabel(page, "Compacting");
+    const compactingUi = await contextUi(page);
+    assertEqual(routeState.compactCalls.length, 1, "exactly one compact POST for one confirm");
+    assertEqual(
+      routeState.compactCalls[0]?.sessionID,
+      sessionID,
+      "compact POST targets the session",
+    );
+    assertEqual(routeState.compactCalls[0]?.status, 202, "compact POST returns 202");
+    assertEqual(routeState.compactCalls[0]?.body, "{}", "compact POST sends an empty body");
+    assertEqual(compactingUi.chip.label, "Compacting", "compacting chip label");
+    assertEqual(compactingUi.chip.state, "compacting", "compacting chip state");
+    check(
+      compactingUi.compact.disabled === true &&
+        compactingUi.compact.reason === "Compaction in progress.",
+      `Compact now is disabled while compacting (${compactingUi.compact.reason})`,
+    );
+    check(compactingUi.confirm.hidden === true, "the confirm closes after acceptance");
+    check(
+      compactingUi.toasts.some(
+        (toast) => toast.text === "Compaction started." && toast.tone === "success",
+      ),
+      `acceptance shows the started toast (${compactingUi.toasts.map((toast) => toast.text).join(" | ")})`,
+    );
+    await shot(page, "context-compacting-1440-dark");
+
+    await wait(400);
+    const settledGets = routeState.contextGets.length;
+    const pollDeadline = Date.now() + 4_500;
+    while (routeState.contextGets.length <= settledGets && Date.now() < pollDeadline) {
+      await wait(100);
+    }
+    check(
+      routeState.contextGets.length > settledGets,
+      `a compacting snapshot starts the 2s context poll (${settledGets} -> ${routeState.contextGets.length})`,
+    );
+
+    phase = "compacted";
+    await emit(page, {
+      type: "session.compacted",
+      seq: 1,
+      streamID: "qa-stream",
+      sessionID,
+    });
+    await waitForChipLabel(page, "Context 6%");
+    const compactedUi = await contextUi(page);
+    check(
+      compactedUi.toasts.some(
+        (toast) => toast.text === "Session compacted." && toast.tone === "success",
+      ),
+      `session.compacted shows the compacted toast (${compactedUi.toasts.map((toast) => toast.text).join(" | ")})`,
+    );
+    assertEqual(compactedUi.chip.state, "ok", "the refreshed snapshot returns to ready");
+    assertEqual(compactedUi.rail.summary, "6% of 200k", "the refreshed usage is rendered");
+    check(compactedUi.compact.disabled === false, "Compact now is enabled again when ready");
+    check(compactedUi.error.hidden === true, "the compacted snapshot clears the error line");
+    assertEqual(
+      routeState.compactCalls.length,
+      1,
+      "session.compacted never POSTs a second compaction",
+    );
+    await shot(page, "context-compacted-1440-dark");
+    checkNoErrors(errors);
+    first = { confirm, compactingUi, compactedUi, routeState };
+  } finally {
+    await context.close();
+  }
+
+  const conflict = await newPage(browser, target);
+  try {
+    const conflictState = await installRoutes(conflict.page, {
+      sessionId: sessionID,
+      messages: contextMessages(sessionID),
+      context: () => defaultContextSnapshot(sessionID),
+      compact: () => ({
+        status: 409,
+        body: { error: "Compaction is already in progress.", code: "compact_in_progress" },
+      }),
+    });
+    await gotoChat(conflict.page, target, sessionID);
+    await waitForChipLabel(conflict.page, "Context 62%");
+    await openContextRail(conflict.page);
+    await conflict.page.locator("#chat-context-compact").click();
+    await conflict.page.waitForFunction(
+      () => document.getElementById("chat-context-confirm")?.hidden === false,
+      undefined,
+      { timeout: 2_000 },
+    );
+    await conflict.page.locator("#chat-context-confirm-compact").click();
+    await conflict.page.waitForFunction(
+      () => {
+        const error = document.getElementById("chat-context-error");
+        return error !== null && error.hidden === false && error.textContent.length > 0;
+      },
+      undefined,
+      { timeout: 3_000 },
+    );
+    const conflictUi = await contextUi(conflict.page);
+    assertEqual(conflictState.compactCalls.length, 1, "the 409 path still issues one compact POST");
+    assertEqual(conflictState.compactCalls[0]?.status, 409, "the compact POST returns 409");
+    assertEqual(
+      conflictUi.error.text,
+      "Compaction is already in progress.",
+      "the fixed 409 message is shown inline",
+    );
+    assertEqual(conflictUi.error.role, "alert", "the inline error is an alert");
+    check(
+      conflictUi.toasts.some(
+        (toast) => toast.text === "Compaction is already in progress." && toast.tone === "error",
+      ),
+      `the 409 path shows an error toast (${conflictUi.toasts.map((toast) => toast.text).join(" | ")})`,
+    );
+    check(
+      conflictUi.compact.disabled === false && conflictUi.compact.state === "ready",
+      "a rejected compaction re-enables the button",
+    );
+    check(conflictUi.confirm.hidden === true, "the confirm stays closed after a 409");
+    assertEqual(conflictUi.chip.label, "Context 62%", "a 409 never renders a compacting chip");
+    await shot(conflict.page, "context-compact-409-1440-dark");
+    checkExpectedHttpError(conflict.errors, 409);
+    return { first, conflict: conflictUi, conflictState };
+  } finally {
+    await conflict.context.close();
+  }
+}
+
+async function scenarioContextSwitchRace(browser, target) {
+  const sessionA = THREADS.main;
+  const sessionB = "ses_context_other";
+  const snapshotA = defaultContextSnapshot(sessionA);
+  const snapshotB = {
+    ...defaultContextSnapshot(sessionB),
+    used: 60000,
+    percent: 30,
+  };
+  const { context, page, errors } = await newPage(browser, target);
+  try {
+    const routeState = await installRoutes(page, {
+      sessionId: sessionA,
+      messages: contextMessages(sessionA),
+      sessions: () => [
+        { id: sessionB, title: "Other", time: { updated: Date.now() } },
+        { id: sessionA, title: "Main", time: { updated: Date.now() - 1_000 } },
+      ],
+      context: async ({ sessionID, call }) => {
+        if (sessionID === sessionB) return snapshotB;
+        if (call.sessionCallIndex >= 2) await wait(900);
+        return snapshotA;
+      },
+    });
+    await gotoChat(page, target, sessionA);
+    await waitForChipLabel(page, "Context 62%");
+
+    await clickSession(page, sessionB);
+    await waitForChipLabel(page, "Context 30%");
+    await wait(150);
+
+    await clickSession(page, sessionA);
+    const started = Date.now();
+    while (
+      !routeState.contextGets.some(
+        (entry) => entry.sessionID === sessionA && entry.sessionCallIndex >= 2,
+      ) &&
+      Date.now() - started < 1_000
+    ) {
+      await wait(20);
+    }
+    await clickSession(page, sessionB);
+    await waitForChipLabel(page, "Context 30%");
+
+    const samples = [];
+    for (let index = 0; index < 15; index += 1) {
+      samples.push(
+        await page.evaluate(
+          () => document.getElementById("chat-context-chip-label")?.textContent ?? null,
+        ),
+      );
+      await wait(100);
+    }
+    const late = await contextUi(page);
+    const aCalls = routeState.contextGets.filter((entry) => entry.sessionID === sessionA);
+    check(
+      aCalls.length >= 2,
+      `the delayed session A context request was issued (${aCalls.length})`,
+    );
+    check(
+      aCalls.some((entry) => entry.sessionCallIndex >= 2 && entry.status === 200),
+      "the delayed session A response was delivered",
+    );
+    check(
+      samples.every((label) => label === "Context 30%"),
+      `session A never overwrites session B after the switch (${samples.join(" | ")})`,
+    );
+    assertEqual(late.chip.label, "Context 30%", "the selected session keeps its own chip");
+    assertEqual(late.rail.state, "ok", "the selected session keeps its own rail state");
+    assertEqual(late.session, sessionB.slice(0, 8), "the selected session id stays on B");
+    await shot(page, "context-switch-race-1440-dark");
+    checkNoErrors(errors);
+    return { samples, late, aCalls };
+  } finally {
+    await context.close();
+  }
+}
+
+async function scenarioContextRetry(browser, target) {
+  const sessionID = THREADS.main;
+  const snapshot = defaultContextSnapshot(sessionID);
+  let failNext = 0;
+  const { context, page, errors } = await newPage(browser, target);
+  try {
+    const routeState = await installRoutes(page, {
+      sessionId: sessionID,
+      messages: contextMessages(sessionID),
+      context: ({ sessionID: requested }) => {
+        if (requested !== sessionID || failNext === 0) return snapshot;
+        failNext -= 1;
+        return {
+          status: 503,
+          body: { error: "Agent is not running.", code: "agent_not_running" },
+        };
+      },
+    });
+    await gotoChat(page, target, sessionID);
+    await waitForChipLabel(page, "Context 62%");
+    const before = routeState.contextGets.length;
+    failNext = 1;
+
+    await emit(page, { type: "stream.ready", seq: 0, streamID: "qa-retry" });
+    await page.waitForFunction(
+      () => document.getElementById("chat-context-chip")?.hidden === true,
+      undefined,
+      { timeout: 2_000 },
+    );
+    const unavailable = await contextUi(page);
+    check(unavailable.chip.hidden === true, "the 503 hides the chip until recovery");
+    assertEqual(
+      await page.evaluate(() => document.getElementById("chat-context-detail")?.textContent),
+      "Context unavailable",
+      "the 503 shows the context-unavailable detail",
+    );
+
+    await waitForChipLabel(page, "Context 62%", 4_000);
+    const retryCalls = routeState.contextGets.slice(before);
+    const recovered = await contextUi(page);
+    check(
+      retryCalls.length >= 2,
+      `the 503 retry issued a second context GET (${retryCalls.length})`,
+    );
+    assertEqual(
+      retryCalls.slice(0, 2).map((entry) => entry.status),
+      [503, 200],
+      "the retry sequence is 503 then 200",
+    );
+    assertEqual(
+      retryCalls[0]?.code,
+      "agent_not_running",
+      "the first 503 carries agent_not_running",
+    );
+    check(
+      retryCalls[1].at - retryCalls[0].at >= 700,
+      `the retry waits for the 750ms backoff (${retryCalls[1].at - retryCalls[0].at}ms)`,
+    );
+    check(recovered.chip.hidden === false, "the chip appears after the retry succeeds");
+    assertEqual(recovered.chip.label, "Context 62%", "the retried snapshot renders");
+    await shot(page, "context-retry-1440-dark");
+    checkExpectedHttpError(errors, 503);
+    return { unavailable, recovered, retryCalls };
+  } finally {
+    await context.close();
+  }
+}
 
 async function scenarioMain(browser, target) {
   const { messages, todo } = mainFixture();
@@ -3438,6 +4192,10 @@ try {
     await runScenario("main", () => scenarioMain(browser, target));
     await runScenario("questions", () => scenarioQuestions(browser, target));
     await runScenario("send", () => scenarioSend(browser, target));
+    await runScenario("context-states", () => scenarioContextStates(browser, target));
+    await runScenario("context-compact", () => scenarioContextCompact(browser, target));
+    await runScenario("context-switch-race", () => scenarioContextSwitchRace(browser, target));
+    await runScenario("context-retry", () => scenarioContextRetry(browser, target));
     await runScenario("diffs", () => scenarioDiffs(browser, target));
     await runScenario("read", () => scenarioRead(browser, target));
     await runScenario("diff-error", () => scenarioDiffError(browser, target));

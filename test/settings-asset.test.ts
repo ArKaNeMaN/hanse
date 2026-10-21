@@ -23,6 +23,13 @@ describe("settings asset", () => {
     expect(asset).toContain("settings-clear-form");
   });
 
+  it("maps the Context section for fragment swaps", () => {
+    expect(asset).toContain('context: "settings-context"');
+    expect(asset).toContain('"x-hanse-fragment": "settings"');
+    expect(asset).toContain("replaceSection");
+    expect(asset).toContain("SECTION_IDS[name]");
+  });
+
   it("preserves open rows and drafts around the swap", () => {
     expect(asset).toContain("openRowIds");
     expect(asset).toContain("captureDrafts");

@@ -48,7 +48,7 @@ import {
 import { loadOrCreateKey } from "../secrets/index.js";
 import { SettingsService } from "../settings/index.js";
 import { SshService } from "../ssh/service.js";
-import { openDatabase, runMigrations } from "../store/index.js";
+import { openDatabase, runMigrations, type SqliteDatabase } from "../store/index.js";
 import { parseWebMcpConfig } from "../web/config.js";
 import { runWebMcpServer } from "../web/mcp.js";
 import type { CliIo } from "./cli.js";
@@ -134,6 +134,40 @@ export interface ServeOptions {
   workspace: string;
   hostname: string;
   port: number;
+}
+
+export interface ResumableApp {
+  id: string;
+  projectId: string;
+  appKey: string;
+}
+
+export const MAX_RESUMABLE_CONTEXT_APPS = 200;
+
+/** Bounded, non-deleting app list used to reattach monitors after a coordinator restart. */
+export function listResumableApps(db: SqliteDatabase): ResumableApp[] {
+  return db
+    .prepare(
+      `SELECT a.id AS id, a.project_id AS projectId, a.app_key AS appKey
+       FROM apps a
+       JOIN projects p ON p.id = a.project_id
+       WHERE a.deleting = 0 AND p.deleting = 0
+       ORDER BY a.id
+       LIMIT ?`,
+    )
+    .all(MAX_RESUMABLE_CONTEXT_APPS) as ResumableApp[];
+}
+
+/** Never lets a monitor-resume failure reach startup; logs one sanitized line. */
+export async function resumeContextMonitors(
+  manager: { resumeRunning(apps: ResumableApp[]): Promise<void> },
+  apps: ResumableApp[],
+): Promise<void> {
+  try {
+    await manager.resumeRunning(apps);
+  } catch {
+    process.stderr.write("hanse: context monitor resume failed\n");
+  }
 }
 export interface ImagesOptions {
   action: string | undefined;
@@ -662,6 +696,9 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
   }
   await new Promise<void>((resolve) => {
     server.listen(options.port, options.hostname, resolve);
+  });
+  void resumeContextMonitors(manager, listResumableApps(db)).catch(() => {
+    process.stderr.write("hanse: context monitor resume failed\n");
   });
   ctx.io.stdout(
     `hanse serving ${getProjects().length} project(s) at http://${options.hostname}:${options.port}`,

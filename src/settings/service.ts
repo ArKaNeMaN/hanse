@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import type { RunSshKeygen } from "../git/credentials.js";
+import type { ContextPolicy } from "../opencode/context.js";
 import type { SqliteDatabase } from "../store/index.js";
 import type { WebToolConfig } from "../web/types.js";
 import { type GitAuthResolution, GitAuthStore } from "./git-auth.js";
@@ -11,6 +12,7 @@ import {
   type StoredProviderKey,
 } from "./provider-keys.js";
 import {
+  DEFAULT_LLM_MODEL,
   findKeyDefinition,
   listKeyDefinitions,
   type ResolverRow,
@@ -180,6 +182,35 @@ function effectiveFor<T>(
   return value as EffectiveValue<T>;
 }
 
+function resolverRowsFor(
+  scopes: readonly SettingsScope[],
+  rowByScopeKey: ReadonlyMap<string, ParsedSettingRow>,
+  key: string,
+): ResolverRow[] {
+  const contributions: ResolverRow[] = [];
+  for (const scope of scopes) {
+    const row = rowByScopeKey.get(`${scope}:${key}`);
+    if (row !== undefined) {
+      contributions.push({ scope, value: row.value });
+    }
+  }
+  return contributions;
+}
+
+/**
+ * Effective settings without the live `context` group. Launch hashing uses this
+ * projection so context changes never mark a running agent as needing a restart.
+ */
+export function launchEffectiveSettings(
+  effective: EffectiveSettings,
+): Omit<EffectiveSettings, "context"> {
+  return {
+    llm: effective.llm,
+    web: effective.web,
+    git: effective.git,
+  };
+}
+
 /**
  * Hierarchical settings and provider-key resolution for one coordinator DB.
  * Reads merge global -> project -> app; writes target exactly one scope.
@@ -236,7 +267,10 @@ export class SettingsService {
     };
   }
 
-  /** Stable hash of effective settings plus merged auth; never profile/pending state. */
+  /**
+   * Stable hash of the full effective settings (including the live `context`
+   * group) plus merged auth; a diagnostics value, never a launch signal.
+   */
   effectiveHash(target: SettingsTarget): string {
     const snapshot = this.snapshot(target);
     return hashValue({
@@ -245,6 +279,40 @@ export class SettingsService {
       authHash: snapshot.authHash,
       gitAuthHash: snapshot.gitAuthHash,
     });
+  }
+
+  /** Three-key live policy for the context monitor; no auth/provider/git resolution. */
+  contextPolicy(target: SettingsTarget): ContextPolicy {
+    const normalized = normalizeTarget(target);
+    const scopes = targetScopes(normalized);
+    const { rows } = this.#readSettings(normalized);
+    const rowByScopeKey = new Map<string, ParsedSettingRow>();
+    for (const row of rows) {
+      rowByScopeKey.set(`${row.scope}:${row.key}`, row);
+    }
+
+    const values = new Map<string, EffectiveValue<unknown>>();
+    for (const key of [
+      "llm.model",
+      "context.auto_compact.enabled",
+      "context.auto_compact.percent",
+    ]) {
+      values.set(
+        key,
+        resolveEffectiveValue(requireDefinition(key), resolverRowsFor(scopes, rowByScopeKey, key)),
+      );
+    }
+
+    const model = effectiveFor<string>(values, "llm.model");
+    const enabled = effectiveFor<boolean>(values, "context.auto_compact.enabled");
+    const percent = effectiveFor<number>(values, "context.auto_compact.percent");
+    return {
+      enabled: enabled.value ?? false,
+      percent: percent.value ?? 80,
+      model: model.value ?? DEFAULT_LLM_MODEL,
+      enabledSource: enabled.source,
+      percentSource: percent.source,
+    };
   }
 
   set(
@@ -437,7 +505,6 @@ export class SettingsService {
     const scoped: Record<string, ScopedValue<unknown>> = {};
     const resolverRows = new Map<string, ResolverRow[]>();
     for (const definition of listKeyDefinitions()) {
-      const contributions: ResolverRow[] = [];
       for (const scope of scopes) {
         const row = rowByScopeKey.get(`${scope}:${definition.key}`);
         if (row === undefined) {
@@ -446,16 +513,14 @@ export class SettingsService {
         }
         if (row.value === null) {
           scoped[`${scope}:${definition.key}`] = { state: "cleared", value: null };
-          contributions.push({ scope, value: null });
           continue;
         }
         const parsed = definition.schema.safeParse(row.value);
         scoped[`${scope}:${definition.key}`] = parsed.success
           ? { state: "set", value: parsed.data }
           : { state: "set", value: row.value };
-        contributions.push({ scope, value: row.value });
       }
-      resolverRows.set(definition.key, contributions);
+      resolverRows.set(definition.key, resolverRowsFor(scopes, rowByScopeKey, definition.key));
     }
 
     const values = new Map<string, EffectiveValue<unknown>>();
@@ -471,6 +536,12 @@ export class SettingsService {
       web: {
         search: effectiveFor<WebToolConfig>(values, "web.search"),
         fetch: effectiveFor<WebToolConfig>(values, "web.fetch"),
+      },
+      context: {
+        autoCompact: {
+          enabled: effectiveFor<boolean>(values, "context.auto_compact.enabled"),
+          percent: effectiveFor<number>(values, "context.auto_compact.percent"),
+        },
       },
       git: {
         user: {

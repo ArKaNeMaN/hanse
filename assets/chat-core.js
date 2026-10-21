@@ -1676,3 +1676,235 @@ export function resolveActiveStatusLabel(input) {
   }
   return "Ready";
 }
+
+/* ------------------------------------------------------------------------- */
+/* Context usage                                                             */
+/* ------------------------------------------------------------------------- */
+
+/**
+ * @typedef {Object} ContextModel
+ * @property {string} [providerID]
+ * @property {string} [modelID]
+ */
+
+/**
+ * @typedef {Object} ContextAutoCompact
+ * @property {boolean} [enabled]
+ * @property {number} [percent]
+ * @property {string} [source]
+ * @property {string} [percentSource]
+ */
+
+/**
+ * Design D4 snapshot, read defensively so a missing or partial payload renders as unknown.
+ *
+ * @typedef {Object} ContextSnapshot
+ * @property {"ready" | "unknown" | "compacting" | string} [state]
+ * @property {number | null} [used]
+ * @property {number | null} [limit]
+ * @property {number | null} [percent]
+ * @property {ContextModel | null} [model]
+ * @property {ContextAutoCompact | null} [autoCompact]
+ * @property {string | null} [lastError]
+ */
+
+/**
+ * @param {unknown} value
+ * @returns {value is number}
+ */
+function isFiniteNumber(value) {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+/**
+ * @param {unknown} snapshot
+ * @returns {ContextSnapshot}
+ */
+function asSnapshot(snapshot) {
+  return snapshot !== null && typeof snapshot === "object" ? snapshot : {};
+}
+
+/**
+ * True when the snapshot carries a usable percentage, computed from used/limit when the
+ * server omitted it. May exceed 100; callers clamp only the meter.
+ *
+ * @param {ContextSnapshot} snapshot
+ * @returns {number | null}
+ */
+function snapshotPercent(snapshot) {
+  if (isFiniteNumber(snapshot.percent)) return snapshot.percent;
+  if (
+    isFiniteNumber(snapshot.used) &&
+    isFiniteNumber(snapshot.limit) &&
+    snapshot.limit > 0
+  ) {
+    return Math.round((snapshot.used / snapshot.limit) * 100);
+  }
+  return null;
+}
+
+/**
+ * @param {number} value
+ * @returns {string}
+ */
+function formatScaled(value) {
+  if (value < 10) return value.toFixed(1).replace(/\.0$/, "");
+  return String(Math.round(value));
+}
+
+/**
+ * @param {number} value
+ * @returns {string}
+ */
+function formatFullNumber(value) {
+  const rounded = Math.round(value);
+  const sign = rounded < 0 ? "-" : "";
+  return `${sign}${String(Math.abs(rounded)).replace(/\B(?=(\d{3})+(?!\d))/g, ",")}`;
+}
+
+/**
+ * @param {ContextModel | null | undefined} model
+ * @returns {string | null}
+ */
+function contextModelLabel(model) {
+  if (model === null || model === undefined || typeof model !== "object") return null;
+  const provider = typeof model.providerID === "string" ? model.providerID.trim() : "";
+  const id = typeof model.modelID === "string" ? model.modelID.trim() : "";
+  if (provider.length === 0 && id.length === 0) return null;
+  if (provider.length === 0) return id;
+  if (id.length === 0) return provider;
+  return `${provider}/${id}`;
+}
+
+/**
+ * Compact token text: `0`, `999`, `1.2k`, `124k`, `1.2m`. Missing values render as an em dash.
+ *
+ * @param {number | null | undefined} value
+ * @returns {string}
+ */
+export function formatTokenCount(value) {
+  if (!isFiniteNumber(value) || value < 0) return "—";
+  const rounded = Math.round(value);
+  if (rounded < 1000) return String(rounded);
+  if (rounded < 1_000_000) {
+    const thousands = rounded / 1000;
+    if (thousands < 999.5) return `${formatScaled(thousands)}k`;
+  }
+  return `${formatScaled(rounded / 1_000_000)}m`;
+}
+
+/**
+ * Meter width clamped to an integer 0..100. Unknown usage renders as 0.
+ *
+ * @param {ContextSnapshot | null | undefined} snapshot
+ * @returns {number}
+ */
+export function contextMeterPercent(snapshot) {
+  const percent = snapshotPercent(asSnapshot(snapshot));
+  if (percent === null) return 0;
+  return Math.min(100, Math.max(0, Math.round(percent)));
+}
+
+/**
+ * Chip label: `Context 62%`, `Context 124k` when the limit is unknown, `Context —` without usage,
+ * or `Compacting` while a summarization is in flight.
+ *
+ * @param {ContextSnapshot | null | undefined} snapshot
+ * @returns {string}
+ */
+export function contextChipLabel(snapshot) {
+  const value = asSnapshot(snapshot);
+  if (value.state === "compacting") return "Compacting";
+  if (value.state === "unknown") return "Context —";
+  const percent = snapshotPercent(value);
+  if (percent !== null) return `Context ${Math.round(percent)}%`;
+  if (isFiniteNumber(value.used)) return `Context ${formatTokenCount(value.used)}`;
+  return "Context —";
+}
+
+/**
+ * State token used for meter/chip styling: `ok`, `warning` (>=70), `danger` (>=90),
+ * `compacting`, or `unknown`.
+ *
+ * @param {ContextSnapshot | null | undefined} snapshot
+ * @returns {"ok" | "warning" | "danger" | "compacting" | "unknown"}
+ */
+export function contextStateClass(snapshot) {
+  const value = asSnapshot(snapshot);
+  if (value.state === "compacting") return "compacting";
+  if (value.state === "unknown") return "unknown";
+  const percent = snapshotPercent(value);
+  if (percent === null) return "unknown";
+  if (percent >= 90) return "danger";
+  if (percent >= 70) return "warning";
+  return "ok";
+}
+
+/**
+ * Rail summary: `62% of 200k`, `124k tokens` when the limit is unknown, or an em dash.
+ *
+ * @param {ContextSnapshot | null | undefined} snapshot
+ * @returns {string}
+ */
+export function contextSummary(snapshot) {
+  const value = asSnapshot(snapshot);
+  if (value.state === "unknown") return "—";
+  const percent = snapshotPercent(value);
+  if (percent !== null && isFiniteNumber(value.limit) && value.limit > 0) {
+    return `${Math.round(percent)}% of ${formatTokenCount(value.limit)}`;
+  }
+  if (isFiniteNumber(value.used)) return `${formatTokenCount(value.used)} tokens`;
+  return "—";
+}
+
+/**
+ * Detail line: `124,000 / 200,000 tokens · provider/model` (tokens only without a limit).
+ *
+ * @param {ContextSnapshot | null | undefined} snapshot
+ * @returns {string}
+ */
+export function contextDetail(snapshot) {
+  const value = asSnapshot(snapshot);
+  if (value.state === "unknown" || !isFiniteNumber(value.used)) return "—";
+  let tokens = `${formatFullNumber(value.used)} tokens`;
+  if (isFiniteNumber(value.limit) && value.limit > 0) {
+    tokens = `${formatFullNumber(value.used)} / ${formatFullNumber(value.limit)} tokens`;
+  }
+  const model = contextModelLabel(value.model);
+  return model === null ? tokens : `${tokens} · ${model}`;
+}
+
+/**
+ * Auto-compaction line: `Auto-compact at 80%` or `Auto-compact off`.
+ *
+ * @param {ContextSnapshot | null | undefined} snapshot
+ * @returns {string}
+ */
+export function autoCompactText(snapshot) {
+  const value = asSnapshot(snapshot);
+  const auto = value.autoCompact;
+  if (auto === null || auto === undefined || typeof auto !== "object" || auto.enabled !== true) {
+    return "Auto-compact off";
+  }
+  if (isFiniteNumber(auto.percent)) return `Auto-compact at ${Math.round(auto.percent)}%`;
+  return "Auto-compact on";
+}
+
+const CONTEXT_ERROR_TEXT = {
+  compaction_failed: "Compaction failed. Try again.",
+  compaction_timeout: "Compaction timed out. Try again.",
+  compaction_unavailable: "Compaction unavailable for this session.",
+};
+
+/**
+ * Map a fixed `lastError` code to human text.
+ *
+ * @param {string | null | undefined} code
+ * @returns {string}
+ */
+export function contextErrorText(code) {
+  if (typeof code === "string" && Object.hasOwn(CONTEXT_ERROR_TEXT, code)) {
+    return CONTEXT_ERROR_TEXT[code];
+  }
+  return "Compaction failed.";
+}

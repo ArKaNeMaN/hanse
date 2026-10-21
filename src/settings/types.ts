@@ -12,6 +12,8 @@ export type SettingsKey =
   | "llm.model"
   | "web.search"
   | "web.fetch"
+  | "context.auto_compact.enabled"
+  | "context.auto_compact.percent"
   | "git.user.name"
   | "git.user.email";
 
@@ -65,6 +67,12 @@ export interface EffectiveSettings {
   web: {
     search: EffectiveValue<WebToolConfig>;
     fetch: EffectiveValue<WebToolConfig>;
+  };
+  context: {
+    autoCompact: {
+      enabled: EffectiveValue<boolean>;
+      percent: EffectiveValue<number>;
+    };
   };
   git: {
     user: {

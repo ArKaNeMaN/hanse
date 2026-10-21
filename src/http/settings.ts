@@ -83,7 +83,7 @@ function wantsFragment(request: HttpRequest): boolean {
   return (request.headers["x-hanse-fragment"] ?? "").trim().toLowerCase() === "settings";
 }
 
-const SECTION_KEYS = ["agent", "web", "git", "restart", "warnings"] as const;
+const SECTION_KEYS = ["agent", "web", "context", "git", "restart", "warnings"] as const;
 
 type SettingsSectionKey = (typeof SECTION_KEYS)[number];
 
@@ -395,19 +395,58 @@ function buildWebToolValue(payload: Record<string, unknown>): unknown {
   return { driver: "deepseek", options };
 }
 
+function contextSettingValue(key: string, raw: unknown): unknown {
+  if (typeof raw !== "string") {
+    return raw;
+  }
+  if (key === "context.auto_compact.enabled") {
+    const normalized = raw.trim().toLowerCase();
+    if (normalized === "true" || normalized === "on" || normalized === "1") {
+      return true;
+    }
+    if (normalized === "false" || normalized === "off" || normalized === "0") {
+      return false;
+    }
+    return raw;
+  }
+  if (key === "context.auto_compact.percent") {
+    if (raw.trim().length === 0) {
+      return raw;
+    }
+    return Number(raw);
+  }
+  return raw;
+}
+
 function settingValue(
   key: string,
   action: string,
   payload: Record<string, unknown>,
   json: boolean,
 ): unknown {
-  if (json || (key !== "web.search" && key !== "web.fetch")) {
+  if (json) {
+    return payload.value;
+  }
+  if (key === "context.auto_compact.enabled" || key === "context.auto_compact.percent") {
+    return contextSettingValue(key, payload.value);
+  }
+  if (key !== "web.search" && key !== "web.fetch") {
     return payload.value;
   }
   if (action === "set") {
     return buildWebToolValue(payload);
   }
   return payload.value;
+}
+
+function mutationSections(key: string): SettingsSectionKey[] {
+  if (key.startsWith("git.")) {
+    return ["git", "restart"];
+  }
+  if (key.startsWith("context.")) {
+    return ["context", "restart", "warnings"];
+  }
+  return ["agent", "web", "context", "restart", "warnings"];
 }
 
 function mutationError(browser: boolean, returnTo: string, error: unknown): HttpResponse {
@@ -537,13 +576,7 @@ export async function handleSettings(deps: HttpDeps, request: HttpRequest): Prom
       return mutationError(browser, returnTo, error);
     }
     if (fragment) {
-      return fragmentResponse(
-        deps,
-        settings,
-        scope,
-        target,
-        key.startsWith("git.") ? ["git", "restart"] : ["agent", "web", "restart", "warnings"],
-      );
+      return fragmentResponse(deps, settings, scope, target, mutationSections(key));
     }
     return browser
       ? redirectNotice(returnTo, "Settings saved.", "success")
@@ -621,6 +654,7 @@ export async function handleSettings(deps: HttpDeps, request: HttpRequest): Prom
       return fragmentResponse(deps, settings, scope, target, [
         "agent",
         "web",
+        "context",
         "restart",
         "warnings",
       ]);
@@ -1128,6 +1162,73 @@ function modelControls(options: {
       ownState: own.state,
       effective: options.effective as EffectiveValue<unknown>,
       label: "Model",
+      clearable: false,
+    })}
+  </form>`;
+}
+
+function scopePrefillPrefix(scope: SettingsScope): string {
+  return scope === "global" ? "Default" : "Inherited";
+}
+
+function contextEnabledControls(options: {
+  scope: SettingsScope;
+  target: SettingsTarget;
+  resolved: ResolvedSettings;
+  effective: EffectiveValue<boolean>;
+  returnTo: string;
+}): string {
+  const own = ownValue(options.resolved, options.scope, "context.auto_compact.enabled");
+  const prefill =
+    own.state === "set" && typeof own.value === "boolean" ? (own.value ? "true" : "false") : "";
+  const placeholder =
+    prefill.length > 0
+      ? ""
+      : `<option value="" selected disabled>${escapeHtml(scopePrefillPrefix(options.scope))}: ${options.effective.value === true ? "On" : "Off"}</option>`;
+  return `<form class="setting-row__form" method="post" action="/api/settings" data-settings-form data-no-busy data-success-notice="Settings saved.">
+    ${hiddenTarget(options.scope, options.target, withHash(options.returnTo, "#setting-context-auto-compact"))}
+    <input type="hidden" name="key" value="context.auto_compact.enabled" />
+    <div class="field">
+      <label class="label" for="context-auto-compact-enabled">Auto-compaction</label>
+      <div class="select-wrap">
+        <select class="select" id="context-auto-compact-enabled" name="value" required>${placeholder}<option value="true"${prefill === "true" ? " selected" : ""}>On</option><option value="false"${prefill === "false" ? " selected" : ""}>Off</option></select>
+        ${icon("chevron-down")}
+      </div>
+    </div>
+    ${standardActions({
+      scope: options.scope,
+      ownState: own.state,
+      effective: options.effective as EffectiveValue<unknown>,
+      label: "Auto-compaction",
+      clearable: false,
+    })}
+  </form>`;
+}
+
+function contextPercentControls(options: {
+  scope: SettingsScope;
+  target: SettingsTarget;
+  resolved: ResolvedSettings;
+  effective: EffectiveValue<number>;
+  returnTo: string;
+}): string {
+  const own = ownValue(options.resolved, options.scope, "context.auto_compact.percent");
+  const value = own.state === "set" && typeof own.value === "number" ? String(own.value) : "";
+  const effectivePercent = options.effective.value ?? 80;
+  const placeholder =
+    value.length > 0 ? "" : `${scopePrefillPrefix(options.scope)}: ${effectivePercent}%`;
+  return `<form class="setting-row__form" method="post" action="/api/settings" data-settings-form data-no-busy data-success-notice="Settings saved.">
+    ${hiddenTarget(options.scope, options.target, withHash(options.returnTo, "#setting-context-auto-compact-percent"))}
+    <input type="hidden" name="key" value="context.auto_compact.percent" />
+    <div class="field">
+      <label class="label" for="context-auto-compact-percent">Threshold</label>
+      <input class="input" id="context-auto-compact-percent" name="value" type="number" min="1" max="99" step="1" placeholder="${escapeHtml(placeholder)}" value="${escapeHtml(value)}" required />
+    </div>
+    ${standardActions({
+      scope: options.scope,
+      ownState: own.state,
+      effective: options.effective as EffectiveValue<unknown>,
+      label: "Auto-compaction threshold",
       clearable: false,
     })}
   </form>`;
@@ -1747,6 +1848,7 @@ function settingsNav(options: { scope: SettingsScope; target: SettingsTarget }):
     <div class="settings-nav__sections" aria-label="Settings sections">
       <a class="settings-nav__link" href="#settings-agent">Agent</a>
       <a class="settings-nav__link" href="#settings-web">Web tools</a>
+      <a class="settings-nav__link" href="#settings-context">Context</a>
       <a class="settings-nav__link" href="#settings-git">Git</a>
       <a class="settings-nav__link" href="#settings-restart">Restart</a>
     </div>
@@ -1860,6 +1962,41 @@ function settingsSections(options: {
     details: scopeDetailsHtml(options.resolved, options.scope, "web.fetch"),
   })}`;
 
+  const enabledEffective = options.resolved.effective.context.autoCompact.enabled;
+  const percentEffective = options.resolved.effective.context.autoCompact.percent;
+  const contextRows = `${settingRow({
+    id: "setting-context-auto-compact",
+    title: "Auto-compaction",
+    effectiveText: enabledEffective.value === true ? "On" : "Off",
+    source: sourceLine(enabledEffective as EffectiveValue<unknown>),
+    hint: "Automatically compacts top-level sessions when context usage crosses the threshold. Live; no restart is required.",
+    body: `${fieldErrorSlot("setting-context-auto-compact-error")}${contextEnabledControls({
+      scope: options.scope,
+      target: options.target,
+      resolved: options.resolved,
+      effective: enabledEffective,
+      returnTo: options.returnTo,
+    })}`,
+    details: scopeDetailsHtml(options.resolved, options.scope, "context.auto_compact.enabled"),
+  })}${settingRow({
+    id: "setting-context-auto-compact-percent",
+    title: "Auto-compaction threshold",
+    effectiveText:
+      percentEffective.value === null
+        ? effectiveText(percentEffective as EffectiveValue<unknown>)
+        : `${percentEffective.value}%`,
+    source: sourceLine(percentEffective as EffectiveValue<unknown>),
+    hint: "Percentage of the model context window used when auto-compaction is on. opencode's own overflow compaction remains a fallback.",
+    body: `${fieldErrorSlot("setting-context-auto-compact-percent-error")}${contextPercentControls({
+      scope: options.scope,
+      target: options.target,
+      resolved: options.resolved,
+      effective: percentEffective,
+      returnTo: options.returnTo,
+    })}`,
+    details: scopeDetailsHtml(options.resolved, options.scope, "context.auto_compact.percent"),
+  })}`;
+
   const profileWarnings =
     options.scope === "app" && options.app !== undefined
       ? (options.deps.manager?.profileWarnings(options.app.id) ?? [])
@@ -1879,6 +2016,13 @@ function settingsSections(options: {
           <span class="badge">Search and fetch</span>
         </div>
         <div class="card__body card__body--flush">${webRows}</div>
+      </section>`,
+    context: `<section class="card settings-section" id="settings-context" aria-labelledby="settings-context-title">
+        <div class="card__head">
+          <h2 class="card__title" id="settings-context-title">Context</h2>
+          <span class="badge">Auto-compaction</span>
+        </div>
+        <div class="card__body card__body--flush">${contextRows}</div>
       </section>`,
     git: gitSection({
       resolved: options.resolved,
@@ -1968,6 +2112,7 @@ function renderSettingsPage(options: {
     <div class="settings-sections">
       ${sections.agent}
       ${sections.web}
+      ${sections.context}
       ${sections.git}
       ${sections.restart}
     </div>

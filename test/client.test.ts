@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   deleteSavedPermission,
   deleteSession,
@@ -8,24 +8,32 @@ import {
   listMessages,
   listPermissions,
   listPermissionsV2,
+  listProviders,
   listQuestions,
   listQuestionsV2,
   listSavedPermissions,
   listSessions,
+  listSessionsBounded,
   listTodos,
   MESSAGES_RESPONSE_MAX_BYTES,
   MESSAGES_RESPONSE_TIMEOUT_MS,
   OPENCODE_MAX_BODY_BYTES,
   OPENCODE_REPLY_TIMEOUT_MS,
   OpencodeHttpError,
+  PROVIDERS_RESPONSE_MAX_BYTES,
+  PROVIDERS_RESPONSE_TIMEOUT_MS,
   rejectQuestion,
   rejectQuestionV2,
   replyPermission,
   replyPermissionV2,
   replyQuestion,
   replyQuestionV2,
+  SESSIONS_RESPONSE_MAX_BYTES,
+  SESSIONS_RESPONSE_TIMEOUT_MS,
+  SUMMARIZE_RESPONSE_TIMEOUT_MS,
   sendPrompt,
   sendPromptAsync,
+  summarizeSession,
 } from "../src/opencode/client.js";
 import { setEndpointAuthorization } from "../src/opencode/endpoint-auth.js";
 
@@ -567,5 +575,264 @@ describe("endpoint authorization", () => {
 
     const expected = `Basic ${Buffer.from("opencode:hunter2", "utf8").toString("base64")}`;
     expect(seen).toEqual([expected, expected]);
+  });
+});
+
+describe("provider catalog client", () => {
+  it("reads GET /config/providers with the 4 MiB cap and 10 s timeout", async () => {
+    const payload = {
+      providers: [
+        {
+          id: "deepseek",
+          models: {
+            "deepseek-flash": {
+              id: "deepseek-flash",
+              limit: { context: 128_000, output: 8_192 },
+            },
+            "deepseek-pro": { limit: { context: 256_000, input: 200_000, output: 16_384 } },
+          },
+        },
+      ],
+      default: { chat: "deepseek/deepseek-flash" },
+    };
+    const server = await upstream((request, response) => {
+      if (request.method === "GET" && request.url === "/config/providers") {
+        json(response, payload);
+        return;
+      }
+      response.writeHead(404);
+      response.end("missing");
+    });
+
+    await expect(listProviders(server.endpoint)).resolves.toEqual(payload);
+    expect(server.calls).toEqual([{ method: "GET", url: "/config/providers", body: "" }]);
+    expect(PROVIDERS_RESPONSE_MAX_BYTES).toBe(4 * 1024 * 1024);
+    expect(PROVIDERS_RESPONSE_TIMEOUT_MS).toBe(10_000);
+  });
+
+  it("normalizes a malformed catalog to an empty provider list", async () => {
+    const bodies: unknown[] = [null, [], { providers: "nope" }, { default: ["x"] }];
+    for (const body of bodies) {
+      const server = await upstream((_request, response) => {
+        json(response, body);
+      });
+      await expect(listProviders(server.endpoint)).resolves.toEqual({ providers: [] });
+    }
+  });
+
+  it("rejects a catalog body over 4 MiB", async () => {
+    const server = await upstream((_request, response) => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({ providers: [], padding: "x".repeat(PROVIDERS_RESPONSE_MAX_BYTES) }),
+      );
+    });
+
+    const error = await listProviders(server.endpoint).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(OpencodeHttpError);
+    expect((error as OpencodeHttpError).status).toBe(0);
+    expect((error as OpencodeHttpError).bodyExcerpt).toContain("exceeded");
+  });
+
+  it("times out with a typed transport error after the configured timeout", async () => {
+    const server = await upstream(() => {
+      // Never respond.
+    });
+    const original = AbortSignal.timeout;
+    const spy = vi
+      .spyOn(AbortSignal, "timeout")
+      .mockImplementation((milliseconds: number) =>
+        original.call(AbortSignal, Math.min(milliseconds, 50)),
+      );
+    try {
+      const error = await listProviders(server.endpoint).catch((caught: unknown) => caught);
+      expect(spy).toHaveBeenCalledWith(PROVIDERS_RESPONSE_TIMEOUT_MS);
+      expect(error).toBeInstanceOf(OpencodeHttpError);
+      expect((error as OpencodeHttpError).status).toBe(0);
+      expect((error as OpencodeHttpError).bodyExcerpt).toContain("timed out");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
+describe("bounded sessions client", () => {
+  it("reads GET /session with the 5 s timeout and 2 MiB cap", async () => {
+    const sessions = [
+      { id: "ses_1", title: "one" },
+      { id: "ses_2", title: "two", parentID: "ses_1" },
+    ];
+    const server = await upstream((request, response) => {
+      if (request.method === "GET" && request.url === "/session") {
+        json(response, sessions);
+        return;
+      }
+      response.writeHead(404);
+      response.end("missing");
+    });
+
+    await expect(listSessionsBounded(server.endpoint)).resolves.toEqual(sessions);
+    expect(SESSIONS_RESPONSE_MAX_BYTES).toBe(2 * 1024 * 1024);
+    expect(SESSIONS_RESPONSE_TIMEOUT_MS).toBe(5_000);
+  });
+
+  it("rejects a session list over 2 MiB", async () => {
+    const server = await upstream((_request, response) => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify([{ id: "ses_1", padding: "x".repeat(SESSIONS_RESPONSE_MAX_BYTES) }]),
+      );
+    });
+
+    const error = await listSessionsBounded(server.endpoint).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(OpencodeHttpError);
+    expect((error as OpencodeHttpError).status).toBe(0);
+    expect((error as OpencodeHttpError).bodyExcerpt).toContain("exceeded");
+  });
+
+  it("times out with a typed transport error after the configured timeout", async () => {
+    const server = await upstream(() => {
+      // Never respond.
+    });
+    const original = AbortSignal.timeout;
+    const spy = vi
+      .spyOn(AbortSignal, "timeout")
+      .mockImplementation((milliseconds: number) =>
+        original.call(AbortSignal, Math.min(milliseconds, 50)),
+      );
+    try {
+      const error = await listSessionsBounded(server.endpoint).catch((caught: unknown) => caught);
+      expect(spy).toHaveBeenCalledWith(SESSIONS_RESPONSE_TIMEOUT_MS);
+      expect(error).toBeInstanceOf(OpencodeHttpError);
+      expect((error as OpencodeHttpError).status).toBe(0);
+      expect((error as OpencodeHttpError).bodyExcerpt).toContain("timed out");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
+describe("summarize client", () => {
+  it("posts the exact model body to the encoded summarize path and parses booleans", async () => {
+    const calls: UpstreamCall[] = [];
+    const server = await upstream((request, response, body) => {
+      calls.push({ method: request.method ?? "", url: request.url ?? "", body });
+      if (request.method === "POST" && request.url === "/session/ses%2F1/summarize") {
+        json(response, true);
+        return;
+      }
+      if (request.method === "POST" && request.url === "/session/ses_false/summarize") {
+        json(response, false);
+        return;
+      }
+      response.writeHead(404);
+      response.end("missing");
+    });
+
+    await expect(
+      summarizeSession(server.endpoint, "ses/1", {
+        providerID: "deepseek",
+        modelID: "deepseek-flash",
+      }),
+    ).resolves.toBe(true);
+    await expect(
+      summarizeSession(server.endpoint, "ses_false", {
+        providerID: "deepseek",
+        modelID: "deepseek-flash",
+      }),
+    ).resolves.toBe(false);
+    expect(calls).toEqual([
+      {
+        method: "POST",
+        url: "/session/ses%2F1/summarize",
+        body: JSON.stringify({
+          providerID: "deepseek",
+          modelID: "deepseek-flash",
+          auto: false,
+        }),
+      },
+      {
+        method: "POST",
+        url: "/session/ses_false/summarize",
+        body: JSON.stringify({
+          providerID: "deepseek",
+          modelID: "deepseek-flash",
+          auto: false,
+        }),
+      },
+    ]);
+  });
+
+  it("defaults to a ten-minute timeout", async () => {
+    const server = await upstream((_request, response) => {
+      json(response, true);
+    });
+    const spy = vi.spyOn(AbortSignal, "timeout");
+    try {
+      await summarizeSession(server.endpoint, "ses_1", {
+        providerID: "deepseek",
+        modelID: "deepseek-flash",
+      });
+      expect(SUMMARIZE_RESPONSE_TIMEOUT_MS).toBe(600_000);
+      expect(spy).toHaveBeenCalledWith(600_000);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("aborts through the caller signal with a typed transport error", async () => {
+    const server = await upstream(() => {
+      // Never respond.
+    });
+    const controller = new AbortController();
+    controller.abort();
+    const error = await summarizeSession(
+      server.endpoint,
+      "ses_1",
+      { providerID: "deepseek", modelID: "deepseek-flash" },
+      { signal: controller.signal },
+    ).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(OpencodeHttpError);
+    expect((error as OpencodeHttpError).status).toBe(0);
+    expect((error as OpencodeHttpError).bodyExcerpt).toContain("aborted");
+  });
+
+  it("maps HTTP failures and custom timeouts to typed errors", async () => {
+    const failing = await upstream((_request, response) => {
+      response.writeHead(500);
+      response.end("boom");
+    });
+    const httpError = await summarizeSession(failing.endpoint, "ses_1", {
+      providerID: "deepseek",
+      modelID: "deepseek-flash",
+    }).catch((caught: unknown) => caught);
+    expect(httpError).toBeInstanceOf(OpencodeHttpError);
+    expect((httpError as OpencodeHttpError).status).toBe(500);
+
+    const hanging = await upstream(() => {
+      // Never respond.
+    });
+    const timeoutError = await summarizeSession(
+      hanging.endpoint,
+      "ses_1",
+      { providerID: "deepseek", modelID: "deepseek-flash" },
+      { timeoutMs: 50 },
+    ).catch((caught: unknown) => caught);
+    expect(timeoutError).toBeInstanceOf(OpencodeHttpError);
+    expect((timeoutError as OpencodeHttpError).status).toBe(0);
+    expect((timeoutError as OpencodeHttpError).bodyExcerpt).toContain("timed out");
+  });
+
+  it("rejects a non-boolean response body as a typed error", async () => {
+    const server = await upstream((_request, response) => {
+      json(response, { ok: true });
+    });
+    const error = await summarizeSession(server.endpoint, "ses_1", {
+      providerID: "deepseek",
+      modelID: "deepseek-flash",
+    }).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(OpencodeHttpError);
+    expect((error as OpencodeHttpError).status).toBe(0);
+    expect((error as OpencodeHttpError).bodyExcerpt).toContain("boolean");
   });
 });

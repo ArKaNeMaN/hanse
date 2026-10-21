@@ -14,6 +14,7 @@ function beginSave() {
 const SECTION_IDS = {
   agent: "settings-agent",
   web: "settings-web",
+  context: "settings-context",
   git: "settings-git",
   restart: "settings-restart",
 };

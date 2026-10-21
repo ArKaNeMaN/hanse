@@ -1,8 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
   applySnapshot,
+  autoCompactText,
   classifyOmo,
+  contextChipLabel,
+  contextDetail,
+  contextErrorText,
+  contextMeterPercent,
+  contextStateClass,
+  contextSummary,
   deriveQueue,
+  formatTokenCount,
   parseMarkdownTable,
   rekeyOptimistic,
   resolveActiveStatusLabel,
@@ -1793,5 +1801,128 @@ describe("resolveActiveStatusLabel", () => {
     );
     expect(resolveActiveStatusLabel({ statusType: "idle" })).toBe("Ready");
     expect(resolveActiveStatusLabel({})).toBe("Ready");
+  });
+});
+
+describe("context usage helpers", () => {
+  const ready = {
+    sessionID: "ses_1",
+    state: "ready",
+    used: 124000,
+    limit: 200000,
+    percent: 62,
+    model: { providerID: "deepseek", modelID: "deepseek-flash" },
+    autoCompact: { enabled: true, percent: 80, source: "app", percentSource: "global" },
+    lastError: null,
+  };
+
+  const unknown = {
+    sessionID: "ses_1",
+    state: "unknown",
+    used: null,
+    limit: 200000,
+    percent: null,
+    model: { providerID: "deepseek", modelID: "deepseek-flash" },
+    autoCompact: { enabled: false, percent: 80, source: "default", percentSource: "default" },
+    lastError: null,
+  };
+
+  const tokensOnly = {
+    sessionID: "ses_1",
+    state: "ready",
+    used: 124000,
+    limit: null,
+    percent: null,
+    model: { providerID: "deepseek", modelID: "deepseek-flash" },
+    autoCompact: { enabled: false, percent: 80 },
+    lastError: null,
+  };
+
+  const overLimit = {
+    sessionID: "ses_1",
+    state: "ready",
+    used: 250000,
+    limit: 200000,
+    percent: 125,
+    model: { providerID: "deepseek", modelID: "deepseek-flash" },
+    autoCompact: { enabled: true, percent: 80 },
+    lastError: null,
+  };
+
+  it("formats compact token counts and treats missing values as an em dash", () => {
+    expect(formatTokenCount(null)).toBe("—");
+    expect(formatTokenCount(undefined)).toBe("—");
+    expect(formatTokenCount(Number.NaN)).toBe("—");
+    expect(formatTokenCount(0)).toBe("0");
+    expect(formatTokenCount(999)).toBe("999");
+    expect(formatTokenCount(1000)).toBe("1k");
+    expect(formatTokenCount(1200)).toBe("1.2k");
+    expect(formatTokenCount(124000)).toBe("124k");
+    expect(formatTokenCount(1200000)).toBe("1.2m");
+    expect(formatTokenCount(999999)).toBe("1m");
+  });
+
+  it("clamps the meter to 0..100 while the text keeps the true percentage", () => {
+    expect(contextMeterPercent(null)).toBe(0);
+    expect(contextMeterPercent({})).toBe(0);
+    expect(contextMeterPercent(ready)).toBe(62);
+    expect(contextMeterPercent(overLimit)).toBe(100);
+    expect(contextMeterPercent({ used: 50000, limit: 200000 })).toBe(25);
+    expect(contextMeterPercent({ percent: -5, used: 0, limit: 100 })).toBe(0);
+    expect(contextChipLabel(overLimit)).toBe("Context 125%");
+    expect(contextSummary(overLimit)).toBe("125% of 200k");
+  });
+
+  it("labels the chip for ready, tokens-only, unknown, and compacting snapshots", () => {
+    expect(contextChipLabel(ready)).toBe("Context 62%");
+    expect(contextChipLabel(tokensOnly)).toBe("Context 124k");
+    expect(contextChipLabel(unknown)).toBe("Context —");
+    expect(contextChipLabel({ state: "ready" })).toBe("Context —");
+    expect(contextChipLabel({ ...ready, state: "compacting" })).toBe("Compacting");
+    expect(contextChipLabel(null)).toBe("Context —");
+  });
+
+  it("maps usage to ok, warning, danger, compacting, and unknown states", () => {
+    expect(contextStateClass(ready)).toBe("ok");
+    expect(contextStateClass({ used: 70000, limit: 100000, percent: 70 })).toBe("warning");
+    expect(contextStateClass({ used: 85000, limit: 100000, percent: 85 })).toBe("warning");
+    expect(contextStateClass({ used: 90000, limit: 100000, percent: 90 })).toBe("danger");
+    expect(contextStateClass(overLimit)).toBe("danger");
+    expect(contextStateClass({ ...ready, state: "compacting" })).toBe("compacting");
+    expect(contextStateClass(unknown)).toBe("unknown");
+    expect(contextStateClass({})).toBe("unknown");
+  });
+
+  it("summarizes percentage when a limit is known and tokens otherwise", () => {
+    expect(contextSummary(ready)).toBe("62% of 200k");
+    expect(contextSummary(tokensOnly)).toBe("124k tokens");
+    expect(contextSummary(unknown)).toBe("—");
+    expect(contextSummary({})).toBe("—");
+  });
+
+  it("builds the detail line with grouped tokens and provider/model", () => {
+    expect(contextDetail(ready)).toBe("124,000 / 200,000 tokens · deepseek/deepseek-flash");
+    expect(contextDetail(tokensOnly)).toBe("124,000 tokens · deepseek/deepseek-flash");
+    expect(contextDetail({ ...ready, model: null })).toBe("124,000 / 200,000 tokens");
+    expect(contextDetail(unknown)).toBe("—");
+    expect(contextDetail(null)).toBe("—");
+  });
+
+  it("describes auto-compaction and maps fixed error codes", () => {
+    expect(autoCompactText(ready)).toBe("Auto-compact at 80%");
+    expect(autoCompactText({ autoCompact: { enabled: false, percent: 80 } })).toBe(
+      "Auto-compact off",
+    );
+    expect(autoCompactText({ autoCompact: { enabled: true } })).toBe("Auto-compact on");
+    expect(autoCompactText({})).toBe("Auto-compact off");
+    expect(autoCompactText(null)).toBe("Auto-compact off");
+
+    expect(contextErrorText("compaction_failed")).toBe("Compaction failed. Try again.");
+    expect(contextErrorText("compaction_timeout")).toBe("Compaction timed out. Try again.");
+    expect(contextErrorText("compaction_unavailable")).toBe(
+      "Compaction unavailable for this session.",
+    );
+    expect(contextErrorText(null)).toBe("Compaction failed.");
+    expect(contextErrorText("upstream_body_should_not_leak")).toBe("Compaction failed.");
   });
 });

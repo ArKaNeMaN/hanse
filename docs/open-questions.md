@@ -1,5 +1,30 @@
 # Open questions
 
+> Stage: `0014-context-compaction`. Owner decisions were delegated and resolved autonomously on
+> 2026-10-21, before the plan review. There are no open items for this stage.
+
+## Stage `0014-context-compaction` - resolved owner decisions
+
+1. **Defaults** - auto-compaction off; threshold 80%.
+2. **Usage formula** - latest non-summary assistant step prompt tokens
+   (`input + cache.read + cache.write`); `step-finish` is authoritative, finished `message.updated`
+   is the fallback.
+3. **Limit source** - `GET /config/providers` -> `limit.context`; a missing limit shows tokens only
+   and disables auto-compaction.
+4. **Auto scope** - top-level sessions of the app; child/subagent sessions are excluded.
+5. **Manual compaction while busy** - `409 session_busy`; unknown status is allowed.
+6. **Compaction model** - last-used session model, effective `llm.model` only when hydration finds no
+   assistant usage; no per-action override.
+7. **Settings application** - live, excluded from the launch settings hash; no restart prompt.
+8. **API** - `GET /api/apps/:app/sessions/:sid/context`, `POST .../compact` returning `202`;
+   human-only.
+9. **Persistence** - in-memory tracker, lazy hydration, best-effort resume of running instances.
+10. **UI** - chip in the thread meta, full meter/action in the context rail, new `Context` settings
+    section.
+11. **No DB migration** and no new dependency.
+12. **Loop prevention** - hysteresis floor, armed/ineffective latch, failure cooldown from the
+    failure instant with one retry after cooldown.
+
 > Stage: `0013-project-and-application-deletion`. Owner decisions were collected on 2026-10-21,
 > before the plan was reviewed. There are no open items for this stage.
 

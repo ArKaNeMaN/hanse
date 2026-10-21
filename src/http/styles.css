@@ -4000,6 +4000,62 @@
     font-variant-numeric: tabular-nums;
   }
 
+  .chat-context-chip {
+    display: inline-flex;
+    gap: var(--space-1);
+    max-inline-size: 100%;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .chat-context-chip[hidden],
+  .chat-context-chip__meter[hidden],
+  .chat-context-usage__confirm[hidden],
+  #chat-context-error[hidden] {
+    display: none;
+  }
+
+  .chat-context-chip .icon {
+    flex: none;
+    color: var(--brass);
+  }
+
+  .chat-context-chip__meter {
+    display: inline-flex;
+    flex: none;
+    inline-size: 2.5rem;
+    block-size: 0.25rem;
+    overflow: hidden;
+    border-radius: var(--radius-pill);
+    background: var(--line);
+  }
+
+  .chat-context-chip__fill {
+    display: block;
+    inline-size: 0%;
+    block-size: 100%;
+    border-radius: inherit;
+    background: var(--brass);
+    transition:
+      inline-size var(--dur-standard) var(--ease-out),
+      background-color var(--dur-standard) var(--ease-out);
+  }
+
+  .chat-context-chip[data-state="ok"] .chat-context-chip__fill {
+    background: var(--success);
+  }
+
+  .chat-context-chip[data-state="warning"] .chat-context-chip__fill {
+    background: var(--warning);
+  }
+
+  .chat-context-chip[data-state="danger"] .chat-context-chip__fill {
+    background: var(--danger);
+  }
+
+  .chat-context-chip[data-state="compacting"] .chat-context-chip__fill {
+    background: var(--brass);
+  }
+
   .policy-warning {
     display: flex;
     flex-wrap: wrap;
@@ -5597,6 +5653,79 @@
 
     .chat-question__answer {
       gap: var(--space-1);
+    }
+  }
+
+  .chat-context-usage {
+    scroll-margin-block-start: var(--space-4);
+  }
+
+  .chat-context-usage__meter {
+    display: flex;
+    inline-size: 100%;
+    block-size: var(--space-2);
+    overflow: hidden;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-pill);
+    background: var(--surface-2);
+  }
+
+  .chat-context-usage__fill {
+    display: block;
+    inline-size: 0%;
+    block-size: 100%;
+    border-radius: inherit;
+    background: var(--brass);
+    transition:
+      inline-size var(--dur-emphasis) var(--ease-out),
+      background-color var(--dur-standard) var(--ease-out);
+  }
+
+  .chat-context-usage[data-state="ok"] .chat-context-usage__fill {
+    background: var(--success);
+  }
+
+  .chat-context-usage[data-state="warning"] .chat-context-usage__fill {
+    background: var(--warning);
+  }
+
+  .chat-context-usage[data-state="danger"] .chat-context-usage__fill {
+    background: var(--danger);
+  }
+
+  .chat-context-usage[data-state="compacting"] .chat-context-usage__fill {
+    background: var(--brass);
+  }
+
+  .chat-context-usage__confirm {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    padding: var(--space-3);
+    border: 1px solid color-mix(in oklab, var(--danger) 35%, var(--line));
+    border-radius: var(--radius-sm);
+    background: var(--surface-2);
+  }
+
+  .chat-context-usage__confirm .caption {
+    max-inline-size: 34ch;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .chat-context-chip__fill,
+    .chat-context-usage__fill {
+      transition: none;
+    }
+  }
+
+  @media (max-width: 479px) {
+    /* 390: the chip keeps its label and drops the meter so the meta row stays one line. */
+    .chat-context-chip {
+      padding-inline: var(--space-1);
+    }
+
+    .chat-context-chip__meter {
+      display: none;
     }
   }
 

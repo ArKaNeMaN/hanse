@@ -305,6 +305,41 @@ describe("chat page", () => {
     expect(response.body).toContain('id="chat-plan-list"');
     expect(response.body).toContain('id="chat-saved-section"');
     expect(response.body).toContain('id="chat-saved-list"');
+    expect(response.body).toContain('class="btn btn-ghost btn-sm chat-context-chip"');
+    expect(response.body).toContain('id="chat-context-chip"');
+    expect(response.body).toContain(
+      'id="chat-context-chip" type="button" aria-controls="chat-context-usage" hidden',
+    );
+    expect(response.body).toContain('id="chat-context-chip-label">Context —<');
+    expect(response.body).toContain('id="chat-context-chip-exact"');
+    expect(response.body).toContain('class="chat-context__section chat-context-usage"');
+    expect(response.body).toContain('id="chat-context-usage"');
+    expect(response.body).toContain('aria-labelledby="context-usage-title"');
+    expect(response.body).toContain('id="context-usage-title"');
+    expect(response.body).toContain('id="chat-context-summary">—<');
+    expect(response.body).toContain(
+      'id="chat-context-meter" role="meter" aria-label="Context usage" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-valuetext="Unknown"',
+    );
+    expect(response.body).toContain('id="chat-context-meter-fill"');
+    expect(response.body).toContain('id="chat-context-detail">Waiting for a completed step.<');
+    expect(response.body).toContain('id="chat-context-auto">Auto-compact off<');
+    expect(response.body).toContain(
+      'id="chat-context-settings" href="/projects/p1/apps/storefront/settings"',
+    );
+    expect(response.body).toContain('id="chat-context-compact" type="button" disabled');
+    expect(response.body).toContain('aria-describedby="chat-context-compact-reason"');
+    expect(response.body).toContain("Start a session to compact.");
+    expect(response.body).toContain('id="chat-context-confirm" hidden');
+    expect(response.body).toContain(
+      "Summarization replaces the session history and can lose detail.",
+    );
+    expect(response.body).toContain(
+      'class="btn btn-danger btn-sm" id="chat-context-confirm-compact"',
+    );
+    expect(response.body).toContain(
+      'class="btn btn-ghost btn-sm" id="chat-context-confirm-cancel"',
+    );
+    expect(response.body).toContain('id="chat-context-error" role="alert" hidden');
     expect(response.body).toContain('id="chat-announcer"');
     expect(response.body).toContain('aria-live="polite"');
     expect(response.body).toContain('id="chat-queue"');
@@ -328,12 +363,16 @@ describe("chat page", () => {
     expect(new Set(ids).size).toBe(ids.length);
     expect(response.body).not.toContain('class="page-header"');
     const application = response.body.indexOf('id="context-app-title"');
+    const usage = response.body.indexOf('id="context-usage-title"');
     const plan = response.body.indexOf('id="context-plan-title"');
     const saved = response.body.indexOf('id="context-saved-title"');
     const handoffs = response.body.indexOf('id="context-handoffs-title"');
-    expect(application).toBeLessThan(plan);
+    const shortcuts = response.body.indexOf('id="context-shortcuts-title"');
+    expect(application).toBeLessThan(usage);
+    expect(usage).toBeLessThan(plan);
     expect(plan).toBeLessThan(saved);
     expect(saved).toBeLessThan(handoffs);
+    expect(handoffs).toBeLessThan(shortcuts);
   });
 
   it("shows settings, a pending restart marker, and a restart action without leaking keys", async () => {

@@ -71,6 +71,24 @@ export const webFetchDefinition: SettingsKeyDefinition<WebToolConfig> = {
   defaultValue: DEFAULT_WEB_TOOL_CONFIG,
 };
 
+/** Live context auto-compaction switch; a default boolean always exists. */
+export const contextAutoCompactEnabledDefinition: SettingsKeyDefinition<boolean> = {
+  key: "context.auto_compact.enabled",
+  schema: z.boolean(),
+  merge: "replace",
+  clearable: false,
+  defaultValue: false,
+};
+
+/** Live auto-compaction threshold as a percentage of the model context window. */
+export const contextAutoCompactPercentDefinition: SettingsKeyDefinition<number> = {
+  key: "context.auto_compact.percent",
+  schema: z.number().int().min(1).max(99),
+  merge: "replace",
+  clearable: false,
+  defaultValue: 80,
+};
+
 function hasControlCharacters(value: string): boolean {
   for (const character of value) {
     const code = character.codePointAt(0) ?? 0;
@@ -120,6 +138,8 @@ export const KEY_DEFINITIONS: readonly SettingsKeyDefinition[] = [
   llmModelDefinition,
   webSearchDefinition,
   webFetchDefinition,
+  contextAutoCompactEnabledDefinition,
+  contextAutoCompactPercentDefinition,
   gitUserNameDefinition,
   gitUserEmailDefinition,
 ];

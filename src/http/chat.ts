@@ -256,6 +256,7 @@ function renderChatPage(
       <span class="caption" id="chat-message-count">0 messages</span>
       <span class="chat-waiting" id="chat-waiting" role="status" aria-live="polite" hidden>${icon("stamp")}Waiting for you</span>
       <button class="btn btn-ghost btn-sm chat-plan-chip" id="chat-plan-chip" type="button" aria-controls="chat-plan-section" title="Open the plan panel" hidden>${icon("activity")}<span id="chat-plan-chip-label">Plan 0/0</span></button>
+      <button class="btn btn-ghost btn-sm chat-context-chip" id="chat-context-chip" type="button" aria-controls="chat-context-usage" hidden>${icon("gauge")}<span id="chat-context-chip-label">Context —</span><span class="sr-only" id="chat-context-chip-exact"></span><span class="chat-context-chip__meter" role="meter" aria-label="Context usage" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-valuetext="Unknown" hidden><span class="chat-context-chip__fill" aria-hidden="true"></span></span></button>
       <span class="chat-working" id="chat-working" hidden><span class="spinner" aria-hidden="true" data-chat-working-spinner></span><span class="chat-working__label" id="chat-working-label" role="status" aria-live="polite" aria-atomic="true">Ready</span><span class="chat-working__elapsed" id="chat-working-elapsed" aria-hidden="true" hidden></span><span class="chat-working__queued" id="chat-working-queued" aria-hidden="true" hidden></span></span>
       <button class="btn btn-ghost btn-sm chat-retry" id="chat-stream-retry" type="button" hidden>${icon("refresh")}Retry</button>
     </div>
@@ -332,6 +333,24 @@ function renderChatPage(
               </div>`
             : ""
         }
+      </section>
+      <section class="chat-context__section chat-context-usage" id="chat-context-usage" aria-labelledby="context-usage-title">
+        <div class="cluster summary-row"><h2 class="overline" id="context-usage-title" tabindex="-1">Context</h2><span class="caption" id="chat-context-summary">—</span></div>
+        <div class="chat-context-usage__meter" id="chat-context-meter" role="meter" aria-label="Context usage" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-valuetext="Unknown"><span class="chat-context-usage__fill" id="chat-context-meter-fill" aria-hidden="true"></span></div>
+        <p class="caption" id="chat-context-detail">Waiting for a completed step.</p>
+        <div class="cluster summary-row"><p class="hint" id="chat-context-auto">Auto-compact off</p><a class="btn btn-ghost btn-sm" id="chat-context-settings" href="${escapeHtml(settingsHref)}">${icon("settings")}Settings</a></div>
+        <div class="cluster">
+          <button class="btn btn-secondary btn-sm" id="chat-context-compact" type="button" disabled aria-describedby="chat-context-compact-reason">Compact now</button>
+        </div>
+        <p class="hint" id="chat-context-compact-reason">Start a session to compact.</p>
+        <div class="chat-context-usage__confirm" id="chat-context-confirm" hidden>
+          <p class="caption">Summarization replaces the session history and can lose detail.</p>
+          <div class="cluster">
+            <button class="btn btn-danger btn-sm" id="chat-context-confirm-compact" type="button">Compact now</button>
+            <button class="btn btn-ghost btn-sm" id="chat-context-confirm-cancel" type="button">Cancel</button>
+          </div>
+        </div>
+        <p class="field-error" id="chat-context-error" role="alert" hidden></p>
       </section>
       <hr class="rule" />
       <section class="chat-context__section chat-plan-section" id="chat-plan-section" aria-labelledby="context-plan-title">

@@ -117,6 +117,14 @@ export interface HanseSessionStatus {
 
 export type HanseActivityCause = "message" | "status" | "removed" | "unknown";
 
+export interface HanseMessageUsage {
+  input: number;
+  output: number;
+  reasoning: number;
+  cacheRead: number;
+  cacheWrite: number;
+}
+
 export type HanseEvent =
   | { type: "stream.ready" }
   | { type: "question.asked"; request: BoundedQuestionRequest }
@@ -154,6 +162,9 @@ export type HanseEvent =
       parentID?: string;
       finish?: string;
       time?: { created?: number; completed?: number };
+      usage?: HanseMessageUsage;
+      model?: { providerID: string; modelID: string };
+      summary?: boolean;
     }
   | {
       type: "message.part.updated";
@@ -193,6 +204,7 @@ export type HanseEvent =
       name?: string;
       message: string;
     }
+  | { type: "session.compacted"; sessionID: string }
   | { type: "session.activity"; sessionID: string; cause?: HanseActivityCause }
   | {
       type: "stream.warning";
@@ -204,9 +216,14 @@ export type HanseEvent =
 /** Wire form: every frame carries the per-connection sequence and stream identity. */
 export type EnvelopedHanseEvent = HanseEvent & { seq: number; streamID: string };
 
+export interface EventProjectorOptions {
+  includeUsage?: boolean;
+}
+
 export interface EventStreamOptions {
   signal?: AbortSignal;
   maxFrameBytes?: number;
+  includeUsage?: boolean;
   /** Called after the upstream reader is attached, before any frame is read. */
   onAttached?: () => void;
 }
@@ -243,6 +260,32 @@ function asString(value: unknown): string | undefined {
 
 function asFiniteNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function asTokenCount(value: unknown): number | undefined {
+  const count = asFiniteNumber(value);
+  return count !== undefined && count >= 0 ? count : undefined;
+}
+
+function boundedUsage(tokens: unknown): HanseMessageUsage | undefined {
+  const record = asRecord(tokens);
+  if (record === undefined) return undefined;
+  const input = asTokenCount(record.input);
+  const output = asTokenCount(record.output);
+  const reasoning = asTokenCount(record.reasoning);
+  const cache = asRecord(record.cache);
+  const cacheRead = asTokenCount(cache?.read);
+  const cacheWrite = asTokenCount(cache?.write);
+  if (
+    input === undefined ||
+    output === undefined ||
+    reasoning === undefined ||
+    cacheRead === undefined ||
+    cacheWrite === undefined
+  ) {
+    return undefined;
+  }
+  return { input, output, reasoning, cacheRead, cacheWrite };
 }
 
 function isPartType(value: string): value is PartType {
@@ -1276,6 +1319,7 @@ function salvageIdentity(prefix: string): SalvagedIdentity {
  * dropped, and terminal events release the key.
  */
 export class EventProjector {
+  private readonly includeUsage: boolean;
   private readonly eventIds = new Set<string>();
   private readonly askedKeys = new Set<string>();
   private readonly partTypes = new Map<string, PartType>();
@@ -1287,6 +1331,10 @@ export class EventProjector {
   private readonly lastStatus = new Map<string, HanseSessionStatus["type"]>();
   private readonly lastError = new Map<string, string>();
   private readonly deltaWarned = new Set<string>();
+
+  constructor(options: EventProjectorOptions = {}) {
+    this.includeUsage = options.includeUsage === true;
+  }
 
   project(raw: unknown): HanseEvent[] {
     const event = asRecord(raw);
@@ -1336,6 +1384,8 @@ export class EventProjector {
         return this.sessionError(properties);
       case "session.idle":
         return this.sessionIdle(properties);
+      case "session.compacted":
+        return this.sessionCompacted(properties);
       case "message.part.removed":
       case "message.removed":
         return this.activity(properties, "removed");
@@ -1496,9 +1546,36 @@ export class EventProjector {
     if (jsonBytes(derived) > MAX_MESSAGE_INFO_BYTES) {
       return this.activity(properties, "unknown");
     }
+    const event: Extract<HanseEvent, { type: "message.updated" }> = {
+      type: "message.updated",
+      ...derived,
+    };
+    if (this.includeUsage) {
+      const usage = boundedUsage(info.tokens);
+      if (usage !== undefined) event.usage = usage;
+      const providerID = asString(info.providerID);
+      const modelID = asString(info.modelID);
+      if (providerID !== undefined && modelID !== undefined) {
+        event.model = {
+          providerID: providerID.slice(0, 200),
+          modelID: modelID.slice(0, 200),
+        };
+      }
+      if (typeof info.summary === "boolean") event.summary = info.summary;
+      if (jsonBytes(event) > MAX_MESSAGE_INFO_BYTES) {
+        return this.activity(properties, "unknown");
+      }
+    }
+    return [event, { type: "session.activity", sessionID, cause: "message" }];
+  }
+
+  private sessionCompacted(properties: Record<string, unknown>): HanseEvent[] {
+    const info = asRecord(properties.info);
+    const sessionID = asString(properties.sessionID) ?? asString(info?.sessionID);
+    if (sessionID === undefined) return this.activity(properties, "unknown");
     return [
-      { type: "message.updated", ...derived },
-      { type: "session.activity", sessionID, cause: "message" },
+      { type: "session.compacted", sessionID },
+      { type: "session.activity", sessionID, cause: "status" },
     ];
   }
 
@@ -1798,7 +1875,7 @@ export function createEventStream(
   options: EventStreamOptions = {},
 ): EventStream {
   const parser = new SseParser({ maxFrameBytes: options.maxFrameBytes });
-  const projector = new EventProjector();
+  const projector = new EventProjector({ includeUsage: options.includeUsage });
   const reader = body.getReader();
   const warned = new Set<string>();
   let closed = false;

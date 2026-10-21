@@ -36,6 +36,9 @@
   handoff/event retention, path guards, and retry semantics.
 - [Chat pagination and generation indicator](./chat-pagination.md) - 30-message session tail,
   cursor-based scroll-up history, overlap-aware snapshot merge, and the in-feed generation row.
+- [Context usage and compaction](./context-compaction.md) - server-side per-session context
+  accounting, provider context limits, manual compaction, and threshold-based auto-compaction.
+  Status: approved (oracle PASS).
 - [Architecture overview](./overview.md) - the coordinator architecture and stage plan.
 - [Agent runtime isolation and per-app toolchains](./agent-runtime.md) - staged B0/B1/B2 runtime split, layered agent images, per-app containers, app image builds, and deployment constraints. Status: proposed, revised after design review.
 

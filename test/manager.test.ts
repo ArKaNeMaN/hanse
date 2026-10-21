@@ -13,6 +13,12 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { computeSpecHash } from "../src/agent/spec.js";
 import { verifyAgentToken } from "../src/mcp/agent-tokens.js";
+import type {
+  ContextMonitorLike,
+  ContextMonitorOptions,
+  ContextPolicy,
+  ContextSnapshot,
+} from "../src/opencode/context.js";
 import { authorizationFor, setEndpointAuthorization } from "../src/opencode/endpoint-auth.js";
 import {
   DeletionPendingError,
@@ -24,6 +30,7 @@ import {
 } from "../src/opencode/manager.js";
 import type { OmoProfileInput, OmoProfileResult } from "../src/opencode/omo-profile.js";
 import type { VerifyPolicyOptions } from "../src/opencode/policy.js";
+import { hashValue } from "../src/settings/hash.js";
 import type {
   EffectiveSettings,
   EffectiveValue,
@@ -64,6 +71,7 @@ interface FakeSettings extends SettingsSource {
   setModel(model: string): void;
   setSearch(search: WebToolConfig | null): void;
   setGitAuthHash(hash: string): void;
+  setContext(enabled: boolean, percent: number): void;
 }
 
 function fakeSettings(
@@ -73,13 +81,16 @@ function fakeSettings(
     gitAuth?: LaunchSettingsSnapshot["gitAuth"];
     gitAuthHash?: string;
     gitIdentity?: { name?: string | null; email?: string | null };
+    context?: { enabled?: boolean; percent?: number };
   } = {},
 ): FakeSettings {
   let model = options.model ?? "deepseek/deepseek-flash";
   let search: WebToolConfig | null = options.search ?? { driver: "builtin" };
   const gitAuth = options.gitAuth ?? {};
   let gitAuthHash = options.gitAuthHash ?? "git-auth-hash";
-  return {
+  let contextEnabled = options.context?.enabled ?? false;
+  let contextPercent = options.context?.percent ?? 80;
+  const settings: FakeSettings = {
     setModel(next) {
       model = next;
     },
@@ -89,10 +100,17 @@ function fakeSettings(
     setGitAuthHash(next) {
       gitAuthHash = next;
     },
+    setContext(nextEnabled, nextPercent) {
+      contextEnabled = nextEnabled;
+      contextPercent = nextPercent;
+    },
     snapshot: (_target): LaunchSettingsSnapshot => {
       const effective: EffectiveSettings = {
         llm: { model: value(model) },
         web: { search: value(search), fetch: value({ driver: "builtin" }) },
+        context: {
+          autoCompact: { enabled: value(contextEnabled), percent: value(contextPercent) },
+        },
         git: {
           user: {
             name: value(options.gitIdentity?.name ?? null),
@@ -123,6 +141,16 @@ function fakeSettings(
       };
     },
   };
+  if (options.context !== undefined) {
+    settings.contextPolicy = (): ContextPolicy => ({
+      enabled: contextEnabled,
+      percent: contextPercent,
+      model,
+      enabledSource: "global",
+      percentSource: "global",
+    });
+  }
+  return settings;
 }
 
 interface FakeProfiles {
@@ -178,6 +206,10 @@ function fixture(
   modelVerifier?: (endpoint: string, expected: string) => Promise<string[]>,
   verify: (options: VerifyPolicyOptions) => Promise<string[]> = async () => [],
   hostPaths?: { hostWorkspace: string; hostAgents: string; workspaceRoot: string },
+  monitorOptions?: {
+    monitorFactory?: (options: ContextMonitorOptions) => ContextMonitorLike;
+    enableContextMonitors?: boolean;
+  },
 ): Fixture {
   const dir = mkdtempSync(path.join(tmpdir(), "hanse-manager-"));
   dirs.push(dir);
@@ -201,6 +233,7 @@ function fixture(
     ...(hostPaths === undefined
       ? {}
       : { hostWorkspace: hostPaths.hostWorkspace, hostAgents: hostPaths.hostAgents }),
+    ...monitorOptions,
   });
   return { manager, runtime, db, dir };
 }
@@ -223,6 +256,55 @@ async function waitFor(predicate: () => boolean, timeoutMs = 2000): Promise<void
     if (Date.now() > deadline) throw new Error("condition was not met in time");
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
+}
+
+interface FakeMonitor extends ContextMonitorLike {
+  options: ContextMonitorOptions;
+  startCount: number;
+  stopCount: number;
+}
+
+function snapshotStub(sessionID: string): ContextSnapshot {
+  return {
+    sessionID,
+    state: "unknown",
+    used: null,
+    limit: null,
+    percent: null,
+    model: null,
+    status: "unknown",
+    updatedAt: new Date(0).toISOString(),
+    lastCompactedAt: null,
+    lastError: null,
+    autoCompact: { enabled: false, percent: 80, source: "default", percentSource: "default" },
+  };
+}
+
+function fakeMonitorFactory(): {
+  monitors: FakeMonitor[];
+  factory: (options: ContextMonitorOptions) => ContextMonitorLike;
+} {
+  const monitors: FakeMonitor[] = [];
+  return {
+    monitors,
+    factory: (options) => {
+      const monitor: FakeMonitor = {
+        options,
+        startCount: 0,
+        stopCount: 0,
+        start() {
+          this.startCount += 1;
+        },
+        stop() {
+          this.stopCount += 1;
+        },
+        snapshot: async (sessionID) => snapshotStub(sessionID),
+        compact: async () => ({ accepted: true }),
+      };
+      monitors.push(monitor);
+      return monitor;
+    },
+  };
 }
 
 describe("InstanceManager lifecycle", () => {
@@ -994,6 +1076,309 @@ describe("InstanceManager lifecycle", () => {
       'model_mismatch: agent "oracle" uses deepseek/other, expected deepseek/deepseek-flash',
     ]);
     expect(authorization).toMatch(/^Basic /);
+  });
+});
+
+describe("InstanceManager context monitors", () => {
+  it("starts one monitor per running app and keeps it across repeated ensure", async () => {
+    const runtime = new FakeAgentRuntime(() => "http://127.0.0.1:4201");
+    const monitors = fakeMonitorFactory();
+    const { manager } = fixture(
+      runtime,
+      fakeSettings({ context: {} }),
+      fakeProfiles().source,
+      undefined,
+      async () => [],
+      undefined,
+      { monitorFactory: monitors.factory },
+    );
+
+    await manager.ensure(APP);
+    expect(monitors.monitors).toHaveLength(1);
+    expect(monitors.monitors[0]?.startCount).toBe(1);
+    expect(monitors.monitors[0]?.options.endpoint).toBe("http://127.0.0.1:4201");
+
+    await expect(manager.contextSnapshot(APP.id, "s")).resolves.toMatchObject({ sessionID: "s" });
+    await expect(manager.compactSession(APP.id, "s")).resolves.toEqual({ accepted: true });
+
+    await manager.ensure(APP);
+    expect(monitors.monitors).toHaveLength(1);
+    expect(monitors.monitors[0]?.startCount).toBe(1);
+  });
+
+  it("does not start a monitor when settings lack a context policy", async () => {
+    const monitors = fakeMonitorFactory();
+    const { manager } = fixture(
+      new FakeAgentRuntime(),
+      fakeSettings(),
+      fakeProfiles().source,
+      undefined,
+      async () => [],
+      undefined,
+      { monitorFactory: monitors.factory },
+    );
+
+    await manager.ensure(APP);
+    expect(monitors.monitors).toHaveLength(0);
+  });
+
+  it("stops the monitor on stopApp, stopForDeletion, and detach", async () => {
+    const runtime = new FakeAgentRuntime();
+    const monitors = fakeMonitorFactory();
+    const { manager } = fixture(
+      runtime,
+      fakeSettings({ context: {} }),
+      fakeProfiles().source,
+      undefined,
+      async () => [],
+      undefined,
+      { monitorFactory: monitors.factory },
+    );
+
+    await manager.ensure(APP);
+    await manager.stopApp(APP.id);
+    expect(monitors.monitors[0]?.stopCount).toBe(1);
+
+    await manager.ensure(APP);
+    await manager.stopForDeletion(APP.id);
+    expect(monitors.monitors[1]?.stopCount).toBe(1);
+
+    const restarted = new FakeAgentRuntime();
+    const next = fakeMonitorFactory();
+    const other = fixture(
+      restarted,
+      fakeSettings({ context: {} }),
+      fakeProfiles().source,
+      undefined,
+      async () => [],
+      undefined,
+      { monitorFactory: next.factory },
+    );
+    await other.manager.ensure(APP);
+    other.manager.detach();
+    expect(next.monitors[0]?.stopCount).toBe(1);
+    expect(other.manager.isRunning(APP.id)).toBe(false);
+  });
+
+  it("stops the old monitor before starting a new one on restart", async () => {
+    const runtime = new FakeAgentRuntime(() => "http://127.0.0.1:4202");
+    const monitors = fakeMonitorFactory();
+    const { manager } = fixture(
+      runtime,
+      fakeSettings({ context: {} }),
+      fakeProfiles().source,
+      undefined,
+      async () => [],
+      undefined,
+      { monitorFactory: monitors.factory },
+    );
+
+    await manager.ensure(APP);
+    await expect(manager.restartIfRunning(APP)).resolves.toBe(true);
+
+    expect(monitors.monitors).toHaveLength(2);
+    expect(monitors.monitors[0]?.stopCount).toBe(1);
+    expect(monitors.monitors[1]?.startCount).toBe(1);
+  });
+
+  it("supersedes the monitor when a reconnect sees a new endpoint", async () => {
+    const runtime = new FakeAgentRuntime(() => "http://127.0.0.1:4203");
+    const monitors = fakeMonitorFactory();
+    const { manager } = fixture(
+      runtime,
+      fakeSettings({ context: {} }),
+      fakeProfiles().source,
+      undefined,
+      async () => [],
+      undefined,
+      { monitorFactory: monitors.factory },
+    );
+
+    await manager.ensure(APP);
+    const status = runtime.statuses.get(APP.id);
+    if (status === undefined) throw new Error("missing runtime status");
+    runtime.statuses.set(APP.id, { ...status, endpoint: "http://127.0.0.1:4299" });
+
+    await manager.ensure(APP);
+
+    expect(monitors.monitors).toHaveLength(2);
+    expect(monitors.monitors[0]?.stopCount).toBe(1);
+    expect(monitors.monitors[1]?.options.endpoint).toBe("http://127.0.0.1:4299");
+  });
+
+  it("stops every monitor before runtime.reconcile on stopAll", async () => {
+    const order: string[] = [];
+    class OrderedRuntime extends FakeAgentRuntime {
+      override async reconcile(appIds: string[]) {
+        order.push("reconcile");
+        return super.reconcile(appIds);
+      }
+    }
+    const monitors = fakeMonitorFactory();
+    const factory = (options: ContextMonitorOptions): ContextMonitorLike => {
+      const monitor = monitors.factory(options);
+      const stop = monitor.stop.bind(monitor);
+      monitor.stop = () => {
+        order.push("monitor:stop");
+        stop();
+      };
+      return monitor;
+    };
+    const { manager } = fixture(
+      new OrderedRuntime(),
+      fakeSettings({ context: {} }),
+      fakeProfiles().source,
+      undefined,
+      async () => [],
+      undefined,
+      { monitorFactory: factory },
+    );
+
+    await manager.ensure(APP);
+    await manager.stopAll();
+
+    expect(order[0]).toBe("monitor:stop");
+    expect(order).toContain("reconcile");
+    expect(order.indexOf("monitor:stop")).toBeLessThan(order.indexOf("reconcile"));
+  });
+
+  it("resumes only running or starting instances and skips deleting apps", async () => {
+    const runtime = new FakeAgentRuntime(() => "http://127.0.0.1:4204");
+    const settings = fakeSettings({ context: {} });
+    const profiles = fakeProfiles();
+    const monitors = fakeMonitorFactory();
+    const initial = fixture(
+      runtime,
+      settings,
+      profiles.source,
+      undefined,
+      async () => [],
+      undefined,
+      { monitorFactory: monitors.factory },
+    );
+    await initial.manager.ensure(APP);
+    initial.manager.detach();
+
+    const resumed = fakeMonitorFactory();
+    const manager = new InstanceManager(initial.db, initial.dir, {
+      runtime,
+      verify: async () => [],
+      settings,
+      omoProfiles: profiles.source,
+      workspaceRoot: "/srv",
+      monitorFactory: resumed.factory,
+    });
+
+    await manager.resumeRunning([{ id: APP.id, projectId: "p", appKey: "web" }]);
+    expect(manager.isRunning(APP.id)).toBe(true);
+    expect(resumed.monitors).toHaveLength(1);
+
+    const status = runtime.statuses.get(APP.id);
+    if (status === undefined) throw new Error("missing runtime status");
+    runtime.statuses.set(APP.id, { ...status, state: "starting" });
+    manager.detach();
+    const starting = fakeMonitorFactory();
+    const startingManager = new InstanceManager(initial.db, initial.dir, {
+      runtime,
+      verify: async () => [],
+      settings,
+      omoProfiles: profiles.source,
+      workspaceRoot: "/srv",
+      monitorFactory: starting.factory,
+    });
+    await startingManager.resumeRunning([{ id: APP.id, projectId: "p", appKey: "web" }]);
+    expect(startingManager.isRunning(APP.id)).toBe(true);
+    expect(starting.monitors).toHaveLength(1);
+
+    runtime.statuses.set(APP.id, { ...status, state: "stopped", endpoint: null });
+    startingManager.detach();
+    const stopped = fakeMonitorFactory();
+    const stoppedManager = new InstanceManager(initial.db, initial.dir, {
+      runtime,
+      verify: async () => [],
+      settings,
+      omoProfiles: profiles.source,
+      workspaceRoot: "/srv",
+      monitorFactory: stopped.factory,
+    });
+    await stoppedManager.resumeRunning([{ id: APP.id, projectId: "p", appKey: "web" }]);
+    expect(stoppedManager.isRunning(APP.id)).toBe(false);
+    expect(stopped.monitors).toHaveLength(0);
+
+    runtime.statuses.set(APP.id, status);
+    initial.db.prepare("UPDATE apps SET deleting = 1 WHERE id = ?").run(APP.id);
+    const deleted = fakeMonitorFactory();
+    const deletedManager = new InstanceManager(initial.db, initial.dir, {
+      runtime,
+      verify: async () => [],
+      settings,
+      omoProfiles: profiles.source,
+      workspaceRoot: "/srv",
+      monitorFactory: deleted.factory,
+    });
+    await deletedManager.resumeRunning([{ id: APP.id, projectId: "p", appKey: "web" }]);
+    expect(deletedManager.isRunning(APP.id)).toBe(false);
+    expect(deleted.monitors).toHaveLength(0);
+  });
+
+  it("throws AgentNotRunningError when no monitor is attached", async () => {
+    const monitors = fakeMonitorFactory();
+    const { manager } = fixture(
+      new FakeAgentRuntime(),
+      fakeSettings({ context: {} }),
+      fakeProfiles().source,
+      undefined,
+      async () => [],
+      undefined,
+      { monitorFactory: monitors.factory },
+    );
+
+    await expect(manager.contextSnapshot(APP.id, "s")).rejects.toMatchObject({
+      code: "agent_not_running",
+    });
+    await expect(manager.compactSession(APP.id, "s")).rejects.toMatchObject({
+      code: "agent_not_running",
+    });
+  });
+
+  it("hashes the pre-change effective shape and ignores context-only changes", async () => {
+    const runtime = new FakeAgentRuntime();
+    const settings = fakeSettings({ context: { enabled: false, percent: 80 } });
+    const profiles = fakeProfiles();
+    const { manager, db } = fixture(runtime, settings, profiles.source);
+    await manager.ensure(APP);
+
+    const recorded = db
+      .prepare(
+        "SELECT applied_settings_hash AS appliedSettingsHash FROM instances WHERE app_id = 'p:web'",
+      )
+      .get() as { appliedSettingsHash: string | null };
+    const preChangeEffective = {
+      llm: { model: value("deepseek/deepseek-flash") },
+      web: { search: value({ driver: "builtin" }), fetch: value({ driver: "builtin" }) },
+      git: {
+        user: { name: value<string | null>(null), email: value<string | null>(null) },
+      },
+    };
+    expect(recorded.appliedSettingsHash).toBe(
+      hashValue({
+        effective: preChangeEffective,
+        providerKeys: {},
+        authHash: "auth-hash",
+        gitAuthHash: "git-auth-hash",
+        profile: "profile-hash",
+      }),
+    );
+    expect(manager.pendingRestart(APP.id)).toEqual({ pending: false, reasons: [] });
+
+    settings.setContext(true, 55);
+    expect(manager.pendingRestart(APP.id)).toEqual({ pending: false, reasons: [] });
+
+    settings.setModel("deepseek/deepseek-pro");
+    expect(manager.pendingRestart(APP.id)).toEqual({
+      pending: true,
+      reasons: ["settings_changed"],
+    });
   });
 });
 

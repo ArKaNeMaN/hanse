@@ -9,6 +9,7 @@ import path from "node:path";
 import type { Duplex } from "node:stream";
 import { isHumanCookie } from "./auth.js";
 import { handleChat, streamSessionEvents } from "./chat.js";
+import { handleContext, isContextRoute } from "./context.js";
 import { handleDeletion, isDeletionRoute } from "./deletion.js";
 import { handleGit } from "./git.js";
 import { type HttpDeps, handleRequest } from "./handler.js";
@@ -167,6 +168,7 @@ export function createHttpServer(deps: HttpDeps): Server {
         const isInternalMcp =
           (httpRequest.method ?? "GET") === "POST" && url.pathname === "/internal/mcp";
         const isSsh = isSshRoute(httpRequest.method, url.pathname);
+        const isContext = isContextRoute(httpRequest.method, url.pathname);
         const isRuntime = /^\/api\/apps\/[^/]+\/runtime$/.test(url.pathname);
         const isChat =
           !isRuntime && (url.pathname === "/chat" || url.pathname.startsWith("/api/apps/"));
@@ -182,9 +184,11 @@ export function createHttpServer(deps: HttpDeps): Server {
                   ? await handleInternalMcp(deps, httpRequest)
                   : isSsh
                     ? await handleSsh(deps, httpRequest)
-                    : isChat
-                      ? await handleChat(deps, httpRequest)
-                      : handleRequest(deps, httpRequest);
+                    : isContext
+                      ? await handleContext(deps, httpRequest)
+                      : isChat
+                        ? await handleChat(deps, httpRequest)
+                        : handleRequest(deps, httpRequest);
         response.writeHead(result.status, {
           "content-type": result.contentType,
           ...(result.headers ?? {}),

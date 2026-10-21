@@ -405,6 +405,253 @@ describe("settings mutations", () => {
     expect(JSON.parse(response.body).error).toContain("not clearable");
   });
 
+  it("sets context auto-compaction from native JSON values", async () => {
+    const f = fixture();
+    const defaults = JSON.parse(
+      (
+        await handleSettings(
+          f.deps,
+          request({ headers: auth(f.token), query: { scope: "global" } }),
+        )
+      ).body,
+    ) as {
+      effective: {
+        context: {
+          autoCompact: {
+            enabled: { value: boolean };
+            percent: { value: number };
+          };
+        };
+      };
+    };
+    expect(defaults.effective.context.autoCompact.enabled.value).toBe(false);
+    expect(defaults.effective.context.autoCompact.percent.value).toBe(80);
+
+    const enabled = await handleSettings(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/settings",
+        headers: auth(f.token, { "content-type": "application/json" }),
+        body: JSON.stringify({
+          scope: "global",
+          key: "context.auto_compact.enabled",
+          action: "set",
+          value: true,
+        }),
+      }),
+    );
+    expect(enabled.status).toBe(200);
+    expect(f.settings.resolve({}).effective.context.autoCompact.enabled).toEqual({
+      value: true,
+      state: "set",
+      source: "global",
+      sources: ["global"],
+    });
+
+    const percent = await handleSettings(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/settings",
+        headers: auth(f.token, { "content-type": "application/json" }),
+        body: JSON.stringify({
+          scope: "global",
+          key: "context.auto_compact.percent",
+          action: "set",
+          value: 67,
+        }),
+      }),
+    );
+    expect(percent.status).toBe(200);
+    const read = JSON.parse(
+      (
+        await handleSettings(
+          f.deps,
+          request({ headers: auth(f.token), query: { scope: "global" } }),
+        )
+      ).body,
+    ) as { scoped: Record<string, unknown> };
+    expect(read.scoped["global:context.auto_compact.percent"]).toEqual({
+      state: "set",
+      value: 67,
+    });
+
+    for (const invalid of [0, 100, 1.5, "67", null]) {
+      const rejected = await handleSettings(
+        f.deps,
+        request({
+          method: "POST",
+          path: "/api/settings",
+          headers: auth(f.token, { "content-type": "application/json" }),
+          body: JSON.stringify({
+            scope: "global",
+            key: "context.auto_compact.percent",
+            action: "set",
+            value: invalid,
+          }),
+        }),
+      );
+      expect(rejected.status).toBe(400);
+    }
+
+    const booleanString = await handleSettings(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/settings",
+        headers: auth(f.token, { "content-type": "application/json" }),
+        body: JSON.stringify({
+          scope: "global",
+          key: "context.auto_compact.enabled",
+          action: "set",
+          value: "on",
+        }),
+      }),
+    );
+    expect(booleanString.status).toBe(400);
+  });
+
+  it("converts context form strings and rejects invalid values", async () => {
+    const f = fixture();
+    const booleanCases: Array<[string, boolean]> = [
+      ["on", true],
+      ["off", false],
+      ["true", true],
+      ["false", false],
+      ["1", true],
+      ["0", false],
+    ];
+    for (const [raw, expected] of booleanCases) {
+      const response = await handleSettings(
+        f.deps,
+        request({
+          method: "POST",
+          path: "/api/settings",
+          headers: auth(f.token, { "content-type": "application/x-www-form-urlencoded" }),
+          body: form({
+            scope: "global",
+            key: "context.auto_compact.enabled",
+            action: "set",
+            value: raw,
+          }),
+        }),
+      );
+      expect(response.status).toBe(200);
+      expect(f.settings.resolve({}).effective.context.autoCompact.enabled.value).toBe(expected);
+    }
+
+    const percent = await handleSettings(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/settings",
+        headers: auth(f.token, { "content-type": "application/x-www-form-urlencoded" }),
+        body: form({
+          scope: "global",
+          key: "context.auto_compact.percent",
+          action: "set",
+          value: "55",
+        }),
+      }),
+    );
+    expect(percent.status).toBe(200);
+    expect(f.settings.resolve({}).effective.context.autoCompact.percent.value).toBe(55);
+
+    for (const [key, raw] of [
+      ["context.auto_compact.percent", ""],
+      ["context.auto_compact.percent", "abc"],
+      ["context.auto_compact.percent", "0"],
+      ["context.auto_compact.percent", "100"],
+      ["context.auto_compact.percent", "1.5"],
+      ["context.auto_compact.enabled", "maybe"],
+    ] as const) {
+      const rejected = await handleSettings(
+        f.deps,
+        request({
+          method: "POST",
+          path: "/api/settings",
+          headers: auth(f.token, { "content-type": "application/x-www-form-urlencoded" }),
+          body: form({ scope: "global", key, action: "set", value: raw }),
+        }),
+      );
+      expect(rejected.status).toBe(400);
+    }
+
+    for (const key of ["context.auto_compact.enabled", "context.auto_compact.percent"]) {
+      const clear = await handleSettings(
+        f.deps,
+        request({
+          method: "POST",
+          path: "/api/settings",
+          headers: auth(f.token, { "content-type": "application/x-www-form-urlencoded" }),
+          body: form({ scope: "global", key, action: "clear" }),
+        }),
+      );
+      expect(clear.status).toBe(400);
+      expect(JSON.parse(clear.body).error).toContain("not clearable");
+    }
+  });
+
+  it("returns the Context fragment for context mutations without a restart warning", async () => {
+    const f = fixture();
+    const enabled = await handleSettings(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/settings",
+        headers: auth(f.token, {
+          "content-type": "application/x-www-form-urlencoded",
+          "x-hanse-fragment": "settings",
+        }),
+        body: form({
+          scope: "project",
+          projectId: "p1",
+          key: "context.auto_compact.enabled",
+          action: "set",
+          value: "on",
+        }),
+      }),
+    );
+    expect(enabled.status).toBe(200);
+    const enabledPayload = JSON.parse(enabled.body) as FragmentPayload;
+    expect(enabledPayload.changed).toEqual(["context", "restart", "warnings"]);
+    expect(enabledPayload.sections.context).toContain('id="settings-context"');
+    expect(enabledPayload.sections.context).toContain('class="mono">On</span>');
+    expect(enabledPayload.sections.context).not.toContain("Restart required");
+    expect(enabledPayload.sections.agent).toBeUndefined();
+    expect(enabledPayload.sections.web).toBeUndefined();
+    expect(enabledPayload.sections.restart).toContain(
+      "No running agents are waiting for a restart.",
+    );
+    expect(enabledPayload.sections.restart).not.toContain("Restart required");
+    expect(enabledPayload.sections.warnings).toBe("");
+
+    const percent = await handleSettings(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/settings",
+        headers: auth(f.token, {
+          "content-type": "application/x-www-form-urlencoded",
+          "x-hanse-fragment": "settings",
+        }),
+        body: form({
+          scope: "project",
+          projectId: "p1",
+          key: "context.auto_compact.percent",
+          action: "set",
+          value: "72",
+        }),
+      }),
+    );
+    const percentPayload = JSON.parse(percent.body) as FragmentPayload;
+    expect(percentPayload.changed).toEqual(["context", "restart", "warnings"]);
+    expect(percentPayload.sections.context).toContain('class="mono">72%</span>');
+    expect(percentPayload.sections.context).toContain('value="72"');
+    expect(percentPayload.sections.context).not.toContain("Restart required");
+  });
+
   it("accepts strict JSON values and rejects arrays, prototype keys, and bad numbers", async () => {
     const f = fixture();
     const set = await handleSettings(
@@ -626,7 +873,7 @@ describe("settings mutations", () => {
     expect(response.headers?.location).toBeUndefined();
     const payload = JSON.parse(response.body) as FragmentPayload;
     expect(payload.ok).toBe(true);
-    expect(payload.changed).toEqual(["agent", "web", "restart", "warnings"]);
+    expect(payload.changed).toEqual(["agent", "web", "context", "restart", "warnings"]);
     expect(payload.sections.agent).toContain('id="settings-agent"');
     expect(payload.sections.agent).toContain("acme/fragment-model");
     expect(payload.sections.restart).toContain('id="settings-restart"');
@@ -875,7 +1122,7 @@ describe("provider keys", () => {
     expect(response.headers?.location).toBeUndefined();
     const payload = JSON.parse(response.body) as FragmentPayload;
     expect(payload.ok).toBe(true);
-    expect(payload.changed).toEqual(["agent", "web", "restart", "warnings"]);
+    expect(payload.changed).toEqual(["agent", "web", "context", "restart", "warnings"]);
     expect(payload.sections.agent).toContain('id="providers"');
     expect(payload.sections.warnings).toBe("");
     expect(response.body).not.toContain(secret);
@@ -884,7 +1131,7 @@ describe("provider keys", () => {
 });
 
 describe("settings pages and pending state", () => {
-  it("renders four section cards, one setting row per setting, and the sticky nav", async () => {
+  it("renders five section cards, one setting row per setting, and the sticky nav", async () => {
     const f = fixture();
     f.settings.setProviderKey("global", {}, "deepseek", "sk-page-secret", "owner");
     const paths = ["/settings", "/projects/p1/settings", "/projects/p1/apps/web/settings"];
@@ -901,13 +1148,21 @@ describe("settings pages and pending state", () => {
       expect(response.body).toContain('class="settings-nav"');
       expect(response.body).toContain('href="#settings-agent"');
       expect(response.body).toContain('href="#settings-web"');
+      expect(response.body).toContain('href="#settings-context"');
       expect(response.body).toContain('href="#settings-git"');
       expect(response.body).toContain('href="#settings-restart"');
-      for (const id of ["settings-agent", "settings-web", "settings-git", "settings-restart"]) {
+      for (const id of [
+        "settings-agent",
+        "settings-web",
+        "settings-context",
+        "settings-git",
+        "settings-restart",
+      ]) {
         expect(response.body).toContain(`id="${id}"`);
       }
       expect(response.body).toContain(">Agent</h2>");
       expect(response.body).toContain(">Web tools</h2>");
+      expect(response.body).toContain(">Context</h2>");
       expect(response.body).toContain(">Git</h2>");
       expect(response.body).toContain(">Restart &amp; pending</h2>");
       const rows = [
@@ -917,6 +1172,8 @@ describe("settings pages and pending state", () => {
         "setting-llm-model",
         "setting-web-search",
         "setting-web-fetch",
+        "setting-context-auto-compact",
+        "setting-context-auto-compact-percent",
         "setting-git-user-name",
         "setting-git-user-email",
         "setting-git-ssh",
@@ -924,6 +1181,24 @@ describe("settings pages and pending state", () => {
       ]);
       expect(response.body).toContain("data-settings-driver");
       expect(response.body).toContain("data-settings-form");
+      const compactRow = rowMarkup(response.body, "setting-context-auto-compact");
+      expect(compactRow).toContain('action="/api/settings"');
+      expect(compactRow).toContain('name="key" value="context.auto_compact.enabled"');
+      expect(compactRow).toContain("data-settings-form");
+      expect(compactRow).toContain("data-no-busy");
+      expect(compactRow).toContain('name="return_to"');
+      expect(compactRow).toContain('<option value="true"');
+      expect(compactRow).toContain('<option value="false"');
+      expect(compactRow).toContain(">On</option>");
+      expect(compactRow).toContain(">Off</option>");
+      expect(compactRow).toContain('class="mono">Off</span>');
+      const percentRow = rowMarkup(response.body, "setting-context-auto-compact-percent");
+      expect(percentRow).toContain('name="key" value="context.auto_compact.percent"');
+      expect(percentRow).toContain('type="number"');
+      expect(percentRow).toContain('min="1"');
+      expect(percentRow).toContain('max="99"');
+      expect(percentRow).toContain('step="1"');
+      expect(percentRow).toContain('class="mono">80%</span>');
       expect(response.body).toContain('autocomplete="new-password"');
       expect(response.body).toContain("/assets/settings.js");
       expect(response.body).not.toContain("<table");
@@ -960,6 +1235,8 @@ describe("settings pages and pending state", () => {
     f.settings.set("global", {}, "llm.model", "global/model", "owner");
     f.settings.set("global", {}, "git.user.name", "Global Agent", "owner");
     f.settings.set("global", {}, "web.search", { driver: "builtin" }, "owner");
+    f.settings.set("global", {}, "context.auto_compact.enabled", true, "owner");
+    f.settings.set("global", {}, "context.auto_compact.percent", 70, "owner");
 
     const project = await handleSettings(
       f.deps,
@@ -976,6 +1253,12 @@ describe("settings pages and pending state", () => {
     const identityRow = rowMarkup(project.body, "setting-git-user-name");
     expect(identityRow).toContain('value=""');
     expect(identityRow).toContain('placeholder="Inherited: Global Agent"');
+    const compactRow = rowMarkup(project.body, "setting-context-auto-compact");
+    expect(compactRow).toContain('<option value="" selected disabled>Inherited: On</option>');
+    expect(compactRow).toContain("data-settings-inherit");
+    const percentRow = rowMarkup(project.body, "setting-context-auto-compact-percent");
+    expect(percentRow).toContain('value=""');
+    expect(percentRow).toContain('placeholder="Inherited: 70%"');
 
     f.settings.set("app", { projectId: "p1", appKey: "web" }, "llm.model", "app/model", "owner");
     const app = await handleSettings(
@@ -997,6 +1280,12 @@ describe("settings pages and pending state", () => {
     );
     expect(rowMarkup(freshGlobal.body, "setting-llm-model")).toContain(
       'placeholder="Default: deepseek/deepseek-flash"',
+    );
+    expect(rowMarkup(freshGlobal.body, "setting-context-auto-compact")).toContain(
+      '<option value="" selected disabled>Default: Off</option>',
+    );
+    expect(rowMarkup(freshGlobal.body, "setting-context-auto-compact-percent")).toContain(
+      'placeholder="Default: 80%"',
     );
   });
 

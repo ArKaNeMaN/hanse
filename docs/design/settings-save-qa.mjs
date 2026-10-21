@@ -166,6 +166,82 @@ try {
   await navigate();
   check((await page.locator("#settings-agent").count()) === 1, "settings page did not render");
 
+  await scenario("context auto-compaction save and inherit");
+  const pendingBefore = await page.locator("#settings-restart [id^=pending-]").count();
+  await page.locator("#setting-context-auto-compact > summary").click();
+  const contextEnabled = await post(async () => {
+    await dismissToasts();
+    await page.locator("#context-auto-compact-enabled").selectOption("true");
+    await page.locator("#setting-context-auto-compact button[value=set]").click();
+  }, "/api/settings");
+  await stillAlive("context enabled save reloaded the document");
+  check(
+    contextEnabled.changed.join(",") === "context,restart,warnings",
+    `unexpected context enabled changed: ${contextEnabled.changed}`,
+  );
+  check(
+    (
+      await page.locator("#setting-context-auto-compact .setting-row__effective").innerText()
+    ).includes("On"),
+    "context enabled summary did not update",
+  );
+  check(
+    await page.locator("#setting-context-auto-compact").evaluate((element) => element.open),
+    "context enabled row closed",
+  );
+  check(
+    (await page.locator("#setting-context-auto-compact [data-confirm-clear]").count()) === 0,
+    "non-clearable context setting rendered a clear action",
+  );
+
+  await page.locator("#setting-context-auto-compact-percent > summary").click();
+  const contextPercent = await post(async () => {
+    await dismissToasts();
+    await page.locator("#context-auto-compact-percent").fill("70");
+    await page.locator("#setting-context-auto-compact-percent button[value=set]").click();
+  }, "/api/settings");
+  await stillAlive("context percent save reloaded the document");
+  check(
+    contextPercent.changed.join(",") === "context,restart,warnings",
+    `unexpected context percent changed: ${contextPercent.changed}`,
+  );
+  check(
+    (
+      await page
+        .locator("#setting-context-auto-compact-percent .setting-row__effective")
+        .innerText()
+    ).includes("70%"),
+    "context percent summary did not update",
+  );
+  check(
+    (await page.locator("#context-auto-compact-percent").inputValue()) === "70",
+    "context percent value did not stay",
+  );
+
+  const contextInherit = await post(async () => {
+    await dismissToasts();
+    await page.locator("#setting-context-auto-compact [data-settings-inherit]").click();
+  }, "/api/settings");
+  await stillAlive("context inherit reloaded the document");
+  check(
+    contextInherit.changed.join(",") === "context,restart,warnings",
+    `unexpected context inherit changed: ${contextInherit.changed}`,
+  );
+  check(
+    (await page.locator("#setting-context-auto-compact .setting-row__source").innerText()).length >
+      0,
+    "context inherit source line missing",
+  );
+  check(
+    (await page.locator("#settings-restart [id^=pending-]").count()) <= pendingBefore,
+    "context save added a restart requirement",
+  );
+  check(
+    !(await page.locator("#settings-restart").innerText()).includes("Auto-compaction"),
+    "context save rendered a restart warning",
+  );
+  await capture(page, "settings-save-context");
+
   await scenario("model save preserves open rows and drafts");
   await page.locator("#setting-llm-model > summary").click();
   await page.locator("#setting-web-search > summary").click();
@@ -178,7 +254,7 @@ try {
   }, "/api/settings");
   await stillAlive("model save reloaded the document");
   check(
-    model.changed.join(",") === "agent,web,restart,warnings",
+    model.changed.join(",") === "agent,web,context,restart,warnings",
     `unexpected model changed: ${model.changed}`,
   );
   check(
@@ -220,7 +296,7 @@ try {
   }, "/api/settings");
   await stillAlive("web save reloaded the document");
   check(
-    web.changed.join(",") === "agent,web,restart,warnings",
+    web.changed.join(",") === "agent,web,context,restart,warnings",
     `unexpected web changed: ${web.changed}`,
   );
   check(
@@ -240,7 +316,7 @@ try {
   }, "/api/settings");
   await stillAlive("web clear reloaded the document");
   check(
-    webClear.changed.join(",") === "agent,web,restart,warnings",
+    webClear.changed.join(",") === "agent,web,context,restart,warnings",
     `unexpected web clear changed: ${webClear.changed}`,
   );
   check(
@@ -258,7 +334,7 @@ try {
   }, "/api/settings");
   await stillAlive("web inherit reloaded the document");
   check(
-    inherit.changed.join(",") === "agent,web,restart,warnings",
+    inherit.changed.join(",") === "agent,web,context,restart,warnings",
     `unexpected web inherit changed: ${inherit.changed}`,
   );
   check(
@@ -375,7 +451,7 @@ try {
   }, "/api/settings/provider");
   await stillAlive("provider save reloaded the document");
   check(
-    provider.changed.join(",") === "agent,web,restart,warnings",
+    provider.changed.join(",") === "agent,web,context,restart,warnings",
     `unexpected provider changed: ${provider.changed}`,
   );
   const providerRow = page.locator("#providers .setting-row", { hasText: PROVIDER }).first();
@@ -398,7 +474,7 @@ try {
   }, "/api/settings/provider");
   await stillAlive("provider clear reloaded the document");
   check(
-    providerClear.changed.join(",") === "agent,web,restart,warnings",
+    providerClear.changed.join(",") === "agent,web,context,restart,warnings",
     `unexpected provider clear changed: ${providerClear.changed}`,
   );
   check(

@@ -1,6 +1,13 @@
 import {
   applySnapshot,
+  autoCompactText,
   classifyOmo,
+  contextChipLabel,
+  contextDetail,
+  contextErrorText,
+  contextMeterPercent,
+  contextStateClass,
+  contextSummary,
   deriveQueue,
   parseMarkdownTable,
   rekeyOptimistic,
@@ -35,6 +42,9 @@ const HISTORY_SCROLL_THRESHOLD_PX = 120;
 const HISTORY_MAX_CONTINUE_PAGES = 3;
 const RUNTIME_POLL_MS = 10000;
 const RUNTIME_UNAVAILABLE_TITLE = "Runtime status unavailable";
+const CONTEXT_POLL_MS = 2000;
+const CONTEXT_POLL_MAX_MS = 10 * 60 * 1000;
+const CONTEXT_COMPACT_GRACE_MS = 5000;
 
 const KNOWN_PART_TYPES = new Set([
   "text",
@@ -96,6 +106,26 @@ function main() {
   const sessionIdEl = document.getElementById("chat-session-id");
   const runtimeEl = document.getElementById("chat-runtime");
   const contextRuntimeEl = document.getElementById("chat-context-runtime");
+  const contextChip = document.getElementById("chat-context-chip");
+  const contextChipLabelEl = document.getElementById("chat-context-chip-label");
+  const contextChipExactEl = document.getElementById("chat-context-chip-exact");
+  const contextChipMeter =
+    contextChip === null ? null : contextChip.querySelector(".chat-context-chip__meter");
+  const contextChipFill =
+    contextChip === null ? null : contextChip.querySelector(".chat-context-chip__fill");
+  const contextUsage = document.getElementById("chat-context-usage");
+  const contextSummaryEl = document.getElementById("chat-context-summary");
+  const contextMeter = document.getElementById("chat-context-meter");
+  const contextMeterFill = document.getElementById("chat-context-meter-fill");
+  const contextDetailEl = document.getElementById("chat-context-detail");
+  const contextAutoEl = document.getElementById("chat-context-auto");
+  const contextSettingsEl = document.getElementById("chat-context-settings");
+  const contextCompactButton = document.getElementById("chat-context-compact");
+  const contextCompactReason = document.getElementById("chat-context-compact-reason");
+  const contextConfirm = document.getElementById("chat-context-confirm");
+  const contextConfirmCompact = document.getElementById("chat-context-confirm-compact");
+  const contextConfirmCancel = document.getElementById("chat-context-confirm-cancel");
+  const contextErrorEl = document.getElementById("chat-context-error");
   const runtimeUrl = shell.dataset.runtimeUrl || "";
   const contextClose = document.querySelector("[data-chat-context-close]");
   const sessionsClose = document.querySelector("[data-chat-sessions-close]");
@@ -181,6 +211,17 @@ function main() {
   let sessionsLoaded = false;
   let runtimeState = null;
   let runtimeTimer = null;
+  const contextBySession = new Map();
+  const contextSeqBySession = new Map();
+  let contextEpoch = 0;
+  let contextPollTimer = null;
+  let contextPollSession = null;
+  let contextPollStartedAt = 0;
+  let contextPollGraceUntil = 0;
+  let contextRetryTimer = null;
+  let contextCompactingSession = null;
+  let contextPosting = false;
+  let contextClientError = null;
   let elapsedAccumulated = 0;
   let elapsedStartedAt = null;
   let elapsedTimer = null;
@@ -840,6 +881,14 @@ function main() {
     return withProject(`${apiBase()}/sessions/${encodeURIComponent(id)}/todo`);
   }
 
+  function contextUrl(id) {
+    return withProject(`${apiBase()}/sessions/${encodeURIComponent(id)}/context`);
+  }
+
+  function compactUrl(id) {
+    return withProject(`${apiBase()}/sessions/${encodeURIComponent(id)}/compact`);
+  }
+
   function savedPermissionsUrl() {
     return withProject(`${apiBase()}/permissions/saved`);
   }
@@ -1420,6 +1469,435 @@ function main() {
   function syncRuntimePolling() {
     if (document.hidden) stopRuntimePolling();
     else startRuntimePolling();
+  }
+
+  function contextHasUsage(snapshot) {
+    return (
+      snapshot !== null &&
+      typeof snapshot === "object" &&
+      snapshot.state !== "unknown" &&
+      Number.isFinite(snapshot.used)
+    );
+  }
+
+  function contextHasModel(snapshot) {
+    if (snapshot === null || typeof snapshot !== "object") return false;
+    const model = snapshot.model;
+    if (model === null || typeof model !== "object") return false;
+    const provider = typeof model.providerID === "string" ? model.providerID.trim() : "";
+    const id = typeof model.modelID === "string" ? model.modelID.trim() : "";
+    return provider.length > 0 || id.length > 0;
+  }
+
+  function contextPercentValue(snapshot) {
+    if (snapshot === null || typeof snapshot !== "object") return null;
+    if (Number.isFinite(snapshot.percent)) return snapshot.percent;
+    if (Number.isFinite(snapshot.used) && Number.isFinite(snapshot.limit) && snapshot.limit > 0) {
+      return (snapshot.used / snapshot.limit) * 100;
+    }
+    return null;
+  }
+
+  function contextAriaValueText(snapshot) {
+    const percent = contextPercentValue(snapshot);
+    const detail = contextDetail(snapshot);
+    if (percent !== null) {
+      const rounded = Math.round(percent);
+      return detail === "—" ? `${rounded}%` : `${rounded}%; ${detail}`;
+    }
+    return detail === "—" ? "Unknown" : detail;
+  }
+
+  function setContextMeter(meter, fill, snapshot, percent, state, visible) {
+    if (meter !== null) {
+      meter.hidden = !visible;
+      meter.dataset.state = state;
+      if (visible) {
+        meter.setAttribute("aria-valuenow", String(percent));
+        meter.setAttribute("aria-valuetext", contextAriaValueText(snapshot));
+      } else {
+        meter.setAttribute("aria-valuenow", "0");
+        meter.setAttribute("aria-valuetext", "Unknown");
+      }
+    }
+    if (fill !== null) {
+      fill.dataset.state = state;
+      fill.style.width = visible ? `${percent}%` : "0%";
+    }
+  }
+
+  function contextScopeLabel(value) {
+    if (value === "app") return "application";
+    if (value === "project") return "project";
+    if (value === "global") return "global";
+    return "default";
+  }
+
+  function contextAutoTitle(snapshot) {
+    const auto = snapshot.autoCompact;
+    if (auto === null || typeof auto !== "object" || auto.enabled !== true) {
+      return "Auto-compact is off.";
+    }
+    const source = contextScopeLabel(auto.source);
+    const percentSource = contextScopeLabel(auto.percentSource);
+    if (source !== percentSource) {
+      return `Enabled by ${source}; threshold from ${percentSource}.`;
+    }
+    return `Enabled by ${source}.`;
+  }
+
+  function hideContextConfirm(returnFocus) {
+    if (contextConfirm !== null) contextConfirm.hidden = true;
+    if (
+      returnFocus === true &&
+      contextCompactButton instanceof HTMLElement &&
+      !contextCompactButton.disabled
+    ) {
+      contextCompactButton.focus();
+    }
+  }
+
+  function openContextConfirm() {
+    if (contextConfirm === null) return;
+    if (contextCompactButton !== null && contextCompactButton.disabled) return;
+    contextConfirm.hidden = false;
+    if (contextConfirmCompact instanceof HTMLElement) contextConfirmCompact.focus();
+  }
+
+  function setContextErrorText(text) {
+    if (contextErrorEl === null) return;
+    const message = typeof text === "string" ? text : "";
+    contextErrorEl.textContent = message;
+    contextErrorEl.hidden = message.length === 0;
+  }
+
+  function showContextError(message) {
+    contextClientError = message;
+    setContextErrorText(message);
+  }
+
+  function clearContextClientError() {
+    contextClientError = null;
+    setContextErrorText(null);
+  }
+
+  function contextCompactReasonFor(snapshot) {
+    if (sessionId === null) return "Start a session to compact.";
+    if (contextPosting) return "Compaction starting…";
+    if (snapshot === null || typeof snapshot !== "object") return "Loading context…";
+    if (snapshot.state === "compacting" || contextCompactingSession === sessionId) {
+      return "Compaction in progress.";
+    }
+    if (snapshot.status === "busy") return "Wait for the agent to finish.";
+    if (snapshot.status === "retry") return "Wait for the agent to retry.";
+    if (!contextHasModel(snapshot)) return "No model is known for this session.";
+    return null;
+  }
+
+  function renderContextCompact(snapshot) {
+    const reason = contextCompactReasonFor(snapshot);
+    if (contextCompactButton !== null) {
+      contextCompactButton.disabled = reason !== null || contextPosting;
+      contextCompactButton.dataset.state = reason === null ? "ready" : "disabled";
+      if (contextPosting) contextCompactButton.setAttribute("aria-busy", "true");
+      else contextCompactButton.removeAttribute("aria-busy");
+    }
+    if (contextCompactReason !== null) {
+      const text = reason === null ? "" : reason;
+      contextCompactReason.textContent = text;
+      contextCompactReason.hidden = text.length === 0;
+    }
+    if (reason !== null) hideContextConfirm(false);
+  }
+
+  function renderContext(snapshot) {
+    if (snapshot === null || typeof snapshot !== "object") return;
+    if (sessionId === null) return;
+    if (typeof snapshot.sessionID === "string" && snapshot.sessionID !== sessionId) return;
+    const state = contextStateClass(snapshot);
+    const percent = contextMeterPercent(snapshot);
+    const hasUsage = contextHasUsage(snapshot);
+    const detail = contextDetail(snapshot);
+    if (contextChip !== null) {
+      contextChip.hidden = false;
+      contextChip.dataset.state = state;
+      if (detail === "—") contextChip.removeAttribute("title");
+      else contextChip.title = detail;
+    }
+    if (contextChipLabelEl !== null) contextChipLabelEl.textContent = contextChipLabel(snapshot);
+    if (contextChipExactEl !== null) contextChipExactEl.textContent = detail;
+    setContextMeter(contextChipMeter, contextChipFill, snapshot, percent, state, hasUsage);
+    if (contextUsage !== null) {
+      contextUsage.hidden = false;
+      contextUsage.dataset.state = state;
+    }
+    if (contextSummaryEl !== null) contextSummaryEl.textContent = contextSummary(snapshot);
+    if (contextDetailEl !== null) contextDetailEl.textContent = detail;
+    if (contextAutoEl !== null) {
+      contextAutoEl.textContent = autoCompactText(snapshot);
+      contextAutoEl.title = contextAutoTitle(snapshot);
+    }
+    if (contextSettingsEl !== null) contextSettingsEl.title = "Configure context and auto-compaction";
+    setContextMeter(contextMeter, contextMeterFill, snapshot, percent, state, hasUsage);
+    renderContextCompact(snapshot);
+    setContextErrorText(
+      snapshot.lastError !== null && snapshot.lastError !== undefined
+        ? contextErrorText(snapshot.lastError)
+        : contextClientError,
+    );
+    syncContextPolling();
+  }
+
+  function resetContextUi(hideSection, detailText, reasonText) {
+    if (contextChip !== null) {
+      contextChip.hidden = true;
+      contextChip.dataset.state = "unknown";
+      contextChip.removeAttribute("title");
+    }
+    if (contextChipLabelEl !== null) contextChipLabelEl.textContent = "Context —";
+    if (contextChipExactEl !== null) contextChipExactEl.textContent = "";
+    setContextMeter(contextChipMeter, contextChipFill, null, 0, "unknown", false);
+    if (contextUsage !== null) {
+      contextUsage.hidden = hideSection === true;
+      contextUsage.dataset.state = "unknown";
+    }
+    if (contextSummaryEl !== null) contextSummaryEl.textContent = "—";
+    if (contextDetailEl !== null) contextDetailEl.textContent = detailText;
+    if (contextAutoEl !== null) {
+      contextAutoEl.textContent = "Auto-compact off";
+      contextAutoEl.title = "";
+    }
+    if (contextSettingsEl !== null) contextSettingsEl.title = "Configure context and auto-compaction";
+    setContextMeter(contextMeter, contextMeterFill, null, 0, "unknown", false);
+    if (contextCompactButton !== null) {
+      contextCompactButton.disabled = true;
+      contextCompactButton.dataset.state = "disabled";
+      contextCompactButton.removeAttribute("aria-busy");
+    }
+    if (contextCompactReason !== null) {
+      contextCompactReason.textContent = reasonText;
+      contextCompactReason.hidden = false;
+    }
+    hideContextConfirm(false);
+    setContextErrorText(null);
+  }
+
+  function renderContextUnavailable(message) {
+    resetContextUi(false, message, message);
+  }
+
+  function clearContextTimers() {
+    if (contextPollTimer !== null) {
+      window.clearInterval(contextPollTimer);
+      contextPollTimer = null;
+    }
+    if (contextRetryTimer !== null) {
+      window.clearTimeout(contextRetryTimer);
+      contextRetryTimer = null;
+    }
+    contextPollSession = null;
+    contextPollStartedAt = 0;
+    contextPollGraceUntil = 0;
+  }
+
+  function contextLoginRedirect() {
+    const next = `${window.location.pathname}${window.location.search}`;
+    window.location.assign(`/login?next=${encodeURIComponent(next)}`);
+  }
+
+  async function refreshContext(id, options) {
+    const settings = options || {};
+    const target = typeof id === "string" && id.length > 0 ? id : sessionId;
+    if (target === null) {
+      resetContextUi(true, "Waiting for a completed step.", "Start a session to compact.");
+      return;
+    }
+    const epoch = contextEpoch;
+    const sequence = (contextSeqBySession.get(target) || 0) + 1;
+    contextSeqBySession.set(target, sequence);
+    try {
+      const snapshot = await api(contextUrl(target));
+      if (target !== sessionId || epoch !== contextEpoch) return;
+      if (contextSeqBySession.get(target) !== sequence) return;
+      if (snapshot === null || typeof snapshot !== "object") {
+        throw new Error("Context snapshot unavailable.");
+      }
+      contextBySession.set(target, snapshot);
+      renderContext(snapshot);
+    } catch (error) {
+      if (target !== sessionId || epoch !== contextEpoch) return;
+      if (contextSeqBySession.get(target) !== sequence) return;
+      handleContextError(error, target, settings);
+    }
+  }
+
+  function handleContextError(error, target, options) {
+    const settings = options || {};
+    const status =
+      error !== null && typeof error === "object" && typeof error.status === "number"
+        ? error.status
+        : 0;
+    const code =
+      error !== null && typeof error === "object" && typeof error.code === "string"
+        ? error.code
+        : "";
+    if (status === 401) {
+      contextLoginRedirect();
+      return;
+    }
+    if (status === 404) {
+      contextBySession.delete(target);
+      contextSeqBySession.delete(target);
+      clearContextTimers();
+      if (target === sessionId) renderContextUnavailable("Session not found");
+      return;
+    }
+    clearContextTimers();
+    if (target !== sessionId) return;
+    renderContextUnavailable("Context unavailable");
+    if (status === 503 && code === "agent_not_running" && settings.retryNotRunning === true) {
+      if (contextRetryTimer !== null) window.clearTimeout(contextRetryTimer);
+      contextRetryTimer = window.setTimeout(() => {
+        contextRetryTimer = null;
+        if (sessionId === target) refreshContext(target).catch(() => {});
+      }, 750);
+    }
+  }
+
+  function startContextPolling(target, options) {
+    if (typeof target !== "string" || target.length === 0) return;
+    const settings = options || {};
+    const awaiting = settings.awaitCompacting === true;
+    if (contextPollTimer !== null && contextPollSession === target) {
+      if (awaiting) contextPollGraceUntil = Date.now() + CONTEXT_COMPACT_GRACE_MS;
+      return;
+    }
+    clearContextTimers();
+    contextPollSession = target;
+    contextPollStartedAt = Date.now();
+    contextPollGraceUntil = awaiting ? Date.now() + CONTEXT_COMPACT_GRACE_MS : 0;
+    contextPollTimer = window.setInterval(contextPollTick, CONTEXT_POLL_MS);
+  }
+
+  function contextPollTick() {
+    const target = contextPollSession;
+    if (target === null || target !== sessionId) {
+      clearContextTimers();
+      return;
+    }
+    if (Date.now() - contextPollStartedAt >= CONTEXT_POLL_MAX_MS) {
+      clearContextTimers();
+      return;
+    }
+    const snapshot = contextBySession.get(target);
+    if (snapshot !== undefined) {
+      if (snapshot.lastError !== null && snapshot.lastError !== undefined) {
+        clearContextTimers();
+        return;
+      }
+      if (snapshot.state !== "compacting" && Date.now() >= contextPollGraceUntil) {
+        clearContextTimers();
+        return;
+      }
+    }
+    if (document.hidden) return;
+    refreshContext(target, { polling: true }).catch(() => {});
+  }
+
+  function syncContextPolling() {
+    const target = sessionId;
+    if (target === null) {
+      clearContextTimers();
+      return;
+    }
+    const snapshot = contextBySession.get(target);
+    if (snapshot !== undefined) {
+      if (snapshot.lastError !== null && snapshot.lastError !== undefined) {
+        clearContextTimers();
+        return;
+      }
+      if (snapshot.state === "compacting") {
+        startContextPolling(target);
+        return;
+      }
+    }
+    if (contextPollSession === target && Date.now() < contextPollGraceUntil) return;
+    clearContextTimers();
+  }
+
+  function compactErrorMessage(error) {
+    const status =
+      error !== null && typeof error === "object" && typeof error.status === "number"
+        ? error.status
+        : 0;
+    const code =
+      error !== null && typeof error === "object" && typeof error.code === "string"
+        ? error.code
+        : "";
+    if (status === 401) return "Sign in again to compact this session.";
+    if (status === 403) return "You do not have permission to compact this session.";
+    if (status === 404) return "Session not found.";
+    if (status === 409) {
+      if (code === "session_busy") return "Wait for the agent to finish before compacting.";
+      if (code === "compact_in_progress") return "Compaction is already in progress.";
+      if (code === "model_unavailable") return "No model is available for this session.";
+      return "Compaction is not available right now.";
+    }
+    if (status === 502) return "Compaction failed. Try again.";
+    if (status === 503) return "Context is unavailable. Try again.";
+    return "Compaction failed. Try again.";
+  }
+
+  async function compactContext() {
+    const target = sessionId;
+    if (target === null || contextPosting) return;
+    contextPosting = true;
+    clearContextClientError();
+    hideContextConfirm(false);
+    const before = contextBySession.get(target);
+    if (before !== undefined) renderContext(before);
+    let accepted = false;
+    try {
+      const result = await api(compactUrl(target), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      });
+      if (target !== sessionId) return;
+      if (result === null || typeof result !== "object" || result.accepted !== true) {
+        throw new Error("Compaction was not accepted.");
+      }
+      accepted = true;
+      contextPosting = false;
+      contextCompactingSession = target;
+      const current = contextBySession.get(target);
+      if (current !== undefined) {
+        contextBySession.set(target, { ...current, state: "compacting", lastError: null });
+      }
+      startContextPolling(target, { awaitCompacting: true });
+      const optimistic = contextBySession.get(target);
+      if (optimistic !== undefined) renderContext(optimistic);
+      announce("Compaction started.");
+      showToast("Compaction started.", "success");
+      await refreshContext(target, { force: true });
+    } catch (error) {
+      if (target !== sessionId) return;
+      const message = compactErrorMessage(error);
+      showContextError(message);
+      showToast(message, "error");
+    } finally {
+      contextPosting = false;
+      contextCompactingSession = null;
+      if (target === sessionId) {
+        const current = contextBySession.get(target);
+        if (!accepted) {
+          if (current !== undefined) renderContext(current);
+          else renderContextUnavailable("Context unavailable");
+        } else if (current !== undefined && current.state !== "compacting") {
+          renderContext(current);
+        }
+      }
+    }
   }
 
   function renderInline(parent, text) {
@@ -3572,6 +4050,7 @@ function main() {
     hasStreamReady = true;
     setConnection("Live", "live");
     refreshRuntime().catch(() => {});
+    refreshContext(sessionId, { retryNotRunning: true }).catch(() => {});
     hydrate({ reconnect: true }).catch(() => {});
     hydrateMessages({ reason: changed ? "reconnect" : "ready", silent: true }).catch(() => {});
   }
@@ -3863,12 +4342,23 @@ function main() {
       announce("The agent failed; details are in the chat.");
       const toastMessage = message.length > 180 ? `${message.slice(0, 179)}…` : message;
       showToast(`Agent error: ${toastMessage}`, "error");
+      refreshContext(sessionId).catch(() => {});
+      return;
+    }
+
+    if (type === "session.compacted") {
+      if (typeof payload.sessionID !== "string" || payload.sessionID !== sessionId) return;
+      clearContextTimers();
+      announce("Session compacted.");
+      showToast("Session compacted.", "success");
+      refreshContext(sessionId).catch(() => {});
       return;
     }
 
     if (type === "session.status") {
       if (bufferHydrationEvent(payload)) return;
       applyAgentStatus(payload);
+      if (payload.sessionID === sessionId) refreshContext(sessionId).catch(() => {});
       return;
     }
 
@@ -6862,6 +7352,15 @@ function main() {
     hydrating = false;
     hydrationBuffer = null;
     sessionId = id;
+    contextEpoch += 1;
+    clearContextTimers();
+    contextCompactingSession = null;
+    contextClientError = null;
+    hideContextConfirm(false);
+    const cachedContext = contextBySession.get(id);
+    if (cachedContext !== undefined) renderContext(cachedContext);
+    else resetContextUi(false, "Waiting for a completed step.", "Loading context…");
+    refreshContext(id).catch(() => {});
     if (previous !== id) {
       store = adoptRuntime(id);
       const runtime = sessionRuntime.get(id);
@@ -6914,6 +7413,12 @@ function main() {
     hydrating = false;
     hydrationBuffer = null;
     sessionId = null;
+    contextEpoch += 1;
+    clearContextTimers();
+    contextCompactingSession = null;
+    contextClientError = null;
+    hideContextConfirm(false);
+    resetContextUi(true, "Waiting for a completed step.", "Start a session to compact.");
     store = createThreadStore(null);
     resetFeedDom();
     sessionSnapshotTooLarge = false;
@@ -6963,6 +7468,13 @@ function main() {
       sessions = [created, ...sessions.filter((session) => String(session.id) !== id)];
       if (sessionSearch !== null) sessionSearch.value = "";
       sessionId = id;
+      contextEpoch += 1;
+      clearContextTimers();
+      contextCompactingSession = null;
+      contextClientError = null;
+      hideContextConfirm(false);
+      resetContextUi(false, "Waiting for a completed step.", "Loading context…");
+      refreshContext(id).catch(() => {});
       if (sessionTitleEl !== null) sessionTitleEl.textContent = sessionLabel(created);
       if (sessionIdEl !== null) {
         sessionIdEl.textContent = id.slice(0, 8);
@@ -6996,6 +7508,10 @@ function main() {
       deletingSessions.delete(id);
       sessionRuntime.delete(id);
       acceptanceBySession.delete(id);
+      contextBySession.delete(id);
+      contextSeqBySession.delete(id);
+      if (contextPollSession === id) clearContextTimers();
+      if (contextCompactingSession === id) contextCompactingSession = null;
       if (wasActive) {
         if (sessions.length > 0) {
           await selectSession(String(sessions[0].id), { focus: false });
@@ -7300,6 +7816,11 @@ function main() {
       closeQueue(true);
       return;
     }
+    if (contextConfirm !== null && !contextConfirm.hidden) {
+      event.preventDefault();
+      hideContextConfirm(true);
+      return;
+    }
     if (contextOpen()) {
       event.preventDefault();
       closeContext(true);
@@ -7469,6 +7990,25 @@ function main() {
       }, 220);
     });
   }
+  if (contextChip !== null) {
+    contextChip.addEventListener("click", () => {
+      setContext(true, false);
+      window.setTimeout(() => {
+        if (contextUsage !== null) contextUsage.scrollIntoView({ block: "start" });
+        const heading = document.getElementById("context-usage-title");
+        if (heading instanceof HTMLElement) heading.focus();
+      }, 220);
+    });
+  }
+  if (contextCompactButton !== null) {
+    contextCompactButton.addEventListener("click", openContextConfirm);
+  }
+  if (contextConfirmCompact !== null) {
+    contextConfirmCompact.addEventListener("click", () => compactContext());
+  }
+  if (contextConfirmCancel !== null) {
+    contextConfirmCancel.addEventListener("click", () => hideContextConfirm(true));
+  }
   if (streamRetry !== null) {
     streamRetry.addEventListener("click", () => {
       streamRetry.hidden = true;
@@ -7479,6 +8019,7 @@ function main() {
     });
   }
   window.addEventListener("beforeunload", closeStream);
+  window.addEventListener("beforeunload", clearContextTimers);
 
   const sshApprovalSlot = document.getElementById("chat-ssh-approvals");
   if (sshApprovalSlot instanceof HTMLElement) {

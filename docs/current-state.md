@@ -236,7 +236,8 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
 - The `hanse` MCP entry carries `timeout: 600000`; existing agents must be restarted (no image
   rebuild) to see the tools and the timeout.
 - Migration v8 (`setting_secrets`, drop legacy `secrets`) and migration v9 (SSH tables) apply in
-  order; the current schema versions are `[1..9]`.
+  order; migrations v10 (applied settings/profile state) and v11 (deletion markers) follow. The
+  current schema versions are `[1..11]`.
 - Live on `deployment-host` (`sha-e2d89a2`): a temporary SSH target pinned and authenticated, an approval was
   approved, `echo QA_OK` and a 65 s `sleep` succeeded, upload/download round-tripped, a real
   `opencode` turn called `hanse_ssh_exec` and received the result after 65 s, and audit rows survived
@@ -278,6 +279,20 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   without waiting for the turn; the blocking route without `async` keeps its `200 {message}`
   response. Async text is capped at 32 KiB; an older upstream without `prompt_async` returns
   `502 async_unavailable`, and the blocking route remains available.
+- Context usage is tracked server-side per running application by a background monitor that
+  subscribes to opencode's `/event` stream and keeps per-session prompt tokens, model, status, and
+  compaction state in memory (no DB row). Usage is `tokens.input + cache.read + cache.write` from the
+  latest non-summary assistant step (`step-finish` authoritative, finished `message.updated`
+  fallback). `GET /api/apps/:app/sessions/:sid/context` returns the context snapshot;
+  `POST /api/apps/:app/sessions/:sid/compact` starts opencode 1.19.3 `summarize` with the last-used
+  session model (effective `llm.model` only when hydration finds no assistant usage) and
+  `auto:false`, returning `202`. Both routes are human-only. A missing model limit degrades to a
+  token count. Auto-compaction is off by default, 80% when enabled, idle-only, top-level-only, with
+  hysteresis, an ineffective latch, and a failure cooldown. opencode's built-in overflow compaction
+  remains enabled. The chat thread meta has a context chip and the context rail has a meter,
+  auto-compaction state, and `Compact now`; the coordinator keeps one extra opencode SSE connection
+  per running app. Sessions are hydrated lazily, and a coordinator restart resumes monitors for
+  still-running instances.
 - The app-level SSE (`GET /api/apps/:app/events`) carries typed frames
   (`stream.ready`, `message.updated`, `message.part.updated`, `message.part.delta`,
   `message.part.omitted`, `session.status`, `session.error`, `session.activity`, `todo.updated`,
@@ -379,14 +394,18 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   `/projects/:id/apps/:appKey/settings`. Values resolve global -> project -> application. Missing
   rows inherit; `null`/`cleared` is an explicit empty override. `llm.model` is a non-clearable scalar
   with default `deepseek/deepseek-flash`; `web.search` and `web.fetch` default to `{driver:"builtin"}`
-  and are clearable. `git.user.name`/`git.user.email` are clearable strings (default `null`).
-  Every page uses a sticky scope/section nav, four section cards (Agent, Web tools, Git,
+  and are clearable. `context.auto_compact.enabled` (default `false`) and
+  `context.auto_compact.percent` (default `80`, integer 1..99) are non-clearable live settings.
+  `git.user.name`/`git.user.email` are clearable strings (default `null`).
+  Every page uses a sticky scope/section nav, five section cards (Agent, Web tools, Context, Git,
   Restart & pending), and one collapsed setting row per setting. Rows show effective value and source
   at rest; editor, scope history (`Scope details`), warnings, and actions are disclosed on demand.
   Saves are live: all settings mutations from `settings.js`/`git-settings.js` request
   `x-hanse-fragment: settings`, and the server returns only the affected section HTML plus the
   warnings/restart state. The client swaps those sections in place, restoring open rows, other-row
-  drafts, focus, scroll, and the URL hash, so a successful save does not reload the page. Non-Git
+  drafts, focus, scroll, and the URL hash, so a successful save does not reload the page. Context
+  settings are excluded from the launch settings hash, so changing them never marks a running agent
+  restart-required. Non-Git
   forms still fall back to redirect + toast without JS; Git credential forms remain JSON-only and
   JS-required.
 - `settings` and `provider_keys` live in `coordinator.db` (migration v3). Provider API keys are
@@ -549,10 +568,13 @@ coordinator; operators do not set them.
 
 ## Verification
 
-`npm run lint && npm run typecheck && npm test && npm run build` (all green; 1295 tests). The UX
-polish pass deployed as `sha-88faab7`; the settings live-save follow-up deployed as `sha-d2fcc3b`.
-The project/application deletion stage is verified by the four gates; it has not been deployed or
-live-smoked from this checkout.
+`npm run lint && npm run typecheck && npm test && npm run build` (all green; 1429 tests in 91
+files). The UX polish pass deployed as `sha-88faab7`; the settings live-save follow-up deployed as
+`sha-d2fcc3b`. The project/application deletion stage is verified by the four gates; it has not been
+deployed or live-smoked from this checkout. The context usage/compaction stage is verified by the
+four gates and the deterministic chat QA bridge (14 scenarios, zero console/page errors, context
+screenshots under `docs/design/artifacts/chat/`); deployment is recorded in the journal after the
+stage deploy.
 B1 core
 live smoke on `deployment-host`: coordinator/IDE/runner healthy, per-app `demo-app` container running,
 `scripts/agent-runtime-probe.sh b1` passes, coordinator recreate reattaches the app network, and the
@@ -615,6 +637,11 @@ Settings stage verification:
   image GC remains the fallback. The deletion mutex is in-process/single-node, there is no CLI delete
   command, and the runner must be reachable.
 
+- Context accounting is in memory and lazily rehydrated; there is no historical usage chart, no
+  per-message cost/billing UI, and child/subagent sessions are excluded from auto-compaction. Hanse
+  keeps opencode's built-in auto-compaction, which may compact before the configured threshold for
+  models with a smaller usable window. The background monitor adds one opencode SSE connection per
+  running application.
 - Single user; no RBAC or multi-tenant isolation.
 - Trust model: trusted repositories; agents execute code.
 - **B2 runs each app in its own hardened container/network and optional per-app image.** App
