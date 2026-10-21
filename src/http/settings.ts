@@ -1,4 +1,5 @@
 import { GitCredentialValidationError } from "../git/credentials.js";
+import type { RegisteredApp } from "../registry/index.js";
 import {
   type EffectiveValue,
   type PendingRestart,
@@ -19,7 +20,13 @@ import { DEEPSEEK_FIELDS, webDriverDefinitions } from "../web/registry.js";
 import type { WebToolConfig } from "../web/types.js";
 import { findApp, toManagedApp } from "./apps.js";
 import { humanFrom, principalFrom } from "./auth.js";
-import { buildSite, type PageChrome, renderNotFound, type SiteModel } from "./dashboard.js";
+import {
+  buildSite,
+  type PageChrome,
+  type ProjectView,
+  renderNotFound,
+  type SiteModel,
+} from "./dashboard.js";
 import type { HttpDeps, HttpRequest, HttpResponse } from "./handler.js";
 import { appShell, escapeHtml, icon, pageHeader, plural, safeLocalPath } from "./ui.js";
 
@@ -70,6 +77,60 @@ function safeDecode(value: string): string {
 function wantsHtml(request: HttpRequest): boolean {
   const accept = request.headers.accept ?? "";
   return accept.includes("text/html") || accept.includes("application/xhtml+xml");
+}
+
+function wantsFragment(request: HttpRequest): boolean {
+  return (request.headers["x-hanse-fragment"] ?? "").trim().toLowerCase() === "settings";
+}
+
+const SECTION_KEYS = ["agent", "web", "git", "restart", "warnings"] as const;
+
+type SettingsSectionKey = (typeof SECTION_KEYS)[number];
+
+type SettingsSections = Record<SettingsSectionKey, string>;
+
+interface SettingsPageEntities {
+  project?: ProjectView;
+  app?: RegisteredApp;
+}
+
+function pageEntities(
+  site: SiteModel,
+  scope: SettingsScope,
+  target: SettingsTarget,
+): SettingsPageEntities | undefined {
+  if (scope === "global") {
+    return {};
+  }
+  const project =
+    target.projectId === undefined
+      ? undefined
+      : site.projects.find((entry) => entry.id === target.projectId);
+  if (project === undefined) {
+    return undefined;
+  }
+  if (scope === "project") {
+    return { project };
+  }
+  const app = project.apps.find((entry) => entry.appKey === target.appKey);
+  if (app === undefined) {
+    return undefined;
+  }
+  return { project, app };
+}
+
+function targetExists(deps: HttpDeps, scope: SettingsScope, target: SettingsTarget): boolean {
+  if (scope === "global") {
+    return true;
+  }
+  const project = deps.getProjects().find((entry) => entry.id === target.projectId);
+  if (project === undefined) {
+    return false;
+  }
+  if (scope === "project") {
+    return true;
+  }
+  return project.service.listApps().some((app) => app.appKey === target.appKey);
 }
 
 function requestPath(request: HttpRequest): string {
@@ -271,6 +332,36 @@ function settingsResponse(
   };
 }
 
+function fragmentResponse(
+  deps: HttpDeps,
+  settings: SettingsService,
+  scope: SettingsScope,
+  target: SettingsTarget,
+  changed: SettingsSectionKey[],
+): HttpResponse {
+  const site = buildSite(deps);
+  const entities = pageEntities(site, scope, target);
+  if (entities === undefined) {
+    return json(404, { error: "not found" });
+  }
+  const resolved = settingsResponse(settings, deps, scope, target);
+  const sections = settingsSections({
+    site,
+    scope,
+    target,
+    resolved,
+    deps,
+    returnTo: settingsPagePath(scope, target),
+    ...(entities.project === undefined ? {} : { project: entities.project }),
+    ...(entities.app === undefined ? {} : { app: entities.app }),
+  });
+  const selected: Partial<SettingsSections> = {};
+  for (const key of changed) {
+    selected[key] = sections[key];
+  }
+  return json(200, { ok: true, changed, sections: selected });
+}
+
 function buildWebToolValue(payload: Record<string, unknown>): unknown {
   const driver = stringValue(payload.driver);
   if (driver === "builtin") {
@@ -369,8 +460,12 @@ export function isSettingsRoute(method: string, pathname: string): boolean {
   return method === "POST" && /^\/api\/apps\/[^/]+\/restart$/.test(pathname);
 }
 
-function authorize(deps: HttpDeps, request: HttpRequest): HttpResponse | undefined {
-  if (wantsHtml(request)) {
+function authorize(
+  deps: HttpDeps,
+  request: HttpRequest,
+  browser: boolean,
+): HttpResponse | undefined {
+  if (browser) {
     if (humanFrom(deps, request) === undefined) {
       return redirect(`/login?next=${encodeURIComponent(requestPath(request))}`);
     }
@@ -390,11 +485,12 @@ export async function handleSettings(deps: HttpDeps, request: HttpRequest): Prom
   if (deps.settings === undefined) {
     return json(503, { error: "settings are not configured" });
   }
-  const denied = authorize(deps, request);
+  const fragment = wantsFragment(request);
+  const browser = wantsHtml(request) && !fragment;
+  const denied = authorize(deps, request, browser);
   if (denied !== undefined) {
     return denied;
   }
-  const browser = wantsHtml(request);
   const principal = principalFrom(deps, request);
   if (principal === undefined) {
     return redirect(`/login?next=${encodeURIComponent(requestPath(request))}`);
@@ -417,12 +513,16 @@ export async function handleSettings(deps: HttpDeps, request: HttpRequest): Prom
     let scope: SettingsScope;
     let target: SettingsTarget;
     let returnTo = "/settings";
+    let key = "";
     const jsonBody = isJsonRequest(request);
     try {
       payload = parseObjectBody(request);
       ({ scope, target } = parseTarget(payload));
       returnTo = safeLocalPath(stringValue(payload.return_to), settingsPagePath(scope, target));
-      const key = stringValue(payload.key) ?? "";
+      if (fragment && !targetExists(deps, scope, target)) {
+        return json(404, { error: "not found" });
+      }
+      key = stringValue(payload.key) ?? "";
       const action = stringValue(payload.action) ?? "";
       if (action === "set") {
         settings.set(scope, target, key, settingValue(key, action, payload, jsonBody), actor);
@@ -436,6 +536,15 @@ export async function handleSettings(deps: HttpDeps, request: HttpRequest): Prom
     } catch (error) {
       return mutationError(browser, returnTo, error);
     }
+    if (fragment) {
+      return fragmentResponse(
+        deps,
+        settings,
+        scope,
+        target,
+        key.startsWith("git.") ? ["git", "restart"] : ["agent", "web", "restart", "warnings"],
+      );
+    }
     return browser
       ? redirectNotice(returnTo, "Settings saved.", "success")
       : json(200, settingsResponse(settings, deps, scope, target));
@@ -448,6 +557,9 @@ export async function handleSettings(deps: HttpDeps, request: HttpRequest): Prom
       }
       const payload = parseObjectBody(request);
       const { scope, target } = parseTarget(payload);
+      if (fragment && !targetExists(deps, scope, target)) {
+        return json(404, { error: "not found" });
+      }
       const kind = stringValue(payload.kind);
       if (kind !== "ssh" && kind !== "https") {
         throw new SettingsValidationError("kind must be ssh or https");
@@ -470,6 +582,9 @@ export async function handleSettings(deps: HttpDeps, request: HttpRequest): Prom
       } else {
         throw new SettingsValidationError("action must be set, clear, or inherit");
       }
+      if (fragment) {
+        return fragmentResponse(deps, settings, scope, target, ["git", "restart"]);
+      }
       return json(200, settingsResponse(settings, deps, scope, target));
     } catch (error) {
       return gitAuthMutationError(error);
@@ -485,6 +600,9 @@ export async function handleSettings(deps: HttpDeps, request: HttpRequest): Prom
       payload = parseObjectBody(request);
       ({ scope, target } = parseTarget(payload));
       returnTo = safeLocalPath(stringValue(payload.return_to), settingsPagePath(scope, target));
+      if (fragment && !targetExists(deps, scope, target)) {
+        return json(404, { error: "not found" });
+      }
       const provider = stringValue(payload.provider) ?? "";
       const action = stringValue(payload.action) ?? "";
       if (action === "set") {
@@ -498,6 +616,14 @@ export async function handleSettings(deps: HttpDeps, request: HttpRequest): Prom
       }
     } catch (error) {
       return mutationError(browser, returnTo, error);
+    }
+    if (fragment) {
+      return fragmentResponse(deps, settings, scope, target, [
+        "agent",
+        "web",
+        "restart",
+        "warnings",
+      ]);
     }
     return browser
       ? redirectNotice(returnTo, "Provider key updated.", "success")
@@ -1117,6 +1243,10 @@ function providerClearAction(
   return { button: `<button ${attributes}>Clear</button>`, reason: "" };
 }
 
+function providerRowId(provider: string): string {
+  return `provider-${encodeURIComponent(provider)}`;
+}
+
 function providerSection(options: {
   resolved: ResolvedSettings;
   scope: SettingsScope;
@@ -1150,7 +1280,7 @@ function providerSection(options: {
               ${clear.reason}
             </form>`;
             return settingRow({
-              id: `provider-${index}`,
+              id: providerRowId(provider),
               title: provider,
               summaryNote: "Change key",
               effectiveText: providerStatusLabel(status),
@@ -1626,7 +1756,7 @@ function settingsNav(options: { scope: SettingsScope; target: SettingsTarget }):
 function clearDialog(): string {
   return `<dialog class="dialog" id="settings-clear-dialog" aria-labelledby="settings-clear-title">
     <div class="dialog__frame">
-      <form class="dialog__form" method="post" action="/api/settings" id="settings-clear-form">
+      <form class="dialog__form" method="post" action="/api/settings" id="settings-clear-form" data-no-busy>
         <input type="hidden" name="action" value="clear" />
         <div class="dialog__head">
           <h2 class="dialog__title" id="settings-clear-title">Clear setting at this scope?</h2>
@@ -1634,6 +1764,7 @@ function clearDialog(): string {
         </div>
         <div class="dialog__body">
           <p id="settings-clear-body">Wider scopes will no longer apply. The setting stays disabled until you set it again.</p>
+          <p class="field-error" data-settings-error role="alert" hidden></p>
         </div>
         <div class="dialog__foot">
           <button class="btn btn-ghost" type="button" data-dialog-close>Cancel</button>
@@ -1642,6 +1773,129 @@ function clearDialog(): string {
       </form>
     </div>
   </dialog>`;
+}
+
+function settingsSections(options: {
+  site: SiteModel;
+  scope: SettingsScope;
+  target: SettingsTarget;
+  resolved: ResolvedSettings & { pendingRestart: PendingRestart[] };
+  deps: HttpDeps;
+  returnTo: string;
+  project?: ProjectView;
+  app?: RegisteredApp;
+}): SettingsSections {
+  const effectiveModel = options.resolved.effective.llm.model;
+  const modelWarning = modelProviderWarning(options.resolved);
+  const searchEffective = options.resolved.effective.web.search;
+  const fetchEffective = options.resolved.effective.web.fetch;
+
+  const agentRows = `${settingRow({
+    id: "setting-llm-model",
+    title: "Model",
+    effectiveText: effectiveText(effectiveModel as EffectiveValue<unknown>),
+    source: sourceLine(effectiveModel as EffectiveValue<unknown>),
+    hint: "Selected model applies to new sessions and OMO agents; existing sessions may keep their model.",
+    ...(modelWarning === undefined ? {} : { warnings: [modelWarning] }),
+    body: `${fieldErrorSlot("setting-llm-model-error")}${modelControls({
+      scope: options.scope,
+      target: options.target,
+      resolved: options.resolved,
+      effective: effectiveModel,
+      returnTo: options.returnTo,
+    })}`,
+    details: scopeDetailsHtml(options.resolved, options.scope, "llm.model"),
+  })}${providerSection({
+    resolved: options.resolved,
+    scope: options.scope,
+    target: options.target,
+    returnTo: options.returnTo,
+  })}`;
+
+  const webRows = `${settingRow({
+    id: "setting-web-search",
+    title: "Web search",
+    effectiveText:
+      searchEffective.value === null
+        ? effectiveText(searchEffective as EffectiveValue<unknown>)
+        : searchEffective.value.driver,
+    source: sourceLine(searchEffective as EffectiveValue<unknown>),
+    hint: "Built-in uses the existing OMO/opencode tools. DeepSeek uses the managed hanse_web MCP server.",
+    ...(webToolWarning("web.search", searchEffective, options.resolved) === undefined
+      ? {}
+      : { warnings: [webToolWarning("web.search", searchEffective, options.resolved) as string] }),
+    body: `${fieldErrorSlot("setting-web-search-error")}${webControls({
+      key: "web.search",
+      title: "Web search",
+      scope: options.scope,
+      target: options.target,
+      returnTo: options.returnTo,
+      resolved: options.resolved,
+      effective: searchEffective,
+      current: ownWebValue(options.resolved, options.scope, "web.search"),
+    })}`,
+    details: scopeDetailsHtml(options.resolved, options.scope, "web.search"),
+  })}${settingRow({
+    id: "setting-web-fetch",
+    title: "Web fetch",
+    effectiveText:
+      fetchEffective.value === null
+        ? effectiveText(fetchEffective as EffectiveValue<unknown>)
+        : fetchEffective.value.driver,
+    source: sourceLine(fetchEffective as EffectiveValue<unknown>),
+    hint: "Built-in uses opencode webfetch. DeepSeek uses the managed hanse_web MCP server.",
+    ...(webToolWarning("web.fetch", fetchEffective, options.resolved) === undefined
+      ? {}
+      : { warnings: [webToolWarning("web.fetch", fetchEffective, options.resolved) as string] }),
+    body: `${fieldErrorSlot("setting-web-fetch-error")}${webControls({
+      key: "web.fetch",
+      title: "Web fetch",
+      scope: options.scope,
+      target: options.target,
+      returnTo: options.returnTo,
+      resolved: options.resolved,
+      effective: fetchEffective,
+      current: ownWebValue(options.resolved, options.scope, "web.fetch"),
+    })}`,
+    details: scopeDetailsHtml(options.resolved, options.scope, "web.fetch"),
+  })}`;
+
+  const profileWarnings =
+    options.scope === "app" && options.app !== undefined
+      ? (options.deps.manager?.profileWarnings(options.app.id) ?? [])
+      : [];
+
+  return {
+    agent: `<section class="card settings-section" id="settings-agent" aria-labelledby="settings-agent-title">
+        <div class="card__head">
+          <h2 class="card__title" id="settings-agent-title">Agent</h2>
+          <span class="badge">Model and providers</span>
+        </div>
+        <div class="card__body card__body--flush">${agentRows}</div>
+      </section>`,
+    web: `<section class="card settings-section" id="settings-web" aria-labelledby="settings-web-title">
+        <div class="card__head">
+          <h2 class="card__title" id="settings-web-title">Web tools</h2>
+          <span class="badge">Search and fetch</span>
+        </div>
+        <div class="card__body card__body--flush">${webRows}</div>
+      </section>`,
+    git: gitSection({
+      resolved: options.resolved,
+      scope: options.scope,
+      target: options.target,
+      returnTo: options.returnTo,
+      ...(options.scope === "app"
+        ? {}
+        : { testAppPath: firstAppSettingsPath(options.site, options.project?.id) }),
+    }),
+    restart: pendingSection({
+      pending: options.resolved.pendingRestart,
+      returnTo: options.returnTo,
+      profileWarnings,
+    }),
+    warnings: warningsSection(options.resolved.warnings),
+  };
 }
 
 function renderSettingsPage(options: {
@@ -1653,20 +1907,12 @@ function renderSettingsPage(options: {
   deps: HttpDeps;
   path: string;
 }): string | undefined {
-  const project =
-    options.target.projectId === undefined
-      ? undefined
-      : options.site.projects.find((entry) => entry.id === options.target.projectId);
-  if (options.scope !== "global" && project === undefined) {
+  const entities = pageEntities(options.site, options.scope, options.target);
+  if (entities === undefined) {
     return undefined;
   }
-  const app =
-    options.scope === "app" && project !== undefined
-      ? project.apps.find((entry) => entry.appKey === options.target.appKey)
-      : undefined;
-  if (options.scope === "app" && app === undefined) {
-    return undefined;
-  }
+  const project = entities.project;
+  const app = entities.app;
 
   const title =
     options.scope === "global"
@@ -1706,118 +1952,24 @@ function renderSettingsPage(options: {
             { label: "Settings" },
           ];
 
-  const returnTo = options.path;
-  const effectiveModel = options.resolved.effective.llm.model;
-  const modelWarning = modelProviderWarning(options.resolved);
-  const searchEffective = options.resolved.effective.web.search;
-  const fetchEffective = options.resolved.effective.web.fetch;
-
-  const agentRows = `${settingRow({
-    id: "setting-llm-model",
-    title: "Model",
-    effectiveText: effectiveText(effectiveModel as EffectiveValue<unknown>),
-    source: sourceLine(effectiveModel as EffectiveValue<unknown>),
-    hint: "Selected model applies to new sessions and OMO agents; existing sessions may keep their model.",
-    ...(modelWarning === undefined ? {} : { warnings: [modelWarning] }),
-    body: `${fieldErrorSlot("setting-llm-model-error")}${modelControls({
-      scope: options.scope,
-      target: options.target,
-      resolved: options.resolved,
-      effective: effectiveModel,
-      returnTo,
-    })}`,
-    details: scopeDetailsHtml(options.resolved, options.scope, "llm.model"),
-  })}${providerSection({
-    resolved: options.resolved,
+  const sections = settingsSections({
+    site: options.site,
     scope: options.scope,
     target: options.target,
-    returnTo,
-  })}`;
-
-  const webRows = `${settingRow({
-    id: "setting-web-search",
-    title: "Web search",
-    effectiveText:
-      searchEffective.value === null
-        ? effectiveText(searchEffective as EffectiveValue<unknown>)
-        : searchEffective.value.driver,
-    source: sourceLine(searchEffective as EffectiveValue<unknown>),
-    hint: "Built-in uses the existing OMO/opencode tools. DeepSeek uses the managed hanse_web MCP server.",
-    ...(webToolWarning("web.search", searchEffective, options.resolved) === undefined
-      ? {}
-      : { warnings: [webToolWarning("web.search", searchEffective, options.resolved) as string] }),
-    body: `${fieldErrorSlot("setting-web-search-error")}${webControls({
-      key: "web.search",
-      title: "Web search",
-      scope: options.scope,
-      target: options.target,
-      returnTo,
-      resolved: options.resolved,
-      effective: searchEffective,
-      current: ownWebValue(options.resolved, options.scope, "web.search"),
-    })}`,
-    details: scopeDetailsHtml(options.resolved, options.scope, "web.search"),
-  })}${settingRow({
-    id: "setting-web-fetch",
-    title: "Web fetch",
-    effectiveText:
-      fetchEffective.value === null
-        ? effectiveText(fetchEffective as EffectiveValue<unknown>)
-        : fetchEffective.value.driver,
-    source: sourceLine(fetchEffective as EffectiveValue<unknown>),
-    hint: "Built-in uses opencode webfetch. DeepSeek uses the managed hanse_web MCP server.",
-    ...(webToolWarning("web.fetch", fetchEffective, options.resolved) === undefined
-      ? {}
-      : { warnings: [webToolWarning("web.fetch", fetchEffective, options.resolved) as string] }),
-    body: `${fieldErrorSlot("setting-web-fetch-error")}${webControls({
-      key: "web.fetch",
-      title: "Web fetch",
-      scope: options.scope,
-      target: options.target,
-      returnTo,
-      resolved: options.resolved,
-      effective: fetchEffective,
-      current: ownWebValue(options.resolved, options.scope, "web.fetch"),
-    })}`,
-    details: scopeDetailsHtml(options.resolved, options.scope, "web.fetch"),
-  })}`;
-
-  const profileWarnings =
-    options.scope === "app" && app !== undefined
-      ? (options.deps.manager?.profileWarnings(app.id) ?? [])
-      : [];
+    resolved: options.resolved,
+    deps: options.deps,
+    returnTo: options.path,
+    ...(project === undefined ? {} : { project }),
+    ...(app === undefined ? {} : { app }),
+  });
 
   const body = `${settingsNav({ scope: options.scope, target: options.target })}
-    ${warningsSection(options.resolved.warnings)}
+    <div id="settings-warnings">${sections.warnings}</div>
     <div class="settings-sections">
-      <section class="card settings-section" id="settings-agent" aria-labelledby="settings-agent-title">
-        <div class="card__head">
-          <h2 class="card__title" id="settings-agent-title">Agent</h2>
-          <span class="badge">Model and providers</span>
-        </div>
-        <div class="card__body card__body--flush">${agentRows}</div>
-      </section>
-      <section class="card settings-section" id="settings-web" aria-labelledby="settings-web-title">
-        <div class="card__head">
-          <h2 class="card__title" id="settings-web-title">Web tools</h2>
-          <span class="badge">Search and fetch</span>
-        </div>
-        <div class="card__body card__body--flush">${webRows}</div>
-      </section>
-      ${gitSection({
-        resolved: options.resolved,
-        scope: options.scope,
-        target: options.target,
-        returnTo,
-        ...(options.scope === "app"
-          ? {}
-          : { testAppPath: firstAppSettingsPath(options.site, project?.id) }),
-      })}
-      ${pendingSection({
-        pending: options.resolved.pendingRestart,
-        returnTo,
-        profileWarnings,
-      })}
+      ${sections.agent}
+      ${sections.web}
+      ${sections.git}
+      ${sections.restart}
     </div>
     ${clearDialog()}`;
 

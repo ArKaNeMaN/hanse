@@ -31,6 +31,18 @@ is deterministic and the runner is not asked for a real repository operation.
 - Terminal at 390/1440, dark and light: live xterm, typed `hello` echoed as `qa:hello`, manual close,
   reconnect to a new live shell; stopped app renders `Agent is not running` and `Agent stopped`.
 
+## Settings live-save gate
+
+`node docs/design/settings-save-qa.mjs` is the browser gate for no-refresh settings saves. It targets
+a running coordinator through `SETTINGS_QA_URL`, `SETTINGS_QA_TOKEN`, `SETTINGS_QA_PROJECT`, and
+`SETTINGS_QA_APP`; `SETTINGS_QA_SSH=1` also exercises SSH credentials when the coordinator has a
+working `ssh-keygen`. The target must allow app-scope setting changes. The harness sets model, web,
+Git identity, HTTPS, SSH, and a provider key, then clears the mutable credential/provider rows. It
+writes `settings-save-report.json` and `settings-save-*.png` here.
+
+Expected result: **PASS**, 85 assertions, zero console/page errors, no document reload across model,
+web, Git identity, HTTPS, SSH, provider save, and clear/inherit scenarios.
+
 ## Results
 
 `report.json`: **PASS**, 164 assertions, zero console/page errors. Screenshots:

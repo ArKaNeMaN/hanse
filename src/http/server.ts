@@ -124,6 +124,9 @@ export function createHttpServer(deps: HttpDeps): Server {
             cookie: request.headers.cookie,
             accept: request.headers.accept,
             "content-type": request.headers["content-type"],
+            "x-hanse-fragment": Array.isArray(request.headers["x-hanse-fragment"])
+              ? request.headers["x-hanse-fragment"][0]
+              : request.headers["x-hanse-fragment"],
           },
           body,
         };

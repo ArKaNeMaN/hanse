@@ -1,6 +1,6 @@
 # 0013 - UX/UI polish pass
 
-Status: implemented and verified locally; deployment pending. Design:
+Status: implemented, verified, and deployed as `sha-88faab7`. Design:
 [`docs/design/ux-polish.md`](../design/ux-polish.md). Plan:
 [`docs/plans/0013-ux-polish.md`](../plans/0013-ux-polish.md).
 

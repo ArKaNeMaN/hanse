@@ -135,6 +135,12 @@ function form(values: Record<string, string>): string {
   return new URLSearchParams(values).toString();
 }
 
+interface FragmentPayload {
+  ok: boolean;
+  changed: string[];
+  sections: Record<string, string>;
+}
+
 function rowMarkup(body: string, id: string): string {
   const start = body.indexOf(`<details class="setting-row" id="${id}"`);
   if (start < 0) {
@@ -197,6 +203,51 @@ describe("settings route auth", () => {
     );
     expect(agent.status).toBe(303);
     expect(agent.headers?.location).toBe("/login?next=%2Fsettings");
+  });
+
+  it("returns JSON 401 for fragment requests instead of redirecting", async () => {
+    const f = fixture();
+    const response = await handleSettings(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/settings",
+        headers: {
+          accept: "text/html",
+          "content-type": "application/x-www-form-urlencoded",
+          "x-hanse-fragment": "settings",
+        },
+        body: form({
+          scope: "global",
+          key: "llm.model",
+          action: "set",
+          value: "acme/unauthorized",
+        }),
+      }),
+    );
+    expect(response.status).toBe(401);
+    expect(response.contentType).toContain("application/json");
+    expect(response.headers?.location).toBeUndefined();
+    expect(JSON.parse(response.body)).toEqual({ error: "sign in required" });
+  });
+
+  it("returns JSON 400 for fragment validation errors", async () => {
+    const f = fixture();
+    const response = await handleSettings(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/settings",
+        headers: auth(f.token, {
+          "content-type": "application/x-www-form-urlencoded",
+          "x-hanse-fragment": "settings",
+        }),
+        body: form({ scope: "global", key: "llm.model", action: "bogus" }),
+      }),
+    );
+    expect(response.status).toBe(400);
+    expect(response.headers?.location).toBeUndefined();
+    expect(JSON.parse(response.body).error).toContain("action must be");
   });
 
   it("rejects oversized bodies with the existing 413 response", async () => {
@@ -551,6 +602,175 @@ describe("settings mutations", () => {
     );
     expect(prototype.status).toBe(400);
   });
+
+  it("returns only the changed settings sections for fragment requests", async () => {
+    const f = fixture();
+    const response = await handleSettings(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/settings",
+        headers: auth(f.token, {
+          "content-type": "application/x-www-form-urlencoded",
+          "x-hanse-fragment": "settings",
+        }),
+        body: form({
+          scope: "global",
+          key: "llm.model",
+          action: "set",
+          value: "acme/fragment-model",
+        }),
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers?.location).toBeUndefined();
+    const payload = JSON.parse(response.body) as FragmentPayload;
+    expect(payload.ok).toBe(true);
+    expect(payload.changed).toEqual(["agent", "web", "restart", "warnings"]);
+    expect(payload.sections.agent).toContain('id="settings-agent"');
+    expect(payload.sections.agent).toContain("acme/fragment-model");
+    expect(payload.sections.restart).toContain('id="settings-restart"');
+    expect(typeof payload.sections.warnings).toBe("string");
+    expect(f.settings.resolve({}).effective.llm.model.value).toBe("acme/fragment-model");
+  });
+
+  it("returns git section fragments and only the changed keys for git identity edits", async () => {
+    const f = fixture();
+    const response = await handleSettings(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/settings",
+        headers: auth(f.token, {
+          "content-type": "application/x-www-form-urlencoded",
+          "x-hanse-fragment": "setTings",
+        }),
+        body: form({
+          scope: "global",
+          key: "git.user.name",
+          action: "set",
+          value: "Fragment Agent",
+        }),
+      }),
+    );
+    expect(response.status).toBe(200);
+    const payload = JSON.parse(response.body) as FragmentPayload;
+    expect(payload.changed).toEqual(["git", "restart"]);
+    expect(payload.sections.git).toContain('id="settings-git"');
+    expect(payload.sections.git).toContain("Fragment Agent");
+    expect(payload.sections.agent).toBeUndefined();
+  });
+
+  it("never echoes Git credential secrets in fragment responses", async () => {
+    const f = fixture();
+    const secret = "sentinel-fragment-git-secret";
+    const response = await handleSettings(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/settings/git",
+        headers: auth(f.token, {
+          "content-type": "application/json",
+          "x-hanse-fragment": "settings",
+        }),
+        body: JSON.stringify({
+          scope: "global",
+          kind: "https",
+          action: "set",
+          value: { hosts: ["github.com"], username: "x-access-token", token: secret },
+        }),
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(response.body).not.toContain(secret);
+    const payload = JSON.parse(response.body) as FragmentPayload;
+    expect(payload.changed).toEqual(["git", "restart"]);
+    expect(payload.sections.git).toContain('id="settings-git"');
+    expect(payload.sections.git).not.toContain(secret);
+  });
+
+  it("returns 404 JSON when a fragment target no longer exists", async () => {
+    const f = fixture();
+    const response = await handleSettings(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/settings",
+        headers: auth(f.token, {
+          "content-type": "application/json",
+          "x-hanse-fragment": "settings",
+        }),
+        body: JSON.stringify({
+          scope: "app",
+          projectId: "p1",
+          appKey: "nope",
+          key: "llm.model",
+          action: "set",
+          value: "acme/orphan",
+        }),
+      }),
+    );
+    expect(response.status).toBe(404);
+    expect(response.headers?.location).toBeUndefined();
+    expect(JSON.parse(response.body)).toEqual({ error: "not found" });
+    expect(f.settings.resolve({ projectId: "p1", appKey: "nope" }).scoped["app:llm.model"]).toEqual(
+      { state: "absent", value: null },
+    );
+  });
+
+  it("keeps the existing JSON response shape without the fragment header", async () => {
+    const f = fixture();
+    const response = await handleSettings(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/settings",
+        headers: auth(f.token, {
+          "content-type": "application/x-www-form-urlencoded",
+        }),
+        body: form({ scope: "global", key: "llm.model", action: "set", value: "acme/json-model" }),
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers?.location).toBeUndefined();
+    const payload = JSON.parse(response.body) as {
+      ok?: boolean;
+      effective: { llm: { model: { value: string } } };
+      pendingRestart: unknown[];
+      sections?: unknown;
+    };
+    expect(payload.ok).toBeUndefined();
+    expect(payload.effective.llm.model.value).toBe("acme/json-model");
+    expect(payload.pendingRestart).toEqual([]);
+    expect(payload.sections).toBeUndefined();
+  });
+
+  it("forwards the fragment header through the HTTP server", async () => {
+    const f = fixture();
+    const server = createHttpServer(f.deps);
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    const port = typeof address === "object" && address !== null ? address.port : 0;
+    const response = await fetch(`http://127.0.0.1:${port}/api/settings`, {
+      method: "POST",
+      headers: {
+        ...auth(f.token),
+        "content-type": "application/json",
+        "x-hanse-fragment": "settings",
+      },
+      body: JSON.stringify({
+        scope: "global",
+        key: "llm.model",
+        action: "set",
+        value: "http/fragment-model",
+      }),
+    });
+    expect(response.status).toBe(200);
+    const payload = (await response.json()) as FragmentPayload;
+    expect(payload.ok).toBe(true);
+    expect(payload.sections.agent).toContain("http/fragment-model");
+  });
 });
 
 describe("provider keys", () => {
@@ -629,6 +849,37 @@ describe("provider keys", () => {
       source: "host-auth",
       authType: "api",
     });
+  });
+
+  it("returns agent and warnings fragments for provider mutations", async () => {
+    const f = fixture();
+    const secret = "sk-fragment-provider-secret";
+    const response = await handleSettings(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/settings/provider",
+        headers: auth(f.token, {
+          "content-type": "application/json",
+          "x-hanse-fragment": "settings",
+        }),
+        body: JSON.stringify({
+          scope: "global",
+          provider: "deepseek",
+          action: "set",
+          key: secret,
+        }),
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers?.location).toBeUndefined();
+    const payload = JSON.parse(response.body) as FragmentPayload;
+    expect(payload.ok).toBe(true);
+    expect(payload.changed).toEqual(["agent", "web", "restart", "warnings"]);
+    expect(payload.sections.agent).toContain('id="providers"');
+    expect(payload.sections.warnings).toBe("");
+    expect(response.body).not.toContain(secret);
+    expect(payload.sections.restart).toContain('id="settings-restart"');
   });
 });
 
@@ -783,13 +1034,29 @@ describe("settings pages and pending state", () => {
       f.deps,
       request({ path: "/settings", headers: htmlAuth(f.token) }),
     );
-    const providerRow = rowMarkup(response.body, "provider-0");
+    const providerRow = rowMarkup(response.body, "provider-deepseek");
     expect(providerRow).toContain('name="provider" value="deepseek"');
     expect(providerRow).toMatch(/data-confirm-clear[^>]*data-setting-label="deepseek key"/);
     expect(providerRow).toContain(">Change key<");
     expect(response.body).toContain('id="settings-clear-dialog"');
     expect(response.body).toContain('id="settings-clear-form"');
     expect(response.body).not.toMatch(/<form[^>]*data-settings-form[^>]*id="settings-clear-form"/);
+  });
+
+  it("wraps warnings for fragment swaps and gives the clear dialog an error slot", async () => {
+    const f = fixture();
+    const response = await handleSettings(
+      f.deps,
+      request({ path: "/settings", headers: htmlAuth(f.token) }),
+    );
+    expect(response.status).toBe(200);
+    expect(response.body).toContain('<div id="settings-warnings">');
+    const formStart = response.body.indexOf('id="settings-clear-form"');
+    expect(formStart).toBeGreaterThan(-1);
+    const formEnd = response.body.indexOf("</form>", formStart);
+    expect(formEnd).toBeGreaterThan(formStart);
+    expect(response.body.slice(formStart, formEnd)).toContain("data-settings-error");
+    expect(response.body.slice(formStart, formEnd)).toContain("data-no-busy");
   });
 
   it("renders one compact warnings block when resolution reports warnings", async () => {
@@ -1128,6 +1395,37 @@ describe("git settings API", () => {
     expect(f.db.prepare("SELECT COUNT(*) AS count FROM setting_secrets").get()).toEqual({
       count: 0,
     });
+  });
+
+  it("returns git and restart fragments for git credential mutations", async () => {
+    const f = fixture();
+    const secret = "sentinel-fragment-git-token";
+    const response = await handleSettings(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/settings/git",
+        headers: auth(f.token, {
+          "content-type": "application/json",
+          "x-hanse-fragment": "settings",
+        }),
+        body: JSON.stringify({
+          scope: "global",
+          kind: "https",
+          action: "set",
+          value: { hosts: ["github.com"], username: "x-access-token", token: secret },
+        }),
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers?.location).toBeUndefined();
+    const payload = JSON.parse(response.body) as FragmentPayload;
+    expect(payload.ok).toBe(true);
+    expect(payload.changed).toEqual(["git", "restart"]);
+    expect(payload.sections.git).toContain('id="settings-git"');
+    expect(payload.sections.git).not.toContain(secret);
+    expect(payload.sections.agent).toBeUndefined();
+    expect(response.body).not.toContain(secret);
   });
 
   it("sets SSH credentials with metadata only in the response and pages", async () => {

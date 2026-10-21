@@ -9,7 +9,10 @@ describe("git settings asset", () => {
     expect(asset).toContain('fetch("/api/settings/git"');
     expect(asset).toContain('"content-type": "application/json"');
     expect(asset).toContain("JSON.stringify(payload)");
-    expect(asset).toContain('querySelectorAll("[data-git-auth]")');
+    expect(asset).toContain('document.addEventListener("submit"');
+    expect(asset).toContain('form.hasAttribute("data-git-auth")');
+    expect(asset).toContain('"x-hanse-fragment": "settings"');
+    expect(asset).toContain("window.hanseSettings");
     expect(asset).toContain("event.preventDefault()");
     expect(asset).toContain("privateKey:");
     expect(asset).toContain("knownHosts");

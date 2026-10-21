@@ -347,8 +347,12 @@ The runner exposes two runtime-token endpoints; the coordinator wraps them as hu
   Every page uses a sticky scope/section nav, four section cards (Agent, Web tools, Git,
   Restart & pending), and one collapsed setting row per setting. Rows show effective value and source
   at rest; editor, scope history (`Scope details`), warnings, and actions are disclosed on demand.
-  Non-Git forms post through `settings.js` for inline errors and keep values; Git credential forms
-  remain JSON-only and JS-required.
+  Saves are live: all settings mutations from `settings.js`/`git-settings.js` request
+  `x-hanse-fragment: settings`, and the server returns only the affected section HTML plus the
+  warnings/restart state. The client swaps those sections in place, restoring open rows, other-row
+  drafts, focus, scroll, and the URL hash, so a successful save does not reload the page. Non-Git
+  forms still fall back to redirect + toast without JS; Git credential forms remain JSON-only and
+  JS-required.
 - `settings` and `provider_keys` live in `coordinator.db` (migration v3). Provider API keys are
   entered in the settings UI, AES-256-GCM encrypted, and never returned. At instance start the
   coordinator reconciles the host `auth.json` with effective provider keys into the per-instance
@@ -509,7 +513,7 @@ coordinator; operators do not set them.
 
 ## Verification
 
-`npm run lint && npm run typecheck && npm test && npm run build` (all green; 1194 tests). Deployed on `deployment-host` as `sha-88faab7`; B1 core
+`npm run lint && npm run typecheck && npm test && npm run build` (all green; 1210 tests). Deployed on `deployment-host` as `sha-88faab7`; B1 core
 live smoke on `deployment-host`: coordinator/IDE/runner healthy, per-app `demo-app` container running,
 `scripts/agent-runtime-probe.sh b1` passes, coordinator recreate reattaches the app network, and the
 app agent has no `/data/state`, Docker socket, operator/runtime token, or sibling app access.

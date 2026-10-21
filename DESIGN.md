@@ -866,7 +866,9 @@ These map exactly to Section 3. No other font sizes are allowed in product CSS.
   `.setting-row__body`, `.setting-row__form`, `.setting-row__actions`, `.setting-row__reason` hold
   the open editor. `.scope-details`/`.scope-list` replace per-setting tables with a compact
   definition list (`Set`/`Cleared`/`Inherited`). Disabled Inherit/Clear controls always carry a
-  visible reason.
+  visible reason. Saves are live: the client swaps the affected section HTML from the server
+  (provider/model/web changes also refresh warnings and restart state), preserving open rows,
+  other-row drafts, focus, scroll, and the URL hash; it does not navigate.
 - **Terminal:** `.page--terminal`, `.page__body--terminal`, `.terminal-shell`,
   `.terminal-toolbar`, `.terminal-toolbar__title`, `.terminal-toolbar__meta`,
   `.terminal-toolbar__status`, `.terminal-toolbar__actions`, `.terminal-banner`, `.terminal-host`,
@@ -982,7 +984,7 @@ Enter submits the non-destructive default, dialog focus returns to its trigger.
 | Showcase inline JS is excluded from Biome | `docs/design/showcase.html` | Static documentation harness with inline ES5 toggles, not product code. Product TypeScript and the capture script remain fully linted. | Remove the exclusion if the harness gains a build step. |
 | System display serif varies by OS | Global | DejaVu Serif on this Linux host; Iowan/Palatino/Georgia on macOS/Windows. No webfonts are permitted. | Accepted; the stack is documented and tested on the host. |
 | Theme control is two-state in the product shell | `src/http/ui.ts`, `assets/app.js` | Dark is the default; `data-theme` toggles light/dark and persists in `localStorage["hanse-theme"]`. A system-follow third state is not implemented. | Add only if the owner asks for system-follow. |
-| Settings forms without JS lose values on validation | `src/http/settings.ts`, `assets/settings.js` | Non-Git forms still submit and redirect; inline errors are the product path. Git credential forms are JSON-only and require JS, with a visible `<noscript>`. | Revisit if no-JS usage is real. |
+| Settings forms without JS lose values on validation | `src/http/settings.ts`, `assets/settings.js` | The JS path saves live via server-rendered section fragments; without JS, non-Git forms still submit and redirect, and Git credential forms are JSON-only with a visible `<noscript>`. | Revisit if no-JS usage is real. |
 | Terminal reconnect starts a new shell | `assets/terminal.js` | PTYs are ephemeral Docker execs; there is no persistent multiplexer. | Add only as a separate feature. |
 | No terminal search or web-links addon | `assets/vendor/xterm/` | The base terminal is complete without them; adding them needs a new vendored bundle and licence/checksum review. | Add only with a separate allowlist review. |
 | Pre-v10 running instances show `Applied state unknown` | `src/opencode/manager.ts`, migration v10 | The applied hash was not persisted before this pass; the UI shows `Restart required` instead of guessing. | One-time; a restart records the values. |

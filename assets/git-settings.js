@@ -1,5 +1,4 @@
-const forms = document.querySelectorAll("[data-git-auth]");
-
+(() => {
 function setBusy(form, busy) {
   form.querySelectorAll("button, input, textarea, select").forEach((control) => {
     control.disabled = busy;
@@ -226,62 +225,107 @@ function noticeFor(action) {
   return "Git credential saved.";
 }
 
-forms.forEach((form) => {
-  if (!(form instanceof HTMLFormElement)) {
+function navigateAfterSave(form, action, kind) {
+  const url = new URL(window.location.href);
+  url.searchParams.set("notice", noticeFor(action));
+  url.searchParams.set("tone", "success");
+  url.hash = `git-${kind}`;
+  window.location.assign(url.toString());
+}
+
+function saveCredential(form, action) {
+  const helper = window.hanseSettings;
+  const release =
+    helper !== undefined && helper !== null && typeof helper.beginSave === "function"
+      ? helper.beginSave()
+      : undefined;
+  if (release === null) {
+    showError(form, "Another settings save is still in progress.");
     return;
   }
-  form.addEventListener("submit", (event) => {
-    const submitter = event.submitter;
-    const isTest =
-      submitter instanceof HTMLElement && submitter.hasAttribute("data-git-test");
-    event.preventDefault();
-    if (isTest) {
-      submitTest(form);
-      return;
-    }
-    const action =
-      submitter instanceof HTMLButtonElement && submitter.value.length > 0
-        ? submitter.value
-        : "set";
-    if (action === "clear" && !window.confirm("Clear this git credential at this scope?")) {
-      return;
-    }
-    const payload = buildPayload(form, action);
-    setBusy(form, true);
-    fetch("/api/settings/git", {
-      method: "POST",
-      credentials: "same-origin",
-      headers: {
-        "content-type": "application/json",
-        accept: "application/json",
-      },
-      body: JSON.stringify(payload),
-    })
-      .then(async (response) => {
-        let data = null;
-        try {
-          data = await response.json();
-        } catch (error) {
-          data = null;
-        }
-        if (!response.ok) {
-          const message =
-            data !== null && typeof data.error === "string"
-              ? data.error
-              : "The git credential could not be saved.";
-          showError(form, message);
-          setBusy(form, false);
-          return;
-        }
-        const url = new URL(window.location.href);
-        url.searchParams.set("notice", noticeFor(action));
-        url.searchParams.set("tone", "success");
-        url.hash = `git-${payload.kind}`;
-        window.location.assign(url.toString());
-      })
-      .catch(() => {
-        showError(form, "The git credential could not be saved.");
+  const payload = buildPayload(form, action);
+  setBusy(form, true);
+  fetch("/api/settings/git", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: {
+      "content-type": "application/json",
+      accept: "application/json",
+      "x-hanse-fragment": "settings",
+    },
+    body: JSON.stringify(payload),
+  })
+    .then(async (response) => {
+      let data = null;
+      try {
+        data = await response.json();
+      } catch (error) {
+        data = null;
+      }
+      if (response.status === 401) {
+        const next = `${window.location.pathname}${window.location.search}`;
+        window.location.assign(`/login?next=${encodeURIComponent(next)}`);
+        return;
+      }
+      if (!response.ok) {
+        const message =
+          data !== null && typeof data.error === "string"
+            ? data.error
+            : "The git credential could not be saved.";
+        showError(form, message);
         setBusy(form, false);
-      });
-  });
+        return;
+      }
+      const row = form.closest(".setting-row");
+      const focusRowId = row instanceof HTMLElement ? row.id : "";
+      if (
+        helper !== undefined &&
+        helper !== null &&
+        typeof helper.applySections === "function" &&
+        helper.applySections(data, {
+          skipForm: form,
+          message: noticeFor(action),
+          focusRowId,
+        })
+      ) {
+        if (form.isConnected) {
+          setBusy(form, false);
+        }
+        return;
+      }
+      navigateAfterSave(form, action, payload.kind);
+    })
+    .catch(() => {
+      showError(form, "The git credential could not be saved.");
+      setBusy(form, false);
+    })
+    .finally(() => {
+      if (release !== undefined) {
+        release();
+      }
+    });
+}
+
+document.addEventListener("submit", (event) => {
+  const form = event.target;
+  if (!(form instanceof HTMLFormElement) || !form.hasAttribute("data-git-auth")) {
+    return;
+  }
+  const submitter = event.submitter;
+  const isTest =
+    submitter instanceof HTMLElement && submitter.hasAttribute("data-git-test");
+  event.preventDefault();
+  if (isTest) {
+    submitTest(form);
+    return;
+  }
+  const action =
+    submitter instanceof HTMLButtonElement && submitter.value.length > 0
+      ? submitter.value
+      : "set";
+  if (action === "clear" && !window.confirm("Clear this git credential at this scope?")) {
+    return;
+  }
+  saveCredential(form, action);
 });
+})();
