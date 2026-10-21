@@ -33,13 +33,13 @@ function insertProjectAndApp(db: ReturnType<typeof openDatabase>): void {
 describe("migration v6 app-images", () => {
   it("applies fresh migrations and defaults existing app inserts to missing", () => {
     const db = openDatabase(":memory:");
-    expect(runMigrations(db)).toBe(9);
+    expect(runMigrations(db)).toBe(10);
     expect(runMigrations(db)).toBe(0);
 
     const versions = db.prepare("SELECT version FROM schema_migrations ORDER BY version").all() as {
       version: number;
     }[];
-    expect(versions.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    expect(versions.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
     const secretTables = (
       db
         .prepare(
@@ -87,11 +87,12 @@ describe("migration v6 app-images", () => {
       "built_at",
       "created_at",
     ]);
-    expect(
-      (db.prepare("PRAGMA table_info(instances)").all() as Array<{ name: string }>).map(
-        (row) => row.name,
-      ),
-    ).toContain("image_ref");
+    const instanceColumns = (
+      db.prepare("PRAGMA table_info(instances)").all() as Array<{ name: string }>
+    ).map((row) => row.name);
+    expect(instanceColumns).toContain("image_ref");
+    expect(instanceColumns).toContain("applied_settings_hash");
+    expect(instanceColumns).toContain("applied_profile");
 
     insertProjectAndApp(db);
     const row = db
@@ -140,13 +141,46 @@ describe("migration v6 app-images", () => {
     insertProjectAndApp(db);
     expect(appColumns(db)).not.toContain("image_status");
 
-    expect(runMigrations(db)).toBe(4);
+    expect(runMigrations(db)).toBe(5);
 
     const row = db.prepare("SELECT image_status, image_error FROM apps WHERE id = 'a1'").get() as {
       image_status: string;
       image_error: string | null;
     };
     expect(row).toEqual({ image_status: "missing", image_error: null });
+    db.close();
+  });
+
+  it("upgrades a v9 database to v10 without losing instance state", () => {
+    const db = openDatabase(":memory:");
+    db.exec(
+      "CREATE TABLE schema_migrations (" +
+        "version INTEGER PRIMARY KEY, name TEXT NOT NULL, checksum TEXT NOT NULL, applied_at TEXT NOT NULL)",
+    );
+    const record = db.prepare(
+      "INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?, ?, ?, ?)",
+    );
+    for (const migration of MIGRATIONS.filter((candidate) => candidate.version <= 9)) {
+      db.exec(migration.sql);
+      record.run(migration.version, migration.name, "existing", now);
+    }
+    insertProjectAndApp(db);
+    db.prepare(
+      "INSERT INTO instances (id, app_id, state, runtime_state, updated_at) VALUES ('a1','a1','running','running',?)",
+    ).run(now);
+
+    expect(runMigrations(db)).toBe(1);
+
+    const row = db
+      .prepare(
+        "SELECT state, applied_settings_hash, applied_profile FROM instances WHERE app_id = 'a1'",
+      )
+      .get() as {
+      state: string;
+      applied_settings_hash: string | null;
+      applied_profile: number | null;
+    };
+    expect(row).toEqual({ state: "running", applied_settings_hash: null, applied_profile: null });
     db.close();
   });
 });

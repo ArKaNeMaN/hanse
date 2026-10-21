@@ -136,10 +136,12 @@ function form(values: Record<string, string>): string {
 }
 
 function fakeManager(
-  options: { pending?: (appId: string) => boolean; stop?: (appId: string) => boolean } = {},
-): InstanceManager & { stopped: string[] } {
+  options: { pending?: (appId: string) => boolean; restart?: (appId: string) => boolean } = {},
+): InstanceManager & { restarted: string[]; stopped: string[] } {
+  const restarted: string[] = [];
   const stopped: string[] = [];
   const manager = {
+    restarted,
     stopped,
     pendingRestart: (appId: string) => {
       const pending = options.pending?.(appId) ?? false;
@@ -147,12 +149,16 @@ function fakeManager(
         ? { pending: true, reasons: ["settings_changed"] }
         : { pending: false, reasons: [] };
     },
+    restartIfRunning: async (app: { id: string }) => {
+      restarted.push(app.id);
+      return options.restart?.(app.id) ?? false;
+    },
     stopApp: async (appId: string) => {
       stopped.push(appId);
-      return options.stop?.(appId) ?? false;
+      return false;
     },
   };
-  return manager as unknown as InstanceManager & { stopped: string[] };
+  return manager as unknown as InstanceManager & { restarted: string[]; stopped: string[] };
 }
 
 describe("settings route auth", () => {
@@ -752,9 +758,9 @@ describe("settings pages and pending state", () => {
 });
 
 describe("restart route", () => {
-  it("reports a running app as restarted", async () => {
+  it("restarts a running app without calling stopApp", async () => {
     const f = fixture();
-    const manager = fakeManager({ stop: () => true });
+    const manager = fakeManager({ restart: () => true });
     f.deps.manager = manager;
     const response = await handleSettings(
       f.deps,
@@ -767,12 +773,13 @@ describe("restart route", () => {
     );
     expect(response.status).toBe(200);
     expect(JSON.parse(response.body)).toEqual({ restarted: true });
-    expect(manager.stopped).toEqual(["p1:web"]);
+    expect(manager.restarted).toEqual(["p1:web"]);
+    expect(manager.stopped).toEqual([]);
   });
 
   it("reports a stopped app without error", async () => {
     const f = fixture();
-    f.deps.manager = fakeManager({ stop: () => false });
+    f.deps.manager = fakeManager({ restart: () => false });
     const response = await handleSettings(
       f.deps,
       request({
@@ -784,6 +791,41 @@ describe("restart route", () => {
     );
     expect(response.status).toBe(200);
     expect(JSON.parse(response.body)).toEqual({ restarted: false, reason: "not_running" });
+  });
+
+  it("returns 502 for a failed restart and a browser error notice", async () => {
+    const f = fixture();
+    const manager = fakeManager();
+    manager.restartIfRunning = async () => {
+      throw new Error("runtime delete failed");
+    };
+    f.deps.manager = manager;
+    const api = await handleSettings(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/apps/web/restart",
+        query: { project: "p1" },
+        headers: auth(f.token),
+      }),
+    );
+    expect(api.status).toBe(502);
+    expect(JSON.parse(api.body)).toEqual({ error: "restart failed" });
+
+    const browser = await handleSettings(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/apps/web/restart",
+        query: { project: "p1" },
+        headers: htmlAuth(f.token),
+        body: form({ return_to: "/projects/p1" }),
+      }),
+    );
+    expect(browser.status).toBe(303);
+    expect(browser.headers?.location).toContain("/projects/p1");
+    expect(browser.headers?.location).toContain("Restart+failed.");
+    expect(manager.stopped).toEqual([]);
   });
 
   it("returns 404 for an unknown app, 503 without a manager, and redirects browsers", async () => {
@@ -810,7 +852,8 @@ describe("restart route", () => {
     );
     expect(unavailable.status).toBe(503);
 
-    f.deps.manager = fakeManager({ stop: () => true });
+    const manager = fakeManager({ restart: () => true });
+    f.deps.manager = manager;
     const browser = await handleSettings(
       f.deps,
       request({
@@ -824,6 +867,8 @@ describe("restart route", () => {
     expect(browser.status).toBe(303);
     expect(browser.headers?.location).toContain("/projects/p1");
     expect(browser.headers?.location).toContain("notice=Agent+restarted.");
+    expect(manager.restarted).toEqual(["p1:web"]);
+    expect(manager.stopped).toEqual([]);
   });
 });
 

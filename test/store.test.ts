@@ -27,13 +27,13 @@ describe("store", () => {
     db.close();
   });
 
-  it("migrates to v9 with agent tokens, runner containers, app image versions, git credentials, and SSH tables", () => {
+  it("migrates to v10 with agent tokens, runner containers, app image versions, git credentials, SSH tables, and applied runtime state", () => {
     const db = openDatabase(tempDbPath());
     runMigrations(db);
     const versions = db.prepare("SELECT version FROM schema_migrations ORDER BY version").all() as {
       version: number;
     }[];
-    expect(versions.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    expect(versions.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
     const secretTables = (
       db
         .prepare(
@@ -60,6 +60,8 @@ describe("store", () => {
     expect(instanceColumns).toContain("container_id");
     expect(instanceColumns).toContain("container_name");
     expect(instanceColumns).toContain("image_ref");
+    expect(instanceColumns).toContain("applied_settings_hash");
+    expect(instanceColumns).toContain("applied_profile");
 
     const versionColumns = (
       db.prepare("PRAGMA table_info(app_image_versions)").all() as {

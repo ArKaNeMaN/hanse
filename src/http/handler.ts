@@ -386,7 +386,7 @@ function routeRuntimeStatus(deps: HttpDeps, request: HttpRequest): HttpResponse 
     .prepare(
       `SELECT endpoint, state, runtime_state AS runtimeState, spec_hash AS specHash,
               container_id AS containerId, container_name AS containerName,
-              started_at AS startedAt, updated_at AS updatedAt
+              image_ref AS imageRef, started_at AS startedAt, updated_at AS updatedAt
        FROM instances WHERE app_id = ?`,
     )
     .get(app.id) as
@@ -397,17 +397,20 @@ function routeRuntimeStatus(deps: HttpDeps, request: HttpRequest): HttpResponse 
         specHash: string | null;
         containerId: string | null;
         containerName: string | null;
+        imageRef: string | null;
         startedAt: string | null;
         updatedAt: string | null;
       }
     | undefined;
+  const storedState = row?.runtimeState ?? row?.state ?? "stopped";
   return json(200, {
     appId: app.id,
-    state: row?.runtimeState ?? row?.state ?? "stopped",
+    state: storedState === "failed" ? "error" : storedState,
     endpoint: row?.endpoint ?? null,
     specHash: row?.specHash ?? null,
     containerId: row?.containerId ?? null,
     containerName: row?.containerName ?? null,
+    imageRef: row?.imageRef ?? null,
     startedAt: row?.startedAt ?? null,
     updatedAt: row?.updatedAt ?? null,
   });

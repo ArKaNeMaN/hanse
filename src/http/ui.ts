@@ -120,14 +120,17 @@ export function statusPill(state: HandoffState): string {
   return `<span class="status" data-state="${state}">${icon(STATUS[state].icon)}${STATUS[state].label}</span>`;
 }
 
-export type RuntimeState = "running" | "stopped" | "failed";
+export type RuntimeState = "starting" | "running" | "stopped" | "error";
 
 export function runtimePill(state: RuntimeState): string {
+  if (state === "starting") {
+    return `<span class="status" data-state="dispatching">${icon("loader")}Starting</span>`;
+  }
   if (state === "running") {
     return `<span class="status" data-state="in_progress">${icon("activity")}Running</span>`;
   }
-  if (state === "failed") {
-    return `<span class="status" data-state="failed">${icon("alert-triangle")}Failed</span>`;
+  if (state === "error") {
+    return `<span class="status" data-state="failed">${icon("alert-triangle")}Error</span>`;
   }
   return `<span class="status" data-state="queued">${icon("clock")}Stopped</span>`;
 }

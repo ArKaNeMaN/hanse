@@ -50,12 +50,14 @@ export interface SiteModel {
   apps: Map<string, AppRef>;
   runtime: Map<string, RuntimeState>;
   pendingRestart: Map<string, boolean>;
+  pendingRestartReasons: Map<string, string[]>;
   pendingCount: number;
   sshPendingCount: number;
   sshPendingByApp: Map<string, number>;
   sshHostsByApp: Map<string, number>;
+  startingCount: number;
   runningCount: number;
-  failedCount: number;
+  errorCount: number;
   stoppedCount: number;
   appCount: number;
   handoffCount: number;
@@ -111,8 +113,15 @@ function runtimeMap(db: SqliteDatabase): Map<string, RuntimeState> {
   }>;
   const map = new Map<string, RuntimeState>();
   for (const row of rows) {
-    if (row.state === "running" || row.state === "failed") {
+    if (
+      row.state === "starting" ||
+      row.state === "running" ||
+      row.state === "stopped" ||
+      row.state === "error"
+    ) {
       map.set(row.app_id, row.state);
+    } else if (row.state === "failed") {
+      map.set(row.app_id, "error");
     } else {
       map.set(row.app_id, "stopped");
     }
@@ -125,6 +134,7 @@ export function buildSite(deps: DashboardDeps): SiteModel {
   const runtime = runtimeMap(deps.db);
   const apps = new Map<string, AppRef>();
   const pendingRestart = new Map<string, boolean>();
+  const pendingRestartReasons = new Map<string, string[]>();
   const projects = deps.getProjects().map((project) => {
     const details = meta.get(project.id);
     const projectApps = project.service.listApps();
@@ -175,8 +185,9 @@ export function buildSite(deps: DashboardDeps): SiteModel {
   } catch {
     // The SSH tables are absent only in pre-migration fixtures; the page still renders.
   }
+  let startingCount = 0;
   let runningCount = 0;
-  let failedCount = 0;
+  let errorCount = 0;
   let stoppedCount = 0;
   let appCount = 0;
   let handoffCount = 0;
@@ -189,12 +200,16 @@ export function buildSite(deps: DashboardDeps): SiteModel {
       }
     }
     for (const app of project.apps) {
-      pendingRestart.set(app.id, deps.manager?.pendingRestart(app.id).pending ?? false);
+      const pending = deps.manager?.pendingRestart(app.id);
+      pendingRestart.set(app.id, pending?.pending ?? false);
+      pendingRestartReasons.set(app.id, pending?.reasons ?? []);
       const state = runtime.get(app.id) ?? "stopped";
-      if (state === "running") {
+      if (state === "starting") {
+        startingCount += 1;
+      } else if (state === "running") {
         runningCount += 1;
-      } else if (state === "failed") {
-        failedCount += 1;
+      } else if (state === "error") {
+        errorCount += 1;
       } else {
         stoppedCount += 1;
       }
@@ -206,12 +221,14 @@ export function buildSite(deps: DashboardDeps): SiteModel {
     apps,
     runtime,
     pendingRestart,
+    pendingRestartReasons,
     pendingCount,
     sshPendingCount,
     sshPendingByApp,
     sshHostsByApp,
+    startingCount,
     runningCount,
-    failedCount,
+    errorCount,
     stoppedCount,
     appCount,
     handoffCount,
@@ -622,9 +639,10 @@ export function renderOverview(site: SiteModel, chrome: PageChrome): string {
             <section class="card" aria-labelledby="runtime-title">
               <div class="card__head"><h2 class="card__title" id="runtime-title">Runtime</h2><span class="mono">${plural(site.appCount, "app")}</span></div>
               <div class="card__body stack--tight">
+                <div class="summary-row"><span class="small">Starting</span><span class="cluster">${runtimePill("starting")}<span class="mono">${site.startingCount}</span></span></div>
                 <div class="summary-row"><span class="small">Running</span><span class="cluster">${runtimePill("running")}<span class="mono">${site.runningCount}</span></span></div>
                 <div class="summary-row"><span class="small">Stopped</span><span class="cluster">${runtimePill("stopped")}<span class="mono">${site.stoppedCount}</span></span></div>
-                <div class="summary-row"><span class="small">Failed</span><span class="cluster">${runtimePill("failed")}<span class="mono">${site.failedCount}</span></span></div>
+                <div class="summary-row"><span class="small">Error</span><span class="cluster">${runtimePill("error")}<span class="mono">${site.errorCount}</span></span></div>
               </div>
               <div class="card__foot"><a class="btn btn-ghost btn-sm" href="/projects">Inspect applications ${icon("arrow-right")}</a></div>
             </section>

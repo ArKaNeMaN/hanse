@@ -442,6 +442,105 @@ describe("InstanceManager lifecycle", () => {
     expect(authorizationFor(endpoint)).toMatch(/^Basic /);
   });
 
+  it("persists applied settings across detach and reattach", async () => {
+    const runtime = new FakeAgentRuntime();
+    const settings = fakeSettings();
+    const profiles = fakeProfiles();
+    const { manager, db, dir } = fixture(runtime, settings, profiles.source);
+    await manager.ensure(APP);
+
+    const recorded = db
+      .prepare(
+        "SELECT applied_settings_hash AS appliedSettingsHash, applied_profile AS appliedProfile FROM instances WHERE app_id = 'p:web'",
+      )
+      .get() as { appliedSettingsHash: string | null; appliedProfile: number | null };
+    expect(recorded.appliedSettingsHash).toEqual(expect.any(String));
+    expect(recorded.appliedProfile).toBe(1);
+
+    settings.setModel("deepseek/deepseek-pro");
+    expect(manager.pendingRestart(APP.id)).toEqual({
+      pending: true,
+      reasons: ["settings_changed"],
+    });
+
+    manager.detach();
+    const reattached = new InstanceManager(db, dir, {
+      runtime,
+      verify: async () => [],
+      settings,
+      omoProfiles: profiles.source,
+      workspaceRoot: "/srv",
+    });
+    expect(reattached.pendingRestart(APP.id)).toEqual({
+      pending: true,
+      reasons: ["settings_changed"],
+    });
+
+    await reattached.ensure(APP);
+    expect(reattached.pendingRestart(APP.id)).toEqual({
+      pending: true,
+      reasons: ["settings_changed"],
+    });
+
+    await expect(reattached.restartIfRunning(APP)).resolves.toBe(true);
+    expect(reattached.pendingRestart(APP.id)).toEqual({ pending: false, reasons: [] });
+  });
+
+  it("reports applied_state_unknown for legacy rows without an applied hash", async () => {
+    const runtime = new FakeAgentRuntime();
+    const settings = fakeSettings();
+    const profiles = fakeProfiles();
+    const { manager, db, dir } = fixture(runtime, settings, profiles.source);
+    await manager.ensure(APP);
+    db.prepare(
+      "UPDATE instances SET applied_settings_hash = NULL, applied_profile = NULL WHERE app_id = 'p:web'",
+    ).run();
+    manager.detach();
+
+    const reattached = new InstanceManager(db, dir, {
+      runtime,
+      verify: async () => [],
+      settings,
+      omoProfiles: profiles.source,
+      workspaceRoot: "/srv",
+    });
+    expect(reattached.pendingRestart(APP.id)).toEqual({
+      pending: true,
+      reasons: ["applied_state_unknown"],
+    });
+
+    await reattached.ensure(APP);
+    expect(reattached.pendingRestart(APP.id)).toEqual({
+      pending: true,
+      reasons: ["applied_state_unknown"],
+    });
+  });
+
+  it("does not report pending for a row that is not running", async () => {
+    const runtime = new FakeAgentRuntime();
+    const settings = fakeSettings();
+    const profiles = fakeProfiles();
+    const { manager, db } = fixture(runtime, settings, profiles.source);
+    await manager.ensure(APP);
+    const recorded = db
+      .prepare(
+        "SELECT applied_settings_hash AS appliedSettingsHash, applied_profile AS appliedProfile FROM instances WHERE app_id = 'p:web'",
+      )
+      .get() as { appliedSettingsHash: string | null; appliedProfile: number | null };
+    await manager.stopApp(APP.id);
+    expect(
+      db
+        .prepare(
+          "SELECT applied_settings_hash AS appliedSettingsHash, applied_profile AS appliedProfile FROM instances WHERE app_id = 'p:web'",
+        )
+        .get(),
+    ).toEqual(recorded);
+    manager.detach();
+    settings.setModel("deepseek/deepseek-pro");
+
+    expect(manager.pendingRestart(APP.id)).toEqual({ pending: false, reasons: [] });
+  });
+
   it("revokes and deletes the token on stop", async () => {
     const runtime = new FakeAgentRuntime();
     const { manager, db, dir } = fixture(runtime, fakeSettings(), fakeProfiles().source);

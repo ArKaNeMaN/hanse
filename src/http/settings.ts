@@ -17,7 +17,7 @@ import type {
 } from "../settings/types.js";
 import { DEEPSEEK_FIELDS, webDriverDefinitions } from "../web/registry.js";
 import type { WebToolConfig } from "../web/types.js";
-import { findApp } from "./apps.js";
+import { findApp, toManagedApp } from "./apps.js";
 import { humanFrom, principalFrom } from "./auth.js";
 import { buildSite, type PageChrome, renderNotFound, type SiteModel } from "./dashboard.js";
 import type { HttpDeps, HttpRequest, HttpResponse } from "./handler.js";
@@ -549,7 +549,18 @@ export async function handleSettings(deps: HttpDeps, request: HttpRequest): Prom
         ? redirectNotice(returnTo, "Agent runtime is not configured.", "error")
         : json(503, { error: "agent runtime is not configured" });
     }
-    const restarted = await deps.manager.stopApp(found.app.id);
+    let restarted: boolean;
+    try {
+      restarted = await deps.manager.restartIfRunning(toManagedApp(found));
+    } catch {
+      return browser
+        ? redirectNotice(
+            returnTo,
+            "Restart failed. The agent is stopped; check the runtime log and retry.",
+            "error",
+          )
+        : json(502, { error: "restart failed" });
+    }
     if (browser) {
       return redirectNotice(
         returnTo,

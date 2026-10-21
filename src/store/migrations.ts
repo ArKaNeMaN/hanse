@@ -366,4 +366,12 @@ CREATE INDEX ssh_audit_app_started ON ssh_audit(app_id, started_at DESC, id DESC
 CREATE INDEX ssh_audit_host_started ON ssh_audit(host_id, started_at DESC, id DESC);
 `,
   },
+  {
+    version: 10,
+    name: "applied-runtime-state",
+    sql: `
+ALTER TABLE instances ADD COLUMN applied_settings_hash TEXT;
+ALTER TABLE instances ADD COLUMN applied_profile INTEGER;
+`,
+  },
 ];

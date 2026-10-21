@@ -646,6 +646,39 @@ describe("http API and assets", () => {
     expect((f.db.prepare("SELECT COUNT(*) AS c FROM handoffs").get() as { c: number }).c).toBe(2);
   });
 
+  it("serves runtime status with a normalized legacy state and image ref", () => {
+    const f = fixture();
+    const token = humanToken(f.db);
+    f.db
+      .prepare(
+        "INSERT INTO instances (id, app_id, endpoint, state, runtime_state, image_ref, updated_at) VALUES ('p:a','p:a','http://127.0.0.1:4100','failed','failed','sha256:app-image',?)",
+      )
+      .run(new Date().toISOString());
+
+    const response = handleRequest(deps(f), {
+      method: "GET",
+      path: "/api/apps/a/runtime",
+      query: { project: "p" },
+      headers: auth(token),
+    });
+    expect(response.status).toBe(200);
+    expect(JSON.parse(response.body)).toMatchObject({
+      appId: "p:a",
+      state: "error",
+      endpoint: "http://127.0.0.1:4100",
+      imageRef: "sha256:app-image",
+    });
+
+    const absent = handleRequest(deps(f), {
+      method: "GET",
+      path: "/api/apps/b/runtime",
+      query: { project: "p" },
+      headers: auth(token),
+    });
+    expect(absent.status).toBe(200);
+    expect(JSON.parse(absent.body)).toMatchObject({ state: "stopped", imageRef: null });
+  });
+
   it("serves an unauthenticated health check", () => {
     const f = fixture();
     const response = handleRequest(deps(f), { method: "GET", path: "/healthz", headers: {} });

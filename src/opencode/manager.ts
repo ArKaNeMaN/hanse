@@ -296,13 +296,25 @@ export class InstanceManager {
         if (endpoint !== undefined && endpoint !== null) {
           setEndpointAuthorization(endpoint, OPENCODE_BASIC_USERNAME, existingPassword);
           if (existing === undefined) {
+            const persisted = this.#db
+              .prepare(
+                `SELECT applied_settings_hash AS appliedSettingsHash,
+                        applied_profile AS appliedProfile
+                 FROM instances WHERE app_id = ?`,
+              )
+              .get(app.id) as
+              | { appliedSettingsHash: string | null; appliedProfile: number | null }
+              | undefined;
             this.#running.set(app.id, {
               endpoint,
               projectId: app.projectId,
               appKey: app.appKey,
               policyWarnings: [],
-              settingsHash: this.#currentSettingsHash(app),
-              appliedProfile: true,
+              settingsHash: persisted?.appliedSettingsHash ?? undefined,
+              appliedProfile:
+                persisted?.appliedProfile === null || persisted?.appliedProfile === undefined
+                  ? undefined
+                  : persisted.appliedProfile !== 0,
             });
           } else {
             if (existing.endpoint !== endpoint) {
@@ -478,7 +490,7 @@ export class InstanceManager {
       );
 
       const status = await this.#options.runtime.ensure(spec);
-      this.#recordStatus(app, status, image);
+      this.#recordStatus(app, status, image, settingsHash, appliedProfile);
       if (status.state !== "running" || status.endpoint === null) {
         throw new Error(`agent runtime did not start ${app.id}: ${status.error ?? status.state}`);
       }
@@ -509,26 +521,92 @@ export class InstanceManager {
   }
 
   pendingRestart(appId: string): { pending: boolean; reasons: string[] } {
-    const entry = this.#running.get(appId);
     const settings = this.#options.settings;
     const omoProfiles = this.#options.omoProfiles;
-    if (entry === undefined || settings === undefined || omoProfiles === undefined) {
+    if (settings === undefined || omoProfiles === undefined) {
       return { pending: false, reasons: [] };
     }
+    const entry = this.#running.get(appId);
+    if (entry !== undefined) {
+      return this.#pendingRestartFor(
+        {
+          appId,
+          projectId: entry.projectId,
+          appKey: entry.appKey,
+          settingsHash: entry.settingsHash,
+          appliedProfile: entry.appliedProfile,
+        },
+        settings,
+        omoProfiles,
+      );
+    }
+    const row = this.#db
+      .prepare(
+        `SELECT a.project_id AS projectId,
+                a.app_key AS appKey,
+                COALESCE(i.runtime_state, i.state) AS state,
+                i.applied_settings_hash AS appliedSettingsHash,
+                i.applied_profile AS appliedProfile
+         FROM instances i
+         JOIN apps a ON a.id = i.app_id
+         WHERE i.app_id = ?`,
+      )
+      .get(appId) as
+      | {
+          projectId: string;
+          appKey: string;
+          state: string;
+          appliedSettingsHash: string | null;
+          appliedProfile: number | null;
+        }
+      | undefined;
+    if (row === undefined || (row.state !== "running" && row.state !== "starting")) {
+      return { pending: false, reasons: [] };
+    }
+    return this.#pendingRestartFor(
+      {
+        appId,
+        projectId: row.projectId,
+        appKey: row.appKey,
+        settingsHash: row.appliedSettingsHash ?? undefined,
+        appliedProfile: row.appliedProfile === null ? undefined : row.appliedProfile !== 0,
+      },
+      settings,
+      omoProfiles,
+    );
+  }
+
+  #pendingRestartFor(
+    target: {
+      appId: string;
+      projectId: string;
+      appKey: string;
+      settingsHash?: string;
+      appliedProfile?: boolean;
+    },
+    settings: SettingsSource,
+    omoProfiles: OmoProfileSource,
+  ): { pending: boolean; reasons: string[] } {
+    if (target.settingsHash === undefined || target.appliedProfile === undefined) {
+      return { pending: true, reasons: ["applied_state_unknown"] };
+    }
     const reasons: string[] = [];
-    if (entry.appliedProfile === false) {
+    if (target.appliedProfile === false) {
       reasons.push("profile_not_applied");
     }
     try {
-      const snapshot = settings.snapshot({ projectId: entry.projectId, appKey: entry.appKey });
+      const snapshot = settings.snapshot({
+        projectId: target.projectId,
+        appKey: target.appKey,
+      });
       const effective = snapshot.resolved.effective;
       const model = effective.llm.model.value ?? DEFAULT_MODEL;
       const preview = omoProfiles.preview({
-        appId,
+        appId: target.appId,
         model,
         disableWebsearch: disableWebsearch(effective.web),
       });
-      if (settingsHashFor(snapshot, preview.contentHash) !== entry.settingsHash) {
+      if (settingsHashFor(snapshot, preview.contentHash) !== target.settingsHash) {
         reasons.push("settings_changed");
       }
     } catch {
@@ -634,14 +712,16 @@ export class InstanceManager {
     app: ManagedApp,
     status: Awaited<ReturnType<AgentRuntimeClient["ensure"]>>,
     image: string,
+    settingsHash?: string,
+    appliedProfile?: boolean,
   ): void {
     const now = new Date().toISOString();
     const startedAt = status.state === "running" ? now : null;
     this.#db
       .prepare(
         `INSERT INTO instances
-           (id, app_id, endpoint, state, runtime_state, spec_hash, container_id, container_name, image_ref, started_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           (id, app_id, endpoint, state, runtime_state, spec_hash, container_id, container_name, image_ref, started_at, updated_at, applied_settings_hash, applied_profile)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(app_id) DO UPDATE SET
            endpoint = excluded.endpoint,
            state = excluded.state,
@@ -654,7 +734,9 @@ export class InstanceManager {
              WHEN instances.state = 'running' THEN instances.started_at
              ELSE excluded.started_at
            END,
-           updated_at = excluded.updated_at`,
+           updated_at = excluded.updated_at,
+           applied_settings_hash = excluded.applied_settings_hash,
+           applied_profile = excluded.applied_profile`,
       )
       .run(
         app.id,
@@ -668,6 +750,8 @@ export class InstanceManager {
         image,
         startedAt,
         now,
+        settingsHash ?? null,
+        appliedProfile === undefined ? null : appliedProfile ? 1 : 0,
       );
   }
 
@@ -697,25 +781,6 @@ export class InstanceManager {
         new Date().toISOString(),
         appId,
       );
-  }
-
-  #currentSettingsHash(app: ManagedApp): string | undefined {
-    const settings = this.#options.settings;
-    const omoProfiles = this.#options.omoProfiles;
-    if (settings === undefined || omoProfiles === undefined) return undefined;
-    try {
-      const snapshot = settings.snapshot({ projectId: app.projectId, appKey: app.appKey });
-      const effective = snapshot.resolved.effective;
-      const model = effective.llm.model.value ?? DEFAULT_MODEL;
-      const preview = omoProfiles.preview({
-        appId: app.id,
-        model,
-        disableWebsearch: disableWebsearch(effective.web),
-      });
-      return settingsHashFor(snapshot, preview.contentHash);
-    } catch {
-      return undefined;
-    }
   }
 
   #withAppLock<T>(appId: string, run: () => Promise<T>): Promise<T> {
