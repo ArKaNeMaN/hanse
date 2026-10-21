@@ -3,6 +3,7 @@ import { appDir } from "./apps.js";
 import type { PageChrome, SiteModel } from "./dashboard.js";
 import {
   appShell,
+  deletionStatus,
   escapeHtml,
   type IconName,
   icon,
@@ -98,11 +99,16 @@ function imageHrefs(
   };
 }
 
-function imagePanel(project: { id: string }, app: RegisteredApp, runtime: string): string {
+function imagePanel(
+  project: { id: string },
+  app: RegisteredApp,
+  runtime: string,
+  deletionPending: boolean,
+): string {
   const status = IMAGE_STATES[app.imageStatus] ?? IMAGE_STATES.missing;
   const hrefs = imageHrefs(project.id, app.appKey);
   const building = app.imageStatus === "building";
-  const disabled = building ? ' disabled aria-busy="true"' : "";
+  const disabled = building ? ' disabled aria-busy="true"' : deletionPending ? " disabled" : "";
   const rollbackRef = app.imageRollbackRef ?? null;
   const rollbackBuilt = app.imageRollbackBuiltAt ?? null;
   const activeRuntime = runtime === "running" || runtime === "starting";
@@ -115,7 +121,7 @@ function imagePanel(project: { id: string }, app: RegisteredApp, runtime: string
     : '<p class="field-error" id="image-error" role="alert" hidden></p>';
   const rollbackForm = `<form method="post" action="${escapeHtml(hrefs.rollbackHref)}" id="image-rollback-form"${rollbackRef === null ? " hidden" : ""}>
           <input type="hidden" name="return_to" value="${escapeHtml(hrefs.appHref)}" />
-          <button class="btn btn-secondary btn-sm" type="button" id="image-rollback" data-dialog-open="image-rollback-dialog"${building ? " disabled" : ""}>${icon("refresh")}<span class="btn__label">${escapeHtml(rollbackAction)}</span></button>
+          <button class="btn btn-secondary btn-sm" type="button" id="image-rollback" data-dialog-open="image-rollback-dialog"${building || deletionPending ? " disabled" : ""}>${icon("refresh")}<span class="btn__label">${escapeHtml(rollbackAction)}</span></button>
         </form>`;
   return `<section class="card" id="image-panel"
       data-project-id="${escapeHtml(project.id)}"
@@ -220,6 +226,71 @@ function settingsState(
   return `<div class="state-strip__value"><span class="status" data-state="delivered">${icon("check")}Applied</span></div><p class="small">Settings match the running agent.</p><div class="state-strip__actions"><a class="btn btn-ghost btn-sm" href="${escapeHtml(settingsHref)}">Review settings</a></div>`;
 }
 
+function applicationDeleteDialog(projectId: string, appKey: string, retrying: boolean): string {
+  const appHref = `/projects/${encodeURIComponent(projectId)}/apps/${encodeURIComponent(appKey)}`;
+  return `<dialog class="dialog" id="application-delete-dialog" aria-labelledby="application-delete-title">
+    <div class="dialog__frame">
+      <header class="dialog__head">
+        <h2 class="dialog__title" id="application-delete-title">${retrying ? "Retry application deletion?" : "Delete application?"}</h2>
+        <p class="dialog__meta">${escapeHtml(appKey)} / ${escapeHtml(projectId)}</p>
+      </header>
+      <form class="dialog__form" method="post" action="/api/projects/${encodeURIComponent(projectId)}/apps/${encodeURIComponent(appKey)}/delete">
+        <div class="dialog__body">
+          <p class="body">This removes the application, including its sessions, handoffs, credentials, and managed images. Checking <strong>Delete files too</strong> also deletes the application source files on disk.</p>
+          <div class="field">
+            <label class="label" for="application-delete-confirm">Type ${escapeHtml(appKey)} to confirm (required)</label>
+            <input class="input" id="application-delete-confirm" name="confirm" required autocomplete="off" spellcheck="false" aria-describedby="application-delete-confirm-hint" />
+            <p class="hint" id="application-delete-confirm-hint">The application key must match exactly.</p>
+          </div>
+          <label class="check">
+            <input class="checkbox" type="checkbox" name="deleteFiles" value="true" />
+            <span>Delete files too</span>
+          </label>
+          <input type="hidden" name="return_to" value="${escapeHtml(appHref)}" />
+        </div>
+        <footer class="dialog__foot">
+          <button class="btn btn-ghost" type="button" data-dialog-close>Cancel</button>
+          <button class="btn btn-danger" type="submit">${retrying ? "Retry deletion" : "Delete application"}</button>
+        </footer>
+      </form>
+    </div>
+  </dialog>`;
+}
+
+function applicationProjectDeleteDialog(
+  projectId: string,
+  projectName: string,
+  appHref: string,
+): string {
+  return `<dialog class="dialog" id="project-delete-dialog" aria-labelledby="project-delete-title">
+    <div class="dialog__frame">
+      <header class="dialog__head">
+        <h2 class="dialog__title" id="project-delete-title">Retry project deletion?</h2>
+        <p class="dialog__meta">${escapeHtml(projectName)} / ${escapeHtml(projectId)}</p>
+      </header>
+      <form class="dialog__form" method="post" action="/api/projects/${encodeURIComponent(projectId)}/delete">
+        <div class="dialog__body">
+          <p class="body">This removes every application in the project, including their sessions, handoffs, credentials, and managed images. Checking <strong>Delete files too</strong> also deletes the project and application source files on disk.</p>
+          <div class="field">
+            <label class="label" for="project-delete-confirm">Type ${escapeHtml(projectName)} to confirm (required)</label>
+            <input class="input" id="project-delete-confirm" name="confirm" required autocomplete="off" spellcheck="false" aria-describedby="project-delete-confirm-hint" />
+            <p class="hint" id="project-delete-confirm-hint">The project name must match exactly.</p>
+          </div>
+          <label class="check">
+            <input class="checkbox" type="checkbox" name="deleteFiles" value="true" />
+            <span>Delete files too</span>
+          </label>
+          <input type="hidden" name="return_to" value="${escapeHtml(appHref)}" />
+        </div>
+        <footer class="dialog__foot">
+          <button class="btn btn-ghost" type="button" data-dialog-close>Cancel</button>
+          <button class="btn btn-danger" type="submit">Retry deletion</button>
+        </footer>
+      </form>
+    </div>
+  </dialog>`;
+}
+
 /** Render the application page shell; repository state is hydrated by assets/git.js. */
 export function renderApplication(
   site: SiteModel,
@@ -238,6 +309,9 @@ export function renderApplication(
   }
 
   const runtime = site.runtime.get(app.id) ?? "stopped";
+  const appDeleting = app.deleting;
+  const projectDeleting = project.deleting === true;
+  const deletionPending = appDeleting || projectDeleting;
   const pending = site.pendingRestart.get(app.id) ?? false;
   const pendingReasons = site.pendingRestartReasons.get(app.id) ?? [];
   const folder = appDir(project, app);
@@ -250,20 +324,25 @@ export function renderApplication(
   const sshHosts = site.sshHostsByApp.get(app.id) ?? 0;
   const sshPending = site.sshPendingByApp.get(app.id) ?? 0;
   const appHref = `/projects/${encodeURIComponent(project.id)}/apps/${encodeURIComponent(app.appKey)}`;
-  const canRestart = runtime === "running" || runtime === "starting";
+  const canRestart = !deletionPending && (runtime === "running" || runtime === "starting");
+
+  const menu = `<details class="menu">
+        <summary class="btn btn-ghost btn-icon" aria-label="More actions" title="More actions">${icon("more")}</summary>
+        <nav class="menu__panel" aria-label="More actions">
+          <a class="menu__item" href="${escapeHtml(ideHref)}" target="_blank" rel="noreferrer">${icon("external")}Open IDE in this folder</a>
+          <a class="menu__item" href="${escapeHtml(settingsHref)}">${icon("settings")}Application settings</a>
+        </nav>
+      </details>`;
+  const appActions = deletionPending
+    ? menu
+    : `<a class="btn btn-secondary" href="${escapeHtml(chatHref)}">${icon("message")}Open chat</a><a class="btn btn-secondary" href="${escapeHtml(terminalHref)}">${icon("terminal")}Terminal</a>${menu}`;
 
   const header = pageHeader({
     overline: "Application",
     title: app.appKey,
     description: "Repository state and lightweight git actions for this application.",
     meta: [project.name, app.kind ?? "app", app.path],
-    actions: `<a class="btn btn-secondary" href="${escapeHtml(chatHref)}">${icon("message")}Open chat</a><a class="btn btn-secondary" href="${escapeHtml(terminalHref)}">${icon("terminal")}Terminal</a><details class="menu">
-        <summary class="btn btn-ghost btn-icon" aria-label="More actions" title="More actions">${icon("more")}</summary>
-        <nav class="menu__panel" aria-label="More actions">
-          <a class="menu__item" href="${escapeHtml(ideHref)}" target="_blank" rel="noreferrer">${icon("external")}Open IDE in this folder</a>
-          <a class="menu__item" href="${escapeHtml(settingsHref)}">${icon("settings")}Application settings</a>
-        </nav>
-      </details>`,
+    actions: appActions,
   });
 
   const restartDialog = canRestart
@@ -301,7 +380,7 @@ export function renderApplication(
   </section>${restartDialog}`;
 
   const image = app.buildConfigured
-    ? imagePanel(project, app, runtime)
+    ? imagePanel(project, app, runtime, deletionPending)
     : defaultImagePanel(project, app, ideHref);
   const sshPendingCopy =
     sshPending > 0
@@ -314,7 +393,40 @@ export function renderApplication(
       ${sshPendingCopy}
     </div>
   </section>`;
-  const body = `${stateStrip}<div id="git-panel" data-project-id="${escapeHtml(project.id)}" data-app-key="${escapeHtml(app.appKey)}" data-api-base="${escapeHtml(apiBase)}">
+  const deletionBanner = deletionPending
+    ? `<div class="error-state section" id="deletion-banner" role="alert">
+      <span class="error-state__mark">${icon("alert-triangle", "icon--lg")}</span>
+      <div>
+        <h3 class="error-state__title">${projectDeleting ? "Project deletion incomplete" : "Deletion incomplete"}</h3>
+        <p class="error-state__body">${projectDeleting ? "This project is marked for deletion. Chat, terminal, and start actions stay disabled until the deletion completes." : "This application is marked for deletion. Chat, terminal, and start actions stay disabled until the deletion completes."}</p>
+      </div>
+    </div>`
+    : "";
+
+  const dangerZone = `<section class="card section" id="danger-zone" aria-labelledby="danger-zone-title">
+    <div class="card__head">
+      <h2 class="card__title" id="danger-zone-title">Danger zone</h2>
+      ${projectDeleting ? deletionStatus("Project deletion incomplete") : appDeleting ? deletionStatus() : '<span class="badge">Destructive</span>'}
+    </div>
+    <div class="card__body stack--tight">
+      ${
+        projectDeleting
+          ? `<p class="small">A previous project deletion did not finish. Retry to remove the remaining applications, records, and runtime resources.</p>`
+          : appDeleting
+            ? `<p class="small">A previous deletion did not finish. Retry to remove the remaining application records and runtime resources.</p>`
+            : `<p class="small">Deleting this application removes its sessions, handoffs, credentials, and managed images. Source files are kept unless you choose to delete them too.</p>`
+      }
+    </div>
+    <div class="card__foot">
+      <button class="btn btn-danger" type="button" data-dialog-open="${projectDeleting ? "project-delete-dialog" : "application-delete-dialog"}">${icon("trash")}${deletionPending ? "Retry deletion" : "Delete application"}</button>
+    </div>
+  </section>`;
+
+  const deleteDialogs = projectDeleting
+    ? applicationProjectDeleteDialog(project.id, project.name, appHref)
+    : applicationDeleteDialog(project.id, app.appKey, appDeleting);
+
+  const body = `${stateStrip}${deletionBanner}<div id="git-panel" data-project-id="${escapeHtml(project.id)}" data-app-key="${escapeHtml(app.appKey)}" data-api-base="${escapeHtml(apiBase)}">
     <p id="git-live" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>
     <div class="workbench-grid workbench-grid--detail section">
       <div class="stack">
@@ -352,7 +464,7 @@ export function renderApplication(
     <noscript>
       <p class="small">Git actions need JavaScript. Use the IDE for repository operations. <a class="btn btn-ghost btn-sm" href="${escapeHtml(ideHref)}" target="_blank" rel="noreferrer">${icon("external")}Open IDE</a></p>
     </noscript>
-  </div>`;
+  </div>${dangerZone}${deleteDialogs}`;
 
   return appShell({
     title: `${app.appKey} application`,

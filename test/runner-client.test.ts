@@ -178,6 +178,33 @@ describe("DockerClient", () => {
     const failing = fixture(() => json(500, { message: "boom" }));
     await expect(failing.client.startContainer("id")).rejects.toBeInstanceOf(DockerError);
   });
+
+  it("inspects a network's labels and containers and maps 404 to undefined", async () => {
+    const f = fixture((method, path) => {
+      if (method === "GET" && path === "/networks/hanse-app-project-app") {
+        return json(200, {
+          Name: "hanse-app-project-app",
+          Labels: { "hanse.managed": "true", "hanse.app.id": "project:app" },
+          Containers: {
+            "container-id": { Name: "hanse-app-project-app", EndpointID: "endpoint-id" },
+          },
+        });
+      }
+      return json(404, { message: "no such network" });
+    });
+
+    await expect(f.client.inspectNetwork("hanse-app-project-app")).resolves.toEqual({
+      Name: "hanse-app-project-app",
+      Labels: { "hanse.managed": "true", "hanse.app.id": "project:app" },
+      Containers: {
+        "container-id": { Name: "hanse-app-project-app", EndpointID: "endpoint-id" },
+      },
+    });
+    expect(f.records[0]?.method).toBe("GET");
+    expect(f.records[0]?.path).toBe("/networks/hanse-app-project-app");
+
+    await expect(f.client.inspectNetwork("missing")).resolves.toBeUndefined();
+  });
 });
 
 describe("RunnerGitClient.test", () => {

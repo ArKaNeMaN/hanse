@@ -15,6 +15,7 @@ import { computeSpecHash } from "../src/agent/spec.js";
 import { verifyAgentToken } from "../src/mcp/agent-tokens.js";
 import { authorizationFor, setEndpointAuthorization } from "../src/opencode/endpoint-auth.js";
 import {
+  DeletionPendingError,
   InstanceManager,
   type ManagedApp,
   type OmoProfileSource,
@@ -539,6 +540,95 @@ describe("InstanceManager lifecycle", () => {
     settings.setModel("deepseek/deepseek-pro");
 
     expect(manager.pendingRestart(APP.id)).toEqual({ pending: false, reasons: [] });
+  });
+
+  it("refuses to start an app whose project is marked deleting", async () => {
+    const runtime = new FakeAgentRuntime();
+    const { manager, db } = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    db.prepare("UPDATE projects SET deleting = 1 WHERE id = ?").run(APP.projectId);
+
+    await expect(manager.ensure(APP)).rejects.toBeInstanceOf(DeletionPendingError);
+    expect(runtime.ensured).toHaveLength(0);
+    expect(manager.isRunning(APP.id)).toBe(false);
+  });
+
+  it("refuses a queued ensure after stopForDeletion commits the marker", async () => {
+    const gate = deferred<void>();
+    let deleteStarted = false;
+    class GatedRuntime extends FakeAgentRuntime {
+      override async delete(appId: string) {
+        deleteStarted = true;
+        await gate.promise;
+        return super.delete(appId);
+      }
+    }
+    const runtime = new GatedRuntime();
+    const { manager, db } = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    await manager.ensure(APP);
+
+    const stopping = manager.stopForDeletion(APP.id);
+    await waitFor(() => deleteStarted);
+    const queued = manager.ensure(APP).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(runtime.ensured).toHaveLength(1);
+
+    gate.resolve(undefined);
+    await expect(stopping).resolves.toBe(true);
+    const queuedError = await queued;
+    expect(queuedError).toBeInstanceOf(DeletionPendingError);
+    expect(runtime.ensured).toHaveLength(1);
+    expect(manager.isRunning(APP.id)).toBe(false);
+    const row = db.prepare("SELECT deleting FROM apps WHERE id = ?").get(APP.id) as {
+      deleting: number;
+    };
+    expect(row.deleting).toBe(1);
+  });
+
+  it("retries stopForDeletion on an already-marked app", async () => {
+    const runtime = new FakeAgentRuntime();
+    const { manager, db } = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    await manager.ensure(APP);
+    db.prepare("UPDATE apps SET deleting = 1 WHERE id = ?").run(APP.id);
+    db.prepare("UPDATE projects SET deleting = 1 WHERE id = ?").run(APP.projectId);
+
+    await expect(manager.stopForDeletion(APP.id)).resolves.toBe(true);
+
+    expect(runtime.deleted).toEqual([APP.id]);
+    expect(manager.isRunning(APP.id)).toBe(false);
+  });
+
+  it("keeps the instance and writes no marker when the runtime delete fails", async () => {
+    class FailingDeleteRuntime extends FakeAgentRuntime {
+      failDelete = false;
+      override async delete(appId: string) {
+        if (this.failDelete) throw new Error("runtime unavailable");
+        return super.delete(appId);
+      }
+    }
+    const runtime = new FailingDeleteRuntime();
+    const { manager, db } = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    const endpoint = await manager.ensure(APP);
+    runtime.failDelete = true;
+
+    await expect(manager.stopForDeletion(APP.id)).rejects.toThrow("runtime unavailable");
+    expect(manager.isRunning(APP.id)).toBe(true);
+    expect(authorizationFor(endpoint)).toBeDefined();
+    expect(runtime.deleted).toEqual([]);
+    const marked = db.prepare("SELECT deleting FROM apps WHERE id = ?").get(APP.id) as {
+      deleting: number;
+    };
+    expect(marked.deleting).toBe(0);
+
+    runtime.failDelete = false;
+    await expect(manager.stopForDeletion(APP.id)).resolves.toBe(true);
+    expect(manager.isRunning(APP.id)).toBe(false);
+    const stopped = db.prepare("SELECT deleting FROM apps WHERE id = ?").get(APP.id) as {
+      deleting: number;
+    };
+    expect(stopped.deleting).toBe(1);
   });
 
   it("revokes and deletes the token on stop", async () => {

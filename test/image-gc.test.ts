@@ -3,18 +3,19 @@ import type { Server } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import type {
-  DockerBuildCacheUsage,
-  DockerBuildPruneOptions,
-  DockerBuildPruneResult,
-  DockerContainerCreateOptions,
-  DockerContainerInspect,
-  DockerContainerSummary,
-  DockerImageUsage,
-  DockerLogs,
-  DockerNetworkSpec,
-  DockerRuntime,
-  DockerSystemDf,
+import {
+  type DockerBuildCacheUsage,
+  type DockerBuildPruneOptions,
+  type DockerBuildPruneResult,
+  type DockerContainerCreateOptions,
+  type DockerContainerInspect,
+  type DockerContainerSummary,
+  DockerError,
+  type DockerImageUsage,
+  type DockerLogs,
+  type DockerNetworkSpec,
+  type DockerRuntime,
+  type DockerSystemDf,
 } from "../src/runner/docker.js";
 import {
   DISK_CRITICAL_PERCENT,
@@ -22,6 +23,7 @@ import {
   ImageGcService,
   usageLevel,
 } from "../src/runner/image-gc.js";
+import { appContainerName } from "../src/runner/names.js";
 import { RunnerService } from "../src/runner/server.js";
 import type { RunnerConfig } from "../src/runner/validate.js";
 
@@ -51,6 +53,7 @@ class FakeDocker implements DockerRuntime {
   pruneCalls = 0;
   systemDfFailure: Error | undefined;
   removeFailure: string | undefined;
+  readonly removeFailures = new Map<string, Error>();
   removeGate: Promise<void> | undefined;
   onRemove: (() => void) | undefined;
 
@@ -66,6 +69,8 @@ class FakeDocker implements DockerRuntime {
   async removeImage(referenceOrId: string): Promise<void> {
     this.onRemove?.();
     if (this.removeGate !== undefined) await this.removeGate;
+    const failure = this.removeFailures.get(referenceOrId);
+    if (failure !== undefined) throw failure;
     if (this.removeFailure === referenceOrId) {
       throw new Error("image is being used by a container");
     }
@@ -336,6 +341,120 @@ describe("image gc", () => {
       code: "invalid_input",
     });
     expect(docker.removed).toEqual([]);
+  });
+});
+
+describe("image purge", () => {
+  const appId = "project:web";
+  const tagPrefix = `${appContainerName(appId)}:`;
+
+  it("removes only exact app-labelled images with only this app's tags", async () => {
+    const docker = new FakeDocker();
+    const collision = "p:web:api";
+    const collisionSibling = "p:web-api";
+    expect(appContainerName(collision)).toBe(appContainerName(collisionSibling));
+    const tag = `${tagPrefix}one`;
+    const collisionTag = `${appContainerName(collision)}:target`;
+    const siblingTag = `${appContainerName(collisionSibling)}:sibling`;
+    docker.images = [
+      image("sha256:target", tag, 100, 1),
+      image("sha256:sibling", siblingTag, 200, 2, { "hanse.app.id": collisionSibling }),
+      image("sha256:collision", collisionTag, 300, 3, { "hanse.app.id": collision }),
+      image("sha256:unlabelled", `${tagPrefix}unlabelled`, 400, 4, null),
+      {
+        Id: "sha256:shared",
+        RepoTags: [`${tagPrefix}shared`, "web:api", "web-api"],
+        Size: 500,
+        Created: 5,
+        Labels: { "hanse.app.id": appId },
+      },
+    ];
+
+    const report = await gcService(docker).purgeApp(appId);
+
+    expect(docker.removed).toEqual([tag]);
+    expect(report.removedRefs).toEqual([tag]);
+    expect(report.removedImageCount).toBe(1);
+    expect(report.skipped).toContainEqual({
+      ref: `${tagPrefix}shared`,
+      reason: "shared_tag",
+    });
+
+    const collisionReport = await gcService(docker).purgeApp(collision);
+    expect(collisionReport.removedRefs).toEqual([collisionTag]);
+    expect(docker.removed).not.toContain(siblingTag);
+  });
+
+  it("protects images used by any container and removes tagless images by id", async () => {
+    const docker = new FakeDocker();
+    const usedTag = `${tagPrefix}used`;
+    const staleTag = `${tagPrefix}stale`;
+    docker.images = [
+      image("sha256:used", usedTag, 100, 1),
+      image("sha256:stale", staleTag, 200, 2),
+      {
+        Id: "sha256:tagless",
+        RepoTags: [],
+        Size: 300,
+        Created: 3,
+        Labels: { "hanse.app.id": appId },
+      },
+    ];
+    docker.containers = [
+      {
+        Id: "container-1",
+        Names: ["/hanse-app-project-web"],
+        Image: usedTag,
+        ImageID: "sha256:used",
+        State: "running",
+        Status: "Up",
+      },
+    ];
+
+    const report = await gcService(docker).purgeApp(appId);
+
+    expect(docker.removed).toEqual([staleTag, "sha256:tagless"]);
+    expect(report.skipped).toContainEqual({ ref: usedTag, reason: "protected" });
+    expect(report.removedRefs).toEqual([staleTag, "sha256:tagless"]);
+    expect(report.estimatedReclaimedBytes).toBe(500);
+  });
+
+  it("treats an in-use removal 409 as a warning and never prunes the build cache", async () => {
+    const docker = new FakeDocker();
+    const tag = `${tagPrefix}in-use`;
+    docker.images = [image("sha256:in-use", tag, 100, 1)];
+    docker.buildCache = [{ ID: "c1", Size: 50, InUse: false }];
+    docker.removeFailures.set(tag, new DockerError(409, "image is being used by container"));
+
+    const report = await gcService(docker).purgeApp(appId);
+
+    expect(report.removedImageCount).toBe(0);
+    expect(report.skipped).toContainEqual({ ref: tag, reason: "protected" });
+    expect(report.buildCachePruned).toBe(false);
+    expect(report.buildCacheReclaimedBytes).toBe(0);
+    expect(docker.pruneCalls).toBe(0);
+    expect(docker.removed).toEqual([]);
+  });
+
+  it("shares the gc lock with a concurrent global run", async () => {
+    const docker = new FakeDocker();
+    docker.images = [image("sha256:stale", `${tagPrefix}stale`, 100, 1)];
+    let release: () => void = () => {};
+    docker.removeGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let started: () => void = () => {};
+    const reachedRemoval = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    docker.onRemove = () => started();
+    const service = gcService(docker);
+
+    const purge = service.purgeApp(appId);
+    await reachedRemoval;
+    await expect(service.gc({})).rejects.toMatchObject({ status: 409, code: "gc_in_progress" });
+    release();
+    await expect(purge).resolves.toMatchObject({ removedImageCount: 1 });
   });
 });
 

@@ -23,6 +23,7 @@ import {
   createEventStream,
   type HanseEvent,
 } from "../opencode/events.js";
+import { DeletionPendingError } from "../opencode/manager.js";
 import {
   MAX_FEEDBACK_LENGTH,
   MAX_LABEL_LENGTH,
@@ -178,6 +179,9 @@ function startFailureMessage(error: unknown): string {
 }
 
 function startFailure(error: unknown): HttpResponse {
+  if (error instanceof DeletionPendingError) {
+    return errorResponse(409, error.message, error.code);
+  }
   return errorResponse(502, startFailureMessage(error));
 }
 
@@ -675,6 +679,10 @@ export async function streamAppEvents(
   try {
     endpoint = await deps.manager.ensure(toManagedApp(found));
   } catch (error) {
+    if (error instanceof DeletionPendingError) {
+      writeJson(response, 409, { error: error.message, code: error.code });
+      return;
+    }
     writeJson(response, 502, { error: startFailureMessage(error) });
     return;
   }

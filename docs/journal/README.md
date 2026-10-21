@@ -17,3 +17,4 @@ them.
 - `0012-git-credentials.md` - per-app SSH/HTTPS credentials in hierarchical settings, encrypted storage, agent-readable materialization, read-only workbench reuse, draft Test connection, and deployment notes.
 - `0013-ux-polish.md` - application-page hierarchy, compact settings, xterm terminal, truthful runtime/chat state, migration v10, browser QA, and accepted debt.
 - `0014-settings-live-save.md` - server-rendered settings fragments, in-place section swaps that preserve open rows/drafts/focus/scroll, Git/provider saves, no-refresh browser QA, and accepted debt.
+- `0015-project-and-application-deletion.md` - human-only app/project deletion, durable markers, runtime/network/image cleanup, manifest/state/DB removal, handoff/events audit, guarded source deletion, HTTP/UI, review fixes, and residual risks.

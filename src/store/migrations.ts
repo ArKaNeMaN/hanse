@@ -374,4 +374,12 @@ ALTER TABLE instances ADD COLUMN applied_settings_hash TEXT;
 ALTER TABLE instances ADD COLUMN applied_profile INTEGER;
 `,
   },
+  {
+    version: 11,
+    name: "deletion-markers",
+    sql: `
+ALTER TABLE apps ADD COLUMN deleting INTEGER NOT NULL DEFAULT 0 CHECK (deleting IN (0, 1));
+ALTER TABLE projects ADD COLUMN deleting INTEGER NOT NULL DEFAULT 0 CHECK (deleting IN (0, 1));
+`,
+  },
 ];

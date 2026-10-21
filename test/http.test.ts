@@ -80,15 +80,16 @@ function deps(f: Fixture): HttpDeps {
     workspaceRoot: f.workspace,
     git: new GitService({ workspaceRoot: f.workspace }),
     getProjects: () => {
-      const row = f.db.prepare("SELECT name, root_path FROM projects WHERE id = 'p'").get() as
-        | { name: string; root_path: string }
-        | undefined;
+      const row = f.db
+        .prepare("SELECT name, root_path, deleting FROM projects WHERE id = 'p'")
+        .get() as { name: string; root_path: string; deleting: number } | undefined;
       return [
         {
           id: "p",
           name: row?.name ?? "P",
           rootPath: row?.root_path ?? f.projectRoot,
           workspaceRoot: f.workspace,
+          deleting: row?.deleting === 1,
           service: f.service,
         },
       ];
@@ -327,6 +328,70 @@ describe("http pages", () => {
     expect(response.body).toContain('aria-label="Open a application"');
     expect(response.body).toContain('href="/projects/p/settings"');
     expect(response.body).toContain('class="nav-item" href="/projects/p/settings"');
+    expect(response.body).toContain('id="danger-zone"');
+    expect(response.body).toContain("Danger zone");
+    expect(response.body).toContain('id="project-delete-dialog"');
+    expect(response.body).toContain('data-dialog-open="project-delete-dialog"');
+    expect(response.body).toContain('action="/api/projects/p/delete"');
+    expect(response.body).toContain('name="confirm" required');
+    expect(response.body).toContain("Type P to confirm (required)");
+    expect(response.body).toContain('name="deleteFiles" value="true"');
+    expect(response.body).toContain('name="return_to" value="/projects/p"');
+    expect(response.body).toContain('class="btn btn-danger" type="submit">Delete project</button>');
+    expect(response.body).toContain("#i-trash");
+    expect(response.body).toContain("sessions, handoffs, credentials, and managed images");
+  });
+
+  it("marks a deleting project as incomplete in the ledgers and on its page", () => {
+    const f = fixture();
+    f.db.prepare("UPDATE projects SET deleting = 1 WHERE id = 'p'").run();
+    const token = humanToken(f.db);
+
+    const overview = handleRequest(deps(f), {
+      method: "GET",
+      path: "/",
+      headers: auth(token),
+    });
+    expect(overview.status).toBe(200);
+    expect(overview.body).toContain("Deletion incomplete");
+
+    const index = handleRequest(deps(f), {
+      method: "GET",
+      path: "/projects",
+      headers: auth(token),
+    });
+    expect(index.status).toBe(200);
+    expect(index.body).toContain("Deletion incomplete");
+
+    const detail = handleRequest(deps(f), {
+      method: "GET",
+      path: "/projects/p",
+      headers: auth(token),
+    });
+    expect(detail.status).toBe(200);
+    expect(detail.body).toContain("Deletion incomplete");
+    expect(detail.body).toContain("Retry deletion");
+    expect(detail.body).toContain('data-dialog-open="project-delete-dialog"');
+    expect(detail.body).toContain("Retry project deletion?");
+    expect(detail.body).toContain("Type P to confirm (required)");
+    expect(detail.body).toContain('action="/api/projects/p/delete"');
+  });
+
+  it("marks a deleting application row in the project table", () => {
+    const f = fixture();
+    f.db.prepare("UPDATE apps SET deleting = 1 WHERE id = 'p:a'").run();
+    const token = humanToken(f.db);
+    const response = handleRequest(deps(f), {
+      method: "GET",
+      path: "/projects/p",
+      headers: auth(token),
+    });
+    expect(response.status).toBe(200);
+    expect(response.body).toContain("Deletion incomplete");
+    expect(response.body).not.toContain("Retry deletion");
+    expect(response.body).toContain('aria-label="Open a application"');
+    expect(response.body).not.toContain('href="/chat?app=a&amp;project=p"');
+    expect(response.body).toContain('href="/chat?app=b&amp;project=p"');
   });
 
   it("returns a styled 404 for an unknown project", () => {

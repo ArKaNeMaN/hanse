@@ -247,6 +247,20 @@ export interface DockerNetworkSpec {
   labels: Record<string, string>;
 }
 
+/** One container endpoint attached to a Docker network (the fields ownership checks need). */
+export interface DockerNetworkContainer {
+  Name?: string;
+  EndpointID?: string;
+}
+
+/** The network fields the runner inspects before removing an app network. */
+export interface DockerNetworkInspect {
+  Name?: string;
+  Id?: string;
+  Labels?: Record<string, string>;
+  Containers?: Record<string, DockerNetworkContainer> | null;
+}
+
 export interface DockerContainerCreateOptions {
   name: string;
   image: string;
@@ -765,6 +779,13 @@ export class DockerClient {
     this.#check(response, `remove network ${name}`);
   }
 
+  async inspectNetwork(name: string): Promise<DockerNetworkInspect | undefined> {
+    const response = await this.#transport.request("GET", `/networks/${encodeURIComponent(name)}`);
+    if (response.status === 404) return undefined;
+    this.#check(response, `inspect network ${name}`);
+    return decodeJson<DockerNetworkInspect>(response, `inspect network ${name}`);
+  }
+
   async connectNetwork(network: string, container: string, aliases: string[]): Promise<void> {
     const response = await this.#transport.request(
       "POST",
@@ -979,6 +1000,7 @@ export interface DockerRuntime {
   version(): Promise<string>;
   ensureNetwork(spec: DockerNetworkSpec): Promise<void>;
   removeNetwork(name: string): Promise<void>;
+  inspectNetwork?(name: string): Promise<DockerNetworkInspect | undefined>;
   connectNetwork(network: string, container: string, aliases: string[]): Promise<void>;
   disconnectNetwork(network: string, container: string): Promise<void>;
   createContainer(options: DockerContainerCreateOptions): Promise<string>;

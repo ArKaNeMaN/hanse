@@ -56,15 +56,21 @@ function fixture(): Fixture {
     workspaceRoot: "/tmp",
     git: new GitService({ workspaceRoot: "/tmp" }),
     settings,
-    getProjects: () => [
-      {
-        id: "p1",
-        name: "Alpha",
-        rootPath: "/tmp/p1",
-        workspaceRoot: "/tmp",
-        service: new CoordinatorService(db, "p1"),
-      },
-    ],
+    getProjects: () => {
+      const row = db.prepare("SELECT deleting FROM projects WHERE id = 'p1'").get() as {
+        deleting: number;
+      };
+      return [
+        {
+          id: "p1",
+          name: "Alpha",
+          rootPath: "/tmp/p1",
+          workspaceRoot: "/tmp",
+          deleting: row.deleting === 1,
+          service: new CoordinatorService(db, "p1"),
+        },
+      ];
+    },
   };
   return { db, deps, token, settings };
 }
@@ -107,6 +113,17 @@ function setImage(
       "UPDATE apps SET image_status = ?, image_ref = ?, image_hash = ?, image_built_at = ?, image_error = ? WHERE id = 'p1:storefront'",
     )
     .run(values.status, values.ref, values.hash, values.builtAt ?? null, values.error ?? null);
+}
+
+function setDeleting(f: Fixture, options: { app?: boolean; project?: boolean }): void {
+  if (options.app !== undefined) {
+    f.db
+      .prepare("UPDATE apps SET deleting = ? WHERE id = 'p1:storefront'")
+      .run(options.app ? 1 : 0);
+  }
+  if (options.project !== undefined) {
+    f.db.prepare("UPDATE projects SET deleting = ? WHERE id = 'p1'").run(options.project ? 1 : 0);
+  }
 }
 
 function count(haystack: string, needle: string): number {
@@ -194,6 +211,91 @@ describe("application page", () => {
     expect(body).toContain("apps/storefront");
     expect(body).toContain('href="/projects/p1"');
     expect(body).toContain('aria-current="page">storefront</span>');
+  });
+
+  it("renders a danger zone with exact-key confirmation and a files option", () => {
+    const f = fixture();
+    const body = page(f);
+
+    expect(body).toContain('id="danger-zone"');
+    expect(body.indexOf('id="danger-zone"')).toBeGreaterThan(body.indexOf('id="git-panel"'));
+    expect(body).toContain("Danger zone");
+    expect(body).not.toContain("Deletion incomplete");
+    expect(body).toContain('data-dialog-open="application-delete-dialog"');
+    expect(body).toContain('id="application-delete-dialog"');
+    expect(body).toContain('action="/api/projects/p1/apps/storefront/delete"');
+    expect(body).toContain('name="confirm" required');
+    expect(body).toContain("Type storefront to confirm (required)");
+    expect(body).toContain("The application key must match exactly.");
+    expect(body).toContain('name="deleteFiles" value="true"');
+    expect(body).toContain("Delete files too");
+    expect(body).toContain('name="return_to" value="/projects/p1/apps/storefront"');
+    expect(body).toContain('class="btn btn-danger" type="submit">Delete application</button>');
+    expect(body).toContain("#i-trash");
+    expect(body).toContain("sessions, handoffs, credentials, and managed images");
+    expect(body).toContain("source files on disk");
+  });
+
+  it("marks a deleting application incomplete and retires chat, terminal, and restart", () => {
+    const f = fixture();
+    setDeleting(f, { app: true });
+    const body = page(f);
+
+    expect(body).toContain('id="deletion-banner"');
+    expect(body).toContain("Deletion incomplete");
+    expect(body).toContain("This application is marked for deletion.");
+    expect(body).toContain("Retry deletion");
+    expect(body).toContain('data-dialog-open="application-delete-dialog"');
+    expect(body).toContain('action="/api/projects/p1/apps/storefront/delete"');
+    expect(body).toContain("Type storefront to confirm (required)");
+    expect(body).not.toContain('id="project-delete-dialog"');
+    expect(body).not.toContain('href="/chat?app=storefront');
+    expect(body).not.toContain('href="/terminal?app=storefront');
+    expect(body).not.toContain('id="app-restart-dialog"');
+  });
+
+  it("disables image build and rollback while deletion is pending", () => {
+    const f = fixture();
+    setImage(f, {
+      status: "ready",
+      ref: "sha256:new",
+      hash: "hash",
+      builtAt: "2026-10-20T10:00:00.000Z",
+    });
+    const now = new Date().toISOString();
+    f.db
+      .prepare(
+        "INSERT INTO app_image_versions (app_id,image_ref,built_at,created_at) VALUES ('p1:storefront','sha256:old',?,?)",
+      )
+      .run(now, now);
+    setDeleting(f, { app: true });
+    const body = page(f);
+
+    expect(body).toMatch(/id="image-build"[^>]*disabled/);
+    expect(body).toContain('id="image-rollback" data-dialog-open="image-rollback-dialog" disabled');
+  });
+
+  it("routes the retry to the project deletion when the project is deleting", () => {
+    const f = fixture();
+    setDeleting(f, { app: true, project: true });
+    const body = page(f);
+
+    expect(body).toContain('id="deletion-banner"');
+    expect(body).toContain("Project deletion incomplete");
+    expect(body).toContain("This project is marked for deletion.");
+    expect(body).toContain("Retry deletion");
+    expect(body).toContain('data-dialog-open="project-delete-dialog"');
+    expect(body).toContain('id="project-delete-dialog"');
+    expect(body).toContain('action="/api/projects/p1/delete"');
+    expect(body).toContain("Type Alpha to confirm (required)");
+    expect(body).toContain("The project name must match exactly.");
+    expect(body).toContain('name="return_to" value="/projects/p1/apps/storefront"');
+    expect(body).not.toContain('id="application-delete-dialog"');
+    expect(body).not.toContain('action="/api/projects/p1/apps/storefront/delete"');
+    expect(body).not.toContain('data-dialog-open="application-delete-dialog"');
+    expect(body).not.toContain('href="/chat?app=storefront');
+    expect(body).not.toContain('href="/terminal?app=storefront');
+    expect(body).not.toContain('id="app-restart-dialog"');
   });
 
   it("keeps the rail as Image, SSH access, Remotes, and Last commit", () => {

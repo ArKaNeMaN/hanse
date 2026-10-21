@@ -13,6 +13,7 @@ import {
   sendPromptAsync,
 } from "../opencode/client.js";
 import { authorizationFor } from "../opencode/endpoint-auth.js";
+import { DeletionPendingError } from "../opencode/manager.js";
 import type { RegisteredApp } from "../registry/index.js";
 import { appDir, findApp, toManagedApp } from "./apps.js";
 import { humanFrom, principalFrom } from "./auth.js";
@@ -417,7 +418,12 @@ export async function streamSessionEvents(
   let endpoint: string;
   try {
     endpoint = await deps.manager.ensure(toManagedApp(found));
-  } catch {
+  } catch (error) {
+    if (error instanceof DeletionPendingError) {
+      response.writeHead(409, { "content-type": "application/json; charset=utf-8" });
+      response.end(JSON.stringify({ error: error.message, code: error.code }));
+      return;
+    }
     response.writeHead(502);
     response.end();
     return;
@@ -534,6 +540,9 @@ export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<
   try {
     endpoint = await deps.manager.ensure(toManagedApp(found));
   } catch (error) {
+    if (error instanceof DeletionPendingError) {
+      return json(409, { error: error.message, code: error.code });
+    }
     const message = `agent failed to start: ${error instanceof Error ? error.message : String(error)}`;
     return asyncSend
       ? json(502, { error: message, code: "agent_unavailable", outcome: "not_sent" })

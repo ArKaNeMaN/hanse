@@ -7,10 +7,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import { CoordinatorService } from "../src/coordinator/service.js";
 import { GitService } from "../src/git/service.js";
 import type { HttpDeps, HttpRequest } from "../src/http/handler.js";
-import { handlePrompts } from "../src/http/prompts.js";
+import { handlePrompts, streamAppEvents } from "../src/http/prompts.js";
 import { createHttpServer } from "../src/http/server.js";
 import { createPrincipal } from "../src/identity/principals.js";
-import type { InstanceManager } from "../src/opencode/manager.js";
+import { DeletionPendingError, type InstanceManager } from "../src/opencode/manager.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
 
 const dirs: string[] = [];
@@ -885,6 +885,64 @@ describe("prompts HTTP", () => {
     );
     expect(response.status).toBe(502);
     expect(JSON.parse(response.body).error).toContain("port in use");
+  });
+
+  it("maps a pending deletion to 409 without changing start failures", async () => {
+    const f = fixture();
+    f.deps.manager = {
+      ensure: async () => {
+        throw new DeletionPendingError("p1:storefront");
+      },
+      policyWarnings: () => [],
+    } as unknown as InstanceManager;
+
+    const response = await handlePrompts(
+      f.deps,
+      request({ query: { project: "p1" }, headers: auth(f.token) }),
+    );
+    expect(response.status).toBe(409);
+    expect(JSON.parse(response.body)).toEqual({
+      error: "application p1:storefront is pending deletion",
+      code: "deletion_pending",
+    });
+  });
+
+  it("maps a pending deletion on the app event stream to 409", async () => {
+    const f = fixture();
+    f.deps.manager = {
+      ensure: async () => {
+        throw new DeletionPendingError("p1:storefront");
+      },
+      policyWarnings: () => [],
+    } as unknown as InstanceManager;
+    const written: { status?: number; body?: string } = {};
+    const response = {
+      writeHead(status: number) {
+        written.status = status;
+        return response;
+      },
+      end(body?: string) {
+        written.body = body;
+      },
+      destroyed: false,
+      writableEnded: false,
+    } as unknown as Parameters<typeof streamAppEvents>[2];
+
+    await streamAppEvents(
+      f.deps,
+      request({
+        path: "/api/apps/storefront/events",
+        query: { project: "p1" },
+        headers: auth(f.token),
+      }),
+      response,
+    );
+
+    expect(written.status).toBe(409);
+    expect(JSON.parse(written.body ?? "")).toEqual({
+      error: "application p1:storefront is pending deletion",
+      code: "deletion_pending",
+    });
   });
 
   it("is dispatched before the chat catch-all on the real server", async () => {

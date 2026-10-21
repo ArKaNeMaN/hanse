@@ -60,6 +60,34 @@ describe("registry", () => {
     db.close();
   });
 
+  it("preserves deletion markers across re-registration", async () => {
+    const root = await projectDir();
+    const { project, rootPath } = await discoverProject(root);
+    const db = openDatabase(path.join(root, "db.sqlite"));
+    runMigrations(db);
+    const registered = registerProject(db, project, rootPath, rootPath);
+    for (const app of registered.apps) {
+      expect(app.deleting).toBe(false);
+    }
+
+    db.prepare("UPDATE apps SET deleting = 1 WHERE project_id = ?").run(project.id);
+    db.prepare("UPDATE projects SET deleting = 1 WHERE id = ?").run(project.id);
+
+    const again = registerProject(db, project, rootPath, rootPath);
+    for (const app of again.apps) {
+      expect(app.deleting).toBe(true);
+    }
+    const appRows = db
+      .prepare("SELECT deleting FROM apps WHERE project_id = ? ORDER BY id")
+      .all(project.id) as { deleting: number }[];
+    expect(appRows).toEqual([{ deleting: 1 }, { deleting: 1 }]);
+    const projectRow = db.prepare("SELECT deleting FROM projects WHERE id = ?").get(project.id) as {
+      deleting: number;
+    };
+    expect(projectRow).toEqual({ deleting: 1 });
+    db.close();
+  });
+
   it("throws for a directory without a manifest", async () => {
     const empty = await mkdtemp(path.join(tmpdir(), "hanse-empty-"));
     dirs.push(empty);

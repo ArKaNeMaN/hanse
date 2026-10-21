@@ -39,7 +39,7 @@ export class CoordinatorService {
   listApps(): RegisteredApp[] {
     const rows = this.#db
       .prepare(
-        `SELECT a.id, a.project_id, a.app_key, a.path, a.kind, a.contract,
+        `SELECT a.id, a.project_id, a.app_key, a.path, a.kind, a.contract, a.deleting,
                 a.image_status, a.image_ref, a.image_hash, a.image_base_digest,
                 a.image_built_at, a.image_error,
                 (SELECT v.image_ref FROM app_image_versions v
@@ -59,6 +59,7 @@ export class CoordinatorService {
       path: string;
       kind: string | null;
       contract: string;
+      deleting: number;
       image_status: RegisteredApp["imageStatus"];
       image_ref: string | null;
       image_hash: string | null;
@@ -75,6 +76,7 @@ export class CoordinatorService {
       path: row.path,
       kind: row.kind,
       contract: row.contract,
+      deleting: row.deleting === 1,
       imageStatus: row.image_status,
       imageRef: row.image_ref,
       imageHash: row.image_hash,

@@ -22,6 +22,8 @@ export interface RegisteredApp {
   path: string;
   kind: string | null;
   contract: string;
+  /** True while a deletion is pending or incomplete; never reset by re-registration. */
+  deleting: boolean;
   imageStatus: AppImageStatus;
   imageRef: string | null;
   imageHash: string | null;
@@ -128,7 +130,7 @@ export function registerProject(
   });
 
   const selectExisting = db.prepare(
-    `SELECT image_ref, image_status, image_hash, image_base_digest, image_built_at
+    `SELECT image_ref, image_status, image_hash, image_base_digest, image_built_at, deleting
      FROM apps WHERE id = ?`,
   );
   const upsertApp = db.prepare(
@@ -152,7 +154,9 @@ export function registerProject(
     const appKey = path.basename(entry.path);
     const id = appId(project.id, appKey);
     const kind = entry.kind ?? null;
-    const existing = selectExisting.get(id) as ExistingImageRow | undefined;
+    const existing = selectExisting.get(id) as
+      | (ExistingImageRow & { deleting: number })
+      | undefined;
     const image = mergeImageMetadata(existing, inspection);
     upsertApp.run({
       id,
@@ -176,6 +180,7 @@ export function registerProject(
       path: entry.path,
       kind,
       contract: "AGENTS.md",
+      deleting: existing?.deleting === 1,
       ...image,
       buildDockerfile: inspection.dockerfile,
       buildConfigured: inspection.status === "error" || inspection.dockerfile !== null,

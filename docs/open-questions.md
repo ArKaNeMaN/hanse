@@ -1,5 +1,21 @@
 # Open questions
 
+> Stage: `0013-project-and-application-deletion`. Owner decisions were collected on 2026-10-21,
+> before the plan was reviewed. There are no open items for this stage.
+
+## Stage `0013-project-and-application-deletion` - resolved owner decisions
+
+1. **Workspace files** - keep source by default; the delete dialog offers an explicit
+   `Delete files too` checkbox. The checkbox path is guarded by root, symlink, shared-directory, and
+   coordinator-state containment checks.
+2. **Handoff history** - delete handoffs that reference the deleted app/project and write a durable
+   `events` audit row. No nullable-FK migration.
+3. **Images** - purge the app's managed images immediately with a targeted, label-scoped runner
+   operation. In-use/shared images are warnings; the existing global GC remains.
+4. **Runtime failure** - strictly require the runner; a runner failure aborts with `502` before a
+   durable marker, and deletion is retried later. No force-delete path.
+5. **Confirmation** - require the exact project name or app key, validated server-side.
+
 > Stage: `0011-ssh-host-access`. Owner decisions were collected on 2026-10-21, before the plan was
 > written. There are no open items for this stage.
 

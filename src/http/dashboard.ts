@@ -6,6 +6,7 @@ import type { SqliteDatabase } from "../store/index.js";
 import { appDir } from "./apps.js";
 import {
   appShell,
+  deletionStatus,
   emptyState,
   escapeHtml,
   handoffDialog,
@@ -31,6 +32,7 @@ export interface ProjectView {
   workspaceRoot: string;
   baseBranch: string;
   createdAt: string;
+  deleting: boolean;
   apps: RegisteredApp[];
   handoffs: Handoff[];
 }
@@ -43,6 +45,7 @@ export interface AppRef {
   projectId: string;
   projectName: string;
   projectRoot: string;
+  deleting: boolean;
 }
 
 export interface SiteModel {
@@ -70,6 +73,7 @@ export interface DashboardDeps {
     name: string;
     rootPath: string;
     workspaceRoot: string;
+    deleting?: boolean;
     service: Pick<CoordinatorService, "listApps">;
   }>;
   manager?: Pick<InstanceManager, "pendingRestart">;
@@ -147,6 +151,7 @@ export function buildSite(deps: DashboardDeps): SiteModel {
         projectId: project.id,
         projectName: project.name,
         projectRoot: project.rootPath,
+        deleting: app.deleting,
       });
     }
     return {
@@ -156,6 +161,7 @@ export function buildSite(deps: DashboardDeps): SiteModel {
       workspaceRoot: project.workspaceRoot,
       baseBranch: details?.baseBranch ?? "main",
       createdAt: details?.createdAt ?? new Date(0).toISOString(),
+      deleting: project.deleting === true,
       apps: projectApps,
       handoffs: listHandoffs(deps.db, project.id),
     };
@@ -421,6 +427,37 @@ function addAppDialog(project: ProjectView): string {
   </dialog>`;
 }
 
+function projectDeleteDialog(project: ProjectView): string {
+  const retrying = project.deleting;
+  return `<dialog class="dialog" id="project-delete-dialog" aria-labelledby="project-delete-title">
+    <div class="dialog__frame">
+      <header class="dialog__head">
+        <h2 class="dialog__title" id="project-delete-title">${retrying ? "Retry project deletion?" : "Delete project?"}</h2>
+        <p class="dialog__meta">${escapeHtml(project.name)} / ${plural(project.apps.length, "application")}</p>
+      </header>
+      <form class="dialog__form" method="post" action="/api/projects/${encodeURIComponent(project.id)}/delete">
+        <div class="dialog__body">
+          <p class="body">This removes every application in the project, including their sessions, handoffs, credentials, and managed images. Checking <strong>Delete files too</strong> also deletes the project and application source files on disk.</p>
+          <div class="field">
+            <label class="label" for="project-delete-confirm">Type ${escapeHtml(project.name)} to confirm (required)</label>
+            <input class="input" id="project-delete-confirm" name="confirm" required autocomplete="off" spellcheck="false" aria-describedby="project-delete-confirm-hint" />
+            <p class="hint" id="project-delete-confirm-hint">The project name must match exactly.</p>
+          </div>
+          <label class="check">
+            <input class="checkbox" type="checkbox" name="deleteFiles" value="true" />
+            <span>Delete files too</span>
+          </label>
+          <input type="hidden" name="return_to" value="/projects/${escapeHtml(encodeURIComponent(project.id))}" />
+        </div>
+        <footer class="dialog__foot">
+          <button class="btn btn-ghost" type="button" data-dialog-close>Cancel</button>
+          <button class="btn btn-danger" type="submit">${retrying ? "Retry deletion" : "Delete project"}</button>
+        </footer>
+      </form>
+    </div>
+  </dialog>`;
+}
+
 function newHandoffDialog(project: ProjectView): string {
   const fromKey = project.apps[0]?.appKey;
   const toKey = project.apps[1]?.appKey ?? fromKey;
@@ -544,7 +581,7 @@ export function renderOverview(site: SiteModel, chrome: PageChrome): string {
     .map((project) => {
       const counts = handoffCounts(project.handoffs);
       return `<tr>
-        <td data-label="Project"><a class="table__primary" href="/projects/${encodeURIComponent(project.id)}">${escapeHtml(project.name)}</a></td>
+        <td data-label="Project"><div class="cluster"><a class="table__primary" href="/projects/${encodeURIComponent(project.id)}">${escapeHtml(project.name)}</a>${project.deleting ? deletionStatus() : ""}</div></td>
         <td data-label="Root path"><span class="mono">${escapeHtml(project.rootPath)}</span></td>
         <td data-label="Apps" class="table__num">${project.apps.length}</td>
         <td data-label="Waiting" class="table__num">${counts.waiting}</td>
@@ -721,7 +758,7 @@ export function renderProjects(
       .map((project) => {
         const counts = handoffCounts(project.handoffs);
         return `<tr>
-          <td data-label="Project"><a class="table__primary" href="/projects/${encodeURIComponent(project.id)}">${escapeHtml(project.name)}</a></td>
+          <td data-label="Project"><div class="cluster"><a class="table__primary" href="/projects/${encodeURIComponent(project.id)}">${escapeHtml(project.name)}</a>${project.deleting ? deletionStatus() : ""}</div></td>
           <td data-label="Root path"><span class="mono">${escapeHtml(project.rootPath)}</span></td>
           <td data-label="Apps" class="table__num">${project.apps.length}</td>
           <td data-label="Waiting" class="table__num">${counts.waiting}</td>
@@ -792,13 +829,17 @@ export function renderProject(
       const runtime = site.runtime.get(app.id) ?? "stopped";
       const pending = site.pendingRestart.get(app.id) ?? false;
       const appHref = `/projects/${encodeURIComponent(project.id)}/apps/${encodeURIComponent(app.appKey)}`;
+      const chatLink =
+        app.deleting || project.deleting
+          ? ""
+          : `<a class="btn btn-ghost btn-sm" href="${escapeHtml(`/chat?app=${encodeURIComponent(app.appKey)}&project=${encodeURIComponent(project.id)}`)}">${icon("message")}Chat</a>`;
       return `<tr>
-        <td data-label="Application"><strong class="table__primary"><a href="${escapeHtml(appHref)}">${escapeHtml(app.appKey)}</a></strong></td>
+        <td data-label="Application"><div class="cluster"><strong class="table__primary"><a href="${escapeHtml(appHref)}">${escapeHtml(app.appKey)}</a></strong>${app.deleting ? deletionStatus() : ""}</div></td>
         <td data-label="Kind"><span class="badge badge--mono">${escapeHtml(app.kind ?? "app")}</span></td>
         <td data-label="Path"><span class="mono">${escapeHtml(app.path)}</span></td>
         <td data-label="Runtime"><div class="cluster">${runtimePill(runtime)}${pending ? `<a class="badge badge-warning" href="${escapeHtml(`/projects/${encodeURIComponent(project.id)}/apps/${encodeURIComponent(app.appKey)}/settings`)}">Restart required</a>` : ""}</div></td>
         <td data-label="Actions" class="table__actions"><div class="table__action-group">
-          <a class="btn btn-ghost btn-sm" href="${escapeHtml(`/chat?app=${encodeURIComponent(app.appKey)}&project=${encodeURIComponent(project.id)}`)}">${icon("message")}Chat</a>
+          ${chatLink}
           <a class="btn btn-ghost btn-icon btn-sm" href="${escapeHtml(ideFolderUrl(appDir(project, app)))}" target="_blank" rel="noreferrer" aria-label="Open ${escapeHtml(app.appKey)} in IDE" title="Open in IDE">${icon("external")}</a>
           <a class="btn btn-ghost btn-icon btn-sm" href="${escapeHtml(appHref)}" aria-label="Open ${escapeHtml(app.appKey)} application" title="Open application">${icon("chevron-right")}</a>
         </div></td>
@@ -868,6 +909,23 @@ export function renderProject(
     <div class="card__foot"><a class="btn btn-ghost btn-sm" href="${escapeHtml(ideFolderUrl(project.rootPath))}" target="_blank" rel="noreferrer">${icon("external")}Open IDE</a></div>
   </section>`;
 
+  const dangerZone = `<section class="card section" id="danger-zone" aria-labelledby="danger-zone-title">
+    <div class="card__head">
+      <h2 class="card__title" id="danger-zone-title">Danger zone</h2>
+      ${project.deleting ? deletionStatus() : '<span class="badge">Destructive</span>'}
+    </div>
+    <div class="card__body stack--tight">
+      ${
+        project.deleting
+          ? `<p class="small">A previous deletion did not finish. Retry to remove the remaining applications, records, and runtime resources. Chat and start stay disabled until deletion completes.</p>`
+          : `<p class="small">Deleting this project removes every application, session, handoff, credential, and managed image. Source files are kept unless you choose to delete them too.</p>`
+      }
+    </div>
+    <div class="card__foot">
+      <button class="btn btn-danger" type="button" data-dialog-open="project-delete-dialog">${icon("trash")}${project.deleting ? "Retry deletion" : "Delete project"}</button>
+    </div>
+  </section>`;
+
   const body = `<div class="watch-strip watch-strip--4">
       <div class="watch"><p class="watch__value">${project.apps.length}</p><p class="watch__label">Applications</p></div>
       <div class="watch"><p class="watch__value">${running}</p><p class="watch__label">Running</p></div>
@@ -896,7 +954,9 @@ export function renderProject(
         ${manifest}
       </aside>
     </div>
+    ${dangerZone}
     ${addAppDialog(project)}
+    ${projectDeleteDialog(project)}
     ${newHandoffDialog(project)}
     ${handoffDialogs(project.handoffs, site, `/projects/${project.id}`)}`;
 

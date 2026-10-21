@@ -93,6 +93,8 @@ export class ImageBuildService {
   readonly #validation: ImageValidationRuntime | undefined;
   readonly #byApp = new Map<string, RunnerImageRecord>();
   readonly #byBuild = new Map<string, RunnerImageRecord>();
+  readonly #starting = new Map<string, string>();
+  readonly #deleting = new Set<string>();
   #active: string | undefined;
 
   constructor(options: ImageBuildServiceOptions) {
@@ -105,17 +107,27 @@ export class ImageBuildService {
     if (this.#build === undefined) {
       throw new ImageBuildError(501, "image builds are not enabled");
     }
+
+    const rawAppId = appIdFromRaw(raw);
+    if (rawAppId !== undefined) {
+      this.#assertStartAllowed(rawAppId);
+    }
     if (this.#active !== undefined) {
       throw new ImageBuildError(409, "another image build is in progress", "build_in_progress");
     }
 
     const buildId = randomUUID();
     this.#active = buildId;
+    if (rawAppId !== undefined) {
+      this.#starting.set(rawAppId, buildId);
+    }
     try {
       const request = await validateBuildRequest(raw, this.#config);
+      this.#assertStartAllowed(request.appId, buildId);
       const context = await createBuildContext(request.appDir, {
         dockerfile: request.dockerfile,
       });
+      this.#assertStartAllowed(request.appId, buildId);
       const tag = `${appContainerName(request.appId)}:${buildId}`;
       const previous = this.#byApp.get(request.appId);
       const record: RunnerImageRecord = {
@@ -143,18 +155,97 @@ export class ImageBuildService {
       if (this.#active === buildId) {
         this.#active = undefined;
       }
+      if (rawAppId !== undefined && this.#starting.get(rawAppId) === buildId) {
+        this.#starting.delete(rawAppId);
+      }
       throw mapBuildError(error);
     }
   }
 
   get(appId: string): RunnerImageRecord {
     const record = this.#byApp.get(appId);
+    const starting = this.#starting.get(appId);
+    if (starting !== undefined && (record === undefined || record.buildId !== starting)) {
+      return {
+        appId,
+        status: "building",
+        imageRef: record?.imageRef ?? null,
+        imageId: record?.imageId ?? null,
+        buildId: starting,
+        logs: "",
+        error: null,
+        updatedAt: new Date().toISOString(),
+      };
+    }
     return record === undefined ? missingRecord(appId) : { ...record };
   }
 
   getBuild(buildId: string): RunnerImageRecord | undefined {
     const record = this.#byBuild.get(buildId);
     return record === undefined ? undefined : { ...record };
+  }
+
+  beginDelete(appId: string): void {
+    if (this.#isBuilding(appId)) {
+      throw new ImageBuildError(
+        409,
+        "an image build is in progress for this app",
+        "build_in_progress",
+      );
+    }
+    this.#deleting.add(appId);
+  }
+
+  endDelete(appId: string): void {
+    this.#deleting.delete(appId);
+  }
+
+  forget(appId: string): void {
+    if (this.#isBuilding(appId)) {
+      throw new ImageBuildError(
+        409,
+        "an image build is in progress for this app",
+        "build_in_progress",
+      );
+    }
+    const buildId = this.#starting.get(appId) ?? this.#byApp.get(appId)?.buildId;
+    this.#byApp.delete(appId);
+    for (const [id, record] of this.#byBuild) {
+      if (record.appId === appId) {
+        this.#byBuild.delete(id);
+      }
+    }
+    this.#starting.delete(appId);
+    if (buildId !== undefined && this.#active === buildId) {
+      this.#active = undefined;
+    }
+  }
+
+  #isBuilding(appId: string): boolean {
+    return this.#starting.has(appId) || this.#byApp.get(appId)?.status === "building";
+  }
+
+  #assertStartAllowed(appId: string, buildId?: string): void {
+    if (this.#deleting.has(appId)) {
+      throw new ImageBuildError(
+        409,
+        "an image deletion is in progress for this app",
+        "build_in_progress",
+      );
+    }
+    if (buildId !== undefined) {
+      if (this.#starting.get(appId) !== buildId) {
+        throw new ImageBuildError(409, "image build was superseded", "build_in_progress");
+      }
+      return;
+    }
+    if (this.#isBuilding(appId)) {
+      throw new ImageBuildError(
+        409,
+        "an image build is already in progress for this app",
+        "build_in_progress",
+      );
+    }
   }
 
   async #execute(record: RunnerImageRecord, job: BuildJob): Promise<void> {
@@ -208,6 +299,9 @@ export class ImageBuildService {
       if (this.#active === record.buildId) {
         this.#active = undefined;
       }
+      if (this.#starting.get(record.appId) === record.buildId) {
+        this.#starting.delete(record.appId);
+      }
     }
   }
 
@@ -218,6 +312,12 @@ export class ImageBuildService {
     if (this.#validation === undefined) return undefined;
     return new ImageValidationService({ runtime: this.#validation }).validate(imageRef, appId);
   }
+}
+
+function appIdFromRaw(raw: unknown): string | undefined {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined;
+  const appId = (raw as Record<string, unknown>).appId;
+  return isValidAppId(appId) ? appId : undefined;
 }
 
 function missingRecord(appId: string): RunnerImageRecord {

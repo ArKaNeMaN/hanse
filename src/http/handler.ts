@@ -5,6 +5,7 @@ import path from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { ConfigError } from "../config/load.js";
 import { decideApproval } from "../coordinator/approval.js";
+import type { DeletionService } from "../coordinator/deletion.js";
 import type { CoordinatorService } from "../coordinator/service.js";
 import type { GitService } from "../git/service.js";
 import { authenticate } from "../identity/auth.js";
@@ -36,6 +37,7 @@ export interface ProjectContext {
   name: string;
   rootPath: string;
   workspaceRoot: string;
+  deleting?: boolean;
   service: CoordinatorService;
 }
 
@@ -50,6 +52,8 @@ export interface HttpDeps {
   runner?: { url: string; token: string };
   /** Present when the coordinator is wired to the runner; image routes 503 otherwise. */
   images?: ImageService;
+  /** Present only when a runner and host workspace are configured; deletion routes 503 otherwise. */
+  deletion?: DeletionService;
 }
 
 export interface HttpRequest {
@@ -58,6 +62,8 @@ export interface HttpRequest {
   headers: Record<string, string | undefined>;
   body?: string;
   query?: Record<string, string>;
+  origin?: string;
+  host?: string;
 }
 
 export interface HttpResponse {
@@ -140,7 +146,7 @@ function redirect(location: string, headers?: Record<string, string>): HttpRespo
   return { status: 303, contentType: "text/plain", body: "", headers: { location, ...headers } };
 }
 
-function safeDecode(value: string): string {
+export function safeDecode(value: string): string {
   try {
     return decodeURIComponent(value.replace(/\+/g, " "));
   } catch {
@@ -163,7 +169,7 @@ function parseForm(body: string | undefined): Record<string, string> {
   return fields;
 }
 
-function wantsHtml(request: HttpRequest): boolean {
+export function wantsHtml(request: HttpRequest): boolean {
   const accept = request.headers.accept ?? "";
   return accept.includes("text/html") || accept.includes("application/xhtml+xml");
 }
@@ -192,7 +198,7 @@ function loginRedirect(request: HttpRequest): HttpResponse {
   return redirect(`/login?next=${encodeURIComponent(requestPath(request))}`);
 }
 
-function loginRedirectTo(next: string): HttpResponse {
+export function loginRedirectTo(next: string): HttpResponse {
   return redirect(`/login?next=${encodeURIComponent(safeLocalPath(next, "/"))}`);
 }
 
@@ -228,7 +234,7 @@ function withNotice(location: string, message: string, tone: "success" | "error"
   return `${pathname}?${params.toString()}${hash}`;
 }
 
-function redirectWithNotice(
+export function redirectWithNotice(
   location: string,
   message: string,
   tone: "success" | "error",
@@ -241,6 +247,18 @@ function browserError(request: HttpRequest, location: string, message: string): 
     return redirectWithNotice(location, message, "error");
   }
   return json(400, { error: message });
+}
+
+function deletionConflict(
+  request: HttpRequest,
+  location: string,
+  message: string,
+  code: "deletion_incomplete" | "deletion_in_progress",
+): HttpResponse {
+  if (wantsHtml(request)) {
+    return redirectWithNotice(location, message, "error");
+  }
+  return json(409, { error: message, code });
 }
 
 function asset(request: HttpRequest): HttpResponse | undefined {
@@ -265,7 +283,7 @@ function bearerToken(request: HttpRequest): string | undefined {
   return match?.[1]?.trim();
 }
 
-function agentTokenFor(request: HttpRequest) {
+export function agentTokenFor(request: HttpRequest) {
   const token = bearerToken(request);
   return token === undefined || token.length === 0 ? undefined : token;
 }
@@ -549,6 +567,18 @@ function route(deps: HttpDeps, request: HttpRequest): HttpResponse {
           .replace(/[^a-z0-9._-]+/g, "-")
           .replace(/^-+|-+$/g, "") || `project-${Date.now()}`;
       const dir = path.join(deps.workspaceRoot, slug);
+      const resolvedRoot = path.resolve(dir);
+      if (
+        deps.deletion !== undefined &&
+        (deps.deletion.isActive() || deps.deletion.isDeletingPath(resolvedRoot))
+      ) {
+        return deletionConflict(
+          request,
+          "/projects",
+          "A deletion is in progress for this location; try again when it finishes.",
+          "deletion_in_progress",
+        );
+      }
       const configPath = path.join(dir, ".hanse", "project.yaml");
       if (existsSync(configPath)) {
         return browserError(request, "/projects", "Project already exists.");
@@ -605,6 +635,44 @@ function route(deps: HttpDeps, request: HttpRequest): HttpResponse {
             });
       }
       const remote = (fields.remote ?? "").trim();
+      const appKey = path.basename(appPath);
+      const appId = `${project.id}:${appKey}`;
+      const projectRow = deps.db
+        .prepare("SELECT deleting FROM projects WHERE id = ?")
+        .get(project.id) as { deleting: number } | undefined;
+      if (project.deleting === true || projectRow?.deleting === 1) {
+        return deletionConflict(
+          request,
+          returnTo,
+          "This project is being deleted; finish the deletion first.",
+          "deletion_incomplete",
+        );
+      }
+      const existingApp = deps.db
+        .prepare("SELECT deleting FROM apps WHERE project_id = ? AND app_key = ?")
+        .get(project.id, appKey) as { deleting: number } | undefined;
+      if (existingApp?.deleting === 1) {
+        return deletionConflict(
+          request,
+          returnTo,
+          "This application is being deleted; finish the deletion first.",
+          "deletion_incomplete",
+        );
+      }
+      if (
+        deps.deletion !== undefined &&
+        (deps.deletion.isDeletingProject(project.id) ||
+          deps.deletion.isDeletingApp(appId) ||
+          deps.deletion.isDeletingAppState(project.id, appKey) ||
+          deps.deletion.isDeletingPath(path.resolve(dir)))
+      ) {
+        return deletionConflict(
+          request,
+          returnTo,
+          "A deletion is in progress for this application; try again when it finishes.",
+          "deletion_in_progress",
+        );
+      }
       try {
         if (remote.length > 0) {
           mkdirSync(path.dirname(dir), { recursive: true });
@@ -639,7 +707,6 @@ function route(deps: HttpDeps, request: HttpRequest): HttpResponse {
           ? redirectWithNotice(returnTo, message, "error")
           : json(500, { error: message });
       }
-      const appKey = path.basename(appPath);
       deps.db
         .prepare(
           "INSERT INTO apps (id, project_id, app_key, path, kind, contract, created_at) VALUES (?, ?, ?, ?, 'app', 'AGENTS.md', ?) ON CONFLICT(id) DO UPDATE SET path = excluded.path, kind = excluded.kind",

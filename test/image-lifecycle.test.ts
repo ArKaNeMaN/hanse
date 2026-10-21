@@ -10,6 +10,7 @@ import { handleImages } from "../src/http/images.js";
 import { createHttpServer } from "../src/http/server.js";
 import { createPrincipal } from "../src/identity/principals.js";
 import type { ImageBuildInput, RunnerImageRecord } from "../src/images/client.js";
+import { RunnerImageClient } from "../src/images/client.js";
 import { type ImageRunnerClient, ImageService } from "../src/images/service.js";
 import { InstanceManager } from "../src/opencode/manager.js";
 import { discoverProject, registerProject } from "../src/registry/index.js";
@@ -48,9 +49,28 @@ afterEach(() => {
 const DOCKERFILE = `ARG HANSE_BASE\nFROM \${HANSE_BASE}\nRUN echo web\n`;
 const APP_YAML = "name: web\nkind: service\nbuild:\n  dockerfile: Dockerfile\n";
 
+function emptyGcReport(protectedRefCount: number): ImageGcReport {
+  return {
+    ok: true,
+    startedAt: "2026-01-01T00:00:00.000Z",
+    finishedAt: "2026-01-01T00:00:00.000Z",
+    durationMs: 0,
+    protectedRefCount,
+    removedImageCount: 0,
+    removedImageIds: [],
+    removedRefs: [],
+    estimatedReclaimedBytes: 0,
+    buildCachePruned: false,
+    buildCacheReclaimedBytes: 0,
+    skipped: [],
+    truncated: false,
+  };
+}
+
 class FakeImageRunner implements ImageRunnerClient {
   readonly records = new Map<string, RunnerImageRecord>();
   readonly builds = new Map<string, RunnerImageRecord>();
+  readonly purgeCalls: string[] = [];
   gcRefs: string[] | undefined;
   nextBuild = 1;
 
@@ -105,21 +125,12 @@ class FakeImageRunner implements ImageRunnerClient {
 
   async gc(protectedRefs: string[]): Promise<ImageGcReport> {
     this.gcRefs = protectedRefs;
-    return {
-      ok: true,
-      startedAt: "2026-01-01T00:00:00.000Z",
-      finishedAt: "2026-01-01T00:00:00.000Z",
-      durationMs: 0,
-      protectedRefCount: protectedRefs.length,
-      removedImageCount: 0,
-      removedImageIds: [],
-      removedRefs: [],
-      estimatedReclaimedBytes: 0,
-      buildCachePruned: false,
-      buildCacheReclaimedBytes: 0,
-      skipped: [],
-      truncated: false,
-    };
+    return emptyGcReport(protectedRefs.length);
+  }
+
+  async purgeApp(appId: string): Promise<ImageGcReport> {
+    this.purgeCalls.push(appId);
+    return emptyGcReport(0);
   }
 
   set(appId: string, patch: Partial<RunnerImageRecord>): void {
@@ -467,5 +478,148 @@ describe("app image lifecycle", () => {
     });
     expect(again.status).toBe(200);
     expect(f.runner.gcRefs).toEqual(["hanse-app-p:web:one", "hanse-app-p:web:two"]);
+  });
+});
+
+describe("app image deletion coordination", () => {
+  function caught(run: () => void): unknown {
+    try {
+      run();
+      return undefined;
+    } catch (error) {
+      return error;
+    }
+  }
+
+  it("fails reserveDelete in the window between the runner check and a pending build", async () => {
+    const f = await fixture();
+    const observed = await f.service.assertRunnerIdle(f.appId);
+
+    const building = f.service.build(f.appId);
+    expect(caught(() => f.service.reserveDelete(f.appId, observed))).toMatchObject({
+      status: 409,
+      code: "build_in_progress",
+    });
+    await expect(f.service.build(f.appId)).rejects.toMatchObject({ code: "build_in_progress" });
+
+    await building;
+  });
+
+  it("reconciles a concrete stale build id but never a pending build", async () => {
+    const f = await fixture();
+    await f.service.build(f.appId);
+    f.runner.set(f.appId, { status: "ready", imageRef: "hanse-app-p:web:one" });
+    const observed = await f.service.assertRunnerIdle(f.appId);
+
+    f.service.reserveDelete(f.appId, observed);
+    await expect(f.service.build(f.appId)).rejects.toMatchObject({
+      status: 409,
+      code: "deletion_pending",
+    });
+
+    f.service.endDelete(f.appId);
+    await expect(f.service.build(f.appId)).resolves.toMatchObject({ status: "building" });
+  });
+
+  it("refuses a build while the app or its project is marked deleting", async () => {
+    const f = await fixture();
+    f.db.prepare("UPDATE apps SET deleting = 1 WHERE id = ?").run(f.appId);
+    await expect(f.service.build(f.appId)).rejects.toMatchObject({
+      status: 409,
+      code: "deletion_pending",
+    });
+
+    f.db.prepare("UPDATE apps SET deleting = 0 WHERE id = ?").run(f.appId);
+    f.db.prepare("UPDATE projects SET deleting = 1 WHERE id = ?").run(f.projectId);
+    await expect(f.service.build(f.appId)).rejects.toMatchObject({
+      status: 409,
+      code: "deletion_pending",
+    });
+  });
+
+  it("writes nothing when a delayed status refresh resumes after the app row is gone", async () => {
+    const f = await fixture();
+    await f.service.build(f.appId);
+    f.runner.set(f.appId, {
+      status: "ready",
+      imageRef: "hanse-app-p:web:one",
+      imageId: "sha256:one",
+      updatedAt: "2026-01-02T00:00:00.000Z",
+    });
+
+    const originalGet = f.runner.get.bind(f.runner);
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    f.runner.get = async (appId) => {
+      await gate;
+      return originalGet(appId);
+    };
+
+    const pending = f.service.status(f.appId);
+    f.db.prepare("DELETE FROM apps WHERE id = ?").run(f.appId);
+    release?.();
+
+    const view = await pending;
+    expect(view).toMatchObject({
+      appId: f.appId,
+      buildId: "build-1",
+      runnerAvailable: true,
+    });
+    expect(versions(f)).toEqual([]);
+  });
+
+  it("purges by id after the app row is gone without reading it back", async () => {
+    const f = await fixture();
+    await f.service.build(f.appId);
+    f.db.prepare("DELETE FROM apps WHERE id = ?").run(f.appId);
+
+    const report = await f.service.purgeApp(f.appId);
+    expect(f.runner.purgeCalls).toEqual([f.appId]);
+    expect(report.ok).toBe(true);
+    await expect(f.service.build(f.appId)).rejects.toMatchObject({ status: 404 });
+  });
+
+  it("forgetApp clears the in-flight guard for the app", async () => {
+    const f = await fixture();
+    await f.service.build(f.appId);
+
+    f.service.forgetApp(f.appId);
+    await expect(f.service.build(f.appId)).resolves.toMatchObject({ status: "building" });
+  });
+});
+
+describe("RunnerImageClient purge", () => {
+  it("sends DELETE by app id and parses the gc report", async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const client = new RunnerImageClient({
+      baseUrl: "http://runner:8790/",
+      token: "runtime-token",
+      fetchImpl: async (url, init) => {
+        calls.push({ url: String(url), init: init ?? {} });
+        return new Response(
+          JSON.stringify({
+            ...emptyGcReport(0),
+            removedImageCount: 1,
+            removedImageIds: ["sha256:one"],
+            removedRefs: ["hanse-app-p:web:one"],
+          }),
+          { status: 200 },
+        );
+      },
+    });
+
+    const report = await client.purgeApp("project:web");
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toBe("http://runner:8790/v1/images/project%3Aweb");
+    expect(calls[0]?.init.method).toBe("DELETE");
+    expect(report).toMatchObject({
+      ok: true,
+      removedImageCount: 1,
+      removedImageIds: ["sha256:one"],
+      removedRefs: ["hanse-app-p:web:one"],
+    });
   });
 });

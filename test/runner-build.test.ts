@@ -11,11 +11,18 @@ import type {
   DockerContainerCreateOptions,
   DockerContainerInspect,
   DockerContainerSummary,
+  DockerImageUsage,
   DockerLogs,
   DockerNetworkSpec,
   DockerRuntime,
+  DockerSystemDf,
 } from "../src/runner/docker.js";
-import { MAX_BUILD_LOG_BYTES, type RunnerImageRecord } from "../src/runner/images.js";
+import {
+  ImageBuildService,
+  MAX_BUILD_LOG_BYTES,
+  type RunnerImageRecord,
+} from "../src/runner/images.js";
+import { appContainerName } from "../src/runner/names.js";
 import { RunnerService } from "../src/runner/server.js";
 import type { RunnerConfig } from "../src/runner/validate.js";
 
@@ -39,6 +46,8 @@ afterEach(async () => {
 
 class FakeDocker implements DockerRuntime {
   readonly creates: DockerContainerCreateOptions[] = [];
+  images: DockerImageUsage[] = [];
+  readonly removed: string[] = [];
 
   async version(): Promise<string> {
     return "1.44";
@@ -51,6 +60,14 @@ class FakeDocker implements DockerRuntime {
   async connectNetwork(_network: string, _container: string, _aliases: string[]): Promise<void> {}
 
   async disconnectNetwork(_network: string, _container: string): Promise<void> {}
+
+  async systemDf(): Promise<DockerSystemDf> {
+    return { Images: this.images, BuildCache: [], LayersSize: 0 };
+  }
+
+  async removeImage(referenceOrId: string): Promise<void> {
+    this.removed.push(referenceOrId);
+  }
 
   async createContainer(options: DockerContainerCreateOptions): Promise<string> {
     this.creates.push(options);
@@ -241,6 +258,93 @@ async function waitForCalls(build: FakeBuildRuntime, count: number): Promise<voi
   }
   throw new Error(`timed out waiting for ${count} build call(s)`);
 }
+
+async function waitForRecord(
+  service: ImageBuildService,
+  appId: string,
+  predicate: (record: RunnerImageRecord) => boolean,
+): Promise<RunnerImageRecord> {
+  const deadline = Date.now() + 3000;
+  while (Date.now() < deadline) {
+    const record = service.get(appId);
+    if (predicate(record)) return record;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error("timed out waiting for image record");
+}
+
+describe("ImageBuildService reservations", () => {
+  it("reserves the raw app id before any await and reports building", async () => {
+    const f = fixture();
+    const build = new FakeBuildRuntime();
+    const service = new ImageBuildService({ config: config(f), build });
+
+    const started = service.start(bodyFor(f));
+    const early = service.get("project:app");
+    expect(early.status).toBe("building");
+    expect(early.buildId).toBeTruthy();
+    expect(() => service.forget("project:app")).toThrow(/in progress/);
+    expect(() => service.beginDelete("project:app")).toThrow(/in progress/);
+    await expect(service.start(bodyFor(f))).rejects.toMatchObject({
+      status: 409,
+      code: "build_in_progress",
+    });
+
+    const accepted = await started;
+    expect(accepted.status).toBe("building");
+    expect(() => service.forget("project:app")).toThrow(/in progress/);
+    await waitForCalls(build, 1);
+    build.succeed("sha256:one");
+    await waitForRecord(service, "project:app", (record) => record.status === "ready");
+
+    service.forget("project:app");
+    expect(service.get("project:app").status).toBe("missing");
+    expect(service.getBuild(accepted.buildId)).toBeUndefined();
+  });
+
+  it("blocks start while an image purge reservation exists", async () => {
+    const f = fixture();
+    const build = new FakeBuildRuntime();
+    const service = new ImageBuildService({ config: config(f), build });
+
+    service.beginDelete("project:app");
+    await expect(service.start(bodyFor(f))).rejects.toMatchObject({
+      status: 409,
+      code: "build_in_progress",
+    });
+    service.endDelete("project:app");
+
+    const started = service.start(bodyFor(f));
+    await waitForCalls(build, 1);
+    build.succeed();
+    await waitForRecord(service, "project:app", (record) => record.status === "ready");
+    await started;
+  });
+
+  it("forgets every build record for the app", async () => {
+    const f = fixture();
+    const build = new FakeBuildRuntime();
+    const service = new ImageBuildService({ config: config(f), build });
+
+    const first = await service.start(bodyFor(f));
+    await waitForCalls(build, 1);
+    build.succeed("sha256:first");
+    await waitForRecord(service, "project:app", (record) => record.status === "ready");
+
+    const second = await service.start(bodyFor(f));
+    await waitForCalls(build, 2);
+    build.succeed("sha256:second");
+    await waitForRecord(
+      service,
+      "project:app",
+      (record) => record.status === "ready" && record.buildId === second.buildId,
+    );
+
+    service.forget("project:app");
+    expect(service.getBuild(first.buildId)).toBeUndefined();
+    expect(service.getBuild(second.buildId)).toBeUndefined();
+  });
+});
 
 describe("runner image build API", () => {
   it("requires the runtime bearer token", async () => {
@@ -439,5 +543,73 @@ describe("runner image build API", () => {
 
     expect(failed.error).toContain("docker socket exploded");
     expect(docker.creates).toHaveLength(0);
+  });
+
+  it("keeps reserved image route names and refuses a purge during a build", async () => {
+    const { f, base, build, docker } = await harness();
+    const reserved: Array<[string, string]> = [
+      ["/v1/images/usage", "GET"],
+      ["/v1/images/gc", "POST"],
+      ["/v1/images/build", "POST"],
+      ["/v1/images/builds/unknown", "GET"],
+    ];
+    for (const [pathname, allow] of reserved) {
+      const response = await fetch(`${base}${pathname}`, {
+        method: "DELETE",
+        headers: { authorization: "Bearer runtime-token" },
+      });
+      expect(response.status, pathname).toBe(405);
+      expect(response.headers.get("allow"), pathname).toBe(allow);
+    }
+
+    await postBuild(base, bodyFor(f));
+    await waitForCalls(build, 1);
+    const inFlight = await fetch(`${base}/v1/images/project%3Aapp`, {
+      method: "DELETE",
+      headers: { authorization: "Bearer runtime-token" },
+    });
+    expect(inFlight.status).toBe(409);
+    expect(await inFlight.json()).toMatchObject({ code: "build_in_progress" });
+    expect(docker.removed).toEqual([]);
+
+    build.succeed();
+    await waitForImage(base, "project:app", (record) => record.status === "ready");
+  });
+
+  it("purges one app's images over DELETE and forgets the build record", async () => {
+    const { f, base, build, docker } = await harness();
+    const accepted = (await (await postBuild(base, bodyFor(f))).json()) as { buildId: string };
+    await waitForCalls(build, 1);
+    build.succeed("sha256:ready");
+    await waitForImage(base, "project:app", (record) => record.status === "ready");
+
+    const tag = `${appContainerName("project:app")}:${accepted.buildId}`;
+    docker.images = [
+      {
+        Id: "sha256:ready",
+        RepoTags: [tag],
+        Size: 100,
+        Created: 1,
+        Labels: { "hanse.app.id": "project:app" },
+      },
+    ];
+
+    const response = await fetch(`${base}/v1/images/project%3Aapp`, {
+      method: "DELETE",
+      headers: { authorization: "Bearer runtime-token" },
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      ok: true,
+      removedImageCount: 1,
+      removedRefs: [tag],
+      buildCachePruned: false,
+    });
+    expect(docker.removed).toEqual([tag]);
+    expect(await (await getJson(base, "/v1/images/project%3Aapp")).json()).toMatchObject({
+      status: "missing",
+    });
+    expect((await getJson(base, `/v1/images/builds/${accepted.buildId}`)).status).toBe(404);
   });
 });

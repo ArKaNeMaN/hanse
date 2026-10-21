@@ -754,20 +754,44 @@ export class RunnerService {
   async delete(appId: string): Promise<RuntimeAppStatus> {
     const summary = await this.#findContainer(appId);
     if (summary === undefined) {
+      await this.#removeManagedAppNetwork(appNetworkName(appId), appId);
       return stoppedStatus(appId);
     }
     const inspect = await this.#docker.inspectContainer(summary.Id);
     const network = inspect?.Config?.Labels?.["hanse.network.name"] ?? appNetworkName(appId);
     await this.#docker.stopContainer(summary.Id);
     await this.#docker.removeContainer(summary.Id, true);
-    await this.#docker
-      .disconnectNetwork(network, this.#config.coordinatorContainer)
-      .catch(() => undefined);
-    await this.#docker.removeNetwork(network).catch(() => undefined);
+    await this.#removeManagedAppNetwork(network, appId);
     return {
       ...stoppedStatus(appId),
       specHash: inspect?.Config?.Labels?.["hanse.spec.hash"] ?? null,
     };
+  }
+
+  async #inspectNetwork(name: string) {
+    const inspectNetwork = this.#docker.inspectNetwork?.bind(this.#docker);
+    if (inspectNetwork === undefined) return undefined;
+    try {
+      return await inspectNetwork(name);
+    } catch (error) {
+      if (error instanceof DockerError && error.status === 404) return undefined;
+      throw error;
+    }
+  }
+
+  async #removeManagedAppNetwork(network: string, appId: string): Promise<void> {
+    const inspected = await this.#inspectNetwork(network);
+    const labels = inspected?.Labels;
+    if (labels?.["hanse.managed"] !== "true" || labels["hanse.app.id"] !== appId) return;
+    await this.#docker
+      .disconnectNetwork(network, this.#config.coordinatorContainer)
+      .catch(() => undefined);
+    try {
+      await this.#docker.removeNetwork(network);
+    } catch (error) {
+      if (error instanceof DockerError && (error.status === 404 || error.status === 409)) return;
+      throw error;
+    }
   }
 
   async status(appId: string): Promise<RuntimeAppStatus | undefined> {
@@ -1127,8 +1151,8 @@ export class RunnerService {
 
     const imageMatch = /^\/v1\/images\/([^/]+)$/.exec(url.pathname);
     if (imageMatch !== null) {
-      if (method !== "GET") {
-        writeJson(response, 405, { error: "method not allowed" }, { Allow: "GET" });
+      if (method !== "GET" && method !== "DELETE") {
+        writeJson(response, 405, { error: "method not allowed" }, { Allow: "GET, DELETE" });
         return;
       }
       let appId: string;
@@ -1139,6 +1163,17 @@ export class RunnerService {
       }
       if (!isValidAppId(appId)) {
         throw new RunnerError(400, "invalid app id");
+      }
+      if (method === "DELETE") {
+        this.#images.beginDelete(appId);
+        try {
+          const report = await this.#imageGc.purgeApp(appId);
+          this.#images.forget(appId);
+          writeJson(response, 200, report);
+        } finally {
+          this.#images.endDelete(appId);
+        }
+        return;
       }
       writeJson(response, 200, this.#images.get(appId));
       return;

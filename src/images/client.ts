@@ -309,6 +309,16 @@ export class RunnerImageClient {
     return parseGc(parsed);
   }
 
+  /** Purge every image labelled for one app; the runner returns a GC report. */
+  async purgeApp(appId: string): Promise<ImageGcReport> {
+    const parsed = await this.#request(
+      `/v1/images/${encodeURIComponent(appId)}`,
+      { method: "DELETE" },
+      GC_TIMEOUT_MS,
+    );
+    return parseGc(parsed);
+  }
+
   async #request(path: string, init: RequestInit, timeoutMs: number): Promise<unknown> {
     let response: Response;
     try {

@@ -136,6 +136,10 @@ export function runtimePill(state: RuntimeState): string {
   return `<span class="status" data-state="queued">${icon("clock")}Stopped</span>`;
 }
 
+export function deletionStatus(label = "Deletion incomplete"): string {
+  return `<span class="status" data-state="failed">${icon("alert-triangle")}${escapeHtml(label)}</span>`;
+}
+
 export function initials(name: string): string {
   const words = name
     .split(/[\s._-]+/)

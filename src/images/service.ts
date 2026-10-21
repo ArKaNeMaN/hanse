@@ -27,6 +27,7 @@ export interface ImageRunnerClient {
   getBuild(buildId: string): Promise<RunnerImageRecord | undefined>;
   usage?(): Promise<ImageUsageReport>;
   gc?(protectedRefs: string[]): Promise<ImageGcReport>;
+  purgeApp?(appId: string): Promise<ImageGcReport>;
 }
 
 export interface AppImageStatusView {
@@ -89,6 +90,8 @@ interface AppRow {
   image_base_digest: string | null;
   image_built_at: string | null;
   image_error: string | null;
+  deleting: number;
+  project_deleting: number;
 }
 
 interface AppImageVersionRow {
@@ -131,6 +134,7 @@ export class ImageService {
   readonly #runner: ImageRunnerClient;
   readonly #active = new Map<string, string>();
   readonly #builds = new Map<string, BuildMeta>();
+  readonly #deleting = new Set<string>();
 
   constructor(options: ImageServiceOptions) {
     this.#db = options.db;
@@ -145,6 +149,13 @@ export class ImageService {
     const app = this.#getApp(appId);
     if (appKey !== undefined && app.app_key !== appKey) {
       throw new ImageServiceError(404, "application not found", "not_found");
+    }
+    if (this.#deleting.has(appId) || app.deleting === 1 || app.project_deleting === 1) {
+      throw new ImageServiceError(
+        409,
+        "the application is being deleted; image builds are disabled",
+        "deletion_pending",
+      );
     }
     if (this.#active.has(appId)) {
       throw new ImageServiceError(
@@ -201,8 +212,18 @@ export class ImageService {
       });
     }
 
-    this.#applyRecord(app, inspection, record);
-    app = this.#getApp(appId);
+    const current = this.#findApp(appId);
+    if (current === undefined) {
+      return this.#view(app, inspection, {
+        buildId: record.buildId,
+        imageId: record.imageId,
+        updatedAt: record.updatedAt,
+        runnerAvailable: true,
+      });
+    }
+
+    this.#applyRecord(current, inspection, record);
+    app = this.#findApp(appId) ?? current;
     return this.#view(app, inspection, {
       buildId: record.buildId,
       imageId: record.imageId,
@@ -326,6 +347,77 @@ export class ImageService {
       return await this.#runner.gc(protectedRefs);
     } catch (error) {
       throw this.#runnerFailure(error);
+    }
+  }
+
+  /**
+   * Ask the runner whether a build is in flight before a deletion reserves the app. The returned
+   * record is the observation `reserveDelete` reconciles coordinator state against.
+   */
+  async assertRunnerIdle(appId: string): Promise<RunnerImageRecord> {
+    let record: RunnerImageRecord;
+    try {
+      record = await this.#runner.get(appId);
+    } catch (error) {
+      throw this.#runnerFailure(error);
+    }
+    if (record.status === "building") {
+      throw new ImageServiceError(
+        409,
+        "an image build is running for this app",
+        "build_in_progress",
+      );
+    }
+    return record;
+  }
+
+  /**
+   * Reserve the app for deletion across the check-to-build window. This is synchronous on purpose:
+   * no build can slip in between the runner check and the local reservation.
+   */
+  reserveDelete(appId: string, observed: RunnerImageRecord): void {
+    const active = this.#active.get(appId);
+    if (active === "pending" || observed.status === "building") {
+      throw new ImageServiceError(
+        409,
+        "an image build is running for this app",
+        "build_in_progress",
+      );
+    }
+    if (active !== undefined) {
+      this.#active.delete(appId);
+      this.#builds.delete(active);
+    }
+    this.#deleting.add(appId);
+  }
+
+  endDelete(appId: string): void {
+    this.#deleting.delete(appId);
+  }
+
+  /** Purge one app's runner images by id; the row may already be gone from the DB. */
+  async purgeApp(appId: string): Promise<ImageGcReport> {
+    try {
+      if (this.#runner.purgeApp === undefined) {
+        throw new ImageServiceError(503, "app image purge is not available", "purge_unavailable");
+      }
+      return await this.#runner.purgeApp(appId);
+    } catch (error) {
+      if (error instanceof ImageServiceError) {
+        throw error;
+      }
+      throw this.#runnerFailure(error);
+    } finally {
+      this.forgetApp(appId);
+    }
+  }
+
+  forgetApp(appId: string): void {
+    this.#active.delete(appId);
+    for (const [buildId, meta] of this.#builds) {
+      if (meta.appId === appId) {
+        this.#builds.delete(buildId);
+      }
     }
   }
 
@@ -618,21 +710,26 @@ export class ImageService {
   }
 
   #getApp(appId: string): AppRow {
-    const row = this.#db
+    const row = this.#findApp(appId);
+    if (row === undefined) {
+      throw new ImageServiceError(404, "application not found", "not_found");
+    }
+    return row;
+  }
+
+  #findApp(appId: string): AppRow | undefined {
+    return this.#db
       .prepare(
         `SELECT a.id, a.project_id, a.app_key, a.path,
                 a.image_ref, a.image_status, a.image_hash,
                 a.image_base_digest, a.image_built_at, a.image_error,
+                a.deleting, p.deleting AS project_deleting,
                 p.root_path
          FROM apps a
          JOIN projects p ON p.id = a.project_id
          WHERE a.id = ?`,
       )
       .get(appId) as AppRow | undefined;
-    if (row === undefined) {
-      throw new ImageServiceError(404, "application not found", "not_found");
-    }
-    return row;
   }
 
   #view(

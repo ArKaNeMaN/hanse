@@ -31,6 +31,9 @@
 - [SSH host access](./ssh-host-access.md) - global operator-defined SSH hosts, per-app grants,
   coordinator-side exec/SFTP through a keyless MCP bridge, idle-based approvals in chat, and
   automatic host-key pinning.
+- [Project and application deletion](./project-and-application-deletion.md) - human-only destructive
+  flow, durable deletion markers, runtime/network/image cleanup, app state and manifest removal,
+  handoff/event retention, path guards, and retry semantics.
 - [Chat pagination and generation indicator](./chat-pagination.md) - 30-message session tail,
   cursor-based scroll-up history, overlap-aware snapshot merge, and the in-feed generation row.
 - [Architecture overview](./overview.md) - the coordinator architecture and stage plan.

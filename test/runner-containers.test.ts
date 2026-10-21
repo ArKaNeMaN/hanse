@@ -3,16 +3,18 @@ import type { Server } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import type {
-  DockerContainerCreateOptions,
-  DockerContainerInspect,
-  DockerContainerSummary,
-  DockerImageInspect,
-  DockerLogs,
-  DockerNetworkSpec,
-  DockerRuntime,
+import {
+  type DockerContainerCreateOptions,
+  type DockerContainerInspect,
+  type DockerContainerSummary,
+  DockerError,
+  type DockerImageInspect,
+  type DockerLogs,
+  type DockerNetworkInspect,
+  type DockerNetworkSpec,
+  type DockerRuntime,
 } from "../src/runner/docker.js";
-import { appNetworkName } from "../src/runner/names.js";
+import { appContainerName, appNetworkName } from "../src/runner/names.js";
 import { RunnerService } from "../src/runner/server.js";
 import { RUNNER_APP_PORT, type RunnerConfig } from "../src/runner/validate.js";
 
@@ -101,6 +103,8 @@ class FakeDocker implements DockerRuntime {
   readonly networkContainers = new Map<string, Set<string>>();
   readonly creates: DockerContainerCreateOptions[] = [];
   readonly connects: { network: string; container: string; aliases: string[] }[] = [];
+  readonly disconnects: { network: string; container: string }[] = [];
+  networkRemoveError: Error | undefined;
   #next = 1;
 
   async version(): Promise<string> {
@@ -112,8 +116,23 @@ class FakeDocker implements DockerRuntime {
   }
 
   async removeNetwork(name: string): Promise<void> {
+    if (this.networkRemoveError !== undefined) throw this.networkRemoveError;
     this.networks.delete(name);
     this.networkContainers.delete(name);
+  }
+
+  async inspectNetwork(name: string): Promise<DockerNetworkInspect | undefined> {
+    const network = this.networks.get(name);
+    if (network === undefined) return undefined;
+    const members = this.networkContainers.get(name);
+    return {
+      Name: network.name,
+      Labels: network.labels,
+      Containers:
+        members === undefined
+          ? {}
+          : Object.fromEntries([...members].map((container) => [container, { Name: container }])),
+    };
   }
 
   async connectNetwork(network: string, container: string, aliases: string[]): Promise<void> {
@@ -124,6 +143,7 @@ class FakeDocker implements DockerRuntime {
   }
 
   async disconnectNetwork(network: string, container: string): Promise<void> {
+    this.disconnects.push({ network, container });
     this.networkContainers.get(network)?.delete(container);
   }
 
@@ -297,6 +317,75 @@ describe("RunnerService per-app containers", () => {
     expect(docker.networks.size).toBe(0);
     expect(existsSync(path.join(f.agents, "project", "a"))).toBe(true);
     expect(await service.status("project:a")).toBeUndefined();
+  });
+
+  it("removes an orphan app network after disconnecting the coordinator", async () => {
+    const { docker, service } = await harness();
+    const network = appNetworkName("project:orphan");
+    docker.networks.set(network, {
+      name: network,
+      labels: { "hanse.managed": "true", "hanse.app.id": "project:orphan" },
+    });
+    docker.networkContainers.set(network, new Set(["hanse"]));
+
+    const status = await service.delete("project:orphan");
+
+    expect(status.state).toBe("stopped");
+    expect(docker.disconnects).toContainEqual({ network, container: "hanse" });
+    expect(docker.networks.has(network)).toBe(false);
+  });
+
+  it("never removes an unmanaged network or an unmanaged container", async () => {
+    const { docker, service } = await harness();
+    const network = appNetworkName("project:a");
+    docker.networks.set(network, {
+      name: network,
+      labels: { "hanse.managed": "false", "hanse.app.id": "project:a" },
+    });
+    docker.containers.set("foreign", {
+      Id: "foreign",
+      Name: `/${appContainerName("project:a")}`,
+      Config: { Labels: { "hanse.app.id": "project:a" } },
+      State: { Status: "running", Running: true },
+    });
+
+    const status = await service.delete("project:a");
+
+    expect(status.state).toBe("stopped");
+    expect(docker.containers.has("foreign")).toBe(true);
+    expect(docker.networks.has(network)).toBe(true);
+  });
+
+  it("never removes a managed network that belongs to another app", async () => {
+    const { docker, service } = await harness();
+    const network = appNetworkName("project:a");
+    docker.networks.set(network, {
+      name: network,
+      labels: { "hanse.managed": "true", "hanse.app.id": "project:other" },
+    });
+
+    await service.delete("project:a");
+
+    expect(docker.networks.has(network)).toBe(true);
+  });
+
+  it("tolerates 404 and 409 when removing the network during reconcile", async () => {
+    const { f, docker, service } = await harness();
+    await service.ensure(rawSpec(f, "a"));
+    docker.networkRemoveError = new DockerError(409, "network has active endpoints");
+
+    const reconciled = await service.reconcile([]);
+    expect(reconciled.stopped).toEqual(["project:a"]);
+    expect(docker.containers.size).toBe(0);
+    expect(docker.networks.has(appNetworkName("project:a"))).toBe(true);
+
+    const orphan = appNetworkName("project:orphan");
+    docker.networks.set(orphan, {
+      name: orphan,
+      labels: { "hanse.managed": "true", "hanse.app.id": "project:orphan" },
+    });
+    docker.networkRemoveError = new DockerError(404, "no such network");
+    await expect(service.delete("project:orphan")).resolves.toMatchObject({ state: "stopped" });
   });
 
   it("reconciles and stops every managed container", async () => {

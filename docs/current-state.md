@@ -88,6 +88,42 @@ The runner exposes two runtime-token endpoints; the coordinator wraps them as hu
   `hanse.app.id`, skips images that also carry unrelated tags, and prunes build cache only through
   the Docker build-cache prune API. A Docker error stops the run (fail closed).
 
+## Project and application deletion
+
+Deletion is a human-only, server-confirmed destructive flow on the project and application pages
+(`Danger zone`) with a native dialog. Mutations go to
+`POST /api/projects/:id/delete` and `POST /api/projects/:id/apps/:appKey/delete`; JSON callers may
+use `DELETE /api/projects/:id?confirm=...` and
+`DELETE /api/projects/:id/apps/:appKey?confirm=...`. The exact project name or app key must be typed
+and is re-validated server-side. Browser callers get a `303` plus notice; JSON gets
+`200 {deleted,kind,projectId,appKey?,warnings}`; errors map `400` confirmation, `401`/`403` auth,
+`404` unknown, `409` (`deletion_in_progress`, `deletion_incomplete`, `build_in_progress`,
+`state_path_collision`, `shared_app_dir`, `shared_project_root`, `unsafe_*`), `502` runtime/runner
+failure, and `503` when no runner-backed deletion service is configured. A present cross-site
+`Origin` is rejected; `hanse_token` remains `SameSite=Strict`.
+
+- The flow stops the managed container, removes its app network (only when the managed labels match),
+  purges the app's `hanse.app.id`-labelled images, and removes the per-app agents directory
+  (opencode DB/sessions, auth, password, MCP token, OMO profile, materialized git credentials,
+  cache/tmp/mise). A project deletes all its apps, the project rows, project/app-scoped settings,
+  provider keys, git credentials, and handoffs; handoff approvals/messages cascade. Each deletion
+  writes an `events` row (`app.deleted`/`project.deleted`).
+- Source files are kept by default; `Delete files too` explicitly removes the app/project directory
+  after the registry cleanup. Source deletion re-checks the live registry, refuses roots, symlink
+  components, sibling apps/projects and shared directories, and is warning-only if it cannot
+  proceed.
+- SSH audit rows, global settings/provider keys, SSH host definitions, and other projects are
+  preserved. Handoffs that reference a deleted app/project are deleted (their history is replaced by
+  the `events` audit row). A shared project root is refused when its manifest belongs to the target
+  (`409 shared_project_root`); a manifest that belongs to another project at the same root is
+  preserved.
+- Migration v11 adds durable `apps.deleting`/`projects.deleting` markers. A partially failed
+  deletion leaves `Deletion incomplete`, blocks start/chat/terminal (`409 deletion_pending`), and is
+  completed by a retry; it cannot be cancelled. A successful deletion removes the row and its marker.
+  Deletion requires a reachable runner (Q4); a runtime failure aborts before any durable marker.
+  Image-purge skips (in-use/shared tag/limit/timeout/truncated) are returned as `warnings`; the
+  existing image GC remains available.
+
 ## Auth (one login)
 
 - One operator token (`HANSE_OPERATOR_TOKEN`), stored hashed as a human principal named `operator`.
@@ -513,8 +549,10 @@ coordinator; operators do not set them.
 
 ## Verification
 
-`npm run lint && npm run typecheck && npm test && npm run build` (all green; 1210 tests). The UX
+`npm run lint && npm run typecheck && npm test && npm run build` (all green; 1295 tests). The UX
 polish pass deployed as `sha-88faab7`; the settings live-save follow-up deployed as `sha-d2fcc3b`.
+The project/application deletion stage is verified by the four gates; it has not been deployed or
+live-smoked from this checkout.
 B1 core
 live smoke on `deployment-host`: coordinator/IDE/runner healthy, per-app `demo-app` container running,
 `scripts/agent-runtime-probe.sh b1` passes, coordinator recreate reattaches the app network, and the
@@ -570,6 +608,12 @@ Settings stage verification:
   server).
 
 ## Known limitations and residual risks
+
+- Deletion is irreversible and a partially failed deletion cannot be cancelled: the app/project stays
+  `Deletion incomplete` and start/chat/terminal remain blocked until a retry completes. Source-file
+  deletion is opt-in and best-effort with warnings; image-purge skips are warnings, and the global
+  image GC remains the fallback. The deletion mutex is in-process/single-node, there is no CLI delete
+  command, and the runner must be reachable.
 
 - Single user; no RBAC or multi-tenant isolation.
 - Trust model: trusted repositories; agents execute code.

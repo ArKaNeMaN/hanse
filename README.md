@@ -15,6 +15,9 @@ and requirements) to each other through the coordinator - like independent teams
 
 - Project/application registry, and creating projects and adding applications from the UI (by path or
   `git clone`).
+- Full project/application deletion from the UI or human-only API: exact-name confirmation, durable
+  retry markers, container/network/image cleanup, app state and manifest removal, optional source-file
+  deletion, and preserved SSH audit/global settings.
 - One isolated `opencode` instance per application (own XDG state and DB; model auth copied in),
   hosted by a separate agent runtime container on the default toolchain image.
 - Global/project/application settings in the coordinator DB, with an encrypted provider-key store, a

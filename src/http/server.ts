@@ -9,6 +9,7 @@ import path from "node:path";
 import type { Duplex } from "node:stream";
 import { isHumanCookie } from "./auth.js";
 import { handleChat, streamSessionEvents } from "./chat.js";
+import { handleDeletion, isDeletionRoute } from "./deletion.js";
 import { handleGit } from "./git.js";
 import { type HttpDeps, handleRequest } from "./handler.js";
 import { handleImages } from "./images.js";
@@ -129,7 +130,20 @@ export function createHttpServer(deps: HttpDeps): Server {
               : request.headers["x-hanse-fragment"],
           },
           body,
+          origin: request.headers.origin,
+          host: request.headers.host,
         };
+        if (isDeletionRoute(httpRequest.method, url.pathname)) {
+          const deletionResult = await handleDeletion(deps, httpRequest);
+          if (deletionResult !== undefined) {
+            response.writeHead(deletionResult.status, {
+              "content-type": deletionResult.contentType,
+              ...(deletionResult.headers ?? {}),
+            });
+            response.end(deletionResult.body);
+            return;
+          }
+        }
         const isEvents = /^\/api\/apps\/[^/]+\/sessions\/[^/]+\/events$/.test(url.pathname);
         if (isEvents && (request.method ?? "GET") === "GET") {
           await streamSessionEvents(deps, httpRequest, response);

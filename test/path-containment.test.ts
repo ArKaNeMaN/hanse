@@ -72,6 +72,7 @@ function registeredApp(appPath: string): RegisteredApp {
     path: appPath,
     kind: null,
     contract: "AGENTS.md",
+    deleting: false,
     imageStatus: "missing",
     imageRef: null,
     imageHash: null,

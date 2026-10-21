@@ -1,10 +1,12 @@
 import { statfs } from "node:fs/promises";
-import type {
-  DockerContainerSummary,
-  DockerImageUsage,
-  DockerRuntime,
-  DockerSystemDf,
+import {
+  type DockerContainerSummary,
+  DockerError,
+  type DockerImageUsage,
+  type DockerRuntime,
+  type DockerSystemDf,
 } from "./docker.js";
+import { appContainerName } from "./names.js";
 
 export const DISK_WARNING_PERCENT = 75;
 export const DISK_CRITICAL_PERCENT = 85;
@@ -282,6 +284,137 @@ export class ImageGcService {
       }
     } else if (pruneBuildCache !== undefined) {
       report.truncated = true;
+    }
+
+    const finishedMs = this.#now();
+    report.finishedAt = new Date(finishedMs).toISOString();
+    report.durationMs = Math.max(0, finishedMs - startedMs);
+    boundReport(report);
+    return report;
+  }
+
+  async purgeApp(appId: string): Promise<ImageGcReport> {
+    if (this.#running) {
+      throw new ImageGcError(409, "image gc is already running", "gc_in_progress");
+    }
+    this.#running = true;
+    try {
+      return await this.#runPurge(appId);
+    } finally {
+      this.#running = false;
+    }
+  }
+
+  async #runPurge(appId: string): Promise<ImageGcReport> {
+    const systemDf = this.#docker.systemDf?.bind(this.#docker);
+    const removeImage = this.#docker.removeImage?.bind(this.#docker);
+    if (systemDf === undefined || removeImage === undefined) {
+      throw new ImageGcError(501, "docker image gc is not supported", "gc_unavailable");
+    }
+
+    const startedMs = this.#now();
+    const deadline = startedMs + this.#timeoutMs;
+    const startedAt = new Date(startedMs).toISOString();
+    let df: DockerSystemDf;
+    try {
+      df = await systemDf();
+    } catch (error) {
+      throw new ImageGcError(
+        502,
+        `docker image inventory failed: ${safeErrorMessage(error)}`,
+        "docker_error",
+      );
+    }
+
+    let containers: DockerContainerSummary[];
+    try {
+      containers = await this.#docker.listContainers();
+    } catch (error) {
+      throw new ImageGcError(
+        502,
+        `docker container inventory failed: ${safeErrorMessage(error)}`,
+        "docker_error",
+      );
+    }
+
+    const protectedTags = new Set<string>();
+    const protectedIds = new Set<string>();
+    for (const container of containers) {
+      if (typeof container.Image === "string" && container.Image.length > 0) {
+        protectedTags.add(container.Image);
+      }
+      if (typeof container.ImageID === "string" && container.ImageID.length > 0) {
+        protectedIds.add(container.ImageID);
+      }
+    }
+
+    const tagPrefix = `${appContainerName(appId)}:`;
+    const candidates = (df.Images ?? [])
+      .filter((image) => image.Labels?.[MANAGED_IMAGE_LABEL] === appId)
+      .sort(
+        (left, right) =>
+          (left.Created ?? 0) - (right.Created ?? 0) || left.Id.localeCompare(right.Id),
+      );
+
+    const report: ImageGcReport = {
+      ok: true,
+      startedAt,
+      finishedAt: startedAt,
+      durationMs: 0,
+      protectedRefCount: protectedTags.size + protectedIds.size,
+      removedImageCount: 0,
+      removedImageIds: [],
+      removedRefs: [],
+      estimatedReclaimedBytes: 0,
+      buildCachePruned: false,
+      buildCacheReclaimedBytes: 0,
+      skipped: [],
+      truncated: false,
+    };
+
+    let attempted = 0;
+    for (const image of candidates) {
+      const tags = imageTags(image);
+      const reference = tags[0] ?? image.Id;
+      if (attempted >= MAX_GC_IMAGES || this.#now() >= deadline) {
+        report.truncated = true;
+        addSkipped(report, reference, attempted >= MAX_GC_IMAGES ? "limit" : "timeout");
+        break;
+      }
+      if (
+        protectedIds.has(image.Id) ||
+        protectedTags.has(image.Id) ||
+        tags.some((tag) => protectedTags.has(tag))
+      ) {
+        addSkipped(report, reference, "protected");
+        continue;
+      }
+      if (tags.some((tag) => !tag.startsWith(tagPrefix))) {
+        addSkipped(report, reference, "shared_tag");
+        continue;
+      }
+
+      attempted += 1;
+      const removeTargets = tags.length === 0 ? [image.Id] : tags;
+      try {
+        for (const target of removeTargets) {
+          await removeImage(target);
+        }
+      } catch (error) {
+        if (error instanceof DockerError && error.status === 409) {
+          addSkipped(report, reference, "protected");
+          continue;
+        }
+        throw new ImageGcError(
+          502,
+          `docker image removal failed for ${reference}: ${safeErrorMessage(error)}`,
+          "docker_error",
+        );
+      }
+      report.removedImageCount += 1;
+      report.removedImageIds.push(image.Id);
+      report.removedRefs.push(...(tags.length === 0 ? [image.Id] : tags));
+      report.estimatedReclaimedBytes += image.Size ?? 0;
     }
 
     const finishedMs = this.#now();

@@ -49,6 +49,20 @@ import {
   type WebPermissionOptions,
 } from "./policy.js";
 
+/**
+ * Thrown by {@link InstanceManager.ensure} when the application or its project is marked for
+ * deletion. Callers map this to HTTP 409 with the `deletion_pending` code.
+ */
+export class DeletionPendingError extends Error {
+  readonly status = 409;
+  readonly code = "deletion_pending";
+
+  constructor(appId: string) {
+    super(`application ${appId} is pending deletion`);
+    this.name = "DeletionPendingError";
+  }
+}
+
 export interface ManagedApp {
   id: string;
   projectId: string;
@@ -274,6 +288,18 @@ export class InstanceManager {
       throw new Error(`application directory must be an absolute resolved path: ${app.appDir}`);
     }
     return this.#withAppLock(app.id, async () => {
+      // The durable marker, not the caller's snapshot, decides whether starting is allowed.
+      const marker = this.#db
+        .prepare(
+          `SELECT a.deleting AS appDeleting, p.deleting AS projectDeleting
+           FROM apps a
+           JOIN projects p ON p.id = a.project_id
+           WHERE a.id = ?`,
+        )
+        .get(app.id) as { appDeleting: number; projectDeleting: number } | undefined;
+      if (marker !== undefined && (marker.appDeleting === 1 || marker.projectDeleting === 1)) {
+        throw new DeletionPendingError(app.id);
+      }
       const identity = { projectId: app.projectId, app: app.appKey };
       const tokenFile = mcpTokenPath(this.#runtimeRoot, identity);
       const isolated = resolveInstanceEnv(this.#runtimeRoot, identity);
@@ -616,27 +642,53 @@ export class InstanceManager {
   }
 
   async stopApp(appId: string): Promise<boolean> {
+    return this.#withAppLock(appId, () => this.#stopLocked(appId));
+  }
+
+  /**
+   * Stop an application and durably mark it deleting in the same per-app lock body.
+   *
+   * A queued `ensure` therefore either runs before the stop (and is stopped) or after the marker is
+   * committed (and is refused). Existing markers on the target are ignored so a retry works. Only
+   * `ensure` throws {@link DeletionPendingError}.
+   */
+  async stopForDeletion(appId: string): Promise<boolean> {
     return this.#withAppLock(appId, async () => {
-      const entry = this.#running.get(appId);
-      let status: Awaited<ReturnType<AgentRuntimeClient["status"]>>;
-      try {
-        status = await this.#options.runtime.status(appId);
-      } catch {
-        status = undefined;
-      }
-      const wasRunning =
-        entry !== undefined ||
-        (status !== undefined && (status.state === "running" || status.state === "starting"));
-      const endpoint = entry?.endpoint ?? status?.endpoint ?? undefined;
-      this.#running.delete(appId);
-      if (endpoint !== undefined && endpoint !== null) {
-        clearEndpointAuthorization(endpoint);
-      }
-      const finalStatus = await this.#options.runtime.delete(appId);
-      this.#recordStatusById(appId, finalStatus);
-      this.#revokeAgentToken(appId, entry);
-      return wasRunning;
+      const stopped = await this.#stopLocked(appId);
+      this.#db.prepare("UPDATE apps SET deleting = 1 WHERE id = ?").run(appId);
+      return stopped;
     });
+  }
+
+  /** Stop logic shared by {@link stopApp} and {@link stopForDeletion}; callers hold the app lock. */
+  async #stopLocked(appId: string): Promise<boolean> {
+    const entry = this.#running.get(appId);
+    let status: Awaited<ReturnType<AgentRuntimeClient["status"]>>;
+    try {
+      status = await this.#options.runtime.status(appId);
+    } catch {
+      status = undefined;
+    }
+    const wasRunning =
+      entry !== undefined ||
+      (status !== undefined && (status.state === "running" || status.state === "starting"));
+    const endpoint = entry?.endpoint ?? status?.endpoint ?? undefined;
+    let finalStatus: Awaited<ReturnType<AgentRuntimeClient["delete"]>>;
+    try {
+      finalStatus = await this.#options.runtime.delete(appId);
+    } catch (error) {
+      // The runtime may have stopped the container before failing; re-read the truth best-effort.
+      // Keep the in-memory entry and endpoint auth so a retry and the running UI stay truthful.
+      await this.#options.runtime.status(appId).catch(() => undefined);
+      throw error;
+    }
+    this.#running.delete(appId);
+    if (endpoint !== undefined && endpoint !== null) {
+      clearEndpointAuthorization(endpoint);
+    }
+    this.#recordStatusById(appId, finalStatus);
+    this.#revokeAgentToken(appId, entry);
+    return wasRunning;
   }
 
   async restartIfRunning(app: ManagedApp): Promise<boolean> {

@@ -8,6 +8,7 @@ import { HttpAgentRuntimeClient } from "../agent/client.js";
 import { runAgentHost } from "../agent/host.js";
 import { runAgentSupervisor } from "../agent/supervisor.js";
 import { ConfigError } from "../config/load.js";
+import { DeletionService } from "../coordinator/deletion.js";
 import { CoordinatorService } from "../coordinator/service.js";
 import {
   GIT_SANDBOX_APP_DIR_ENV,
@@ -578,16 +579,18 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
     ...(hostAgents === undefined ? {} : { hostAgents }),
   });
   const getProjects = (): ProjectContext[] => {
-    const rows = db.prepare("SELECT id, name, root_path FROM projects").all() as {
+    const rows = db.prepare("SELECT id, name, root_path, deleting FROM projects").all() as {
       id: string;
       name: string;
       root_path: string;
+      deleting: number;
     }[];
     return rows.map((row) => ({
       id: row.id,
       name: row.name,
       rootPath: row.root_path,
       workspaceRoot: workspace,
+      deleting: row.deleting === 1,
       service: new CoordinatorService(db, row.id),
     }));
   };
@@ -607,6 +610,17 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
           defaultImage: defaultImageReference(),
           runner: new RunnerImageClient({ baseUrl: runnerUrl, token: runtimeToken }),
         });
+  const deletion =
+    images === undefined
+      ? undefined
+      : new DeletionService({
+          db,
+          workspaceRoot: workspace,
+          agentsHome: path.resolve(agentsHome()),
+          coordinatorStateDir: path.resolve(coordinatorStateDir(ctx.stateHome)),
+          manager,
+          images,
+        });
   const server = createHttpServer({
     db,
     workspaceRoot: workspace,
@@ -619,6 +633,7 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
       ? {}
       : { runner: { url: runnerUrl, token: runtimeToken } }),
     ...(images === undefined ? {} : { images }),
+    ...(deletion === undefined ? {} : { deletion }),
   });
 
   let ide: ChildProcess | null = null;
