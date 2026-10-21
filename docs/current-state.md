@@ -187,9 +187,9 @@ The runner exposes two runtime-token endpoints; the coordinator wraps them as hu
   `403`. The only agent-facing route remains `/internal/mcp`.
 - The `hanse` MCP entry carries `timeout: 600000`; existing agents must be restarted (no image
   rebuild) to see the tools and the timeout.
-- Migration v9 creates the SSH tables. Stage 0010 owns v8 (`setting_secrets`); while 0010 is
-  uncommitted, a fresh DB applies v1-v7 + v9 (8 migrations, versions `[1..7, 9]`).
-- Live on `deployment-host` (`sha-b844bc3`): a temporary SSH target pinned and authenticated, an approval was
+- Migration v8 (`setting_secrets`, drop legacy `secrets`) and migration v9 (SSH tables) apply in
+  order; the current schema versions are `[1..9]`.
+- Live on `deployment-host` (`sha-e2d89a2`): a temporary SSH target pinned and authenticated, an approval was
   approved, `echo QA_OK` and a 65 s `sleep` succeeded, upload/download round-tripped, a real
   `opencode` turn called `hanse_ssh_exec` and received the result after 65 s, and audit rows survived
   host deletion.
@@ -503,6 +503,16 @@ B1.5 live smoke: git status and fetch returned `200` through the coordinator/run
 (`demo-app`, public GitHub remote), no `hanse-git-*` container remained, the app container had no
 `HANSE_GIT_*` environment, and the terminal WebSocket still returned `B1_LAN_OK`. The `b1` probe
 passed again after the deploy.
+Git credential live smoke on `sha-e2d89a2`: migrations `[1..9]` applied, `setting_secrets` exists,
+the legacy `secrets` table is absent, and the SSH tables remain. `demo-app` was lazily started with the
+managed directory `<app>/home/.config/hanse/git/{config,ssh,askpass}`; its environment contains only
+the path variables and no `HANSE_GIT_*`. Authenticated `git/status` and `git/fetch` returned `200`
+for the public HTTPS remote and left no one-shot container. Test connection rejected an invalid draft
+key with `400 invalid_git_credential`, accepted a valid draft key far enough to reach GitHub, then
+reported the TOFU warning and `502 auth_failed` without leaking the key; `HANSE_HOST_RUNNER_TMP` was
+clean afterward. The app settings page exposed **Test connection**, and the `b1` probe passed. No
+operator PAT/deploy key was available, so a successful credential-backed push and successful SSH
+Test remain covered by tests rather than live smoke.
 Chat browser
 QA: `node docs/design/chat-qa.mjs` (deterministic fixtures; 3 scenarios, 81 assertions, 10
 screenshots, zero console/page errors). Live smoke against a real deployment: 1

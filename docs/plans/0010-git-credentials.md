@@ -1,6 +1,7 @@
 # Plan 0010 - Git credentials
 
-Status: **implemented and verified** (1152 tests); deployment pending.
+Status: **implemented, verified, and deployed** as `sha-e2d89a2` (1152 tests); see
+[`docs/journal/0012-git-credentials.md`](../journal/0012-git-credentials.md).
 
 Design: [`docs/design/git-credentials.md`](../design/git-credentials.md). Design review: `oracle`,
 2026-10-21, PASS; design gate cleared. Owner decisions are recorded in the design (§4) and carried

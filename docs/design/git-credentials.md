@@ -1,6 +1,6 @@
 # Git credentials
 
-- Status: implemented and verified (1152 tests); deployment pending
+- Status: implemented, verified, and deployed as `sha-e2d89a2` (1152 tests)
 - Date: 2026-10-21
 - Stage: `0010-git-credentials`
 - Owners: Hanse maintainers
@@ -1463,19 +1463,19 @@ changes and cleared the design gate.
 - `docs/current-state.md` - current topology, git workbench, settings, and known limits.
 - `docs/conventions.md` - `.hanse` manifests and runtime layout.
 - `docs/process.md` - delivery gates and verification.
-- `docs/deployment.md` - GHCR/Compose operations and the old git credential workflow.
+- `docs/deployment.md` - GHCR/Compose operations and the per-app git credential rollout.
 - `docs/design/git-workbench.md` - the application page, operation set, and hardening.
 - `docs/design/web-tools-and-settings.md` - the settings hierarchy, provider-key pattern, restart
   semantics, and design-doc structure.
 - `docs/design/agent-runtime.md` - per-app containers, the runner, the one-shot no-secret git context,
   and the trust model.
 - `src/settings/registry.ts`, `src/settings/service.ts`, `src/settings/types.ts`,
-  `src/settings/provider-keys.ts`, `src/settings/hash.ts`
-- `src/secrets/crypto.ts`, `src/secrets/store.ts`, `src/secrets/git-credential.ts`
+  `src/settings/provider-keys.ts`, `src/settings/hash.ts`, `src/settings/git-auth.ts`
+- `src/secrets/crypto.ts`
 - `src/opencode/manager.ts`, `src/opencode/instance.ts`, `src/opencode/launcher.ts`,
   `src/opencode/policy.ts`
-- `src/git/env.ts`, `src/git/service.ts`, `src/git/runner-client.ts`, `src/git/op.ts`,
-  `src/git/request.ts`
+- `src/git/env.ts`, `src/git/credentials.ts`, `src/git/materialize.ts`, `src/git/service.ts`,
+  `src/git/runner-client.ts`, `src/git/op.ts`, `src/git/request.ts`
 - `src/runner/server.ts`, `src/runner/validate.ts`
 - `src/http/settings.ts`, `src/http/git.ts`, `src/http/server.ts`, `src/http/handler.ts`
 - `src/store/migrations.ts`, `src/store/database.ts`
