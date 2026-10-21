@@ -246,10 +246,15 @@ describe("runAgentHost", () => {
     expect(runningStatus.opencodeVersion).toBe("fake-opencode 1.2.3");
     expect(runningStatus.port).toBe(spec.port);
 
+    // Wait for opencode to finish starting before aborting: a SIGTERM sent earlier kills the
+    // process before it installs its handler, so it never reports the graceful stop.
+    await waitFor(() => (out.join("").includes("fake-opencode listening") ? true : undefined));
+
     controller.abort();
     await expect(running).resolves.toBe(0);
     expect(readHostStatus(f.stateDir)?.state).toBe("stopped");
-    expect(out.join("")).toContain("fake-opencode stopping");
+    // Child stdio is a pipe: its last lines may arrive after the child exits.
+    await waitFor(() => (out.join("").includes("fake-opencode stopping") ? true : undefined));
     expect(readFileSync(path.join(f.base, "opencode-signals"), "utf8")).toContain("SIGTERM");
     expect(out.join("")).toContain(`agent-host: starting ${spec.appId}`);
     expect(out.join("")).toContain("fake-opencode listening");
