@@ -6674,6 +6674,7 @@
 }
 
 .terminal-toolbar {
+  grid-row: 1;
   display: flex;
   align-items: center;
   gap: var(--space-3);
@@ -6720,6 +6721,7 @@
 }
 
 .terminal-banner {
+  grid-row: 2;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -6736,6 +6738,8 @@
 }
 
 .terminal-host {
+  grid-row: 3;
+  position: relative;
   min-block-size: 0;
   overflow: hidden;
   padding: var(--space-2) var(--space-3);
@@ -6771,8 +6775,9 @@
 }
 
 .terminal-empty {
+  position: absolute;
+  inset: var(--space-2) var(--space-3);
   justify-content: center;
-  min-block-size: 100%;
 }
 
 /* 44px controls while the toolbar is touch-sized. */

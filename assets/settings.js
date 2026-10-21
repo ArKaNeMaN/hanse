@@ -245,4 +245,17 @@ document.querySelectorAll("[data-settings-form]").forEach((form) => {
     submitSettings(form, body);
   });
 });
+
+if (window.location.hash.length > 1) {
+  let target = null;
+  try {
+    target = document.querySelector(window.location.hash);
+  } catch {
+    target = null;
+  }
+  if (target instanceof HTMLDetailsElement && target.classList.contains("setting-row")) {
+    target.open = true;
+  }
+}
+
 })();
