@@ -76,6 +76,7 @@ const ICONS = {
     '<path d="M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49" /><path d="M14.084 14.158a3 3 0 0 1-4.242-4.242" /><path d="M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143" /><path d="m2 2 20 20" />',
   loader:
     '<line x1="12" x2="12" y1="2" y2="6" /><line x1="12" x2="12" y1="18" y2="22" /><line x1="4.93" x2="7.76" y1="4.93" y2="7.76" /><line x1="16.24" x2="19.07" y1="16.24" y2="19.07" /><line x1="2" x2="6" y1="12" y2="12" /><line x1="18" x2="22" y1="12" y2="12" /><line x1="4.93" x2="7.76" y1="19.07" y2="16.24" /><line x1="16.24" x2="19.07" y1="7.76" y2="4.93" />',
+  more: '<circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /><circle cx="5" cy="12" r="1" />',
 } as const;
 
 export type IconName = keyof typeof ICONS;
@@ -317,6 +318,7 @@ export interface ShellOptions {
   moduleScripts?: string[];
   notice?: Notice;
   topbarActions?: string;
+  settingsHref?: string;
 }
 
 function pageClasses(base: string, extra: string | undefined): string {
@@ -404,7 +406,7 @@ function sidebar(options: ShellOptions): string {
       count: options.pendingCount,
     }) +
     navItem({
-      href: "/settings",
+      href: options.settingsHref ?? "/settings",
       label: "Settings",
       iconName: "settings",
       active: options.active === "settings",

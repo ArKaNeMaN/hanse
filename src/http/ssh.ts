@@ -257,6 +257,10 @@ function renderPage(
       header: "",
       scripts: ["/assets/ssh.js"],
       body,
+      settingsHref:
+        found === undefined
+          ? "/settings"
+          : `/projects/${encodeURIComponent(found.project.id)}/apps/${encodeURIComponent(found.app.appKey)}/settings`,
     }),
   );
 }

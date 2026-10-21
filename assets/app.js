@@ -92,6 +92,45 @@ document.querySelectorAll("dialog.dialog").forEach((dialog) => {
   });
 });
 
+function closeMenu(menu, returnFocus) {
+  const summary = menu.querySelector("summary");
+  menu.open = false;
+  if (returnFocus && summary instanceof HTMLElement) {
+    summary.focus();
+  }
+}
+
+document.querySelectorAll("details.menu").forEach((menu) => {
+  menu.addEventListener("toggle", () => {
+    if (!menu.open) {
+      return;
+    }
+    document.querySelectorAll("details.menu[open]").forEach((other) => {
+      if (other !== menu) {
+        closeMenu(other, false);
+      }
+    });
+  });
+});
+
+document.addEventListener("click", (event) => {
+  document.querySelectorAll("details.menu[open]").forEach((menu) => {
+    if (!(event.target instanceof Node) || !menu.contains(event.target)) {
+      closeMenu(menu, true);
+    }
+  });
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") {
+    return;
+  }
+  const menu = document.querySelector("details.menu[open]");
+  if (menu instanceof HTMLDetailsElement) {
+    closeMenu(menu, true);
+  }
+});
+
 const themeToggle = document.querySelector("[data-theme-toggle]");
 const themeLabel = document.querySelector("[data-theme-label]");
 

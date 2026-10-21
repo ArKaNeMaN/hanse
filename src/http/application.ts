@@ -4,6 +4,7 @@ import type { PageChrome, SiteModel } from "./dashboard.js";
 import {
   appShell,
   escapeHtml,
+  type IconName,
   icon,
   ideFolderUrl,
   pageHeader,
@@ -28,132 +29,191 @@ function loadingBody(id: string, lines: number): string {
   return `<div class="card__body" id="${id}" aria-busy="true"><span class="sr-only">Loading repository status.</span><div class="skeleton-stack" aria-hidden="true">${skeletons}</div></div>`;
 }
 
-const IMAGE_STATUS: Record<
-  RegisteredApp["imageStatus"],
-  { label: string; tone: string; action: string; hint: string }
-> = {
+interface ImageState {
+  label: string;
+  state: string;
+  glyph: IconName;
+  action: string;
+  hint: string;
+}
+
+const IMAGE_STATES: Record<RegisteredApp["imageStatus"], ImageState> = {
   missing: {
-    label: "Missing",
-    tone: "badge-ghost",
+    label: "Not built",
+    state: "queued",
+    glyph: "clock",
     action: "Build image",
     hint: "No app image has been built. Build it before starting the agent.",
   },
   building: {
     label: "Building",
-    tone: "badge-info",
-    action: "Building...",
+    state: "in_progress",
+    glyph: "loader",
+    action: "Building…",
     hint: "The runner is building this image. The previous image remains in use.",
   },
   ready: {
-    label: "Ready",
-    tone: "badge-success",
+    label: "Built",
+    state: "delivered",
+    glyph: "check",
     action: "Rebuild image",
     hint: "The image matches the current Dockerfile and default base.",
   },
   stale: {
-    label: "Stale",
-    tone: "badge-warning",
+    label: "Out of date",
+    state: "expired",
+    glyph: "hourglass",
     action: "Rebuild image",
-    hint: "The Dockerfile or default base changed. The running container keeps the old image until you rebuild.",
+    hint: "The Dockerfile or default base changed. The running agent keeps the old image until you rebuild and restart.",
   },
   error: {
-    label: "Error",
-    tone: "badge-error",
+    label: "Build failed",
+    state: "failed",
+    glyph: "alert-triangle",
     action: "Retry build",
-    hint: "The last build failed. Review the logs and retry; the previous image is kept.",
+    hint: "The last build failed. The previous image is kept.",
   },
 };
 
-function imagePanel(
-  project: { id: string },
-  app: RegisteredApp,
-  imageStatus: RegisteredApp["imageStatus"],
-): string {
-  const status = IMAGE_STATUS[imageStatus] ?? IMAGE_STATUS.missing;
-  const buildHref = `/api/apps/${encodeURIComponent(app.appKey)}/build?project=${encodeURIComponent(project.id)}`;
-  const rollbackHref = `/api/apps/${encodeURIComponent(app.appKey)}/image/rollback?project=${encodeURIComponent(project.id)}`;
-  const imageUrl = `/api/apps/${encodeURIComponent(app.appKey)}/image?project=${encodeURIComponent(project.id)}`;
-  const logsUrl = `/api/apps/${encodeURIComponent(app.appKey)}/image/logs?project=${encodeURIComponent(project.id)}`;
-  const appHref = `/projects/${encodeURIComponent(project.id)}/apps/${encodeURIComponent(app.appKey)}`;
-  const disabled = imageStatus === "building" ? " disabled" : "";
+function imageHrefs(
+  projectId: string,
+  appKey: string,
+): {
+  appHref: string;
+  buildHref: string;
+  rollbackHref: string;
+  imageUrl: string;
+  logsUrl: string;
+  runtimeUrl: string;
+} {
+  const key = encodeURIComponent(appKey);
+  const project = encodeURIComponent(projectId);
+  return {
+    appHref: `/projects/${project}/apps/${key}`,
+    buildHref: `/api/apps/${key}/build?project=${project}`,
+    rollbackHref: `/api/apps/${key}/image/rollback?project=${project}`,
+    imageUrl: `/api/apps/${key}/image?project=${project}`,
+    logsUrl: `/api/apps/${key}/image/logs?project=${project}`,
+    runtimeUrl: `/api/apps/${key}/runtime?project=${project}`,
+  };
+}
+
+function imagePanel(project: { id: string }, app: RegisteredApp, runtime: string): string {
+  const status = IMAGE_STATES[app.imageStatus] ?? IMAGE_STATES.missing;
+  const hrefs = imageHrefs(project.id, app.appKey);
+  const building = app.imageStatus === "building";
+  const disabled = building ? ' disabled aria-busy="true"' : "";
   const rollbackRef = app.imageRollbackRef ?? null;
   const rollbackBuilt = app.imageRollbackBuiltAt ?? null;
+  const activeRuntime = runtime === "running" || runtime === "starting";
+  const rollbackAction = activeRuntime ? "Roll back and restart" : "Roll back image";
+  const rollbackBody = activeRuntime
+    ? `This replaces the current image with <span class="mono" id="image-rollback-dialog-ref">${escapeHtml(rollbackRef ?? "no previous image")}</span> and restarts the agent. An active turn will be interrupted.`
+    : `This replaces the current image with <span class="mono" id="image-rollback-dialog-ref">${escapeHtml(rollbackRef ?? "no previous image")}</span>.`;
   const error = app.imageError
-    ? `<p class="small" id="image-error">${escapeHtml(app.imageError)}</p>`
-    : '<p class="small" id="image-error" hidden></p>';
-  return `<section class="card section" id="image-panel"
+    ? `<p class="field-error" id="image-error" role="alert">${escapeHtml(app.imageError)}</p>`
+    : '<p class="field-error" id="image-error" role="alert" hidden></p>';
+  const rollbackForm = `<form method="post" action="${escapeHtml(hrefs.rollbackHref)}" id="image-rollback-form"${rollbackRef === null ? " hidden" : ""}>
+          <input type="hidden" name="return_to" value="${escapeHtml(hrefs.appHref)}" />
+          <button class="btn btn-secondary btn-sm" type="button" id="image-rollback" data-dialog-open="image-rollback-dialog"${building ? " disabled" : ""}>${icon("refresh")}<span class="btn__label">${escapeHtml(rollbackAction)}</span></button>
+        </form>`;
+  return `<section class="card" id="image-panel"
       data-project-id="${escapeHtml(project.id)}"
       data-app-key="${escapeHtml(app.appKey)}"
-      data-status="${escapeHtml(imageStatus)}"
-      data-image-url="${escapeHtml(imageUrl)}"
-      data-logs-url="${escapeHtml(logsUrl)}">
+      data-status="${escapeHtml(app.imageStatus)}"
+      data-image-ref="${escapeHtml(app.imageRef ?? "")}"
+      data-image-url="${escapeHtml(hrefs.imageUrl)}"
+      data-logs-url="${escapeHtml(hrefs.logsUrl)}"
+      data-runtime-url="${escapeHtml(hrefs.runtimeUrl)}">
     <div class="card__head">
       <h2 class="card__title" id="image-title">Image</h2>
       <div class="cluster">
-        <span class="badge ${status.tone}" id="image-status" data-status="${escapeHtml(imageStatus)}" role="status" aria-live="polite">${escapeHtml(status.label)}</span>
-        <button class="btn btn-ghost btn-icon btn-sm" type="button" id="image-refresh" aria-label="Refresh image status" title="Refresh image status">${icon("refresh")}</button>
+        <span class="status" id="image-status" data-status="${escapeHtml(app.imageStatus)}" data-state="${status.state}">${icon(status.glyph)}${escapeHtml(status.label)}</span>
+        <button class="btn btn-ghost btn-icon btn-sm" id="image-refresh" type="button" aria-label="Refresh image status" title="Refresh image status">${icon("refresh")}</button>
       </div>
     </div>
     <div class="card__body stack--tight">
       <p class="sr-only" id="image-live" role="status" aria-live="polite" aria-atomic="true"></p>
       <div class="cluster">
-        <form method="post" action="${escapeHtml(buildHref)}">
-          <input type="hidden" name="return_to" value="${escapeHtml(appHref)}" />
-          <button class="btn btn-primary btn-sm" type="submit" id="image-build" data-action-label="${escapeHtml(status.action)}"${disabled}>${icon("layers")}${escapeHtml(status.action)}</button>
+        <form method="post" action="${escapeHtml(hrefs.buildHref)}">
+          <input type="hidden" name="return_to" value="${escapeHtml(hrefs.appHref)}" />
+          <button class="btn btn-secondary btn-sm" type="submit" id="image-build" data-action-label="${escapeHtml(status.action)}"${disabled}>${icon("layers")}<span class="btn__label">${escapeHtml(status.action)}</span></button>
         </form>
-        <span class="small" id="image-hint">${escapeHtml(status.hint)}</span>
       </div>
-      <div class="stack--tight"><span class="overline">Reference</span><span class="mono" id="image-ref">${escapeHtml(app.imageRef ?? "Not built")}</span></div>
-      <div class="stack--tight"><span class="overline">Built</span><span class="small" id="image-built" data-built-at="${escapeHtml(app.imageBuiltAt ?? "")}">${app.imageBuiltAt ? timeTag(app.imageBuiltAt) : "Never"}</span></div>
-      <div class="stack--tight"><span class="overline">Rollback</span><span class="mono" id="image-rollback-ref">${escapeHtml(rollbackRef ?? "None")}</span><span class="small" id="image-rollback-built" data-built-at="${escapeHtml(rollbackBuilt ?? "")}"${rollbackRef === null ? " hidden" : ""}>${rollbackBuilt ? timeTag(rollbackBuilt) : ""}</span></div>
-      <form method="post" action="${escapeHtml(rollbackHref)}" id="image-rollback-form"${rollbackRef === null ? " hidden" : ""}>
-        <input type="hidden" name="return_to" value="${escapeHtml(appHref)}" />
-        <button class="btn btn-secondary btn-sm" type="submit" id="image-rollback">${icon("refresh")}Roll back to previous image</button>
-      </form>
+      <p class="mono" id="image-ref">${escapeHtml(app.imageRef ?? "Not built")}</p>
+      <p class="small" id="image-hint">${escapeHtml(status.hint)}</p>
+      <p class="small" id="image-notice" hidden>Restart the agent to use the new image.</p>
       ${error}
-      <div class="stack--tight">
-        <div class="cluster">
-          <span class="overline">Build logs</span>
-          <button class="btn btn-ghost btn-icon btn-sm" type="button" id="image-logs-refresh" aria-label="Refresh build logs" title="Refresh build logs">${icon("refresh")}</button>
+      <details class="disclosure" id="image-details">
+        <summary>Image details${icon("chevron-down", "disclosure__chevron")}</summary>
+        <div class="stack--tight">
+          <div class="summary-row"><span class="overline">Built</span><span id="image-built" data-built-at="${escapeHtml(app.imageBuiltAt ?? "")}">${app.imageBuiltAt ? timeTag(app.imageBuiltAt) : "Never"}</span></div>
+          <div class="summary-row"${rollbackRef === null ? " hidden" : ""}><span class="overline">Previous</span><span class="mono" id="image-rollback-ref">${escapeHtml(rollbackRef ?? "None")}</span></div>
+          <div class="summary-row"${rollbackRef === null ? " hidden" : ""}><span class="overline">Previous built</span><span id="image-rollback-built" data-built-at="${escapeHtml(rollbackBuilt ?? "")}"${rollbackRef === null ? " hidden" : ""}>${rollbackBuilt === null ? "" : timeTag(rollbackBuilt)}</span></div>
+          ${rollbackForm}
+          <details class="disclosure" id="image-logs-details">
+            <summary>Build logs${icon("chevron-down", "disclosure__chevron")}</summary>
+            <pre class="mono image-logs" id="image-logs">No build logs yet.</pre>
+          </details>
         </div>
-        <pre class="mono prose--pre image-logs" id="image-logs" aria-live="polite">No build logs yet.</pre>
-      </div>
+      </details>
     </div>
+    <dialog class="dialog" id="image-rollback-dialog" aria-labelledby="image-rollback-dialog-title">
+      <div class="dialog__frame">
+        <header class="dialog__head"><h2 class="dialog__title" id="image-rollback-dialog-title">Roll back image?</h2></header>
+        <form method="post" action="${escapeHtml(hrefs.rollbackHref)}">
+          <div class="dialog__body">
+            <p class="body">${rollbackBody}</p>
+            <input type="hidden" name="return_to" value="${escapeHtml(hrefs.appHref)}" />
+          </div>
+          <footer class="dialog__foot">
+            <button class="btn btn-ghost" type="button" data-dialog-close>Cancel</button>
+            <button class="btn btn-primary" type="submit" id="image-rollback-confirm">${escapeHtml(rollbackAction)}</button>
+          </footer>
+        </form>
+      </div>
+    </dialog>
   </section>`;
 }
 
-function defaultImagePanel(project: { id: string }, app: RegisteredApp): string {
-  return `<section class="card section" id="image-panel"
+function defaultImagePanel(project: { id: string }, app: RegisteredApp, ideHref: string): string {
+  const hrefs = imageHrefs(project.id, app.appKey);
+  return `<section class="card" id="image-panel"
       data-project-id="${escapeHtml(project.id)}"
       data-app-key="${escapeHtml(app.appKey)}"
-      data-status="default">
+      data-status="default"
+      data-runtime-url="${escapeHtml(hrefs.runtimeUrl)}">
     <div class="card__head">
       <h2 class="card__title" id="image-title">Image</h2>
-      <span class="badge badge-ghost" id="image-status" data-status="default" role="status">Default</span>
+      <span class="status" id="image-status" data-status="default" data-state="cancelled">${icon("layers")}Default image</span>
     </div>
     <div class="card__body stack--tight">
-      <p class="small" id="image-hint">This application uses the shared default agent image. Add a per-app Dockerfile build configuration to use a custom image.</p>
-      <div class="stack--tight"><span class="overline">Agent image</span><span class="mono" id="image-ref">Default agent image</span></div>
+      <p class="sr-only" id="image-live" role="status" aria-live="polite" aria-atomic="true"></p>
+      <p class="small" id="image-hint">This application uses the shared default agent image.</p>
+      <p class="small">Add .hanse/Dockerfile to build a custom image for this application.</p>
+      <p class="mono" id="image-ref">Default agent image</p>
+      <div class="cluster"><a class="btn btn-ghost btn-sm" href="${escapeHtml(ideHref)}" target="_blank" rel="noreferrer">${icon("external")}Open application folder</a></div>
     </div>
   </section>`;
 }
 
-function applicationRail(
-  project: { id: string; name: string },
-  app: RegisteredApp,
-  runtime: string,
-  settingsHref: string,
+function settingsState(
   pending: boolean,
+  reasons: string[],
+  runtimeConfigured: boolean,
+  settingsHref: string,
 ): string {
-  return `<section class="card" aria-labelledby="application-card-title">
-    <div class="card__head"><h2 class="card__title" id="application-card-title">Application</h2></div>
-    <div class="card__body stack--tight">
-      <div class="cluster">${runtime}<span class="badge badge--mono">${escapeHtml(app.kind ?? "app")}</span>${pending ? '<span class="badge badge-warning">Restart required</span>' : ""}</div>
-      <div class="stack--tight"><span class="overline">Project</span><a class="small" href="/projects/${encodeURIComponent(project.id)}">${escapeHtml(project.name)}</a></div>
-      <div class="stack--tight"><span class="overline">Path</span><span class="mono">${escapeHtml(app.path)}</span></div>
-      <div class="stack--tight"><span class="overline">Settings</span><a class="small" href="${escapeHtml(settingsHref)}">Application settings</a></div>
-    </div>
-  </section>`;
+  if (pending) {
+    const unknown = reasons.includes("applied_state_unknown");
+    const copy = unknown
+      ? "The coordinator cannot confirm which settings this running agent loaded."
+      : "The agent is running with older settings.";
+    return `<div class="state-strip__value"><span class="status" data-state="awaiting_approval">${icon("stamp")}Restart required</span></div><p class="small">${copy}</p>`;
+  }
+  if (runtimeConfigured) {
+    return `<div class="state-strip__value"><span class="status" data-state="delivered">${icon("check")}Applied</span></div><p class="small">Settings match the running agent.</p><div class="state-strip__actions"><a class="btn btn-ghost btn-sm" href="${escapeHtml(settingsHref)}">Review settings</a></div>`;
+  }
+  return `<div class="state-strip__value"><span class="status" data-state="cancelled">${icon("slash")}Unavailable</span></div><p class="small">The agent runtime is not configured.</p><div class="state-strip__actions"><a class="btn btn-ghost btn-sm" href="${escapeHtml(settingsHref)}">Review settings</a></div>`;
 }
 
 /** Render the application page shell; repository state is hydrated by assets/git.js. */
@@ -162,6 +222,7 @@ export function renderApplication(
   projectId: string,
   appKey: string,
   chrome: PageChrome,
+  runtimeConfigured = false,
 ): string | undefined {
   const project = site.projects.find((candidate) => candidate.id === projectId);
   if (project === undefined) {
@@ -174,6 +235,7 @@ export function renderApplication(
 
   const runtime = site.runtime.get(app.id) ?? "stopped";
   const pending = site.pendingRestart.get(app.id) ?? false;
+  const pendingReasons = site.pendingRestartReasons.get(app.id) ?? [];
   const folder = appDir(project, app);
   const chatHref = `/chat?app=${encodeURIComponent(app.appKey)}&project=${encodeURIComponent(project.id)}`;
   const settingsHref = `/projects/${encodeURIComponent(project.id)}/apps/${encodeURIComponent(app.appKey)}/settings`;
@@ -183,36 +245,72 @@ export function renderApplication(
   const sshHref = `/ssh?project=${encodeURIComponent(project.id)}&app=${encodeURIComponent(app.appKey)}`;
   const sshHosts = site.sshHostsByApp.get(app.id) ?? 0;
   const sshPending = site.sshPendingByApp.get(app.id) ?? 0;
+  const appHref = `/projects/${encodeURIComponent(project.id)}/apps/${encodeURIComponent(app.appKey)}`;
+  const canRestart = runtime === "running" || runtime === "starting";
 
   const header = pageHeader({
     overline: "Application",
     title: app.appKey,
-    description: "Repository state, branch, and lightweight git actions for this application.",
+    description: "Repository state and lightweight git actions for this application.",
     meta: [project.name, app.kind ?? "app", app.path],
-    actions: `<a class="btn btn-secondary" href="${escapeHtml(terminalHref)}">${icon("terminal")}Terminal</a><a class="btn btn-secondary" href="${escapeHtml(settingsHref)}">${icon("settings")}Settings</a><a class="btn btn-secondary" href="${escapeHtml(chatHref)}">${icon("message")}Open chat</a><a class="btn btn-secondary" href="${escapeHtml(ideHref)}" target="_blank" rel="noreferrer">${icon("external")}Open IDE</a>`,
+    actions: `<a class="btn btn-secondary" href="${escapeHtml(chatHref)}">${icon("message")}Open chat</a><a class="btn btn-secondary" href="${escapeHtml(terminalHref)}">${icon("terminal")}Terminal</a><details class="menu">
+        <summary class="btn btn-ghost btn-icon" aria-label="More actions" title="More actions">${icon("more")}</summary>
+        <nav class="menu__panel" aria-label="More actions">
+          <a class="menu__item" href="${escapeHtml(ideHref)}" target="_blank" rel="noreferrer">${icon("external")}Open IDE in this folder</a>
+          <a class="menu__item" href="${escapeHtml(settingsHref)}">${icon("settings")}Application settings</a>
+        </nav>
+      </details>`,
   });
 
-  const pendingBanner = pending
-    ? `<section class="card section" id="settings-pending" aria-labelledby="settings-pending-title">
-        <div class="card__body cluster">
-          <span class="badge badge-warning">Restart required</span>
-          <div class="stack--tight"><h2 class="card__title" id="settings-pending-title">Settings changed</h2><p class="small">The agent is running with older settings. Restart it to apply the new model, auth, or web tools.</p></div>
-          <form method="post" action="/api/apps/${encodeURIComponent(app.appKey)}/restart?project=${encodeURIComponent(project.id)}">
-            <input type="hidden" name="return_to" value="${escapeHtml(`/projects/${project.id}/apps/${app.appKey}`)}" />
-            <button class="btn btn-primary btn-sm" type="submit">${icon("refresh")}Restart agent</button>
-          </form>
-        </div>
-      </section>`
+  const restartDialog = canRestart
+    ? `<dialog class="dialog" id="app-restart-dialog" aria-labelledby="app-restart-dialog-title">
+      <div class="dialog__frame">
+        <header class="dialog__head"><h2 class="dialog__title" id="app-restart-dialog-title">Restart ${escapeHtml(app.appKey)}?</h2></header>
+        <form method="post" action="/api/apps/${encodeURIComponent(app.appKey)}/restart?project=${encodeURIComponent(project.id)}">
+          <div class="dialog__body">
+            <p class="body">An active turn will be interrupted. Sessions are kept.</p>
+            <input type="hidden" name="return_to" value="${escapeHtml(appHref)}" />
+          </div>
+          <footer class="dialog__foot">
+            <button class="btn btn-ghost" type="button" data-dialog-close>Cancel</button>
+            <button class="btn btn-primary" type="submit">Restart agent</button>
+          </footer>
+        </form>
+      </div>
+    </dialog>`
     : "";
 
+  const stateStrip = `<section class="state-strip" id="app-state" aria-label="Application state">
+    <div class="state-strip__cell" id="runtime-state">
+      <span class="state-strip__label">Runtime</span>
+      <div class="state-strip__value">${runtimePill(runtime)}</div>
+      <div class="state-strip__actions" id="runtime-actions">${
+        canRestart
+          ? `<form id="runtime-restart"><button class="btn btn-secondary btn-sm" type="button" data-dialog-open="app-restart-dialog">${icon("refresh")}Restart agent</button></form>`
+          : ""
+      }</div>
+    </div>
+    <div class="state-strip__cell" id="settings-state">
+      <span class="state-strip__label">Settings</span>
+      ${settingsState(pending, pendingReasons, runtimeConfigured, settingsHref)}
+    </div>
+  </section>${restartDialog}`;
+
   const image = app.buildConfigured
-    ? imagePanel(project, app, app.imageStatus)
-    : defaultImagePanel(project, app);
-  const sshPanel = `<section class="card section" id="ssh-panel" aria-labelledby="ssh-panel-title">
+    ? imagePanel(project, app, runtime)
+    : defaultImagePanel(project, app, ideHref);
+  const sshPendingCopy =
+    sshPending > 0
+      ? `<span class="status" data-state="awaiting_approval">${icon("stamp")}${sshPending} pending ${sshPending === 1 ? "approval" : "approvals"}</span>`
+      : '<p class="small">No pending approvals.</p>';
+  const sshPanel = `<section class="card" id="ssh-panel" aria-labelledby="ssh-panel-title">
     <div class="card__head"><h2 class="card__title" id="ssh-panel-title">SSH access</h2><a class="btn btn-ghost btn-sm" href="${escapeHtml(sshHref)}">${icon("terminal")}Manage</a></div>
-    <p class="small">${sshHosts} allowed ${sshHosts === 1 ? "host" : "hosts"} · ${sshPending} pending ${sshPending === 1 ? "approval" : "approvals"}</p>
+    <div class="card__body stack--tight">
+      <p class="small">${sshHosts} allowed ${sshHosts === 1 ? "host" : "hosts"}</p>
+      ${sshPendingCopy}
+    </div>
   </section>`;
-  const body = `${pendingBanner}${image}${sshPanel}<div id="git-panel" data-project-id="${escapeHtml(project.id)}" data-app-key="${escapeHtml(app.appKey)}" data-api-base="${escapeHtml(apiBase)}">
+  const body = `${stateStrip}<div id="git-panel" data-project-id="${escapeHtml(project.id)}" data-app-key="${escapeHtml(app.appKey)}" data-api-base="${escapeHtml(apiBase)}">
     <p id="git-live" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>
     <div class="workbench-grid workbench-grid--detail section">
       <div class="stack">
@@ -235,7 +333,8 @@ export function renderApplication(
         </section>
       </div>
       <aside class="rail-stack" aria-label="Application details">
-        ${applicationRail(project, app, runtimePill(runtime), settingsHref, pending)}
+        ${image}
+        ${sshPanel}
         <section class="card" aria-labelledby="remotes-title">
           <div class="card__head"><h2 class="card__title" id="remotes-title">Remotes</h2></div>
           ${loadingBody("git-remotes-body", 3)}
@@ -268,5 +367,6 @@ export function renderApplication(
     header,
     scripts: ["/assets/git.js", "/assets/images.js"],
     body,
+    settingsHref,
   });
 }

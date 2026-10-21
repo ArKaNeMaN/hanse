@@ -1,60 +1,65 @@
 (function () {
   const panel = document.getElementById("image-panel");
-  if (panel === null) {
+  const statusEl = document.getElementById("image-status");
+  const refEl = document.getElementById("image-ref");
+  if (panel === null || statusEl === null || refEl === null) {
     return;
   }
 
-  const statusEl = document.getElementById("image-status");
   const statusLive = document.getElementById("image-live");
-  const refEl = document.getElementById("image-ref");
   const builtEl = document.getElementById("image-built");
   const rollbackRefEl = document.getElementById("image-rollback-ref");
   const rollbackBuiltEl = document.getElementById("image-rollback-built");
   const rollbackForm = document.getElementById("image-rollback-form");
+  const rollbackButton = document.getElementById("image-rollback");
+  const rollbackDialogRef = document.getElementById("image-rollback-dialog-ref");
   const errorEl = document.getElementById("image-error");
   const hintEl = document.getElementById("image-hint");
+  const noticeEl = document.getElementById("image-notice");
   const logsEl = document.getElementById("image-logs");
+  const logsDetails = document.getElementById("image-logs-details");
   const buildButton = document.getElementById("image-build");
   const statusButton = document.getElementById("image-refresh");
-  const logsButton = document.getElementById("image-logs-refresh");
-
-  if (statusEl === null || refEl === null || builtEl === null || logsEl === null) {
-    return;
-  }
 
   const imageUrl = panel.dataset.imageUrl || "";
   const logsUrl = panel.dataset.logsUrl || "";
+  const runtimeUrl = panel.dataset.runtimeUrl || "";
   const POLL_MS = 3000;
   const STATUS = {
     missing: {
-      label: "Missing",
-      tone: "badge-ghost",
+      label: "Not built",
+      state: "queued",
+      glyph: "clock",
       action: "Build image",
       hint: "No app image has been built. Build it before starting the agent.",
     },
     building: {
       label: "Building",
-      tone: "badge-info",
-      action: "Building...",
+      state: "in_progress",
+      glyph: "loader",
+      action: "Building…",
       hint: "The runner is building this image. The previous image remains in use.",
     },
     ready: {
-      label: "Ready",
-      tone: "badge-success",
+      label: "Built",
+      state: "delivered",
+      glyph: "check",
       action: "Rebuild image",
       hint: "The image matches the current Dockerfile and default base.",
     },
     stale: {
-      label: "Stale",
-      tone: "badge-warning",
+      label: "Out of date",
+      state: "expired",
+      glyph: "hourglass",
       action: "Rebuild image",
-      hint: "The Dockerfile or default base changed. The running container keeps the old image until you rebuild.",
+      hint: "The Dockerfile or default base changed. The running agent keeps the old image until you rebuild and restart.",
     },
     error: {
-      label: "Error",
-      tone: "badge-error",
+      label: "Build failed",
+      state: "failed",
+      glyph: "alert-triangle",
       action: "Retry build",
-      hint: "The last build failed. Review the logs and retry; the previous image is kept.",
+      hint: "The last build failed. The previous image is kept.",
     },
   };
 
@@ -63,7 +68,7 @@
   let logsBusy = false;
 
   function setLive(text) {
-    if (statusLive !== null) {
+    if (statusLive !== null && statusLive.textContent !== text) {
       statusLive.textContent = text;
     }
   }
@@ -74,13 +79,32 @@
 
   function formatTime(iso) {
     if (typeof iso !== "string" || iso.length === 0) {
-      return "Never";
+      return "";
     }
     const date = new Date(iso);
     if (Number.isNaN(date.getTime())) {
       return iso;
     }
-    return date.toLocaleString();
+    return date.toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" });
+  }
+
+  function renderTime(element, iso, emptyText) {
+    element.dataset.builtAt = typeof iso === "string" ? iso : "";
+    element.replaceChildren();
+    if (typeof iso !== "string" || iso.length === 0) {
+      element.textContent = emptyText;
+      return;
+    }
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) {
+      element.textContent = iso;
+      return;
+    }
+    const time = document.createElement("time");
+    time.setAttribute("datetime", iso);
+    time.setAttribute("title", formatTime(iso));
+    time.textContent = formatTime(iso);
+    element.appendChild(time);
   }
 
   async function request(url) {
@@ -113,18 +137,92 @@
     }
   }
 
+  function setStatusLabel(element, label) {
+    for (const node of element.childNodes) {
+      if (node.nodeType === 3) {
+        node.textContent = label;
+        return;
+      }
+    }
+    element.appendChild(document.createTextNode(label));
+  }
+
+  function setStatusGlyph(element, glyph) {
+    let use = element.querySelector("use");
+    if (use === null) {
+      element.insertAdjacentHTML(
+        "afterbegin",
+        `<svg class="icon" aria-hidden="true" focusable="false"><use href="#i-${glyph}"></use></svg>`,
+      );
+      use = element.querySelector("use");
+    }
+    if (use !== null) {
+      use.setAttribute("href", `#i-${glyph}`);
+    }
+  }
+
+  function updateRollbackLabel(state) {
+    const active = state === "running" || state === "starting";
+    const label = active ? "Roll back and restart" : "Roll back image";
+    const confirm = document.getElementById("image-rollback-confirm");
+    if (confirm !== null) {
+      confirm.textContent = label;
+    }
+    if (rollbackButton !== null) {
+      const labelEl = rollbackButton.querySelector(".btn__label");
+      if (labelEl !== null) {
+        labelEl.textContent = label;
+      }
+    }
+  }
+
+  async function refreshRuntime() {
+    if (runtimeUrl.length === 0 || panel.dataset.status === "default") {
+      return;
+    }
+    try {
+      const data = await request(runtimeUrl);
+      const state = typeof data.state === "string" ? data.state : "";
+      updateRollbackLabel(state);
+      const cardRef = (panel.dataset.imageRef || "").length > 0 ? panel.dataset.imageRef : null;
+      const runtimeRef =
+        typeof data.imageRef === "string" && data.imageRef.length > 0 ? data.imageRef : null;
+      const running = state === "running" || state === "starting";
+      if (noticeEl !== null) {
+        noticeEl.hidden = !(
+          running &&
+          cardRef !== null &&
+          runtimeRef !== null &&
+          cardRef !== runtimeRef
+        );
+      }
+    } catch {
+      // Runtime is secondary here; status and build controls stay usable.
+    }
+  }
+
   function renderStatus(data) {
     const status = normalizeStatus(data.status);
     const meta = STATUS[status];
     panel.dataset.status = status;
+    statusEl.className = "status";
     statusEl.dataset.status = status;
-    statusEl.className = `badge ${meta.tone}`;
-    statusEl.textContent = meta.label;
+    statusEl.dataset.state = meta.state;
+    setStatusGlyph(statusEl, meta.glyph);
+    setStatusLabel(statusEl, meta.label);
 
-    refEl.textContent =
-      typeof data.imageRef === "string" && data.imageRef.length > 0 ? data.imageRef : "Not built";
-    builtEl.dataset.builtAt = typeof data.builtAt === "string" ? data.builtAt : "";
-    builtEl.textContent = formatTime(data.builtAt);
+    const imageRef =
+      typeof data.imageRef === "string" && data.imageRef.length > 0 ? data.imageRef : null;
+    refEl.textContent = imageRef ?? "Not built";
+    if (imageRef === null) {
+      delete panel.dataset.imageRef;
+    } else {
+      panel.dataset.imageRef = imageRef;
+    }
+
+    if (builtEl !== null) {
+      renderTime(builtEl, typeof data.builtAt === "string" ? data.builtAt : "", "Never");
+    }
 
     const previousImageRef =
       typeof data.previousImageRef === "string" && data.previousImageRef.length > 0
@@ -132,15 +230,24 @@
         : null;
     if (rollbackRefEl !== null) {
       rollbackRefEl.textContent = previousImageRef ?? "None";
+      const row = rollbackRefEl.closest(".summary-row");
+      if (row !== null) row.hidden = previousImageRef === null;
     }
     if (rollbackBuiltEl !== null) {
-      rollbackBuiltEl.dataset.builtAt =
-        typeof data.previousImageBuiltAt === "string" ? data.previousImageBuiltAt : "";
-      rollbackBuiltEl.textContent = formatTime(data.previousImageBuiltAt);
+      renderTime(
+        rollbackBuiltEl,
+        typeof data.previousImageBuiltAt === "string" ? data.previousImageBuiltAt : "",
+        "",
+      );
       rollbackBuiltEl.hidden = previousImageRef === null;
+      const row = rollbackBuiltEl.closest(".summary-row");
+      if (row !== null) row.hidden = previousImageRef === null;
     }
     if (rollbackForm !== null) {
       rollbackForm.hidden = previousImageRef === null;
+    }
+    if (rollbackDialogRef !== null) {
+      rollbackDialogRef.textContent = previousImageRef ?? "no previous image";
     }
 
     if (errorEl !== null) {
@@ -152,22 +259,47 @@
       hintEl.textContent = meta.hint;
     }
     if (buildButton !== null) {
-      buildButton.textContent = meta.action;
+      const label = buildButton.querySelector(".btn__label");
+      if (label !== null) {
+        label.textContent = meta.action;
+      }
       buildButton.dataset.actionLabel = meta.action;
       buildButton.disabled = status === "building";
+      if (status === "building") {
+        buildButton.setAttribute("aria-busy", "true");
+      } else {
+        buildButton.removeAttribute("aria-busy");
+      }
+    }
+    if (rollbackButton !== null) {
+      rollbackButton.disabled = status === "building";
     }
 
     if (status === "building") {
+      if (logsDetails !== null && !logsDetails.open) {
+        logsDetails.open = true;
+      }
       schedulePoll();
     } else {
       stopPoll();
     }
-    setLive(`${meta.label}. ${data.error ? String(data.error) : meta.hint}`);
+    setLive(`${meta.label}. ${typeof data.error === "string" && data.error.length > 0 ? data.error : meta.hint}`);
+    void refreshRuntime();
   }
 
   function renderLogs(data) {
-    const text = typeof data.logs === "string" ? data.logs : "";
-    logsEl.textContent = text.length === 0 ? "No build logs yet." : text;
+    if (logsEl === null) {
+      return;
+    }
+    const text =
+      typeof data.logs === "string" && data.logs.length > 0 ? data.logs : "No build logs yet.";
+    if (logsEl.textContent === text) {
+      return;
+    }
+    const atBottom = logsEl.scrollHeight - logsEl.scrollTop - logsEl.clientHeight < 4;
+    const previousTop = logsEl.scrollTop;
+    logsEl.textContent = text;
+    logsEl.scrollTop = atBottom ? logsEl.scrollHeight : previousTop;
   }
 
   async function refreshStatus() {
@@ -178,7 +310,15 @@
     try {
       renderStatus(await request(imageUrl));
     } catch (error) {
-      setLive(error instanceof Error ? error.message : "Could not refresh image status.");
+      const message =
+        error instanceof Error && error.message.length > 0
+          ? error.message
+          : "Could not refresh image status.";
+      setLive(message);
+      if (errorEl !== null) {
+        errorEl.textContent = message;
+        errorEl.hidden = false;
+      }
     } finally {
       statusBusy = false;
     }
@@ -192,7 +332,11 @@
     try {
       renderLogs(await request(logsUrl));
     } catch (error) {
-      setLive(error instanceof Error ? error.message : "Could not refresh build logs.");
+      setLive(
+        error instanceof Error && error.message.length > 0
+          ? error.message
+          : "Could not refresh build logs.",
+      );
     } finally {
       logsBusy = false;
     }
@@ -212,9 +356,11 @@
     timer = window.setTimeout(async () => {
       timer = null;
       await refreshStatus();
-      await refreshLogs();
       const status = normalizeStatus(panel.dataset.status || "");
       if (status === "building") {
+        if (logsDetails !== null && logsDetails.open) {
+          await refreshLogs();
+        }
         schedulePoll();
       }
     }, POLL_MS);
@@ -223,29 +369,34 @@
   if (statusButton !== null) {
     statusButton.addEventListener("click", () => {
       void refreshStatus();
+      if (logsDetails !== null && logsDetails.open) {
+        void refreshLogs();
+      }
     });
   }
-  if (logsButton !== null) {
-    logsButton.addEventListener("click", () => {
-      void refreshLogs();
+  if (logsDetails !== null) {
+    logsDetails.addEventListener("toggle", () => {
+      if (logsDetails.open) {
+        void refreshLogs();
+      }
     });
   }
 
-  const initial = normalizeStatus(panel.dataset.status || "");
-  renderStatus({
-    status: initial,
-    imageRef: refEl.textContent === "Not built" ? null : refEl.textContent,
-    builtAt: builtEl.dataset.builtAt || "",
-    previousImageRef:
-      rollbackRefEl !== null && rollbackRefEl.textContent !== "None"
-        ? rollbackRefEl.textContent
-        : null,
-    previousImageBuiltAt: rollbackBuiltEl !== null ? rollbackBuiltEl.dataset.builtAt : "",
-    error: errorEl !== null && !errorEl.hidden ? errorEl.textContent : null,
-  });
-
-  void refreshLogs();
-  if (initial === "building") {
-    void refreshStatus();
+  const initial = panel.dataset.status || "";
+  if (initial === "default") {
+    void refreshRuntime();
+  } else {
+    renderStatus({
+      status: initial,
+      imageRef: refEl.textContent === "Not built" ? null : refEl.textContent,
+      builtAt: builtEl !== null ? builtEl.dataset.builtAt || "" : "",
+      previousImageRef:
+        rollbackRefEl !== null && rollbackRefEl.textContent !== "None"
+          ? rollbackRefEl.textContent
+          : null,
+      previousImageBuiltAt:
+        rollbackBuiltEl !== null ? rollbackBuiltEl.dataset.builtAt || "" : "",
+      error: errorEl !== null && !errorEl.hidden ? errorEl.textContent : null,
+    });
   }
 })();

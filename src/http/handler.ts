@@ -687,6 +687,7 @@ function route(deps: HttpDeps, request: HttpRequest): HttpResponse {
           safeDecode(applicationMatch[1] ?? ""),
           safeDecode(applicationMatch[2] ?? ""),
           chrome,
+          deps.manager !== undefined,
         );
         if (page !== undefined) {
           return html(200, page);

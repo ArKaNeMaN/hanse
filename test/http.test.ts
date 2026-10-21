@@ -326,7 +326,7 @@ describe("http pages", () => {
     expect(response.body).toContain('href="/projects/p/apps/a"');
     expect(response.body).toContain('aria-label="Open a application"');
     expect(response.body).toContain('href="/projects/p/settings"');
-    expect(response.body).toContain('href="/settings"');
+    expect(response.body).toContain('class="nav-item" href="/projects/p/settings"');
   });
 
   it("returns a styled 404 for an unknown project", () => {

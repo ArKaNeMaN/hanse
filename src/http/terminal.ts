@@ -99,6 +99,7 @@ export function renderTerminalPage(
     header,
     scripts: ["/assets/terminal.js"],
     body,
+    settingsHref: `/projects/${encodeURIComponent(project.id)}/apps/${encodeURIComponent(app.appKey)}/settings`,
   });
 }
 

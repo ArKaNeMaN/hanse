@@ -257,6 +257,7 @@ function shell(
     breadcrumb: Array<{ label: string; href?: string }>;
     header: string;
     body: string;
+    settingsHref?: string;
   },
 ): string {
   return appShell({
@@ -270,6 +271,7 @@ function shell(
     header: options.header,
     body: options.body,
     notice: chrome.notice,
+    settingsHref: options.settingsHref,
   });
 }
 
@@ -905,6 +907,7 @@ export function renderProject(
     breadcrumb: [{ label: "Projects", href: "/projects" }, { label: project.name }],
     header,
     body,
+    settingsHref: `/projects/${encodeURIComponent(project.id)}/settings`,
   });
 }
 
