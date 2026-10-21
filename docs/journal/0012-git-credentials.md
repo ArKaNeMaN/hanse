@@ -1,8 +1,8 @@
 # Stage 0010 - Git credentials
 
 - Date: 2026-10-21
-- Status: implemented, verified, and deployed to `deployment-host` as `sha-e2d89a2`; deployment record in the
-  local `docs/deploy/deploy-log.md`
+- Status: implemented, verified, and deployed to `deployment-host` as `sha-e2d89a2`; the follow-up pasted-key
+  whitespace fix shipped in `sha-d2fcc3b`. Deployment record in the local `docs/deploy/deploy-log.md`.
 - Design: [`docs/design/git-credentials.md`](../design/git-credentials.md)
 - Plan: [`docs/plans/0010-git-credentials.md`](../plans/0010-git-credentials.md)
 - Gate reviews: `oracle` design review (PASS after revisions); `momus` plan review (PASS); `oracle`
@@ -74,6 +74,24 @@ deploy was merged on top of stage 0011 (`sha-b844bc3`); SSH tables and features 
 No operator PAT or deploy key was available on the host, so a **successful credential-backed**
 fetch/push and a successful SSH Test were not executed live. The failure paths, public HTTPS fetch,
 materialization, and API/UI wiring were verified; unit and integration tests cover the success paths.
+
+## Follow-up - pasted SSH key whitespace
+
+An otherwise valid ed25519 key failed to save when it was pasted with leading indentation, trailing
+spaces, tabs, non-breaking spaces, or a UTF-8 BOM. OpenSSH's PEM parser reported the opaque
+`Load key ".../draft": error in libcrypto`. `normalizeSshPrivateKey` now strips a BOM, normalizes
+CR/LF, trims each line, and drops leading/trailing blank lines before the size, control-character,
+and PEM-envelope checks. The Test-draft validator uses the same normalization, so the app-page Test
+path accepts the same pasted key.
+
+Commits `0e6e50e` and `47652bc`; the live coordinator is `sha-d2fcc3b` (the parallel settings commit
+on top includes both fixes). Regression coverage includes indented/tab/trailing-space/CRLF/BOM/NBSP
+variants and a Test-draft normalization test. Live verification against the deployed coordinator:
+an app-scope save of an indented ed25519 key returned `200`, `inherit` removed the row, and the
+`setting_secrets` table was empty afterward; the Test endpoint accepted the draft and reached app
+resolution (`502 unknown app` while `demo-app` was stopped, not a `400` validation error); direct
+validation of the deployed module returned a SHA256 fingerprint. The full suite is **1196 passing**;
+`npm run lint`, `npm run typecheck`, `npm test`, and `npm run build` are green.
 
 ## Decisions and residuals
 
