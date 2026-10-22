@@ -1,6 +1,6 @@
 # 0018 - Managed agent skills (global, project, application)
 
-Status: implemented and verified; not deployed.
+Status: implemented, verified, and deployed as `sha-33523f1` on 2026-10-22.
 
 - Design: [`docs/design/agent-skills.md`](../design/agent-skills.md) (oracle round 7 PASS)
 - Plan: [`docs/plans/0015-agent-skills.md`](../plans/0015-agent-skills.md) (momus round 2 PASS)
@@ -114,6 +114,32 @@ was added and the repository `.opencode` model is unchanged.
 - A coordinator DB restore older than the agents volume can leave materialized files loaded in a
   running container until the next start; this is the same restart boundary as any skill change.
 
+## Deploy
+
+- Images: coordinator `ghcr.io/arkaneman/hanse:sha-33523f1`
+  (`sha256:5fc6d072d2acad5072c4cb3591c069280ba8c94261f767ea0cbbeac9794d904f`), agent-default
+  `sha256:0f5c5e55513029412deea406c844216f95e6f307b618e516f6e53916d1eb4aae`, agent-ide
+  `sha256:dde60f2282f001a8c913e0e4e459de29a059e7cbc3cd4672ac71e724527467ce`, runner
+  `sha256:02242478440db36737f928b9fa736f5eeaac12a3bdd3b0b4cebc374cd93643ec`.
+- Previous: coordinator `sha-50acf4f`; agent/ide/runner `sha-d2fcc3b`. The deploy backed up
+  `state`, `workspace`, `agents`, `.env`, and `compose.override.yaml` to
+  `<BACKUP_DIR>/20261022-110642-pre-skills/` and tagged the old coordinator/IDE/runner images as
+  `rollback-20261022-110642`.
+- Health: `/healthz`, `/login`, static assets including `/assets/skills.js`, authenticated `/`,
+  `/projects`, `/settings`, `/skills`, `/api/projects`, `/api/skills`, the application skills page,
+  and `/ide/` returned the expected statuses; `hanse`, `hanse-ide`, and `hanse-runner` were healthy;
+  logs showed `hanse serving 2 project(s)` with no errors.
+- Database: `schema_migrations` reached 12 and the `skills` table was created with no rows.
+- Live skills smoke on `demo-app`: the first apply created `config/opencode/{skill,skills}` and
+  `.hanse-skills-initialized`; a temporary global `deploy-smoke` skill was created through the API,
+  the agent was restarted, `SKILL.md` was materialized, and `opencode debug skill` inside the
+  container listed it with the expected description and path. After deleting the skill and
+  restarting, the file was gone and the skill was no longer listed.
+- Runtime probes: `scripts/agent-runtime-probe.sh b1` and `b2` passed; the app container had no
+  operator/runtime token, no `/data/state`, and no Docker socket; `GET
+  /api/apps/demo-app/sessions` returned `200`.
+
 ## Next steps
 
-Commit the stage. Deployment is separate and has not been performed from this checkout.
+No code work remains for this stage. Future skill options (multi-file bundles, per-agent allowlists,
+repository-root override) are separate stages.

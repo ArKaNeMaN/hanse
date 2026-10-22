@@ -1,6 +1,6 @@
 # Plan 0015: Managed agent skills (global, project, application)
 
-- Status: implemented and verified (journal 0018); not deployed
+- Status: implemented, verified, and deployed as `sha-33523f1` (journal 0018)
 - Design: [`docs/design/agent-skills.md`](../design/agent-skills.md) (oracle round 7 PASS)
 - Design reviewer: `oracle` - PASS
 - Plan reviewer: `momus`

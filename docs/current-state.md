@@ -640,7 +640,10 @@ screenshots under `docs/design/artifacts/chat/`). The context stage is deployed 
 `node docs/design/skills-qa.mjs` (PASS, 49 assertions, zero console/page errors; report and
 screenshots under `docs/design/artifacts/skills/`). An empirical `opencode debug skill` run against
 a materialized root listed the managed names and descriptions (local 1.18.35; deployment pins
-1.19.3). The skills stage has not been deployed from this checkout.
+1.19.3). The skills stage is deployed as coordinator/agent/ide/runner `sha-33523f1` (2026-10-22,
+journal 0018): migration v12 applied, `demo-app` materialized an empty set, a temporary global skill
+was created, listed by `opencode debug skill`, then deleted and removed after restart, and the B1/B2
+probes passed.
 B1 core live smoke on `deployment-host`: coordinator/IDE/runner healthy, per-app `demo-app` container running,
 `scripts/agent-runtime-probe.sh b1` passes, coordinator recreate reattaches the app network, and the
 app agent has no `/data/state`, Docker socket, operator/runtime token, or sibling app access.
