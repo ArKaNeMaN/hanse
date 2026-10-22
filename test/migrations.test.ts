@@ -1,5 +1,14 @@
-import { describe, expect, it } from "vitest";
-import { openDatabase, runMigrations } from "../src/store/index.js";
+import { createHash } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { describe, expect, it, vi } from "vitest";
+import {
+  openDatabase,
+  runMigrations,
+  SchemaTooNewError,
+  UnknownMigrationError,
+} from "../src/store/index.js";
 import { MIGRATIONS } from "../src/store/migrations.js";
 
 const IMAGE_COLUMNS = [
@@ -12,6 +21,10 @@ const IMAGE_COLUMNS = [
 ];
 
 const now = "2026-10-21T00:00:00.000Z";
+
+function migrationChecksum(sql: string): string {
+  return createHash("sha256").update(sql).digest("hex");
+}
 
 function appColumns(db: ReturnType<typeof openDatabase>): string[] {
   return (
@@ -175,7 +188,7 @@ describe("migration v6 app-images", () => {
     );
     for (const migration of MIGRATIONS.filter((candidate) => candidate.version <= 5)) {
       db.exec(migration.sql);
-      record.run(migration.version, migration.name, "existing", now);
+      record.run(migration.version, migration.name, migrationChecksum(migration.sql), now);
     }
     insertProjectAndApp(db);
     expect(appColumns(db)).not.toContain("image_status");
@@ -201,7 +214,7 @@ describe("migration v6 app-images", () => {
     );
     for (const migration of MIGRATIONS.filter((candidate) => candidate.version <= 9)) {
       db.exec(migration.sql);
-      record.run(migration.version, migration.name, "existing", now);
+      record.run(migration.version, migration.name, migrationChecksum(migration.sql), now);
     }
     insertProjectAndApp(db);
     db.prepare(
@@ -234,7 +247,7 @@ describe("migration v6 app-images", () => {
     );
     for (const migration of MIGRATIONS.filter((candidate) => candidate.version <= 10)) {
       db.exec(migration.sql);
-      record.run(migration.version, migration.name, "existing", now);
+      record.run(migration.version, migration.name, migrationChecksum(migration.sql), now);
     }
     insertProjectAndApp(db);
     expect(appColumns(db)).not.toContain("deleting");
@@ -266,7 +279,7 @@ describe("migration v6 app-images", () => {
     );
     for (const migration of MIGRATIONS.filter((candidate) => candidate.version <= 11)) {
       db.exec(migration.sql);
-      record.run(migration.version, migration.name, "existing", now);
+      record.run(migration.version, migration.name, migrationChecksum(migration.sql), now);
     }
     insertProjectAndApp(db);
     expect(() => db.prepare("SELECT 1 FROM skills").get()).toThrow();
@@ -303,5 +316,116 @@ describe("migration v6 app-images", () => {
       insert.run("global", "p", "", "second", "Review code", "Body", now, now),
     ).toThrow();
     db.close();
+  });
+
+  it("rejects a newer applied schema before applying anything", () => {
+    const db = openDatabase(":memory:");
+    db.exec(
+      "CREATE TABLE schema_migrations (" +
+        "version INTEGER PRIMARY KEY, name TEXT NOT NULL, checksum TEXT NOT NULL, applied_at TEXT NOT NULL)",
+    );
+    db.prepare(
+      "INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?, ?, ?, ?)",
+    ).run(13, "future", "future-checksum", now);
+
+    expect(() => runMigrations(db)).toThrowError(SchemaTooNewError);
+    try {
+      runMigrations(db);
+    } catch (error) {
+      expect(error).toMatchObject({
+        code: "schema_too_new",
+        applied: 13,
+        known: 12,
+      });
+      expect((error as Error).message).toContain("13");
+      expect((error as Error).message).toContain("12");
+    }
+    expect(() => db.prepare("SELECT 1 FROM skills").get()).toThrow();
+    db.close();
+  });
+
+  it("does not apply pending migrations when the database is newer", () => {
+    const db = openDatabase(":memory:");
+    db.exec(
+      "CREATE TABLE schema_migrations (" +
+        "version INTEGER PRIMARY KEY, name TEXT NOT NULL, checksum TEXT NOT NULL, applied_at TEXT NOT NULL)",
+    );
+    const record = db.prepare(
+      "INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?, ?, ?, ?)",
+    );
+    for (const migration of MIGRATIONS.filter((candidate) => candidate.version <= 11)) {
+      db.exec(migration.sql);
+      record.run(migration.version, migration.name, migrationChecksum(migration.sql), now);
+    }
+    record.run(13, "future", "future-checksum", now);
+
+    expect(() => runMigrations(db)).toThrowError(SchemaTooNewError);
+    expect(() => db.prepare("SELECT 1 FROM skills").get()).toThrow();
+    const count = db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get() as {
+      count: number;
+    };
+    expect(count.count).toBe(12);
+    db.close();
+  });
+
+  it("rejects an applied version this binary does not know", () => {
+    const db = openDatabase(":memory:");
+    db.exec(
+      "CREATE TABLE schema_migrations (" +
+        "version INTEGER PRIMARY KEY, name TEXT NOT NULL, checksum TEXT NOT NULL, applied_at TEXT NOT NULL)",
+    );
+    db.prepare(
+      "INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?, ?, ?, ?)",
+    ).run(0, "unknown", "unknown-checksum", now);
+
+    expect(() => runMigrations(db)).toThrowError(UnknownMigrationError);
+    try {
+      runMigrations(db);
+    } catch (error) {
+      expect(error).toMatchObject({ code: "unknown_migration", version: 0, knownMax: 12 });
+    }
+    db.close();
+  });
+
+  it("warns and continues on a checksum mismatch", () => {
+    const db = openDatabase(":memory:");
+    runMigrations(db);
+    db.prepare("UPDATE schema_migrations SET checksum = 'tampered' WHERE version = 12").run();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      expect(runMigrations(db)).toBe(0);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("schema_checksum_mismatch version=12"),
+      );
+    } finally {
+      warn.mockRestore();
+    }
+    db.close();
+  });
+
+  it("starts a real v12 database unchanged", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "hanse-v12-"));
+    const file = path.join(dir, "coordinator.db");
+    try {
+      const first = openDatabase(file);
+      expect(runMigrations(first)).toBe(12);
+      first.close();
+
+      const reopened = openDatabase(file);
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      try {
+        expect(runMigrations(reopened)).toBe(0);
+        expect(warn).not.toHaveBeenCalled();
+      } finally {
+        warn.mockRestore();
+      }
+      const max = reopened
+        .prepare("SELECT MAX(version) AS version FROM schema_migrations")
+        .get() as { version: number };
+      expect(max.version).toBe(12);
+      reopened.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

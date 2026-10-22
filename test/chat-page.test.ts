@@ -15,13 +15,18 @@ import {
   reservationFits,
   reservationUnits,
 } from "../assets/chat-highlight.js";
+import { DeploymentInProgressError } from "../src/coordinator/deployment-lock.js";
 import { CoordinatorService } from "../src/coordinator/service.js";
 import { GitService } from "../src/git/service.js";
 import { handleChat, streamSessionEvents } from "../src/http/chat.js";
 import { type HttpDeps, type HttpRequest, handleRequest } from "../src/http/handler.js";
 import { createHttpServer } from "../src/http/server.js";
 import { createPrincipal } from "../src/identity/principals.js";
-import { DeletionPendingError, type InstanceManager } from "../src/opencode/manager.js";
+import {
+  AgentTokenReconcileError,
+  DeletionPendingError,
+  type InstanceManager,
+} from "../src/opencode/manager.js";
 import { SettingsService } from "../src/settings/index.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
 
@@ -1301,6 +1306,76 @@ describe("async chat send", () => {
     expect(JSON.parse(written.body ?? "")).toEqual({
       error: "application p1:storefront is pending deletion",
       code: "deletion_pending",
+    });
+  });
+
+  it("maps a deployment lock to the shared 409 body", async () => {
+    const f = fixture();
+    f.deps.manager = {
+      ensure: async () => {
+        throw new DeploymentInProgressError("ensure", { phase: "switching" });
+      },
+    } as unknown as InstanceManager;
+
+    const response = await handleChat(f.deps, asyncRequest({ headers: auth(f.token) }));
+    expect(response.status).toBe(409);
+    expect(response.headers?.["retry-after"]).toBe("30");
+    expect(JSON.parse(response.body)).toEqual({
+      error: "deployment_in_progress",
+      message: "deployment in progress: switching",
+      retryAfter: 30,
+    });
+  });
+
+  it("maps an agent-token reconciliation failure to the shared 500 body", async () => {
+    const f = fixture();
+    f.deps.manager = {
+      ensure: async () => {
+        throw new AgentTokenReconcileError("p1:storefront");
+      },
+    } as unknown as InstanceManager;
+
+    const response = await handleChat(f.deps, asyncRequest({ headers: auth(f.token) }));
+    expect(response.status).toBe(500);
+    expect(JSON.parse(response.body)).toEqual({ error: "agent_token_reconcile_failed" });
+  });
+
+  it("maps a deployment lock on the SSE ensure path to 409", async () => {
+    const f = fixture();
+    f.deps.manager = {
+      ensure: async () => {
+        throw new DeploymentInProgressError("ensure", { phase: "switching" });
+      },
+    } as unknown as InstanceManager;
+    const written: { status?: number; body?: string } = {};
+    const response = {
+      writeHead(status: number) {
+        written.status = status;
+        return response;
+      },
+      end(body?: string) {
+        written.body = body;
+      },
+      on() {},
+      destroyed: false,
+      writableEnded: false,
+    } as unknown as ServerResponse;
+
+    await streamSessionEvents(
+      f.deps,
+      request({
+        path: "/api/apps/storefront/sessions/ses_1/events",
+        query: { project: "p1" },
+        headers: auth(f.token),
+      }),
+      response,
+    );
+
+    expect(written.status).toBe(409);
+    expect(JSON.parse(written.body ?? "")).toEqual({
+      error: "deployment_in_progress",
+      message: "deployment in progress: switching",
+      retryAfter: 30,
     });
   });
 

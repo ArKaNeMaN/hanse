@@ -3,7 +3,9 @@
 #   docker compose -f compose.yaml -f compose.build.yaml up -d --build
 #
 # The resulting images are local (defaults: hanse:dev, hanse-agent-ide:dev,
-# hanse-agent-default:dev) and do not overwrite the published tags.
+# hanse-runner:dev) and do not overwrite the published tags. The per-app agent image is not a
+# Compose service, so this overlay does not build agent-default; build it explicitly with
+# `docker build --target agent-default -t hanse-agent-default:dev .` when needed.
 services:
   hanse:
     image: ${HANSE_BUILD_IMAGE:-hanse:dev}

@@ -151,6 +151,40 @@ describe("remote MCP bridge", () => {
     expect(seen).toEqual(["Bearer token-1", "Bearer token-2"]);
   });
 
+  it("fails an in-flight old-token request and succeeds on the next file-token request", async () => {
+    const { tokenFile } = fixture("old-token");
+    const seen: string[] = [];
+    const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
+      const headers = (init?.headers ?? {}) as Record<string, string>;
+      seen.push(headers.authorization ?? "");
+      if (seen.length === 1) {
+        writeFileSync(tokenFile, "new-token", { mode: 0o600 });
+        return new Response("denied", { status: 401 });
+      }
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: 2, result: { ok: true } }), {
+        status: 200,
+      });
+    }) as typeof fetch;
+
+    const lines = await bridge(
+      tokenFile,
+      [
+        '{"jsonrpc":"2.0","id":1,"method":"tools/list"}\n',
+        '{"jsonrpc":"2.0","id":2,"method":"tools/list"}\n',
+      ],
+      fetchImpl,
+    );
+
+    expect(seen).toEqual(["Bearer old-token", "Bearer new-token"]);
+    expect(lines).toHaveLength(2);
+    expect(JSON.parse(lines[0] ?? "")).toMatchObject({ jsonrpc: "2.0", id: 1, error: {} });
+    expect(JSON.parse(lines[1] ?? "")).toMatchObject({
+      jsonrpc: "2.0",
+      id: 2,
+      result: { ok: true },
+    });
+  });
+
   it("reports a missing token file as a JSON-RPC error without printing anything else", async () => {
     const dir = mkdtempSync(path.join(tmpdir(), "hanse-mcp-remote-"));
     dirs.push(dir);

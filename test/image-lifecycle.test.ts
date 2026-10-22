@@ -3,6 +3,8 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { DeploymentInProgressError, DeploymentLock } from "../src/coordinator/deployment-lock.js";
+import { LifecycleActivity } from "../src/coordinator/lifecycle-activity.js";
 import { CoordinatorService } from "../src/coordinator/service.js";
 import { GitService } from "../src/git/service.js";
 import type { HttpDeps, HttpRequest } from "../src/http/handler.js";
@@ -156,7 +158,9 @@ interface Fixture {
   service: ImageService;
 }
 
-async function fixture(): Promise<Fixture> {
+async function fixture(
+  options: { deploymentLock?: DeploymentLock; lifecycleActivity?: LifecycleActivity } = {},
+): Promise<Fixture> {
   const base = mkdtempSync(path.join(tmpdir(), "hanse-image-lifecycle-"));
   dirs.push(base);
   const workspacePath = path.join(base, "workspace");
@@ -189,6 +193,10 @@ async function fixture(): Promise<Fixture> {
     hostWorkspace,
     defaultImage: defaultImageReference(),
     runner,
+    ...(options.deploymentLock === undefined ? {} : { deploymentLock: options.deploymentLock }),
+    ...(options.lifecycleActivity === undefined
+      ? {}
+      : { lifecycleActivity: options.lifecycleActivity }),
   });
   const token = createPrincipal(db, { kind: "human", name: "operator" }).token;
   const agentToken = createPrincipal(db, { kind: "agent", name: "agent" }).token;
@@ -207,6 +215,8 @@ async function fixture(): Promise<Fixture> {
         service: new CoordinatorService(db, projectId),
       },
     ],
+    deploymentLock: options.deploymentLock,
+    lifecycleActivity: options.lifecycleActivity,
   };
   return {
     db,
@@ -407,14 +417,11 @@ describe("app image lifecycle", () => {
       const body = (await response.json()) as {
         imageRef: string;
         restarted: boolean;
-        restartScheduled: boolean;
       };
       expect(body).toMatchObject({
         imageRef: "hanse-app-p:web:one",
-        restarted: false,
-        restartScheduled: true,
+        restarted: true,
       });
-      await new Promise((resolve) => setTimeout(resolve, 25));
     } finally {
       await new Promise<void>((resolve) => {
         server.closeAllConnections();
@@ -424,6 +431,61 @@ describe("app image lifecycle", () => {
     expect(runtime.ensured).toHaveLength(2);
     expect(runtime.deleted).toHaveLength(1);
     expect(runtime.ensured[1]?.image).toBe("hanse-app-p:web:one");
+  });
+
+  it("preserves the browser form redirect and notice for rollback", async () => {
+    const f = await fixture();
+    await readyBuild(f, "hanse-app-p:web:one", "sha256:one", "2026-01-01T00:00:00.000Z");
+    await readyBuild(f, "hanse-app-p:web:two", "sha256:two", "2026-01-02T00:00:00.000Z");
+
+    const response = await handleImages(f.deps, {
+      method: "POST",
+      path: "/api/apps/web/image/rollback",
+      headers: auth(f.token, {
+        accept: "text/html",
+        "content-type": "application/x-www-form-urlencoded",
+      }),
+      query: { project: f.projectId },
+      body: new URLSearchParams({ project: f.projectId }).toString(),
+    });
+    expect(response.status).toBe(303);
+    expect(response.headers?.location).toContain("notice=Image+rolled+back");
+    expect(response.headers?.location).toContain("tone=success");
+    expect(imageRef(f)).toBe("hanse-app-p:web:one");
+  });
+
+  it("returns 409 restart_in_progress when a rollback restart claim is already held", async () => {
+    const f = await fixture();
+    await readyBuild(f, "hanse-app-p:web:one", "sha256:one", "2026-01-01T00:00:00.000Z");
+    await readyBuild(f, "hanse-app-p:web:two", "sha256:two", "2026-01-02T00:00:00.000Z");
+    const row = f.db
+      .prepare("SELECT image_status, image_ref FROM apps WHERE id = ?")
+      .get(f.appId) as { image_status: "ready" | "stale"; image_ref: string | null };
+    const runtime = new FakeAgentRuntime(() => "http://127.0.0.1:4210");
+    const manager = new InstanceManager(f.db, path.join(f.workspace, "agents"), {
+      runtime,
+      verify: async () => [],
+      workspaceRoot: f.workspace,
+    });
+    const app = {
+      id: f.appId,
+      projectId: f.projectId,
+      appKey: "web",
+      appDir: f.appDir,
+      imageStatus: row.image_status,
+      imageRef: row.image_ref,
+    };
+    await manager.ensure(app);
+    f.deps.manager = manager;
+
+    const claim = manager.beginRestart(app);
+    expect(claim.accepted).toBe(true);
+    const response = await handleImages(f.deps, rollbackRequest(f));
+    expect(response.status).toBe(409);
+    expect(JSON.parse(response.body)).toEqual({ error: "restart_in_progress" });
+    expect(imageRef(f)).toBe("hanse-app-p:web:two");
+    await claim.completion;
+    expect(manager.isRestarting(f.appId)).toBe(false);
   });
 
   it("renders the current and rollback references on the application page", async () => {
@@ -620,6 +682,80 @@ describe("RunnerImageClient purge", () => {
       removedImageCount: 1,
       removedImageIds: ["sha256:one"],
       removedRefs: ["hanse-app-p:web:one"],
+    });
+  });
+
+  describe("app image deployment lock", () => {
+    function writeActiveLock(file: string): void {
+      const now = new Date();
+      writeFileSync(
+        file,
+        JSON.stringify({
+          version: 1,
+          id: "lock-1",
+          phase: "switching",
+          startedAt: now.toISOString(),
+          updatedAt: now.toISOString(),
+          expiresAt: new Date(now.getTime() + 60_000).toISOString(),
+        }),
+        "utf8",
+      );
+    }
+
+    function lockFilePath(): string {
+      const dir = mkdtempSync(path.join(tmpdir(), "hanse-image-lock-"));
+      dirs.push(dir);
+      return path.join(dir, "deploy.lock");
+    }
+
+    it("blocks a build before it reaches the runner", async () => {
+      const lockPath = lockFilePath();
+      const activity = new LifecycleActivity();
+      const f = await fixture({
+        deploymentLock: new DeploymentLock(lockPath),
+        lifecycleActivity: activity,
+      });
+      writeActiveLock(lockPath);
+
+      await expect(f.service.build(f.appId, "web")).rejects.toBeInstanceOf(
+        DeploymentInProgressError,
+      );
+      expect(f.runner.builds.size).toBe(0);
+      const row = f.db.prepare("SELECT image_status FROM apps WHERE id = ?").get(f.appId) as {
+        image_status: string;
+      };
+      expect(row.image_status).toBe("missing");
+      expect(activity.count).toBe(0);
+    });
+
+    it("returns the shared 409 body for a locked build route", async () => {
+      const lockPath = lockFilePath();
+      const f = await fixture({ deploymentLock: new DeploymentLock(lockPath) });
+      writeActiveLock(lockPath);
+
+      const response = await handleImages(f.deps, buildRequest(f));
+      expect(response.status).toBe(409);
+      expect(response.headers?.["retry-after"]).toBe("30");
+      expect(JSON.parse(response.body)).toEqual({
+        error: "deployment_in_progress",
+        message: "deployment in progress: switching",
+        retryAfter: 30,
+      });
+      expect(f.runner.builds.size).toBe(0);
+    });
+
+    it("blocks a rollback without changing the selected image", async () => {
+      const lockPath = lockFilePath();
+      const f = await fixture({ deploymentLock: new DeploymentLock(lockPath) });
+      await readyBuild(f, "hanse-app-p:web:one", "sha256:one", "2026-01-01T00:00:00.000Z");
+      await readyBuild(f, "hanse-app-p:web:two", "sha256:two", "2026-01-02T00:00:00.000Z");
+      const before = imageRef(f);
+      writeActiveLock(lockPath);
+
+      const response = await handleImages(f.deps, rollbackRequest(f));
+      expect(response.status).toBe(409);
+      expect(JSON.parse(response.body)).toMatchObject({ error: "deployment_in_progress" });
+      expect(imageRef(f)).toBe(before);
     });
   });
 });

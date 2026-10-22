@@ -40,6 +40,7 @@ import {
 } from "../opencode/prompts.js";
 import { appDir, type FoundApp, findApp, toManagedApp } from "./apps.js";
 import { principalFrom } from "./auth.js";
+import { lifecycleErrorResponse, mapLifecycleHttpError } from "./errors.js";
 import type { HttpDeps, HttpRequest, HttpResponse } from "./handler.js";
 
 const MAX_ANSWER_BYTES = 32 * 1024;
@@ -181,6 +182,10 @@ function startFailureMessage(error: unknown): string {
 function startFailure(error: unknown): HttpResponse {
   if (error instanceof DeletionPendingError) {
     return errorResponse(409, error.message, error.code);
+  }
+  const mapped = lifecycleErrorResponse(error);
+  if (mapped !== undefined) {
+    return mapped;
   }
   return errorResponse(502, startFailureMessage(error));
 }
@@ -681,6 +686,15 @@ export async function streamAppEvents(
   } catch (error) {
     if (error instanceof DeletionPendingError) {
       writeJson(response, 409, { error: error.message, code: error.code });
+      return;
+    }
+    const mapped = mapLifecycleHttpError(error);
+    if (mapped !== undefined) {
+      response.writeHead(mapped.status, {
+        "content-type": "application/json; charset=utf-8",
+        ...(mapped.headers ?? {}),
+      });
+      response.end(JSON.stringify(mapped.body));
       return;
     }
     writeJson(response, 502, { error: startFailureMessage(error) });

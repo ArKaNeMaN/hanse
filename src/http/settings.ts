@@ -27,6 +27,7 @@ import {
   renderNotFound,
   type SiteModel,
 } from "./dashboard.js";
+import { lifecycleErrorResponse } from "./errors.js";
 import type { HttpDeps, HttpRequest, HttpResponse } from "./handler.js";
 import { appShell, escapeHtml, icon, pageHeader, plural, safeLocalPath } from "./ui.js";
 
@@ -704,15 +705,37 @@ export async function handleSettings(deps: HttpDeps, request: HttpRequest): Prom
         ? redirectNotice(returnTo, "Application not found.", "error")
         : json(404, { error: "not found" });
     }
-    if (deps.manager === undefined) {
+    const manager = deps.manager;
+    if (manager === undefined) {
       return browser
         ? redirectNotice(returnTo, "Agent runtime is not configured.", "error")
         : json(503, { error: "agent runtime is not configured" });
     }
+    try {
+      deps.deploymentLock?.assertUnlocked("restart");
+    } catch (error) {
+      const mapped = lifecycleErrorResponse(error);
+      if (mapped !== undefined) {
+        return mapped;
+      }
+      throw error;
+    }
+    const asynchronous = request.query?.async === "1" || request.query?.async === "true";
+    const claim = manager.beginRestart(toManagedApp(found));
+    if (!claim.accepted || claim.completion === undefined) {
+      return json(409, { error: "restart_in_progress" });
+    }
+    if (asynchronous) {
+      return json(202, { accepted: true, appId: found.app.id });
+    }
     let restarted: boolean;
     try {
-      restarted = await deps.manager.restartIfRunning(toManagedApp(found));
-    } catch {
+      restarted = await claim.completion;
+    } catch (error) {
+      const mapped = lifecycleErrorResponse(error);
+      if (mapped !== undefined) {
+        return mapped;
+      }
       return browser
         ? redirectNotice(returnTo, "Restart failed. Check the runtime log and retry.", "error")
         : json(502, { error: "restart failed" });

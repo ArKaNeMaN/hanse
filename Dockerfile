@@ -86,6 +86,7 @@ LABEL org.opencontainers.image.title="hanse" \
 USER root
 ENV NODE_ENV=production \
     HOME=/home/coder \
+    HANSE_REVISION=${REVISION} \
     HANSE_OMO_PLUGIN=file:///opt/hanse/omo/node_modules/oh-my-openagent \
     HANSE_CODEGRAPH_BIN=/opt/hanse/codegraph/node_modules/.bin/codegraph
 
@@ -168,6 +169,7 @@ LABEL org.opencontainers.image.title="hanse-agent-base" \
 
 ENV NODE_ENV=production \
     HOME=/home/agent \
+    HANSE_REVISION=${REVISION} \
     HANSE_OMO_PLUGIN=file:///opt/hanse/omo/node_modules/oh-my-openagent \
     HANSE_CODEGRAPH_BIN=/opt/hanse/codegraph/node_modules/.bin/codegraph
 
@@ -267,6 +269,7 @@ LABEL org.opencontainers.image.title="hanse-agent-ide" \
 
 ENV NODE_ENV=production \
     HOME=/home/coder \
+    HANSE_REVISION=${REVISION} \
     HANSE_OMO_PLUGIN=file:///opt/hanse/omo/node_modules/oh-my-openagent \
     HANSE_CODEGRAPH_BIN=/opt/hanse/codegraph/node_modules/.bin/codegraph
 
@@ -339,7 +342,8 @@ LABEL org.opencontainers.image.title="hanse-runner" \
       org.opencontainers.image.revision="${REVISION}" \
       org.opencontainers.image.licenses="NOASSERTION"
 
-ENV NODE_ENV=production
+ENV NODE_ENV=production \
+    HANSE_REVISION=${REVISION}
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends dumb-init ca-certificates \

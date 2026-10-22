@@ -19,14 +19,18 @@ import { isInside, resolveAppPath, resolveWithinRoot } from "../runtime/app-path
 import { boundedErrorMessage } from "../runtime/build-spec.js";
 import { projectSchema } from "../schema/index.js";
 import type { SqliteDatabase } from "../store/index.js";
+import type { DeploymentLock } from "./deployment-lock.js";
+import { DeploymentInProgressError } from "./deployment-lock.js";
+import type { LifecycleActivity } from "./lifecycle-activity.js";
 
 /** Manager surface needed by deletion; production passes `InstanceManager`. */
 export interface DeletionManager {
   /**
    * Stop the app and durably mark it deleting in the same per-app lock body. Must ignore an
-   * existing target marker so a retry works.
+   * existing target marker so a retry works. `lockChecked` skips a nested deployment recheck when
+   * the caller already took the guard and opened its own activity span.
    */
-  stopForDeletion(appId: string): Promise<boolean>;
+  stopForDeletion(appId: string, options?: { lockChecked?: boolean }): Promise<boolean>;
 }
 
 /** Image-service surface needed by deletion; production passes `ImageService`. */
@@ -47,6 +51,10 @@ export interface DeletionServiceOptions {
   images: DeletionImages;
   /** Optional structured logger. Only ids, counts, and warnings are emitted. */
   logger?: Logger;
+  /** Advisory external deployment lock; deletion is a destructive operation. */
+  deploymentLock?: DeploymentLock;
+  /** Process-local destructive-operation counter exposed through `/readyz`. */
+  lifecycleActivity?: LifecycleActivity;
 }
 
 export interface DeleteOptions {
@@ -149,6 +157,8 @@ export class DeletionService {
   readonly #manager: DeletionManager;
   readonly #images: DeletionImages;
   readonly #logger: Logger | undefined;
+  readonly #deploymentLock: DeploymentLock | undefined;
+  readonly #lifecycleActivity: LifecycleActivity | undefined;
 
   readonly #projectReservations = new Set<string>();
   readonly #appReservations = new Set<string>();
@@ -162,6 +172,8 @@ export class DeletionService {
     this.#manager = options.manager;
     this.#images = options.images;
     this.#logger = options.logger;
+    this.#deploymentLock = options.deploymentLock;
+    this.#lifecycleActivity = options.lifecycleActivity;
   }
 
   /** True while any delete operation (of this process) holds the deletion mutex. */
@@ -238,11 +250,13 @@ export class DeletionService {
     const warnings: string[] = [];
 
     this.#acquire();
+    const endActivity = this.#beginLifecycle("delete_app");
 
     let imageReserved = false;
     let statePath: string | undefined;
     let sourcePath: string | undefined;
     try {
+      this.#assertDeploymentUnlocked("delete_app");
       this.#appReservations.add(appId);
       this.#logger?.info("deletion started", {
         kind: "app",
@@ -265,8 +279,11 @@ export class DeletionService {
       imageReserved = true;
 
       try {
-        await this.#manager.stopForDeletion(appId);
+        await this.#manager.stopForDeletion(appId, { lockChecked: true });
       } catch (error) {
+        if (error instanceof DeploymentInProgressError) {
+          throw error;
+        }
         throw new DeletionError(
           502,
           "runtime_stop_failed",
@@ -317,6 +334,9 @@ export class DeletionService {
         warnings,
       };
     } catch (error) {
+      if (error instanceof DeploymentInProgressError) {
+        throw error;
+      }
       throw asDeletionError(error);
     } finally {
       if (imageReserved) {
@@ -329,6 +349,7 @@ export class DeletionService {
       if (sourcePath !== undefined) {
         this.#pathReservations.delete(sourcePath);
       }
+      endActivity();
       this.#release();
     }
   }
@@ -352,10 +373,12 @@ export class DeletionService {
     const warnings: string[] = [];
 
     this.#acquire();
+    const endActivity = this.#beginLifecycle("delete_project");
 
     const reservedAppIds: string[] = [];
     let stateResolved: string | undefined;
     try {
+      this.#assertDeploymentUnlocked("delete_project");
       this.#projectReservations.add(project.id);
       this.#pathReservations.add(projectRoot);
       const state = this.#resolveProjectStateDir(project.id, roots);
@@ -394,9 +417,12 @@ export class DeletionService {
         this.#images.reserveDelete(app.id, observed);
         reservedAppIds.push(app.id);
         try {
-          await this.#manager.stopForDeletion(app.id);
+          await this.#manager.stopForDeletion(app.id, { lockChecked: true });
         } catch (error) {
           // The project marker stays set: the project is `deletion_incomplete`, not normal.
+          if (error instanceof DeploymentInProgressError) {
+            throw error;
+          }
           throw new DeletionError(
             502,
             "runtime_stop_failed",
@@ -442,6 +468,9 @@ export class DeletionService {
       });
       return { deleted: true, kind: "project", projectId: project.id, warnings };
     } catch (error) {
+      if (error instanceof DeploymentInProgressError) {
+        throw error;
+      }
       throw asDeletionError(error);
     } finally {
       for (const appId of reservedAppIds) {
@@ -452,8 +481,17 @@ export class DeletionService {
       if (stateResolved !== undefined) {
         this.#pathReservations.delete(stateResolved);
       }
+      endActivity();
       this.#release();
     }
+  }
+
+  #beginLifecycle(operation: string): () => void {
+    return this.#lifecycleActivity?.begin(operation) ?? (() => undefined);
+  }
+
+  #assertDeploymentUnlocked(operation: string): void {
+    this.#deploymentLock?.assertUnlocked(operation);
   }
 
   #acquire(): void {

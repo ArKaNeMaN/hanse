@@ -4,6 +4,7 @@ import type { Server } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { DeploymentInProgressError } from "../src/coordinator/deployment-lock.js";
 import { CoordinatorService } from "../src/coordinator/service.js";
 import type { RunSshKeygen } from "../src/git/credentials.js";
 import { GitService } from "../src/git/service.js";
@@ -155,6 +156,7 @@ function fakeManager(
 ): InstanceManager & { restarted: string[]; stopped: string[] } {
   const restarted: string[] = [];
   const stopped: string[] = [];
+  let active: string | undefined;
   const manager = {
     restarted,
     stopped,
@@ -163,6 +165,18 @@ function fakeManager(
       return pending
         ? { pending: true, reasons: ["settings_changed"] }
         : { pending: false, reasons: [] };
+    },
+    isRestarting: (appId: string) => active === appId,
+    beginRestart: (app: { id: string }) => {
+      if (active === app.id) {
+        return { accepted: false };
+      }
+      active = app.id;
+      restarted.push(app.id);
+      const completion = Promise.resolve(options.restart?.(app.id) ?? false).finally(() => {
+        if (active === app.id) active = undefined;
+      });
+      return { accepted: true, completion };
     },
     restartIfRunning: async (app: { id: string }) => {
       restarted.push(app.id);
@@ -1498,9 +1512,10 @@ describe("restart route", () => {
   it("returns 502 for a failed restart and a browser error notice", async () => {
     const f = fixture();
     const manager = fakeManager();
-    manager.restartIfRunning = async () => {
-      throw new Error("runtime delete failed");
-    };
+    manager.beginRestart = () => ({
+      accepted: true,
+      completion: Promise.reject(new Error("runtime delete failed")),
+    });
     f.deps.manager = manager;
     const api = await handleSettings(
       f.deps,
@@ -1528,6 +1543,117 @@ describe("restart route", () => {
     expect(browser.headers?.location).toContain("/projects/p1");
     expect(browser.headers?.location).toContain("Restart+failed.");
     expect(manager.stopped).toEqual([]);
+  });
+
+  it("returns the shared 409 body when a deployment lock blocks restart", async () => {
+    const f = fixture();
+    const manager = fakeManager();
+    f.deps.deploymentLock = {
+      assertUnlocked: () => {
+        throw new DeploymentInProgressError("restart", { phase: "switching" });
+      },
+    } as unknown as HttpDeps["deploymentLock"];
+    f.deps.manager = manager;
+    const response = await handleSettings(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/apps/web/restart",
+        query: { project: "p1" },
+        headers: auth(f.token),
+      }),
+    );
+    expect(response.status).toBe(409);
+    expect(response.headers?.["retry-after"]).toBe("30");
+    expect(JSON.parse(response.body)).toEqual({
+      error: "deployment_in_progress",
+      message: "deployment in progress: switching",
+      retryAfter: 30,
+    });
+    expect(manager.restarted).toEqual([]);
+    expect(manager.stopped).toEqual([]);
+  });
+
+  it("returns 202 for an accepted async restart without waiting for completion", async () => {
+    const f = fixture();
+    const manager = fakeManager();
+    let completed = false;
+    manager.beginRestart = (app: { id: string }) => {
+      manager.restarted.push(app.id);
+      return {
+        accepted: true,
+        completion: new Promise<boolean>((resolve) => {
+          setTimeout(() => {
+            completed = true;
+            resolve(true);
+          }, 50);
+        }),
+      };
+    };
+    f.deps.manager = manager;
+    const response = await handleSettings(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/apps/web/restart",
+        query: { project: "p1", async: "1" },
+        headers: auth(f.token),
+      }),
+    );
+    expect(response.status).toBe(202);
+    expect(JSON.parse(response.body)).toEqual({ accepted: true, appId: "p1:web" });
+    expect(completed).toBe(false);
+    expect(manager.restarted).toEqual(["p1:web"]);
+  });
+
+  it("returns 409 restart_in_progress for a duplicate sync or async claim", async () => {
+    const f = fixture();
+    const manager = fakeManager();
+    manager.beginRestart = () => ({ accepted: false });
+    f.deps.manager = manager;
+
+    for (const query of [{ project: "p1" }, { project: "p1", async: "1" }]) {
+      const response = await handleSettings(
+        f.deps,
+        request({
+          method: "POST",
+          path: "/api/apps/web/restart",
+          query,
+          headers: auth(f.token),
+        }),
+      );
+      expect(response.status).toBe(409);
+      expect(JSON.parse(response.body)).toEqual({ error: "restart_in_progress" });
+    }
+  });
+
+  it("checks the deployment lock before an async claim", async () => {
+    const f = fixture();
+    const manager = fakeManager();
+    let claimed = false;
+    manager.beginRestart = () => {
+      claimed = true;
+      return { accepted: true, completion: Promise.resolve(true) };
+    };
+    f.deps.manager = manager;
+    f.deps.deploymentLock = {
+      assertUnlocked: () => {
+        throw new DeploymentInProgressError("restart");
+      },
+    } as unknown as HttpDeps["deploymentLock"];
+
+    const response = await handleSettings(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/apps/web/restart",
+        query: { project: "p1", async: "1" },
+        headers: auth(f.token),
+      }),
+    );
+    expect(response.status).toBe(409);
+    expect(JSON.parse(response.body)).toMatchObject({ error: "deployment_in_progress" });
+    expect(claimed).toBe(false);
   });
 
   it("returns 404 for an unknown app, 503 without a manager, and redirects browsers", async () => {

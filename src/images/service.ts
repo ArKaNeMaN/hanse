@@ -1,4 +1,6 @@
 import { ConfigError } from "../config/load.js";
+import type { DeploymentLock } from "../coordinator/deployment-lock.js";
+import type { LifecycleActivity } from "../coordinator/lifecycle-activity.js";
 import type { AppBuildInspection, AppImageStatus } from "../registry/index.js";
 import { resolveAppBuild } from "../registry/index.js";
 import type { ImageGcReport, ImageUsageReport } from "../runner/image-gc.js";
@@ -18,6 +20,10 @@ export interface ImageServiceOptions {
   /** Default/base agent image reference, including an optional digest. */
   defaultImage: string;
   runner: ImageRunnerClient;
+  /** Advisory external deployment lock; builds and rollbacks are destructive. */
+  deploymentLock?: DeploymentLock;
+  /** Process-local destructive-operation counter; the CLI leaves this unset. */
+  lifecycleActivity?: LifecycleActivity;
 }
 
 /** Build runners are injected so tests never need Docker or a live runner. */
@@ -132,6 +138,8 @@ export class ImageService {
   readonly #hostWorkspace: string;
   readonly #defaultImage: string;
   readonly #runner: ImageRunnerClient;
+  readonly #deploymentLock: DeploymentLock | undefined;
+  readonly #lifecycleActivity: LifecycleActivity | undefined;
   readonly #active = new Map<string, string>();
   readonly #builds = new Map<string, BuildMeta>();
   readonly #deleting = new Set<string>();
@@ -142,6 +150,8 @@ export class ImageService {
     this.#hostWorkspace = options.hostWorkspace;
     this.#defaultImage = options.defaultImage;
     this.#runner = options.runner;
+    this.#deploymentLock = options.deploymentLock;
+    this.#lifecycleActivity = options.lifecycleActivity;
   }
 
   /** Start one human-requested build. Never triggered by file changes or registration. */
@@ -164,34 +174,40 @@ export class ImageService {
         "build_in_progress",
       );
     }
-    const spec = this.#resolveBuild(app);
-
-    this.#active.set(appId, "pending");
-    let result: ImageBuildResult;
+    const end = this.#beginLifecycle("image_build");
     try {
-      result = await this.#runner.build({
-        appId: app.id,
-        appDir: spec.hostAppDir,
-        dockerfile: spec.dockerfile,
-        baseImage: this.#defaultImage,
-        buildArgs: spec.buildArgs,
-        specHash: spec.specHash,
-      });
-    } catch (error) {
-      this.#active.delete(appId);
-      throw this.#runnerFailure(error);
-    }
+      this.#assertDeploymentUnlocked("image_build");
+      const spec = this.#resolveBuild(app);
 
-    this.#active.set(appId, result.buildId);
-    this.#builds.set(result.buildId, {
-      appId,
-      specHash: spec.specHash,
-      baseDigest: digestFromReference(this.#defaultImage),
-    });
-    this.#db
-      .prepare("UPDATE apps SET image_status = 'building', image_error = NULL WHERE id = ?")
-      .run(appId);
-    return result;
+      this.#active.set(appId, "pending");
+      let result: ImageBuildResult;
+      try {
+        result = await this.#runner.build({
+          appId: app.id,
+          appDir: spec.hostAppDir,
+          dockerfile: spec.dockerfile,
+          baseImage: this.#defaultImage,
+          buildArgs: spec.buildArgs,
+          specHash: spec.specHash,
+        });
+      } catch (error) {
+        this.#active.delete(appId);
+        throw this.#runnerFailure(error);
+      }
+
+      this.#active.set(appId, result.buildId);
+      this.#builds.set(result.buildId, {
+        appId,
+        specHash: spec.specHash,
+        baseDigest: digestFromReference(this.#defaultImage),
+      });
+      this.#db
+        .prepare("UPDATE apps SET image_status = 'building', image_error = NULL WHERE id = ?")
+        .run(appId);
+      return result;
+    } finally {
+      end();
+    }
   }
 
   /** Refresh the DB from the runner and return the bounded status view. */
@@ -232,7 +248,7 @@ export class ImageService {
     });
   }
 
-  /** Switch the app back to its previous recorded image version. */
+  /** Switch the app back to its previous recorded image version. DB-only; the manager owns guards. */
   async rollback(appId: string, appKey?: string): Promise<AppImageRollbackResult> {
     const app = this.#getApp(appId);
     if (appKey !== undefined && app.app_key !== appKey) {
@@ -419,6 +435,14 @@ export class ImageService {
         this.#builds.delete(buildId);
       }
     }
+  }
+
+  #beginLifecycle(operation: string): () => void {
+    return this.#lifecycleActivity?.begin(operation) ?? (() => undefined);
+  }
+
+  #assertDeploymentUnlocked(operation: string): void {
+    this.#deploymentLock?.assertUnlocked(operation);
   }
 
   #protectedImageRefs(): string[] {

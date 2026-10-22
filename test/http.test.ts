@@ -3,7 +3,9 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { DeploymentLock } from "../src/coordinator/deployment-lock.js";
 import { getHandoff, type HandoffState } from "../src/coordinator/handoff.js";
+import { LifecycleActivity } from "../src/coordinator/lifecycle-activity.js";
 import { CoordinatorService } from "../src/coordinator/service.js";
 import { GitService } from "../src/git/service.js";
 import { type HttpDeps, type HttpRequest, handleRequest } from "../src/http/handler.js";
@@ -742,6 +744,164 @@ describe("http API and assets", () => {
     });
     expect(absent.status).toBe(200);
     expect(JSON.parse(absent.body)).toMatchObject({ state: "stopped", imageRef: null });
+  });
+
+  it("reports an in-memory restart claim on the runtime route without mutating state", () => {
+    const f = fixture();
+    const token = humanToken(f.db);
+    const d = deps(f);
+    d.manager = {
+      isRestarting: (appId: string) => appId === "p:a",
+    } as unknown as NonNullable<HttpDeps["manager"]>;
+
+    const running = handleRequest(d, {
+      method: "GET",
+      path: "/api/apps/a/runtime",
+      query: { project: "p" },
+      headers: auth(token),
+    });
+    expect(running.status).toBe(200);
+    expect(JSON.parse(running.body)).toMatchObject({ appId: "p:a", restarting: true });
+
+    const idle = handleRequest(d, {
+      method: "GET",
+      path: "/api/apps/b/runtime",
+      query: { project: "p" },
+      headers: auth(token),
+    });
+    expect(idle.status).toBe(200);
+    expect(JSON.parse(idle.body)).toMatchObject({ appId: "p:b", restarting: false });
+  });
+
+  it("serves the readiness contract without auth and without mutating state", () => {
+    const f = fixture();
+    const d = deps(f);
+    d.deploymentLock = new DeploymentLock(path.join(f.workspace, "deploy.lock"));
+    d.lifecycleActivity = new LifecycleActivity();
+    const previousRevision = process.env.HANSE_REVISION;
+    delete process.env.HANSE_REVISION;
+    try {
+      const before = f.db.prepare("SELECT COUNT(*) AS count FROM instances").get() as {
+        count: number;
+      };
+      const response = handleRequest(d, { method: "GET", path: "/readyz", headers: {} });
+      expect(response.status).toBe(200);
+      expect(response.headers?.["cache-control"]).toBe("no-store");
+      expect(JSON.parse(response.body)).toEqual({
+        status: "ok",
+        version: expect.any(String),
+        revision: "unknown",
+        schemaVersion: 12,
+        deploying: false,
+        inFlightLifecycle: 0,
+      });
+      const after = f.db.prepare("SELECT COUNT(*) AS count FROM instances").get() as {
+        count: number;
+      };
+      expect(after).toEqual(before);
+    } finally {
+      if (previousRevision === undefined) delete process.env.HANSE_REVISION;
+      else process.env.HANSE_REVISION = previousRevision;
+    }
+  });
+
+  it("reports the revision, an active lock, and in-flight lifecycle work", () => {
+    const f = fixture();
+    const d = deps(f);
+    const lockFile = path.join(f.workspace, "deploy.lock");
+    writeFileSync(
+      lockFile,
+      JSON.stringify({
+        version: 1,
+        id: "lock-1",
+        phase: "switching",
+        startedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      }),
+      "utf8",
+    );
+    d.deploymentLock = new DeploymentLock(lockFile);
+    d.lifecycleActivity = new LifecycleActivity();
+    const end = d.lifecycleActivity.begin("ensure");
+    const previousRevision = process.env.HANSE_REVISION;
+    process.env.HANSE_REVISION = "abc123";
+    try {
+      const response = handleRequest(d, { method: "GET", path: "/readyz", headers: {} });
+      expect(JSON.parse(response.body)).toMatchObject({
+        status: "ok",
+        revision: "abc123",
+        deploying: true,
+        inFlightLifecycle: 1,
+      });
+      end();
+      const after = handleRequest(d, { method: "GET", path: "/readyz", headers: {} });
+      expect(JSON.parse(after.body)).toMatchObject({ inFlightLifecycle: 0 });
+    } finally {
+      if (previousRevision === undefined) delete process.env.HANSE_REVISION;
+      else process.env.HANSE_REVISION = previousRevision;
+    }
+  });
+
+  it("treats an empty revision as unknown", () => {
+    const f = fixture();
+    const previousRevision = process.env.HANSE_REVISION;
+    process.env.HANSE_REVISION = "";
+    try {
+      const response = handleRequest(deps(f), { method: "GET", path: "/readyz", headers: {} });
+      expect(JSON.parse(response.body)).toMatchObject({ revision: "unknown" });
+    } finally {
+      if (previousRevision === undefined) delete process.env.HANSE_REVISION;
+      else process.env.HANSE_REVISION = previousRevision;
+    }
+  });
+
+  it("returns 503 when the readiness schema query fails", () => {
+    const f = fixture();
+    f.db.exec("DROP TABLE schema_migrations");
+    const response = handleRequest(deps(f), { method: "GET", path: "/readyz", headers: {} });
+    expect(response.status).toBe(503);
+    expect(response.headers?.["cache-control"]).toBe("no-store");
+    expect(JSON.parse(response.body)).toEqual({
+      status: "error",
+      error: "database_unavailable",
+    });
+  });
+
+  it("supports the two-poll quiescence handshake", () => {
+    const f = fixture();
+    const d = deps(f);
+    const lockFile = path.join(f.workspace, "deploy.lock");
+    writeFileSync(
+      lockFile,
+      JSON.stringify({
+        version: 1,
+        id: "lock-1",
+        phase: "switching",
+        startedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      }),
+      "utf8",
+    );
+    d.deploymentLock = new DeploymentLock(lockFile);
+    d.lifecycleActivity = new LifecycleActivity();
+    const end = d.lifecycleActivity.begin("delete_app");
+
+    const first = JSON.parse(
+      handleRequest(d, { method: "GET", path: "/readyz", headers: {} }).body,
+    ) as { deploying: boolean; inFlightLifecycle: number };
+    expect(first).toMatchObject({ deploying: true, inFlightLifecycle: 1 });
+
+    end();
+    const second = JSON.parse(
+      handleRequest(d, { method: "GET", path: "/readyz", headers: {} }).body,
+    ) as { deploying: boolean; inFlightLifecycle: number };
+    const third = JSON.parse(
+      handleRequest(d, { method: "GET", path: "/readyz", headers: {} }).body,
+    ) as { deploying: boolean; inFlightLifecycle: number };
+    expect(second).toMatchObject({ deploying: true, inFlightLifecycle: 0 });
+    expect(third).toMatchObject({ deploying: true, inFlightLifecycle: 0 });
   });
 
   it("serves an unauthenticated health check", () => {

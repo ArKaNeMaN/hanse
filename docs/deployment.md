@@ -36,8 +36,9 @@ no extra published port.
 ## Quick start (published image)
 
 The images are published to GitHub Container Registry as
-`ghcr.io/arkaneman/hanse`, `ghcr.io/arkaneman/hanse-agent-ide`, and
-`ghcr.io/arkaneman/hanse-agent-default` (`linux/amd64`).
+`ghcr.io/arkaneman/hanse` (coordinator), `ghcr.io/arkaneman/hanse-agent-base`,
+`ghcr.io/arkaneman/hanse-agent-default` (per-app agents), `ghcr.io/arkaneman/hanse-agent-ide` (IDE),
+and `ghcr.io/arkaneman/hanse-runner` (runner), all for `linux/amd64`.
 
 ```bash
 mkdir -p hanse && cd hanse
@@ -56,12 +57,17 @@ ROOT=$(pwd)
 sed -i.bak "s|^# HANSE_HOST_WORKSPACE=.*|HANSE_HOST_WORKSPACE=$ROOT/workspace|; s|^# HANSE_HOST_AGENTS=.*|HANSE_HOST_AGENTS=$ROOT/agents|" .env && rm -f .env.bak
 sudo chown -R 1000:1000 workspace state agents
 docker compose pull
-docker pull "ghcr.io/arkaneman/hanse-agent-default:${HANSE_TAG:-latest}"
+
+# The per-app agent image is not a Compose service. Source .env so the explicit pull uses the same
+# repository and tag resolution as Compose (HANSE_AGENT_TAG, then HANSE_TAG).
+set -a; . ./.env; set +a
+docker pull "${HANSE_AGENT_IMAGE:-ghcr.io/arkaneman/hanse-agent-default}:${HANSE_AGENT_TAG:-${HANSE_TAG:-latest}}"
 docker compose up -d
 ```
 
 `docker compose pull` pulls the coordinator, IDE, and runner images. The per-app agent image is not a
-Compose service, so pull it explicitly; the runner creates app containers from that local image.
+Compose service, so pull it explicitly as above; the runner creates app containers from that local
+image.
 
 Open <http://127.0.0.1:8787> and sign in with the token from `.env`.
 
@@ -165,11 +171,15 @@ Compose reads `.env` in the directory containing `compose.yaml`.
 | `HANSE_OPERATOR_TOKEN` | **required** | The single operator login for the UI, IDE, and extension API. Use a long random value. |
 | `HANSE_RUNTIME_TOKEN` | **required** | Shared secret between the coordinator and the internal runner. Not exposed publicly. Use a second long random value. |
 | `HANSE_IMAGE` | `ghcr.io/arkaneman/hanse` | Coordinator image repository. Change it for a mirror or a fork. |
-| `HANSE_TAG` | `latest` | Coordinator image tag. Pin a release or `sha-<short>` tag for reproducible deployments. |
+| `HANSE_TAG` | `latest` | Coordinator image tag. Pin a release, `sha-<full>`, or `sha-<short>` tag for reproducible deployments; also the fallback for the agent, IDE, and runner tags. |
 | `HANSE_AGENT_IMAGE` | `ghcr.io/arkaneman/hanse-agent-default` | Per-app agent image repository. |
+| `HANSE_AGENT_TAG` | `HANSE_TAG` | Per-app agent image tag; also the fallback for the IDE and runner tags. |
 | `HANSE_IDE_IMAGE` | `ghcr.io/arkaneman/hanse-agent-ide` | IDE image repository. |
+| `HANSE_IDE_TAG` | `HANSE_AGENT_TAG`, then `HANSE_TAG` | IDE image tag. Overrides only the IDE. |
 | `HANSE_RUNNER_IMAGE` | `ghcr.io/arkaneman/hanse-runner` | Runner image repository. |
-| `HANSE_AGENT_TAG` | `HANSE_TAG` | Agent, IDE, and runner image tag; defaults to the coordinator tag. |
+| `HANSE_RUNNER_TAG` | `HANSE_AGENT_TAG`, then `HANSE_TAG` | Runner image tag. Overrides only the runner. |
+| `HANSE_DEPLOY_LOCK_FILE` | `/data/state/hanse/deploy.lock` in Compose | Absolute path of the external deployment lock read by the coordinator. The orchestrator writes and removes it; the coordinator only reads. |
+| `HANSE_REVISION` | image-provided | Full commit revision baked into the image and reported by `GET /readyz`. Not an operator setting; a source build without `REVISION` reports `unknown`. |
 | `HANSE_BIND` | `127.0.0.1` | Host address for port 8787. Set `0.0.0.0` (or a LAN IP) to expose it. |
 | `HANSE_PORT` | `8787` | Host port mapped to the coordinator. |
 | `HANSE_WORKSPACE` | `./workspace` | Host path for projects and applications. |
@@ -179,10 +189,13 @@ Compose reads `.env` in the directory containing `compose.yaml`.
 | `HANSE_HOST_AGENTS` | **required** | Absolute host path corresponding to `/data/agents`. |
 | `HANSE_HOST_RUNNER_TMP` | `/var/lib/hanse/tmp` | Absolute writable host path for ephemeral Test-connection credential dirs. Mounted into the runner at the same absolute path; must not overlap the workspace or agents roots. Do not place it on a shared or backed-up volume. |
 | `HANSE_BUILD_IMAGE` | `hanse:dev` | Local coordinator tag used by the source-build overlay. |
-| `HANSE_AGENT_BUILD_IMAGE` | `hanse-agent-default:dev` | Local agent tag used by the source-build overlay. |
 | `HANSE_IDE_BUILD_IMAGE` | `hanse-agent-ide:dev` | Local IDE tag used by the source-build overlay. |
 | `HANSE_RUNNER_BUILD_IMAGE` | `hanse-runner:dev` | Local runner tag used by the source-build overlay. |
 | `HANSE_HOST_AUTH_FILE` | - | Required only by `compose.host-auth.yaml`; path to a host `auth.json`. |
+
+`HANSE_IMAGE`, `HANSE_AGENT_IMAGE`, `HANSE_IDE_IMAGE`, and `HANSE_RUNNER_IMAGE` are repository values,
+not full references or digests: Compose always appends `:${tag}`. A full reference or digest in one of
+those variables produces a double-tagged, invalid reference.
 
 The coordinator also receives `HANSE_STATE_HOME=/data/state`, `HANSE_AGENTS_HOME=/data/agents`,
 `HANSE_RUNNER_URL=http://runner:8790`, `HANSE_AGENT_API_BASE=http://hanse:8787`, `HANSE_IDE_URL=/ide/`,
@@ -263,19 +276,23 @@ Security model, in short:
 ## Updating and rollback
 
 ```bash
+set -a; . ./.env; set +a
 docker compose pull
-docker pull "ghcr.io/arkaneman/hanse-agent-default:${HANSE_TAG:-latest}"
+docker pull "${HANSE_AGENT_IMAGE:-ghcr.io/arkaneman/hanse-agent-default}:${HANSE_AGENT_TAG:-${HANSE_TAG:-latest}}"
 docker compose up -d --remove-orphans
 docker compose ps
 curl -fsS http://127.0.0.1:8787/healthz
+curl -fsS http://127.0.0.1:8787/readyz
 ```
 
-`latest` tracks `main`. For a reproducible deployment, set `HANSE_TAG` to a release tag or a
-`sha-<short>` tag produced by the publish workflow.
+`latest` tracks `main`. For a reproducible deployment, pin each image tag to a release or a
+`sha-<short>`/`sha-<full>` tag produced by the publish workflow. `HANSE_TAG` pins the coordinator and
+is the fallback for the other images; `HANSE_AGENT_TAG` pins the per-app agent and is the fallback for
+the IDE and runner; `HANSE_IDE_TAG` and `HANSE_RUNNER_TAG` override only their own service.
 
 The store uses forward-only migrations. Rolling the image back after a migration may fail because
-the older binary may not understand the newer schema. Back up `state` before an upgrade; restoring
-that backup is the reliable rollback path.
+the older binary may not understand the newer schema, and a newer-than-code schema now exits before
+listening. Back up `state` before an upgrade; restoring that backup is the reliable rollback path.
 
 On the first start after this upgrade, each application's managed skills are materialized before
 `opencode serve`. If an instance already has entries outside the effective set in its Hanse-owned
@@ -285,9 +302,67 @@ upgrade. Skill changes, like settings changes, apply only on an explicit agent r
 never hot-reloaded.
 
 ```bash
-# Pin a previous image without rebuilding
-HANSE_TAG=sha-<previous> docker compose up -d
+# Pin each image independently without rebuilding. Omit a line to keep its normal fallback.
+HANSE_TAG=sha-<previous-coordinator> \
+HANSE_AGENT_TAG=sha-<previous-agent> \
+HANSE_IDE_TAG=sha-<previous-ide> \
+HANSE_RUNNER_TAG=sha-<previous-runner> \
+docker compose up -d
 ```
+
+## Deployment lock and release identity
+
+The coordinator reads (never writes) an advisory deployment lock at `HANSE_DEPLOY_LOCK_FILE`,
+default `/data/state/hanse/deploy.lock` inside the coordinator state volume. While it is active,
+coordinator actions that could destroy or replace a managed app fail with
+`409 deployment_in_progress`: creating, recreating, stopping, or deleting an app container, image
+build/rollback, and app/project deletion. A running app with a usable password, reconciled MCP token,
+and endpoint still reconnects and serves chat; requests that would fall through to a recreate are
+rejected. The lock is an operational contract, not a security boundary.
+
+The external orchestrator contracts are:
+
+1. Write the lock atomically before changing images or stopping containers.
+2. Poll `GET /readyz` until it reports `deploying: true` and `inFlightLifecycle: 0` on **two
+   consecutive polls at least two seconds apart**. Only then switch images or restart services.
+3. Heartbeat every 60 seconds. A lock whose `updatedAt` is older than 300 seconds, or whose
+   `expiresAt` has passed, is inactive. `expiresAt` slides from the last heartbeat and is clamped to
+   `updatedAt + 2 hours`, so a long pull stays locked while heartbeats continue.
+4. Remove the lock on success and on failure.
+
+A malformed lock is treated as active until its file mtime is older than 300 seconds, then inactive.
+`ENOENT` is inactive; any other read/stat/permission error is treated as active (fail closed) and
+must be repaired or removed by the operator.
+
+The lock file lives under `state/hanse/` but is **not** part of the database backup. A restore that
+replaces the whole `state/` directory can remove or replace it. During a deploy, do not delete the
+lock without rewriting it: restore only the coordinator database and other non-lock state, or rewrite
+the lock atomically before continuing.
+
+`hanse images` (the CLI) honors the lock but runs in a separate process and is **not** counted in
+`inFlightLifecycle`. Do not run `hanse images build`, rollback, or GC during a deploy; use the
+coordinator routes, which are counted and rejected by the lock.
+
+### Image tags and digests
+
+| Deployment | Repository variable | Tag variable | Fallback |
+| --- | --- | --- | --- |
+| Coordinator | `HANSE_IMAGE` | `HANSE_TAG` | `latest` |
+| Per-app agent | `HANSE_AGENT_IMAGE` | `HANSE_AGENT_TAG` | `HANSE_TAG` |
+| IDE | `HANSE_IDE_IMAGE` | `HANSE_IDE_TAG` | `HANSE_AGENT_TAG`, then `HANSE_TAG` |
+| Runner | `HANSE_RUNNER_IMAGE` | `HANSE_RUNNER_TAG` | `HANSE_AGENT_TAG`, then `HANSE_TAG` |
+
+The publish workflow also produces `hanse-agent-base`; it is the base layer for `agent-default` and
+is not a Compose service. Tags are mutable. For a deploy, use the `sha-<full>` tag, verify that the
+OCI `org.opencontainers.image.revision` label and the runtime `HANSE_REVISION` value
+(`GET /readyz`) match the commit, and pin the digest recorded in the `image-digests` workflow
+artifact. The artifact lists all five image references with their manifest digests.
+
+Automation can restart an app asynchronously with `POST /api/apps/:app/restart?async=1` (returns
+`202` after the claim) and poll `GET /api/apps/:app/runtime` for `restarting`. The claim is in
+memory: if the coordinator exits before the restart finishes, the app can remain stopped with no
+surviving marker, so the caller must treat a stopped app after a `202` as a failure and retry (or use
+the synchronous restart route when it needs a completion signal).
 
 ## Disk usage and app image GC
 
@@ -319,13 +394,19 @@ cp .env.example .env
 docker compose -f compose.yaml -f compose.build.yaml up -d --build
 ```
 
-The source-build overlay tags the results as `hanse:dev`, `hanse-agent-default:dev`,
+The source-build overlay builds and tags the coordinator, IDE, and runner images as `hanse:dev`,
 `hanse-agent-ide:dev`, and `hanse-runner:dev` (override with `HANSE_BUILD_IMAGE`,
-`HANSE_AGENT_BUILD_IMAGE`, `HANSE_IDE_BUILD_IMAGE`, and `HANSE_RUNNER_BUILD_IMAGE`) so it does not
-overwrite the published tags. The build needs network access
-and several GB of disk. It compiles TypeScript and Tailwind, installs production dependencies for the
-target architecture, then installs `opencode`, the OMO baseline, CodeGraph, Python, PHP, and the
-code-server IDE layer. PHP 8.3 and its extensions come from prebuilt
+`HANSE_IDE_BUILD_IMAGE`, and `HANSE_RUNNER_BUILD_IMAGE`) so it does not overwrite the published tags.
+The per-app agent image is not a Compose service and the overlay does not build it; build it
+explicitly when you need a local default agent image:
+
+```bash
+docker build --target agent-default -t hanse-agent-default:dev .
+```
+
+The build needs network access and several GB of disk. It compiles TypeScript and Tailwind, installs
+production dependencies for the target architecture, then installs `opencode`, the OMO baseline,
+CodeGraph, Python, PHP, and the code-server IDE layer. PHP 8.3 and its extensions come from prebuilt
 [`packages.sury.org`](https://packages.sury.org/php/) Debian packages rather than compiling
 extensions from source.
 
@@ -360,7 +441,7 @@ modules aligned with `.nvmrc` and CI while avoiding a hand-copied code-server in
 ### Multi-arch build
 
 ```bash
-for target in runtime:hanse agent-default:hanse-agent-default agent-ide:hanse-agent-ide runner:hanse-runner; do
+for target in runtime:hanse agent-base:hanse-agent-base agent-default:hanse-agent-default agent-ide:hanse-agent-ide runner:hanse-runner; do
   build_target=${target%%:*}
   image=${target#*:}
   docker buildx build \
@@ -372,7 +453,8 @@ done
 ```
 
 Use `--load` instead of `--push` for a single-platform local image. The publish workflow builds all
-three images for both architectures and pushes provenance and SBOM attestations.
+five images for `linux/amd64` by default and pushes provenance and SBOM attestations; arm64 is only
+produced by an explicit manual-dispatch override or a local build like the one above.
 
 ## Operator terminal
 
@@ -394,6 +476,7 @@ line-oriented console in the managed app container, not a second IDE terminal:
 ```bash
 docker compose ps
 curl -fsS http://127.0.0.1:8787/healthz   # {"status":"ok"}
+curl -fsS http://127.0.0.1:8787/readyz    # version, revision, schema, deploy state
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8787/          # 303 to /login
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8787/assets/app.css  # 200
 docker compose logs -f --tail=100 hanse
@@ -406,6 +489,13 @@ All three static services define health checks. `hanse` is healthy when `/health
 `/healthz` answers on port 8790. The coordinator waits for the runner; the IDE waits for the
 coordinator. Check per-app containers with
 `docker ps --filter label=hanse.managed=true`.
+
+`GET /healthz` remains exactly `{"status":"ok"}`. The separate unauthenticated `GET /readyz` returns
+`status`, `version`, `revision`, `schemaVersion`, `deploying`, and `inFlightLifecycle` with
+`Cache-Control: no-store`; it performs only database reads and returns `503`
+`{"status":"error","error":"database_unavailable"}` if the schema query fails. Because it uses the
+synchronous database handle with `busy_timeout=5000`, a concurrent restore can delay it up to five
+seconds; the 50 ms p99 is a target, not a gate.
 
 ## Backup and restore
 
@@ -445,6 +535,10 @@ tar xzf hanse-<date>.tgz
 sudo chown -R 1000:1000 workspace state agents
 docker compose up -d
 ```
+
+`state/hanse/deploy.lock` is not database state. A whole-`state/` restore can remove or replace it.
+Never remove the lock during a deploy without rewriting it: restore only the coordinator database and
+other non-lock state, or rewrite the lock atomically before the orchestrator continues.
 
 ## Git credentials
 
@@ -567,12 +661,20 @@ never mounted into app containers, and the `hanse mcp` shim only forwards tool c
 
 ## Maintainers: publishing to GHCR
 
-`.github/workflows/publish.yml` builds `linux/amd64` by default (arm64 via manual dispatch) and pushes to
-`ghcr.io/<owner>/hanse` on every push to `main`, on `v*` tags, and on manual dispatch.
+`.github/workflows/publish.yml` builds all five images (`hanse`, `hanse-agent-base`,
+`hanse-agent-default`, `hanse-agent-ide`, and `hanse-runner`) for `linux/amd64` by default (arm64
+via manual dispatch) and pushes to `ghcr.io/<owner>/...` on every push to `main`, on `v*` tags, and
+on manual dispatch.
+
+The workflow is gated: `verify` runs lint, the sensitive-data check, typecheck, tests, and the build;
+`docker-verify` builds every target without pushing; only then does the `publish` matrix push. After
+a partial or complete publish, `verify-images` retries manifest inspection for propagation, checks
+all five `sha-<full>` tags, extracts each digest with `docker buildx imagetools inspect`, and uploads
+`digests.txt` as the `image-digests` artifact. A missing tag or digest fails that run.
 
 Tags produced:
 
-- `main` and `sha-<short>` for branch builds.
+- `main`, `sha-<short>`, and `sha-<full>` for branch builds.
 - `latest` on the default branch.
 - `0.1.0` and `0.1` for a `v0.1.0` tag.
 
@@ -589,14 +691,19 @@ Local publish:
 
 ```bash
 echo "$GITHUB_TOKEN" | docker login ghcr.io -u <user> --password-stdin
+VERSION=$(node -p 'require("./package.json").version')
+REVISION=$(git rev-parse HEAD)
 docker buildx build \
-  --platform linux/amd64,linux/arm64 \
+  --platform linux/amd64 \
+  --target runtime \
+  --build-arg VERSION="$VERSION" \
+  --build-arg REVISION="$REVISION" \
   -t ghcr.io/arkaneman/hanse:dev \
   --push .
 ```
 
 The `Dockerfile` pins every external component. To upgrade one, bump the matching `ARG`, rebuild,
-and run the container smoke test against `/healthz`, `/login`, the assets, and `/ide/`.
+and run the container smoke test against `/healthz`, `/readyz`, `/login`, the assets, and `/ide/`.
 
 ## Known limits
 
@@ -604,5 +711,8 @@ and run the container smoke test against `/healthz`, `/login`, the assets, and `
   [`docs/current-state.md`](current-state.md#known-limitations-and-residual-risks) for the full list.
 - Agents share the coordinator uid inside the container and can read `state`; they are not a sandbox.
 - Database migrations are forward-only.
+- The deployment lock is advisory and single-host. It cannot stop a runner call that already
+  outlived a coordinator timeout, and the CLI image commands are outside the quiescence counter.
+- An async restart claim is in memory; a coordinator exit after `202` can leave the app stopped.
 - The image is large (code-server, `opencode`, OMO, and CodeGraph are bundled).
 - `latest` moves with `main`; pin a tag for production.

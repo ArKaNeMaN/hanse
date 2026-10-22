@@ -7,6 +7,7 @@ import {
   type DeletionManager,
   DeletionService,
 } from "../src/coordinator/deletion.js";
+import { DeploymentLock } from "../src/coordinator/deployment-lock.js";
 import { CoordinatorService } from "../src/coordinator/service.js";
 import { GitService } from "../src/git/service.js";
 import { handleDeletion, isDeletionRoute } from "../src/http/deletion.js";
@@ -122,7 +123,7 @@ interface Fixture {
   service: DeletionService;
 }
 
-function fixture(): Fixture {
+function fixture(options: { deploymentLock?: DeploymentLock } = {}): Fixture {
   const base = mkdtempSync(path.join(tmpdir(), "hanse-deletion-http-"));
   dirs.push(base);
   const workspace = path.join(base, "workspace");
@@ -160,6 +161,7 @@ function fixture(): Fixture {
     coordinatorStateDir: coordinator,
     manager,
     images,
+    ...(options.deploymentLock === undefined ? {} : { deploymentLock: options.deploymentLock }),
   });
   return { base, workspace, projectRoot, agents, coordinator, db, manager, images, service };
 }
@@ -244,6 +246,37 @@ describe("deletion route matching", () => {
 });
 
 describe("deletion HTTP handler", () => {
+  it("returns the shared 409 body when a deployment lock blocks deletion", async () => {
+    const lockDir = mkdtempSync(path.join(tmpdir(), "hanse-deletion-http-lock-"));
+    dirs.push(lockDir);
+    const lockPath = path.join(lockDir, "deploy.lock");
+    const now = new Date();
+    writeFileSync(
+      lockPath,
+      JSON.stringify({
+        version: 1,
+        id: "lock-1",
+        phase: "switching",
+        startedAt: now.toISOString(),
+        updatedAt: now.toISOString(),
+        expiresAt: new Date(now.getTime() + 60_000).toISOString(),
+      }),
+      "utf8",
+    );
+    const f = fixture({ deploymentLock: new DeploymentLock(lockPath) });
+    const token = humanToken(f.db);
+    const response = await handleDeletion(deps(f), projectRequest(token, "DELETE"));
+
+    expect(response?.status).toBe(409);
+    expect(response?.headers?.["retry-after"]).toBe("30");
+    expect(responseJson(response)).toEqual({
+      error: "deployment_in_progress",
+      message: "deployment in progress: switching",
+      retryAfter: 30,
+    });
+    expect(f.db.prepare("SELECT id FROM projects WHERE id = ?").get(PROJECT_ID)).toBeDefined();
+  });
+
   it("returns 503 when the deletion service is not configured", async () => {
     const f = fixture();
     const token = humanToken(f.db);

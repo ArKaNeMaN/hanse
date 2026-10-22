@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   existsSync,
   lstatSync,
@@ -22,6 +23,10 @@ import {
 } from "../src/skills/index.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
 import { MIGRATIONS } from "../src/store/migrations.js";
+
+function migrationChecksum(sql: string): string {
+  return createHash("sha256").update(sql).digest("hex");
+}
 
 const dirs: string[] = [];
 const EPOCH = Date.UTC(2026, 9, 22, 10, 0, 0);
@@ -560,7 +565,12 @@ describe("migration v12", () => {
     );
     for (const migration of MIGRATIONS.filter((candidate) => candidate.version <= 11)) {
       db.exec(migration.sql);
-      record.run(migration.version, migration.name, "existing", "2026-10-22T00:00:00.000Z");
+      record.run(
+        migration.version,
+        migration.name,
+        migrationChecksum(migration.sql),
+        "2026-10-22T00:00:00.000Z",
+      );
     }
     expect(() => db.prepare("SELECT 1 FROM skills").get()).toThrow();
     expect(runMigrations(db)).toBe(1);

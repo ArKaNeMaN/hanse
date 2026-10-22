@@ -18,6 +18,7 @@ import type { RegisteredApp } from "../registry/index.js";
 import { appDir, findApp, toManagedApp } from "./apps.js";
 import { humanFrom, principalFrom } from "./auth.js";
 import { buildSite, type PageChrome, renderNotFound, type SiteModel } from "./dashboard.js";
+import { lifecycleErrorResponse, mapLifecycleHttpError } from "./errors.js";
 import type { HttpDeps, HttpRequest, HttpResponse } from "./handler.js";
 import {
   appShell,
@@ -445,6 +446,15 @@ export async function streamSessionEvents(
       response.end(JSON.stringify({ error: error.message, code: error.code }));
       return;
     }
+    const mapped = mapLifecycleHttpError(error);
+    if (mapped !== undefined) {
+      response.writeHead(mapped.status, {
+        "content-type": "application/json; charset=utf-8",
+        ...(mapped.headers ?? {}),
+      });
+      response.end(JSON.stringify(mapped.body));
+      return;
+    }
     response.writeHead(502);
     response.end();
     return;
@@ -563,6 +573,10 @@ export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<
   } catch (error) {
     if (error instanceof DeletionPendingError) {
       return json(409, { error: error.message, code: error.code });
+    }
+    const mapped = lifecycleErrorResponse(error);
+    if (mapped !== undefined) {
+      return mapped;
     }
     const message = `agent failed to start: ${error instanceof Error ? error.message : String(error)}`;
     return asyncSend

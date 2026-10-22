@@ -12,7 +12,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { computeSpecHash } from "../src/agent/spec.js";
-import { verifyAgentToken } from "../src/mcp/agent-tokens.js";
+import { DeploymentInProgressError, DeploymentLock } from "../src/coordinator/deployment-lock.js";
+import { LifecycleActivity } from "../src/coordinator/lifecycle-activity.js";
+import { mintAgentToken, verifyAgentToken } from "../src/mcp/agent-tokens.js";
 import type {
   ContextMonitorLike,
   ContextMonitorOptions,
@@ -21,10 +23,14 @@ import type {
 } from "../src/opencode/context.js";
 import { authorizationFor, setEndpointAuthorization } from "../src/opencode/endpoint-auth.js";
 import {
+  AgentTokenReconcileError,
   DeletionPendingError,
+  ImageRollbackIncompleteError,
+  ImageRollbackRestoreError,
   InstanceManager,
   type ManagedApp,
   type OmoProfileSource,
+  RestartInProgressError,
   type SettingsSource,
   settingsHashFor,
   verifyAgentModels,
@@ -281,6 +287,7 @@ function fixture(
     enableContextMonitors?: boolean;
   },
   skills?: SkillSource | ((db: SqliteDatabase) => SkillSource),
+  lifecycle?: { deploymentLock?: DeploymentLock; lifecycleActivity?: LifecycleActivity },
 ): Fixture {
   const dir = mkdtempSync(path.join(tmpdir(), "hanse-manager-"));
   dirs.push(dir);
@@ -307,6 +314,7 @@ function fixture(
       : { hostWorkspace: hostPaths.hostWorkspace, hostAgents: hostPaths.hostAgents }),
     ...monitorOptions,
     ...(skillsSource === undefined ? {} : { skills: skillsSource }),
+    ...(lifecycle === undefined ? {} : lifecycle),
   });
   return { manager, runtime, db, dir };
 }
@@ -336,6 +344,12 @@ async function waitFor(predicate: () => boolean, timeoutMs = 2000): Promise<void
     if (Date.now() > deadline) throw new Error("condition was not met in time");
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
+}
+
+function markRuntimeStopped(runtime: FakeAgentRuntime, appId: string): void {
+  const status = runtime.statuses.get(appId);
+  if (status === undefined) throw new Error("missing runtime status");
+  runtime.statuses.set(appId, { ...status, state: "stopped", endpoint: null });
 }
 
 interface FakeMonitor extends ContextMonitorLike {
@@ -619,7 +633,7 @@ describe("InstanceManager lifecycle", () => {
     }
     const runtime = new OrderedRuntime();
     const skills = fakeSkills("skills-one", order);
-    const { manager, dir } = fixture(
+    const { manager } = fixture(
       runtime,
       fakeSettings(),
       fakeProfiles().source,
@@ -630,7 +644,7 @@ describe("InstanceManager lifecycle", () => {
       skills.source,
     );
     await manager.ensure(APP);
-    writeFileSync(path.join(dir, "p", "web", "mcp-token"), "tampered-token", { mode: 0o600 });
+    markRuntimeStopped(runtime, APP.id);
     order.length = 0;
 
     await manager.ensure(APP);
@@ -669,7 +683,7 @@ describe("InstanceManager lifecycle", () => {
     const order: string[] = [];
     const skills = fakeSkills("skills-one", order);
     const runtime = new FakeAgentRuntime();
-    const { manager, dir } = fixture(
+    const { manager } = fixture(
       runtime,
       fakeSettings(),
       fakeProfiles().source,
@@ -680,7 +694,7 @@ describe("InstanceManager lifecycle", () => {
       skills.source,
     );
     await manager.ensure(APP);
-    writeFileSync(path.join(dir, "p", "web", "mcp-token"), "tampered-token", { mode: 0o600 });
+    markRuntimeStopped(runtime, APP.id);
     order.length = 0;
     runtime.deleted.length = 0;
     skills.failProbe = new Error("staging write failed");
@@ -707,7 +721,7 @@ describe("InstanceManager lifecycle", () => {
     }
     const skills = fakeSkills("skills-one", order);
     const runtime = new OrderedRuntime();
-    const { manager, db, dir } = fixture(
+    const { manager, db } = fixture(
       runtime,
       fakeSettings(),
       fakeProfiles().source,
@@ -718,7 +732,7 @@ describe("InstanceManager lifecycle", () => {
       skills.source,
     );
     await manager.ensure(APP);
-    writeFileSync(path.join(dir, "p", "web", "mcp-token"), "tampered-token", { mode: 0o600 });
+    markRuntimeStopped(runtime, APP.id);
     order.length = 0;
     runtime.deleted.length = 0;
     skills.failApply = new Error("live write failed");
@@ -1145,7 +1159,7 @@ describe("InstanceManager lifecycle", () => {
     expect(row?.revoked_at).not.toBeNull();
   });
 
-  it("recreates a running instance when the token file no longer matches", async () => {
+  it("reconciles a mismatched token file without recreating a running instance", async () => {
     const runtime = new FakeAgentRuntime();
     const { manager, db, dir } = fixture(runtime, fakeSettings(), fakeProfiles().source);
     const firstEndpoint = await manager.ensure(APP);
@@ -1157,13 +1171,167 @@ describe("InstanceManager lifecycle", () => {
     const endpoint = await manager.ensure(APP);
 
     expect(endpoint).toBe(firstEndpoint);
-    expect(runtime.ensured).toHaveLength(2);
-    expect(runtime.deleted).toEqual([APP.id]);
+    expect(runtime.ensured).toHaveLength(1);
+    expect(runtime.deleted).toEqual([]);
     const token = readFileSync(tokenFile, "utf8");
     expect(token).not.toBe(previousToken);
     expect(verifyAgentToken(db, previousToken)).toBeUndefined();
     expect(verifyAgentToken(db, token)).toBeDefined();
     expect(manager.isRunning(APP.id)).toBe(true);
+  });
+
+  it("reconciles a missing token row against a running container without recreating it", async () => {
+    const runtime = new FakeAgentRuntime();
+    const { manager, db, dir } = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    const endpoint = await manager.ensure(APP);
+    const tokenFile = path.join(dir, "p", "web", "mcp-token");
+    const previousToken = readFileSync(tokenFile, "utf8");
+    db.prepare("DELETE FROM agent_tokens WHERE app_id = ?").run(APP.id);
+
+    await expect(manager.ensure(APP)).resolves.toBe(endpoint);
+
+    const token = readFileSync(tokenFile, "utf8");
+    expect(token).not.toBe(previousToken);
+    expect(runtime.ensured).toHaveLength(1);
+    expect(runtime.deleted).toEqual([]);
+    expect(verifyAgentToken(db, token)).toBeDefined();
+    expect(verifyAgentToken(db, previousToken)).toBeUndefined();
+  });
+
+  it("reconciles a rotated token row against a running container without recreating it", async () => {
+    const runtime = new FakeAgentRuntime();
+    const { manager, db, dir } = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    const endpoint = await manager.ensure(APP);
+    const tokenFile = path.join(dir, "p", "web", "mcp-token");
+    const previousToken = readFileSync(tokenFile, "utf8");
+    const rotated = mintAgentToken(db, APP.id);
+
+    await expect(manager.ensure(APP)).resolves.toBe(endpoint);
+
+    const token = readFileSync(tokenFile, "utf8");
+    expect(token).not.toBe(previousToken);
+    expect(runtime.ensured).toHaveLength(1);
+    expect(runtime.deleted).toEqual([]);
+    expect(verifyAgentToken(db, token)).toBeDefined();
+    expect(verifyAgentToken(db, rotated)).toBeUndefined();
+  });
+
+  it("repairs a crash between the DB commit and the file rename on the next ensure", async () => {
+    const runtime = new FakeAgentRuntime();
+    const { manager, db, dir } = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    const endpoint = await manager.ensure(APP);
+    const tokenFile = path.join(dir, "p", "web", "mcp-token");
+    const previousToken = readFileSync(tokenFile, "utf8");
+    const committed = mintAgentToken(db, APP.id);
+
+    await expect(manager.ensure(APP)).resolves.toBe(endpoint);
+
+    const token = readFileSync(tokenFile, "utf8");
+    expect(token).not.toBe(previousToken);
+    expect(runtime.ensured).toHaveLength(1);
+    expect(runtime.deleted).toEqual([]);
+    expect(verifyAgentToken(db, token)).toBeDefined();
+    expect(verifyAgentToken(db, committed)).toBeUndefined();
+  });
+
+  it("fails closed without recreating when the token file cannot be written", async () => {
+    const runtime = new FakeAgentRuntime();
+    const { manager, db, dir } = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    const endpoint = await manager.ensure(APP);
+    const tokenFile = path.join(dir, "p", "web", "mcp-token");
+    rmSync(tokenFile);
+    mkdirSync(tokenFile);
+
+    await expect(manager.ensure(APP)).rejects.toBeInstanceOf(AgentTokenReconcileError);
+    expect(runtime.ensured).toHaveLength(1);
+    expect(runtime.deleted).toEqual([]);
+    const active = db
+      .prepare("SELECT COUNT(*) AS count FROM agent_tokens WHERE app_id = ? AND revoked_at IS NULL")
+      .get(APP.id) as { count: number };
+    expect(active.count).toBe(0);
+
+    rmSync(tokenFile, { recursive: true });
+    await expect(manager.ensure(APP)).resolves.toBe(endpoint);
+    const token = readFileSync(tokenFile, "utf8");
+    expect(verifyAgentToken(db, token)).toBeDefined();
+  });
+
+  it("does not write tokens on the periodic status reconciler", async () => {
+    const runtime = new FakeAgentRuntime();
+    const { manager, db, dir } = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    await manager.ensure(APP);
+    const tokenFile = path.join(dir, "p", "web", "mcp-token");
+    const token = readFileSync(tokenFile, "utf8");
+    const activeBefore = db
+      .prepare(
+        "SELECT token_hash FROM agent_tokens WHERE app_id = ? AND revoked_at IS NULL ORDER BY created_at DESC LIMIT 1",
+      )
+      .get(APP.id) as { token_hash: string };
+
+    manager.startStatusReconciler(10);
+    await new Promise((resolve) => setTimeout(resolve, 35));
+    manager.stopStatusReconciler();
+
+    const activeAfter = db
+      .prepare(
+        "SELECT token_hash FROM agent_tokens WHERE app_id = ? AND revoked_at IS NULL ORDER BY created_at DESC LIMIT 1",
+      )
+      .get(APP.id) as { token_hash: string };
+    expect(activeAfter).toEqual(activeBefore);
+    expect(readFileSync(tokenFile, "utf8")).toBe(token);
+    expect(verifyAgentToken(db, token)).toBeDefined();
+  });
+
+  it("reconciles the token on startup before attaching an enabled context monitor", async () => {
+    const runtime = new FakeAgentRuntime(() => "http://127.0.0.1:4212");
+    const settings = fakeSettings({ context: {} });
+    const profiles = fakeProfiles();
+    const initial = fixture(runtime, settings, profiles.source);
+    await initial.manager.ensure(APP);
+    initial.manager.detach();
+    initial.db.prepare("DELETE FROM agent_tokens WHERE app_id = ?").run(APP.id);
+
+    const monitors = fakeMonitorFactory();
+    const manager = new InstanceManager(initial.db, initial.dir, {
+      runtime,
+      verify: async () => [],
+      settings,
+      omoProfiles: profiles.source,
+      workspaceRoot: "/srv",
+      monitorFactory: monitors.factory,
+    });
+    await manager.resumeRunning([{ id: APP.id, projectId: "p", appKey: "web" }]);
+
+    const token = readFileSync(path.join(initial.dir, "p", "web", "mcp-token"), "utf8");
+    expect(verifyAgentToken(initial.db, token)).toBeDefined();
+    expect(monitors.monitors).toHaveLength(1);
+    expect(manager.isRunning(APP.id)).toBe(true);
+  });
+
+  it("reconciles the token on startup even when context monitors are disabled", async () => {
+    const runtime = new FakeAgentRuntime(() => "http://127.0.0.1:4211");
+    const settings = fakeSettings({ context: {} });
+    const profiles = fakeProfiles();
+    const initial = fixture(runtime, settings, profiles.source);
+    await initial.manager.ensure(APP);
+    initial.manager.detach();
+    initial.db.prepare("DELETE FROM agent_tokens WHERE app_id = ?").run(APP.id);
+
+    const monitors = fakeMonitorFactory();
+    const manager = new InstanceManager(initial.db, initial.dir, {
+      runtime,
+      verify: async () => [],
+      settings,
+      omoProfiles: profiles.source,
+      workspaceRoot: "/srv",
+      enableContextMonitors: false,
+      monitorFactory: monitors.factory,
+    });
+    await manager.resumeRunning([{ id: APP.id, projectId: "p", appKey: "web" }]);
+
+    const token = readFileSync(path.join(initial.dir, "p", "web", "mcp-token"), "utf8");
+    expect(verifyAgentToken(initial.db, token)).toBeDefined();
+    expect(monitors.monitors).toHaveLength(0);
   });
 
   it("relaunches when the runtime status is not running", async () => {
@@ -1798,12 +1966,14 @@ interface ImageFixture {
   runtime: FakeAgentRuntime;
   app: ManagedApp;
   appDir: string;
+  db: SqliteDatabase;
 }
 
 function imageFixture(
   status: ManagedApp["imageStatus"],
   imageRef: string | null,
   buildDeclaration = true,
+  lifecycle: { deploymentLock?: DeploymentLock; lifecycleActivity?: LifecycleActivity } = {},
 ): ImageFixture {
   const dir = mkdtempSync(path.join(tmpdir(), "hanse-manager-image-"));
   dirs.push(dir);
@@ -1828,15 +1998,21 @@ function imageFixture(
   db.prepare(
     "INSERT INTO apps (id,project_id,app_key,path,contract,created_at) VALUES ('p:web','p','web','apps/web','AGENTS.md',?)",
   ).run(now);
+  db.prepare("UPDATE apps SET image_status = ?, image_ref = ? WHERE id = 'p:web'").run(
+    status ?? "missing",
+    imageRef,
+  );
   const runtime = new FakeAgentRuntime(() => "http://127.0.0.1:4100");
   const manager = new InstanceManager(db, dir, {
     runtime,
     verify: async () => [],
     workspaceRoot: dir,
+    ...lifecycle,
   });
   return {
     manager,
     runtime,
+    db,
     appDir,
     app: {
       id: "p:web",
@@ -1906,5 +2082,582 @@ describe("InstanceManager app image selection", () => {
       }),
     ).rejects.toThrow(/state_path_collision/);
     expect(f.runtime.ensured).toHaveLength(0);
+  });
+});
+
+describe("InstanceManager image rollback", () => {
+  interface ImageRow {
+    image_status: string;
+    image_ref: string | null;
+    image_hash: string | null;
+    image_base_digest: string | null;
+    image_built_at: string | null;
+    image_error: string | null;
+  }
+
+  function imageRow(db: SqliteDatabase, appId: string): ImageRow {
+    return db
+      .prepare(
+        `SELECT image_status, image_ref, image_hash, image_base_digest, image_built_at, image_error
+         FROM apps WHERE id = ?`,
+      )
+      .get(appId) as ImageRow;
+  }
+
+  function setImage(db: SqliteDatabase, appId: string, values: Partial<ImageRow>): void {
+    const current = imageRow(db, appId);
+    db.prepare(
+      `UPDATE apps SET image_status = @image_status, image_ref = @image_ref,
+         image_hash = @image_hash, image_base_digest = @image_base_digest,
+         image_built_at = @image_built_at, image_error = @image_error
+       WHERE id = @id`,
+    ).run({ id: appId, ...current, ...values });
+  }
+
+  function rollbackOne(f: ImageFixture) {
+    return async () => {
+      setImage(f.db, f.app.id, {
+        image_status: "ready",
+        image_ref: "hanse-app-p:web:one",
+        image_hash: "hash-one",
+        image_base_digest: "base-one",
+        image_built_at: "2026-01-01T00:00:00.000Z",
+        image_error: null,
+      });
+      return {
+        appId: f.app.id,
+        appKey: "web",
+        status: "ready" as const,
+        imageRef: "hanse-app-p:web:one",
+        previousImageRef: "hanse-app-p:web:two",
+        builtAt: "2026-01-01T00:00:00.000Z",
+      };
+    };
+  }
+
+  it("updates a stopped app and re-reads the new ref on the next ensure", async () => {
+    const f = imageFixture("ready", "hanse-app-p:web:two");
+
+    const outcome = await f.manager.rollbackImage(f.app, rollbackOne(f));
+
+    expect(outcome.restarted).toBe(false);
+    expect(outcome.result.imageRef).toBe("hanse-app-p:web:one");
+    expect(f.runtime.ensured).toHaveLength(0);
+    expect(imageRow(f.db, f.app.id).image_ref).toBe("hanse-app-p:web:one");
+
+    await f.manager.ensure({ ...f.app, imageRef: "hanse-app-p:web:two" });
+    expect(f.runtime.ensured[0]?.image).toBe("hanse-app-p:web:one");
+  });
+
+  it("restarts a running app on the new image and reports restarted", async () => {
+    const f = imageFixture("ready", "hanse-app-p:web:two");
+    await f.manager.ensure(f.app);
+
+    const outcome = await f.manager.rollbackImage(f.app, rollbackOne(f));
+
+    expect(outcome.restarted).toBe(true);
+    expect(f.runtime.deleted).toEqual([f.app.id]);
+    expect(f.runtime.ensured).toHaveLength(2);
+    expect(f.runtime.ensured[1]?.image).toBe("hanse-app-p:web:one");
+    expect(f.manager.isRestarting(f.app.id)).toBe(false);
+  });
+
+  it("returns 409 without a DB change when a restart claim is already held", async () => {
+    const f = imageFixture("ready", "hanse-app-p:web:two");
+    await f.manager.ensure(f.app);
+    const hold = f.manager.beginRestart(f.app);
+    expect(hold.accepted).toBe(true);
+    let called = false;
+
+    await expect(
+      f.manager.rollbackImage(f.app, async () => {
+        called = true;
+        return rollbackOne(f)();
+      }),
+    ).rejects.toBeInstanceOf(RestartInProgressError);
+
+    expect(called).toBe(false);
+    expect(imageRow(f.db, f.app.id).image_ref).toBe("hanse-app-p:web:two");
+    await hold.completion;
+    expect(f.manager.isRestarting(f.app.id)).toBe(false);
+  });
+
+  it("returns 409 without a claim or DB change when the deployment lock is active", async () => {
+    const lockDir = mkdtempSync(path.join(tmpdir(), "hanse-manager-rollback-lock-"));
+    dirs.push(lockDir);
+    const lockPath = path.join(lockDir, "deploy.lock");
+    const activity = new LifecycleActivity();
+    const f = imageFixture("ready", "hanse-app-p:web:two", true, {
+      deploymentLock: new DeploymentLock(lockPath),
+      lifecycleActivity: activity,
+    });
+    await f.manager.ensure(f.app);
+    const now = new Date();
+    writeFileSync(
+      lockPath,
+      JSON.stringify({
+        version: 1,
+        id: "lock-1",
+        phase: "switching",
+        startedAt: now.toISOString(),
+        updatedAt: now.toISOString(),
+        expiresAt: new Date(now.getTime() + 60_000).toISOString(),
+      }),
+      "utf8",
+    );
+    let called = false;
+
+    await expect(
+      f.manager.rollbackImage(f.app, async () => {
+        called = true;
+        return rollbackOne(f)();
+      }),
+    ).rejects.toBeInstanceOf(DeploymentInProgressError);
+
+    expect(called).toBe(false);
+    expect(imageRow(f.db, f.app.id).image_ref).toBe("hanse-app-p:web:two");
+    expect(f.manager.isRestarting(f.app.id)).toBe(false);
+    expect(activity.count).toBe(0);
+  });
+
+  it("restores every image field when the restart fails", async () => {
+    const f = imageFixture("ready", "hanse-app-p:web:two");
+    setImage(f.db, f.app.id, {
+      image_hash: "hash-two",
+      image_base_digest: "base-two",
+      image_built_at: "2026-01-02T00:00:00.000Z",
+      image_error: "stale-warning",
+    });
+    await f.manager.ensure(f.app);
+    const before = imageRow(f.db, f.app.id);
+    f.runtime.ensure = async () => {
+      throw new Error("start failed");
+    };
+
+    await expect(f.manager.rollbackImage(f.app, rollbackOne(f))).rejects.toBeInstanceOf(
+      ImageRollbackIncompleteError,
+    );
+
+    expect(imageRow(f.db, f.app.id)).toEqual(before);
+    expect(f.manager.isRestarting(f.app.id)).toBe(false);
+  });
+
+  it("returns 500 when restoring the snapshot also fails", async () => {
+    const f = imageFixture("ready", "hanse-app-p:web:two");
+    await f.manager.ensure(f.app);
+    const original = f.runtime.ensure.bind(f.runtime);
+    let calls = 0;
+    f.runtime.ensure = async (spec) => {
+      calls += 1;
+      if (calls === 1) {
+        f.db.exec("ALTER TABLE apps RENAME TO apps_archive");
+        throw new Error("start failed");
+      }
+      return original(spec);
+    };
+
+    await expect(f.manager.rollbackImage(f.app, rollbackOne(f))).rejects.toBeInstanceOf(
+      ImageRollbackRestoreError,
+    );
+    expect(f.manager.isRestarting(f.app.id)).toBe(false);
+  });
+
+  it("starts a queued ensure on the new image when the rollback waits for the lock", async () => {
+    class GatedFirstEnsure extends FakeAgentRuntime {
+      calls = 0;
+      readonly entered = deferred<void>();
+      readonly gate = deferred<void>();
+
+      override async ensure(
+        spec: Parameters<FakeAgentRuntime["ensure"]>[0],
+      ): ReturnType<FakeAgentRuntime["ensure"]> {
+        this.calls += 1;
+        if (this.calls === 1) {
+          this.entered.resolve();
+          await this.gate.promise;
+        }
+        return super.ensure(spec);
+      }
+    }
+
+    const runtime = new GatedFirstEnsure(() => "http://127.0.0.1:4310");
+    const f = imageFixture("ready", "hanse-app-p:web:two");
+    const manager = new InstanceManager(f.db, path.dirname(path.dirname(f.appDir)), {
+      runtime,
+      verify: async () => [],
+      workspaceRoot: path.dirname(f.appDir),
+    });
+    const start = manager.ensure(f.app);
+    await runtime.entered.promise;
+    const rollback = manager.rollbackImage(f.app, rollbackOne(f));
+    runtime.gate.resolve();
+    await expect(start).resolves.toBe("http://127.0.0.1:4310");
+
+    const outcome = await rollback;
+    expect(outcome.restarted).toBe(true);
+    expect(runtime.ensured[1]?.image).toBe("hanse-app-p:web:one");
+  });
+
+  it("never calls public ensure or restartIfRunning while holding the app lock", async () => {
+    const f = imageFixture("ready", "hanse-app-p:web:two");
+    await f.manager.ensure(f.app);
+    let publicCalls = 0;
+    f.manager.ensure = (async () => {
+      publicCalls += 1;
+      throw new Error("public ensure called");
+    }) as InstanceManager["ensure"];
+    f.manager.restartIfRunning = (async () => {
+      publicCalls += 1;
+      throw new Error("public restartIfRunning called");
+    }) as InstanceManager["restartIfRunning"];
+
+    const outcome = await f.manager.rollbackImage(f.app, rollbackOne(f));
+
+    expect(outcome.restarted).toBe(true);
+    expect(publicCalls).toBe(0);
+  });
+});
+
+describe("InstanceManager deployment lock", () => {
+  function activeLock(): string {
+    const now = new Date();
+    return JSON.stringify({
+      version: 1,
+      id: "lock-1",
+      phase: "switching",
+      startedAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+      expiresAt: new Date(now.getTime() + 60_000).toISOString(),
+    });
+  }
+
+  function lockFixture(): {
+    f: Fixture;
+    lock: DeploymentLock;
+    lockPath: string;
+    activity: LifecycleActivity;
+    runtime: FakeAgentRuntime;
+  } {
+    const lockDir = mkdtempSync(path.join(tmpdir(), "hanse-manager-lock-"));
+    dirs.push(lockDir);
+    const lockPath = path.join(lockDir, "deploy.lock");
+    const lock = new DeploymentLock(lockPath);
+    const activity = new LifecycleActivity();
+    const runtime = new FakeAgentRuntime(() => "http://127.0.0.1:4101");
+    const f = fixture(
+      runtime,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { deploymentLock: lock, lifecycleActivity: activity },
+    );
+    return { f, lock, lockPath, activity, runtime };
+  }
+
+  it("allows a fast reconnect under an active lock without counting it", async () => {
+    const { f, lockPath, activity, runtime } = lockFixture();
+    const endpoint = await f.manager.ensure(APP);
+    expect(activity.count).toBe(0);
+    writeFileSync(lockPath, activeLock(), "utf8");
+
+    await expect(f.manager.ensure(APP)).resolves.toBe(endpoint);
+    expect(runtime.ensured).toHaveLength(1);
+    expect(runtime.deleted).toEqual([]);
+    expect(activity.count).toBe(0);
+  });
+
+  it("refuses to start a stopped app under an active lock", async () => {
+    const { f, lockPath, activity, runtime } = lockFixture();
+    writeFileSync(lockPath, activeLock(), "utf8");
+
+    await expect(f.manager.ensure(APP)).rejects.toBeInstanceOf(DeploymentInProgressError);
+    expect(runtime.ensured).toEqual([]);
+    expect(runtime.deleted).toEqual([]);
+    expect(activity.count).toBe(0);
+  });
+
+  it("does not delete a running app whose endpoint is missing under a lock", async () => {
+    const { f, lockPath, activity, runtime } = lockFixture();
+    await f.manager.ensure(APP);
+    const status = runtime.statuses.get(APP.id);
+    if (status === undefined) throw new Error("missing status");
+    runtime.statuses.set(APP.id, { ...status, endpoint: null });
+    writeFileSync(lockPath, activeLock(), "utf8");
+
+    const second = new InstanceManager(f.db, f.dir, {
+      runtime,
+      workspaceRoot: "/srv",
+      deploymentLock: new DeploymentLock(lockPath),
+      lifecycleActivity: activity,
+    });
+    await expect(second.ensure(APP)).rejects.toBeInstanceOf(DeploymentInProgressError);
+    expect(runtime.deleted).toEqual([]);
+    expect(runtime.ensured).toHaveLength(1);
+    expect(activity.count).toBe(0);
+  });
+
+  it("guards stop, restart, deletion stop, and stopAll at entry", async () => {
+    const { f, lockPath, runtime } = lockFixture();
+    await f.manager.ensure(APP);
+    writeFileSync(lockPath, activeLock(), "utf8");
+
+    await expect(f.manager.stopApp(APP.id)).rejects.toBeInstanceOf(DeploymentInProgressError);
+    await expect(f.manager.restartIfRunning(APP)).rejects.toBeInstanceOf(DeploymentInProgressError);
+    await expect(f.manager.stopForDeletion(APP.id)).rejects.toBeInstanceOf(
+      DeploymentInProgressError,
+    );
+    await expect(f.manager.stopAll()).rejects.toBeInstanceOf(DeploymentInProgressError);
+
+    expect(runtime.deleted).toEqual([]);
+    const deleting = f.db.prepare("SELECT deleting FROM apps WHERE id = ?").get(APP.id) as {
+      deleting: number;
+    };
+    expect(deleting.deleting).toBe(0);
+    expect(f.manager.isRunning(APP.id)).toBe(true);
+  });
+
+  it("runs an operation that passed its guard before the lock to completion", async () => {
+    class GatedRuntime extends FakeAgentRuntime {
+      readonly entered = deferred<void>();
+      readonly gate = deferred<void>();
+
+      override async ensure(
+        spec: Parameters<FakeAgentRuntime["ensure"]>[0],
+      ): ReturnType<FakeAgentRuntime["ensure"]> {
+        this.entered.resolve();
+        await this.gate.promise;
+        return super.ensure(spec);
+      }
+    }
+
+    const runtime = new GatedRuntime(() => "http://127.0.0.1:4102");
+    const activity = new LifecycleActivity();
+    const f = fixture(
+      runtime,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { lifecycleActivity: activity },
+    );
+    const pending = f.manager.ensure(APP);
+    await runtime.entered.promise;
+    expect(activity.count).toBe(1);
+
+    runtime.gate.resolve();
+    await expect(pending).resolves.toBe("http://127.0.0.1:4102");
+    expect(activity.count).toBe(0);
+    expect(runtime.ensured).toHaveLength(1);
+    expect(runtime.deleted).toEqual([]);
+    expect(f.manager.isRunning(APP.id)).toBe(true);
+  });
+
+  it("keeps one activity span across a restart's stop and start", async () => {
+    class SecondCallGate extends FakeAgentRuntime {
+      calls = 0;
+      readonly entered = deferred<void>();
+      readonly gate = deferred<void>();
+
+      override async ensure(
+        spec: Parameters<FakeAgentRuntime["ensure"]>[0],
+      ): ReturnType<FakeAgentRuntime["ensure"]> {
+        this.calls += 1;
+        if (this.calls === 2) {
+          this.entered.resolve();
+          await this.gate.promise;
+        }
+        return super.ensure(spec);
+      }
+    }
+
+    const runtime = new SecondCallGate(() => "http://127.0.0.1:4103");
+    const activity = new LifecycleActivity();
+    const f = fixture(
+      runtime,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { lifecycleActivity: activity },
+    );
+    await f.manager.ensure(APP);
+    const pending = f.manager.restartIfRunning(APP);
+    await runtime.entered.promise;
+    expect(activity.count).toBe(1);
+    expect(runtime.deleted).toEqual([APP.id]);
+    runtime.gate.resolve();
+    await expect(pending).resolves.toBe(true);
+    expect(activity.count).toBe(0);
+  });
+});
+
+describe("InstanceManager restart claims", () => {
+  it("accepts exactly one same-tick async claim", async () => {
+    const runtime = new FakeAgentRuntime(() => "http://127.0.0.1:4300");
+    const f = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    await f.manager.ensure(APP);
+
+    const first = f.manager.beginRestart(APP);
+    const second = f.manager.beginRestart(APP);
+    expect(first.accepted).toBe(true);
+    expect(second.accepted).toBe(false);
+    expect(second.completion).toBeUndefined();
+
+    await expect(first.completion).resolves.toBe(true);
+    expect(f.manager.isRestarting(APP.id)).toBe(false);
+    expect(runtime.ensured).toHaveLength(2);
+  });
+
+  it("rejects a synchronous restart while an async claim is held", async () => {
+    const runtime = new FakeAgentRuntime(() => "http://127.0.0.1:4301");
+    const f = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    await f.manager.ensure(APP);
+
+    const claim = f.manager.beginRestart(APP);
+    expect(claim.accepted).toBe(true);
+    await expect(f.manager.restartIfRunning(APP)).rejects.toBeInstanceOf(RestartInProgressError);
+    await expect(claim.completion).resolves.toBe(true);
+    expect(f.manager.isRestarting(APP.id)).toBe(false);
+  });
+
+  it("returns before a slow async restart completes and releases the claim", async () => {
+    class SlowRuntime extends FakeAgentRuntime {
+      calls = 0;
+      readonly entered = deferred<void>();
+      readonly gate = deferred<void>();
+
+      override async ensure(
+        spec: Parameters<FakeAgentRuntime["ensure"]>[0],
+      ): ReturnType<FakeAgentRuntime["ensure"]> {
+        this.calls += 1;
+        if (this.calls === 2) {
+          this.entered.resolve();
+          await this.gate.promise;
+        }
+        return super.ensure(spec);
+      }
+    }
+
+    const runtime = new SlowRuntime(() => "http://127.0.0.1:4302");
+    const f = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    await f.manager.ensure(APP);
+
+    const claim = f.manager.beginRestart(APP);
+    expect(claim.accepted).toBe(true);
+    await runtime.entered.promise;
+    expect(f.manager.isRestarting(APP.id)).toBe(true);
+
+    runtime.gate.resolve();
+    await expect(claim.completion).resolves.toBe(true);
+    expect(f.manager.isRestarting(APP.id)).toBe(false);
+  });
+
+  it("releases the claim when a restart fails", async () => {
+    class FailingRestartRuntime extends FakeAgentRuntime {
+      calls = 0;
+
+      override async ensure(
+        spec: Parameters<FakeAgentRuntime["ensure"]>[0],
+      ): ReturnType<FakeAgentRuntime["ensure"]> {
+        this.calls += 1;
+        if (this.calls === 2) {
+          throw new Error("start failed");
+        }
+        return super.ensure(spec);
+      }
+    }
+
+    const runtime = new FailingRestartRuntime(() => "http://127.0.0.1:4303");
+    const f = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    await f.manager.ensure(APP);
+
+    await expect(f.manager.restartIfRunning(APP)).rejects.toThrow("start failed");
+    expect(f.manager.isRestarting(APP.id)).toBe(false);
+  });
+
+  it("completes a restart that passed its guard before a lock appeared", async () => {
+    class GatedRuntime extends FakeAgentRuntime {
+      calls = 0;
+      readonly entered = deferred<void>();
+      readonly gate = deferred<void>();
+
+      override async ensure(
+        spec: Parameters<FakeAgentRuntime["ensure"]>[0],
+      ): ReturnType<FakeAgentRuntime["ensure"]> {
+        this.calls += 1;
+        if (this.calls === 2) {
+          this.entered.resolve();
+          await this.gate.promise;
+        }
+        return super.ensure(spec);
+      }
+    }
+
+    const lockDir = mkdtempSync(path.join(tmpdir(), "hanse-manager-restart-lock-"));
+    dirs.push(lockDir);
+    const lockPath = path.join(lockDir, "deploy.lock");
+    const runtime = new GatedRuntime(() => "http://127.0.0.1:4304");
+    const f = fixture(
+      runtime,
+      fakeSettings(),
+      fakeProfiles().source,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { deploymentLock: new DeploymentLock(lockPath), lifecycleActivity: new LifecycleActivity() },
+    );
+    await f.manager.ensure(APP);
+
+    const pending = f.manager.restartIfRunning(APP);
+    await runtime.entered.promise;
+    const now = new Date();
+    writeFileSync(
+      lockPath,
+      JSON.stringify({
+        version: 1,
+        id: "lock-1",
+        phase: "switching",
+        startedAt: now.toISOString(),
+        updatedAt: now.toISOString(),
+        expiresAt: new Date(now.getTime() + 60_000).toISOString(),
+      }),
+      "utf8",
+    );
+    runtime.gate.resolve();
+
+    await expect(pending).resolves.toBe(true);
+    expect(runtime.ensured).toHaveLength(2);
+  });
+
+  it("keeps a 202 claim in memory only (process-exit limitation)", async () => {
+    const runtime = new FakeAgentRuntime(() => "http://127.0.0.1:4305");
+    const f = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    await f.manager.ensure(APP);
+
+    const claim = f.manager.beginRestart(APP);
+    expect(claim.accepted).toBe(true);
+    expect(f.manager.isRestarting(APP.id)).toBe(true);
+
+    // A replacement process has its own in-memory claim map; a 202 claim does not survive an exit.
+    const replacement = new InstanceManager(f.db, f.dir, {
+      runtime,
+      verify: async () => [],
+      workspaceRoot: "/srv",
+    });
+    expect(replacement.isRestarting(APP.id)).toBe(false);
+
+    await claim.completion;
   });
 });

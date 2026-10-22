@@ -26,7 +26,48 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  verify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run check:sensitive
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  docker-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [runtime, agent-base, agent-default, agent-ide, runner]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build the ${{ matrix.target }} image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: ${{ matrix.target }}
+          platforms: linux/amd64
+          push: false
+          load: false
+          cache-from: type=gha,scope=ci-${{ matrix.target }}
+          cache-to: type=gha,mode=max,scope=ci-${{ matrix.target }}
+
   publish:
+    needs: [verify, docker-verify]
     runs-on: ubuntu-latest
     timeout-minutes: 120
     strategy:
@@ -76,6 +117,7 @@ jobs:
           tags: |
             type=ref,event=branch
             type=sha,format=short
+            type=sha,format=long
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable={{is_default_branch}}
@@ -95,6 +137,46 @@ jobs:
           cache-to: type=gha,mode=max,scope=${{ matrix.name }}
           provenance: mode=max
           sbom: true
+
+  verify-images:
+    needs: publish
+    if: always() && needs.publish.result != 'cancelled'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Verify all five full-SHA manifests and record digests
+        run: |
+          base="ghcr.io/${GITHUB_REPOSITORY,,}"
+          rm -f digests.txt
+          for suffix in "" "-agent-base" "-agent-default" "-agent-ide" "-runner"; do
+            ref="${base}${suffix}:sha-${GITHUB_SHA}"
+            ok=0
+            for attempt in $(seq 1 12); do
+              if docker manifest inspect "$ref" >/dev/null 2>&1; then ok=1; break; fi
+              sleep 10
+            done
+            [ "$ok" = 1 ] || { echo "missing manifest: $ref"; exit 1; }
+            digest=$(docker buildx imagetools inspect "$ref" | awk '/^Digest:/{print $2; exit}')
+            [ -n "$digest" ] || { echo "no digest: $ref"; exit 1; }
+            echo "$ref $digest" >> digests.txt
+          done
+          cat digests.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image-digests
+          path: digests.txt
+          if-no-files-found: error
 
 # Package visibility is a one-time package setting; GITHUB_TOKEN cannot change it through
 # /user/packages. Document the manual check in docs/deployment.md.

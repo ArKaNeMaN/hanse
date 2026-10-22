@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -80,6 +80,20 @@ describe("agent tokens", () => {
     expect(verifyAgentToken(db, second)).toBeDefined();
   });
 
+  it("rolls back the revoke when the insert fails in one transaction", () => {
+    const { db } = fixture();
+    const first = mintAgentToken(db, "p:a");
+    db.prepare(
+      `CREATE TRIGGER reject_token_insert BEFORE INSERT ON agent_tokens
+       BEGIN SELECT RAISE(ABORT, 'insert rejected'); END;`,
+    ).run();
+
+    expect(() => mintAgentToken(db, "p:a")).toThrow(/insert rejected/);
+
+    expect(activeHashes(db)).toEqual([hashAgentToken(first)]);
+    expect(verifyAgentToken(db, first)).toBeDefined();
+  });
+
   it("writes the token file atomically with mode 0600", () => {
     const { tokenFile } = fixture();
     writeAgentTokenFile(tokenFile, "token-value");
@@ -135,6 +149,24 @@ describe("agent tokens", () => {
     expect(second).not.toBe(first);
     expect(verifyAgentToken(db, first)).toBeUndefined();
     expect(verifyAgentToken(db, second)).toBeDefined();
+  });
+
+  it("leaves no active row when the token file write fails, then repairs on retry", () => {
+    const { db, tokenFile } = fixture();
+    const first = ensureAgentToken(db, "p:a", tokenFile);
+    rmSync(tokenFile);
+    mkdirSync(tokenFile);
+
+    expect(() => ensureAgentToken(db, "p:a", tokenFile)).toThrow();
+    expect(activeHashes(db)).toEqual([]);
+    expect(verifyAgentToken(db, first)).toBeUndefined();
+
+    rmSync(tokenFile, { recursive: true });
+    const repaired = ensureAgentToken(db, "p:a", tokenFile);
+
+    expect(activeHashes(db)).toEqual([hashAgentToken(repaired)]);
+    expect(readFileSync(tokenFile, "utf8")).toBe(repaired);
+    expect(verifyAgentToken(db, repaired)).toBeDefined();
   });
 
   it("sanitizes the project and app segments of the token path", () => {

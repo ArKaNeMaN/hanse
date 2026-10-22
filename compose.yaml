@@ -20,6 +20,7 @@ services:
       HANSE_HOST_WORKSPACE: ${HANSE_HOST_WORKSPACE:?set HANSE_HOST_WORKSPACE to the absolute host workspace path}
       HANSE_HOST_AGENTS: ${HANSE_HOST_AGENTS:?set HANSE_HOST_AGENTS to the absolute host agents path}
       HANSE_AGENT_API_BASE: http://hanse:8787
+      HANSE_DEPLOY_LOCK_FILE: ${HANSE_DEPLOY_LOCK_FILE:-/data/state/hanse/deploy.lock}
       HANSE_AGENT_IMAGE: ${HANSE_AGENT_IMAGE:-ghcr.io/arkaneman/hanse-agent-default}:${HANSE_AGENT_TAG:-${HANSE_TAG:-latest}}
       HANSE_IDE_URL: /ide/
       HANSE_IDE: "0"
@@ -51,7 +52,7 @@ services:
       start_period: 30s
 
   ide:
-    image: ${HANSE_IDE_IMAGE:-ghcr.io/arkaneman/hanse-agent-ide}:${HANSE_AGENT_TAG:-${HANSE_TAG:-latest}}
+    image: ${HANSE_IDE_IMAGE:-ghcr.io/arkaneman/hanse-agent-ide}:${HANSE_IDE_TAG:-${HANSE_AGENT_TAG:-${HANSE_TAG:-latest}}}
     container_name: hanse-ide
     restart: unless-stopped
     user: "1000:1000"
@@ -88,7 +89,7 @@ services:
         condition: service_healthy
 
   runner:
-    image: ${HANSE_RUNNER_IMAGE:-ghcr.io/arkaneman/hanse-runner}:${HANSE_AGENT_TAG:-${HANSE_TAG:-latest}}
+    image: ${HANSE_RUNNER_IMAGE:-ghcr.io/arkaneman/hanse-runner}:${HANSE_RUNNER_TAG:-${HANSE_AGENT_TAG:-${HANSE_TAG:-latest}}}
     container_name: hanse-runner
     restart: unless-stopped
     user: "0:0"

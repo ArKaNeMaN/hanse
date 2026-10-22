@@ -18,6 +18,8 @@ import {
   type DeletionManager,
   DeletionService,
 } from "../src/coordinator/deletion.js";
+import { DeploymentInProgressError, DeploymentLock } from "../src/coordinator/deployment-lock.js";
+import { LifecycleActivity } from "../src/coordinator/lifecycle-activity.js";
 import type { RunnerImageRecord } from "../src/images/client.js";
 import { ImageServiceError } from "../src/images/service.js";
 import { sanitizeAppKey } from "../src/opencode/instance.js";
@@ -78,6 +80,7 @@ class FakeManager implements DeletionManager {
   readonly entered: string[] = [];
   readonly stops: string[] = [];
   failOn: string | undefined;
+  failWith: unknown;
   gate: Promise<void> | undefined;
   onStop: ((appId: string) => void) | undefined;
 
@@ -89,6 +92,9 @@ class FakeManager implements DeletionManager {
       await this.gate;
     }
     this.onStop?.(appId);
+    if (this.failWith !== undefined) {
+      throw this.failWith;
+    }
     if (this.failOn === appId) {
       throw new Error("runtime unavailable");
     }
@@ -160,6 +166,8 @@ interface FixtureOptions {
   projectId?: string;
   manifest?: string;
   agentsUnderWorkspace?: boolean;
+  deploymentLock?: DeploymentLock;
+  lifecycleActivity?: LifecycleActivity;
 }
 
 function projectManifest(
@@ -235,6 +243,10 @@ function fixture(options: FixtureOptions = {}): Fixture {
     coordinatorStateDir: coordinator,
     manager,
     images,
+    ...(options.deploymentLock === undefined ? {} : { deploymentLock: options.deploymentLock }),
+    ...(options.lifecycleActivity === undefined
+      ? {}
+      : { lifecycleActivity: options.lifecycleActivity }),
   });
   return {
     base,
@@ -1164,5 +1176,106 @@ describe("DeletionService failure paths", () => {
     const manifest = parseYaml(readFileSync(f.manifestPath, "utf8")) as { id?: string };
     expect(manifest.id).toBe(OTHER_PROJECT_ID);
     expect(existsSync(f.projectRoot)).toBe(true);
+  });
+});
+
+describe("deletion deployment lock", () => {
+  function activeLock(): { lock: DeploymentLock; path: string } {
+    const dir = mkdtempSync(path.join(tmpdir(), "hanse-deletion-lock-"));
+    dirs.push(dir);
+    const lockPath = path.join(dir, "deploy.lock");
+    const now = new Date();
+    writeFileSync(
+      lockPath,
+      JSON.stringify({
+        version: 1,
+        id: "lock-1",
+        phase: "backing_up",
+        startedAt: now.toISOString(),
+        updatedAt: now.toISOString(),
+        expiresAt: new Date(now.getTime() + 60_000).toISOString(),
+      }),
+      "utf8",
+    );
+    return { lock: new DeploymentLock(lockPath), path: lockPath };
+  }
+
+  it("refuses an app deletion before the stop or marker", async () => {
+    const { lock } = activeLock();
+    const f = fixture({ deploymentLock: lock });
+    const appId = `${f.projectId}:web`;
+    const state = stateDir(f, f.projectId, "web");
+    expect(existsSync(state)).toBe(true);
+
+    await expect(
+      f.service.deleteApp(f.projectId, "web", { confirm: "web" }),
+    ).rejects.toBeInstanceOf(DeploymentInProgressError);
+    expect(f.manager.entered).toEqual([]);
+    expect(f.images.reserved.size).toBe(0);
+    const app = f.db.prepare("SELECT deleting FROM apps WHERE id = ?").get(appId) as {
+      deleting: number;
+    };
+    expect(app.deleting).toBe(0);
+    expect(existsSync(state)).toBe(true);
+  });
+
+  it("refuses a retried deletion before the stop", async () => {
+    const { lock } = activeLock();
+    const f = fixture({ deploymentLock: lock });
+    const appId = `${f.projectId}:web`;
+    f.db.prepare("UPDATE apps SET deleting = 1 WHERE id = ?").run(appId);
+
+    await expect(
+      f.service.deleteApp(f.projectId, "web", { confirm: "web" }),
+    ).rejects.toBeInstanceOf(DeploymentInProgressError);
+    expect(f.manager.entered).toEqual([]);
+    expect(f.images.reserved.size).toBe(0);
+  });
+
+  it("refuses a project deletion before writing the marker", async () => {
+    const { lock } = activeLock();
+    const f = fixture({ deploymentLock: lock });
+
+    await expect(
+      f.service.deleteProject(f.projectId, { confirm: f.projectName }),
+    ).rejects.toBeInstanceOf(DeploymentInProgressError);
+    expect(f.manager.entered).toEqual([]);
+    const project = f.db.prepare("SELECT deleting FROM projects WHERE id = ?").get(f.projectId) as {
+      deleting: number;
+    };
+    expect(project.deleting).toBe(0);
+    const apps = f.db
+      .prepare("SELECT deleting FROM apps WHERE project_id = ?")
+      .all(f.projectId) as Array<{ deleting: number }>;
+    expect(apps.map((row) => row.deleting)).toEqual([0, 0]);
+  });
+
+  it("preserves a typed deployment error from the nested stop", async () => {
+    const f = fixture();
+    f.manager.failWith = new DeploymentInProgressError("stop_for_deletion", {
+      phase: "switching",
+    });
+
+    await expect(
+      f.service.deleteApp(f.projectId, "web", { confirm: "web" }),
+    ).rejects.toBeInstanceOf(DeploymentInProgressError);
+  });
+
+  it("counts the whole deletion as one lifecycle span", async () => {
+    const activity = new LifecycleActivity();
+    const f = fixture({ lifecycleActivity: activity });
+    let release!: () => void;
+    f.manager.gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    const pending = f.service.deleteApp(f.projectId, "web", { confirm: "web" });
+    while (f.manager.entered.length === 0) {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+    expect(activity.count).toBe(1);
+    release();
+    await expect(pending).resolves.toMatchObject({ deleted: true });
+    expect(activity.count).toBe(0);
   });
 });

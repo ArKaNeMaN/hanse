@@ -9,6 +9,7 @@ import {
 import { DeletionPendingError } from "../opencode/manager.js";
 import { findApp, toManagedApp } from "./apps.js";
 import { principalFrom } from "./auth.js";
+import { lifecycleErrorResponse } from "./errors.js";
 import type { HttpDeps, HttpRequest, HttpResponse } from "./handler.js";
 
 const CONTEXT_PATH = /^\/api\/apps\/([^/]+)\/sessions\/([^/]+)\/context$/;
@@ -112,6 +113,10 @@ export async function handleContext(deps: HttpDeps, request: HttpRequest): Promi
   } catch (error) {
     if (error instanceof DeletionPendingError) {
       return deletionPending();
+    }
+    const mapped = lifecycleErrorResponse(error);
+    if (mapped !== undefined) {
+      return mapped;
     }
     return json(502, { error: "agent unavailable", code: "agent_unavailable" });
   }

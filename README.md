@@ -46,15 +46,16 @@ and requirements) to each other through the coordinator - like independent teams
   opened folder.
 - Human-only operator terminal per application: a coordinator-proxied WebSocket/TTY exec in the
   managed app container, with no operator or runtime token exposed to the app.
-- Docker Compose deployment from coordinator, IDE, runner, and agent images, intended for a trusted
-  LAN. Published images are `linux/amd64`; arm64 is built on demand until it returns to the default
-  publish matrix.
+- Docker Compose deployment from coordinator, IDE, runner, agent-base, and agent-default images,
+  intended for a trusted LAN. Published images are `linux/amd64`; arm64 is built on demand until it
+  returns to the default publish matrix.
 
 ## Run it
 
 The published images are `ghcr.io/arkaneman/hanse` (coordinator),
-`ghcr.io/arkaneman/hanse-agent-ide` (IDE), `ghcr.io/arkaneman/hanse-runner` (runner), and
-`ghcr.io/arkaneman/hanse-agent-default` (per-app agents), for `linux/amd64`:
+`ghcr.io/arkaneman/hanse-agent-base` (shared agent base),
+`ghcr.io/arkaneman/hanse-agent-default` (per-app agents), `ghcr.io/arkaneman/hanse-agent-ide` (IDE),
+and `ghcr.io/arkaneman/hanse-runner` (runner), for `linux/amd64`:
 
 ```bash
 mkdir -p hanse && cd hanse
@@ -70,12 +71,16 @@ ROOT=$(pwd)
 sed -i.bak "s|^# HANSE_HOST_WORKSPACE=.*|HANSE_HOST_WORKSPACE=$ROOT/workspace|; s|^# HANSE_HOST_AGENTS=.*|HANSE_HOST_AGENTS=$ROOT/agents|" .env && rm -f .env.bak
 sudo chown -R 1000:1000 workspace state agents
 docker compose pull
-docker pull "ghcr.io/arkaneman/hanse-agent-default:${HANSE_TAG:-latest}"
+set -a; . ./.env; set +a
+docker pull "${HANSE_AGENT_IMAGE:-ghcr.io/arkaneman/hanse-agent-default}:${HANSE_AGENT_TAG:-${HANSE_TAG:-latest}}"
 docker compose up -d
 ```
 
 Open <http://127.0.0.1:8787> and sign in with the token. The coordinator binds loopback by default;
 set `HANSE_BIND=0.0.0.0` to expose it on the LAN.
+
+`GET /healthz` is the liveness check. For deployment automation, `GET /readyz` reports the version,
+image revision, schema version, deployment-lock state, and in-flight lifecycle count.
 
 The full guide covers model credentials, LAN/TLS exposure, backups (including `agents`), upgrades,
 source builds, image publishing, and troubleshooting: [`docs/deployment.md`](docs/deployment.md).

@@ -9,6 +9,8 @@ import { runAgentHost } from "../agent/host.js";
 import { runAgentSupervisor } from "../agent/supervisor.js";
 import { ConfigError } from "../config/load.js";
 import { DeletionService } from "../coordinator/deletion.js";
+import { DeploymentLock, deploymentLockPath } from "../coordinator/deployment-lock.js";
+import { LifecycleActivity } from "../coordinator/lifecycle-activity.js";
 import { CoordinatorService } from "../coordinator/service.js";
 import {
   GIT_SANDBOX_APP_DIR_ENV,
@@ -49,7 +51,13 @@ import { loadOrCreateKey } from "../secrets/index.js";
 import { SettingsService } from "../settings/index.js";
 import { SkillService } from "../skills/index.js";
 import { SshService } from "../ssh/service.js";
-import { openDatabase, runMigrations, type SqliteDatabase } from "../store/index.js";
+import {
+  openDatabase,
+  runMigrations,
+  SchemaTooNewError,
+  type SqliteDatabase,
+  UnknownMigrationError,
+} from "../store/index.js";
 import { parseWebMcpConfig } from "../web/config.js";
 import { runWebMcpServer } from "../web/mcp.js";
 import type { CliIo } from "./cli.js";
@@ -241,6 +249,7 @@ export async function imagesCommand(options: ImagesOptions, ctx: CommandContext)
       hostWorkspace,
       defaultImage: defaultImageReference(),
       runner: new RunnerImageClient({ baseUrl: runnerUrl, token }),
+      deploymentLock: new DeploymentLock(deploymentLockPath(ctx.stateHome)),
     });
     const result = await service.build(app.id, app.appKey);
     ctx.io.stdout(`Building image for ${app.appKey} (build ${result.buildId})`);
@@ -578,8 +587,27 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
         : process.env.HANSE_AGENT_SUPERVISOR_URL?.trim() || "http://127.0.0.1:8789",
     token: runtimeToken,
   });
-  const db = openDatabase(coordinatorDbPath(ctx.stateHome));
-  runMigrations(db);
+  let deploymentLock: DeploymentLock;
+  try {
+    deploymentLock = new DeploymentLock(deploymentLockPath(ctx.stateHome));
+  } catch (error) {
+    ctx.io.stderr(`serve: ${error instanceof Error ? error.message : String(error)}`);
+    return 1;
+  }
+  const lifecycleActivity = new LifecycleActivity();
+  let db: SqliteDatabase | undefined;
+  try {
+    db = openDatabase(coordinatorDbPath(ctx.stateHome));
+    runMigrations(db);
+  } catch (error) {
+    if (error instanceof SchemaTooNewError || error instanceof UnknownMigrationError) {
+      ctx.io.stderr(`serve: ${error.message}`);
+      db?.close();
+      return 1;
+    }
+    db?.close();
+    throw error;
+  }
   const settings = new SettingsService({
     db,
     secretKey,
@@ -614,6 +642,8 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
     workspaceRoot: workspace,
     ...(hostWorkspace === undefined ? {} : { hostWorkspace }),
     ...(hostAgents === undefined ? {} : { hostAgents }),
+    deploymentLock,
+    lifecycleActivity,
   });
   const getProjects = (): ProjectContext[] => {
     const rows = db.prepare("SELECT id, name, root_path, deleting FROM projects").all() as {
@@ -646,6 +676,8 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
           hostWorkspace,
           defaultImage: defaultImageReference(),
           runner: new RunnerImageClient({ baseUrl: runnerUrl, token: runtimeToken }),
+          deploymentLock,
+          lifecycleActivity,
         });
   const deletion =
     images === undefined
@@ -657,6 +689,8 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
           coordinatorStateDir: path.resolve(coordinatorStateDir(ctx.stateHome)),
           manager,
           images,
+          deploymentLock,
+          lifecycleActivity,
         });
   manager.startStatusReconciler();
   const server = createHttpServer({
@@ -675,6 +709,8 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
       : { runner: { url: runnerUrl, token: runtimeToken } }),
     ...(images === undefined ? {} : { images }),
     ...(deletion === undefined ? {} : { deletion }),
+    deploymentLock,
+    lifecycleActivity,
   });
 
   let ide: ChildProcess | null = null;

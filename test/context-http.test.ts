@@ -4,6 +4,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { DeploymentInProgressError } from "../src/coordinator/deployment-lock.js";
 import { CoordinatorService } from "../src/coordinator/service.js";
 import { GitService } from "../src/git/service.js";
 import { handleContext, isContextRoute } from "../src/http/context.js";
@@ -20,6 +21,7 @@ import {
   SessionNotFoundError,
 } from "../src/opencode/context.js";
 import {
+  AgentTokenReconcileError,
   DeletionPendingError,
   type InstanceManager,
   type ManagedApp,
@@ -397,6 +399,49 @@ describe("POST compact", () => {
       error: "application is pending deletion",
       code: "deletion_pending",
     });
+    expect(stub.calls.compacts).toEqual([]);
+  });
+
+  it("maps a deployment lock to the shared 409 body", async () => {
+    const f = fixture();
+    const stub = managerStub({
+      ensure: async () => {
+        throw new DeploymentInProgressError("ensure", { phase: "switching" });
+      },
+    });
+    f.deps.manager = stub.manager;
+
+    const response = await handleContext(
+      f.deps,
+      request({ method: "POST", path: COMPACT, headers: auth(f.token) }),
+    );
+
+    expect(response.status).toBe(409);
+    expect(response.headers?.["retry-after"]).toBe("30");
+    expect(JSON.parse(response.body)).toEqual({
+      error: "deployment_in_progress",
+      message: "deployment in progress: switching",
+      retryAfter: 30,
+    });
+    expect(stub.calls.compacts).toEqual([]);
+  });
+
+  it("maps an agent-token reconciliation failure to the shared 500 body", async () => {
+    const f = fixture();
+    const stub = managerStub({
+      ensure: async () => {
+        throw new AgentTokenReconcileError("p1:storefront");
+      },
+    });
+    f.deps.manager = stub.manager;
+
+    const response = await handleContext(
+      f.deps,
+      request({ method: "POST", path: COMPACT, headers: auth(f.token) }),
+    );
+
+    expect(response.status).toBe(500);
+    expect(JSON.parse(response.body)).toEqual({ error: "agent_token_reconcile_failed" });
     expect(stub.calls.compacts).toEqual([]);
   });
 

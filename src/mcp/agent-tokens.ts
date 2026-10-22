@@ -40,13 +40,21 @@ function activeTokenRow(db: SqliteDatabase, appId: string): AgentTokenRow | unde
     .get(appId) as AgentTokenRow | undefined;
 }
 
-/** Mint a new token for an app, revoking the previous active token first. */
+/**
+ * Mint a new token for an app, revoking the previous active token first.
+ *
+ * The revoke and the insert share one `better-sqlite3` transaction so a failed insert cannot leave
+ * the app without its previous token.
+ */
 export function mintAgentToken(db: SqliteDatabase, appId: string): string {
-  revokeAgentToken(db, appId);
   const token = randomBytes(32).toString("base64url");
-  db.prepare(
-    "INSERT INTO agent_tokens (id, app_id, token_hash, created_at, revoked_at) VALUES (?, ?, ?, ?, NULL)",
-  ).run(randomUUID(), appId, hashAgentToken(token), new Date().toISOString());
+  const now = new Date().toISOString();
+  db.transaction(() => {
+    revokeAgentToken(db, appId);
+    db.prepare(
+      "INSERT INTO agent_tokens (id, app_id, token_hash, created_at, revoked_at) VALUES (?, ?, ?, ?, NULL)",
+    ).run(randomUUID(), appId, hashAgentToken(token), now);
+  })();
   return token;
 }
 
@@ -72,6 +80,10 @@ export function agentTokenMatches(db: SqliteDatabase, appId: string, tokenFile: 
 /**
  * Reuse the token file/hash when they agree; otherwise revoke the old token, mint a new one, and
  * atomically rewrite the file. A token file is never trusted by existence alone.
+ *
+ * A failed file write revokes the freshly minted row and leaves no active token row. The previous
+ * row is not restored because the previous file bytes are no longer guaranteed; the next
+ * reconciliation repairs the pair. An orphan file is therefore tolerated.
  */
 export function ensureAgentToken(db: SqliteDatabase, appId: string, tokenFile: string): string {
   const token = readTokenFile(tokenFile);
@@ -82,7 +94,12 @@ export function ensureAgentToken(db: SqliteDatabase, appId: string, tokenFile: s
     }
   }
   const minted = mintAgentToken(db, appId);
-  writeAgentTokenFile(tokenFile, minted);
+  try {
+    writeAgentTokenFile(tokenFile, minted);
+  } catch (error) {
+    revokeAgentToken(db, appId);
+    throw error;
+  }
   return minted;
 }
 

@@ -1,6 +1,12 @@
 import { ImageServiceError } from "../images/service.js";
+import {
+  ImageRollbackIncompleteError,
+  type ImageRollbackOutcome,
+  ImageRollbackRestoreError,
+} from "../opencode/manager.js";
 import { findApp, toManagedApp } from "./apps.js";
 import { principalFrom } from "./auth.js";
+import { lifecycleErrorResponse } from "./errors.js";
 import type { HttpDeps, HttpRequest, HttpResponse } from "./handler.js";
 
 const BUILD_PATH = /^\/api\/apps\/([^/]+)\/build$/;
@@ -218,6 +224,10 @@ export async function handleImages(deps: HttpDeps, request: HttpRequest): Promis
       }
       return json(202, result);
     } catch (error) {
+      const mapped = lifecycleErrorResponse(error);
+      if (mapped !== undefined) {
+        return mapped;
+      }
       if (error instanceof ImageServiceError) {
         if (wantsHtml(request) || isFormContentType(request.headers["content-type"])) {
           return redirect(
@@ -238,36 +248,47 @@ export async function handleImages(deps: HttpDeps, request: HttpRequest): Promis
     if (invalid !== undefined) {
       return invalid;
     }
+    const images = deps.images;
     try {
-      const result = await deps.images.rollback(found.app.id, found.app.appKey);
-      // The runner deletes the app network during a stop/start. Do not hold the HTTP response open
-      // across that network churn; schedule the restart after the rollback response is flushed.
-      let restartScheduled = false;
-      if (deps.manager !== undefined) {
-        const refreshed = findApp(deps, found.project.id, found.app.appKey) ?? found;
-        const target = toManagedApp(refreshed);
-        const manager = deps.manager;
-        restartScheduled = true;
-        setTimeout(() => {
-          void manager.restartIfRunning(target).catch(() => undefined);
-        }, 0);
+      let outcome: ImageRollbackOutcome;
+      if (deps.manager === undefined) {
+        const end = deps.lifecycleActivity?.begin("image_rollback");
+        try {
+          deps.deploymentLock?.assertUnlocked("image_rollback");
+          outcome = {
+            result: await images.rollback(found.app.id, found.app.appKey),
+            restarted: false,
+          };
+        } finally {
+          end?.();
+        }
+      } else {
+        outcome = await deps.manager.rollbackImage(toManagedApp(found), () =>
+          images.rollback(found.app.id, found.app.appKey),
+        );
       }
       if (wantsHtml(request) || isFormContentType(request.headers["content-type"])) {
         return redirect(
           appHrefWithNotice(
             found.project.id,
             found.app.appKey,
-            restartScheduled ? "Image rolled back; restarting the agent." : "Image rolled back.",
+            outcome.restarted ? "Image rolled back; the agent restarted." : "Image rolled back.",
             "success",
           ),
         );
       }
-      return json(200, {
-        ...result,
-        restarted: false,
-        restartScheduled,
-      });
+      return json(200, { ...outcome.result, restarted: outcome.restarted });
     } catch (error) {
+      const mapped = lifecycleErrorResponse(error);
+      if (mapped !== undefined) {
+        return mapped;
+      }
+      if (error instanceof ImageRollbackRestoreError) {
+        return json(500, { error: "image_rollback_restore_failed" });
+      }
+      if (error instanceof ImageRollbackIncompleteError) {
+        return json(502, { error: "image_rollback_incomplete" });
+      }
       if (error instanceof ImageServiceError) {
         if (wantsHtml(request) || isFormContentType(request.headers["content-type"])) {
           return redirect(

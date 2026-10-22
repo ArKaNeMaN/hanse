@@ -1,6 +1,7 @@
 import { type DeleteOptions, DeletionError } from "../coordinator/deletion.js";
 import { verifyAgentToken } from "../mcp/agent-tokens.js";
 import { principalFrom } from "./auth.js";
+import { lifecycleErrorResponse } from "./errors.js";
 import {
   agentTokenFor,
   type HttpDeps,
@@ -256,6 +257,10 @@ export async function handleDeletion(
     }
     return json(200, result);
   } catch (error) {
+    const mapped = lifecycleErrorResponse(error);
+    if (mapped !== undefined) {
+      return mapped;
+    }
     if (error instanceof DeletionError) {
       return deletionFailure(request, error, location);
     }

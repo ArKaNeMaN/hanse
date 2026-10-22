@@ -21,11 +21,12 @@ coordinator. The product surface is one web UI (dashboard + chat + handoffs) plu
 
 ## Runtime topology (B2: runner + per-app images)
 
-Four multi-arch images are built from `Dockerfile`: `ghcr.io/arkaneman/hanse` (coordinator),
-`hanse-agent-ide` (IDE), `hanse-runner` (runner), and `hanse-agent-default` (per-app agent).
-Publish currently targets `linux/amd64`; arm64 is on-demand/backlog. Compose definitions live in
-`compose.yaml`; `compose.build.yaml` adds a source build, and `compose.host-auth.yaml` mounts a host
-`opencode` auth file.
+Five images are built from `Dockerfile`: `ghcr.io/arkaneman/hanse` (coordinator),
+`ghcr.io/arkaneman/hanse-agent-base` (shared agent base), `ghcr.io/arkaneman/hanse-agent-default`
+(per-app agent), `ghcr.io/arkaneman/hanse-agent-ide` (IDE), and `ghcr.io/arkaneman/hanse-runner`
+(runner). Publish currently targets `linux/amd64`; arm64 is on-demand/backlog. Compose definitions
+live in `compose.yaml`; `compose.build.yaml` adds a source build, and `compose.host-auth.yaml` mounts
+a host `opencode` auth file.
 
 - **`hanse`** (coordinator): runs `node dist/index.js serve --workspace /data/workspace`. Mounts
   `./workspace:/data/workspace`, `./state:/data/state`, and `./agents:/data/agents`; the host opencode
@@ -45,10 +46,58 @@ Publish currently targets `linux/amd64`; arm64 is on-demand/backlog. Compose def
 - **Networks:** `front` contains the coordinator and IDE; `control` contains the coordinator and
   runner; each app container has its own network. App containers cannot reach the IDE or sibling apps.
 - **Exposed port:** `${HANSE_BIND:-127.0.0.1}:${HANSE_PORT:-8787}` (loopback by default; set
-  `HANSE_BIND=0.0.0.0` or a LAN IP to expose it). `/healthz` is an unauthenticated liveness endpoint.
-  `/` and `/api/*` are our UI; `/ide/*` is reverse-proxied to `ide:8080` (HTTP and WebSocket), with
-  `/ide` stripped and `?folder` confined to the workspace root. The coordinator is the single front
-  door.
+  `HANSE_BIND=0.0.0.0` or a LAN IP to expose it). `/healthz` is an unauthenticated constant liveness
+  endpoint; the separate unauthenticated `/readyz` reports version, revision, schema version,
+  deployment-lock state, and in-flight lifecycle count. `/` and `/api/*` are our UI; `/ide/*` is
+  reverse-proxied to `ide:8080` (HTTP and WebSocket), with `/ide` stripped and `?folder` confined to
+  the workspace root. The coordinator is the single front door.
+
+## Deployment safety and readiness
+
+- **Deployment lock.** The coordinator reads an advisory JSON lock at `HANSE_DEPLOY_LOCK_FILE`
+  (default `<state>/hanse/deploy.lock`) and never writes it; the external orchestrator owns it. While
+  active, operations that could delete, stop, recreate, build over, or roll back a managed app throw
+  `DeploymentInProgressError` and map to `409 deployment_in_progress` with `Retry-After: 30`. A
+  running app with a working password, reconciled MCP token, and endpoint still reconnects and serves
+  chat. The guard runs once at operation entry; a started destructive operation completes rather than
+  rechecking mid-operation. `ENOENT` is inactive, other read/stat errors fail closed, and a malformed
+  lock is active until its file mtime is older than 300 seconds.
+- **Quiescence handshake.** The orchestrator writes the lock, then polls `GET /readyz` until
+  `deploying: true` and `inFlightLifecycle: 0` on two consecutive polls at least two seconds apart,
+  then switches images, heartbeats every 60 seconds, and removes the lock. A lock older than 300
+  seconds at the heartbeat or past `expiresAt` is stale; `expiresAt` slides from the last heartbeat
+  and is clamped to `updatedAt + 2 hours`. The lock is not part of the database backup: a whole
+  `state/` restore must restore only the DB/non-lock state or rewrite the lock before continuing.
+  `hanse images` honors the lock but runs outside the process counter and must not run during a
+  deploy.
+- **Readiness.** `GET /readyz` is synchronous, unauthenticated, non-mutating, and returns
+  `{status,version,revision,schemaVersion,deploying,inFlightLifecycle}` with
+  `Cache-Control: no-store`; `revision` comes from image-provided `HANSE_REVISION` (`unknown` when
+  absent), and a schema-query failure returns `503 {"status":"error","error":"database_unavailable"}`.
+  It never calls the manager or runtime. The existing synchronous database handle inherits
+  `busy_timeout=5000`, so a concurrent restore can delay it up to five seconds.
+- **Schema guard.** Starting against a database whose applied migration is newer than the binary, or
+  whose applied version is unknown, exits `1` before listening and before any partial migration.
+  An applied checksum that differs from the code logs `schema_checksum_mismatch` with the version and
+  continues; the operator should investigate a possible edited or corrupted migration.
+- **Async restart.** `POST /api/apps/:app/restart?async=1` claims synchronously and returns
+  `202 {accepted:true,appId}` without waiting; a duplicate claim returns `409 restart_in_progress`.
+  Sync, async, and image-rollback restarts share one per-app claim. `GET /api/apps/:app/runtime`
+  exposes `restarting`. The claim is in memory: if the coordinator exits after `202`, the app can
+  remain stopped with no surviving marker, and the caller must retry or use the sync route.
+- **MCP-token reconciliation.** A running app whose token row is missing or rotated reconciles the
+  token in place and reconnects without `runtime.delete`/`runtime.ensure`; the container identity and
+  start time are unchanged. Mint and file write are compensated on failure, an old in-flight token
+  gets `401`, and the next request re-reads the new file. A running app's reconciliation failure
+  returns `500 agent_token_reconcile_failed` (or `409 deployment_in_progress` under a lock) instead
+  of recreating the container. The DB/file invariant is eventual, not crash-safe: a crash between the
+  DB commit and the file rename leaves a mismatch that the next startup/`ensure` repairs.
+- **Release identity.** Publish is gated by a `verify` job and a non-pushing `docker-verify` matrix
+  for all five targets; `publish` needs both. Images carry both `sha-<short>` and `sha-<full>` tags,
+  the full commit in the OCI revision label, and the full commit in `HANSE_REVISION`. `verify-images`
+  checks all five full-SHA manifests after the matrix, records digests, and uploads the
+  `image-digests` artifact. Tags are mutable; the orchestrator pins digests. IDE, runner, and agent
+  tags are independently overridable with backward-compatible fallbacks.
 
 ## Per-app images (B2)
 
@@ -606,6 +655,10 @@ Host `./agents` is mounted at `/data/agents` read-write in `hanse` and read-only
 | `HANSE_HOST_RUNNER_TMP` | runner | absolute writable host path for ephemeral Test-connection credential dirs, mounted at the same path; must not overlap workspace/agents (default `/var/lib/hanse/tmp`) |
 | `HANSE_AGENT_API_BASE` | serve | coordinator URL passed to agents as the MCP API base (Compose: `http://hanse:8787`) |
 | `HANSE_AGENT_IMAGE` | serve, runner | default per-app image; runner requires it to be in its allowlist |
+| `HANSE_TAG` / `HANSE_AGENT_TAG` | Compose | coordinator and per-app agent image tags; `HANSE_TAG` is the fallback for all, `HANSE_AGENT_TAG` for IDE/runner |
+| `HANSE_IDE_TAG` / `HANSE_RUNNER_TAG` | Compose | independent IDE and runner image tags; fall back to `HANSE_AGENT_TAG`, then `HANSE_TAG` |
+| `HANSE_DEPLOY_LOCK_FILE` | serve | absolute path of the external deployment lock (default `<state>/hanse/deploy.lock`) |
+| `HANSE_REVISION` | serve, image | image-provided full commit revision reported by `/readyz`; not an operator setting |
 | `HANSE_AUTH_FILE` | serve | host opencode `auth.json`; reconciled with provider-key settings into each app state |
 | `HANSE_OMO_PLUGIN` | serve | comma-separated baseline plugin specs injected into every instance |
 | `HANSE_CODEGRAPH_BIN` | serve | path to the codegraph CLI used for the baseline MCP server |
@@ -713,6 +766,21 @@ Settings stage verification:
   keeps opencode's built-in auto-compaction, which may compact before the configured threshold for
   models with a smaller usable window. The background monitor adds one opencode SSE connection per
   running application.
+- The deployment lock is advisory, not a security boundary and not distributed. A runner call that
+  already outlived a coordinator timeout is outside what the counter can see, and the `hanse images`
+  CLI is outside the quiescence counter; the orchestrator must also wait for runner health and must
+  not run CLI image commands during a deploy. A whole-`state/` restore can remove or replace
+  `deploy.lock`; restore only DB/non-lock state or rewrite the lock before continuing.
+- An async restart's claim is in memory. If the coordinator exits after returning `202`, the app may
+  remain stopped and the caller must retry; use the sync route when a completion signal is required.
+- MCP-token reconciliation is eventual, not crash-safe across SQLite and the filesystem. A crash
+  between the DB commit and the file rename is repaired by the next startup/`ensure`; until then an
+  old token gets `401`, and no container is recreated.
+- A checksum mismatch is a startup warning, not a gate: it is logged with the version and startup
+  continues, so a deliberately edited migration is visible in logs but not blocked. A newer or
+  unknown applied migration still exits before listening.
+- `/readyz` uses the synchronous database handle with `busy_timeout=5000`, so a concurrent restore
+  can delay it up to five seconds; the 50 ms p99 is a target, not a gate.
 - Single user; no RBAC or multi-tenant isolation.
 - Trust model: trusted repositories; agents execute code.
 - **B2 runs each app in its own hardened container/network and optional per-app image.** App

@@ -6,6 +6,8 @@ import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { ConfigError } from "../config/load.js";
 import { decideApproval } from "../coordinator/approval.js";
 import type { DeletionService } from "../coordinator/deletion.js";
+import type { DeploymentLock } from "../coordinator/deployment-lock.js";
+import type { LifecycleActivity } from "../coordinator/lifecycle-activity.js";
 import type { CoordinatorService } from "../coordinator/service.js";
 import type { GitService } from "../git/service.js";
 import { authenticate } from "../identity/auth.js";
@@ -18,6 +20,7 @@ import type { SettingsService } from "../settings/index.js";
 import type { SkillService } from "../skills/index.js";
 import type { SshService } from "../ssh/service.js";
 import type { SqliteDatabase } from "../store/index.js";
+import { VERSION } from "../version.js";
 import { renderApplication } from "./application.js";
 import { humanFrom, principalFrom } from "./auth.js";
 import {
@@ -58,6 +61,10 @@ export interface HttpDeps {
   images?: ImageService;
   /** Present only when a runner and host workspace are configured; deletion routes 503 otherwise. */
   deletion?: DeletionService;
+  /** Advisory external deployment lock reported by `/readyz`. */
+  deploymentLock?: DeploymentLock;
+  /** Process-local destructive-operation counter reported by `/readyz`. */
+  lifecycleActivity?: LifecycleActivity;
 }
 
 export interface HttpRequest {
@@ -451,6 +458,7 @@ function routeRuntimeStatus(deps: HttpDeps, request: HttpRequest): HttpResponse 
     imageRef: row?.imageRef ?? null,
     startedAt: row?.startedAt ?? null,
     updatedAt: row?.updatedAt ?? null,
+    restarting: deps.manager?.isRestarting?.(app.id) ?? false,
   });
 }
 
@@ -473,6 +481,32 @@ function route(deps: HttpDeps, request: HttpRequest): HttpResponse {
 
   if (request.method === "GET" && request.path === "/healthz") {
     return json(200, { status: "ok" });
+  }
+
+  if (request.method === "GET" && request.path === "/readyz") {
+    const headers = { "cache-control": "no-store" };
+    let schemaVersion: number | null;
+    try {
+      const row = deps.db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as
+        | { version: number | null }
+        | undefined;
+      schemaVersion = row?.version ?? null;
+    } catch {
+      return json(503, { status: "error", error: "database_unavailable" }, headers);
+    }
+    const revision = process.env.HANSE_REVISION?.trim();
+    return json(
+      200,
+      {
+        status: "ok",
+        version: VERSION,
+        revision: revision === undefined || revision.length === 0 ? "unknown" : revision,
+        schemaVersion,
+        deploying: deps.deploymentLock?.isActive() ?? false,
+        inFlightLifecycle: deps.lifecycleActivity?.count ?? 0,
+      },
+      headers,
+    );
   }
 
   if (request.method === "GET" && request.path === "/login") {
