@@ -1,6 +1,6 @@
 # Plan 0016: Deployment safety and release identity
 
-- Status: implemented and verified; commit/push authorized; host deployment deferred by owner
+- Status: implemented, verified, and pushed; host deployment deferred by owner
 - Design: [`docs/design/deployment-safety.md`](../design/deployment-safety.md)
 - Design reviewer: `oracle` - PASS
 - Plan reviewer: `momus`

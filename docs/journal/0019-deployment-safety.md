@@ -2,7 +2,7 @@
 
 - Date: 2026-10-22
 - Stage: `0016-deployment-safety`
-- Status: implemented and verified; commit/push authorized; host deployment deferred by owner
+- Status: implemented, verified, and pushed; host deployment deferred by owner
 - Design: [`docs/design/deployment-safety.md`](../design/deployment-safety.md)
 - Plan: [`docs/plans/0016-deployment-safety.md`](../plans/0016-deployment-safety.md)
 - Decision: [`docs/decisions/0012-deployment-lock.md`](../decisions/0012-deployment-lock.md)
@@ -53,6 +53,19 @@ without destroying a running agent, and expose an unambiguous release identity.
 - **Documentation.** Deployment and current-state docs now describe the tag matrix, lock/quiescence
   contract, readiness, digest pinning, CLI-during-deploy prohibition, and accepted limits. The
   tracked repository contains no host-specific data.
+
+## Release
+
+- Commit: `1458306` (`feat(deploy): add deployment safety and release identity`).
+- CI run: `39784046189` - success.
+- Publish run: `39784046194` - success, including `verify`, `docker-verify` (five targets),
+  the five-image publish matrix, and `verify-images`.
+- Published full-SHA tags (all five images): `sha-1458306f60722c81b82207d34cbb382884390270`.
+- Digests are recorded in the workflow artifact `image-digests` (`digests.txt`), for example
+  coordinator `sha256:3dd7e69576208d6f7c1bdde5473d4f500521ea8ba74ceab37ad8cbd413733fbc`.
+- The runner image was pulled and inspected locally: OCI revision and `HANSE_REVISION` both equal
+  the full commit SHA.
+- No host deployment was performed; the external deployment-worker stage remains separate.
 
 ## Verification
 
