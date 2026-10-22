@@ -886,6 +886,38 @@ These map exactly to Section 3. No other font sizes are allowed in product CSS.
   `Error`, not `Failed`; image "Built" is not runtime readiness; pending restart is shown once per
   route.
 
+### 5.21 SSH operator console
+
+The SSH page is a scoped operator console rather than a table-plus-form page. It uses the existing
+shell, page header, watch strip, sticky nav, card, status, badge, table, empty-state, and dialog
+primitives; no new color, type, spacing, radius, or shadow token is introduced.
+
+- **Sticky nav:** `.ssh-nav` extends `.settings-nav`; `.ssh-nav__scope`,
+  `.ssh-nav__scope-label`, and `.ssh-nav__select` hold the single application-scope picker. Anchor
+  links and the scope picker are canonicalized to `/ssh?target=projectId:appKey`, while legacy
+  `project`/`app` query links keep working.
+- **Health strip:** `.ssh-watch` spaces the four-cell `.watch-strip--4` beneath the nav.
+- **Host grid:** `.ssh-grid` is a responsive auto-fill grid; `.ssh-host` is a card with a 2px
+  inline-start state rail (`data-pin="pinned|unpinned|mismatch"`) that is always paired with a
+  text-and-glyph status pill, so state is never color-only. This state rail is the documented
+  exception to the general no-side-stripe rule; it identifies host-key pin state, not row selection.
+  `.ssh-host__body`, `__head`, `__ident`, `__name`, `__addr`, `__facts`, `__fact`, `__access`,
+  `__grant`, `__key`, and `__actions` carry the card anatomy.
+- **Inline results:** `.ssh-test`, `__head`, `__note`, and `__facts` render a test or prepare-re-pin
+  result inside the affected host card. `.ssh-warning` carries the out-of-band verification warning.
+- **Dialogs:** `.ssh-dialog` hosts the add and per-host edit forms; `.ssh-form__group` (with
+  `--danger`), `.ssh-form__grid`, `.ssh-form__full`, `.ssh-public-key`, `.ssh-key-meta`, and
+  `.ssh-fingerprint` compose connection, write-only key, access policy, host key, and danger-zone
+  groups. `.ssh-fingerprint` is mono and wraps safely.
+- **Access:** `.ssh-panel` and `.ssh-panel--flush` hold the allowlist and tables; `.ssh-allowlist`
+  is the host checkbox grid; `.ssh-subtitle` names the grants sub-section.
+- **Approvals and audit:** `.ssh-approvals` and `.ssh-approval` (+ `__head`, `__ident`, `__title`,
+  `__meta`, `__foot`) are spacious request rows with a mono command block. `.ssh-audit__command`
+  wraps long previews; `.ssh-note` carries the recency note.
+- **Responsive behavior:** host cards and form grids collapse to one column; the scope picker wraps
+  below 768px; approval actions stack below 639px; tables use `.table--stack`; no horizontal page
+  overflow at 360px.
+
 ---
 
 ## 6. Motion & Interaction
