@@ -16,8 +16,9 @@ CHAT_QA_URL=http://127.0.0.1:8792 CHAT_QA_TOKEN=qa-token node docs/design/chat-q
 
 `report.json` records every scenario, assertion, observation, screenshot path, and the console/page
 error list for the deterministic gate. The last deterministic run reported **14 scenarios, 299
-assertions, 32 screenshots, zero console/page errors**. `report-live.json` records the post-deployment
-`--live` run on `deployment-host`: **1 scenario, 2 assertions, 1 screenshot, zero console/page errors**.
+assertions, 32 screenshots, zero console/page errors**. The two `read` captures are intentionally not
+committed because they contained reference-deployment source data; the `read` assertions remain in
+`report.json`. Live-run reports, screenshots, and session identifiers are never committed.
 
 The phase-7 diff scenarios inject a `Worker` probe before page load to count worker creation,
 `tokenize` posts, responses, and terminations. They reuse the same deterministic route/EventSource
@@ -41,8 +42,6 @@ and any other console/page error still fails the gate.
 | `main-1440-diff.png` | Dark 1440 diff feed: standard `edit` (`filediff.patch`), hashline `edit` (`metadata.diff`), four-file `apply_patch` (add/update/delete/move), a 40-line TypeScript `write`, a 64 KiB write, unknown/binary/plain/truncated fallbacks, file-list mode, and the 50-file cap. |
 | `main-1440-diff-light.png` | The same feed after `data-theme="light"`: a keyword token's computed color changes while the add-line background still derives from `--success`. |
 | `main-390-diff.png` | Dark 390 diff layout: no page horizontal overflow, narrower diff columns, and the diff/code scrollers are the only horizontal scrollers in the feed. |
-| `read-1440.png` | Completed `read` XML renders as a path/line-number/code block with a status footer and syntax tokens; the raw `<path>`/`<content>` XML is absent. |
-| `read-390.png` | The same read block at 390: no page horizontal overflow, the footer wraps, and XML line numbers stay visible. |
 | `diff-error-1440-dark.png` | A failed `edit` auto-opens the existing error `<pre>` with no diff body, no tokens, and zero worker requests. |
 | `diff-lazy-1440-dark.png` | One open and one closed diff: opening tokenizes only the open file, closing clears its tokens, reopening tokenizes again, and focus/scroll survive a streaming update. |
 | `diff-streaming-1440-dark.png` | A live streaming diff updates running -> completed and then hydrates: the open diff keeps its tokens, the closed diff stays plain, and a MutationObserver/rAF probe sees no colored -> plain -> colored flash. |
@@ -70,7 +69,6 @@ and any other console/page error still fails the gate.
 | `context-compact-409-1440-dark.png` | A fixed `409 compact_in_progress`: inline alert, error toast, no compacting chip, and the button re-enabled after one POST. |
 | `context-switch-race-1440-dark.png` | A delayed session-A context response arriving after switching to B: every sampled chip label stays `Context 30%` (B), never A's 62%. |
 | `context-retry-1440-dark.png` | A `stream.ready` context GET returning `503 agent_not_running` hides the chip, then the 750ms retry renders `Context 62%` after a second GET. |
-| `live-1792412907432.png` | Real managed `demo-app` agent on `deployment-host`: prompt accepted, assistant text streamed, markdown table rendered, status returned to `Ready`, zero console/page errors. |
 
 ## Accepted gaps
 
@@ -84,23 +82,8 @@ and any other console/page error still fails the gate.
   questions, OMO, tools, tables, width). The full reconnect/hydration/unknown-acceptance matrix and
   the remaining R3/R5/R7/R8/R13/R14 rows have unit/HTTP coverage; they are not all separate browser
   captures here.
-- The live smoke passed on `deployment-host` against the real `demo-app` app/session
-  (`<SESSION_ID>`): 1 scenario, 2 assertions (assistant text + markdown table), 1
-  screenshot, zero console/page errors. The command is:
-
-  ```bash
-  CHAT_QA_URL=http://<LAN_HOST>:8787 \
-  CHAT_QA_TOKEN=<operator token> \
-  CHAT_QA_APP=demo-app \
-  CHAT_QA_PROJECT=<project id> \
-  CHAT_QA_LIVE_SESSION=<existing session id> \
-  node docs/design/chat-qa.mjs --live
-  ```
-
-  It skips route interception, opens the real app/session, sends `CHAT_QA_LIVE_PROMPT` (default: a
-  short markdown table), waits for a new assistant message and `Ready`, and asserts streaming, a
-  rendered table, and zero console/page errors. It does not cold-start an app. The full design §14.4
-  eight-scenario matrix (bash loop, todowrite, question/auto-advance, queued sends/combined reply,
-  OMO, retry, reload mid-turn/while queued) is not scripted as one live suite; those paths are
-  covered by deterministic browser/unit/HTTP tests. A missing live prerequisite fails the gate
-  rather than skipping it.
+- A live smoke was run against a reference deployment. Its report, session identifiers, and
+  screenshot are intentionally not committed; only the deterministic harness and sanitized artifacts
+  are tracked. The `--live` mode remains available for local verification, but its artifacts must not
+  be committed. The full design §14.4 eight-scenario matrix is covered by deterministic
+  browser/unit/HTTP tests; a missing live prerequisite fails the gate rather than skipping it.

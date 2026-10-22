@@ -46,7 +46,7 @@ This mechanism has four problems:
    container) has no credentials, so it cannot fetch or push even though the web workbench can.
 4. It carries a **legacy, unused secret store**. `src/secrets/store.ts` and
    `src/secrets/git-credential.ts` back the migration-v2 `secrets` table, but nothing reads them; the
-   store is not wired into `serve`. On `deployment-host` the table has **no rows** (verified before this stage).
+   store is not wired into `serve`. The legacy table was empty (verified before this stage).
 
 The owner wants git credentials to be first-class application configuration: one SSH and one HTTPS
 credential per scope, configured in the existing settings pages, encrypted at rest, materialized into
@@ -114,7 +114,7 @@ contradict them. There are **no open questions** for this stage.
    leave a seam for multiple host-keyed credentials later.
 8. **Remove the entire `HANSE_GIT_*` mechanism, `HANSE_HOST_GIT_DIR`, and `HANSE_GIT_SSL_CAINFO`; no
    fallback.** Remove the unused legacy `secrets` table/helper (`src/secrets/git-credential.ts`,
-   `src/secrets/store.ts`); `deployment-host` has no rows. A private CA, if ever needed, belongs in the app image
+   `src/secrets/store.ts`); the legacy table was empty. A private CA, if ever needed, belongs in the app image
    trust store or a future `git.tls` setting.
 9. **Add a Test connection button** that tests draft values through a new runner operation
    (`ls-remote`) in a network-enabled one-shot sandbox, using an ephemeral credential dir, redacted
@@ -1119,7 +1119,7 @@ DROP TABLE IF EXISTS secrets;
 ```
 
 - Additive for `setting_secrets`; the only destructive statement is `DROP TABLE IF EXISTS secrets`.
-- **Verified on `deployment-host`: `secrets` has no rows.** No data migration/backfill is needed. The pre-drop
+- **The legacy table was empty.** No data migration/backfill is needed. The pre-drop
   check is `SELECT COUNT(*) FROM secrets`; the expected result is `0`.
 - `runMigrations` wraps the migration in a transaction (`src/store/database.ts:38-64`), so the
   create+drop is atomic. `DROP TABLE IF EXISTS` keeps the migration idempotent on restored or
@@ -1346,7 +1346,7 @@ DROP TABLE IF EXISTS secrets;
 
 - `a49d5cd` adds `openssh-client` to `agent-base` (`Dockerfile:167-170`). The base, default, IDE, and
   any app images built on them now provide `ssh`/`ssh-keygen`. Runtime and IDE images already provide
-  them on deployment-host, but the runtime stage must add `openssh-client` explicitly (or a build-time
+  them, but the runtime stage must add `openssh-client` explicitly (or a build-time
   `ssh-keygen` assertion) so save/Test validation does not depend on an unverified code-server base
   package.
 - Publish the agent/default/IDE/runner images for this stage; the default image tag used by Compose
@@ -1355,7 +1355,7 @@ DROP TABLE IF EXISTS secrets;
   inherit the base must provide `git` and `openssh-client` or SSH fails with the clear image error.
 - Add `openssh-client` to the `runtime` stage explicitly (or a build-time `ssh-keygen` assertion). The
   coordinator validates drafts with `ssh-keygen`; relying on the code-server base package set is
-  fragile even though deployment-host currently has it. This is an additional image change for the stage.
+  fragile. This is an additional image change for the stage.
 
 ### 16.2 Deploy sequence
 

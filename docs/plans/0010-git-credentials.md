@@ -39,8 +39,8 @@ Owner decisions carried into this plan:
 7. One SSH credential and one HTTPS credential per scope; the schema leaves a seam for host-keyed
    credentials later.
 8. Remove the credential/config `HANSE_GIT_*` mechanism, `HANSE_HOST_GIT_DIR`, and
-   `HANSE_GIT_SSL_CAINFO` with no fallback; remove the legacy `secrets` table/helper. `deployment-host` had
-   no rows and no configured values, so no data migration is required.
+   `HANSE_GIT_SSL_CAINFO` with no fallback; remove the legacy `secrets` table/helper. The legacy table
+   was empty and had no configured values, so no data migration is required.
 9. Test connection runs draft values through the runner's network-enabled one-shot sandbox and is
    app-page-only.
 
@@ -192,7 +192,7 @@ Targeted: `npx vitest run test/git-auth-store.test.ts test/git-credentials.test.
 
 ### 4.5 Risks
 
-- `DROP TABLE secrets` is destructive in principle; deployment-host has no rows and the migration is additive for
+- `DROP TABLE secrets` is destructive in principle; the legacy table is empty and the migration is additive for
   all other state. Back up `state/` before deploy.
 - `ssh-keygen` in the coordinator is a new runtime dependency; the explicit runtime-stage install
   removes reliance on the code-server base.

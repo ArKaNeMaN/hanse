@@ -125,7 +125,7 @@ Options:
 Decision needed:
 
 - Is Landlock acceptable, or is bwrap/per-app container required?
-- What is the kernel/LSM situation on `deployment-host`? (Landlock ABI, user namespaces, AppArmor)
+- What is the kernel/LSM situation on the target host? (Landlock ABI, user namespaces, AppArmor)
 - May we add a seccomp profile / capabilities / helper binary to the image?
 - Is network egress allowed for agents? OMO's built-in MCPs need it.
 

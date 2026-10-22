@@ -100,14 +100,12 @@ design is the contract; this entry records what shipped and how it was verified.
     unavailable, so an omitted first snapshot cannot leave a permanent neutral row.
   These are the only product changes made in response to QA; the final harness, typecheck, lint,
   test, and build runs are green.
-- Live agent smoke on `deployment-host` - **PASS**: `CHAT_QA_URL=http://<LAN_HOST>:8787`,
-  `CHAT_QA_APP=demo-app`, existing session `<SESSION_ID>`. The real managed agent
-  answered a prompt with a markdown table; 1 scenario, 2 assertions, 1 screenshot, zero
-  console/page errors. Evidence: `docs/design/artifacts/chat/report-live.json` and
-  `live-1792412907432.png`. The full design §14.4 eight-scenario live matrix (bash loop, todowrite,
-  question/auto-advance, queued sends/combined reply, OMO, retry, reload mid-turn/while queued) was
-  not run as a scripted live suite; those paths are covered by deterministic browser/unit/HTTP
-  tests.
+- Live agent smoke on `deployment-host` - **PASS**: `CHAT_QA_APP=demo-app`, existing session
+  `<SESSION_ID>`. The real managed agent answered a prompt with a markdown table; 1 scenario, 2
+  assertions, 1 screenshot, zero console/page errors. The live report, screenshot, and session
+  identifiers are intentionally not committed; only the deterministic harness is tracked. The full
+  design §14.4 eight-scenario live matrix was not run as a scripted live suite; those paths are
+  covered by deterministic browser/unit/HTTP tests.
 
 ## Accepted debt
 

@@ -111,7 +111,7 @@ Previous stage decisions are recorded in
 7. **One SSH credential and one HTTPS credential per scope.** The schema and wrappers leave a seam for
    host-keyed credentials later.
 8. **Remove the entire credential/config `HANSE_GIT_*` mechanism, `HANSE_HOST_GIT_DIR`, and
-   `HANSE_GIT_SSL_CAINFO` with no fallback**, plus the unused legacy `secrets` table/helper. `deployment-host`
-   had no rows, so no data migration is required.
+   `HANSE_GIT_SSL_CAINFO` with no fallback**, plus the unused legacy `secrets` table/helper. The
+   legacy table was empty, so no data migration is required.
 9. **Test connection** runs draft values through the runner's network-enabled one-shot sandbox and is
    app-page-only.

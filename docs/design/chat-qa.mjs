@@ -1314,17 +1314,17 @@ function bigPatchFixture() {
 function readFixture() {
   const start = 1418;
   const source = [
-    "def bundle_bytes(data, drop_index, mins=2.0):",
-    '    """Return the bundle bytes."""',
-    "    if not data:",
-    '        return b""',
+    "def summarize_items(items, skip_index, limit=2.0):",
+    '    """Return the summarized items."""',
+    "    if not items:",
+    "        return []",
     "",
     "    result = []",
-    "    for index, item in enumerate(data):",
-    "        if index == drop_index:",
+    "    for index, item in enumerate(items):",
+    "        if index == skip_index:",
     "            continue",
     "        result.append(item)",
-    "    return bytes(result)",
+    "    return result",
   ];
   const end = start + source.length - 1;
   const path = "/workspace/example/apps/demo-app/tools/analyzer/webui.py";

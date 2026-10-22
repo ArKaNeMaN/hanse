@@ -47,6 +47,24 @@ All gates must pass before a change is considered done. The CSS is built by
 - Do not commit secrets.
 - Documentation is agent-first; human-facing docs are added only when explicitly needed.
 
+## Sensitive data and deployment runbooks
+
+Tracked files, commit messages, and checked-in artifacts must never contain deployment-host
+specifics: hostnames or aliases, LAN/public IP addresses, ports, SSH users, absolute home or install
+paths, backup/state/database paths, OS/package/container versions, disk usage, real project or
+application names, project/session IDs, tokens, keys, or screenshots of real data. Use placeholders
+such as `<deployment-host>`, `<LAN_HOST>`, `<INSTALL_DIR>`, `<BACKUP_DIR>`, `<PROJECT_ID>`, and
+`<SESSION_ID>`. Do not name or alias the production host in tracked files, commit messages, or QA
+artifacts.
+
+Deployment runbooks, host inventories, deploy logs, and live QA evidence belong only in the
+untracked, git-ignored `docs/deploy/` directory. Never force-add it or copy its contents into tracked
+docs.
+
+Run `npm run check:sensitive` before committing. It scans tracked text for private addresses, host
+aliases, home paths, and credential-like literals; review binary artifacts manually because a
+screenshot can leak the same data without matching text.
+
 ## Delivery pipeline
 
 Multi-phase work follows the `feature-delivery` pipeline: design -> design review -> owner questions

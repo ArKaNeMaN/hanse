@@ -17,7 +17,7 @@ read-only `/run/hanse/git` host directory (`HANSE_HOST_GIT_DIR`). That mechanism
 - **invisible to the product**, requiring `.env` edits and a runner recreate, with no per-app status
   or test;
 - **unavailable to the agent's native git**, so the workbench could push but the agent could not; and
-- backed by an unused legacy `secrets` table/helper that nothing read (no rows on `deployment-host`).
+- backed by an unused legacy `secrets` table/helper that nothing read (the legacy table was empty).
 
 The owner wanted git credentials to be first-class application configuration: one SSH and one HTTPS
 credential per scope, configured in the existing settings pages, encrypted at rest, and materialized
@@ -54,7 +54,7 @@ We will adopt **Variant A**: per-app, agent-readable git credentials.
    `HANSE_GIT_*` variable are removed from Compose, `.env`, docs, and code with no fallback. The four
    non-secret sandbox operation variables (`HANSE_GIT_OP`, `HANSE_GIT_APP_DIR`, `HANSE_GIT_BRANCH`,
    `HANSE_GIT_MESSAGE`) remain. The legacy `secrets` table and helper are removed (v8
-   `DROP TABLE IF EXISTS secrets`; `deployment-host` had no rows).
+   `DROP TABLE IF EXISTS secrets`; the legacy table was empty).
 7. **Preserve hardening.** No shell, fixed argument arrays, command-line config that disables
    hooks/fsmonitor/ext/credential helpers, output caps, redaction, the repository-root rule,
    `GIT_CEILING_DIRECTORIES`, and the one-shot sandbox stay in force.
