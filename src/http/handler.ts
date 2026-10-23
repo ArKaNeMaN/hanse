@@ -1,8 +1,9 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { decideApproval } from "../coordinator/approval.js";
+import { type ApprovalKind, decideApproval, getPendingApproval } from "../coordinator/approval.js";
 import type { DeletionService } from "../coordinator/deletion.js";
 import type { DeploymentLock } from "../coordinator/deployment-lock.js";
+import type { HandoffDispatcher } from "../coordinator/dispatcher.js";
 import type { LifecycleActivity } from "../coordinator/lifecycle-activity.js";
 import {
   addApplication,
@@ -66,6 +67,7 @@ export interface HttpDeps {
   images?: ImageService;
   /** Present only when a runner and host workspace are configured; deletion routes 503 otherwise. */
   deletion?: DeletionService;
+  dispatcher?: HandoffDispatcher;
   /** Advisory external deployment lock reported by `/readyz`. */
   deploymentLock?: DeploymentLock;
   /** Process-local destructive-operation counter reported by `/readyz`. */
@@ -326,11 +328,12 @@ export function agentTokenFor(request: HttpRequest) {
   return token === undefined || token.length === 0 ? undefined : token;
 }
 
-function pendingApprovalId(db: SqliteDatabase, handoffId: string): string | undefined {
-  const row = db
-    .prepare("SELECT id FROM approvals WHERE handoff_id = ? AND state = 'pending'")
-    .get(handoffId) as { id: string } | undefined;
-  return row?.id;
+function pendingApprovalId(
+  db: SqliteDatabase,
+  handoffId: string,
+  kind?: ApprovalKind,
+): string | undefined {
+  return getPendingApproval(db, handoffId, kind)?.id;
 }
 
 function projectViews(deps: HttpDeps): ReturnType<typeof buildSite>["projects"] {
@@ -390,8 +393,14 @@ function routeDecision(deps: HttpDeps, request: HttpRequest): HttpResponse {
       : "approved"
     : parsed.decision;
   const reason = fields.reason?.trim();
+  const approvalKind: ApprovalKind | undefined =
+    fields.approval_kind === "reply"
+      ? "reply"
+      : fields.approval_kind === "dispatch"
+        ? "dispatch"
+        : undefined;
 
-  const approvalId = pendingApprovalId(deps.db, parsed.handoffId);
+  const approvalId = pendingApprovalId(deps.db, parsed.handoffId, approvalKind);
   if (approvalId === undefined) {
     const message = "No pending approval for this handoff.";
     return browser ? redirectWithNotice(returnTo, message, "error") : json(409, { error: message });
@@ -402,7 +411,14 @@ function routeDecision(deps: HttpDeps, request: HttpRequest): HttpResponse {
     const message = error instanceof Error ? error.message : String(error);
     return browser ? redirectWithNotice(returnTo, message, "error") : json(409, { error: message });
   }
-  const message = decision === "approved" ? "Handoff approved." : "Handoff rejected.";
+  const message =
+    approvalKind === "reply"
+      ? decision === "approved"
+        ? "Reply approved."
+        : "Reply rejected."
+      : decision === "approved"
+        ? "Handoff approved."
+        : "Handoff rejected.";
   return browser ? redirectWithNotice(returnTo, message, "success") : redirect(returnTo);
 }
 
@@ -615,13 +631,29 @@ function route(deps: HttpDeps, request: HttpRequest): HttpResponse {
         return redirectWithNotice(returnTo, "Summary is required.", "error");
       }
       try {
-        project.service.requestSiblingChange({
+        const result = project.service.requestSiblingChange({
           fromAppKey: fields.from ?? "",
           toAppKey: fields.to ?? "",
           summary: summary.length === 0 ? "(no summary)" : summary,
           spec: fields.spec ?? "",
           requiresApproval: fields.requires_approval === "1",
+          origin: "operator",
         });
+        if (!browser) {
+          return redirect("/");
+        }
+        if (result.status === "denied") {
+          return redirectWithNotice(returnTo, "Handoff denied by project policy.", "error");
+        }
+        return redirectWithNotice(
+          returnTo,
+          result.status === "existing"
+            ? "Handoff already exists."
+            : result.status === "awaiting_approval"
+              ? "Handoff created; awaiting operator approval."
+              : "Handoff created.",
+          "success",
+        );
       } catch (error) {
         return browserError(
           request,
@@ -629,7 +661,6 @@ function route(deps: HttpDeps, request: HttpRequest): HttpResponse {
           error instanceof Error ? error.message : String(error),
         );
       }
-      return browser ? redirectWithNotice(returnTo, "Handoff created.", "success") : redirect("/");
     });
   }
 

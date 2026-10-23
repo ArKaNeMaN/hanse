@@ -1,14 +1,21 @@
 import { randomUUID } from "node:crypto";
+import { AuthError } from "../identity/auth.js";
+import type { Principal } from "../identity/principals.js";
 import type { RegisteredApp } from "../registry/index.js";
 import type { SqliteDatabase } from "../store/index.js";
-import { requestApproval } from "./approval.js";
+import { expirePendingApprovals, getPendingApproval, requestApproval } from "./approval.js";
 import {
   createHandoff,
   getHandoff,
   type Handoff,
+  type HandoffOutcome,
   type HandoffState,
   transitionHandoff,
+  updateHandoff,
 } from "./handoff.js";
+import { resolveHandoffPolicy } from "./policy.js";
+
+export type HandoffRequestStatus = "queued" | "awaiting_approval" | "denied" | "existing";
 
 export interface RequestSiblingChangeInput {
   fromAppKey: string;
@@ -18,10 +25,13 @@ export interface RequestSiblingChangeInput {
   requiresApproval?: boolean;
   idempotencyKey?: string;
   expiresAt?: string;
+  origin?: "agent" | "operator";
 }
 
 export interface RequestSiblingChangeResult {
   handoffId: string;
+  status: HandoffRequestStatus;
+  state: HandoffState;
 }
 
 const DELIVERABLE_STATES: readonly HandoffState[] = ["dispatching", "in_progress", "delivered"];
@@ -96,8 +106,19 @@ export class CoordinatorService {
   }
 
   requestSiblingChange(input: RequestSiblingChangeInput): RequestSiblingChangeResult {
-    const fromAppId = this.#appIdByKey(input.fromAppKey);
-    const toAppId = this.#appIdByKey(input.toAppKey);
+    const fromAppKey = input.fromAppKey.trim();
+    const toAppKey = input.toAppKey.trim();
+    if (fromAppKey === toAppKey) {
+      throw new Error("a handoff must target a different application");
+    }
+    const fromAppId = this.#appIdByKey(fromAppKey);
+    const toAppId = this.#appIdByKey(toAppKey);
+    const policy = resolveHandoffPolicy(this.#db, this.#projectId, fromAppKey, toAppKey);
+    // An agent's `requires_approval` flag may raise the policy bar, never lower it.
+    const dispatchMode =
+      policy.dispatchMode === "auto" && input.requiresApproval === true
+        ? "approve"
+        : policy.dispatchMode;
     const handoff = createHandoff(this.#db, {
       projectId: this.#projectId,
       fromAppId,
@@ -105,24 +126,102 @@ export class CoordinatorService {
       summary: input.summary,
       spec: input.spec,
       idempotencyKey: input.idempotencyKey ?? randomUUID(),
-      requiresApproval: input.requiresApproval,
+      requiresApproval: dispatchMode === "approve",
       expiresAt: input.expiresAt,
+      origin: input.origin ?? "agent",
+      policyDispatchMode: dispatchMode,
+      policyReplyMode: policy.replyMode,
     });
-    if (handoff.state === "awaiting_approval" && !this.#hasApproval(handoff.id)) {
-      requestApproval(this.#db, handoff.id);
+    if (dispatchMode === "deny") {
+      if (handoff.state === "queued" || handoff.state === "awaiting_approval") {
+        const denied = transitionHandoff(this.#db, handoff.id, "rejected", {
+          error: "denied by handoff policy",
+        });
+        return { handoffId: denied.id, status: "denied", state: denied.state };
+      }
+      return {
+        handoffId: handoff.id,
+        status: handoff.state === "rejected" ? "denied" : "existing",
+        state: handoff.state,
+      };
     }
-    return { handoffId: handoff.id };
+    if (handoff.state === "awaiting_approval" && !this.#hasApproval(handoff.id, "dispatch")) {
+      requestApproval(this.#db, handoff.id, "dispatch");
+    }
+    const status: HandoffRequestStatus =
+      handoff.state === "awaiting_approval"
+        ? "awaiting_approval"
+        : handoff.state === "queued"
+          ? "queued"
+          : handoff.state === "rejected"
+            ? "denied"
+            : "existing";
+    return { handoffId: handoff.id, status, state: handoff.state };
   }
 
-  handoffStatus(id: string): Handoff | undefined {
-    return getHandoff(this.#db, id);
+  /**
+   * Bind an agent-created handoff to the session that invoked `request_sibling_change`.
+   * The coordinator derives this from the app's event stream, so the agent cannot spoof it.
+   */
+  bindSourceSession(
+    handoffId: string,
+    appId: string,
+    sessionId: string,
+    sessionTitle?: string | null,
+  ): boolean {
+    const handoff = getHandoff(this.#db, handoffId);
+    if (handoff === undefined) return false;
+    if (handoff.fromAppId !== appId) return false;
+    if (handoff.origin !== "agent") return false;
+    if (handoff.sourceSessionId !== null) return false;
+    const parentRow = this.#db
+      .prepare(
+        `SELECT id FROM handoffs
+         WHERE to_app_id = ? AND target_session_id = ? AND id <> ?
+         ORDER BY created_at DESC, id DESC LIMIT 1`,
+      )
+      .get(appId, sessionId, handoffId) as { id: string } | undefined;
+    const parent = parentRow === undefined ? undefined : getHandoff(this.#db, parentRow.id);
+    const rootHandoffId = parent?.rootHandoffId ?? parent?.id ?? handoff.id;
+    updateHandoff(this.#db, handoffId, {
+      sourceSessionId: sessionId,
+      sourceSessionTitle: sessionTitle ?? null,
+      parentHandoffId: parent?.id ?? null,
+      rootHandoffId,
+      depth: parent === undefined ? 0 : parent.depth + 1,
+    });
+    return true;
   }
 
-  /** Record the result of a handoff. Idempotent: an already-delivered handoff is returned unchanged. */
-  deliverHandoff(id: string, result: string): Handoff {
+  handoffStatus(id: string, callerAppKey?: string): Handoff | undefined {
+    const handoff = getHandoff(this.#db, id);
+    if (handoff === undefined) return undefined;
+    if (callerAppKey === undefined) return handoff;
+    const callerId = this.#tryAppIdByKey(callerAppKey);
+    if (callerId === undefined) return undefined;
+    if (handoff.fromAppId !== callerId && handoff.toAppId !== callerId) return undefined;
+    return handoff;
+  }
+
+  /**
+   * Record the target agent's reply. Only the addressed application may deliver; an already
+   * delivered handoff is returned unchanged (idempotent retries).
+   */
+  deliverHandoff(
+    id: string,
+    result: string,
+    outcome: HandoffOutcome = "completed",
+    callerAppKey?: string,
+  ): Handoff {
     const handoff = getHandoff(this.#db, id);
     if (handoff === undefined) {
       throw new Error(`Handoff not found: ${id}`);
+    }
+    if (callerAppKey !== undefined) {
+      const callerId = this.#tryAppIdByKey(callerAppKey);
+      if (callerId === undefined || callerId !== handoff.toAppId) {
+        throw new Error(`Handoff ${id} is not addressed to this application`);
+      }
     }
     if (handoff.state === "delivered") {
       return handoff;
@@ -130,27 +229,71 @@ export class CoordinatorService {
     if (!DELIVERABLE_STATES.includes(handoff.state)) {
       throw new Error(`Handoff ${id} is not deliverable (state: ${handoff.state})`);
     }
-    const dispatched =
-      handoff.state === "dispatching" ? transitionHandoff(this.#db, id, "in_progress") : handoff;
-    if (dispatched.state === "delivered") {
-      return dispatched;
+    if (handoff.state === "dispatching") {
+      transitionHandoff(this.#db, id, "in_progress");
     }
-    return transitionHandoff(this.#db, id, "delivered", { result });
+    const delivered = transitionHandoff(this.#db, id, "delivered", { result, outcome });
+    if (delivered.policyReplyMode === "approve") {
+      updateHandoff(this.#db, id, { replyState: "awaiting_approval", replyError: null });
+      requestApproval(this.#db, id, "reply");
+    } else {
+      updateHandoff(this.#db, id, { replyState: "pending", replyError: null });
+    }
+    return getHandoff(this.#db, id) ?? delivered;
   }
 
-  #hasApproval(handoffId: string): boolean {
-    return (
-      this.#db.prepare("SELECT id FROM approvals WHERE handoff_id = ?").get(handoffId) !== undefined
-    );
+  /** Cancel a pending/running handoff or its undelivered reply. Human-only. */
+  cancelHandoff(id: string, principal: Principal): Handoff {
+    if (principal.kind !== "human") {
+      throw new AuthError("only a human principal may cancel a handoff");
+    }
+    const handoff = getHandoff(this.#db, id);
+    if (handoff === undefined) {
+      throw new Error(`Handoff not found: ${id}`);
+    }
+    if (handoff.state === "delivered") {
+      if (
+        handoff.replyState === "pending" ||
+        handoff.replyState === "awaiting_approval" ||
+        handoff.replyState === "waiting_operator" ||
+        handoff.replyState === "failed"
+      ) {
+        expirePendingApprovals(this.#db, id, "reply");
+        return updateHandoff(this.#db, id, {
+          replyState: "cancelled",
+          replyError: null,
+        });
+      }
+      throw new Error(`Handoff ${id} has no reply pending delivery`);
+    }
+    if (
+      handoff.state === "rejected" ||
+      handoff.state === "failed" ||
+      handoff.state === "expired" ||
+      handoff.state === "cancelled"
+    ) {
+      throw new Error(`Handoff ${id} is already closed (state: ${handoff.state})`);
+    }
+    expirePendingApprovals(this.#db, id);
+    return transitionHandoff(this.#db, id, "cancelled", { error: "cancelled by operator" });
+  }
+
+  #hasApproval(handoffId: string, kind: "dispatch" | "reply"): boolean {
+    return getPendingApproval(this.#db, handoffId, kind) !== undefined;
   }
 
   #appIdByKey(appKey: string): string {
+    const id = this.#tryAppIdByKey(appKey);
+    if (id === undefined) {
+      throw new Error(`Unknown application "${appKey}" in project ${this.#projectId}`);
+    }
+    return id;
+  }
+
+  #tryAppIdByKey(appKey: string): string | undefined {
     const row = this.#db
       .prepare("SELECT id FROM apps WHERE project_id = ? AND app_key = ?")
       .get(this.#projectId, appKey) as { id: string } | undefined;
-    if (row === undefined) {
-      throw new Error(`Unknown application "${appKey}" in project ${this.#projectId}`);
-    }
-    return row.id;
+    return row?.id;
   }
 }

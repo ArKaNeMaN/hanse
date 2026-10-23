@@ -155,8 +155,8 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   purges the app's `hanse.app.id`-labelled images, and removes the per-app agents directory
   (opencode DB/sessions, auth, password, MCP token, OMO profile, materialized git credentials,
   cache/tmp/mise). A project deletes all its apps, the project rows, project/app-scoped settings,
-  provider keys, git credentials, and handoffs; handoff approvals/messages cascade. Each deletion
-  writes an `events` row (`app.deleted`/`project.deleted`).
+  provider keys, git credentials, and handoffs; handoff approvals/messages cascade and app-scoped
+  policy rules are removed. Each deletion writes an `events` row (`app.deleted`/`project.deleted`).
 - Source files are kept by default; `Delete files too` explicitly removes the app/project directory
   after the registry cleanup. Source deletion re-checks the live registry, refuses roots, symlink
   components, sibling apps/projects and shared directories, and is warning-only if it cannot
@@ -197,7 +197,10 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
 - Browser forms post to the existing API endpoints and receive a 303 back to a validated `return_to`
   with a `notice`/`tone` toast. JSON API behavior is unchanged for non-browser callers.
 - Handoff decisions use `POST /api/handoffs/:id/decision` (`decision=approved|rejected`, optional
-  `reason`, `return_to`); the legacy `/approve` and `/reject` endpoints still work.
+  `approval_kind=dispatch|reply`, `reason`, `return_to`); the legacy `/approve` and `/reject` endpoints
+  still work. Reply relaunch/retry/cancel and the project policy editor use
+  `POST /api/handoffs/:id/reply/*`, `POST /api/handoffs/:id/cancel`, and
+  `POST /api/projects/:id/handoff-policy*` (all human-only).
 - Static assets are allowlisted: `/assets/app.css`, `/assets/app.js`, `/assets/chat.js`,
   `/assets/chat-core.js`, `/assets/chat-commands.js`, `/assets/chat-diff.js`, `/assets/chat-highlight.js`,
   `/assets/chat-highlight-worker.js`, `/assets/git.js`, `/assets/git-settings.js`,
@@ -306,8 +309,9 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
 - The `hanse` MCP entry carries `timeout: 600000`; existing agents must be restarted (no image
   rebuild) to see the tools and the timeout.
 - Migration v8 (`setting_secrets`, drop legacy `secrets`) and migration v9 (SSH tables) apply in
-  order; migrations v10 (applied settings/profile state), v11 (deletion markers), v12 (skills), and
-  v13 (skill bundles) follow. The current schema versions are `[1..13]`.
+  order; migrations v10 (applied settings/profile state), v11 (deletion markers), v12 (skills),
+  v13 (skill bundles), and v14 (session-bound handoffs, reply routing, and handoff policy) follow.
+  The current schema versions are `[1..14]`.
 - Live on `deployment-host` (`sha-e2d89a2`): a temporary SSH target pinned and authenticated, an approval was
   approved, `echo QA_OK` and a 65 s `sleep` succeeded, upload/download round-tripped, a real
   `opencode` turn called `hanse_ssh_exec` and received the result after 65 s, and audit rows survived
@@ -720,15 +724,55 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
 ## Handoffs (agent-to-agent requests)
 
 - Coordinator MCP server: `hanse mcp` (stdio, bound to one app via `HANSE_DB`, `HANSE_PROJECT_ID`,
-  `HANSE_APP_KEY`). The per-app opencode overlay (`OPENCODE_CONFIG_CONTENT`) registers it; tools:
-  `request_sibling_change` (non-blocking, returns a handoff id), `list_apps`, `handoff_status`,
-  `deliver_handoff`.
-- Handoffs are durable in SQLite with a state machine (`queued`, `awaiting_approval`, `dispatching`,
-  `in_progress`, `delivered`, `rejected`, `failed`, `expired`, `cancelled`). The dashboard shows them and
-  a human can approve/reject.
-- **Not yet implemented:** automatically waking the target application's agent with the spec and the
-  automatic `dispatching -> in_progress -> delivered` transition. There is no built-in dispatch loop;
-  `deliver_handoff` is the callback that records a result.
+  `HANSE_APP_KEY`) or its remote bridge to `/internal/mcp`. The per-app opencode overlay
+  (`OPENCODE_CONFIG_CONTENT`) registers it; tools: `request_sibling_change` (non-blocking),
+  `list_apps`, `handoff_status`, `deliver_handoff`.
+- A handoff is **session-bound**. The coordinator observes the app's existing `/event` stream through
+  the context monitor and binds an agent request to the `sessionID` that invoked
+  `request_sibling_change`; the agent cannot spoof this. The request then creates a fresh target session,
+  sends a dispatch envelope (handoff id, source/target, summary, spec, reply protocol), and records the
+  target session id.
+- `deliver_handoff` is the target agent's reply callback (`outcome`: `completed`, `blocked`, or
+  `failed`; free-text `result`) and is idempotent. The coordinator stores the result and, by default,
+  injects a clearly marked `[Hanse handoff reply]` user message into the source session via
+  `prompt_async`; the source agent continues in a new turn. The envelope marks the reply as untrusted
+  sibling content.
+- If the source session was deleted, or the handoff was created by the operator, the reply is kept with
+  `reply_state = waiting_operator`. The operator can relaunch it in a new source-app session with an
+  optional note, retry delivery to the known source session, cancel the reply, or cancel the handoff.
+  A relaunch injects the original request, the target reply, and the note.
+- Dispatch is durable and serialized per target application: at most one handoff is actively
+  dispatching/running per target app; the rest wait in `queued`. The dispatcher runs inside the
+  coordinator (5 s tick), starts a stopped target app, creates a session titled after the handoff, and
+  enforces a 5-minute dispatch-start deadline, a 2-hour run deadline, a 10-minute source-binding
+  deadline, and an 8-hop chain depth limit.
+- Policy lives in the `handoff_policies` table (project default plus directed pair rules with `*`
+  wildcards). Dispatch modes are `auto`, `approve`, and `deny`; reply modes are `auto` and `approve`.
+  Precedence is exact pair > one wildcard > project default > built-in `auto/auto`. A rule always wins
+  over the agent's `requires_approval` flag, which can only raise a request to approval; `deny` always
+  wins. The policy is snapshotted on the handoff. The project page has the policy editor.
+- `request_sibling_change` returns `{handoffId, status, state}` immediately (`queued`,
+  `awaiting_approval`, or `denied`). A denied request is stored as `rejected` for audit.
+  `handoff_status` is scoped to the calling application (source or target); `deliver_handoff` is accepted
+  only from the target application.
+- Handoff state machine: `queued`, `awaiting_approval`, `dispatching`, `in_progress`, `delivered`,
+  `rejected`, `failed`, `expired`, `cancelled`. Reply routing is orthogonal: `none`, `pending`,
+  `awaiting_approval`, `delivered`, `waiting_operator`, `failed`, `cancelled`.
+- The dispatcher reuses the existing per-app context-monitor stream rather than opening a second SSE
+  connection. If context monitors are disabled, source-session binding is unavailable and agent-created
+  handoffs stay unbound (and are failed by the binding deadline).
+- Operator UI: `/handoffs` has `All`/`Waiting`/`Active`/`Closed`/`Replies` filters, inline approvals,
+  and a detail dialog with source/target session links, policy, outcome, reply state, and the
+  relaunch/retry/cancel actions. Project pages have a **Handoff policy** card.
+- Human-only API: `POST /api/handoffs/:id/decision` (optional `approval_kind=dispatch|reply`),
+  `POST /api/handoffs/:id/reply/relaunch|deliver|cancel`, `POST /api/handoffs/:id/cancel`,
+  `POST /api/projects/:id/handoff-policy`, `POST /api/projects/:id/handoff-policy/delete`, and
+  `GET /api/projects/:id/handoff-policy`. Agent tokens get `403` outside `/internal/mcp`.
+- Not implemented: multi-turn negotiation (one reply per handoff), cross-project handoffs, worktree
+  isolation between concurrent target sessions, automatic routing of the target's interactive
+  questions, failure/rejection notifications back into the source session (the operator sees failed
+  or rejected handoffs), and hard cancellation (there is no abort wrapper for an opencode turn; cancel
+  is soft).
 
 ## Web IDE
 
@@ -771,9 +815,9 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
 
 Host `./state` is mounted at `/data/state` in `hanse` only:
 
-- `hanse/coordinator.db` (+ `-wal`, `-shm`) - projects, apps, instances, tasks, handoffs, approvals,
-  principals, events, settings, skills, provider keys, and encrypted git credentials
-  (`setting_secrets`).
+- `hanse/coordinator.db` (+ `-wal`, `-shm`) - projects, apps, instances, tasks, handoffs, handoff
+  policies, approvals, principals, events, settings, skills, provider keys, and encrypted git
+  credentials (`setting_secrets`).
 - `hanse/secret.key` - AES-256-GCM key for the credential store and provider keys (mode `0600`).
 
 Host `./agents` is mounted at `/data/agents` read-write in `hanse` and read-only in `hanse-runner`:
@@ -977,7 +1021,9 @@ Settings stage verification:
   warning-only by owner decision, `bash` path checks are best-effort, symlinks/bind mounts can
   escape, and `.env`/network are intentionally allowed. B1 adds per-app containers and networks;
   upstream authentication remains a later hardening step.
-- Cross-app handoff delivery to a live sibling session is not automatic (see above).
+- Cross-app handoff delivery is automatic but policy-gated: the target runs in a fresh session and its
+  reply wakes the source session; strict pairs require operator approval, and replies with no live
+  source session wait for an operator relaunch.
 - SSH host keys are coordinator-held; the agent can run arbitrary commands as the configured SSH
   user on an approved host. The remote user's privileges are the real boundary; use least-privilege
   deploy users. Do not grant SSH to the coordinator host or a host that can read coordinator state

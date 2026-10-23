@@ -1040,6 +1040,7 @@ export interface ContextMonitorOptions {
   client?: ContextMonitorClientHooks;
   /** Sanitized diagnostics only; never pass upstream bodies or provider payloads. */
   log?: (message: string) => void;
+  onEvent?: (event: HanseEvent) => void;
 }
 
 export interface ContextMonitorLike {
@@ -1161,6 +1162,7 @@ export class ContextMonitor implements ContextMonitorLike {
   readonly #backoffMaxMs: number;
   readonly #compactTimeoutMs: number;
   readonly #log: (message: string) => void;
+  readonly #onEvent: ((event: HanseEvent) => void) | undefined;
   readonly #listMessagePage: typeof listMessagePage;
   readonly #listSessions: typeof listSessionsBounded;
   readonly #summarize: typeof summarizeSession;
@@ -1191,6 +1193,7 @@ export class ContextMonitor implements ContextMonitorLike {
     this.#compactTimeoutMs = options.compactTimeoutMs ?? DEFAULT_COMPACT_TIMEOUT_MS;
     this.#backoffMs = this.#backoffBaseMs;
     this.#log = options.log ?? (() => undefined);
+    this.#onEvent = options.onEvent;
     this.#listMessagePage = options.client?.listMessagePage ?? listMessagePage;
     this.#listSessions = options.client?.listSessions ?? listSessionsBounded;
     this.#summarize = options.client?.summarize ?? summarizeSession;
@@ -1322,6 +1325,11 @@ export class ContextMonitor implements ContextMonitorLike {
   }
 
   #observe(event: HanseEvent): void {
+    try {
+      this.#onEvent?.(event);
+    } catch {
+      // An observer failure must never stop the context monitor or its stream.
+    }
     const now = this.#now();
     this.#tracker.applyEvent(event as unknown as ContextEvent, now);
     if (event.type === "session.compacted") {

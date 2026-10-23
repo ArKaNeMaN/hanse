@@ -1,4 +1,11 @@
-import type { HandoffState } from "../coordinator/handoff.js";
+import type {
+  HandoffDispatchMode,
+  HandoffOrigin,
+  HandoffOutcome,
+  HandoffReplyMode,
+  HandoffReplyState,
+  HandoffState,
+} from "../coordinator/handoff.js";
 import { isMasterProject, masterChatHref } from "../master/constants.js";
 
 /**
@@ -121,6 +128,21 @@ export function statusIcon(state: HandoffState): IconName {
 
 export function statusPill(state: HandoffState): string {
   return `<span class="status" data-state="${state}">${icon(STATUS[state].icon)}${STATUS[state].label}</span>`;
+}
+
+const REPLY_STATUS: Record<HandoffReplyState, { label: string; icon: IconName } | null> = {
+  none: null,
+  pending: { label: "Reply queued", icon: "clock" },
+  awaiting_approval: { label: "Reply approval", icon: "stamp" },
+  delivered: { label: "Reply delivered", icon: "check" },
+  waiting_operator: { label: "Reply waiting", icon: "inbox" },
+  failed: { label: "Reply failed", icon: "alert-triangle" },
+  cancelled: { label: "Reply cancelled", icon: "slash" },
+};
+
+export function replyPill(state: HandoffReplyState): string {
+  const entry = REPLY_STATUS[state];
+  return entry === null ? "" : `<span class="badge">${icon(entry.icon)}${entry.label}</span>`;
 }
 
 export type RuntimeState = "starting" | "running" | "stopped" | "error";
@@ -601,10 +623,40 @@ export interface HandoffDialogInput {
   attempts: number;
   error: string | null;
   result: string | null;
+  outcome: HandoffOutcome | null;
   createdAt: string;
   updatedAt: string;
   returnTo: string;
-  canDecide: boolean;
+  approvalKind: "dispatch" | "reply" | null;
+  policyDispatchMode: HandoffDispatchMode;
+  policyReplyMode: HandoffReplyMode;
+  origin: HandoffOrigin;
+  sourceSessionId: string | null;
+  sourceSessionHref: string | null;
+  sourceSessionDeleted: boolean;
+  targetSessionId: string | null;
+  targetSessionHref: string | null;
+  replyState: HandoffReplyState;
+  replyError: string | null;
+  replyDeliveredSessionId: string | null;
+  replyDeliveredAt: string | null;
+  replyDeliveredHref: string | null;
+  deliveredVia: string | null;
+  operatorNote: string | null;
+  canCancel: boolean;
+  canRelaunch: boolean;
+  canRetryReply: boolean;
+  canCancelReply: boolean;
+}
+
+function sessionRef(href: string | null, id: string | null, emptyLabel: string): string {
+  if (id === null) {
+    return `<span class="small">${escapeHtml(emptyLabel)}</span>`;
+  }
+  const short = escapeHtml(id.slice(0, 8));
+  return href === null
+    ? `<span class="mono">${short}</span>`
+    : `<a class="mono" href="${escapeHtml(href)}">${short}</a>`;
 }
 
 export function handoffDialog(input: HandoffDialogInput): string {
@@ -612,78 +664,170 @@ export function handoffDialog(input: HandoffDialogInput): string {
   const safeDialogId = escapeHtml(dialogId);
   const safeTitleId = escapeHtml(`${dialogId}-title`);
   const meta = `${input.id} / ${input.from} to ${input.to}`;
-  const reason = input.canDecide
-    ? `<div class="field">
-        <label class="label" for="${safeDialogId}-reason">Reason, optional</label>
-        <textarea class="textarea" id="${safeDialogId}-reason" name="reason" placeholder="Record why this request is approved or rejected" aria-describedby="${safeDialogId}-reason-hint"></textarea>
-        <p class="hint" id="${safeDialogId}-reason-hint">The reason is written to the handoff audit trail.</p>
-      </div>`
-    : "";
+  const title =
+    input.approvalKind === "reply"
+      ? "Review reply"
+      : input.approvalKind === "dispatch"
+        ? "Review handoff"
+        : "Handoff detail";
+
+  const source = sessionRef(
+    input.sourceSessionHref,
+    input.sourceSessionId,
+    input.origin === "operator"
+      ? "Operator-created (no source session)"
+      : "Not bound to a session yet",
+  );
+  const target = sessionRef(input.targetSessionHref, input.targetSessionId, "Not dispatched yet");
+
   const error =
     input.error === null || input.error.length === 0
       ? ""
       : `<div class="error-state" role="alert">
           <span class="error-state__mark">${icon("alert-triangle")}</span>
-          <div><h3 class="error-state__title">Attempt failed</h3><p class="error-state__body">${escapeHtml(input.error)}</p></div>
+          <div><h3 class="error-state__title">Request failed</h3><p class="error-state__body">${escapeHtml(input.error)}</p></div>
         </div>`;
   const result =
     input.result === null || input.result.length === 0
       ? ""
       : `<div class="stack--tight">
-          <p class="overline">Result</p>
-          <p class="body">${escapeHtml(input.result)}</p>
+          <p class="overline">Result${input.outcome === null ? "" : ` (${escapeHtml(input.outcome)})`}</p>
+          <div class="prose prose--pre">${escapeHtml(input.result)}</div>
         </div>`;
-  const controls = input.canDecide
-    ? `<form class="dialog__form" method="post" action="/api/handoffs/${encodeURIComponent(input.id)}/decision">
-        <div class="dialog__body">
-          ${routeCard(input)}
-          <div class="stack--tight">
-            <p class="overline">Specification</p>
-            <div class="prose prose--pre">${escapeHtml(input.spec)}</div>
+  const reply =
+    input.replyState === "none"
+      ? ""
+      : `<div class="stack--tight">
+          <p class="overline">Reply</p>
+          <div class="cluster">${replyPill(input.replyState)}${input.deliveredVia === null ? "" : `<span class="mono">via ${escapeHtml(input.deliveredVia)}</span>`}</div>
+          ${
+            input.replyError === null || input.replyError.length === 0
+              ? ""
+              : `<p class="field-error">${icon("alert-circle")}${escapeHtml(input.replyError)}</p>`
+          }
+          ${
+            input.replyDeliveredAt === null
+              ? ""
+              : `<p class="small">Delivered ${escapeHtml(absoluteTime(input.replyDeliveredAt))} to ${sessionRef(input.replyDeliveredHref, input.replyDeliveredSessionId, "session")}</p>`
+          }
+          ${
+            input.operatorNote === null || input.operatorNote.length === 0
+              ? ""
+              : `<div class="stack--tight"><p class="overline">Operator note</p><div class="prose prose--pre">${escapeHtml(input.operatorNote)}</div></div>`
+          }
+        </div>`;
+
+  const details = `${routeCard(input)}
+    <div class="stack--tight">
+      <p class="overline">Policy</p>
+      <p class="small">Dispatch: <span class="mono">${escapeHtml(input.policyDispatchMode)}</span> · Reply: <span class="mono">${escapeHtml(input.policyReplyMode)}</span> · Origin: <span class="mono">${escapeHtml(input.origin)}</span></p>
+    </div>
+    <div class="stack--tight">
+      <p class="overline">Sessions</p>
+      <p class="small">Source: ${source}</p>
+      <p class="small">Target: ${target}</p>
+      ${input.sourceSessionDeleted ? `<p class="field-error">${icon("alert-circle")}The source session was deleted; any reply will wait for an operator decision.</p>` : ""}
+    </div>
+    <div class="stack--tight">
+      <p class="overline">Specification</p>
+      <div class="prose prose--pre">${escapeHtml(input.spec)}</div>
+    </div>
+    <div class="stack--tight">
+      <p class="overline">Attempts</p>
+      <p class="mono">${input.attempts}</p>
+      <p class="mono">created ${escapeHtml(absoluteTime(input.createdAt))}</p>
+      <p class="mono">updated ${escapeHtml(absoluteTime(input.updatedAt))}</p>
+    </div>
+    ${error}
+    ${result}
+    ${reply}`;
+
+  const reason =
+    input.approvalKind === null
+      ? ""
+      : `<div class="field">
+          <label class="label" for="${safeDialogId}-reason">Reason, optional</label>
+          <textarea class="textarea" id="${safeDialogId}-reason" name="reason" placeholder="Record why this is approved or rejected" aria-describedby="${safeDialogId}-reason-hint"></textarea>
+          <p class="hint" id="${safeDialogId}-reason-hint">The reason is written to the handoff audit trail.</p>
+        </div>`;
+
+  if (input.approvalKind !== null) {
+    const approve = input.approvalKind === "reply" ? "Approve reply" : "Approve handoff";
+    const reject = input.approvalKind === "reply" ? "Reject reply" : "Reject handoff";
+    return `<dialog class="dialog" id="${safeDialogId}" aria-labelledby="${safeTitleId}">
+      <div class="dialog__frame">
+        <header class="dialog__head">
+          <h2 class="dialog__title" id="${safeTitleId}">${title}</h2>
+          <p class="dialog__meta">${escapeHtml(meta)}</p>
+        </header>
+        <form class="dialog__form" method="post" action="/api/handoffs/${encodeURIComponent(input.id)}/decision">
+          <div class="dialog__body">
+            ${details}
+            ${reason}
+            <input type="hidden" name="approval_kind" value="${input.approvalKind}" />
+            <input type="hidden" name="return_to" value="${escapeHtml(input.returnTo)}" />
           </div>
-          <div class="stack--tight">
-            <p class="overline">Attempts</p>
-            <p class="mono">${input.attempts}</p>
-            <p class="mono">created ${escapeHtml(absoluteTime(input.createdAt))}</p>
-            <p class="mono">updated ${escapeHtml(absoluteTime(input.updatedAt))}</p>
-          </div>
-          ${error}
-          ${result}
-          ${reason}
-          <input type="hidden" name="return_to" value="${escapeHtml(input.returnTo)}" />
-        </div>
-        <footer class="dialog__foot">
-          <button class="btn btn-ghost" type="button" data-dialog-close>Cancel</button>
-          <button class="btn btn-primary" type="submit" name="decision" value="approved">Approve handoff</button>
-          <button class="btn btn-danger" type="submit" name="decision" value="rejected">Reject handoff</button>
-        </footer>
-      </form>`
-    : `<div class="dialog__body">
-        ${routeCard(input)}
-        <div class="stack--tight">
-          <p class="overline">Specification</p>
-          <div class="prose prose--pre">${escapeHtml(input.spec)}</div>
-        </div>
-        <div class="stack--tight">
-          <p class="overline">Attempts</p>
-          <p class="mono">${input.attempts}</p>
-          <p class="mono">created ${escapeHtml(absoluteTime(input.createdAt))}</p>
-          <p class="mono">updated ${escapeHtml(absoluteTime(input.updatedAt))}</p>
-        </div>
-        ${error}
-        ${result}
+          <footer class="dialog__foot">
+            <button class="btn btn-ghost" type="button" data-dialog-close>Cancel</button>
+            <button class="btn btn-primary" type="submit" name="decision" value="approved">${approve}</button>
+            <button class="btn btn-danger" type="submit" name="decision" value="rejected">${reject}</button>
+          </footer>
+        </form>
       </div>
-      <footer class="dialog__foot">
-        <button class="btn btn-ghost" type="button" data-dialog-close>Close</button>
-      </footer>`;
+    </dialog>`;
+  }
+
+  const relaunch = input.canRelaunch
+    ? `<form class="stack--tight" method="post" action="/api/handoffs/${encodeURIComponent(input.id)}/reply/relaunch">
+        <div class="field">
+          <label class="label" for="${safeDialogId}-note">Operator note, optional</label>
+          <textarea class="textarea" id="${safeDialogId}-note" name="note" placeholder="Context for the new session"></textarea>
+          <p class="hint">The original request, the sibling reply, and this note are sent to a new ${escapeHtml(input.from)} session.</p>
+        </div>
+        <input type="hidden" name="return_to" value="${escapeHtml(input.returnTo)}" />
+        <div class="cluster"><button class="btn btn-primary" type="submit">Start in a new session</button></div>
+      </form>`
+    : "";
+  const smallActions = [
+    input.canRetryReply
+      ? `<form method="post" action="/api/handoffs/${encodeURIComponent(input.id)}/reply/deliver">
+          <input type="hidden" name="return_to" value="${escapeHtml(input.returnTo)}" />
+          <button class="btn btn-secondary btn-sm" type="submit">Retry reply delivery</button>
+        </form>`
+      : "",
+    input.canCancelReply
+      ? `<form method="post" action="/api/handoffs/${encodeURIComponent(input.id)}/reply/cancel">
+          <input type="hidden" name="return_to" value="${escapeHtml(input.returnTo)}" />
+          <button class="btn btn-ghost btn-sm" type="submit">Cancel reply</button>
+        </form>`
+      : "",
+    input.canCancel
+      ? `<form method="post" action="/api/handoffs/${encodeURIComponent(input.id)}/cancel">
+          <input type="hidden" name="return_to" value="${escapeHtml(input.returnTo)}" />
+          <button class="btn btn-danger btn-sm" type="submit">Cancel handoff</button>
+        </form>`
+      : "",
+  ]
+    .filter((value) => value.length > 0)
+    .join("");
+  const actions =
+    relaunch.length === 0 && smallActions.length === 0
+      ? ""
+      : `<div class="stack--tight">${relaunch}${smallActions.length === 0 ? "" : `<div class="cluster">${smallActions}</div>`}</div>`;
 
   return `<dialog class="dialog" id="${safeDialogId}" aria-labelledby="${safeTitleId}">
     <div class="dialog__frame">
       <header class="dialog__head">
-        <h2 class="dialog__title" id="${safeTitleId}">${escapeHtml(input.canDecide ? "Review handoff" : "Handoff detail")}</h2>
+        <h2 class="dialog__title" id="${safeTitleId}">${title}</h2>
         <p class="dialog__meta">${escapeHtml(meta)}</p>
       </header>
-      ${controls}
+      <div class="dialog__body">
+        ${details}
+        ${actions}
+      </div>
+      <footer class="dialog__foot">
+        <button class="btn btn-ghost" type="button" data-dialog-close>Close</button>
+      </footer>
     </div>
   </dialog>`;
 }

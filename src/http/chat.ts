@@ -663,7 +663,22 @@ export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<
       }
     }
     if (sessionMatch !== null && request.method === "DELETE") {
-      await deleteSession(endpoint, safeDecode(sessionMatch[2] ?? ""));
+      const sessionId = safeDecode(sessionMatch[2] ?? "");
+      await deleteSession(endpoint, sessionId);
+      try {
+        const now = new Date().toISOString();
+        deps.db
+          .prepare(
+            `UPDATE handoffs SET
+               source_session_deleted_at = COALESCE(source_session_deleted_at, ?),
+               updated_at = ?
+             WHERE (source_session_id = ? OR reply_delivered_session_id = ?)
+               AND source_session_deleted_at IS NULL`,
+          )
+          .run(now, now, sessionId, sessionId);
+      } catch {
+        // Handoff bookkeeping is best-effort; the upstream session is already deleted.
+      }
       return json(200, { deleted: true });
     }
     if (messagesMatch !== null && request.method === "GET") {

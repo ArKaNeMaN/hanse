@@ -437,4 +437,64 @@ CREATE TABLE skill_references (
 );
 `,
   },
+  {
+    version: 14,
+    name: "session-bound-handoffs",
+    sql: `
+ALTER TABLE handoffs ADD COLUMN source_session_id TEXT;
+ALTER TABLE handoffs ADD COLUMN source_session_title TEXT;
+ALTER TABLE handoffs ADD COLUMN target_session_id TEXT;
+ALTER TABLE handoffs ADD COLUMN target_session_title TEXT;
+ALTER TABLE handoffs ADD COLUMN source_session_deleted_at TEXT;
+ALTER TABLE handoffs ADD COLUMN reply_state TEXT NOT NULL DEFAULT 'none'
+  CHECK (reply_state IN (
+    'none', 'pending', 'awaiting_approval', 'delivered',
+    'waiting_operator', 'failed', 'cancelled'
+  ));
+ALTER TABLE handoffs ADD COLUMN reply_message_id TEXT;
+ALTER TABLE handoffs ADD COLUMN reply_delivered_session_id TEXT;
+ALTER TABLE handoffs ADD COLUMN reply_delivered_at TEXT;
+ALTER TABLE handoffs ADD COLUMN reply_error TEXT;
+ALTER TABLE handoffs ADD COLUMN reply_attempts INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE handoffs ADD COLUMN dispatch_message_id TEXT;
+ALTER TABLE handoffs ADD COLUMN dispatch_started_at TEXT;
+ALTER TABLE handoffs ADD COLUMN deadline_at TEXT;
+ALTER TABLE handoffs ADD COLUMN outcome TEXT
+  CHECK (outcome IS NULL OR outcome IN ('completed', 'blocked', 'failed'));
+ALTER TABLE handoffs ADD COLUMN origin TEXT NOT NULL DEFAULT 'agent'
+  CHECK (origin IN ('agent', 'operator'));
+ALTER TABLE handoffs ADD COLUMN parent_handoff_id TEXT;
+ALTER TABLE handoffs ADD COLUMN root_handoff_id TEXT;
+ALTER TABLE handoffs ADD COLUMN depth INTEGER NOT NULL DEFAULT 0
+  CHECK (depth >= 0);
+ALTER TABLE handoffs ADD COLUMN policy_dispatch_mode TEXT NOT NULL DEFAULT 'auto'
+  CHECK (policy_dispatch_mode IN ('auto', 'approve', 'deny'));
+ALTER TABLE handoffs ADD COLUMN policy_reply_mode TEXT NOT NULL DEFAULT 'auto'
+  CHECK (policy_reply_mode IN ('auto', 'approve'));
+ALTER TABLE handoffs ADD COLUMN operator_note TEXT;
+ALTER TABLE handoffs ADD COLUMN delivered_via TEXT;
+
+ALTER TABLE approvals ADD COLUMN kind TEXT NOT NULL DEFAULT 'dispatch'
+  CHECK (kind IN ('dispatch', 'reply'));
+CREATE INDEX approvals_handoff_kind ON approvals(handoff_id, kind, state);
+
+CREATE TABLE handoff_policies (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  from_app_key TEXT NOT NULL DEFAULT '*',
+  to_app_key TEXT NOT NULL DEFAULT '*',
+  dispatch_mode TEXT NOT NULL CHECK (dispatch_mode IN ('auto', 'approve', 'deny')),
+  reply_mode TEXT NOT NULL CHECK (reply_mode IN ('auto', 'approve')),
+  updated_at TEXT NOT NULL,
+  updated_by TEXT,
+  UNIQUE (project_id, from_app_key, to_app_key)
+);
+CREATE INDEX handoff_policies_project ON handoff_policies(project_id);
+
+CREATE INDEX handoffs_source_session ON handoffs(source_session_id);
+CREATE INDEX handoffs_target_session ON handoffs(target_session_id);
+CREATE INDEX handoffs_reply_state ON handoffs(reply_state);
+CREATE INDEX handoffs_to_app_state ON handoffs(to_app_id, state);
+`,
+  },
 ];

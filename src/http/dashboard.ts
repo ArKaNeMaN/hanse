@@ -1,4 +1,5 @@
 import { type Handoff, type HandoffState, listHandoffs } from "../coordinator/handoff.js";
+import { type HandoffPolicy, listHandoffPolicies } from "../coordinator/policy.js";
 import type { CoordinatorService } from "../coordinator/service.js";
 import { isMasterProject, masterChatHref } from "../master/constants.js";
 import type { InstanceManager } from "../opencode/manager.js";
@@ -18,6 +19,7 @@ import {
   pageHeader,
   plural,
   type RuntimeState,
+  replyPill,
   routeCard,
   routeText,
   runtimePill,
@@ -37,6 +39,7 @@ export interface ProjectView {
   builtin?: boolean;
   apps: RegisteredApp[];
   handoffs: Handoff[];
+  handoffPolicies: HandoffPolicy[];
 }
 
 export interface AppRef {
@@ -95,10 +98,12 @@ const CLOSED_STATES: readonly HandoffState[] = [
   "cancelled",
 ];
 
-export type HandoffFilter = "all" | "waiting" | "active" | "closed";
+export type HandoffFilter = "all" | "waiting" | "active" | "closed" | "replies";
 
 export function parseHandoffFilter(value: string | undefined): HandoffFilter {
-  return value === "waiting" || value === "active" || value === "closed" ? value : "all";
+  return value === "waiting" || value === "active" || value === "closed" || value === "replies"
+    ? value
+    : "all";
 }
 
 function projectMeta(db: SqliteDatabase): Map<string, { baseBranch: string; createdAt: string }> {
@@ -167,6 +172,7 @@ export function buildSite(deps: DashboardDeps): SiteModel {
       builtin: isMasterProject(project.id),
       apps: projectApps,
       handoffs: listHandoffs(deps.db, project.id),
+      handoffPolicies: listHandoffPolicies(deps.db, project.id),
     };
   });
 
@@ -207,7 +213,7 @@ export function buildSite(deps: DashboardDeps): SiteModel {
     handoffCount += project.handoffs.length;
     appCount += project.apps.length;
     for (const handoff of project.handoffs) {
-      if (handoff.state === "awaiting_approval") {
+      if (handoff.state === "awaiting_approval" || handoff.replyState === "awaiting_approval") {
         pendingCount += 1;
       }
     }
@@ -299,20 +305,31 @@ function handoffCounts(handoffs: Handoff[]): {
   waiting: number;
   active: number;
   closed: number;
+  replies: number;
 } {
   let waiting = 0;
   let active = 0;
   let closed = 0;
+  let replies = 0;
   for (const handoff of handoffs) {
-    if (handoff.state === "awaiting_approval") {
+    if (handoff.state === "awaiting_approval" || handoff.replyState === "awaiting_approval") {
       waiting += 1;
-    } else if (ACTIVE_STATES.includes(handoff.state)) {
+    }
+    if (ACTIVE_STATES.includes(handoff.state)) {
       active += 1;
-    } else if (CLOSED_STATES.includes(handoff.state)) {
+    }
+    if (CLOSED_STATES.includes(handoff.state)) {
       closed += 1;
     }
+    if (
+      handoff.replyState === "waiting_operator" ||
+      handoff.replyState === "failed" ||
+      handoff.replyState === "awaiting_approval"
+    ) {
+      replies += 1;
+    }
   }
-  return { all: handoffs.length, waiting, active, closed };
+  return { all: handoffs.length, waiting, active, closed, replies };
 }
 
 function appKeyFor(site: SiteModel, appId: string): string {
@@ -347,8 +364,15 @@ function sortedHandoffs(handoffs: Handoff[]): Handoff[] {
 
 function waitingHandoffs(site: SiteModel): Handoff[] {
   return sortedHandoffs(
-    allHandoffs(site).filter((handoff) => handoff.state === "awaiting_approval"),
+    allHandoffs(site).filter(
+      (handoff) =>
+        handoff.state === "awaiting_approval" || handoff.replyState === "awaiting_approval",
+    ),
   );
+}
+
+function displayState(handoff: Handoff): HandoffState {
+  return handoff.replyState === "awaiting_approval" ? "awaiting_approval" : handoff.state;
 }
 
 function reviewHref(handoff: Handoff, filter: HandoffFilter = "all"): string {
@@ -368,7 +392,7 @@ function projectHandoffRows(site: SiteModel, project: ProjectView): string {
     .map((handoff) => {
       return `<tr id="handoff-${escapeHtml(handoff.id)}">
         <td data-label="Route">${routeText(appKeyFor(site, handoff.fromAppId), appKeyFor(site, handoff.toAppId))}</td>
-        <td data-label="State">${statusPill(handoff.state)}</td>
+        <td data-label="State"><div class="cluster">${statusPill(handoff.state)}${replyPill(handoff.replyState)}</div></td>
         <td data-label="Summary"><span class="table__primary">${escapeHtml(handoff.summary)}</span></td>
         <td data-label="Updated"><span class="mono table__nowrap">${timeTag(handoff.updatedAt)}</span></td>
         <td data-label="Actions" class="table__actions"><button class="btn btn-ghost btn-sm" type="button" data-dialog-open="h-${escapeHtml(handoff.id)}">Review</button></td>
@@ -471,6 +495,53 @@ function projectDeleteDialog(project: ProjectView): string {
   </dialog>`;
 }
 
+function handoffPolicyCard(project: ProjectView): string {
+  const key = (value: string): string => (value === "*" ? "Any application" : value);
+  const appOption = (appKey: string): string =>
+    `<option value="${escapeHtml(appKey)}">${escapeHtml(appKey)}</option>`;
+  const anyOption = '<option value="*">Any application</option>';
+  const rules = project.handoffPolicies;
+  const rows =
+    rules.length === 0
+      ? '<p class="small">No rules. Dispatch and replies are autonomous for every directed pair.</p>'
+      : `<div class="table-wrap"><table class="table table--stack">
+          <thead><tr><th scope="col">From</th><th scope="col">To</th><th scope="col">Dispatch</th><th scope="col">Reply</th><th scope="col"></th></tr></thead>
+          <tbody>${rules
+            .map(
+              (rule) => `<tr>
+                <td data-label="From"><span class="mono">${escapeHtml(key(rule.fromAppKey))}</span></td>
+                <td data-label="To"><span class="mono">${escapeHtml(key(rule.toAppKey))}</span></td>
+                <td data-label="Dispatch"><span class="mono">${escapeHtml(rule.dispatchMode)}</span></td>
+                <td data-label="Reply"><span class="mono">${escapeHtml(rule.replyMode)}</span></td>
+                <td data-label="" class="table__actions"><form method="post" action="/api/projects/${encodeURIComponent(project.id)}/handoff-policy/delete">
+                  <input type="hidden" name="from" value="${escapeHtml(rule.fromAppKey)}" />
+                  <input type="hidden" name="to" value="${escapeHtml(rule.toAppKey)}" />
+                  <input type="hidden" name="return_to" value="/projects/${escapeHtml(encodeURIComponent(project.id))}" />
+                  <button class="btn btn-ghost btn-sm" type="submit">Delete</button>
+                </form></td>
+              </tr>`,
+            )
+            .join("")}</tbody>
+        </table></div>`;
+  return `<section class="card" aria-labelledby="handoff-policy-title">
+    <div class="card__head"><h2 class="card__title" id="handoff-policy-title">Handoff policy</h2><span class="badge">${rules.length} rules</span></div>
+    <div class="card__body stack--tight">
+      <p class="small">The most specific rule wins: exact pair, then one wildcard (a from-specific rule wins a tie), then the project default. No matching rule means <span class="mono">auto</span> dispatch and <span class="mono">auto</span> reply.</p>
+      ${rows}
+      <form class="stack--tight" method="post" action="/api/projects/${encodeURIComponent(project.id)}/handoff-policy">
+        <div class="cluster">
+          <div class="field"><label class="label" for="handoff-policy-from">From</label><div class="select-wrap"><select class="select" id="handoff-policy-from" name="from">${anyOption}${project.apps.map((app) => appOption(app.appKey)).join("")}</select>${icon("chevron-down")}</div></div>
+          <div class="field"><label class="label" for="handoff-policy-to">To</label><div class="select-wrap"><select class="select" id="handoff-policy-to" name="to">${anyOption}${project.apps.map((app) => appOption(app.appKey)).join("")}</select>${icon("chevron-down")}</div></div>
+          <div class="field"><label class="label" for="handoff-policy-dispatch">Dispatch</label><div class="select-wrap"><select class="select" id="handoff-policy-dispatch" name="dispatch_mode"><option value="auto">Auto</option><option value="approve">Approve</option><option value="deny">Deny</option></select>${icon("chevron-down")}</div></div>
+          <div class="field"><label class="label" for="handoff-policy-reply">Reply</label><div class="select-wrap"><select class="select" id="handoff-policy-reply" name="reply_mode"><option value="auto">Auto</option><option value="approve">Approve</option></select>${icon("chevron-down")}</div></div>
+        </div>
+        <input type="hidden" name="return_to" value="/projects/${escapeHtml(encodeURIComponent(project.id))}" />
+        <div class="cluster"><button class="btn btn-secondary btn-sm" type="submit">Save rule</button></div>
+      </form>
+    </div>
+  </section>`;
+}
+
 function newHandoffDialog(project: ProjectView): string {
   const fromKey = project.apps[0]?.appKey;
   const toKey = project.apps[1]?.appKey ?? fromKey;
@@ -513,7 +584,7 @@ function newHandoffDialog(project: ProjectView): string {
           </div>
           <label class="check">
             <input class="checkbox" type="checkbox" name="requires_approval" value="1" checked />
-            <span>Requires operator approval before dispatch</span>
+            <span>Require operator approval for this handoff</span>
           </label>
           ${empty ? '<p class="hint">Add an application to this project before creating a handoff.</p>' : ""}
           <input type="hidden" name="project" value="${escapeHtml(project.id)}" />
@@ -528,12 +599,41 @@ function newHandoffDialog(project: ProjectView): string {
   </dialog>`;
 }
 
+function chatSessionHref(site: SiteModel, appId: string, sessionId: string | null): string | null {
+  if (sessionId === null) return null;
+  const app = site.apps.get(appId);
+  if (app === undefined) return null;
+  return `/chat?app=${encodeURIComponent(app.appKey)}&project=${encodeURIComponent(app.projectId)}&session=${encodeURIComponent(sessionId)}`;
+}
+
 function handoffDialogs(handoffs: Handoff[], site: SiteModel, returnTo: string): string {
   return handoffs
-    .map((handoff) =>
-      handoffDialog({
+    .map((handoff) => {
+      const approvalKind =
+        handoff.replyState === "awaiting_approval"
+          ? ("reply" as const)
+          : handoff.state === "awaiting_approval"
+            ? ("dispatch" as const)
+            : null;
+      const terminal =
+        handoff.state === "delivered" ||
+        handoff.state === "rejected" ||
+        handoff.state === "failed" ||
+        handoff.state === "expired" ||
+        handoff.state === "cancelled";
+      const replyWaiting =
+        handoff.replyState === "waiting_operator" ||
+        handoff.replyState === "failed" ||
+        handoff.replyState === "cancelled";
+      const replyCancellable =
+        handoff.state === "delivered" &&
+        (handoff.replyState === "pending" ||
+          handoff.replyState === "awaiting_approval" ||
+          handoff.replyState === "waiting_operator" ||
+          handoff.replyState === "failed");
+      return handoffDialog({
         id: handoff.id,
-        state: handoff.state,
+        state: displayState(handoff),
         from: appKeyFor(site, handoff.fromAppId),
         to: appKeyFor(site, handoff.toAppId),
         summary: handoff.summary,
@@ -541,12 +641,40 @@ function handoffDialogs(handoffs: Handoff[], site: SiteModel, returnTo: string):
         attempts: handoff.attempts,
         error: handoff.error,
         result: handoff.result,
+        outcome: handoff.outcome,
         createdAt: handoff.createdAt,
         updatedAt: handoff.updatedAt,
         returnTo,
-        canDecide: handoff.state === "awaiting_approval",
-      }),
-    )
+        approvalKind,
+        policyDispatchMode: handoff.policyDispatchMode,
+        policyReplyMode: handoff.policyReplyMode,
+        origin: handoff.origin,
+        sourceSessionId: handoff.sourceSessionId,
+        sourceSessionHref: chatSessionHref(site, handoff.fromAppId, handoff.sourceSessionId),
+        sourceSessionDeleted: handoff.sourceSessionDeletedAt !== null,
+        targetSessionId: handoff.targetSessionId,
+        targetSessionHref: chatSessionHref(site, handoff.toAppId, handoff.targetSessionId),
+        replyState: handoff.replyState,
+        replyError: handoff.replyError,
+        replyDeliveredSessionId: handoff.replyDeliveredSessionId,
+        replyDeliveredAt: handoff.replyDeliveredAt,
+        replyDeliveredHref: chatSessionHref(
+          site,
+          handoff.fromAppId,
+          handoff.replyDeliveredSessionId,
+        ),
+        deliveredVia: handoff.deliveredVia,
+        operatorNote: handoff.operatorNote,
+        canCancel: !terminal,
+        canRelaunch: handoff.result !== null && replyWaiting,
+        canRetryReply:
+          handoff.result !== null &&
+          (handoff.replyState === "waiting_operator" || handoff.replyState === "failed") &&
+          handoff.sourceSessionId !== null &&
+          handoff.sourceSessionDeletedAt === null,
+        canCancelReply: replyCancellable,
+      });
+    })
     .join("");
 }
 
@@ -638,7 +766,7 @@ export function renderOverview(site: SiteModel, chrome: PageChrome): string {
                 (handoff) => `<tr>
                   <td data-label="Route">${routeText(appKeyFor(site, handoff.fromAppId), appKeyFor(site, handoff.toAppId))}</td>
                   <td data-label="Summary"><span class="table__primary">${escapeHtml(handoff.summary)}</span></td>
-                  <td data-label="State">${statusPill(handoff.state)}</td>
+                  <td data-label="State"><div class="cluster">${statusPill(handoff.state)}${replyPill(handoff.replyState)}</div></td>
                   <td data-label="Time"><span class="mono table__nowrap">${timeTag(handoff.updatedAt)}</span></td>
                   <td data-label="Actions" class="table__actions"><a class="btn btn-ghost btn-sm" href="${reviewHref(handoff)}">Review</a></td>
                 </tr>`,
@@ -659,7 +787,7 @@ export function renderOverview(site: SiteModel, chrome: PageChrome): string {
           .map((handoff) =>
             routeCard({
               id: handoff.id,
-              state: handoff.state,
+              state: displayState(handoff),
               from: appKeyFor(site, handoff.fromAppId),
               to: appKeyFor(site, handoff.toAppId),
               summary: handoff.summary,
@@ -867,7 +995,10 @@ export function renderProject(
   }
   const counts = handoffCounts(project.handoffs);
   const waiting = sortedHandoffs(
-    project.handoffs.filter((handoff) => handoff.state === "awaiting_approval"),
+    project.handoffs.filter(
+      (handoff) =>
+        handoff.state === "awaiting_approval" || handoff.replyState === "awaiting_approval",
+    ),
   );
   const running = project.apps.filter(
     (app) => (site.runtime.get(app.id) ?? "stopped") === "running",
@@ -951,7 +1082,7 @@ export function renderProject(
           .map((handoff) =>
             routeCard({
               id: handoff.id,
-              state: handoff.state,
+              state: displayState(handoff),
               from: appKeyFor(site, handoff.fromAppId),
               to: appKeyFor(site, handoff.toAppId),
               summary: handoff.summary,
@@ -1007,6 +1138,7 @@ export function renderProject(
           <div class="card__head"><h2 class="card__title" id="project-handoffs-title">Handoffs</h2><span class="mono">${counts.all}</span></div>
           <div class="card__body${project.handoffs.length === 0 ? "" : " card__body--flush"}">${handoffsContent}</div>
         </section>
+        ${handoffPolicyCard(project)}
       </div>
       <aside class="rail-stack" aria-label="Project attention">
         <section class="card" aria-labelledby="project-waiting-title">
@@ -1076,13 +1208,25 @@ export function renderHandoffs(
   const counts = handoffCounts(allHandoffs(site));
   const filtered = sortedHandoffs(
     allHandoffs(site).filter((handoff) => {
-      if (filter === "waiting" && handoff.state !== "awaiting_approval") {
+      if (
+        filter === "waiting" &&
+        handoff.state !== "awaiting_approval" &&
+        handoff.replyState !== "awaiting_approval"
+      ) {
         return false;
       }
       if (filter === "active" && !ACTIVE_STATES.includes(handoff.state)) {
         return false;
       }
       if (filter === "closed" && !CLOSED_STATES.includes(handoff.state)) {
+        return false;
+      }
+      if (
+        filter === "replies" &&
+        handoff.replyState !== "waiting_operator" &&
+        handoff.replyState !== "failed" &&
+        handoff.replyState !== "awaiting_approval"
+      ) {
         return false;
       }
       return matchesQuery(site, handoff, needle);
@@ -1093,7 +1237,12 @@ export function renderHandoffs(
     overline: "Workbench",
     title: "Handoffs",
     description: "Requests between sibling applications, with operator approval where required.",
-    meta: [`${counts.all} total`, `${counts.waiting} waiting`, `${counts.active} active`],
+    meta: [
+      `${counts.all} total`,
+      `${counts.waiting} waiting`,
+      `${counts.active} active`,
+      `${counts.replies} replies waiting`,
+    ],
   });
 
   const segment = (value: HandoffFilter, label: string, count: number): string => {
@@ -1107,6 +1256,7 @@ export function renderHandoffs(
       ${segment("waiting", "Waiting", counts.waiting)}
       ${segment("active", "Active", counts.active)}
       ${segment("closed", "Closed", counts.closed)}
+      ${segment("replies", "Replies", counts.replies)}
     </div>
     <form class="cluster" method="get" action="/handoffs" role="search">
       ${filter === "all" ? "" : `<input type="hidden" name="filter" value="${filter}" />`}
@@ -1128,7 +1278,9 @@ export function renderHandoffs(
           ? "No handoffs waiting"
           : filter === "active"
             ? "No active handoffs"
-            : "No closed handoffs";
+            : filter === "replies"
+              ? "No replies waiting"
+              : "No closed handoffs";
     const body = allEmpty
       ? "Handoffs route work between applications. Open a project to create the first one."
       : query.length > 0
@@ -1137,7 +1289,9 @@ export function renderHandoffs(
           ? "Approval requests arrive here when an agent requires a human decision."
           : filter === "active"
             ? "Queued, dispatching, and in-progress handoffs appear here."
-            : "Delivered, rejected, failed, expired, and cancelled handoffs appear here.";
+            : filter === "replies"
+              ? "Sibling replies that need a source session or an operator decision appear here."
+              : "Delivered, rejected, failed, expired, and cancelled handoffs appear here.";
     const action = allEmpty
       ? `<a class="btn btn-secondary btn-sm" href="/projects">Open a project</a>`
       : query.length > 0
@@ -1153,8 +1307,9 @@ export function renderHandoffs(
     const rows = filtered
       .map((handoff) => {
         const inline =
-          handoff.state === "awaiting_approval"
+          handoff.state === "awaiting_approval" || handoff.replyState === "awaiting_approval"
             ? `<form class="table__inline-form" method="post" action="/api/handoffs/${encodeURIComponent(handoff.id)}/decision">
+                <input type="hidden" name="approval_kind" value="${handoff.replyState === "awaiting_approval" ? "reply" : "dispatch"}" />
                 <input type="hidden" name="return_to" value="${escapeHtml(filterHref(filter, ""))}" />
                 <button class="btn btn-danger btn-sm" type="submit" name="decision" value="rejected">Reject</button>
                 <button class="btn btn-primary btn-sm" type="submit" name="decision" value="approved">Approve</button>
@@ -1163,7 +1318,7 @@ export function renderHandoffs(
         return `<tr id="handoff-${escapeHtml(handoff.id)}">
           <td data-label="Id"><span class="mono table__nowrap">${escapeHtml(shortId(handoff.id))}</span></td>
           <td data-label="Route">${routeText(appKeyFor(site, handoff.fromAppId), appKeyFor(site, handoff.toAppId))}</td>
-          <td data-label="State">${statusPill(handoff.state)}</td>
+          <td data-label="State"><div class="cluster">${statusPill(handoff.state)}${replyPill(handoff.replyState)}</div></td>
           <td data-label="Summary"><span class="table__primary">${escapeHtml(handoff.summary)}</span></td>
           <td data-label="Updated"><span class="mono table__nowrap">${timeTag(handoff.updatedAt)}</span></td>
           <td data-label="Actions" class="table__actions"><div class="table__action-group">${inline}<button class="btn btn-ghost btn-sm" type="button" data-dialog-open="h-${escapeHtml(handoff.id)}">Review</button></div></td>

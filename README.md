@@ -47,8 +47,10 @@ and requirements) to each other through the coordinator - like independent teams
 - Optional per-app images from `.hanse/Dockerfile` (`ARG HANSE_BASE`), built on a human action,
   validated in a locked-down container, with status/logs, stale detection, two-version rollback, and
   explicit GC.
-- Agent-driven handoffs via MCP tools (`request_sibling_change`, `list_apps`, `handoff_status`,
-  `deliver_handoff`) with human approval in the dashboard.
+- Session-bound, autonomous agent handoffs via MCP tools (`request_sibling_change`, `list_apps`,
+  `handoff_status`, `deliver_handoff`): the coordinator starts a fresh target session, routes the reply
+  back into the source session, parks replies whose source session is gone for an operator relaunch,
+  and enforces directed project policy with `auto`/`approve`/`deny` dispatch and reply approval.
 - A single operator login for the UI and the web IDE (no separate IDE password).
 - Embedded web IDE (code-server) at `/ide/`: opened in the selected project/application, GitHub Dark
   Dimmed theme, a bundled "Hanse Agent" chat extension with tabs per app, and a terminal rooted in the

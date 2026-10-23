@@ -54,13 +54,15 @@ function insertProjectAndApp(db: ReturnType<typeof openDatabase>): void {
 describe("migration v6 app-images", () => {
   it("applies fresh migrations and defaults existing app inserts to missing", () => {
     const db = openDatabase(":memory:");
-    expect(runMigrations(db)).toBe(13);
+    expect(runMigrations(db)).toBe(14);
     expect(runMigrations(db)).toBe(0);
 
     const versions = db.prepare("SELECT version FROM schema_migrations ORDER BY version").all() as {
       version: number;
     }[];
-    expect(versions.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
+    expect(versions.map((row) => row.version)).toEqual([
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
+    ]);
     const secretTables = (
       db
         .prepare(
@@ -200,7 +202,7 @@ describe("migration v6 app-images", () => {
     insertProjectAndApp(db);
     expect(appColumns(db)).not.toContain("image_status");
 
-    expect(runMigrations(db)).toBe(8);
+    expect(runMigrations(db)).toBe(9);
 
     const row = db.prepare("SELECT image_status, image_error FROM apps WHERE id = 'a1'").get() as {
       image_status: string;
@@ -228,7 +230,7 @@ describe("migration v6 app-images", () => {
       "INSERT INTO instances (id, app_id, state, runtime_state, updated_at) VALUES ('a1','a1','running','running',?)",
     ).run(now);
 
-    expect(runMigrations(db)).toBe(4);
+    expect(runMigrations(db)).toBe(5);
 
     const row = db
       .prepare(
@@ -260,7 +262,7 @@ describe("migration v6 app-images", () => {
     expect(appColumns(db)).not.toContain("deleting");
     expect(projectColumns(db)).not.toContain("deleting");
 
-    expect(runMigrations(db)).toBe(3);
+    expect(runMigrations(db)).toBe(4);
 
     const app = db.prepare("SELECT deleting FROM apps WHERE id = 'a1'").get() as {
       deleting: number;
@@ -291,7 +293,7 @@ describe("migration v6 app-images", () => {
     insertProjectAndApp(db);
     expect(() => db.prepare("SELECT 1 FROM skills").get()).toThrow();
 
-    expect(runMigrations(db)).toBe(2);
+    expect(runMigrations(db)).toBe(3);
     expect(runMigrations(db)).toBe(0);
 
     const columns = (db.prepare("PRAGMA table_info(skills)").all() as Array<{ name: string }>).map(
@@ -336,7 +338,7 @@ describe("migration v6 app-images", () => {
     );
     db.prepare(
       "INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?, ?, ?, ?)",
-    ).run(14, "future", "future-checksum", now);
+    ).run(15, "future", "future-checksum", now);
 
     expect(() => runMigrations(db)).toThrowError(SchemaTooNewError);
     try {
@@ -344,11 +346,11 @@ describe("migration v6 app-images", () => {
     } catch (error) {
       expect(error).toMatchObject({
         code: "schema_too_new",
-        applied: 14,
-        known: 13,
+        applied: 15,
+        known: 14,
       });
+      expect((error as Error).message).toContain("15");
       expect((error as Error).message).toContain("14");
-      expect((error as Error).message).toContain("13");
     }
     expect(() => db.prepare("SELECT 1 FROM skills").get()).toThrow();
     db.close();
@@ -367,7 +369,7 @@ describe("migration v6 app-images", () => {
       db.exec(migration.sql);
       record.run(migration.version, migration.name, migrationChecksum(migration.sql), now);
     }
-    record.run(14, "future", "future-checksum", now);
+    record.run(15, "future", "future-checksum", now);
 
     expect(() => runMigrations(db)).toThrowError(SchemaTooNewError);
     expect(() => db.prepare("SELECT 1 FROM skills").get()).toThrow();
@@ -392,7 +394,7 @@ describe("migration v6 app-images", () => {
     try {
       runMigrations(db);
     } catch (error) {
-      expect(error).toMatchObject({ code: "unknown_migration", version: 0, knownMax: 13 });
+      expect(error).toMatchObject({ code: "unknown_migration", version: 0, knownMax: 14 });
     }
     db.close();
   });
@@ -439,7 +441,7 @@ describe("migration v6 app-images", () => {
       const reopened = openDatabase(file);
       const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
       try {
-        expect(runMigrations(reopened)).toBe(1);
+        expect(runMigrations(reopened)).toBe(2);
         expect(runMigrations(reopened)).toBe(0);
         expect(warn).not.toHaveBeenCalled();
       } finally {
@@ -448,7 +450,7 @@ describe("migration v6 app-images", () => {
       const max = reopened
         .prepare("SELECT MAX(version) AS version FROM schema_migrations")
         .get() as { version: number };
-      expect(max.version).toBe(13);
+      expect(max.version).toBe(14);
       const skill = reopened
         .prepare("SELECT license, compatibility, metadata_json FROM skills WHERE name = 'review'")
         .get() as { license: string | null; compatibility: string | null; metadata_json: string };
@@ -511,7 +513,7 @@ describe("migration v6 app-images", () => {
     const file = path.join(dir, "coordinator.db");
     try {
       const first = openDatabase(file);
-      expect(runMigrations(first)).toBe(13);
+      expect(runMigrations(first)).toBe(14);
       first.close();
 
       const reopened = openDatabase(file);
@@ -525,7 +527,7 @@ describe("migration v6 app-images", () => {
       const max = reopened
         .prepare("SELECT MAX(version) AS version FROM schema_migrations")
         .get() as { version: number };
-      expect(max.version).toBe(13);
+      expect(max.version).toBe(14);
       reopened.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });

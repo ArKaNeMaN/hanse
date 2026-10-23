@@ -43,6 +43,7 @@ import {
   OPENCODE_BASIC_USERNAME,
   setEndpointAuthorization,
 } from "./endpoint-auth.js";
+import type { HanseEvent } from "./events.js";
 import {
   buildConfigOverlay,
   type IsolatedEnv,
@@ -224,6 +225,8 @@ export interface InstanceManagerOptions {
   monitorFactory?: (options: ContextMonitorOptions) => ContextMonitorLike;
   /** Set false to disable background context monitors regardless of settings support. */
   enableContextMonitors?: boolean;
+  /** Observe every projected app event while an instance monitor is running. */
+  onEvent?: (app: { id: string; projectId: string; appKey: string }, event: HanseEvent) => void;
   /** Advisory external deployment lock; absent in unit fixtures that do not exercise it. */
   deploymentLock?: DeploymentLock;
   /** Process-local destructive-operation counter exposed through `/readyz`. */
@@ -1354,6 +1357,11 @@ export class InstanceManager {
     this.#startMonitor(app, entry);
   }
 
+  /** Endpoint of a currently attached instance without starting or probing anything. */
+  endpointFor(appId: string): string | undefined {
+    return this.#running.get(appId)?.endpoint;
+  }
+
   async contextSnapshot(appId: string, sessionId: string): Promise<ContextSnapshot> {
     const monitor = this.#running.has(appId) ? this.#monitors.get(appId)?.monitor : undefined;
     if (monitor === undefined) throw new AgentNotRunningError();
@@ -1394,6 +1402,9 @@ export class InstanceManager {
         this.#monitors.get(app.id)?.generation === generation &&
         this.#running.get(app.id)?.endpoint === entry.endpoint,
       settings: { contextPolicy: (target) => contextPolicy.call(settings, target) },
+      ...(this.#options.onEvent === undefined
+        ? {}
+        : { onEvent: (event: HanseEvent) => this.#options.onEvent?.(app, event) }),
     };
     const monitor = this.#options.monitorFactory?.(options) ?? new ContextMonitor(options);
     this.#monitors.set(app.id, { monitor, endpoint: entry.endpoint, generation });

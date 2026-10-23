@@ -36,22 +36,35 @@ It never writes coordinator-specific config into a managed repository (see ADR 0
 
 ## Cross-application handoff
 
-A handoff is a structured request from one application to a sibling application. The coordinator owns
-a queue and a handoff ledger, and exposes them to agents as three thin MCP tools:
+A handoff is a structured, session-bound request from one application to a sibling application. The
+coordinator owns a durable queue and a handoff ledger, and exposes thin MCP tools:
 
 - `request_sibling_change` - enqueue a request for a sibling application;
 - `list_apps` - list the applications in the project;
-- `handoff_status` - look up a handoff by id.
+- `handoff_status` - look up a handoff the caller sent or received;
+- `deliver_handoff` - the target's reply callback.
 
-A handoff moves through `queued -> in_progress -> delivered/rejected`. Cross-application writes can be
-gated behind human approval. Delivering a request wakes the target application by creating a fresh
-session seeded with that application's own contract plus the request spec (see ADR 0004).
+The coordinator binds an agent-created request to the invoking opencode session by observing the app's
+projected `/event` stream. It creates a fresh target session, sends the spec and reply protocol, and
+routes the target's reply back into the source session as a clearly marked, untrusted user message.
+Replies whose source session is gone are kept for an explicit operator relaunch (see ADR 0015).
+
+Dispatch is durable and serialized per target application: one active handoff per target app, with the
+rest queued. The target app is started if needed. Source binding, dispatch start, and the run itself
+have deadlines, and a chain-depth limit stops autonomous ping-pong.
+
+Handoff policy is operator-owned coordinator state, not a repository manifest. A project default and
+directed pair rules select `auto`, `approve`, or `deny` for dispatch and `auto` or `approve` for reply
+delivery. Policy is snapshotted on the handoff; `requires_approval` from an agent can raise but
+never lower it.
 
 ## Concurrency
 
-- One writer lane per application, held by the coordinator.
-- Read-only fan-out (for example project Q&A) is allowed without the writer lock.
-- The user's own messages enter through the same queue, so they are serialized with agent work.
+- Handoff dispatch holds one writer lane per target application; other handoffs for that application
+  wait in `queued`.
+- Human chat sessions and handoff sessions share the application worktree; there is no general writer
+  lock or worktree isolation yet.
+- The user's own messages enter the same opencode session queue, so they are serialized with agent work.
 
 ## Runtime state
 

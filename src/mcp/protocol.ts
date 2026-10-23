@@ -1,3 +1,4 @@
+import { normalizeOutcome } from "../coordinator/handoff.js";
 import type { CoordinatorService } from "../coordinator/service.js";
 import { PACKAGE_NAME, VERSION } from "../version.js";
 
@@ -20,7 +21,8 @@ export interface RpcResponse {
 export const TOOLS = [
   {
     name: "request_sibling_change",
-    description: "Request a change in a sibling application. Returns a handoff id immediately.",
+    description:
+      "Ask a sibling application to do work. Returns a handoff id immediately. The coordinator binds the request to this session, applies the project handoff policy, starts a fresh session on the target, and later delivers the target's reply back into this session. Do not wait or poll.",
     inputSchema: {
       type: "object",
       properties: {
@@ -28,7 +30,11 @@ export const TOOLS = [
         to: { type: "string" },
         summary: { type: "string" },
         spec: { type: "string" },
-        requires_approval: { type: "boolean" },
+        requires_approval: {
+          type: "boolean",
+          description:
+            "Raise this request to operator approval. Project policy can require or deny approval regardless of this value.",
+        },
         idempotency_key: { type: "string" },
       },
       required: ["from", "to", "summary", "spec"],
@@ -41,15 +47,24 @@ export const TOOLS = [
   },
   {
     name: "handoff_status",
-    description: "Look up a handoff by id.",
+    description: "Look up a handoff that this application sent or received.",
     inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
   },
   {
     name: "deliver_handoff",
-    description: "Record the result of a handoff. Idempotent per handoff id.",
+    description:
+      "Record the result of a handoff that was dispatched to this application. Call exactly once when the work is finished. The coordinator routes the result to the source session.",
     inputSchema: {
       type: "object",
-      properties: { id: { type: "string" }, result: { type: "string" } },
+      properties: {
+        id: { type: "string" },
+        outcome: {
+          type: "string",
+          enum: ["completed", "blocked", "failed"],
+          description: "Use blocked when you need clarification; include the questions in result.",
+        },
+        result: { type: "string" },
+      },
       required: ["id", "result"],
     },
   },
@@ -90,11 +105,16 @@ function callTool(
       result = { apps: service.listApps() };
       break;
     case "handoff_status":
-      result = { handoff: service.handoffStatus(asString(args.id, "id")) ?? null };
+      result = { handoff: service.handoffStatus(asString(args.id, "id"), boundFrom) ?? null };
       break;
     case "deliver_handoff":
       result = {
-        handoff: service.deliverHandoff(asString(args.id, "id"), asString(args.result, "result")),
+        handoff: service.deliverHandoff(
+          asString(args.id, "id"),
+          asString(args.result, "result"),
+          normalizeOutcome(args.outcome),
+          boundFrom,
+        ),
       };
       break;
     default:

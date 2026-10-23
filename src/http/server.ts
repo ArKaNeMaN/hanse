@@ -15,6 +15,7 @@ import { handleContext, isContextRoute } from "./context.js";
 import { handleDeletion, isDeletionRoute } from "./deletion.js";
 import { handleGit } from "./git.js";
 import { type HttpDeps, handleRequest } from "./handler.js";
+import { handleHandoffHttp } from "./handoff.js";
 import { handleImages } from "./images.js";
 import { handleInternalMcp } from "./internal-mcp.js";
 import {
@@ -228,6 +229,15 @@ export function createHttpServer(deps: HttpDeps): Server {
           origin: request.headers.origin,
           host: request.headers.host,
         };
+        const handoffResult = await handleHandoffHttp(deps, httpRequest);
+        if (handoffResult !== undefined) {
+          response.writeHead(handoffResult.status, {
+            "content-type": handoffResult.contentType,
+            ...(handoffResult.headers ?? {}),
+          });
+          response.end(handoffResult.body);
+          return;
+        }
         if (isDeletionRoute(httpRequest.method, url.pathname)) {
           const deletionResult = await handleDeletion(deps, httpRequest);
           if (deletionResult !== undefined) {

@@ -10,6 +10,7 @@ import { runAgentSupervisor } from "../agent/supervisor.js";
 import { ConfigError } from "../config/load.js";
 import { DeletionService } from "../coordinator/deletion.js";
 import { DeploymentLock, deploymentLockPath } from "../coordinator/deployment-lock.js";
+import { HandoffDispatcher } from "../coordinator/dispatcher.js";
 import { LifecycleActivity } from "../coordinator/lifecycle-activity.js";
 import { CoordinatorService } from "../coordinator/service.js";
 import {
@@ -651,6 +652,7 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
   const skills = new SkillService({ db });
   const previews =
     runnerUrl !== undefined && runnerUrl.length > 0 ? new PreviewService() : undefined;
+  let handoffDispatcher: HandoffDispatcher | undefined;
   const manager = new InstanceManager(db, path.resolve(agentsHome()), {
     runtime,
     settings,
@@ -662,6 +664,7 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
     ...(hostAgents === undefined ? {} : { hostAgents }),
     deploymentLock,
     lifecycleActivity,
+    onEvent: (app, event) => handoffDispatcher?.observe(app, event),
   });
   const getProjects = (): ProjectContext[] => {
     const rows = db.prepare("SELECT id, name, root_path, deleting FROM projects").all() as {
@@ -711,6 +714,13 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
           lifecycleActivity,
         });
   manager.startStatusReconciler();
+  handoffDispatcher = new HandoffDispatcher({
+    db,
+    manager,
+    settings,
+    workspaceRoot: workspace,
+    logger: (message) => ctx.io.stderr(`hanse: ${message}`),
+  });
   const server = createHttpServer({
     db,
     workspaceRoot: workspace,
@@ -720,6 +730,7 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
     settings,
     ssh,
     skills,
+    dispatcher: handoffDispatcher,
     ...(previews === undefined ? {} : { previews }),
     agentsHome: path.resolve(agentsHome()),
     baselinePlugins: resolveBaselinePlugins(),
@@ -763,6 +774,7 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
   void resumeContextMonitors(manager, listResumableApps(db)).catch(() => {
     process.stderr.write("hanse: context monitor resume failed\n");
   });
+  handoffDispatcher.start();
   const operatorCount = getProjects().filter((project) => !isMasterProject(project.id)).length;
   ctx.io.stdout(
     `hanse serving ${operatorCount} project(s) and the master agent at http://${options.hostname}:${options.port}`,
@@ -770,6 +782,7 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
 
   return await new Promise<number>((resolve) => {
     const shutdown = (): void => {
+      handoffDispatcher?.stop();
       manager.detach();
       ide?.kill("SIGTERM");
       server.close(() => {

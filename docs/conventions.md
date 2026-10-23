@@ -63,6 +63,10 @@ live in `settings`, and per-scope SSH/HTTPS credentials live encrypted in `setti
 (migration v8). They are materialized into the application HOME at start; do not commit them to
 `.hanse/project.yaml`, `.hanse/app.yaml`, a Dockerfile, or a repository `.git/config`.
 
+Handoff approval policy is coordinator DB state in `handoff_policies`, not a manifest. A project
+default and directed pair rules select dispatch/reply approval; repository `.hanse/` files never carry
+approval rules.
+
 Agent skills are also Settings, not manifests. A managed skill is a bundle: a generated `SKILL.md`
 plus flat `references/<slug>.md` files, with optional license/compatibility and a metadata map. The
 coordinator stores the bundle in the `skills` and `skill_references` tables (migration v13) at
