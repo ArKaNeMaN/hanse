@@ -126,6 +126,10 @@ works in both themes with no per-theme overrides.
 | Grid line | `--grid-line` | `rgba(169,183,194,.06)` | `rgba(18,32,42,.055)` | Chart ground |
 | Scrim | `--scrim` | `rgba(3,6,10,.74)` | `rgba(18,32,42,.42)` | Dialog / drawer scrim |
 | Shadow | `--shadow-overlay` | `0 24px 64px -24px rgba(0,0,0,.8), 0 2px 8px rgba(0,0,0,.45)` | `0 20px 48px -24px rgba(18,32,42,.35), 0 2px 8px rgba(18,32,42,.08)` | Overlays only |
+| Scrollbar size | `--scrollbar-size` | `0.625rem` (10px) | `0.625rem` (10px) | Scrollbar thickness on both axes |
+| Scrollbar thumb | `--scrollbar-thumb` | `color-mix(in oklab, var(--steel-300) 65%, transparent)` | `color-mix(in oklab, var(--text-3) 80%, transparent)` | Resting scrollbar thumb |
+| Scrollbar hover | `--scrollbar-thumb-hover` | `color-mix(in oklab, var(--steel-300) 85%, transparent)` | `var(--text-3)` | Thumb on pointer hover |
+| Scrollbar active | `--scrollbar-thumb-active` | `color-mix(in oklab, var(--brass) 45%, var(--steel-500))` | `color-mix(in oklab, var(--brass) 75%, var(--line-strong))` | Thumb while dragged |
 
 ### 2.3 Status tokens
 
@@ -413,6 +417,14 @@ viewport and its own scrollback. No chart ground.
 | Drawers | panel itself | scrim blocks the page behind |
 
 `min-block-size: 0` on every scroll child. `100dvh`, never `100vh`.
+
+**Scrollbar treatment.** Every scroller wears the same Chart Room chrome: a transparent track and a
+thin, inset pill thumb at `--scrollbar-size`, drawn from `--scrollbar-thumb`, brightening to
+`--scrollbar-thumb-hover` on hover and taking a restrained brass cast
+(`--scrollbar-thumb-active`) only while dragged. The rule is global (`*::-webkit-scrollbar` in the
+base layer, with Firefox's `scrollbar-color` behind a Firefox-only feature query), so any new
+scroll owner inherits it with no per-component styling. The operator terminal is the one exception:
+its xterm viewport stays hidden by a rule in the component layer, which wins over the global one.
 
 ### 4.6 Content stress contract
 
