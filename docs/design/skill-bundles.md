@@ -808,10 +808,12 @@ preview) are resolved; Q3 (agent-assisted authoring) is deferred to a future sta
 ## 12. Future direction - agent-assisted skill authoring
 
 The owner wants the `skill-author` skill to be usable inside Hanse, but does not want every
-application agent to have skill-write access. A future stage should compare a coordinator-level
-management agent with a narrowly scoped skill-admin tool surface and human approval, per-application
-opt-in grants, and an operator-only authoring assistant. This stage keeps all skill management
-human-only; the future agent, if added, must not become a backdoor around the human-only APIs.
+application agent to have skill-write access. A later stage added a narrow exception for the built-in
+master agent: `create_skill` can create bundles at global, project, or app scope, requires operator
+confirmation for global scope, refuses the reserved master project/app, and audits the creation.
+Reading, updating, deleting, overriding, enabling, and disabling skills remain operator-only. The
+human HTTP API stays human-only; the master surface is separate, target-guarded, and audited. See
+[`master-skill-creation.md`](./master-skill-creation.md).
 
 ## 13. Design review record
 

@@ -850,7 +850,7 @@ export function renderProject(
       <div class="card__body stack--tight">
         <p class="small">The master runs as an isolated agent. It creates projects and applications, writes their instructions, changes non-secret settings, and starts or restarts application agents through its Hanse tools.</p>
         <p class="small">Its own directory is coordinator-managed and read-only inside its container. Its instructions are rewritten from the coordinator on every start.</p>
-        <p class="small">Provider keys, git credentials, skill editing, image builds, and deletion stay operator-only UI actions.</p>
+        <p class="small">Provider keys, git credentials, skill updating/deletion, image builds, and deletion stay operator-only UI actions. Skills can also be created from the master chat.</p>
       </div>
       <div class="card__foot"><a class="btn btn-secondary btn-sm" href="${escapeHtml(chatHref)}">${icon("message")}Open chat</a><a class="btn btn-ghost btn-sm" href="${escapeHtml(appSettingsHref)}">${icon("settings")}Application settings</a><a class="btn btn-ghost btn-sm" href="${escapeHtml(appSkillsHref)}">${icon("code")}Skills</a></div>
     </section>`;

@@ -435,7 +435,7 @@ export function renderApplication(
     <div class="card__body stack--tight">
       <div class="stack--tight"><span class="overline">Directory</span><span class="mono">${escapeHtml(folder)}</span></div>
       <p class="small">The master's directory is coordinator-managed and read-only inside its container. Its instructions are rewritten on every coordinator start.</p>
-      <p class="small">Workspace changes go through the master's Hanse tools. Provider keys, git credentials, skill editing, image builds, and deletion are operator-only UI actions.</p>
+      <p class="small">Workspace changes go through the master's Hanse tools. Provider keys, git credentials, skill updating/deletion, image builds, and deletion are operator-only UI actions. Skills can also be created from the master chat.</p>
     </div>
     <div class="card__foot"><a class="btn btn-secondary btn-sm" href="${escapeHtml(settingsHref)}">${icon("settings")}Application settings</a><a class="btn btn-ghost btn-sm" href="${escapeHtml(`/projects/${encodeURIComponent(project.id)}/apps/${encodeURIComponent(app.appKey)}/skills`)}">${icon("code")}Skills</a></div>
   </section>`;

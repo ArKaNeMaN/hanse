@@ -21,8 +21,24 @@ import type {
   SettingsScope,
   SettingsTarget,
 } from "../settings/types.js";
+import {
+  SkillConflictError,
+  type SkillInput,
+  type SkillReference,
+  type SkillRow,
+  type SkillScope,
+  type SkillService,
+  type SkillTarget,
+  SkillValidationError,
+} from "../skills/index.js";
 import type { SqliteDatabase } from "../store/index.js";
-import { isMasterApp, MASTER_APP_ID, MASTER_APP_KEY, MASTER_PROJECT_ID } from "./constants.js";
+import {
+  isMasterApp,
+  isMasterProject,
+  MASTER_APP_ID,
+  MASTER_APP_KEY,
+  MASTER_PROJECT_ID,
+} from "./constants.js";
 import {
   listWorkspaceDir,
   readWorkspaceFile,
@@ -47,6 +63,7 @@ export interface MasterToolContext {
   settings?: SettingsService;
   manager?: InstanceManager;
   deletion?: DeletionService;
+  skills?: SkillService;
 }
 
 interface ProjectRow {
@@ -121,6 +138,38 @@ export const MASTER_TOOLS = [
         app_key: { type: "string" },
       },
       required: ["key", "scope"],
+    },
+  },
+  {
+    name: "create_skill",
+    description:
+      "Create an enabled agent skill bundle at global, project, or application scope. Global scope requires confirm_global after operator approval. A same-name skill at the same scope is rejected; a narrower same-name skill shadows a wider one. Creating a skill never restarts agents.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        scope: { type: "string", enum: ["global", "project", "app"] },
+        confirm_global: {
+          type: "boolean",
+          description: "Required true for global scope after the operator approves it.",
+        },
+        project_id: { type: "string" },
+        app_key: { type: "string" },
+        name: { type: "string" },
+        description: { type: "string" },
+        content: { type: "string" },
+        license: { type: ["string", "null"] },
+        compatibility: { type: ["string", "null"] },
+        metadata: { type: "object", additionalProperties: { type: "string" } },
+        references: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: { path: { type: "string" }, content: { type: "string" } },
+            required: ["path", "content"],
+          },
+        },
+      },
+      required: ["scope", "name", "description", "content"],
     },
   },
   {
@@ -351,6 +400,257 @@ function requireManager(context: MasterToolContext): InstanceManager {
   return context.manager;
 }
 
+function requireSkills(context: MasterToolContext): SkillService {
+  if (context.skills === undefined) {
+    throw new MasterToolError("unavailable", "skills are not configured");
+  }
+  return context.skills;
+}
+
+function asSkillScope(value: unknown): SkillScope {
+  if (value === "global" || value === "project" || value === "app") {
+    return value;
+  }
+  throw new MasterToolError("invalid_argument", 'scope must be "global", "project", or "app"');
+}
+
+function asOptionalStringOrNull(value: unknown, field: string): string | null | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (value === null || typeof value === "string") {
+    return value;
+  }
+  throw new MasterToolError("invalid_argument", `"${field}" must be a string or null`);
+}
+
+function asOptionalMetadata(value: unknown): Record<string, string> | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new MasterToolError("invalid_argument", '"metadata" must be a plain object');
+  }
+  for (const [key, entry] of Object.entries(value)) {
+    if (typeof entry !== "string") {
+      throw new MasterToolError("invalid_argument", `metadata value for ${key} must be a string`);
+    }
+  }
+  return value as Record<string, string>;
+}
+
+function asOptionalReferences(value: unknown): SkillReference[] | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Array.isArray(value)) {
+    throw new MasterToolError("invalid_argument", '"references" must be an array');
+  }
+  const references: SkillReference[] = [];
+  for (const [index, entry] of value.entries()) {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+      throw new MasterToolError(
+        "invalid_argument",
+        `references[${index}] must be an object with path and content`,
+      );
+    }
+    const record = entry as Record<string, unknown>;
+    if (typeof record.path !== "string" || typeof record.content !== "string") {
+      throw new MasterToolError(
+        "invalid_argument",
+        `references[${index}] must have string path and content`,
+      );
+    }
+    references.push({ path: record.path, content: record.content });
+  }
+  return references;
+}
+
+function skillInputFromArgs(args: Record<string, unknown>): SkillInput {
+  if (args.enabled !== undefined) {
+    throw new MasterToolError(
+      "invalid_argument",
+      "enabled is not settable; create_skill always creates an enabled skill",
+    );
+  }
+  const name = asString(args.name, "name");
+  const description = asString(args.description, "description");
+  const content = asString(args.content, "content");
+  const license = asOptionalStringOrNull(args.license, "license");
+  const compatibility = asOptionalStringOrNull(args.compatibility, "compatibility");
+  const metadata = asOptionalMetadata(args.metadata);
+  const references = asOptionalReferences(args.references);
+  return {
+    name,
+    description,
+    content,
+    ...(license === undefined ? {} : { license }),
+    ...(compatibility === undefined ? {} : { compatibility }),
+    ...(metadata === undefined ? {} : { metadata }),
+    ...(references === undefined ? {} : { references }),
+  };
+}
+
+/** Validate a skill target before and inside the creation transaction. */
+function assertSkillTarget(db: SqliteDatabase, scope: SkillScope, target: SkillTarget): void {
+  if (scope === "global") {
+    return;
+  }
+  const project = projectRow(db, target.projectId ?? "");
+  if (project === undefined) {
+    throw new MasterToolError("unknown_project", "project not found");
+  }
+  if (isMasterProject(project.id)) {
+    throw new MasterToolError("master_protected", "the master project cannot own agent skills");
+  }
+  if (scope === "app" && isMasterApp(project.id, target.appKey ?? "")) {
+    throw new MasterToolError("master_protected", "the master application cannot own agent skills");
+  }
+  if (project.deleting === 1) {
+    throw new MasterToolError("deletion_pending", "the project is pending deletion");
+  }
+  if (scope !== "app") {
+    return;
+  }
+  const app = appRow(db, project.id, target.appKey ?? "");
+  if (app === undefined) {
+    throw new MasterToolError("unknown_app", "application not found");
+  }
+  if (app.deleting === 1) {
+    throw new MasterToolError("deletion_pending", "the application is pending deletion");
+  }
+}
+
+function skillSummary(row: SkillRow): Record<string, unknown> {
+  return {
+    id: row.id,
+    scope: row.scope,
+    projectId: row.projectId,
+    appKey: row.appKey,
+    name: row.name,
+    description: row.description,
+    license: row.license,
+    compatibility: row.compatibility,
+    metadata: row.metadata,
+    enabled: row.enabled,
+    references: row.references.map((reference) => ({
+      path: reference.path,
+      size: Buffer.byteLength(reference.content, "utf8"),
+    })),
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    updatedBy: row.updatedBy,
+  };
+}
+
+function shadowedByScopes(
+  db: SqliteDatabase,
+  scope: SkillScope,
+  target: SkillTarget,
+  name: string,
+): SkillScope[] {
+  if (scope === "app") {
+    return [];
+  }
+  const scopes: SkillScope[] = [];
+  if (scope === "global") {
+    const project = db
+      .prepare(
+        `SELECT 1 FROM skills s
+         JOIN projects p ON p.id = s.project_id
+         WHERE s.scope = 'project' AND s.name = ? AND p.deleting = 0
+         LIMIT 1`,
+      )
+      .get(name);
+    if (project !== undefined) {
+      scopes.push("project");
+    }
+    const app = db
+      .prepare(
+        `SELECT 1 FROM skills s
+         JOIN apps a ON a.project_id = s.project_id AND a.app_key = s.app_key
+         JOIN projects p ON p.id = a.project_id
+         WHERE s.scope = 'app' AND s.name = ? AND a.deleting = 0 AND p.deleting = 0
+         LIMIT 1`,
+      )
+      .get(name);
+    if (app !== undefined) {
+      scopes.push("app");
+    }
+    return scopes;
+  }
+  const app = db
+    .prepare(
+      `SELECT 1 FROM skills s
+       JOIN apps a ON a.project_id = s.project_id AND a.app_key = s.app_key
+       JOIN projects p ON p.id = a.project_id
+       WHERE s.scope = 'app' AND s.name = ? AND s.project_id = ?
+         AND a.deleting = 0 AND p.deleting = 0
+       LIMIT 1`,
+    )
+    .get(name, target.projectId ?? "");
+  if (app !== undefined) {
+    scopes.push("app");
+  }
+  return scopes;
+}
+
+function appsInScope(
+  db: SqliteDatabase,
+  scope: SkillScope,
+  target: SkillTarget,
+): { total: number; running: number } {
+  const clauses = ["a.deleting = 0", "p.deleting = 0"];
+  const params: string[] = [];
+  if (scope !== "global") {
+    clauses.push("p.id = ?");
+    params.push(target.projectId ?? "");
+  }
+  if (scope === "app") {
+    clauses.push("a.app_key = ?");
+    params.push(target.appKey ?? "");
+  }
+  const rows = db
+    .prepare(
+      `SELECT a.id FROM apps a
+       JOIN projects p ON p.id = a.project_id
+       WHERE ${clauses.join(" AND ")}`,
+    )
+    .all(...params) as Array<{ id: string }>;
+  let running = 0;
+  for (const row of rows) {
+    const state = runtimeState(db, row.id);
+    if (state === "running" || state === "starting") {
+      running += 1;
+    }
+  }
+  return { total: rows.length, running };
+}
+
+function skillConflictError(
+  skills: SkillService,
+  scope: SkillScope,
+  target: SkillTarget,
+  name: string,
+): MasterToolError {
+  let existing: ReturnType<SkillService["resolve"]>["rows"][number] | undefined;
+  try {
+    existing = skills.resolve(target).rows.find((row) => row.scope === scope && row.name === name);
+  } catch {
+    existing = undefined;
+  }
+  if (existing !== undefined) {
+    return new MasterToolError(
+      "skill_exists",
+      `a skill named "${name}" already exists at ${scope} scope (id ${existing.id}, updated by ${existing.updatedBy ?? "unknown"} at ${existing.updatedAt}); choose a different name or ask the operator to edit it`,
+    );
+  }
+  return new MasterToolError(
+    "skill_exists",
+    `a skill named "${name}" already exists at ${scope} scope; choose a different name or ask the operator to edit it`,
+  );
+}
+
 function lookupApp(
   context: MasterToolContext,
   projectId: string,
@@ -425,6 +725,15 @@ function lifecycleError(error: unknown): MasterToolError {
   }
   if (error instanceof SettingsValidationError) {
     return new MasterToolError("invalid_argument", error.message);
+  }
+  if (error instanceof SkillValidationError) {
+    return new MasterToolError(
+      "invalid_skill",
+      error.field === undefined ? error.message : `${error.field}: ${error.message}`,
+    );
+  }
+  if (error instanceof SkillConflictError) {
+    return new MasterToolError("skill_exists", error.message);
   }
   if (error instanceof WorkspaceFileError) {
     return new MasterToolError(error.code, error.message);
@@ -605,6 +914,95 @@ export async function callMasterTool(
           ...(appId === undefined
             ? {}
             : { pendingRestart: pendingRestart(context.manager, appId) }),
+        };
+      }
+      case "create_skill": {
+        const scope = asSkillScope(args.scope);
+        if (scope === "global") {
+          if (args.confirm_global === undefined || args.confirm_global === false) {
+            throw new MasterToolError(
+              "confirmation_required",
+              "global skills affect every application, including the master; ask the operator and pass confirm_global: true after approval",
+            );
+          }
+          if (args.confirm_global !== true) {
+            throw new MasterToolError("invalid_argument", '"confirm_global" must be a boolean');
+          }
+        } else if (args.confirm_global !== undefined) {
+          throw new MasterToolError(
+            "invalid_argument",
+            "confirm_global is only valid for global scope",
+          );
+        }
+        const target: SkillTarget = targetFor(args, scope);
+        assertSkillTarget(context.db, scope, target);
+        const input = skillInputFromArgs(args);
+        const skills = requireSkills(context);
+        const name = input.name ?? "";
+        let created: SkillRow;
+        try {
+          created = context.db.transaction(() => {
+            assertSkillTarget(context.db, scope, target);
+            const row = skills.create(scope, target, input, "master");
+            recordEvent(context.db, "master.skill_created", {
+              skillId: row.id,
+              scope: row.scope,
+              projectId: row.projectId,
+              appKey: row.appKey,
+              name: row.name,
+              referenceCount: row.references.length,
+              contentBytes: Buffer.byteLength(row.content, "utf8"),
+              referenceBytes: row.references.reduce(
+                (total, reference) => total + Buffer.byteLength(reference.content, "utf8"),
+                0,
+              ),
+            });
+            return row;
+          })();
+        } catch (error) {
+          if (error instanceof SkillConflictError) {
+            throw skillConflictError(skills, scope, target, name);
+          }
+          throw error;
+        }
+        const warnings = new Set<string>();
+        let shadows: SkillScope[] = [];
+        try {
+          shadows =
+            skills.resolve(target).effective.find((entry) => entry.id === created.id)?.shadows ??
+            [];
+        } catch {
+          warnings.add("post_create_enrichment");
+        }
+        let shadowedBy: SkillScope[] = [];
+        try {
+          shadowedBy = shadowedByScopes(context.db, scope, target, created.name);
+        } catch {
+          warnings.add("post_create_enrichment");
+        }
+        let scopeApps = { total: 0, running: 0 };
+        try {
+          scopeApps = appsInScope(context.db, scope, target);
+        } catch {
+          warnings.add("post_create_enrichment");
+        }
+        let pending: { pending: boolean; reasons: string[] } | undefined;
+        if (scope === "app") {
+          try {
+            pending = pendingRestart(context.manager, `${target.projectId}:${target.appKey}`);
+          } catch {
+            pending = { pending: false, reasons: [] };
+            warnings.add("post_create_enrichment");
+          }
+        }
+        return {
+          ok: true,
+          skill: skillSummary(created),
+          shadows,
+          shadowedBy,
+          appsInScope: scopeApps,
+          ...(pending === undefined ? {} : { pendingRestart: pending }),
+          ...(warnings.size === 0 ? {} : { warnings: [...warnings] }),
         };
       }
       case "start_app": {

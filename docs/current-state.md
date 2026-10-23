@@ -591,9 +591,9 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   model-provider auth is, as for every agent.
 - `/internal/mcp` dispatches a separate allowlist when the presented token resolves to
   `hanse-master:master`: `list_projects`, `get_app`, `get_settings`, `set_setting`,
-  `inherit_setting`, `create_project`, `add_app`, `start_app`, `restart_app`, `list_dir`, `read_file`,
-  `write_file`. SSH and handoff tools are rejected as `unknown_tool`; there is no fall-through.
-  Failures return `{ok:false, code, message}` text content.
+  `inherit_setting`, `create_skill`, `create_project`, `add_app`, `start_app`, `restart_app`,
+  `list_dir`, `read_file`, `write_file`. SSH and handoff tools are rejected as `unknown_tool`; there
+  is no fall-through. Failures return `{ok:false, code, message}` text content.
 - Workspace file tools are workspace-relative and confined with realpath/symlink checks,
   `O_NOFOLLOW`, regular-file checks, 256 KiB read/write caps, 500-entry listings, UTF-8/NUL checks,
   and denials for `.git`, `.hanse/project.yaml`, `.hanse/app.yaml`, and the master `AGENTS.md`.
@@ -606,6 +606,16 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
 - Settings writes accept only the seven registry keys (no provider keys or git credentials), validate
   the target scope, and report pending restarts. `start_app` and `restart_app` refuse the master
   itself; a stopped app is not started by `restart_app`.
+- `create_skill` creates an enabled bundle at global, project, or app scope through
+  `SkillService.create`, with actor `master`. It accepts the same structured fields as the human
+  form and reuses every service validation. Global scope requires `confirm_global: true` after the
+  operator approves. Project/app targets must be registered and not deleting; the reserved master
+  project/app is refused. A same-scope duplicate returns `skill_exists` with the existing row
+  context; a narrower same-name row shadows a wider one. The create and its
+  `master.skill_created` event commit in one transaction (audit failure rolls back the skill). The
+  result reports `shadows`, `shadowedBy`, `appsInScope {total, running}`, and app-scope
+  `pendingRestart`; it never echoes the body or reference contents. Creating a skill never restarts
+  an agent.
 - UI: a **Master** navigation entry opens its chat. The master is hidden from the overview ledger,
   project index, sidebar project lists, `/api/projects`, and chat's default selection. Direct
   project/app/settings/skills URLs still resolve with a reduced master page (no git workbench or
@@ -917,8 +927,10 @@ Settings stage verification:
 - Codegraph indexes are per application (`<app>/.codegraph/`) and are not built automatically;
   per-app HOME keeps the global codegraph state separate.
 - No TLS; intended for a trusted LAN (VPN/reverse proxy for remote access).
-- The master agent has no deletion, file removal/move, git, image-build, skill-editing, or
-  provider-key/git-credential tool. Manifest changes are limited to the provisioning tools; renaming
+- The master agent has no deletion, file removal/move, git, image-build, skill update/delete/override
+  or provider-key/git-credential tool; skill creation is available through `create_skill`, but
+  reading/listing skills and editing existing ones remain operator-only. Manifest changes are
+  limited to the provisioning tools; renaming
   projects, removing apps, and changing base branches remain UI/manifest jobs. A changed master
   `AGENTS.md` needs an explicit master restart because instructions are not part of the settings
   hash. The master reads text files only, can read workspace content that itself contains secrets,

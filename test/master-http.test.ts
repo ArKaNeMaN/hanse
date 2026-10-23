@@ -13,10 +13,12 @@ import {
   type ProjectContext,
 } from "../src/http/handler.js";
 import { handleInternalMcp } from "../src/http/internal-mcp.js";
+import { createHttpServer } from "../src/http/server.js";
 import { createPrincipal } from "../src/identity/principals.js";
 import { ensureMasterAgent } from "../src/master/bootstrap.js";
 import { MASTER_APP_ID, MASTER_APP_KEY, MASTER_PROJECT_ID } from "../src/master/constants.js";
 import { mintAgentToken } from "../src/mcp/agent-tokens.js";
+import { SkillService } from "../src/skills/index.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
 
 const dirs: string[] = [];
@@ -90,6 +92,7 @@ function fixture(options: { withOperator: boolean }): Fixture {
       workspaceRoot: workspace,
       getProjects,
       git: new GitService({ workspaceRoot: workspace }),
+      skills: new SkillService({ db }),
     },
   };
 }
@@ -210,6 +213,7 @@ describe("master HTTP surface", () => {
     const masterTools = (JSON.parse(master.body) as { result: { tools: Array<{ name: string }> } })
       .result.tools;
     expect(masterTools.map((tool) => tool.name)).toContain("write_file");
+    expect(masterTools.map((tool) => tool.name)).toContain("create_skill");
     expect(masterTools.map((tool) => tool.name)).not.toContain("ssh_exec");
 
     const appToken = mintAgentToken(value.deps.db, "p:a");
@@ -228,5 +232,78 @@ describe("master HTTP surface", () => {
     expect(JSON.parse(app.body)).toMatchObject({
       error: { message: expect.stringContaining("Unknown tool") },
     });
+  });
+
+  it("accepts a maximum valid skill bundle and rejects an oversized body", async () => {
+    const value = fixture({ withOperator: true });
+    const masterToken = mintAgentToken(value.deps.db, MASTER_APP_ID);
+    const server = createHttpServer(value.deps);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    const port = typeof address === "object" && address !== null ? address.port : 0;
+    const url = `http://127.0.0.1:${port}/internal/mcp`;
+    const metadata: Record<string, string> = {};
+    for (let index = 0; index < 15; index += 1) {
+      metadata[`key-${index}`] = "€".repeat(1000);
+    }
+    const payload = {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: {
+        name: "create_skill",
+        arguments: {
+          scope: "app",
+          project_id: "p",
+          app_key: "a",
+          name: "max-skill",
+          description: "€".repeat(1024),
+          content: "\u0001".repeat(48000),
+          metadata,
+          references: Array.from({ length: 20 }, (_, index) => ({
+            path: `references/r${index}.md`,
+            content: "€".repeat(9600),
+          })),
+        },
+      },
+    };
+    const body = JSON.stringify(payload);
+    expect(Buffer.byteLength(body, "utf8")).toBeLessThan(1024 * 1024);
+    try {
+      const accepted = await fetch(url, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${masterToken}`,
+          "content-type": "application/json",
+        },
+        body,
+      });
+      expect(accepted.status).toBe(200);
+      const acceptedBody = (await accepted.json()) as {
+        result?: { content?: Array<{ text?: string }> };
+      };
+      expect(JSON.parse(acceptedBody.result?.content?.[0]?.text ?? "{}")).toMatchObject({
+        ok: true,
+        skill: { name: "max-skill", scope: "app" },
+      });
+
+      const oversized = JSON.stringify({ ...payload, padding: "x".repeat(1024 * 1024) });
+      const rejected = await fetch(url, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${masterToken}`,
+          "content-type": "application/json",
+        },
+        body: oversized,
+      });
+      expect(rejected.status).toBe(413);
+      expect(JSON.parse(await rejected.text())).toMatchObject({ code: "payload_too_large" });
+      const count = value.deps.db.prepare("SELECT COUNT(*) AS count FROM skills").get() as {
+        count: number;
+      };
+      expect(count.count).toBe(1);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 });

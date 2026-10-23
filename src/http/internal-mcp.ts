@@ -52,6 +52,7 @@ export async function handleInternalMcp(
         ...(deps.settings === undefined ? {} : { settings: deps.settings }),
         ...(deps.manager === undefined ? {} : { manager: deps.manager }),
         ...(deps.deletion === undefined ? {} : { deletion: deps.deletion }),
+        ...(deps.skills === undefined ? {} : { skills: deps.skills }),
       },
       agent,
       payload as RpcRequest,

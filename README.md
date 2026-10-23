@@ -15,10 +15,10 @@ and requirements) to each other through the coordinator - like independent teams
 
 - Project/application registry, and creating projects and adding applications from the UI (by path or
   `git clone`).
-- Built-in **master agent** for operating Hanse itself: create projects and applications, write
-  application `AGENTS.md` contracts, change non-secret settings, and start/restart agents from a
-  dedicated chat, with workspace-confined file tools, an allowlisted MCP surface, and an isolated
-  read-only app directory.
+- Built-in **master agent** for operating Hanse itself: create projects, applications, and
+  global/project/application skill bundles, write application `AGENTS.md` contracts, change
+  non-secret settings, and start/restart agents from a dedicated chat, with workspace-confined file
+  tools, an allowlisted MCP surface, and an isolated read-only app directory.
 - Full project/application deletion from the UI or human-only API: exact-name confirmation, durable
   retry markers, container/network/image cleanup, app state and manifest removal, optional source-file
   deletion, and preserved SSH audit/global settings.
