@@ -1413,7 +1413,10 @@
     padding-block-start: var(--space-4);
   }
 
-  .terminal {
+  /* xterm.js adds both `terminal` and `xterm` to its root element. Keep this
+     legacy log styling off the operator terminal so it cannot clamp the
+     renderer to a 65vh box inside a full-height host. */
+  .terminal:not(.xterm) {
     margin: 0;
     min-block-size: 26rem;
     max-block-size: 65vh;
@@ -1430,7 +1433,7 @@
     border-block: 1px solid var(--line);
   }
 
-  .terminal:focus-visible {
+  .terminal:not(.xterm):focus-visible {
     outline: 2px solid var(--focus);
     outline-offset: -2px;
   }
@@ -7390,7 +7393,7 @@
   position: relative;
   min-block-size: 0;
   overflow: hidden;
-  padding: var(--space-2) var(--space-3);
+  margin: var(--space-2) var(--space-3);
   background: var(--inset);
 }
 

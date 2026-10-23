@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -247,6 +247,21 @@ describe("operator terminal page", () => {
       headers: { authorization: `Bearer ${f.humanToken}` },
     });
     expect(unknown.status).toBe(404);
+  });
+});
+
+describe("operator terminal layout styles", () => {
+  const css = readFileSync(new URL("../src/http/styles.css", import.meta.url), "utf8");
+
+  it("keeps the legacy terminal log box off xterm's root element", () => {
+    expect(css).toContain(".terminal:not(.xterm) {");
+    expect(css).not.toMatch(/(^|\n)\s*\.terminal\s*\{/);
+  });
+
+  it("uses host margin rather than padding so FitAddon measures the content box", () => {
+    const hostRule = css.match(/\.terminal-host\s*\{[^}]*\}/)?.[0];
+    expect(hostRule).toContain("margin: var(--space-2) var(--space-3);");
+    expect(hostRule).not.toContain("padding:");
   });
 });
 
