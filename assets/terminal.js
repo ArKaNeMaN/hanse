@@ -318,11 +318,14 @@
     }
     const fontFamily = tokenValue("font-family", "--font-mono") || "monospace";
     const fontSize = Number.parseFloat(tokenValue("font-size", "--text-mono")) || 12;
+    const Unicode11Ctor = window.Unicode11Addon && window.Unicode11Addon.Unicode11Addon;
+    const GraphemesCtor =
+      window.UnicodeGraphemesAddon && window.UnicodeGraphemesAddon.UnicodeGraphemesAddon;
     host.replaceChildren();
     term = new TerminalCtor({
       fontFamily,
       fontSize,
-      lineHeight: 1.5,
+      lineHeight: 1,
       letterSpacing: 0,
       cursorBlink: !reducedMotion.matches,
       cursorStyle: "bar",
@@ -330,9 +333,41 @@
       screenReaderMode: true,
       allowTransparency: false,
       convertEol: false,
-      allowProposedApi: false,
+      allowProposedApi: true,
       theme: readTheme(),
     });
+    let unicode11Loaded = false;
+    if (typeof Unicode11Ctor === "function") {
+      try {
+        term.loadAddon(new Unicode11Ctor());
+        unicode11Loaded = true;
+      } catch {
+        unicode11Loaded = false;
+      }
+    }
+    let graphemesLoaded = false;
+    if (typeof GraphemesCtor === "function") {
+      try {
+        term.loadAddon(new GraphemesCtor());
+        graphemesLoaded = true;
+      } catch {
+        graphemesLoaded = false;
+      }
+    }
+    if (graphemesLoaded) {
+      try {
+        term.unicode.activeVersion = "15-graphemes";
+      } catch {
+        graphemesLoaded = false;
+      }
+    }
+    if (!graphemesLoaded && unicode11Loaded) {
+      try {
+        term.unicode.activeVersion = "11";
+      } catch {
+        // The proposed unicode API is unavailable; keep the default width table.
+      }
+    }
     fitAddon = new FitCtor();
     term.loadAddon(fitAddon);
     term.open(host);

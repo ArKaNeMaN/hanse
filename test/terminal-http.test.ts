@@ -210,10 +210,16 @@ describe("operator terminal page", () => {
 
     const xtermScript = terminal.body.indexOf("/assets/vendor/xterm/xterm-6.0.0.js");
     const fitScript = terminal.body.indexOf("/assets/vendor/xterm/addon-fit-0.11.0.js");
+    const unicode11Script = terminal.body.indexOf("/assets/vendor/xterm/addon-unicode11-0.9.0.js");
+    const graphemesScript = terminal.body.indexOf(
+      "/assets/vendor/xterm/addon-unicode-graphemes-0.4.0.js",
+    );
     const terminalScript = terminal.body.indexOf("/assets/terminal.js");
     expect(xtermScript).toBeGreaterThan(-1);
     expect(fitScript).toBeGreaterThan(xtermScript);
-    expect(terminalScript).toBeGreaterThan(fitScript);
+    expect(unicode11Script).toBeGreaterThan(fitScript);
+    expect(graphemesScript).toBeGreaterThan(unicode11Script);
+    expect(terminalScript).toBeGreaterThan(graphemesScript);
     expect(terminal.body).not.toContain(RUNTIME_TOKEN);
 
     const application = handleRequest(f.deps, {

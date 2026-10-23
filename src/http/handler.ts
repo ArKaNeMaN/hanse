@@ -133,6 +133,14 @@ const ASSETS: Record<string, { file: string; contentType: string }> = {
     file: "vendor/xterm/addon-fit-0.11.0.js",
     contentType: "text/javascript; charset=utf-8",
   },
+  "/assets/vendor/xterm/addon-unicode11-0.9.0.js": {
+    file: "vendor/xterm/addon-unicode11-0.9.0.js",
+    contentType: "text/javascript; charset=utf-8",
+  },
+  "/assets/vendor/xterm/addon-unicode-graphemes-0.4.0.js": {
+    file: "vendor/xterm/addon-unicode-graphemes-0.4.0.js",
+    contentType: "text/javascript; charset=utf-8",
+  },
   "/assets/ssh.js": { file: "ssh.js", contentType: "text/javascript; charset=utf-8" },
   "/assets/settings.js": {
     file: "settings.js",

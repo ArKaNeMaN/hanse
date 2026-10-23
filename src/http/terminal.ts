@@ -94,6 +94,8 @@ export function renderTerminalPage(
     scripts: [
       "/assets/vendor/xterm/xterm-6.0.0.js",
       "/assets/vendor/xterm/addon-fit-0.11.0.js",
+      "/assets/vendor/xterm/addon-unicode11-0.9.0.js",
+      "/assets/vendor/xterm/addon-unicode-graphemes-0.4.0.js",
       "/assets/terminal.js",
     ],
     styles: ["/assets/vendor/xterm/xterm-6.0.0.css"],

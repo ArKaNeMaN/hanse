@@ -1025,6 +1025,16 @@ describe("http API and assets", () => {
         contentType: "text/javascript; charset=utf-8",
         marker: "FitAddon",
       },
+      {
+        path: "/assets/vendor/xterm/addon-unicode11-0.9.0.js",
+        contentType: "text/javascript; charset=utf-8",
+        marker: "Unicode11Addon",
+      },
+      {
+        path: "/assets/vendor/xterm/addon-unicode-graphemes-0.4.0.js",
+        contentType: "text/javascript; charset=utf-8",
+        marker: "UnicodeGraphemesAddon",
+      },
     ];
     for (const asset of assets) {
       const response = handleRequest(deps(f), {
@@ -1040,6 +1050,8 @@ describe("http API and assets", () => {
     for (const assetPath of [
       "/assets/vendor/xterm/xterm-9.9.9.js",
       "/assets/vendor/xterm/addon-fit-9.9.9.js",
+      "/assets/vendor/xterm/addon-unicode11-9.9.9.js",
+      "/assets/vendor/xterm/addon-unicode-graphemes-9.9.9.js",
       "/assets/vendor/xterm/unknown.css",
     ]) {
       const missing = handleRequest(deps(f), {
