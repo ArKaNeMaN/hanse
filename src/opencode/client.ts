@@ -52,6 +52,22 @@ export interface OpencodeProviders {
   default?: Record<string, string>;
 }
 
+export interface OpencodeCommand {
+  name: string;
+  description?: string;
+  agent?: string;
+  model?: string | { providerID: string; modelID: string };
+  source?: "command" | "mcp" | "skill";
+  /**
+   * Optional on purpose: MCP prompts expose a non-string value that may serialize as `{}`, and the
+   * reduced v2 shape omits it. The pure whitelist treats any non-string as absent and derives
+   * `shell: "unknown"`; the client never retains or logs a non-string template.
+   */
+  template?: string;
+  subtask?: boolean;
+  hints?: string[];
+}
+
 export interface OpencodeQuestionOption {
   label: string;
   description?: string;
@@ -153,6 +169,10 @@ export const PROVIDERS_RESPONSE_TIMEOUT_MS = 10_000;
 export const SESSIONS_RESPONSE_MAX_BYTES = 2 * 1024 * 1024;
 export const SESSIONS_RESPONSE_TIMEOUT_MS = 5_000;
 export const SUMMARIZE_RESPONSE_TIMEOUT_MS = 600_000;
+export const COMMANDS_RESPONSE_MAX_BYTES = 4 * 1024 * 1024;
+export const COMMANDS_RESPONSE_TIMEOUT_MS = 10_000;
+export const COMMAND_RUN_TIMEOUT_MS = 30 * 60 * 1000;
+export const COMMAND_RESPONSE_DRAIN_BYTES = 1024 * 1024;
 const ERROR_EXCERPT_BYTES = 4_096;
 const ERROR_EXCERPT_CHARS = 300;
 
@@ -196,6 +216,47 @@ export async function listSessionsBounded(endpoint: string): Promise<OpencodeSes
     options,
   );
   return readJson<OpencodeSession[]>(response, path, options);
+}
+
+export async function listCommands(
+  endpoint: string,
+  options?: OpencodeRequestOptions,
+): Promise<OpencodeCommand[]> {
+  const path = "/command";
+  const requestOptions: OpencodeRequestOptions = {
+    maxBytes: options?.maxBytes ?? COMMANDS_RESPONSE_MAX_BYTES,
+    timeoutMs: options?.timeoutMs ?? COMMANDS_RESPONSE_TIMEOUT_MS,
+  };
+  const body = await getJson<unknown>(endpoint, path, requestOptions);
+  return coerceCommandList(body, path);
+}
+
+export async function runSessionCommand(
+  endpoint: string,
+  sessionId: string,
+  name: string,
+  args: string,
+  messageID: string,
+  options?: { signal?: AbortSignal; timeoutMs?: number },
+): Promise<void> {
+  const path = `/session/${encodeURIComponent(sessionId)}/command`;
+  const timeoutMs = options?.timeoutMs ?? COMMAND_RUN_TIMEOUT_MS;
+  const requestOptions: OpencodeRequestOptions = {
+    maxBytes: COMMAND_RESPONSE_DRAIN_BYTES,
+    timeoutMs,
+  };
+  const response = await requestResponse(
+    endpoint,
+    path,
+    {
+      method: "POST",
+      body: JSON.stringify({ command: name, arguments: args, messageID }),
+    },
+    timeoutMs,
+    requestOptions,
+    options?.signal,
+  );
+  await readCapped(response, COMMAND_RESPONSE_DRAIN_BYTES);
 }
 
 export async function listProviders(endpoint: string): Promise<OpencodeProviders> {
@@ -372,6 +433,51 @@ function parseOpencodeModel(model: string | undefined): OpencodeModel | undefine
   const slash = model.indexOf("/");
   if (slash <= 0 || slash === model.length - 1) return undefined;
   return { providerID: model.slice(0, slash), modelID: model.slice(slash + 1) };
+}
+
+function coerceCommandList(body: unknown, path: string): OpencodeCommand[] {
+  if (!Array.isArray(body)) {
+    throw new OpencodeHttpError(path, 0, "response body is not an array");
+  }
+  const commands: OpencodeCommand[] = [];
+  for (const entry of body) {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+      throw new OpencodeHttpError(path, 0, "response body contains a non-object command");
+    }
+    commands.push(coerceCommandEntry(entry as Record<string, unknown>));
+  }
+  return commands;
+}
+
+function coerceCommandEntry(record: Record<string, unknown>): OpencodeCommand {
+  const command: OpencodeCommand = {
+    name: typeof record.name === "string" ? record.name : "",
+  };
+  if (typeof record.description === "string") command.description = record.description;
+  if (typeof record.agent === "string") command.agent = record.agent;
+  const model = coerceCommandModel(record.model);
+  if (model !== undefined) command.model = model;
+  if (record.source === "command" || record.source === "mcp" || record.source === "skill") {
+    command.source = record.source;
+  }
+  if (typeof record.template === "string") command.template = record.template;
+  if (typeof record.subtask === "boolean") command.subtask = record.subtask;
+  if (Array.isArray(record.hints)) {
+    command.hints = record.hints.filter((hint): hint is string => typeof hint === "string");
+  }
+  return command;
+}
+
+function coerceCommandModel(
+  value: unknown,
+): string | { providerID: string; modelID: string } | undefined {
+  if (typeof value === "string") return value;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  if (typeof record.providerID !== "string" || typeof record.modelID !== "string") {
+    return undefined;
+  }
+  return { providerID: record.providerID, modelID: record.modelID };
 }
 
 function v2LocationQuery(appDir: string): string {

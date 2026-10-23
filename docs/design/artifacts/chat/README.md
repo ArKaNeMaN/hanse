@@ -15,10 +15,24 @@ CHAT_QA_URL=http://127.0.0.1:8792 CHAT_QA_TOKEN=qa-token node docs/design/chat-q
 ```
 
 `report.json` records every scenario, assertion, observation, screenshot path, and the console/page
-error list for the deterministic gate. The last deterministic run reported **14 scenarios, 299
-assertions, 32 screenshots, zero console/page errors**. The two `read` captures are intentionally not
+error list for the deterministic gate. The last deterministic run reported **22 scenarios, 429
+assertions, 45 screenshots, zero console/page errors**. The two `read` captures are intentionally not
 committed because they contained reference-deployment source data; the `read` assertions remain in
 `report.json`. Live-run reports, screenshots, and session identifiers are never committed.
+
+The slash-command scenarios add a `commands` fixture to `installRoutes`: a `GET /commands` list with
+the six Hanse entries, application commands (including one MCP prompt and one `shell:"present"` and
+one `shell:"unknown"` entry), a disabled row, and a `command_shadowed` warning for the `ide` alias,
+plus a `POST .../sessions/:sid/commands` state machine and a `commandGets` cache counter. The
+scenarios add these names to `report.json`: `commands-palette` (open via `/` and the Commands
+button, filter, result/empty announcements, combobox/listbox ARIA, disabled-row skip, insert-vs-
+submit), `commands-shell-confirm`, `commands-shell-unknown`, `commands-stale-400` (one optimistic
+row reused and rekeyed after a single retry), `commands-unknown-literal` (`//foo`, an unknown slash,
+and a direct-typed shadow), `commands-master` (`/editor`/`/diff` disabled with the reason), and
+`commands-popup` (popup-blocked same-tab fallback). `commands-widths` repeats the open palette at
+390/768/1440 in dark and light and asserts no horizontal overflow, the in-flow position above the
+composer, and 44 px rows at 390. A deliberate non-2xx response still only filters its own expected
+resource log.
 
 The phase-7 diff scenarios inject a `Worker` probe before page load to count worker creation,
 `tokenize` posts, responses, and terminations. They reuse the same deterministic route/EventSource
@@ -57,6 +71,14 @@ and any other console/page error still fails the gate.
 | `send-sending-1440-dark.png` | Optimistic local row (`sending`) visible before the delayed 202. |
 | `send-streaming-1440-dark.png` | Server-ID rekey with no duplicate user row, plus assistant text deltas (`Streaming works.`). |
 | `send-queued-1440-dark.png` | A second send while busy: one queued row, `1 message queued`, and `· 1 queued` in the status. |
+| `commands-palette-1440-dark.png` | The open palette: Hanse and Application commands groups, `Hanse`/`MCP`/`Shell`/`Shell unknown` badges, a disabled row with its reason, the shadow footer, and the active row. |
+| `commands-shell-confirm-1440-dark.png` | The reusable confirmation dialog after `/shellcheck --dry-run`; accepting produces the single accepted optimistic row rekeyed to the 202 `messageID`. |
+| `commands-shell-unknown-1440-dark.png` | A `shell:"unknown"` MCP prompt still opens the same confirmation dialog and posts `confirmShell:true` only after acceptance. |
+| `commands-stale-400-1440-dark.png` | A stale `400 shell_confirmation_required` retry: the existing optimistic row is visible behind the second confirmation and adopts the retry's `messageID`. |
+| `commands-unknown-literal-1440-dark.png` | `//foo` and an unknown slash sent verbatim through the text path, and a direct-typed shadow posting the opencode command with the shadow hint. |
+| `commands-master-1440-dark.png` | The master palette with `/editor` and `/diff` visible but disabled with the reason, `/restart` still available, and the inline disabled hint after Enter. |
+| `commands-popup-1440-dark.png` | A blocked `window.open` for `/editor` with the same-tab fallback and the popup-blocked notice. |
+| `commands-widths-{390,768,1440}-{dark,light}.png` | The open palette across the width/theme matrix: no horizontal overflow, in-flow above the draft, and 44 px touch rows at 390. |
 | `context-ready-1440-dark.png` | Ready context at 1440 dark: `Context 62%` chip, `62% of 200k` summary, `124,000 / 200,000 tokens · deepseek/deepseek-flash` detail, `Auto-compact at 80%`, meter ARIA, and an enabled `Compact now`. |
 | `context-ready-390-dark.png` | The same ready chip and context rail at 390 with no horizontal overflow. |
 | `context-ready-768-light.png` | The ready context rail at 768 in light theme. |

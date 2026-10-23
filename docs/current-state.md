@@ -199,7 +199,7 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
 - Handoff decisions use `POST /api/handoffs/:id/decision` (`decision=approved|rejected`, optional
   `reason`, `return_to`); the legacy `/approve` and `/reject` endpoints still work.
 - Static assets are allowlisted: `/assets/app.css`, `/assets/app.js`, `/assets/chat.js`,
-  `/assets/chat-core.js`, `/assets/chat-diff.js`, `/assets/chat-highlight.js`,
+  `/assets/chat-core.js`, `/assets/chat-commands.js`, `/assets/chat-diff.js`, `/assets/chat-highlight.js`,
   `/assets/chat-highlight-worker.js`, `/assets/git.js`, `/assets/git-settings.js`,
   `/assets/settings.js`, `/assets/skill-detail.js`, `/assets/markdown.js`, `/assets/vendor/prism/prism-1.30.0.min.js`,
   `/assets/vendor/xterm/xterm-6.0.0.js`, `/assets/vendor/xterm/xterm-6.0.0.css`,
@@ -209,8 +209,9 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
 - `assets/app.js` adds shell drawer, native-dialog, theme, toast, password-visibility, and
   submit-busy behavior. `assets/chat.js` is an ESM module that owns the chat workspace (sessions,
   messages, typed SSE, composer, queue, questions, OMO cards, safe markdown/tables, syntax-highlighted
-  diffs/write content) and imports the pure helpers in `assets/chat-core.js`, `assets/chat-diff.js`,
-  and the lazy worker controller in `assets/chat-highlight.js`. `assets/git.js` hydrates the
+  diffs/write content) and imports the pure helpers in `assets/chat-core.js`,
+  `assets/chat-commands.js`, `assets/chat-diff.js`, and the lazy worker controller in
+  `assets/chat-highlight.js`. `assets/git.js` hydrates the
   application git panel. Pages remain server-rendered; no bundler or client framework is used.
 - The chat workspace is the stage-3 three-pane surface: sessions rail, thread, and context rail.
   Below 1360 the context pane is a drawer; below 768 both rails are drawers. The thread is the only
@@ -336,6 +337,21 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   without waiting for the turn; the blocking route without `async` keeps its `200 {message}`
   response. Async text is capped at 32 KiB; an older upstream without `prompt_async` returns
   `502 async_unavailable`, and the blocking route remains available.
+- The chat composer has one slash-command palette (`/` at the start or the `Commands` button). It
+  merges opencode's v1 `GET /command` catalog with six Hanse actions; custom
+  `.opencode/command(s)`, JSON commands, MCP prompts, and skills appear automatically.
+  `GET /api/apps/:app/commands` returns display metadata only (never `template`): name, description,
+  origin, hints, agent/model/subtask, a `none|present|unknown` shell flag, and availability.
+  `POST /api/apps/:app/sessions/:sid/commands` forwards the exact name and raw argument string to
+  `POST /session/:sid/command`, requires `confirmShell` for `present`/`unknown` (including blocks
+  injected through arguments), and returns `202 {accepted, sessionID, name, messageID}` after a
+  750 ms early-failure window; output arrives over the app SSE and post-dispatch failures are
+  `command_failed`/unknown. Hanse actions are `/new`, `/help`, `/editor` (`/ide`), `/compact`,
+  `/diff`, and `/restart`; `/model` and `/stop` are deferred and 25 TUI-local commands are skipped.
+  `/diff` opens the application page `Changes` in a new tab (worktree-wide, not session-scoped);
+  `/editor` and `/diff` are disabled for the master. Both routes are human-only; POST is JSON-only
+  and rejects a cross-site `Origin`; GET degrades to Hanse-only while the app is stopped or the
+  runtime is unconfigured. Hanse never expands templates, parses arguments, or executes shell blocks.
 - Context usage is tracked server-side per running application by a background monitor that
   subscribes to opencode's `/event` stream and keeps per-session prompt tokens, model, status, and
   compaction state in memory (no DB row). Usage is `tokens.input + cache.read + cache.write` from the

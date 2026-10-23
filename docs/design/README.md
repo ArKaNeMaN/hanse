@@ -39,6 +39,10 @@
 - [Context usage and compaction](./context-compaction.md) - server-side per-session context
   accounting, provider context limits, manual compaction, and threshold-based auto-compaction.
   Status: approved (oracle PASS).
+- [Slash commands](./slash-commands.md) - a thin opencode server-command proxy and a small
+  Hanse-native command registry merged into one chat palette, with the wire contract, collision
+  policy, detached execution, and security analysis. Status: approved (oracle PASS after 2 rounds);
+  plan reviewed (momus PASS); implemented and verified (journal 0025); commit pending.
 - [App-agent skill authoring](./app-skill-authoring.md) - app-scope create/list/get/update/enable/override tools over the existing app MCP surface, token-bound targets, by-id authorization, content-free audit, manual restart, and accepted self-modification risk. Status: approved (oracle PASS after three rounds); plan reviewed (momus PASS); implemented and verified (journal 0024); all five gates pass; committed.
 - [Managed agent skills](./agent-skills.md) - global/project/application skill registry, deterministic per-instance materialization into `opencode`'s config skill roots, restart semantics, human-only API, and scope-aware Web UI. Status: approved (oracle PASS after seven rounds).
 - [Skill bundles and the skill workspace](./skill-bundles.md) - `references/*.md` bundles, structured frontmatter metadata, a dedicated side-by-side source/preview workspace, inventory-only list pages, and a backward-compatible materialization hash. Status: approved (oracle PASS after five rounds); plan reviewed (momus PASS); implemented and verified (journal 0020).

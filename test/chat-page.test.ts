@@ -380,6 +380,87 @@ describe("chat page", () => {
     expect(handoffs).toBeLessThan(shortcuts);
   });
 
+  it("renders the command palette, confirm dialog, and command data attributes", async () => {
+    const f = fixture();
+    const response = await handleChat(
+      f.deps,
+      request({ query: { app: "storefront", project: "p1" }, headers: auth(f.token) }),
+    );
+    expect(response.status).toBe(200);
+    expect(response.body).toContain('id="chat-command-palette"');
+    expect(response.body).toContain('id="chat-command-listbox"');
+    expect(response.body).toContain('role="listbox" aria-label="Slash commands"');
+    expect(response.body).toContain('id="chat-command-status"');
+    expect(response.body).toContain('id="chat-command-shadow"');
+    expect(response.body).toContain('id="chat-commands-button"');
+    expect(response.body).toContain('aria-label="Commands"');
+    expect(response.body).toContain('id="chat-command-confirm"');
+    expect(response.body).toContain('class="dialog command-confirm"');
+    expect(response.body).toContain('aria-modal="true"');
+    expect(response.body).toContain('aria-labelledby="chat-command-confirm-title"');
+    expect(response.body).toContain('id="chat-command-confirm-body"');
+    expect(response.body).toContain('id="chat-command-confirm-cancel"');
+    expect(response.body).toContain('id="chat-command-confirm-accept"');
+    expect(response.body).toContain('role="combobox"');
+    expect(response.body).toContain('aria-autocomplete="list"');
+    expect(response.body).toContain('aria-haspopup="listbox"');
+    expect(response.body).toContain('aria-controls="chat-command-listbox"');
+    expect(response.body).toContain('aria-expanded="false"');
+    expect(response.body).toContain('data-ide-url="/ide/?folder=');
+    expect(response.body).toContain('data-app-url="/projects/p1/apps/storefront"');
+    expect(response.body).not.toContain('data-master="1"');
+    const palette = response.body.indexOf('id="chat-command-palette"');
+    const composer = response.body.indexOf('id="chat-composer"');
+    const dock = response.body.indexOf('id="chat-prompt-dock"');
+    expect(dock).toBeGreaterThan(-1);
+    expect(palette).toBeGreaterThan(dock);
+    expect(palette).toBeLessThan(composer);
+  });
+
+  it("marks the master chat shell with data-master", async () => {
+    const f = fixture();
+    addProject(f.db, "hanse-master", "Hanse master", [{ key: "master", path: ".hanse-master" }]);
+    const response = await handleChat(
+      f.deps,
+      request({
+        query: { app: "master", project: "hanse-master" },
+        headers: auth(f.token),
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(response.body).toContain('data-master="1"');
+  });
+
+  it("serves chat-commands.js from the asset allowlist", () => {
+    const f = fixture();
+    const response = handleRequest(f.deps, {
+      method: "GET",
+      path: "/assets/chat-commands.js",
+      headers: {},
+    });
+    expect(response.status).toBe(200);
+    expect(response.contentType).toBe("text/javascript; charset=utf-8");
+    expect(response.body).toContain("export function parseComposerCommand");
+    expect(response.body).toContain("export function resolveComposerCommand");
+    expect(response.body).toContain("export const HANSE_ACTIONS");
+  });
+
+  it("keeps command palette wiring free of template interpolation and innerHTML", () => {
+    const f = fixture();
+    const response = handleRequest(f.deps, {
+      method: "GET",
+      path: "/assets/chat.js",
+      headers: {},
+    });
+    expect(response.status).toBe(200);
+    expect(response.body).toContain('from "./chat-commands.js"');
+    expect(response.body).toContain("function dispatchComposerDraft()");
+    expect(response.body).toContain("if (paletteOpen)");
+    expect(response.body).toContain("sendServerCommand");
+    expect(response.body).not.toContain("innerHTML");
+    expect(response.body).not.toContain("template");
+  });
+
   it("shows settings, a pending restart marker, and a restart action without leaking keys", async () => {
     const f = fixture();
     f.settings.setProviderKey("global", {}, "deepseek", "sk-chat-secret", "owner");

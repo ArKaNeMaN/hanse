@@ -213,6 +213,7 @@ function renderChatPage(
   const folder = appDir(project, app);
   const path = isMasterApp(project.id, app.appKey) ? folder : (ref?.path ?? app.path);
   const appHref = `/projects/${encodeURIComponent(project.id)}/apps/${encodeURIComponent(app.appKey)}`;
+  const master = isMasterApp(project.id, app.appKey);
   const settingsHref = `/projects/${encodeURIComponent(project.id)}/apps/${encodeURIComponent(app.appKey)}/settings`;
   const pendingRestart = site.pendingRestart.get(app.id) ?? false;
   const chatHref = `/chat?app=${encodeURIComponent(app.appKey)}&project=${encodeURIComponent(project.id)}`;
@@ -295,10 +296,19 @@ function renderChatPage(
     <p class="chat-session-notice" id="chat-session-notice" role="status" hidden>Session too large to refresh; showing the last loaded state.</p>
     <div class="ssh-approval-slot" id="chat-ssh-approvals" hidden></div>
     <section class="prompt-dock" id="chat-prompt-dock" aria-label="Agent requests" hidden></section>
+    <div class="command-palette" id="chat-command-palette" hidden>
+      <div class="command-palette__head">
+        <span class="overline">Commands</span>
+        <span class="command-palette__status" id="chat-command-status" role="status" aria-live="polite" aria-atomic="true"></span>
+      </div>
+      <div class="command-palette__list" id="chat-command-listbox" role="listbox" aria-label="Slash commands"></div>
+      <p class="command-palette__shadow" id="chat-command-shadow" hidden></p>
+    </div>
     <form class="composer" id="chat-composer" data-no-busy>
       <div class="composer__row">
         <label class="sr-only" for="chat-prompt">Message ${escapeHtml(app.appKey)} agent</label>
-        <textarea class="textarea" id="chat-prompt" name="prompt" rows="1" required placeholder="Message ${escapeHtml(app.appKey)} agent" aria-describedby="chat-composer-hint"></textarea>
+        <textarea class="textarea" id="chat-prompt" name="prompt" rows="1" required placeholder="Message ${escapeHtml(app.appKey)} agent" aria-describedby="chat-composer-hint" role="combobox" aria-autocomplete="list" aria-haspopup="listbox" aria-controls="chat-command-listbox" aria-expanded="false"></textarea>
+        <button class="btn btn-ghost btn-icon" id="chat-commands-button" type="button" aria-label="Commands" aria-haspopup="listbox" aria-expanded="false" aria-controls="chat-command-listbox" title="Commands">${icon("slash")}</button>
         <button class="btn btn-primary" id="chat-send" type="submit">${icon("send")}<span class="btn__label">Send</span></button>
       </div>
       <div class="composer__hint" id="chat-composer-hint">
@@ -407,7 +417,7 @@ function renderChatPage(
     bodyClass: "page__body--chat",
     moduleScripts: ["/assets/chat.js"],
     topbarActions,
-    body: `<div class="chat-shell chat-shell--workspace" id="chat-shell" data-app-key="${escapeHtml(app.appKey)}" data-project-id="${escapeHtml(project.id)}" data-runtime-url="${escapeHtml(`/api/apps/${encodeURIComponent(app.appKey)}/runtime?project=${encodeURIComponent(project.id)}`)}" data-app-initials="${escapeHtml(initials(app.appKey))}" data-operator-initials="${escapeHtml(initials(principal.name))}" data-chat-sessions="closed" data-chat-context="closed">
+    body: `<div class="chat-shell chat-shell--workspace" id="chat-shell" data-app-key="${escapeHtml(app.appKey)}" data-project-id="${escapeHtml(project.id)}" data-runtime-url="${escapeHtml(`/api/apps/${encodeURIComponent(app.appKey)}/runtime?project=${encodeURIComponent(project.id)}`)}" data-ide-url="${escapeHtml(ideFolderUrl(folder))}" data-app-url="${escapeHtml(appHref)}"${master ? ' data-master="1"' : ""} data-app-initials="${escapeHtml(initials(app.appKey))}" data-operator-initials="${escapeHtml(initials(principal.name))}" data-chat-sessions="closed" data-chat-context="closed">
       <h1 class="sr-only">Chat with ${escapeHtml(app.appKey)}</h1>
       ${sessions}
       ${thread}
@@ -419,6 +429,20 @@ function renderChatPage(
         </div>
         <div class="chat-queue__list" id="chat-queue-list"></div>
       </div>
+      <dialog class="dialog command-confirm" id="chat-command-confirm" aria-modal="true" aria-labelledby="chat-command-confirm-title" aria-describedby="chat-command-confirm-body">
+        <div class="dialog__frame">
+          <div class="dialog__head">
+            <h2 class="dialog__title" id="chat-command-confirm-title">Confirm command</h2>
+          </div>
+          <div class="dialog__body">
+            <p id="chat-command-confirm-body"></p>
+          </div>
+          <div class="dialog__foot">
+            <button class="btn btn-ghost btn-sm" type="button" id="chat-command-confirm-cancel">Cancel</button>
+            <button class="btn btn-danger btn-sm" type="button" id="chat-command-confirm-accept">Confirm</button>
+          </div>
+        </div>
+      </dialog>
       <p class="sr-only" id="chat-announcer" role="status" aria-live="polite" aria-atomic="true"></p>
       <div class="chat-scrim" data-chat-scrim></div>
     </div>`,

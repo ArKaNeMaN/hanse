@@ -15,6 +15,7 @@ import type { GitService } from "../git/service.js";
 import { authenticate } from "../identity/auth.js";
 import type { Principal } from "../identity/principals.js";
 import type { ImageService } from "../images/service.js";
+import type { Logger } from "../logging/logger.js";
 import { verifyAgentToken } from "../mcp/agent-tokens.js";
 import type { InstanceManager } from "../opencode/manager.js";
 import type { SettingsService } from "../settings/index.js";
@@ -66,6 +67,8 @@ export interface HttpDeps {
   deploymentLock?: DeploymentLock;
   /** Process-local destructive-operation counter reported by `/readyz`. */
   lifecycleActivity?: LifecycleActivity;
+  /** Structured operator log; optional so tests and embeds may omit it. */
+  logger?: Logger;
 }
 
 export interface HttpRequest {
@@ -93,6 +96,10 @@ const ASSETS: Record<string, { file: string; contentType: string }> = {
   "/assets/chat.js": { file: "chat.js", contentType: "text/javascript; charset=utf-8" },
   "/assets/chat-core.js": {
     file: "chat-core.js",
+    contentType: "text/javascript; charset=utf-8",
+  },
+  "/assets/chat-commands.js": {
+    file: "chat-commands.js",
     contentType: "text/javascript; charset=utf-8",
   },
   "/assets/chat-diff.js": {

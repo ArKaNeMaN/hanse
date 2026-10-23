@@ -8131,3 +8131,211 @@
     -webkit-line-clamp: 3;
   }
 }
+
+/* Slash-command palette: in-flow above the composer, never covering the draft. */
+.chat-shell--workspace .chat-thread > .command-palette {
+  grid-row: 8;
+}
+
+.chat-shell--workspace .chat-thread > .composer {
+  grid-row: 9;
+}
+
+.command-palette {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-block-size: min(50dvh, 24rem);
+  padding: var(--space-2) var(--space-6) var(--space-3);
+  border-block-start: 1px solid var(--line);
+  background: var(--surface-1);
+  animation: hns-command-palette-in var(--dur-standard) var(--ease-standard);
+}
+
+.command-palette[hidden] {
+  display: none;
+}
+
+.command-palette__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.command-palette__status {
+  color: var(--text-3);
+  font-size: var(--text-micro);
+}
+
+.command-palette__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-block-size: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.command-palette__group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.command-palette__group-label {
+  margin: 0;
+  color: var(--text-3);
+  font-size: var(--text-overline);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.command-palette__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-1) var(--space-3);
+  align-items: center;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.command-palette__row:not(.command-palette__row--disabled):hover {
+  background: var(--wash-1);
+}
+
+.command-palette__row--active {
+  background: var(--wash-2);
+}
+
+.command-palette__row--disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
+}
+
+.command-palette__main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-inline-size: 0;
+}
+
+.command-palette__name {
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: var(--text-body);
+  overflow-wrap: anywhere;
+}
+
+.command-palette__desc {
+  color: var(--text-2);
+  font-size: var(--text-sm);
+  line-height: 1.35;
+}
+
+.command-palette__hints {
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+}
+
+.command-palette__badges {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-1);
+}
+
+.command-palette__badge {
+  padding: 1px var(--space-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-pill);
+  color: var(--text-2);
+  font-size: var(--text-micro);
+  white-space: nowrap;
+}
+
+.command-palette__badge[data-tone="hanse"] {
+  color: var(--brass);
+}
+
+.command-palette__badge[data-tone="mcp"] {
+  color: var(--info);
+}
+
+.command-palette__badge[data-tone="shell"] {
+  color: var(--warning);
+}
+
+.command-palette__shell-note,
+.command-palette__reason {
+  grid-column: 1 / -1;
+  font-size: var(--text-caption);
+}
+
+.command-palette__shell-note {
+  color: var(--warning);
+}
+
+.command-palette__reason {
+  color: var(--danger);
+}
+
+.command-palette__shadow {
+  margin: 0;
+  color: var(--warning);
+  font-size: var(--text-caption);
+}
+
+.command-palette__shadow[hidden] {
+  display: none;
+}
+
+.command-palette__empty {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  color: var(--text-3);
+  font-size: var(--text-sm);
+}
+
+.command-confirm .dialog__body p {
+  margin: 0;
+}
+
+@keyframes hns-command-palette-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes hns-command-palette-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (max-width: 767px) {
+  .command-palette {
+    padding-inline: var(--space-3);
+  }
+
+  .command-palette__row {
+    min-block-size: 44px;
+    padding: var(--space-3);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .command-palette {
+    animation: hns-command-palette-fade var(--dur-micro) linear;
+  }
+}

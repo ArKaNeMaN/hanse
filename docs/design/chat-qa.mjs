@@ -563,6 +563,8 @@ async function installRoutes(page, config) {
     messageGets: [],
     contextGets: [],
     compactCalls: [],
+    commandGets: [],
+    commandPosts: [],
   };
 
   const messages = typeof config.messages === "function" ? config.messages : () => config.messages;
@@ -666,6 +668,50 @@ async function installRoutes(page, config) {
       }
       return json(route, override ?? { accepted: true, sessionID }, 202);
     }
+    if (pathname.endsWith("/commands") && method === "GET") {
+      state.commandGets.push(Date.now());
+      const fixture =
+        typeof config.commands === "function"
+          ? await config.commands({ state })
+          : (config.commands ?? commandsFixture());
+      return json(route, fixture);
+    }
+    if (pathname.includes("/sessions/") && pathname.endsWith("/commands") && method === "POST") {
+      const sessionID = sessionIDFromPath(pathname, "commands");
+      let body = {};
+      try {
+        body = JSON.parse(request.postData() ?? "{}");
+      } catch {
+        body = { invalid: request.postData() };
+      }
+      const call = {
+        sessionID,
+        body,
+        at: Date.now(),
+        callIndex: state.commandPosts.length + 1,
+        status: 202,
+      };
+      state.commandPosts.push(call);
+      const result =
+        typeof config.commandPost === "function"
+          ? await config.commandPost({ state, body, call })
+          : config.commandPost;
+      if (result !== null && typeof result === "object" && typeof result.status === "number") {
+        call.status = result.status;
+        if (result.delayMs) await wait(result.delayMs);
+        return json(route, result.body ?? {}, result.status);
+      }
+      return json(
+        route,
+        {
+          accepted: true,
+          sessionID,
+          name: body.name,
+          messageID: `msg_cmd_${call.callIndex}`,
+        },
+        202,
+      );
+    }
     if (pathname.includes("/messages") && method === "GET") {
       state.messageGets.push(Date.now());
       return json(route, { messages: messages() });
@@ -683,6 +729,188 @@ async function installRoutes(page, config) {
   });
 
   return state;
+}
+
+function commandsFixture(options = {}) {
+  const master = options.master === true;
+  const masterReason = "Not available in the master chat";
+  return {
+    sources: { hanse: "ok", opencode: "ok" },
+    warnings: [
+      {
+        code: "command_shadowed",
+        command: "ide",
+        message: "/ide is provided by the application.",
+      },
+    ],
+    commands: [
+      {
+        name: "new",
+        source: "hanse",
+        action: "new",
+        aliases: ["clear"],
+        description: "Start a new session",
+        hints: [],
+        shell: "none",
+        available: true,
+      },
+      {
+        name: "help",
+        source: "hanse",
+        action: "help",
+        aliases: [],
+        description: "Show command help",
+        hints: [],
+        shell: "none",
+        available: true,
+      },
+      {
+        name: "editor",
+        source: "hanse",
+        action: "editor",
+        aliases: [],
+        description: "Open the web IDE",
+        hints: [],
+        shell: "none",
+        available: !master,
+        ...(master ? { unavailableReason: masterReason } : {}),
+      },
+      {
+        name: "compact",
+        source: "hanse",
+        action: "compact",
+        aliases: [],
+        description: "Compact the current session",
+        hints: [],
+        shell: "none",
+        available: true,
+      },
+      {
+        name: "diff",
+        source: "hanse",
+        action: "diff",
+        aliases: [],
+        description: "Open the application changes",
+        hints: [],
+        shell: "none",
+        available: !master,
+        ...(master ? { unavailableReason: masterReason } : {}),
+      },
+      {
+        name: "restart",
+        source: "hanse",
+        action: "restart",
+        aliases: [],
+        description: "Restart the application agent",
+        hints: [],
+        shell: "none",
+        available: true,
+      },
+      {
+        name: "deploy",
+        source: "opencode",
+        origin: "command",
+        description: "Deploy the application",
+        hints: [],
+        shell: "none",
+        available: true,
+      },
+      {
+        name: "disabledcmd",
+        source: "opencode",
+        origin: "command",
+        description: "A command disabled by the application",
+        hints: [],
+        shell: "none",
+        available: false,
+        unavailableReason: "Disabled by the application policy.",
+      },
+      {
+        name: "ide",
+        source: "opencode",
+        origin: "command",
+        description: "Application IDE command",
+        hints: [],
+        shell: "none",
+        available: true,
+      },
+      {
+        name: "mcp-unknown",
+        source: "opencode",
+        origin: "mcp",
+        description: "MCP prompt with unknown shell usage",
+        hints: [],
+        shell: "unknown",
+        available: true,
+      },
+      {
+        name: "shellcheck",
+        source: "opencode",
+        origin: "command",
+        description: "Runs a shell block on the server",
+        hints: [],
+        shell: "present",
+        available: true,
+      },
+    ],
+  };
+}
+
+function commandMessagesFixture() {
+  return [];
+}
+
+async function paletteState(page) {
+  return page.evaluate(() => {
+    const palette = document.getElementById("chat-command-palette");
+    const listbox = document.getElementById("chat-command-listbox");
+    const prompt = document.getElementById("chat-prompt");
+    const activeId = prompt?.getAttribute("aria-activedescendant") ?? null;
+    const activeRow = activeId === null ? null : document.getElementById(activeId);
+    const rows = Array.from(document.querySelectorAll("#chat-command-listbox [role='option']"));
+    return {
+      hidden: palette?.hidden ?? true,
+      status: document.getElementById("chat-command-status")?.textContent ?? "",
+      shadowHidden: document.getElementById("chat-command-shadow")?.hidden ?? true,
+      shadowText: document.getElementById("chat-command-shadow")?.textContent ?? "",
+      expanded: prompt?.getAttribute("aria-expanded") ?? null,
+      role: prompt?.getAttribute("role") ?? null,
+      listboxRole: listbox?.getAttribute("role") ?? null,
+      groups: Array.from(
+        document.querySelectorAll("#chat-command-listbox [role='group']"),
+        (group) => group.getAttribute("aria-label"),
+      ),
+      rowCount: rows.length,
+      rows: rows.map((row) => ({
+        id: row.id,
+        name: row.querySelector(".command-palette__name")?.textContent ?? "",
+        disabled: row.getAttribute("aria-disabled") === "true",
+        selected: row.getAttribute("aria-selected") === "true",
+        reason: row.querySelector(".command-palette__reason")?.textContent ?? "",
+        badges: Array.from(
+          row.querySelectorAll(".command-palette__badge"),
+          (badge) => badge.textContent,
+        ),
+      })),
+      activeId,
+      activeDisabled: activeRow?.getAttribute("aria-disabled") === "true",
+      activeName: activeRow?.querySelector(".command-palette__name")?.textContent ?? null,
+      announcer: document.getElementById("chat-announcer")?.textContent ?? "",
+    };
+  });
+}
+
+async function waitForPalette(page) {
+  await page.waitForSelector("#chat-command-palette:not([hidden])");
+  await page.waitForFunction(
+    () => document.querySelectorAll("#chat-command-listbox [role='option']").length >= 6,
+  );
+  await wait(150);
+}
+
+async function fillComposer(page, value) {
+  const prompt = page.locator("#chat-prompt");
+  await prompt.fill(value);
 }
 
 // ---------------------------------------------------------------------------
@@ -2955,6 +3183,686 @@ async function scenarioSend(browser, target) {
   }
 }
 
+async function scenarioCommandsPalette(browser, target) {
+  const { context, page, errors } = await newPage(browser, target);
+  try {
+    const routeState = await installRoutes(page, {
+      sessionId: THREADS.send,
+      messages: commandMessagesFixture(),
+    });
+    await gotoChat(page, target, THREADS.send);
+    await page.waitForSelector("#chat-prompt");
+    const prompt = page.locator("#chat-prompt");
+
+    await fillComposer(page, "/");
+    await waitForPalette(page);
+    let state = await paletteState(page);
+    check(state.hidden === false, "typing / opens the palette");
+    check(state.role === "combobox", "the composer carries the combobox role");
+    check(state.listboxRole === "listbox", "the palette list is a listbox");
+    check(state.expanded === "true", "aria-expanded is true while open");
+    check(
+      state.groups.includes("Hanse") && state.groups.includes("Application commands"),
+      `both groups render (${state.groups.join(", ")})`,
+    );
+    check(state.rowCount >= 11, `both sources are listed (${state.rowCount} rows)`);
+    check(
+      state.rows.some((row) => row.name === "/deploy"),
+      "an application command row renders",
+    );
+    check(
+      state.rows.some((row) => row.name === "/shellcheck" && row.badges.includes("Shell")),
+      "a shell command carries the Shell badge",
+    );
+    check(
+      state.rows.some((row) => row.name === "/mcp-unknown" && row.badges.includes("Shell unknown")),
+      "an unknown-shell command carries the Shell unknown badge",
+    );
+    const disabled = state.rows.find((row) => row.name === "/disabledcmd");
+    check(
+      disabled?.disabled && disabled.reason.includes("Disabled"),
+      "a disabled row stays visible with its reason",
+    );
+    check(
+      state.shadowHidden === false && state.shadowText.includes("/ide"),
+      "the shadow footer names the shadowed command",
+    );
+    check(routeState.commandGets.length >= 1, "the palette fetches GET /commands");
+
+    await fillComposer(page, "/deploy");
+    await wait(400);
+    state = await paletteState(page);
+    check(state.rowCount === 1 && state.rows[0].name === "/deploy", "filtering narrows the rows");
+    check(state.status.includes("1 command"), `the status counts one result (${state.status})`);
+    check(
+      state.announcer.includes("1 command"),
+      `the announcer reports one result (${state.announcer})`,
+    );
+
+    await fillComposer(page, "/zzz");
+    await wait(400);
+    state = await paletteState(page);
+    check(state.rowCount === 0, "an unmatched filter renders no rows");
+    check(state.status === "No matching commands", `the empty state is exact (${state.status})`);
+    check(
+      state.announcer === "No matching commands",
+      `the announcer says no matching commands (${state.announcer})`,
+    );
+
+    await fillComposer(page, "/deploy");
+    await wait(200);
+    await prompt.press("Enter");
+    await wait(200);
+    const inserted = await page.inputValue("#chat-prompt");
+    state = await paletteState(page);
+    check(inserted === "/deploy ", `Enter inserts the canonical line (${inserted})`);
+    check(state.hidden === true && state.expanded === "false", "inserting closes the palette");
+    check(
+      routeState.postCalls === 0 && routeState.commandPosts.length === 0,
+      "Enter in the palette never executes or submits",
+    );
+
+    await fillComposer(page, "/");
+    await waitForPalette(page);
+    await page.evaluate(() => document.getElementById("chat-composer")?.requestSubmit());
+    await wait(200);
+    const submitted = await page.inputValue("#chat-prompt");
+    check(submitted === "/new ", `a form submit while open inserts the active row (${submitted})`);
+    check(
+      routeState.postCalls === 0 && routeState.commandPosts.length === 0,
+      "a form submit while open never executes",
+    );
+
+    await fillComposer(page, "");
+    await page.click("#chat-commands-button");
+    await waitForPalette(page);
+    state = await paletteState(page);
+    check(state.hidden === false, "the Commands button opens the palette");
+
+    const seen = new Set();
+    for (let index = 0; index < 18; index += 1) {
+      await prompt.press("ArrowDown");
+      const current = await paletteState(page);
+      check(!current.activeDisabled, "ArrowDown never selects a disabled row");
+      if (current.activeId !== null) seen.add(current.activeId);
+    }
+    check(seen.size > 4, `ArrowDown moves through the enabled rows (${seen.size})`);
+    await prompt.press("End");
+    const atEnd = await paletteState(page);
+    check(!atEnd.activeDisabled, "End lands on an enabled row");
+    check(atEnd.activeName !== "/disabledcmd", "End skips the disabled row");
+    await prompt.press("Home");
+    const atHome = await paletteState(page);
+    check(atHome.activeName === "/new", `Home lands on the first row (${atHome.activeName})`);
+
+    await prompt.press("Escape");
+    const closed = await paletteState(page);
+    check(closed.hidden === true, "Escape closes the palette");
+    const focused = await page.evaluate(() => document.activeElement?.id ?? null);
+    check(focused === "chat-prompt", `Escape returns focus to the composer (${focused})`);
+    await page.click("#chat-commands-button");
+    await waitForPalette(page);
+    state = await paletteState(page);
+    check(errors.length === 0, `no console or page errors (${errors.join("; ")})`);
+    await shot(page, "commands-palette-1440-dark");
+    return { rows: state.rowCount, groups: state.groups };
+  } finally {
+    await context.close();
+  }
+}
+
+async function scenarioCommandsShellConfirm(browser, target) {
+  const { context, page, errors } = await newPage(browser, target);
+  let routeState;
+  try {
+    routeState = await installRoutes(page, {
+      sessionId: THREADS.send,
+      messages: commandMessagesFixture(),
+      commandPost: () => ({
+        status: 202,
+        body: {
+          accepted: true,
+          sessionID: THREADS.send,
+          name: "shellcheck",
+          messageID: "msg_cmd_shell",
+        },
+      }),
+    });
+    await gotoChat(page, target, THREADS.send);
+    await page.waitForSelector("#chat-prompt");
+    const prompt = page.locator("#chat-prompt");
+
+    await fillComposer(page, "/");
+    await waitForPalette(page);
+    await fillComposer(page, "/shellcheck");
+    await wait(250);
+    await prompt.press("Enter");
+    await wait(150);
+    await prompt.pressSequentially("--dry-run");
+    await prompt.press("Enter");
+    await page.waitForSelector("#chat-command-confirm[open]");
+    const dialog = await page.evaluate(() => ({
+      title: document.getElementById("chat-command-confirm-title")?.textContent ?? "",
+      body: document.getElementById("chat-command-confirm-body")?.textContent ?? "",
+      modal: document.getElementById("chat-command-confirm")?.getAttribute("aria-modal"),
+    }));
+    check(
+      dialog.title === "Run /shellcheck?",
+      `the dialog title names the command (${dialog.title})`,
+    );
+    check(
+      dialog.body.includes("runs on the server outside the agent permission flow"),
+      "the shell warning explains the risk",
+    );
+    check(dialog.modal === "true", "the dialog is modal");
+    check(routeState.commandPosts.length === 0, "no POST happens before confirmation");
+    await wait(250);
+    await shot(page, "commands-shell-confirm-1440-dark");
+
+    await page.click("#chat-command-confirm-cancel");
+    await wait(200);
+    const cancelled = await page.evaluate(() => ({
+      open: document.getElementById("chat-command-confirm")?.open ?? false,
+      value: document.getElementById("chat-prompt")?.value ?? null,
+    }));
+    check(cancelled.open === false, "cancel closes the dialog");
+    check(
+      cancelled.value === "/shellcheck --dry-run",
+      `cancel restores the draft (${cancelled.value})`,
+    );
+    check(routeState.commandPosts.length === 0, "cancel sends nothing");
+
+    await prompt.press("Enter");
+    await page.waitForSelector("#chat-command-confirm[open]");
+    await page.click("#chat-command-confirm-accept");
+    const deadline = Date.now() + 5000;
+    while (routeState.commandPosts.length === 0 && Date.now() < deadline) await wait(50);
+    check(routeState.commandPosts.length === 1, "accept posts exactly once");
+    const body = routeState.commandPosts[0].body;
+    assertEqual(
+      { name: body.name, arguments: body.arguments, confirmShell: body.confirmShell },
+      { name: "shellcheck", arguments: "--dry-run", confirmShell: true },
+      "the shell command body",
+    );
+    await page.waitForFunction(
+      () => {
+        const row = document.querySelector(".message--optimistic");
+        return row?.dataset.messageId === "msg_cmd_shell" && row?.dataset.state === "accepted";
+      },
+      undefined,
+      { timeout: 5000 },
+    );
+    const optimistic = await page.evaluate(() =>
+      Array.from(document.querySelectorAll(".message--optimistic")).map((node) => ({
+        id: node.dataset.messageId,
+        state: node.dataset.state,
+        text: node.textContent ?? "",
+      })),
+    );
+    check(optimistic.length === 1, `exactly one optimistic row remains (${optimistic.length})`);
+    check(
+      optimistic[0].id === "msg_cmd_shell" && optimistic[0].text.includes("/shellcheck --dry-run"),
+      "the optimistic row is rekeyed by the 202 messageID",
+    );
+    check(errors.length === 0, `no console or page errors (${errors.join("; ")})`);
+    return { body, optimistic };
+  } finally {
+    await context.close();
+  }
+}
+
+async function scenarioCommandsShellUnknown(browser, target) {
+  const { context, page, errors } = await newPage(browser, target);
+  let routeState;
+  try {
+    routeState = await installRoutes(page, {
+      sessionId: THREADS.send,
+      messages: commandMessagesFixture(),
+      commandPost: () => ({
+        status: 202,
+        body: {
+          accepted: true,
+          sessionID: THREADS.send,
+          name: "mcp-unknown",
+          messageID: "msg_cmd_unknown",
+        },
+      }),
+    });
+    await gotoChat(page, target, THREADS.send);
+    await page.waitForSelector("#chat-prompt");
+    const prompt = page.locator("#chat-prompt");
+
+    await fillComposer(page, "/");
+    await waitForPalette(page);
+    const palette = await paletteState(page);
+    const row = palette.rows.find((candidate) => candidate.name === "/mcp-unknown");
+    check(row?.badges.includes("Shell unknown"), "the row carries Shell unknown");
+    await fillComposer(page, "/mcp-unknown");
+    await wait(250);
+    await prompt.press("Enter");
+    await wait(150);
+    await prompt.press("Enter");
+    await page.waitForSelector("#chat-command-confirm[open]");
+    check(
+      routeState.commandPosts.length === 0,
+      "an unknown-shell command requires confirmation before the POST",
+    );
+    await wait(250);
+    await shot(page, "commands-shell-unknown-1440-dark");
+    await page.click("#chat-command-confirm-accept");
+    const deadline = Date.now() + 5000;
+    while (routeState.commandPosts.length === 0 && Date.now() < deadline) await wait(50);
+    check(routeState.commandPosts.length === 1, "the unknown-shell command posts once");
+    check(
+      routeState.commandPosts[0].body.confirmShell === true,
+      "the unknown-shell POST confirms the shell usage",
+    );
+    await wait(300);
+    check(errors.length === 0, `no console or page errors (${errors.join("; ")})`);
+    return { body: routeState.commandPosts[0].body };
+  } finally {
+    await context.close();
+  }
+}
+
+async function scenarioCommandsStale400(browser, target) {
+  const { context, page, errors } = await newPage(browser, target);
+  let routeState;
+  try {
+    routeState = await installRoutes(page, {
+      sessionId: THREADS.send,
+      messages: commandMessagesFixture(),
+      commandPost: ({ call }) =>
+        call.callIndex === 1
+          ? {
+              status: 400,
+              body: {
+                error: "Confirm the shell command before running it.",
+                code: "shell_confirmation_required",
+                outcome: "not_sent",
+              },
+            }
+          : {
+              status: 202,
+              body: {
+                accepted: true,
+                sessionID: THREADS.send,
+                name: "deploy",
+                messageID: "msg_cmd_stale",
+              },
+            },
+    });
+    await gotoChat(page, target, THREADS.send);
+    await page.waitForSelector("#chat-prompt");
+    const prompt = page.locator("#chat-prompt");
+
+    await fillComposer(page, "/");
+    await waitForPalette(page);
+    await fillComposer(page, "/deploy");
+    await wait(250);
+    await prompt.press("Enter");
+    await wait(150);
+    await prompt.press("Enter");
+    await page.waitForSelector("#chat-command-confirm[open]");
+    check(routeState.commandPosts.length === 1, "the stale list causes one rejected POST first");
+    const beforeRetry = await page.evaluate(
+      () => document.querySelectorAll(".message--optimistic").length,
+    );
+    check(beforeRetry === 1, `the optimistic row exists before the retry (${beforeRetry})`);
+    await wait(250);
+    await shot(page, "commands-stale-400-1440-dark");
+    await page.click("#chat-command-confirm-accept");
+    const deadline = Date.now() + 5000;
+    while (routeState.commandPosts.length < 2 && Date.now() < deadline) await wait(50);
+    check(routeState.commandPosts.length === 2, "the client retries exactly once");
+    check(
+      routeState.commandPosts[0].body.confirmShell === false &&
+        routeState.commandPosts[1].body.confirmShell === true,
+      "the retry adds confirmShell:true",
+    );
+    await page.waitForFunction(
+      () => {
+        const rows = document.querySelectorAll(".message--optimistic");
+        const row = rows[0];
+        return rows.length === 1 && row?.dataset.messageId === "msg_cmd_stale";
+      },
+      undefined,
+      { timeout: 5000 },
+    );
+    const rows = await page.evaluate(() =>
+      Array.from(document.querySelectorAll(".message--optimistic")).map((node) => ({
+        id: node.dataset.messageId,
+        state: node.dataset.state,
+      })),
+    );
+    check(rows.length === 1, `the retry reuses the single row (${rows.length})`);
+    check(rows[0].id === "msg_cmd_stale", "the reused row adopts the retry messageID");
+    checkExpectedHttpError(errors, 400);
+    return { posts: routeState.commandPosts.length, rows };
+  } finally {
+    await context.close();
+  }
+}
+
+async function scenarioCommandsUnknownLiteral(browser, target) {
+  const { context, page, errors } = await newPage(browser, target);
+  let routeState;
+  try {
+    routeState = await installRoutes(page, {
+      sessionId: THREADS.send,
+      messages: commandMessagesFixture(),
+      messageIDs: ["msg_lit1", "msg_lit2"],
+      commandPost: () => ({
+        status: 202,
+        body: {
+          accepted: true,
+          sessionID: THREADS.send,
+          name: "ide",
+          messageID: "msg_cmd_ide",
+        },
+      }),
+    });
+    await gotoChat(page, target, THREADS.send);
+    await page.waitForSelector("#chat-prompt");
+    const prompt = page.locator("#chat-prompt");
+
+    await fillComposer(page, "//foo");
+    await prompt.press("Enter");
+    await wait(500);
+    check(routeState.postCalls === 1, "//foo is sent through the text path");
+    assertEqual(JSON.parse(routeState.postBodies[0].body).text, "//foo", "//foo is sent verbatim");
+    const firstHint = await page.evaluate(() =>
+      Array.from(document.querySelectorAll(".toast__copy strong"), (node) => node.textContent),
+    );
+    check(
+      firstHint.some((text) => text.includes("Unknown command; sent as a message.")),
+      "//foo shows the non-blocking unknown hint",
+    );
+
+    await wait(400);
+    await fillComposer(page, "/nope");
+    await prompt.press("Enter");
+    await wait(500);
+    check(routeState.postCalls === 2, "an unknown slash is sent through the text path");
+    assertEqual(
+      JSON.parse(routeState.postBodies[1].body).text,
+      "/nope",
+      "an unknown slash is sent verbatim",
+    );
+
+    await wait(400);
+    await fillComposer(page, "/ide ");
+    await prompt.press("Enter");
+    const deadline = Date.now() + 5000;
+    while (routeState.commandPosts.length === 0 && Date.now() < deadline) await wait(50);
+    check(
+      routeState.commandPosts.length === 1,
+      "a directly typed shadow posts the opencode command",
+    );
+    check(
+      routeState.commandPosts[0].body.name === "ide",
+      `the opencode entry wins the token (${routeState.commandPosts[0].body.name})`,
+    );
+    const shadowHint = await page.evaluate(() =>
+      Array.from(document.querySelectorAll(".toast__copy strong"), (node) => node.textContent),
+    );
+    check(
+      shadowHint.some((text) => text.includes("/ide is provided by the application.")),
+      "a direct-typed shadow shows the shadow hint",
+    );
+    check(errors.length === 0, `no console or page errors (${errors.join("; ")})`);
+    await shot(page, "commands-unknown-literal-1440-dark");
+    return { sent: routeState.postBodies.map((entry) => JSON.parse(entry.body).text) };
+  } finally {
+    await context.close();
+  }
+}
+
+async function scenarioCommandsMaster(browser, target) {
+  const { context, page, errors } = await newPage(browser, target);
+  try {
+    await page.addInitScript(() => {
+      window.__qaOpened = [];
+      window.open = (url) => {
+        window.__qaOpened.push(String(url));
+        return null;
+      };
+      const apply = () => {
+        const shell = document.getElementById("chat-shell");
+        if (shell === null) return false;
+        shell.dataset.master = "1";
+        return true;
+      };
+      if (!apply()) {
+        const observer = new MutationObserver(() => {
+          if (apply()) observer.disconnect();
+        });
+        observer.observe(document, { childList: true, subtree: true });
+      }
+    });
+    await installRoutes(page, {
+      sessionId: THREADS.send,
+      messages: commandMessagesFixture(),
+      commands: commandsFixture({ master: true }),
+    });
+    await gotoChat(page, target, THREADS.send);
+    await page.waitForSelector("#chat-prompt");
+    await page.click("#chat-commands-button");
+    await waitForPalette(page);
+    const state = await paletteState(page);
+    const editor = state.rows.find((row) => row.name === "/editor");
+    const diff = state.rows.find((row) => row.name === "/diff");
+    const restart = state.rows.find((row) => row.name === "/restart");
+    check(editor?.disabled, "/editor is disabled for the master");
+    check(
+      editor.reason.includes("Not available in the master chat"),
+      `the editor row carries the reason (${editor.reason})`,
+    );
+    check(diff?.disabled, "/diff is disabled for the master");
+    check(restart !== undefined && !restart.disabled, "/restart stays available for the master");
+
+    await fillComposer(page, "/editor");
+    await wait(200);
+    const prompt = page.locator("#chat-prompt");
+    await prompt.press("Escape");
+    await prompt.press("Enter");
+    await wait(250);
+    const afterDisabled = await page.evaluate(() => ({
+      value: document.getElementById("chat-prompt")?.value ?? null,
+      opened: window.__qaOpened ?? [],
+      error: document.getElementById("chat-send-error")?.textContent ?? "",
+      expanded: document.getElementById("chat-prompt")?.getAttribute("aria-expanded"),
+    }));
+    check(afterDisabled.value === "/editor", "a disabled row is not inserted by Enter");
+    check(afterDisabled.opened.length === 0, "a disabled command opens no tab");
+    check(
+      afterDisabled.error.includes("Not available in the master chat"),
+      `the disabled reason is explained inline (${afterDisabled.error})`,
+    );
+    await shot(page, "commands-master-1440-dark");
+    check(errors.length === 0, `no console or page errors (${errors.join("; ")})`);
+    return { editor: editor.reason, diff: diff.reason };
+  } finally {
+    await context.close();
+  }
+}
+
+async function scenarioCommandsPopup(browser, target) {
+  const { context, page, errors } = await newPage(browser, target);
+  try {
+    await page.addInitScript(() => {
+      window.__qaOpened = [];
+      window.__qaAssigned = [];
+      window.open = (url) => {
+        window.__qaOpened.push(String(url));
+        try {
+          sessionStorage.setItem("qaOpenedCount", String(window.__qaOpened.length));
+          sessionStorage.setItem("qaOpenedUrl", String(url));
+        } catch {
+          // Storage may be unavailable in the throwaway browser context.
+        }
+        return null;
+      };
+      const record = () => {
+        const toast = document.querySelector(".toast__copy strong");
+        if (toast !== null && /popup was blocked/.test(toast.textContent ?? "")) {
+          try {
+            sessionStorage.setItem("qaPopupNotice", toast.textContent ?? "");
+          } catch {
+            // Storage may be unavailable in the throwaway browser context.
+          }
+        }
+      };
+      new MutationObserver(record).observe(document, {
+        childList: true,
+        subtree: true,
+      });
+      try {
+        window.location.assign = (url) => {
+          window.__qaAssigned.push(String(url));
+        };
+      } catch {
+        // Navigation is the fallback when the engine blocks the method assignment.
+      }
+    });
+    await page.route("**/ide/**", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "text/html",
+        body: "<!doctype html><title>QA IDE</title>",
+      }),
+    );
+    await installRoutes(page, {
+      sessionId: THREADS.send,
+      messages: commandMessagesFixture(),
+    });
+    await gotoChat(page, target, THREADS.send);
+    await page.waitForSelector("#chat-prompt");
+    const prompt = page.locator("#chat-prompt");
+
+    await fillComposer(page, "/editor ");
+    await shot(page, "commands-popup-1440-dark");
+    await prompt.press("Enter");
+    await wait(400);
+    const popup = await page.evaluate(() => ({
+      opened: window.__qaOpened ?? [],
+      assigned: window.__qaAssigned ?? [],
+      toasts: Array.from(
+        document.querySelectorAll(".toast__copy strong"),
+        (node) => node.textContent,
+      ),
+      notice: sessionStorage.getItem("qaPopupNotice"),
+      openCount: Number(sessionStorage.getItem("qaOpenedCount") ?? "0"),
+      openUrl: sessionStorage.getItem("qaOpenedUrl"),
+    }));
+    if (popup.assigned.length > 0) {
+      check(
+        popup.assigned[0].includes("/ide/"),
+        `the same-tab fallback targets the IDE (${popup.assigned[0]})`,
+      );
+      check(
+        popup.toasts.some((text) =>
+          text.includes("Opened in this tab because the popup was blocked."),
+        ),
+        "the popup-blocked notice is shown",
+      );
+    } else {
+      await page.waitForURL(/\/ide\//, { timeout: 5000 });
+      check(
+        typeof popup.notice === "string" &&
+          popup.notice.includes("Opened in this tab because the popup was blocked."),
+        "the popup-blocked notice survives the same-tab navigation",
+      );
+    }
+    check(popup.openCount === 1, `window.open was attempted once (${popup.openCount})`);
+    check(errors.length === 0, `no console or page errors (${errors.join("; ")})`);
+    return { assigned: popup.assigned, opened: popup.opened };
+  } finally {
+    await context.close();
+  }
+}
+
+async function scenarioCommandsWidths(browser, target) {
+  const results = [];
+  for (const width of [390, 768, 1440]) {
+    for (const colorScheme of ["dark", "light"]) {
+      const { context, page, errors } = await newPage(browser, target, {
+        width,
+        colorScheme,
+      });
+      try {
+        await installRoutes(page, {
+          sessionId: THREADS.send,
+          messages: commandMessagesFixture(),
+        });
+        await gotoChat(page, target, THREADS.send);
+        if (colorScheme === "light") {
+          await page.evaluate(() => {
+            document.documentElement.dataset.theme = "light";
+          });
+        }
+        await page.waitForSelector("#chat-prompt");
+        await page.click("#chat-commands-button");
+        await waitForPalette(page);
+        const layout = await page.evaluate(() => {
+          const palette = document.getElementById("chat-command-palette");
+          const composer = document.getElementById("chat-composer");
+          const listbox = document.getElementById("chat-command-listbox");
+          const row = document.querySelector("#chat-command-listbox [role='option']");
+          const paletteRect = palette?.getBoundingClientRect();
+          const composerRect = composer?.getBoundingClientRect();
+          const rowRect = row?.getBoundingClientRect();
+          return {
+            overflow: document.documentElement.scrollWidth - window.innerWidth,
+            paletteBottom: paletteRect?.bottom ?? null,
+            composerTop: composerRect?.top ?? null,
+            paletteHeight: paletteRect?.height ?? 0,
+            listboxScroll: listbox === null ? 0 : listbox.scrollHeight,
+            listboxClient: listbox === null ? 0 : listbox.clientHeight,
+            rowHeight: rowRect?.height ?? 0,
+            promptVisible:
+              (document.getElementById("chat-prompt")?.getBoundingClientRect().height ?? 0) > 0,
+          };
+        });
+        check(
+          layout.overflow <= 1,
+          `${width} ${colorScheme}: no horizontal overflow (${layout.overflow})`,
+        );
+        check(
+          layout.paletteBottom !== null &&
+            layout.composerTop !== null &&
+            layout.paletteBottom <= layout.composerTop + 1,
+          `${width} ${colorScheme}: the palette sits above the composer`,
+        );
+        check(
+          layout.paletteHeight <= Math.max(320, windowHeight(width) * 0.5) + 8,
+          `${width} ${colorScheme}: the palette is capped (${layout.paletteHeight})`,
+        );
+        check(layout.promptVisible, `${width} ${colorScheme}: the draft stays visible`);
+        if (width === 390) {
+          check(
+            layout.rowHeight >= 44,
+            `${width} ${colorScheme}: touch rows are at least 44px (${layout.rowHeight})`,
+          );
+        }
+        if (layout.listboxScroll > layout.listboxClient) {
+          check(layout.listboxClient > 0, `${width} ${colorScheme}: the list scrolls internally`);
+        }
+        await shot(page, `commands-widths-${width}-${colorScheme}`);
+        check(errors.length === 0, `${width} ${colorScheme}: no console/page errors`);
+        results.push({ width, colorScheme, ...layout });
+      } finally {
+        await context.close();
+      }
+    }
+  }
+  return results;
+}
+
+function windowHeight(width) {
+  return width <= 390 ? 844 : width <= 768 ? 1024 : 900;
+}
+
 async function scenarioDiffs(browser, target) {
   const fixture = bigPatchFixture();
   const { context, page, errors } = await newPage(browser, target, { workerProbe: true });
@@ -4192,6 +5100,20 @@ try {
     await runScenario("main", () => scenarioMain(browser, target));
     await runScenario("questions", () => scenarioQuestions(browser, target));
     await runScenario("send", () => scenarioSend(browser, target));
+    await runScenario("commands-palette", () => scenarioCommandsPalette(browser, target));
+    await runScenario("commands-shell-confirm", () =>
+      scenarioCommandsShellConfirm(browser, target),
+    );
+    await runScenario("commands-shell-unknown", () =>
+      scenarioCommandsShellUnknown(browser, target),
+    );
+    await runScenario("commands-stale-400", () => scenarioCommandsStale400(browser, target));
+    await runScenario("commands-unknown-literal", () =>
+      scenarioCommandsUnknownLiteral(browser, target),
+    );
+    await runScenario("commands-master", () => scenarioCommandsMaster(browser, target));
+    await runScenario("commands-popup", () => scenarioCommandsPopup(browser, target));
+    await runScenario("commands-widths", () => scenarioCommandsWidths(browser, target));
     await runScenario("context-states", () => scenarioContextStates(browser, target));
     await runScenario("context-compact", () => scenarioContextCompact(browser, target));
     await runScenario("context-switch-race", () => scenarioContextSwitchRace(browser, target));

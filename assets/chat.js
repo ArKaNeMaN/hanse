@@ -15,6 +15,16 @@ import {
   toolStatusChip as toolStatusChipSpec,
 } from "./chat-core.js";
 import {
+  commandBlockedByPending,
+  commandLine,
+  filterCommands,
+  groupCommands,
+  hanseFallbackEntries,
+  parseComposerCommand,
+  resolveComposerCommand,
+  shellRequiresConfirmation,
+} from "./chat-commands.js";
+import {
   allocateView,
   extractToolView,
   patchPartView,
@@ -45,6 +55,10 @@ const RUNTIME_UNAVAILABLE_TITLE = "Runtime status unavailable";
 const CONTEXT_POLL_MS = 2000;
 const CONTEXT_POLL_MAX_MS = 10 * 60 * 1000;
 const CONTEXT_COMPACT_GRACE_MS = 5000;
+const COMMANDS_CACHE_MS = 30000;
+const PALETTE_RENDER_LIMIT = 200;
+const SHELL_CONFIRM_BODY =
+  "This command contains shell blocks, or its shell usage cannot be verified, and it runs on the server outside the agent permission flow.";
 
 const KNOWN_PART_TYPES = new Set([
   "text",
@@ -127,6 +141,9 @@ function main() {
   const contextConfirmCancel = document.getElementById("chat-context-confirm-cancel");
   const contextErrorEl = document.getElementById("chat-context-error");
   const runtimeUrl = shell.dataset.runtimeUrl || "";
+  const ideUrl = shell.dataset.ideUrl || "";
+  const appPageUrl = shell.dataset.appUrl || "";
+  const isMaster = shell.dataset.master === "1";
   const contextClose = document.querySelector("[data-chat-context-close]");
   const sessionsClose = document.querySelector("[data-chat-sessions-close]");
   const contextToggles = Array.from(
@@ -146,6 +163,16 @@ function main() {
   const queueEl = document.getElementById("chat-queue");
   const queueList = document.getElementById("chat-queue-list");
   const queueClose = document.querySelector("[data-chat-queue-close]");
+  const commandPalette = document.getElementById("chat-command-palette");
+  const commandListbox = document.getElementById("chat-command-listbox");
+  const commandStatusEl = document.getElementById("chat-command-status");
+  const commandShadowEl = document.getElementById("chat-command-shadow");
+  const commandsButton = document.getElementById("chat-commands-button");
+  const commandConfirm = document.getElementById("chat-command-confirm");
+  const commandConfirmTitle = document.getElementById("chat-command-confirm-title");
+  const commandConfirmBody = document.getElementById("chat-command-confirm-body");
+  const commandConfirmAccept = document.getElementById("chat-command-confirm-accept");
+  const commandConfirmCancel = document.getElementById("chat-command-confirm-cancel");
   const announcer = document.getElementById("chat-announcer");
   const planList = document.getElementById("chat-plan-list");
   const planEmpty = document.getElementById("chat-plan-empty");
@@ -254,6 +281,19 @@ function main() {
   let promptStale = false;
   let announceTimer = null;
 
+  let commands = [];
+  let commandsStatus = "idle";
+  let commandsFetchedAt = 0;
+  let commandsSources = { hanse: "ok", opencode: "ok" };
+  let commandsWarnings = [];
+  let commandsShadowed = [];
+  let commandsRequest = null;
+  let commandsDispatching = false;
+  let paletteOpen = false;
+  let paletteFilter = "";
+  let paletteActive = 0;
+  let paletteRows = [];
+
   const todoCache = new Map();
   const todoEventSeq = new Map();
   let todoFetchSeq = 0;
@@ -313,6 +353,7 @@ function main() {
         absenceSince: null,
         graceTimer: null,
         exposeRecovery: false,
+        commandAccepted: false,
       };
       acceptanceBySession.set(id, state);
     }
@@ -351,6 +392,7 @@ function main() {
     state.inFlight = false;
     state.posting = false;
     state.tempID = null;
+    state.commandAccepted = false;
     clearAcceptanceGrace(state);
     if (state.serverID !== null) {
       const record = store.messages.get(state.serverID);
@@ -418,7 +460,23 @@ function main() {
 
   function resolveUnknownFromSnapshot(snapshotIDs) {
     const state = activeAcceptance();
-    if (state === null || state.state !== "unknown") return;
+    if (state === null) return;
+    if (state.state === "accepted" && state.commandAccepted === true) {
+      const present =
+        state.serverID !== null &&
+        (snapshotIDs instanceof Set
+          ? snapshotIDs.has(state.serverID)
+          : store.messages.has(state.serverID));
+      state.commandAccepted = false;
+      if (present) return;
+      state.state = "unknown";
+      startAcceptanceGrace(state);
+      syncComposer();
+      renderSendRecovery();
+      scheduleFlush();
+      return;
+    }
+    if (state.state !== "unknown") return;
     if (state.serverID !== null) {
       const present =
         snapshotIDs instanceof Set ? snapshotIDs.has(state.serverID) : store.messages.has(state.serverID);
@@ -3849,6 +3907,7 @@ function main() {
     hasStreamReady = true;
     setConnection("Live", "live");
     refreshRuntime().catch(() => {});
+    refreshCommands({ force: true, quiet: true }).catch(() => {});
     refreshContext(sessionId, { retryNotRunning: true }).catch(() => {});
     hydrate({ reconnect: true }).catch(() => {});
     hydrateMessages({ reason: changed ? "reconnect" : "ready", silent: true }).catch(() => {});
@@ -7380,9 +7439,784 @@ function main() {
     }
   }
 
+  function commandsUrl() {
+    return withProject(`${apiBase()}/commands`);
+  }
+
+  function serverCommandUrl(id) {
+    return withProject(`${apiBase()}/sessions/${encodeURIComponent(id)}/commands`);
+  }
+
+  function commandsAreStale() {
+    return commandsStatus !== "ready" || Date.now() - commandsFetchedAt > COMMANDS_CACHE_MS;
+  }
+
+  async function refreshCommands(options) {
+    const settings = options || {};
+    if (!settings.force && !commandsAreStale()) return commands;
+    if (commandsRequest !== null) return commandsRequest;
+    commandsStatus = "loading";
+    commandsRequest = (async () => {
+      try {
+        const data = await api(commandsUrl());
+        commands = Array.isArray(data?.commands) ? data.commands : [];
+        commandsSources =
+          data?.sources !== null && typeof data?.sources === "object"
+            ? data.sources
+            : { hanse: "ok", opencode: "unavailable" };
+        commandsWarnings = Array.isArray(data?.warnings) ? data.warnings : [];
+        commandsShadowed = commandsWarnings
+          .filter(
+            (warning) =>
+              warning !== null &&
+              typeof warning === "object" &&
+              warning.code === "command_shadowed" &&
+              typeof warning.command === "string",
+          )
+          .map((warning) => warning.command);
+        commandsStatus = "ready";
+        commandsFetchedAt = Date.now();
+        return commands;
+      } catch {
+        commandsStatus = commands.length > 0 ? "ready" : "error";
+        if (commands.length === 0) {
+          commandsSources = { hanse: "ok", opencode: "unavailable" };
+          commandsWarnings = [];
+          commandsShadowed = [];
+        }
+        return commands;
+      } finally {
+        commandsRequest = null;
+        if (paletteOpen) renderCommandPalette();
+      }
+    })();
+    return commandsRequest;
+  }
+
+  function effectiveCommandList() {
+    if (commands.length > 0) return commands;
+    return hanseFallbackEntries(isMaster);
+  }
+
+  function paletteSourceNotice() {
+    if (commandsStatus === "error") {
+      return "Application commands are unavailable; Hanse commands still work";
+    }
+    const status = commandsSources.opencode;
+    if (status === "stopped") return "Application commands load when the agent starts";
+    if (status === "unconfigured") {
+      return "No agent runtime is configured; Hanse commands still work";
+    }
+    if (status === "unavailable") {
+      return "Application commands are unavailable; Hanse commands still work";
+    }
+    return null;
+  }
+
+  function commandBadge(label, tone) {
+    const badge = element("span", "command-palette__badge", label);
+    if (tone !== undefined) badge.dataset.tone = tone;
+    return badge;
+  }
+
+  function renderCommandRow(entry, index) {
+    const disabled = entry.available === false;
+    const row = element("div", "command-palette__row");
+    row.id = `chat-command-option-${index}`;
+    row.setAttribute("role", "option");
+    row.setAttribute("aria-selected", "false");
+    row.dataset.commandIndex = String(index);
+    row.dataset.disabled = disabled ? "true" : "false";
+    if (disabled) {
+      row.classList.add("command-palette__row--disabled");
+      row.setAttribute("aria-disabled", "true");
+    }
+    const main = element("div", "command-palette__main");
+    main.append(element("span", "command-palette__name", `/${entry.name}`));
+    if (typeof entry.description === "string" && entry.description.length > 0) {
+      main.append(element("span", "command-palette__desc", entry.description));
+    }
+    if (Array.isArray(entry.hints) && entry.hints.length > 0) {
+      main.append(element("span", "command-palette__hints", entry.hints.join(" · ")));
+    }
+    const badges = element("span", "command-palette__badges");
+    if (entry.source === "hanse") {
+      badges.append(commandBadge("Hanse", "hanse"));
+    } else if (entry.origin === "mcp") {
+      badges.append(commandBadge("MCP", "mcp"));
+    } else if (entry.origin === "skill") {
+      badges.append(commandBadge("Skill", "skill"));
+    }
+    if (entry.shell === "present" || entry.shell === "unknown") {
+      const label = entry.shell === "present" ? "Shell" : "Shell unknown";
+      const badge = commandBadge(label, "shell");
+      badge.title = "Runs shell commands outside the agent permission flow.";
+      badges.append(badge);
+      row.append(main, badges);
+      row.append(element("span", "command-palette__shell-note", "Confirmation required."));
+    } else {
+      row.append(main, badges);
+    }
+    if (disabled && typeof entry.unavailableReason === "string") {
+      row.append(element("span", "command-palette__reason", entry.unavailableReason));
+    }
+    return row;
+  }
+
+  function applyPaletteSelection() {
+    for (const row of paletteRows) {
+      const selected = row.index === paletteActive && !row.disabled;
+      row.node.setAttribute("aria-selected", selected ? "true" : "false");
+      row.node.classList.toggle("command-palette__row--active", selected);
+    }
+    const active = paletteRows[paletteActive];
+    if (active === undefined || active.disabled) {
+      if (promptEl instanceof HTMLTextAreaElement) promptEl.removeAttribute("aria-activedescendant");
+      return;
+    }
+    if (promptEl instanceof HTMLTextAreaElement) {
+      promptEl.setAttribute("aria-activedescendant", active.node.id);
+    }
+    active.node.scrollIntoView({ block: "nearest" });
+  }
+
+  function renderCommandPalette(preserveName) {
+    if (!paletteOpen || commandListbox === null) return;
+    const previous =
+      preserveName ??
+      (paletteRows[paletteActive] === undefined ? null : paletteRows[paletteActive].entry.name);
+    const filtered = filterCommands(effectiveCommandList(), paletteFilter);
+    const total = filtered.length;
+    const capped = filtered.slice(0, PALETTE_RENDER_LIMIT);
+    const groups = groupCommands(capped);
+    const children = [];
+    paletteRows = [];
+    let optionIndex = 0;
+    for (const group of groups) {
+      const section = element("div", "command-palette__group");
+      section.setAttribute("role", "group");
+      section.setAttribute("aria-label", group.label);
+      section.append(element("p", "command-palette__group-label", group.label));
+      if (group.entries.length === 0) {
+        if (
+          group.label === "Application commands" &&
+          paletteFilter.trim().length === 0 &&
+          commandsStatus === "ready" &&
+          paletteSourceNotice() === null
+        ) {
+          section.append(element("p", "command-palette__empty", "No application commands"));
+        }
+      }
+      for (const entry of group.entries) {
+        const index = optionIndex;
+        optionIndex += 1;
+        const node = renderCommandRow(entry, index);
+        paletteRows.push({ entry, index, disabled: entry.available === false, node });
+        section.append(node);
+      }
+      children.push(section);
+    }
+    commandListbox.replaceChildren(...children);
+
+    let activeIndex = -1;
+    if (previous !== null) {
+      activeIndex = paletteRows.findIndex(
+        (row) => !row.disabled && row.entry.name === previous,
+      );
+    }
+    if (activeIndex === -1) activeIndex = paletteRows.findIndex((row) => !row.disabled);
+    paletteActive = activeIndex;
+    applyPaletteSelection();
+
+    const notice = paletteSourceNotice();
+    let status = "";
+    if (total === 0) {
+      status = "No matching commands";
+    } else if (total > PALETTE_RENDER_LIMIT) {
+      status = `Showing ${PALETTE_RENDER_LIMIT} of ${total}. Refine your search.`;
+    } else {
+      status = plural(total, "command");
+    }
+    if (notice !== null && paletteFilter.trim().length === 0) {
+      status = `${status} · ${notice}`;
+    }
+    if (commandStatusEl !== null) commandStatusEl.textContent = status;
+    if (commandShadowEl !== null) {
+      if (commandsStatus === "ready" && commandsShadowed.length > 0) {
+        commandShadowEl.hidden = false;
+        commandShadowEl.textContent = `Provided by the application: ${commandsShadowed
+          .map((name) => `/${name}`)
+          .join(", ")}`;
+      } else {
+        commandShadowEl.hidden = true;
+        commandShadowEl.textContent = "";
+      }
+    }
+    announce(total === 0 ? "No matching commands" : plural(total, "command"));
+  }
+
+  function openCommandPalette(filter, options) {
+    const settings = options || {};
+    paletteOpen = true;
+    paletteFilter = typeof filter === "string" ? filter : "";
+    if (commandPalette !== null) commandPalette.hidden = false;
+    if (promptEl instanceof HTMLTextAreaElement) {
+      promptEl.setAttribute("aria-expanded", "true");
+    }
+    if (commandsButton !== null) commandsButton.setAttribute("aria-expanded", "true");
+    renderCommandPalette();
+    if (settings.focus === true && promptEl instanceof HTMLTextAreaElement) promptEl.focus();
+    if (commandsAreStale()) refreshCommands({ quiet: true }).catch(() => {});
+  }
+
+  function closeCommandPalette(options) {
+    const settings = options || {};
+    paletteOpen = false;
+    paletteFilter = "";
+    paletteActive = 0;
+    paletteRows = [];
+    if (commandPalette !== null) commandPalette.hidden = true;
+    if (commandListbox !== null) commandListbox.replaceChildren();
+    if (promptEl instanceof HTMLTextAreaElement) {
+      promptEl.setAttribute("aria-expanded", "false");
+      promptEl.removeAttribute("aria-activedescendant");
+    }
+    if (commandsButton !== null) commandsButton.setAttribute("aria-expanded", "false");
+    if (settings.focus === true && promptEl instanceof HTMLTextAreaElement) promptEl.focus();
+  }
+
+  function syncPaletteFromDraft() {
+    if (!(promptEl instanceof HTMLTextAreaElement)) return;
+    const value = promptEl.value;
+    const tokenDraft = /^\/(?!\/)\S*$/.test(value) ? value.slice(1) : null;
+    if (paletteOpen) {
+      if (tokenDraft === null) {
+        closeCommandPalette({});
+        return;
+      }
+      paletteFilter = tokenDraft;
+      renderCommandPalette();
+      return;
+    }
+    if (tokenDraft !== null) openCommandPalette(tokenDraft, {});
+  }
+
+  function movePaletteActive(target) {
+    const enabled = paletteRows.filter((row) => !row.disabled);
+    if (enabled.length === 0) return;
+    if (target === "home") {
+      paletteActive = enabled[0].index;
+    } else if (target === "end") {
+      paletteActive = enabled[enabled.length - 1].index;
+    } else {
+      const position = enabled.findIndex((row) => row.index === paletteActive);
+      const offset = target === "down" ? 1 : -1;
+      const next =
+        position === -1
+          ? offset > 0
+            ? 0
+            : enabled.length - 1
+          : (position + offset + enabled.length) % enabled.length;
+      paletteActive = enabled[next].index;
+    }
+    applyPaletteSelection();
+  }
+
+  function insertCommandRow(index) {
+    const row = paletteRows[index];
+    if (row === undefined || row.disabled) {
+      announce("Choose an available command.");
+      return false;
+    }
+    if (!(promptEl instanceof HTMLTextAreaElement)) return false;
+    const line = commandLine(row.entry.name);
+    promptEl.value = line;
+    promptEl.setSelectionRange(line.length, line.length);
+    resizePrompt();
+    closeCommandPalette({ focus: true });
+    showSendError(null);
+    announce(`Inserted /${row.entry.name}`);
+    return true;
+  }
+
+  function insertActiveCommand() {
+    return insertCommandRow(paletteActive);
+  }
+
+  function openCommandConfirm(options) {
+    const settings = options || {};
+    if (commandConfirm === null || typeof commandConfirm.showModal !== "function") {
+      return Promise.resolve(
+        window.confirm(
+          settings.body === undefined ? settings.title : `${settings.title}\n\n${settings.body}`,
+        ),
+      );
+    }
+    if (commandConfirmTitle !== null) {
+      commandConfirmTitle.textContent = settings.title || "Confirm command";
+    }
+    if (commandConfirmBody !== null) commandConfirmBody.textContent = settings.body || "";
+    if (commandConfirmAccept !== null) {
+      commandConfirmAccept.textContent = settings.confirmLabel || "Confirm";
+    }
+    if (commandConfirmCancel !== null) {
+      commandConfirmCancel.textContent = settings.cancelLabel || "Cancel";
+    }
+    const restore = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        commandConfirm.removeEventListener("close", onClose);
+        if (commandConfirmAccept !== null) {
+          commandConfirmAccept.removeEventListener("click", onAccept);
+        }
+        if (commandConfirmCancel !== null) {
+          commandConfirmCancel.removeEventListener("click", onCancel);
+        }
+        if (commandConfirm.open) commandConfirm.close();
+        if (restore !== null && restore.isConnected) restore.focus();
+        else if (promptEl instanceof HTMLTextAreaElement) promptEl.focus();
+        resolve(value);
+      };
+      const onClose = () => finish(false);
+      const onAccept = () => finish(true);
+      const onCancel = () => finish(false);
+      commandConfirm.addEventListener("close", onClose);
+      if (commandConfirmAccept !== null) commandConfirmAccept.addEventListener("click", onAccept);
+      if (commandConfirmCancel !== null) commandConfirmCancel.addEventListener("click", onCancel);
+      try {
+        commandConfirm.showModal();
+      } catch {
+        finish(false);
+        return;
+      }
+      if (commandConfirmAccept !== null) commandConfirmAccept.focus();
+    });
+  }
+
+  function shellConfirmation(entry) {
+    return openCommandConfirm({
+      title: `Run /${entry.name}?`,
+      body: SHELL_CONFIRM_BODY,
+      confirmLabel: "Run command",
+      cancelLabel: "Cancel",
+    });
+  }
+
+  function openNewTab(url) {
+    if (typeof url !== "string" || url.length === 0) {
+      showToast("No link is available.", "error");
+      return;
+    }
+    let opened = null;
+    try {
+      opened = window.open(url, "_blank");
+    } catch {
+      opened = null;
+    }
+    if (opened === null) {
+      const notice = "Opened in this tab because the popup was blocked.";
+      showToast(notice, "success");
+      announce(notice);
+      window.location.assign(url);
+      return;
+    }
+    try {
+      opened.opener = null;
+    } catch {
+      // Cross-origin handle; the tab is already open.
+    }
+  }
+
+  function runCompactCommand() {
+    const snapshot = sessionId === null ? null : contextBySession.get(sessionId) ?? null;
+    const reason = contextCompactReasonFor(snapshot);
+    if (reason !== null) {
+      showToast(reason, "error");
+      announce(reason);
+      return "skipped";
+    }
+    setContext(true, false);
+    openContextConfirm();
+    const recheck = contextCompactReasonFor(
+      sessionId === null ? null : contextBySession.get(sessionId) ?? null,
+    );
+    if (recheck !== null) {
+      showToast(recheck, "error");
+      announce(recheck);
+      return "skipped";
+    }
+    if (
+      contextConfirm === null ||
+      contextConfirm.hidden ||
+      (contextCompactButton !== null && contextCompactButton.disabled)
+    ) {
+      showToast("Compaction is unavailable.", "error");
+      announce("Compaction is unavailable.");
+      return "skipped";
+    }
+    if (contextConfirmCompact instanceof HTMLElement) contextConfirmCompact.focus();
+    announce("Compaction confirmation opened.");
+    return "ran";
+  }
+
+  async function restartApplication() {
+    const confirmed = await openCommandConfirm({
+      title: `Restart ${appKey}?`,
+      body: "An active turn will be interrupted.",
+      confirmLabel: "Restart agent",
+      cancelLabel: "Cancel",
+    });
+    if (!confirmed) {
+      announce("Restart cancelled.");
+      return "skipped";
+    }
+    announce("Restarting…");
+    showToast("Restarting…", "success");
+    const query = new URLSearchParams();
+    if (projectId.length > 0) query.set("project", projectId);
+    query.set("async", "1");
+    try {
+      await api(`/api/apps/${encodeURIComponent(appKey)}/restart?${query.toString()}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      });
+      refreshRuntime().catch(() => {});
+    } catch (error) {
+      if (error !== null && typeof error === "object" && error.status === 409) {
+        showToast("A restart is already in progress.", "error");
+      } else {
+        showToast(error instanceof Error ? error.message : "Restart failed.", "error");
+      }
+    }
+    return "ran";
+  }
+
+  async function runHanseAction(resolved, args) {
+    const entry = resolved.entry;
+    if (resolved.action === "new") {
+      startDraft({ focus: true });
+      announce("Started a new session.");
+      return "ran";
+    }
+    if (resolved.action === "help") {
+      const trimmed = args.trim();
+      const filter = trimmed.length === 0 ? "" : trimmed.split(/\s+/)[0];
+      closeCommandPalette({});
+      openCommandPalette(filter, { focus: true });
+      announce(filter.length === 0 ? "Commands" : `Commands filtered by ${filter}`);
+      return "palette";
+    }
+    if (resolved.action === "editor") {
+      openNewTab(ideUrl);
+      return "ran";
+    }
+    if (resolved.action === "diff") {
+      openNewTab(appPageUrl.length === 0 ? "" : `${appPageUrl}#changes-title`);
+      return "ran";
+    }
+    if (resolved.action === "compact") return runCompactCommand();
+    if (resolved.action === "restart") return restartApplication();
+    showSendError(`/${entry.name} is not available in this build.`);
+    return "skipped";
+  }
+
+  function clearComposerValue() {
+    if (!(promptEl instanceof HTMLTextAreaElement)) return;
+    promptEl.value = "";
+    resizePrompt();
+    syncComposer();
+  }
+
+  async function dispatchComposerDraft() {
+    if (!(promptEl instanceof HTMLTextAreaElement)) return "fallthrough";
+    if (acceptanceInFlight() || acceptanceUnknown()) return "handled";
+    const parsed = parseComposerCommand(promptEl.value);
+    if (parsed.kind !== "command") return "fallthrough";
+    if (commandsDispatching) return "handled";
+    commandsDispatching = true;
+    try {
+      if (commandsAreStale()) await refreshCommands({ quiet: true });
+      if (acceptanceInFlight() || acceptanceUnknown()) return "handled";
+      const resolved = resolveComposerCommand(
+        commandsStatus === "ready" ? commands : [],
+        parsed.token,
+        { listAvailable: commandsStatus === "ready", master: isMaster },
+      );
+      if (resolved.kind === "unknown") {
+        showToast("Unknown command; sent as a message.", "error");
+        announce("Unknown command; sent as a message.");
+        return "fallthrough";
+      }
+      if (resolved.kind === "disabled") {
+        showSendError(resolved.reason);
+        announce(resolved.reason);
+        return "handled";
+      }
+      const pending = activePromptEntries().length > 0;
+      if (commandBlockedByPending(resolved.entry, pending)) {
+        focusRequest();
+        showSendError("Answer the pending request first.");
+        announce("Answer the pending request first.");
+        return "handled";
+      }
+      if (resolved.kind === "opencode") {
+        if (resolved.shadowed) {
+          showToast(`/${parsed.token} is provided by the application.`, "error");
+          announce(`/${parsed.token} is provided by the application.`);
+        }
+        await sendServerCommand(resolved.entry, parsed.args);
+        return "handled";
+      }
+      if (resolved.action !== "help" && parsed.args.trim().length > 0) {
+        showSendError(`/${resolved.entry.name} does not take arguments.`);
+        announce(`/${resolved.entry.name} does not take arguments.`);
+        return "handled";
+      }
+      const draft = promptEl.value;
+      clearComposerValue();
+      const outcome = await runHanseAction(resolved, parsed.args);
+      if (outcome === "skipped") {
+        if (promptEl.value.length === 0) {
+          promptEl.value = draft;
+          resizePrompt();
+        }
+        return "handled";
+      }
+      if (outcome !== "palette") closeCommandPalette({ focus: true });
+      return "handled";
+    } finally {
+      commandsDispatching = false;
+    }
+  }
+
+  async function sendServerCommand(entry, args) {
+    if (!(promptEl instanceof HTMLTextAreaElement)) return;
+    const draft = promptEl.value;
+    const initialSession = sessionId;
+    const acceptanceKey = initialSession === null ? "draft" : initialSession;
+    const state = acceptanceFor(acceptanceKey);
+    if (state.inFlight || state.state === "unknown") return;
+
+    let confirmShell = false;
+    if (shellRequiresConfirmation(entry.shell)) {
+      const confirmed = await shellConfirmation(entry);
+      if (!confirmed) {
+        announce("Command cancelled.");
+        return;
+      }
+      confirmShell = true;
+    }
+    if (acceptanceInFlight() || acceptanceUnknown()) return;
+    if (activePromptEntries().length > 0) {
+      focusRequest();
+      showSendError("Answer the pending request first.");
+      return;
+    }
+
+    const lineText = commandLine(entry.name, args).trim();
+    const tempID = localID();
+    const knownUserIDs = new Set();
+    for (const id of store.order) {
+      const record = store.messages.get(id);
+      if (record !== undefined && record.role === "user") knownUserIDs.add(id);
+    }
+    state.inFlight = true;
+    state.posting = false;
+    state.state = "sending";
+    state.sessionID = initialSession;
+    state.tempID = tempID;
+    state.serverID = null;
+    state.text = lineText;
+    state.knownUserIDs = knownUserIDs;
+    state.bufferedEvents = [];
+    clearAcceptanceGrace(state);
+    insertOptimisticMessage(tempID, lineText);
+    showSendError(null);
+    showSessionError(null);
+    setSessionNotice(false);
+    promptEl.value = "";
+    resizePrompt();
+    closeCommandPalette({});
+    syncComposer();
+    renderSendRecovery();
+
+    const run = async () => {
+      let id = initialSession;
+      let posted = false;
+      let retriedConfirmation = false;
+      try {
+        if (id === null) {
+          id = await ensureSession();
+          moveAcceptance("draft", id);
+          state.sessionID = id;
+          store.sessionID = id;
+        }
+        for (;;) {
+          state.posting = true;
+          updateWorkingStatus();
+          posted = true;
+          let accepted;
+          try {
+            accepted = await api(serverCommandUrl(id), {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({
+                name: entry.name,
+                arguments: args,
+                confirmShell,
+              }),
+            });
+          } catch (error) {
+            state.posting = false;
+            if (
+              !retriedConfirmation &&
+              error !== null &&
+              typeof error === "object" &&
+              error.status === 400 &&
+              error.code === "shell_confirmation_required"
+            ) {
+              const confirmed = await shellConfirmation(entry);
+              if (!confirmed) {
+                removeAcceptanceRow(state, tempID);
+                state.inFlight = false;
+                state.posting = false;
+                state.state = "idle";
+                state.commandAccepted = false;
+                state.tempID = null;
+                state.serverID = null;
+                state.text = "";
+                state.knownUserIDs = new Set();
+                state.bufferedEvents = [];
+                clearAcceptanceGrace(state);
+                if (promptEl.value.length === 0) {
+                  promptEl.value = draft;
+                  resizePrompt();
+                }
+                syncComposer();
+                renderSendRecovery();
+                scheduleFlush();
+                announce("Command cancelled.");
+                return;
+              }
+              retriedConfirmation = true;
+              confirmShell = true;
+              continue;
+            }
+            throw error;
+          }
+          state.posting = false;
+          const serverID =
+            accepted !== null &&
+            typeof accepted === "object" &&
+            typeof accepted.messageID === "string"
+              ? accepted.messageID
+              : null;
+          if (serverID === null) {
+            const failure = new Error("Delivery unknown; checking…");
+            failure.outcome = "unknown";
+            throw failure;
+          }
+          rekeyAcceptanceRow(state, serverID, false);
+          state.state = "accepted";
+          state.commandAccepted = true;
+          state.inFlight = false;
+          state.tempID = null;
+          state.serverID = serverID;
+          clearAcceptanceGrace(state);
+          recomputeQueue();
+          syncComposer();
+          renderSendRecovery();
+          refreshRuntime().catch(() => {});
+          refreshSessions().catch(() => {});
+          if (sessionId === id && promptEl instanceof HTMLTextAreaElement) promptEl.focus();
+          return;
+        }
+      } catch (error) {
+        state.posting = false;
+        const outcome =
+          error !== null && typeof error === "object" ? error.outcome : undefined;
+        const code = error !== null && typeof error === "object" ? error.code : undefined;
+        const status = error !== null && typeof error === "object" ? error.status : undefined;
+        const unknown =
+          outcome === "unknown" ||
+          code === "command_failed" ||
+          (posted && status === undefined);
+        if (unknown) {
+          const returnedID =
+            error !== null && typeof error === "object" && typeof error.messageID === "string"
+              ? error.messageID
+              : null;
+          if (returnedID !== null) {
+            if (!rekeyAcceptanceRow(state, returnedID, true)) {
+              state.serverID = returnedID;
+              state.tempID = null;
+            }
+            state.state = "unknown";
+            state.commandAccepted = false;
+            state.inFlight = false;
+            clearAcceptanceGrace(state);
+            recomputeQueue();
+          } else {
+            const record = activeRowFor(state, tempID);
+            if (record !== undefined && record !== null) {
+              record.optimistic = "unknown";
+              record.version += 1;
+              if (state.sessionID === sessionId) dirtyMessages.add(tempID);
+            }
+            state.state = "unknown";
+            state.commandAccepted = false;
+            state.inFlight = false;
+            if (state.sessionID === sessionId) {
+              recomputeQueue();
+              scheduleFlush();
+            }
+          }
+          syncComposer();
+          renderSendRecovery();
+          showToast(error instanceof Error ? error.message : "Delivery unknown; checking…", "error");
+          if (sessionId !== null) {
+            hydrateMessages({ reason: "unknown", silent: true }).catch(() => {});
+          }
+          refreshRuntime().catch(() => {});
+          return;
+        }
+        removeAcceptanceRow(state, tempID);
+        state.inFlight = false;
+        state.posting = false;
+        state.state = "idle";
+        state.commandAccepted = false;
+        state.tempID = null;
+        state.serverID = null;
+        state.text = "";
+        state.knownUserIDs = new Set();
+        state.bufferedEvents = [];
+        clearAcceptanceGrace(state);
+        if (promptEl.value.length === 0) {
+          promptEl.value = draft;
+          resizePrompt();
+        }
+        showSendError(error instanceof Error ? error.message : String(error));
+        if (status === 404 && code === "command_not_found") {
+          refreshCommands({ force: true, quiet: true }).catch(() => {});
+        }
+        syncComposer();
+        renderSendRecovery();
+        scheduleFlush();
+        refreshRuntime().catch(() => {});
+      }
+    };
+    state.chain = state.chain.then(run, run);
+  }
+
   async function sendPrompt() {
     if (!(promptEl instanceof HTMLTextAreaElement)) return;
     if (acceptanceInFlight() || acceptanceUnknown()) return;
+    const dispatched = await dispatchComposerDraft();
+    if (dispatched === "handled") return;
     if (activePromptEntries().length > 0) {
       focusRequest();
       return;
@@ -7606,6 +8440,11 @@ function main() {
   }
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") return;
+    if (paletteOpen) {
+      event.preventDefault();
+      closeCommandPalette({ focus: true });
+      return;
+    }
     if (cancelPromptStep()) {
       event.preventDefault();
       return;
@@ -7671,9 +8510,40 @@ function main() {
     });
   }
   if (promptEl instanceof HTMLTextAreaElement) {
-    promptEl.addEventListener("input", resizePrompt);
+    promptEl.addEventListener("input", () => {
+      resizePrompt();
+      syncPaletteFromDraft();
+    });
     promptEl.addEventListener("keydown", (event) => {
-      if (event.key !== "Enter" || event.isComposing) return;
+      if (event.isComposing) return;
+      if (paletteOpen) {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          closeCommandPalette({ focus: true });
+          return;
+        }
+        if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+          event.preventDefault();
+          movePaletteActive(event.key === "ArrowDown" ? "down" : "up");
+          return;
+        }
+        if (event.key === "Home" || event.key === "End") {
+          event.preventDefault();
+          movePaletteActive(event.key === "Home" ? "home" : "end");
+          return;
+        }
+        if (event.key === "Enter" || event.key === "Tab") {
+          event.preventDefault();
+          if (insertActiveCommand()) return;
+          if (event.key === "Enter" && paletteRows.length === 0) {
+            closeCommandPalette({ focus: true });
+            sendPrompt();
+          }
+          return;
+        }
+        return;
+      }
+      if (event.key !== "Enter") return;
       if (event.metaKey || event.ctrlKey || !event.shiftKey) {
         event.preventDefault();
         sendPrompt();
@@ -7684,7 +8554,29 @@ function main() {
   if (composer !== null) {
     composer.addEventListener("submit", (event) => {
       event.preventDefault();
+      if (paletteOpen && insertActiveCommand()) return;
       sendPrompt();
+    });
+  }
+  if (commandsButton !== null) {
+    commandsButton.addEventListener("click", () => {
+      if (paletteOpen) {
+        closeCommandPalette({ focus: true });
+        return;
+      }
+      openCommandPalette("", { focus: true });
+    });
+  }
+  if (commandListbox !== null) {
+    commandListbox.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+    });
+    commandListbox.addEventListener("click", (event) => {
+      const target = event.target instanceof Element ? event.target.closest("[data-command-index]") : null;
+      if (!(target instanceof HTMLElement)) return;
+      const index = Number(target.dataset.commandIndex);
+      if (!Number.isInteger(index)) return;
+      insertCommandRow(index);
     });
   }
   if (scrollEl !== null) {

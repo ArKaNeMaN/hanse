@@ -31,6 +31,7 @@ import { createHttpServer } from "../http/server.js";
 import { upsertPrincipalWithToken } from "../identity/principals.js";
 import { RunnerImageClient } from "../images/client.js";
 import { ImageService, ImageServiceError } from "../images/service.js";
+import { createLogger } from "../logging/logger.js";
 import { ensureMasterAgent } from "../master/bootstrap.js";
 import { isMasterProject, MASTER_DIR_NAME } from "../master/constants.js";
 import { runRemoteMcpServer } from "../mcp/remote.js";
@@ -722,6 +723,7 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
     ...(deletion === undefined ? {} : { deletion }),
     deploymentLock,
     lifecycleActivity,
+    logger: createLogger(),
   });
 
   let ide: ChildProcess | null = null;

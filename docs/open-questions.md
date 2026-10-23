@@ -1,5 +1,34 @@
 # Open questions
 
+> Stage: `0021-slash-commands`. Owner decisions were collected on 2026-10-23, before the plan was
+> written. There are no open items for this stage.
+
+## Stage `0021-slash-commands` - resolved owner decisions
+
+1. **opencode server commands** - proxy the opencode command catalog and command execution as-is.
+   No per-command implementation, no template expansion, and no argument parsing in hanse; custom
+   `.opencode/command(s)` files, JSON `command` entries, MCP prompts, and skills appear automatically.
+2. **TUI-local commands** - implement as a hanse-internal registry merged into the same palette, with
+   hanse actions mapped to the existing web UI. `/sessions` is explicitly excluded because the chat
+   page already shows every session in the sessions rail.
+3. **`/restart` and `/diff`** - included in this stage, not deferred.
+4. **Shell-block warning** - delegated to the implementer. Decision: never send an opencode command
+   `template` to the browser; compute a conservative `hasShell` flag on the server from the v1
+   template, show a `shell` badge and a one-line warning in the palette, and require an explicit
+   confirmation before invoking a `hasShell` command. When the upstream does not return templates
+   (v2 command shape), `hasShell` is unknown and the UI makes no safety claim.
+5. **Remaining TUI-local commands** - the verified opencode v1.19.3 client-local set is 30 slash
+   commands. After the five implemented TUI-local actions (`/new`, `/help`, `/editor`, `/compact`,
+   `/diff`), the other 25 are not implemented: `/sessions`, `/workspaces`, `/models`, `/agents`,
+   `/mcps`, `/variants`, `/connect`, `/org`, `/status`, `/update`, `/debug`, `/themes`, `/exit`,
+   `/skills`, `/warp`, `/move`, `/rename`, `/timeline`, `/fork`, `/undo`, `/redo`, `/timestamps`,
+   `/thinking`, `/copy`, `/export`. The per-command rationale is recorded in the design doc;
+   `/model` and `/stop` remain separate future work because they need a model catalog or a new abort
+   route.
+6. **`/diff` semantics** - the command opens the application page `Changes` card (worktree-wide) in a
+   new tab; inline feed diffs remain the per-edit view. A session-scoped aggregate diff is deferred,
+   because it needs a verified upstream route or a new client-side patch log.
+
 > Stage: `0017-skill-bundles`. Owner decisions were collected on 2026-10-23, before the plan was
 > written. There are no open items for the core bundle/editor stage.
 
