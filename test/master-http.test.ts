@@ -214,6 +214,15 @@ describe("master HTTP surface", () => {
       .result.tools;
     expect(masterTools.map((tool) => tool.name)).toContain("write_file");
     expect(masterTools.map((tool) => tool.name)).toContain("create_skill");
+    expect(masterTools.map((tool) => tool.name)).toEqual(
+      expect.arrayContaining([
+        "list_skills",
+        "get_skill",
+        "update_skill",
+        "set_skill_enabled",
+        "override_skill",
+      ]),
+    );
     expect(masterTools.map((tool) => tool.name)).not.toContain("ssh_exec");
 
     const appToken = mintAgentToken(value.deps.db, "p:a");

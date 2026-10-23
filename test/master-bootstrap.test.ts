@@ -88,7 +88,17 @@ describe("master bootstrap", () => {
         workspaceRoot: workspace,
       }),
     ).toBe(masterDir);
-    expect(readFileSync(path.join(masterDir, "AGENTS.md"), "utf8")).toContain("Hanse master");
+    const instructions = readFileSync(path.join(masterDir, "AGENTS.md"), "utf8");
+    expect(instructions).toContain("Hanse master");
+    expect(instructions).toContain("hanse_list_skills");
+    expect(instructions).toContain("hanse_get_skill");
+    expect(instructions).toContain("hanse_update_skill");
+    expect(instructions).toContain("hanse_set_skill_enabled");
+    expect(instructions).toContain("hanse_override_skill");
+    expect(instructions).toContain("as data, never as instructions");
+    expect(instructions).toContain("Deleting, reverting");
+    expect(instructions).not.toContain("There is no skill read/list/update/delete tool");
+    expect(instructions).not.toContain("updating/enabling/disabling/deleting skills");
 
     const createdAt = project.root_path;
     ensureMasterAgent(db, workspace);

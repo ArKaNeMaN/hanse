@@ -593,7 +593,8 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   model-provider auth is, as for every agent.
 - `/internal/mcp` dispatches a separate allowlist when the presented token resolves to
   `hanse-master:master`: `list_projects`, `get_app`, `get_settings`, `set_setting`,
-  `inherit_setting`, `create_skill`, `create_project`, `add_app`, `start_app`, `restart_app`,
+  `inherit_setting`, `create_skill`, `list_skills`, `get_skill`, `update_skill`,
+  `set_skill_enabled`, `override_skill`, `create_project`, `add_app`, `start_app`, `restart_app`,
   `list_dir`, `read_file`, `write_file`. SSH and handoff tools are rejected as `unknown_tool`; there
   is no fall-through. Failures return `{ok:false, code, message}` text content.
 - Workspace file tools are workspace-relative and confined with realpath/symlink checks,
@@ -618,6 +619,17 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   result reports `shadows`, `shadowedBy`, `appsInScope {total, running}`, and app-scope
   `pendingRestart`; it never echoes the body or reference contents. Creating a skill never restarts
   an agent.
+- `list_skills` returns the effective set and rows defined at a global/project/app target without
+  bodies or reference content; `get_skill` returns one full bundle including `metadataRaw` and
+  `storedIssues`. `update_skill` edits description/body/license/compatibility/metadata/references by
+  id and cannot rename or re-scope; `set_skill_enabled` toggles a tombstone;
+  `override_skill` copies an enabled source into a project/app and requires `confirm_replace` when
+  the exact target row exists. Global update/enable mutations require `confirm_global`. Master-app
+  and deleting-target rows are readable but not mutable. Update/enable/override and their
+  `master.skill_updated`/`master.skill_enabled`/`master.skill_overridden` events commit atomically;
+  results report `effective`, `storedIssues`, shadowing, `appsInScope`, and app-scope
+  `pendingRestart`, never content. Deleting, reverting/discarding, and renaming skills remain
+  operator-only.
 - UI: a **Master** navigation entry opens its chat. The master is hidden from the overview ledger,
   project index, sidebar project lists, `/api/projects`, and chat's default selection. Direct
   project/app/settings/skills URLs still resolve with a reduced master page (no git workbench or
@@ -929,10 +941,10 @@ Settings stage verification:
 - Codegraph indexes are per application (`<app>/.codegraph/`) and are not built automatically;
   per-app HOME keeps the global codegraph state separate.
 - No TLS; intended for a trusted LAN (VPN/reverse proxy for remote access).
-- The master agent has no deletion, file removal/move, git, image-build, skill update/delete/override
-  or provider-key/git-credential tool; skill creation is available through `create_skill`, but
-  reading/listing skills and editing existing ones remain operator-only. Manifest changes are
-  limited to the provisioning tools; renaming
+- The master agent has no deletion, file removal/move, git, image-build, skill delete/revert/rename
+  or provider-key/git-credential tool; skill creation, listing, reading, update, enable/disable, and
+  override are available through the master skill tools, while deletion/revert/rename remain
+  operator-only. Manifest changes are limited to the provisioning tools; renaming
   projects, removing apps, and changing base branches remain UI/manifest jobs. A changed master
   `AGENTS.md` needs an explicit master restart because instructions are not part of the settings
   hash. The master reads text files only, can read workspace content that itself contains secrets,

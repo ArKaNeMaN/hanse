@@ -933,3 +933,908 @@ describe("master tools", () => {
     expect(result.warnings).toContain("post_create_enrichment");
   });
 });
+
+interface ManagementResult {
+  ok: true;
+  skill: CreatedSkill;
+  effective: boolean;
+  storedIssues: Array<{ code: string }>;
+  shadows: string[];
+  shadowedBy: string[];
+  appsInScope: { total: number; running: number };
+  pendingRestart?: { pending: boolean; reasons: string[] };
+  warnings?: string[];
+}
+
+async function captureFailure(run: () => Promise<unknown>): Promise<MasterToolError> {
+  try {
+    await run();
+  } catch (error) {
+    return error as MasterToolError;
+  }
+  throw new Error("expected failure");
+}
+
+function corruptMetadata(value: Fixture, id: number): void {
+  value.db.pragma("ignore_check_constraints = ON");
+  value.db.prepare("UPDATE skills SET metadata_json = 'not-json' WHERE id = ?").run(id);
+  value.db.pragma("ignore_check_constraints = OFF");
+}
+
+describe("master skill management", () => {
+  async function manage(
+    value: Fixture,
+    name: string,
+    args: Record<string, unknown>,
+  ): Promise<ManagementResult> {
+    return (await callMasterTool(value.context, MASTER, name, args)) as ManagementResult;
+  }
+
+  it("advertises the management surface without delete or rename tools", async () => {
+    const value = fixture();
+    const listed = await handleMasterRpc(
+      value.context,
+      { appId: MASTER_APP_ID, projectId: MASTER_PROJECT_ID, appKey: MASTER_APP_KEY },
+      { jsonrpc: "2.0", id: 1, method: "tools/list" },
+    );
+    if (listed === undefined || listed.result === undefined) {
+      throw new Error("tools/list returned no result");
+    }
+    const tools = (listed.result as { tools: Array<{ name: string; inputSchema: unknown }> }).tools;
+    const names = tools.map((tool) => tool.name);
+    expect(names).toEqual(
+      expect.arrayContaining([
+        "list_skills",
+        "get_skill",
+        "update_skill",
+        "set_skill_enabled",
+        "override_skill",
+      ]),
+    );
+    expect(names).not.toContain("delete_skill");
+    expect(names).not.toContain("revert_skill");
+    expect(names).not.toContain("discard_skill");
+    expect(names).not.toContain("rename_skill");
+    const required = (name: string): string[] => {
+      const tool = tools.find((entry) => entry.name === name) as {
+        inputSchema: { required?: string[] };
+      };
+      return tool.inputSchema.required ?? [];
+    };
+    expect(required("list_skills")).toEqual(["scope"]);
+    expect(required("get_skill")).toEqual(["skill_id"]);
+    expect(required("update_skill")).toEqual(["skill_id"]);
+    expect(required("set_skill_enabled")).toEqual(["skill_id", "enabled"]);
+    expect(required("override_skill")).toEqual(["source_skill_id", "scope", "project_id"]);
+  });
+
+  it("lists effective and defined skills without bodies", async () => {
+    const value = fixture();
+    const created = project(value);
+    const global = await createSkill(value, {
+      scope: "global",
+      confirm_global: true,
+      name: "list-global",
+      description: "d",
+      content: "GLOBAL-BODY-SENTINEL",
+    });
+    const projectSkill = await createSkill(value, {
+      scope: "project",
+      project_id: created.id,
+      name: "list-project",
+      description: "d",
+      content: "PROJECT-BODY-SENTINEL",
+    });
+    const appSkill = await createSkill(value, {
+      scope: "app",
+      project_id: created.id,
+      app_key: "reviewer",
+      name: "list-app",
+      description: "d",
+      content: "APP-BODY-SENTINEL",
+    });
+    const projectList = (await callMasterTool(value.context, MASTER, "list_skills", {
+      scope: "project",
+      project_id: created.id,
+    })) as {
+      effective: Array<{ id: number; name: string }>;
+      rows: Array<{ id: number; name: string; storedIssues: unknown[] }>;
+      disabled: unknown[];
+    };
+    expect(projectList.rows.map((row) => row.name)).toEqual(["list-project"]);
+    expect(projectList.rows[0]?.id).toBe(projectSkill.skill.id);
+    expect(projectList.rows[0]?.storedIssues).toEqual([]);
+    expect(projectList.effective.map((row) => row.name)).toEqual(
+      expect.arrayContaining(["list-global", "list-project"]),
+    );
+    expect(projectList.effective.find((row) => row.name === "list-project")?.id).toBe(
+      projectSkill.skill.id,
+    );
+    expect(JSON.stringify(projectList)).not.toContain("GLOBAL-BODY-SENTINEL");
+    expect(JSON.stringify(projectList)).not.toContain("PROJECT-BODY-SENTINEL");
+    const appList = (await callMasterTool(value.context, MASTER, "list_skills", {
+      scope: "app",
+      project_id: created.id,
+      app_key: "reviewer",
+    })) as { rows: Array<{ id: number; name: string }> };
+    expect(appList.rows.map((row) => row.name)).toEqual(["list-app"]);
+    expect(appList.rows[0]?.id).toBe(appSkill.skill.id);
+    expect(JSON.stringify(appList)).not.toContain("APP-BODY-SENTINEL");
+    expect(global.skill.id).toBeGreaterThan(0);
+  });
+
+  it("lists stored issues, disabled tombstones, and reads reserved/deleting targets", async () => {
+    const value = fixture();
+    const created = project(value);
+    const broken = await createSkill(value, {
+      scope: "app",
+      project_id: created.id,
+      app_key: "reviewer",
+      name: "broken-meta",
+      description: "d",
+      content: "c",
+      metadata: { author: "a" },
+    });
+    corruptMetadata(value, broken.skill.id);
+    const hidden = await createSkill(value, {
+      scope: "project",
+      project_id: created.id,
+      name: "hidden-skill",
+      description: "d",
+      content: "c",
+    });
+    value.skills.update(hidden.skill.id, { enabled: false }, "test");
+    const appList = (await callMasterTool(value.context, MASTER, "list_skills", {
+      scope: "app",
+      project_id: created.id,
+      app_key: "reviewer",
+    })) as {
+      rows: Array<{ id: number; name: string; storedIssues: unknown[] }>;
+      disabled: Array<{ id: number; name: string; source: string | null; disabledBy: string }>;
+      effective: Array<{ name: string }>;
+    };
+    const brokenRow = appList.rows.find((row) => row.id === broken.skill.id);
+    expect(brokenRow?.storedIssues.length).toBeGreaterThan(0);
+    expect(appList.effective.map((row) => row.name)).not.toContain("broken-meta");
+    expect(appList.disabled).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: hidden.skill.id,
+          name: "hidden-skill",
+          disabledBy: "project",
+        }),
+      ]),
+    );
+    value.skills.create(
+      "app",
+      { projectId: MASTER_PROJECT_ID, appKey: MASTER_APP_KEY },
+      { name: "master-skill", description: "d", content: "c" },
+      "test",
+    );
+    const masterList = await callMasterTool(value.context, MASTER, "list_skills", {
+      scope: "app",
+      project_id: MASTER_PROJECT_ID,
+      app_key: MASTER_APP_KEY,
+    });
+    expect(JSON.stringify(masterList)).toContain("master-skill");
+    value.db.prepare("UPDATE projects SET deleting = 1 WHERE id = ?").run(created.id);
+    const deletingList = await callMasterTool(value.context, MASTER, "list_skills", {
+      scope: "project",
+      project_id: created.id,
+    });
+    expect(deletingList).toBeDefined();
+  });
+
+  it("reads a full skill and its raw invalid metadata", async () => {
+    const value = fixture();
+    const created = project(value);
+    const skill = await createSkill(value, {
+      scope: "app",
+      project_id: created.id,
+      app_key: "reviewer",
+      name: "detail-skill",
+      description: "detail description",
+      content: "DETAIL-BODY",
+      metadata: { author: "a" },
+      references: [{ path: "references/detail.md", content: "DETAIL-REF" }],
+    });
+    const detail = (await callMasterTool(value.context, MASTER, "get_skill", {
+      skill_id: skill.skill.id,
+    })) as {
+      skill: {
+        content: string;
+        metadataRaw: string | null;
+        storedIssues: unknown[];
+        references: Array<{ content: string; size: number }>;
+      };
+    };
+    expect(detail.skill.content).toBe("DETAIL-BODY");
+    expect(detail.skill.metadataRaw).toBeNull();
+    expect(detail.skill.storedIssues).toEqual([]);
+    expect(detail.skill.references[0]?.content).toBe("DETAIL-REF");
+    expect(detail.skill.references[0]?.size).toBe(10);
+    corruptMetadata(value, skill.skill.id);
+    const broken = (await callMasterTool(value.context, MASTER, "get_skill", {
+      skill_id: skill.skill.id,
+    })) as { skill: { metadataRaw: string | null; storedIssues: unknown[] } };
+    expect(broken.skill.metadataRaw).toBe("not-json");
+    expect(broken.skill.storedIssues.length).toBeGreaterThan(0);
+    await expectFailure(
+      () => callMasterTool(value.context, MASTER, "get_skill", { skill_id: 9999 }),
+      "unknown_skill",
+    );
+  });
+
+  it("updates fields, clears optional data, and audits field names only", async () => {
+    const value = fixture();
+    const created = project(value);
+    const skill = await createSkill(value, {
+      scope: "app",
+      project_id: created.id,
+      app_key: "reviewer",
+      name: "update-skill",
+      description: "old description",
+      content: "OLD-BODY",
+      license: "MIT",
+      compatibility: "Node 20",
+      metadata: { author: "old" },
+      references: [{ path: "references/old.md", content: "OLD-REF" }],
+    });
+    const updated = await manage(value, "update_skill", {
+      skill_id: skill.skill.id,
+      description: "new description",
+      content: "NEW-BODY",
+      license: null,
+      compatibility: "Node 22",
+      metadata: { author: "new" },
+      references: [{ path: "references/new.md", content: "NEW-REF" }],
+    });
+    expect(updated.skill.description).toBe("new description");
+    expect(updated.skill.license).toBeNull();
+    expect(updated.skill.compatibility).toBe("Node 22");
+    expect(updated.skill.metadata).toEqual({ author: "new" });
+    expect(updated.effective).toBe(true);
+    expect(updated.storedIssues).toEqual([]);
+    expect("content" in updated.skill).toBe(false);
+    const stored = value.skills.get(skill.skill.id);
+    expect(stored?.content).toBe("NEW-BODY");
+    expect(stored?.references[0]?.content).toBe("NEW-REF");
+    const cleared = await manage(value, "update_skill", {
+      skill_id: skill.skill.id,
+      metadata: {},
+      references: [],
+    });
+    expect(cleared.skill.metadata).toEqual({});
+    expect(value.skills.get(skill.skill.id)?.references).toEqual([]);
+    const event = value.db
+      .prepare("SELECT payload FROM events WHERE type = 'master.skill_updated' ORDER BY id DESC")
+      .get() as { payload: string };
+    const payload = JSON.parse(event.payload) as Record<string, unknown>;
+    expect(payload.changed).toEqual(["metadata", "references"]);
+    expect(payload).not.toHaveProperty("description");
+    expect(payload).not.toHaveProperty("content");
+    expect(event.payload).not.toContain("NEW-BODY");
+    expect(event.payload).not.toContain("NEW-REF");
+    expect(event.payload).not.toContain("new description");
+  });
+
+  it("rejects invalid updates and guards global, master, and deleting rows", async () => {
+    const value = fixture();
+    const created = project(value);
+    const skill = await createSkill(value, {
+      scope: "app",
+      project_id: created.id,
+      app_key: "reviewer",
+      name: "update-guards",
+      description: "d",
+      content: "c",
+    });
+    await expectFailure(
+      () => callMasterTool(value.context, MASTER, "update_skill", { skill_id: skill.skill.id }),
+      "invalid_argument",
+    );
+    await expectFailure(
+      () =>
+        callMasterTool(value.context, MASTER, "update_skill", {
+          skill_id: skill.skill.id,
+          name: "renamed",
+        }),
+      "invalid_argument",
+    );
+    await expectFailure(
+      () =>
+        callMasterTool(value.context, MASTER, "update_skill", {
+          skill_id: skill.skill.id,
+          enabled: false,
+        }),
+      "invalid_argument",
+    );
+    await expectFailure(
+      () =>
+        callMasterTool(value.context, MASTER, "update_skill", {
+          skill_id: skill.skill.id,
+          metadata: ["bad"],
+        }),
+      "invalid_argument",
+    );
+    await expectFailure(
+      () =>
+        callMasterTool(value.context, MASTER, "update_skill", {
+          skill_id: skill.skill.id,
+          references: [{ path: "references/Bad.md", content: "x" }],
+        }),
+      "invalid_skill",
+    );
+    await expectFailure(
+      () =>
+        callMasterTool(value.context, MASTER, "update_skill", {
+          skill_id: 9999,
+          description: "d",
+        }),
+      "unknown_skill",
+    );
+    const global = await createSkill(value, {
+      scope: "global",
+      confirm_global: true,
+      name: "global-update",
+      description: "d",
+      content: "c",
+    });
+    await expectFailure(
+      () =>
+        callMasterTool(value.context, MASTER, "update_skill", {
+          skill_id: global.skill.id,
+          description: "new",
+        }),
+      "confirmation_required",
+    );
+    const globalUpdated = await manage(value, "update_skill", {
+      skill_id: global.skill.id,
+      description: "new",
+      confirm_global: true,
+    });
+    expect(globalUpdated.skill.description).toBe("new");
+    await expectFailure(
+      () =>
+        callMasterTool(value.context, MASTER, "update_skill", {
+          skill_id: skill.skill.id,
+          description: "new",
+          confirm_global: true,
+        }),
+      "invalid_argument",
+    );
+    const masterSkill = value.skills.create(
+      "app",
+      { projectId: MASTER_PROJECT_ID, appKey: MASTER_APP_KEY },
+      { name: "master-update", description: "d", content: "c" },
+      "test",
+    );
+    await expectFailure(
+      () =>
+        callMasterTool(value.context, MASTER, "update_skill", {
+          skill_id: masterSkill.id,
+          description: "new",
+        }),
+      "master_protected",
+    );
+    value.db.prepare("UPDATE projects SET deleting = 1 WHERE id = ?").run(created.id);
+    await expectFailure(
+      () =>
+        callMasterTool(value.context, MASTER, "update_skill", {
+          skill_id: skill.skill.id,
+          description: "new",
+        }),
+      "deletion_pending",
+    );
+  });
+
+  it("repairs invalid metadata and reports invalid rows as non-effective", async () => {
+    const value = fixture();
+    const created = project(value);
+    const skill = await createSkill(value, {
+      scope: "app",
+      project_id: created.id,
+      app_key: "reviewer",
+      name: "repair-skill",
+      description: "d",
+      content: "c",
+      metadata: { author: "a" },
+    });
+    corruptMetadata(value, skill.skill.id);
+    const bodyOnly = await manage(value, "update_skill", {
+      skill_id: skill.skill.id,
+      content: "new body",
+    });
+    expect(bodyOnly.effective).toBe(false);
+    expect(bodyOnly.storedIssues.length).toBeGreaterThan(0);
+    expect(bodyOnly.shadows).toEqual([]);
+    expect(bodyOnly.shadowedBy).toEqual([]);
+    const repaired = await manage(value, "update_skill", {
+      skill_id: skill.skill.id,
+      metadata: {},
+    });
+    expect(repaired.effective).toBe(true);
+    expect(repaired.storedIssues).toEqual([]);
+    expect(value.skills.get(skill.skill.id)?.metadataRaw).toBeNull();
+  });
+
+  it("rolls back updates when the audit insert fails", async () => {
+    const value = fixture();
+    const created = project(value);
+    const skill = await createSkill(value, {
+      scope: "app",
+      project_id: created.id,
+      app_key: "reviewer",
+      name: "rollback-update",
+      description: "d",
+      content: "before",
+    });
+    value.db.exec("DROP TABLE events");
+    await expectFailure(
+      () =>
+        callMasterTool(value.context, MASTER, "update_skill", {
+          skill_id: skill.skill.id,
+          content: "after",
+        }),
+      "internal_error",
+    );
+    expect(value.skills.get(skill.skill.id)?.content).toBe("before");
+  });
+
+  it("enables and disables skills and reports tombstones", async () => {
+    const value = fixture();
+    const created = project(value);
+    const skill = await createSkill(value, {
+      scope: "app",
+      project_id: created.id,
+      app_key: "reviewer",
+      name: "toggle-skill",
+      description: "d",
+      content: "c",
+    });
+    const disabled = await manage(value, "set_skill_enabled", {
+      skill_id: skill.skill.id,
+      enabled: false,
+    });
+    expect(disabled.skill.enabled).toBe(false);
+    expect(disabled.effective).toBe(false);
+    expect(disabled.shadows).toEqual([]);
+    expect(disabled.shadowedBy).toEqual([]);
+    expect(disabled.storedIssues).toEqual([]);
+    const enabled = await manage(value, "set_skill_enabled", {
+      skill_id: skill.skill.id,
+      enabled: true,
+    });
+    expect(enabled.effective).toBe(true);
+    const global = await createSkill(value, {
+      scope: "global",
+      confirm_global: true,
+      name: "global-toggle",
+      description: "d",
+      content: "c",
+    });
+    await expectFailure(
+      () =>
+        callMasterTool(value.context, MASTER, "set_skill_enabled", {
+          skill_id: global.skill.id,
+          enabled: false,
+        }),
+      "confirmation_required",
+    );
+    const globalDisabled = await manage(value, "set_skill_enabled", {
+      skill_id: global.skill.id,
+      enabled: false,
+      confirm_global: true,
+    });
+    expect(globalDisabled.skill.enabled).toBe(false);
+    await expectFailure(
+      () =>
+        callMasterTool(value.context, MASTER, "set_skill_enabled", {
+          skill_id: skill.skill.id,
+          enabled: false,
+          confirm_global: true,
+        }),
+      "invalid_argument",
+    );
+    await expectFailure(
+      () =>
+        callMasterTool(value.context, MASTER, "set_skill_enabled", {
+          skill_id: 9999,
+          enabled: false,
+        }),
+      "unknown_skill",
+    );
+    const masterSkill = value.skills.create(
+      "app",
+      { projectId: MASTER_PROJECT_ID, appKey: MASTER_APP_KEY },
+      { name: "master-toggle", description: "d", content: "c" },
+      "test",
+    );
+    await expectFailure(
+      () =>
+        callMasterTool(value.context, MASTER, "set_skill_enabled", {
+          skill_id: masterSkill.id,
+          enabled: false,
+        }),
+      "master_protected",
+    );
+    value.db.prepare("UPDATE projects SET deleting = 1 WHERE id = ?").run(created.id);
+    await expectFailure(
+      () =>
+        callMasterTool(value.context, MASTER, "set_skill_enabled", {
+          skill_id: skill.skill.id,
+          enabled: false,
+        }),
+      "deletion_pending",
+    );
+  });
+
+  it("rolls back enable/disable when the audit insert fails", async () => {
+    const value = fixture();
+    const created = project(value);
+    const skill = await createSkill(value, {
+      scope: "app",
+      project_id: created.id,
+      app_key: "reviewer",
+      name: "rollback-enable",
+      description: "d",
+      content: "c",
+    });
+    value.db.exec("DROP TABLE events");
+    await expectFailure(
+      () =>
+        callMasterTool(value.context, MASTER, "set_skill_enabled", {
+          skill_id: skill.skill.id,
+          enabled: false,
+        }),
+      "internal_error",
+    );
+    expect(value.skills.get(skill.skill.id)?.enabled).toBe(true);
+  });
+
+  it("overrides a global skill and requires replacement confirmation", async () => {
+    const value = fixture();
+    const created = project(value);
+    const global = await createSkill(value, {
+      scope: "global",
+      confirm_global: true,
+      name: "copy-me",
+      description: "global description",
+      content: "v1",
+      metadata: { author: "global" },
+      references: [{ path: "references/copy.md", content: "GLOBAL-REF" }],
+    });
+    const overridden = await manage(value, "override_skill", {
+      source_skill_id: global.skill.id,
+      scope: "app",
+      project_id: created.id,
+      app_key: "reviewer",
+    });
+    expect(overridden.skill.name).toBe("copy-me");
+    expect(overridden.effective).toBe(true);
+    expect("content" in overridden.skill).toBe(false);
+    const copied = value.skills.get(overridden.skill.id);
+    expect(copied?.content).toBe("v1");
+    expect(copied?.metadata).toEqual({ author: "global" });
+    expect(copied?.references[0]?.content).toBe("GLOBAL-REF");
+    const conflict = await captureFailure(() =>
+      callMasterTool(value.context, MASTER, "override_skill", {
+        source_skill_id: global.skill.id,
+        scope: "app",
+        project_id: created.id,
+        app_key: "reviewer",
+      }),
+    );
+    expect(conflict.code).toBe("replacement_confirmation_required");
+    expect(conflict.message).toContain(`id ${overridden.skill.id}`);
+    const replaced = await manage(value, "override_skill", {
+      source_skill_id: global.skill.id,
+      scope: "app",
+      project_id: created.id,
+      app_key: "reviewer",
+      confirm_replace: true,
+    });
+    expect(replaced.skill.id).toBe(overridden.skill.id);
+    const event = value.db
+      .prepare("SELECT payload FROM events WHERE type = 'master.skill_overridden' ORDER BY id DESC")
+      .get() as { payload: string };
+    const payload = JSON.parse(event.payload) as Record<string, unknown>;
+    expect(payload).toMatchObject({
+      sourceSkillId: global.skill.id,
+      skillId: overridden.skill.id,
+      scope: "app",
+      projectId: created.id,
+      appKey: "reviewer",
+      name: "copy-me",
+    });
+    expect(event.payload).not.toContain("GLOBAL-REF");
+    expect(payload).not.toHaveProperty("content");
+  });
+
+  it("rejects invalid override sources and targets", async () => {
+    const value = fixture();
+    const one = namedProject(value, "One");
+    const two = namedProject(value, "Two");
+    const disabledSource = await createSkill(value, {
+      scope: "project",
+      project_id: one.id,
+      name: "disabled-source",
+      description: "d",
+      content: "c",
+    });
+    value.skills.update(disabledSource.skill.id, { enabled: false }, "test");
+    await expectFailure(
+      () =>
+        callMasterTool(value.context, MASTER, "override_skill", {
+          source_skill_id: disabledSource.skill.id,
+          scope: "app",
+          project_id: one.id,
+          app_key: "reviewer",
+        }),
+      "invalid_skill",
+    );
+    const invisibleSource = await createSkill(value, {
+      scope: "project",
+      project_id: one.id,
+      name: "invisible-source",
+      description: "d",
+      content: "c",
+    });
+    await expectFailure(
+      () =>
+        callMasterTool(value.context, MASTER, "override_skill", {
+          source_skill_id: invisibleSource.skill.id,
+          scope: "app",
+          project_id: two.id,
+          app_key: "reviewer",
+        }),
+      "invalid_skill",
+    );
+    const badSource = await createSkill(value, {
+      scope: "global",
+      confirm_global: true,
+      name: "bad-source",
+      description: "d",
+      content: "c",
+      metadata: { author: "a" },
+    });
+    corruptMetadata(value, badSource.skill.id);
+    await expectFailure(
+      () =>
+        callMasterTool(value.context, MASTER, "override_skill", {
+          source_skill_id: badSource.skill.id,
+          scope: "app",
+          project_id: one.id,
+          app_key: "reviewer",
+        }),
+      "invalid_skill",
+    );
+    const badText = await createSkill(value, {
+      scope: "global",
+      confirm_global: true,
+      name: "bad-text",
+      description: "d",
+      content: "c",
+    });
+    value.db
+      .prepare("UPDATE skills SET description = ? WHERE id = ?")
+      .run("bad\tdescription", badText.skill.id);
+    await expectFailure(
+      () =>
+        callMasterTool(value.context, MASTER, "override_skill", {
+          source_skill_id: badText.skill.id,
+          scope: "app",
+          project_id: one.id,
+          app_key: "reviewer",
+        }),
+      "invalid_skill",
+    );
+    await expectFailure(
+      () =>
+        callMasterTool(value.context, MASTER, "override_skill", {
+          source_skill_id: badText.skill.id,
+          scope: "global",
+          project_id: one.id,
+        }),
+      "invalid_argument",
+    );
+    await expectFailure(
+      () =>
+        callMasterTool(value.context, MASTER, "override_skill", {
+          source_skill_id: 9999,
+          scope: "app",
+          project_id: one.id,
+          app_key: "reviewer",
+        }),
+      "unknown_skill",
+    );
+    await expectFailure(
+      () =>
+        callMasterTool(value.context, MASTER, "override_skill", {
+          source_skill_id: badText.skill.id,
+          scope: "app",
+          project_id: one.id,
+          app_key: "reviewer",
+          confirm_replace: "yes",
+        }),
+      "invalid_argument",
+    );
+    await expectFailure(
+      () =>
+        callMasterTool(value.context, MASTER, "override_skill", {
+          source_skill_id: badText.skill.id,
+          scope: "app",
+          project_id: one.id,
+          app_key: "reviewer",
+          confirm_global: true,
+        }),
+      "invalid_argument",
+    );
+  });
+
+  it("rejects self-overrides and guards master/deleting targets", async () => {
+    const value = fixture();
+    const created = project(value);
+    const appSource = await createSkill(value, {
+      scope: "app",
+      project_id: created.id,
+      app_key: "reviewer",
+      name: "self-source",
+      description: "d",
+      content: "c",
+    });
+    await expectFailure(
+      () =>
+        callMasterTool(value.context, MASTER, "override_skill", {
+          source_skill_id: appSource.skill.id,
+          scope: "app",
+          project_id: created.id,
+          app_key: "reviewer",
+        }),
+      "invalid_argument",
+    );
+    const global = await createSkill(value, {
+      scope: "global",
+      confirm_global: true,
+      name: "master-copy",
+      description: "d",
+      content: "c",
+    });
+    await expectFailure(
+      () =>
+        callMasterTool(value.context, MASTER, "override_skill", {
+          source_skill_id: global.skill.id,
+          scope: "app",
+          project_id: MASTER_PROJECT_ID,
+          app_key: MASTER_APP_KEY,
+        }),
+      "master_protected",
+    );
+    value.db.prepare("UPDATE projects SET deleting = 1 WHERE id = ?").run(created.id);
+    await expectFailure(
+      () =>
+        callMasterTool(value.context, MASTER, "override_skill", {
+          source_skill_id: global.skill.id,
+          scope: "app",
+          project_id: created.id,
+          app_key: "reviewer",
+        }),
+      "deletion_pending",
+    );
+  });
+
+  it("keeps a tombstone snapshot when re-enabling an override", async () => {
+    const value = fixture();
+    const created = project(value);
+    const global = await createSkill(value, {
+      scope: "global",
+      confirm_global: true,
+      name: "snapshot-skill",
+      description: "d",
+      content: "v1",
+    });
+    const tombstone = await manage(value, "override_skill", {
+      source_skill_id: global.skill.id,
+      scope: "app",
+      project_id: created.id,
+      app_key: "reviewer",
+      enabled: false,
+    });
+    expect(tombstone.effective).toBe(false);
+    await manage(value, "update_skill", {
+      skill_id: global.skill.id,
+      content: "v2",
+      confirm_global: true,
+    });
+    const enabled = await manage(value, "set_skill_enabled", {
+      skill_id: tombstone.skill.id,
+      enabled: true,
+    });
+    expect(enabled.effective).toBe(true);
+    expect(value.skills.get(tombstone.skill.id)?.content).toBe("v1");
+  });
+
+  it("rolls back an override when the audit insert fails", async () => {
+    const value = fixture();
+    const created = project(value);
+    const global = await createSkill(value, {
+      scope: "global",
+      confirm_global: true,
+      name: "override-rollback",
+      description: "d",
+      content: "c",
+    });
+    value.db.exec("DROP TABLE events");
+    await expectFailure(
+      () =>
+        callMasterTool(value.context, MASTER, "override_skill", {
+          source_skill_id: global.skill.id,
+          scope: "app",
+          project_id: created.id,
+          app_key: "reviewer",
+        }),
+      "internal_error",
+    );
+    const rows = value.skills.resolve({ projectId: created.id, appKey: "reviewer" }).rows;
+    expect(rows.map((row) => row.name)).not.toContain("override-rollback");
+  });
+
+  it("keeps management mutations successful when enrichment fails", async () => {
+    const value = fixture();
+    const created = project(value);
+    const skill = await createSkill(value, {
+      scope: "app",
+      project_id: created.id,
+      app_key: "reviewer",
+      name: "enrichment-skill",
+      description: "d",
+      content: "c",
+    });
+    const real = value.skills;
+    const throwingResolve = {
+      get: real.get.bind(real),
+      update: real.update.bind(real),
+      resolve: () => {
+        throw new Error("resolve failed");
+      },
+    } as unknown as SkillService;
+    const updated = (await callMasterTool(
+      { ...value.context, skills: throwingResolve },
+      MASTER,
+      "update_skill",
+      { skill_id: skill.skill.id, content: "new" },
+    )) as ManagementResult;
+    expect(updated.ok).toBe(true);
+    expect(updated.effective).toBe(false);
+    expect(updated.storedIssues).toEqual([]);
+    expect(updated.shadows).toEqual([]);
+    expect(updated.shadowedBy).toEqual([]);
+    expect(updated.warnings).toContain("post_create_enrichment");
+    expect(value.skills.get(skill.skill.id)?.content).toBe("new");
+
+    const manager = {
+      ...(value.context.manager as InstanceManager),
+      pendingRestart: () => {
+        throw new Error("pending failed");
+      },
+    } as unknown as InstanceManager;
+    const toggled = (await callMasterTool(
+      { ...value.context, manager },
+      MASTER,
+      "set_skill_enabled",
+      { skill_id: skill.skill.id, enabled: true },
+    )) as ManagementResult;
+    expect(toggled.ok).toBe(true);
+    expect(toggled.pendingRestart).toEqual({ pending: false, reasons: [] });
+    expect(toggled.warnings).toContain("post_create_enrichment");
+
+    value.db.exec("DROP TABLE instances");
+    const counted = (await callMasterTool(value.context, MASTER, "set_skill_enabled", {
+      skill_id: skill.skill.id,
+      enabled: false,
+    })) as ManagementResult;
+    expect(counted.ok).toBe(true);
+    expect(counted.appsInScope).toEqual({ total: 0, running: 0 });
+    expect(counted.warnings).toContain("post_create_enrichment");
+  });
+});

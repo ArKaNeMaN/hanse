@@ -10,6 +10,11 @@ Out of scope: updating, deleting, enabling/disabling, overriding, copying, readi
 skills from the master; creating skills inside the reserved master project/application; automatic
 agent restarts; skill import/export; any database migration or npm dependency.
 
+> Superseded in part by stage 0020
+> ([`master-skill-management.md`](./master-skill-management.md), journal 0023): the master now also
+> lists, reads, updates, enables/disables, and overrides skills. Deleting, reverting/discarding, and
+> renaming remain operator-only. The create tool and its safety contract are unchanged.
+
 ## 1. Problem
 
 The master agent can create projects, add applications, write their `AGENTS.md`, change non-secret

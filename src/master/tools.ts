@@ -22,14 +22,19 @@ import type {
   SettingsTarget,
 } from "../settings/types.js";
 import {
+  type EffectiveSkill,
   SkillConflictError,
   type SkillInput,
   type SkillReference,
   type SkillRow,
   type SkillScope,
   type SkillService,
+  type SkillSummary,
   type SkillTarget,
+  type SkillUpdate,
   SkillValidationError,
+  validateSkillContent,
+  validateSkillDescription,
 } from "../skills/index.js";
 import type { SqliteDatabase } from "../store/index.js";
 import {
@@ -170,6 +175,87 @@ export const MASTER_TOOLS = [
         },
       },
       required: ["scope", "name", "description", "content"],
+    },
+  },
+  {
+    name: "list_skills",
+    description:
+      "List the effective skill set and the rows defined at a global, project, or application target. Returns no skill bodies or reference contents.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        scope: { type: "string", enum: ["global", "project", "app"] },
+        project_id: { type: "string" },
+        app_key: { type: "string" },
+      },
+      required: ["scope"],
+    },
+  },
+  {
+    name: "get_skill",
+    description:
+      "Read one skill by id, including its body, reference contents, metadata, raw invalid metadata, and stored issues.",
+    inputSchema: {
+      type: "object",
+      properties: { skill_id: { type: "integer", minimum: 1 } },
+      required: ["skill_id"],
+    },
+  },
+  {
+    name: "update_skill",
+    description:
+      "Update an existing skill's description, body, license, compatibility, metadata, or references by id. Name, scope, target, and enabled are immutable.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        skill_id: { type: "integer", minimum: 1 },
+        description: { type: "string" },
+        content: { type: "string" },
+        license: { type: ["string", "null"] },
+        compatibility: { type: ["string", "null"] },
+        metadata: { type: "object", additionalProperties: { type: "string" } },
+        references: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: { path: { type: "string" }, content: { type: "string" } },
+            required: ["path", "content"],
+          },
+        },
+        confirm_global: { type: "boolean" },
+      },
+      required: ["skill_id"],
+    },
+  },
+  {
+    name: "set_skill_enabled",
+    description:
+      "Enable or disable one skill by id. A disabled skill is a tombstone, not a deletion.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        skill_id: { type: "integer", minimum: 1 },
+        enabled: { type: "boolean" },
+        confirm_global: { type: "boolean" },
+      },
+      required: ["skill_id", "enabled"],
+    },
+  },
+  {
+    name: "override_skill",
+    description:
+      "Copy an enabled source skill into a project or application target. Replacing an existing target row requires confirm_replace.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        source_skill_id: { type: "integer", minimum: 1 },
+        scope: { type: "string", enum: ["project", "app"] },
+        project_id: { type: "string" },
+        app_key: { type: "string" },
+        enabled: { type: "boolean" },
+        confirm_replace: { type: "boolean" },
+      },
+      required: ["source_skill_id", "scope", "project_id"],
     },
   },
   {
@@ -651,6 +737,240 @@ function skillConflictError(
   );
 }
 
+function assertGlobalConfirmation(scope: SkillScope, args: Record<string, unknown>): void {
+  if (scope === "global") {
+    if (args.confirm_global === undefined || args.confirm_global === false) {
+      throw new MasterToolError(
+        "confirmation_required",
+        "global skills affect every application, including the master; ask the operator and pass confirm_global: true after approval",
+      );
+    }
+    if (args.confirm_global !== true) {
+      throw new MasterToolError("invalid_argument", '"confirm_global" must be a boolean');
+    }
+    return;
+  }
+  if (args.confirm_global !== undefined) {
+    throw new MasterToolError("invalid_argument", "confirm_global is only valid for global scope");
+  }
+}
+
+function asPositiveInteger(value: unknown, field: string): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) {
+    throw new MasterToolError("invalid_argument", `"${field}" must be a positive integer`);
+  }
+  return value;
+}
+
+function asBoolean(value: unknown, field: string): boolean {
+  if (typeof value !== "boolean") {
+    throw new MasterToolError("invalid_argument", `"${field}" must be a boolean`);
+  }
+  return value;
+}
+
+function asOverrideScope(value: unknown): "project" | "app" {
+  if (value === "project" || value === "app") {
+    return value;
+  }
+  throw new MasterToolError("invalid_argument", 'scope must be "project" or "app"');
+}
+
+function skillRowTarget(row: SkillRow): SkillTarget {
+  if (row.scope === "global") {
+    return {};
+  }
+  if (row.scope === "project") {
+    return { projectId: row.projectId };
+  }
+  return { projectId: row.projectId, appKey: row.appKey };
+}
+
+function assertSkillRowMutable(db: SqliteDatabase, row: SkillRow): void {
+  assertSkillTarget(db, row.scope, skillRowTarget(row));
+}
+
+function skillDetail(row: SkillRow): Record<string, unknown> {
+  return {
+    ...skillSummary(row),
+    content: row.content,
+    metadataRaw: row.metadataRaw,
+    references: row.references.map((reference) => ({
+      path: reference.path,
+      content: reference.content,
+      size: Buffer.byteLength(reference.content, "utf8"),
+    })),
+    storedIssues: row.storedIssues,
+  };
+}
+
+function listEffectiveEntry(entry: EffectiveSkill, target: SkillTarget): Record<string, unknown> {
+  return {
+    id: entry.id,
+    projectId: entry.source === "global" ? "" : (target.projectId ?? ""),
+    appKey: entry.source === "app" ? (target.appKey ?? "") : "",
+    name: entry.name,
+    description: entry.description,
+    license: entry.license,
+    compatibility: entry.compatibility,
+    metadata: entry.metadata,
+    enabled: true,
+    references: entry.references,
+    storedIssues: [],
+    source: entry.source,
+    shadows: entry.shadows,
+    updatedAt: entry.updatedAt,
+    updatedBy: entry.updatedBy,
+  };
+}
+
+function listRowEntry(row: SkillSummary): Record<string, unknown> {
+  return {
+    id: row.id,
+    scope: row.scope,
+    projectId: row.projectId,
+    appKey: row.appKey,
+    name: row.name,
+    description: row.description,
+    license: row.license,
+    compatibility: row.compatibility,
+    metadata: row.metadata,
+    enabled: row.enabled,
+    references: row.references,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    updatedBy: row.updatedBy,
+    storedIssues: row.storedIssues,
+  };
+}
+
+interface SkillMutationEnrichment {
+  effective?: boolean;
+  storedIssues?: SkillRow["storedIssues"];
+  shadows: SkillScope[];
+  shadowedBy: SkillScope[];
+  appsInScope: { total: number; running: number };
+  pendingRestart?: { pending: boolean; reasons: string[] };
+  warnings?: string[];
+}
+
+function skillMutationEnrichment(
+  context: MasterToolContext,
+  skills: SkillService,
+  row: SkillRow,
+  target: SkillTarget,
+  includeState: boolean,
+): SkillMutationEnrichment {
+  const warnings = new Set<string>();
+  let effective = false;
+  let shadows: SkillScope[] = [];
+  try {
+    const winner = skills.resolve(target).effective.find((entry) => entry.id === row.id);
+    if (winner !== undefined) {
+      effective = true;
+      shadows = winner.shadows;
+    }
+  } catch {
+    warnings.add("post_create_enrichment");
+  }
+  let shadowedBy: SkillScope[] = [];
+  if (effective) {
+    try {
+      shadowedBy = shadowedByScopes(context.db, row.scope, target, row.name);
+    } catch {
+      warnings.add("post_create_enrichment");
+    }
+  }
+  let scopeApps = { total: 0, running: 0 };
+  try {
+    scopeApps = appsInScope(context.db, row.scope, target);
+  } catch {
+    warnings.add("post_create_enrichment");
+  }
+  let pending: { pending: boolean; reasons: string[] } | undefined;
+  if (row.scope === "app") {
+    try {
+      pending = pendingRestart(context.manager, `${row.projectId}:${row.appKey}`);
+    } catch {
+      pending = { pending: false, reasons: [] };
+      warnings.add("post_create_enrichment");
+    }
+  }
+  return {
+    ...(includeState ? { effective, storedIssues: row.storedIssues } : {}),
+    shadows,
+    shadowedBy,
+    appsInScope: scopeApps,
+    ...(pending === undefined ? {} : { pendingRestart: pending }),
+    ...(warnings.size === 0 ? {} : { warnings: [...warnings] }),
+  };
+}
+
+function skillUpdatePatchFromArgs(args: Record<string, unknown>): SkillUpdate {
+  const patch: SkillUpdate = {};
+  if (args.description !== undefined) {
+    patch.description = asString(args.description, "description");
+  }
+  if (args.content !== undefined) {
+    patch.content = asString(args.content, "content");
+  }
+  if (args.license !== undefined) {
+    const license = asOptionalStringOrNull(args.license, "license");
+    if (license !== undefined) {
+      patch.license = license;
+    }
+  }
+  if (args.compatibility !== undefined) {
+    const compatibility = asOptionalStringOrNull(args.compatibility, "compatibility");
+    if (compatibility !== undefined) {
+      patch.compatibility = compatibility;
+    }
+  }
+  if (args.metadata !== undefined) {
+    const metadata = asOptionalMetadata(args.metadata);
+    if (metadata !== undefined) {
+      patch.metadata = metadata;
+    }
+  }
+  if (args.references !== undefined) {
+    const references = asOptionalReferences(args.references);
+    if (references !== undefined) {
+      patch.references = references;
+    }
+  }
+  return patch;
+}
+
+function unknownSkillError(id: number): MasterToolError {
+  return new MasterToolError("unknown_skill", `skill ${id} not found`);
+}
+
+function replacementConfirmationError(row: SkillSummary): MasterToolError {
+  return new MasterToolError(
+    "replacement_confirmation_required",
+    `a skill named "${row.name}" already exists at the target (id ${row.id}, updated by ${row.updatedBy ?? "unknown"} at ${row.updatedAt}); pass confirm_replace: true to replace it`,
+  );
+}
+
+function assertOverridableSource(source: SkillRow): void {
+  if (source.storedIssues.length > 0) {
+    throw new MasterToolError(
+      "invalid_skill",
+      `source skill ${source.id} has stored issues; repair it before overriding`,
+    );
+  }
+  validateSkillDescription(source.description);
+  validateSkillContent(source.content);
+}
+
+function isSameSkillTarget(row: SkillRow, scope: "project" | "app", target: SkillTarget): boolean {
+  return (
+    row.scope === scope &&
+    row.projectId === (target.projectId ?? "") &&
+    row.appKey === (scope === "app" ? (target.appKey ?? "") : "")
+  );
+}
+
 function lookupApp(
   context: MasterToolContext,
   projectId: string,
@@ -918,22 +1238,7 @@ export async function callMasterTool(
       }
       case "create_skill": {
         const scope = asSkillScope(args.scope);
-        if (scope === "global") {
-          if (args.confirm_global === undefined || args.confirm_global === false) {
-            throw new MasterToolError(
-              "confirmation_required",
-              "global skills affect every application, including the master; ask the operator and pass confirm_global: true after approval",
-            );
-          }
-          if (args.confirm_global !== true) {
-            throw new MasterToolError("invalid_argument", '"confirm_global" must be a boolean');
-          }
-        } else if (args.confirm_global !== undefined) {
-          throw new MasterToolError(
-            "invalid_argument",
-            "confirm_global is only valid for global scope",
-          );
-        }
+        assertGlobalConfirmation(scope, args);
         const target: SkillTarget = targetFor(args, scope);
         assertSkillTarget(context.db, scope, target);
         const input = skillInputFromArgs(args);
@@ -965,44 +1270,211 @@ export async function callMasterTool(
           }
           throw error;
         }
-        const warnings = new Set<string>();
-        let shadows: SkillScope[] = [];
-        try {
-          shadows =
-            skills.resolve(target).effective.find((entry) => entry.id === created.id)?.shadows ??
-            [];
-        } catch {
-          warnings.add("post_create_enrichment");
-        }
-        let shadowedBy: SkillScope[] = [];
-        try {
-          shadowedBy = shadowedByScopes(context.db, scope, target, created.name);
-        } catch {
-          warnings.add("post_create_enrichment");
-        }
-        let scopeApps = { total: 0, running: 0 };
-        try {
-          scopeApps = appsInScope(context.db, scope, target);
-        } catch {
-          warnings.add("post_create_enrichment");
-        }
-        let pending: { pending: boolean; reasons: string[] } | undefined;
-        if (scope === "app") {
-          try {
-            pending = pendingRestart(context.manager, `${target.projectId}:${target.appKey}`);
-          } catch {
-            pending = { pending: false, reasons: [] };
-            warnings.add("post_create_enrichment");
-          }
-        }
         return {
           ok: true,
           skill: skillSummary(created),
-          shadows,
-          shadowedBy,
-          appsInScope: scopeApps,
-          ...(pending === undefined ? {} : { pendingRestart: pending }),
-          ...(warnings.size === 0 ? {} : { warnings: [...warnings] }),
+          ...skillMutationEnrichment(context, skills, created, target, false),
+        };
+      }
+      case "list_skills": {
+        const scope = asSkillScope(args.scope);
+        const target: SkillTarget = targetFor(args, scope);
+        requireTargetExists(context.db, scope, target);
+        const skills = requireSkills(context);
+        const resolved = skills.resolve(target);
+        return {
+          ok: true,
+          scope,
+          target,
+          effective: resolved.effective.map((entry) => listEffectiveEntry(entry, target)),
+          rows: resolved.rows.map((entry) => listRowEntry(entry)),
+          disabled: resolved.disabled,
+        };
+      }
+      case "get_skill": {
+        const id = asPositiveInteger(args.skill_id, "skill_id");
+        const skills = requireSkills(context);
+        const row = skills.get(id);
+        if (row === undefined) {
+          throw unknownSkillError(id);
+        }
+        return { ok: true, skill: skillDetail(row) };
+      }
+      case "update_skill": {
+        const id = asPositiveInteger(args.skill_id, "skill_id");
+        for (const field of ["name", "scope", "project_id", "app_key"]) {
+          if (args[field] !== undefined) {
+            throw new MasterToolError("invalid_argument", `"${field}" is immutable`);
+          }
+        }
+        if (args.enabled !== undefined) {
+          throw new MasterToolError(
+            "invalid_argument",
+            "enabled is not settable here; use set_skill_enabled",
+          );
+        }
+        const patch = skillUpdatePatchFromArgs(args);
+        if (Object.keys(patch).length === 0) {
+          throw new MasterToolError("invalid_argument", "update_skill requires at least one field");
+        }
+        const skills = requireSkills(context);
+        const current = skills.get(id);
+        if (current === undefined) {
+          throw unknownSkillError(id);
+        }
+        assertGlobalConfirmation(current.scope, args);
+        assertSkillRowMutable(context.db, current);
+        const updated = context.db.transaction(() => {
+          const row = skills.get(id);
+          if (row === undefined) {
+            throw unknownSkillError(id);
+          }
+          assertGlobalConfirmation(row.scope, args);
+          assertSkillRowMutable(context.db, row);
+          const result = skills.update(id, patch, "master");
+          recordEvent(context.db, "master.skill_updated", {
+            skillId: result.id,
+            scope: result.scope,
+            projectId: result.projectId,
+            appKey: result.appKey,
+            name: result.name,
+            changed: Object.keys(patch),
+            contentBytes: Buffer.byteLength(result.content, "utf8"),
+            referenceCount: result.references.length,
+            referenceBytes: result.references.reduce(
+              (total, reference) => total + Buffer.byteLength(reference.content, "utf8"),
+              0,
+            ),
+          });
+          return result;
+        })();
+        return {
+          ok: true,
+          skill: skillSummary(updated),
+          ...skillMutationEnrichment(context, skills, updated, skillRowTarget(updated), true),
+        };
+      }
+      case "set_skill_enabled": {
+        const id = asPositiveInteger(args.skill_id, "skill_id");
+        const enabled = asBoolean(args.enabled, "enabled");
+        for (const field of [
+          "name",
+          "scope",
+          "project_id",
+          "app_key",
+          "description",
+          "content",
+          "license",
+          "compatibility",
+          "metadata",
+          "references",
+        ]) {
+          if (args[field] !== undefined) {
+            throw new MasterToolError(
+              "invalid_argument",
+              "set_skill_enabled only changes enabled; use update_skill for content",
+            );
+          }
+        }
+        const skills = requireSkills(context);
+        const current = skills.get(id);
+        if (current === undefined) {
+          throw unknownSkillError(id);
+        }
+        assertGlobalConfirmation(current.scope, args);
+        assertSkillRowMutable(context.db, current);
+        const updated = context.db.transaction(() => {
+          const row = skills.get(id);
+          if (row === undefined) {
+            throw unknownSkillError(id);
+          }
+          assertGlobalConfirmation(row.scope, args);
+          assertSkillRowMutable(context.db, row);
+          const result = skills.update(id, { enabled }, "master");
+          recordEvent(context.db, "master.skill_enabled", {
+            skillId: result.id,
+            scope: result.scope,
+            projectId: result.projectId,
+            appKey: result.appKey,
+            name: result.name,
+            enabled: result.enabled,
+          });
+          return result;
+        })();
+        return {
+          ok: true,
+          skill: skillSummary(updated),
+          ...skillMutationEnrichment(context, skills, updated, skillRowTarget(updated), true),
+        };
+      }
+      case "override_skill": {
+        const sourceId = asPositiveInteger(args.source_skill_id, "source_skill_id");
+        const scope = asOverrideScope(args.scope);
+        if (args.confirm_global !== undefined) {
+          throw new MasterToolError(
+            "invalid_argument",
+            "confirm_global is not valid for override_skill",
+          );
+        }
+        const target: SkillTarget = targetFor(args, scope);
+        const enabled = args.enabled === undefined ? undefined : asBoolean(args.enabled, "enabled");
+        const confirmReplace =
+          args.confirm_replace === undefined
+            ? false
+            : asBoolean(args.confirm_replace, "confirm_replace");
+        const skills = requireSkills(context);
+        const source = skills.get(sourceId);
+        if (source === undefined) {
+          throw unknownSkillError(sourceId);
+        }
+        assertSkillTarget(context.db, scope, target);
+        if (isSameSkillTarget(source, scope, target)) {
+          throw new MasterToolError(
+            "invalid_argument",
+            "the source skill is already at the target scope",
+          );
+        }
+        assertOverridableSource(source);
+        const existing = skills.resolve(target).rows.find((row) => row.name === source.name);
+        if (existing !== undefined && !confirmReplace) {
+          throw replacementConfirmationError(existing);
+        }
+        const overridden = context.db.transaction(() => {
+          assertSkillTarget(context.db, scope, target);
+          const currentSource = skills.get(sourceId);
+          if (currentSource === undefined) {
+            throw unknownSkillError(sourceId);
+          }
+          if (isSameSkillTarget(currentSource, scope, target)) {
+            throw new MasterToolError(
+              "invalid_argument",
+              "the source skill is already at the target scope",
+            );
+          }
+          assertOverridableSource(currentSource);
+          const targetRow = skills
+            .resolve(target)
+            .rows.find((row) => row.name === currentSource.name);
+          if (targetRow !== undefined && !confirmReplace) {
+            throw replacementConfirmationError(targetRow);
+          }
+          const result = skills.override(sourceId, scope, target, enabled, "master");
+          recordEvent(context.db, "master.skill_overridden", {
+            sourceSkillId: sourceId,
+            skillId: result.id,
+            scope: result.scope,
+            projectId: result.projectId,
+            appKey: result.appKey,
+            name: result.name,
+            enabled: result.enabled,
+            referenceCount: result.references.length,
+          });
+          return result;
+        })();
+        return {
+          ok: true,
+          skill: skillSummary(overridden),
+          ...skillMutationEnrichment(context, skills, overridden, skillRowTarget(overridden), true),
         };
       }
       case "start_app": {
