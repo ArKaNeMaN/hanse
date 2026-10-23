@@ -944,3 +944,68 @@ describe("git credentials", () => {
     expect(service.snapshot(appTarget).gitAuthHash).not.toContain("two");
   });
 });
+
+describe("project git auth resolution", () => {
+  it("returns global and project rows and ignores the app scope", () => {
+    const { service } = fixture({ runSshKeygen: fakeSshKeygen() });
+    service.setGitAuth(
+      "global",
+      {},
+      "https",
+      { hosts: ["github.com"], username: "global-user", token: "global-token" },
+      "owner",
+    );
+    service.setGitAuth("project", projectTarget, "ssh", { privateKey: VALID_SSH_KEY }, "owner");
+    service.setGitAuth(
+      "app",
+      appTarget,
+      "https",
+      { hosts: ["github.com"], username: "app-user", token: "app-token" },
+      "owner",
+    );
+
+    const auth = service.projectGitAuth("p");
+    expect(auth.https.status).toMatchObject({ state: "set", source: "global" });
+    expect(auth.https.scoped.app).toBe("absent");
+    expect(auth.gitAuth.https).toEqual({
+      hosts: ["github.com"],
+      username: "global-user",
+      token: "global-token",
+    });
+    expect(auth.ssh.status).toMatchObject({ state: "set", source: "project" });
+    expect(auth.gitAuth.ssh?.privateKey).toBe(VALID_SSH_KEY);
+  });
+
+  it("returns no credential when only an app-scope row exists", () => {
+    const { service } = fixture();
+    service.setGitAuth(
+      "app",
+      appTarget,
+      "https",
+      { hosts: ["github.com"], username: "app-user", token: "app-token" },
+      "owner",
+    );
+    const auth = service.projectGitAuth("p");
+    expect(auth.gitAuth).toEqual({});
+    expect(auth.https.status).toEqual({ state: "missing", kind: "https" });
+    expect(auth.ssh.status).toEqual({ state: "missing", kind: "ssh" });
+  });
+
+  it("exposes an error status for an undecryptable project credential", () => {
+    const { db, service } = fixture();
+    service.setGitAuth(
+      "project",
+      projectTarget,
+      "https",
+      { hosts: ["github.com"], username: "user", token: "token" },
+      "owner",
+    );
+    db.prepare(
+      "UPDATE setting_secrets SET cipher = 'broken-cipher' WHERE scope = 'project' AND project_id = 'p' AND key = 'git.auth.https'",
+    ).run();
+
+    const auth = service.projectGitAuth("p");
+    expect(auth.https.status).toMatchObject({ state: "error", kind: "https" });
+    expect(auth.gitAuth.https).toBeUndefined();
+  });
+});

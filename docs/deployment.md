@@ -572,6 +572,16 @@ application scope; the design and threat model are in
 - **Materialized files**: each app gets `<agents>/<project>/<app>/home/.config/hanse/git/` (`config`,
   `ssh`, `askpass`, plus optional `id`, `known_hosts`, `token`, `username`, `https_hosts`). The agent
   can read its own credentials by design; scope keys and tokens accordingly.
+- **Add-app clone**: when an application is added from a remote, the coordinator clones it with
+  the target project's effective `global` + `project` git credential (never `app` scope, which does
+  not exist yet). SSH remotes require an SSH credential and fail with a clear "no SSH git credential
+  is configured for this project" message; HTTPS remotes use the token when configured and
+  otherwise clone public repositories normally; `git://` is unchanged. The credential is written to
+  a short-lived `0700` directory under the coordinator temp root, with the same wrapper/askpass and
+  child-env allowlist as fetch/push, and removed after the clone. Every branch uses the git env
+  allowlist with an empty `HOME` and does not spread `process.env`; a plain clone writes no
+  credential files. Remotes containing `?` or `#` are rejected as potentially credential-bearing.
+  A missing or unreadable credential fails before any clone. There is no ambient fallback.
 - **No ambient credential**: there is no runner/global git credential fallback and no custom CA
   setting. A private CA belongs in the app image trust store. Local status/switch/commit work without
   a network credential; fetch/update/push fail with a clear configuration message.
@@ -639,6 +649,14 @@ never mounted into app containers, and the `hanse mcp` shim only forwards tool c
   application repository is indexed with `codegraph init`.
 - **`git clone` fails with a TLS error**: the image includes `git` and CA certificates; a corporate
   proxy may need its CA mounted into the container.
+- **SSH add-app clone fails**: configure an SSH credential at the target project (or global) scope
+  in Settings -> Git, using a deploy key for that repository. The clone runs synchronously in the
+  coordinator container, so it needs `git`, `openssh-client`, and a writable/executable temp root;
+  a `noexec` `/tmp` mount cannot run the wrapper. A missing key now reports "no SSH git credential
+  is configured for this project" and a wrong key reports git's sanitized
+  `Permission denied (publickey)` instead of a bare command failure. Stale `hanse-git-clone-*`
+  directories are swept at `serve` startup (default one hour); inspect them only if a crash leaves
+  a directory behind.
 - **Git push/fetch fails**: configure SSH or HTTPS in Settings -> Git at the app/project/global
   scope (or use Test connection on the app page), confirm a restart was applied, and check host-key
   trust and the token's repository/permissions. Inspect `docker compose logs runner`; there is no

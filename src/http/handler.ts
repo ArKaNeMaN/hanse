@@ -485,15 +485,20 @@ function routeRuntimeStatus(deps: HttpDeps, request: HttpRequest): HttpResponse 
   });
 }
 
-function provisioningDeps(deps: HttpDeps): {
+export function provisioningDeps(deps: HttpDeps): {
   db: HttpDeps["db"];
   workspaceRoot: string;
   deletion?: ProvisioningDeletionGuard;
+  resolveGitAuth?: (projectId: string) => ReturnType<SettingsService["projectGitAuth"]>;
 } {
+  const settings = deps.settings;
   return {
     db: deps.db,
     workspaceRoot: deps.workspaceRoot,
     ...(deps.deletion === undefined ? {} : { deletion: deps.deletion }),
+    ...(settings === undefined
+      ? {}
+      : { resolveGitAuth: (projectId: string) => settings.projectGitAuth(projectId) }),
   };
 }
 

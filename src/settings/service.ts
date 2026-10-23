@@ -410,6 +410,11 @@ export class SettingsService {
     this.#gitAuth.inherit(location, requireGitAuthKind(kind));
   }
 
+  /** Resolve the effective git credential for a project (global + project scopes only). */
+  projectGitAuth(projectId: string): GitAuthResolution {
+    return this.#gitAuth.resolve(this.#gitAuth.listFor(projectId));
+  }
+
   #timestamp(): Date {
     return this.#now === undefined ? new Date() : this.#now();
   }

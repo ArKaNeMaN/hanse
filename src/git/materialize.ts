@@ -331,7 +331,8 @@ function requireAuth(auth: GitCredentialAuth): {
  *
  * This core writer does not perform the canonical app-root checks; the app path must call
  * {@link materializeGitCredentials}. The Phase 3 Test connection path uses it with an ephemeral
- * directory and the container-visible `visibleDir`.
+ * directory and the container-visible `visibleDir`; the coordinator add-app clone uses it with an
+ * ephemeral `0700` credentials directory and `ownership: null`.
  */
 export function writeGitCredentialFiles(
   dir: string,

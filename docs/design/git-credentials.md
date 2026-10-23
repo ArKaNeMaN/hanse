@@ -85,7 +85,6 @@ provide `ssh`/`ssh-keygen`.
   per-remote credential maps (backlog; the seam is described in §8.2).
 - Monorepo or project-root repositories; the app directory must remain the repository root.
 - Git credentials for the web IDE and its terminal.
-- `git clone` on add-app; it is deferred to a follow-up that reuses project-scope settings.
 - A custom CA/TLS setting. If a private CA is ever needed, it belongs in the app image trust store or
   a future `git.tls` setting.
 - A credential vault, key rotation, AAD binding of ciphertext, or audit history for reads.
@@ -569,6 +568,12 @@ so a user's `id_*`, `config`, or agent socket is never clobbered or read.
 The materializer never uses the agent's `HOME/.ssh`; the wrapper uses `-F /dev/null` and an explicit
 `-i` path, and the askpass is explicit. This is the "no clobbering `~/.ssh/id_*`" guarantee.
 
+The **add-app clone** caller uses the same writer with a different location: a fresh
+`<TMPDIR>/hanse-git-clone-*` directory (`0700`, `ownership: null`, real path as `visibleDir`). It
+contains the same `config`, `ssh`, and `askpass` files plus only the credential for the remote
+scheme, and it is removed in `finally` (and swept at startup). Credentials for this caller never
+enter `workspace/`, the state volume, argv, or a log.
+
 ### 9.2 Modes, ownership, and atomic writes
 
 - Directories `0700`; the key, known_hosts, token, username, hosts file, and config `0600`; the `ssh`
@@ -643,6 +648,15 @@ are applied: add `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM`, `GIT_CONFIG_NOSYSTEM`
 config/credential `HANSE_GIT_*` variable to `SCRUBBED_ENV_KEYS`. The manager builds an explicit env
 object (no `process.env` spread), but the B0 `launcher.ts` path spreads `process.env` and must not
 inherit a host credential dir or helper.
+
+The **add-app clone** is the third env consumer and uses the same `gitChildEnv` allowlist as the
+one-shot workbench. It always sets `HOME` to a `0700` subdirectory of the ephemeral credentials
+directory and overlays `credentialEnv(credentialsDir)`, then sets `HANSE_CREDENTIALS_READONLY=0`
+explicitly. It never spreads `process.env`; inherited `GIT_TRACE`, `GIT_CONFIG_COUNT`,
+`GIT_DIR`, proxy, and CA variables are therefore dropped or restricted to the explicit allowlist.
+The clone argv is prefixed with `gitConfigArgs({ sshCommand, askpass })`, so the same
+`core.hooksPath=/dev/null`, `credential.helper=`, `protocol.ext.allow=never`, and
+`submodule.recurse=false` hardening applies.
 
 ### 9.4 SSH wrapper
 
@@ -1140,6 +1154,7 @@ DROP TABLE IF EXISTS secrets;
 | Git identity | `settings` plaintext; managed `config` | Coordinator, that app, the one-shot git container |
 | `secret.key` | `/data/state/hanse/secret.key` (`0600`) | Coordinator only; never mounted into agents |
 | Public key / fingerprint / hosts / username | `meta_json` + API/HTML | Humans; not secret |
+| Ephemeral add-app clone credential directory | `<TMPDIR>/hanse-git-clone-*/{id,token,username,https_hosts,...}` during one clone | Coordinator; same-uid coordinator processes (for example the IDE terminal) during the clone window; removed in `finally` and swept at startup |
 
 ### 13.2 Accepted risks and mitigations
 
@@ -1195,6 +1210,24 @@ DROP TABLE IF EXISTS secrets;
   between the check and mount resolution. This cannot disclose host secrets the app cannot already
   reach (it owns its own credential dir), and the agent-readable model accepts it; the coordinator-side
   materializer runs while the app is stopped. Treat this as a residual, not an absolute prevention.
+- **Add-app clone capability (accepted).** The master agent can call `add_app` with another
+  project's `project_id` and an attacker-chosen SSH remote; the coordinator then uses that
+  project's SSH key against that host. This makes the key an authentication oracle (a successful
+  clone reveals that the key is valid for the host), although it does not return the private key.
+  HTTPS tokens stay confined by the existing exact host allowlist and the askpass only answers
+  `https://` prompts, so a master-chosen host cannot receive a token outside the allowlist.
+  Accepted by owner decision for this stage; the master is operator-trusted and the alternative
+  (no clone credentials for master) was rejected as an inconsistent provisioning path.
+- **Ephemeral clone directory visibility.** While a clone runs, the credential directory lives in
+  the coordinator's temp root with `0700` modes. A same-uid process (the IDE terminal runs as the
+  same user) can read it during that window. The operator already owns the credential, and the
+  window is one synchronous clone; the directory is removed in `finally` and stale
+  `hanse-git-clone-*` directories are swept at `serve` startup.
+- **No ambient clone credential.** An SSH remote never falls back to an ambient key or agent, and an
+  HTTPS remote without a configured credential runs the plain clone (public repositories still
+  work). A missing SSH credential fails with a clear `clone_failed` message instead of a swallowed
+  `Permission denied (publickey)`.
+
 - **Encryption.** AES-256-GCM with the existing key, no AAD binding to scope/key (same as provider
   keys). A DB-write attacker could swap ciphertexts; key rotation and restoring a DB without
   `secret.key` are not addressed. `secure_delete` + WAL checkpoint reduces, but does not eliminate,
@@ -1412,8 +1445,10 @@ DROP TABLE IF EXISTS secrets;
 - Local status/switch/commit keep working with no credential. A repository-local `user.name`/
   `user.email` still supplies identity when the setting is unset.
 - The web IDE and its terminal are unchanged and do not receive these credentials (owner decision 5).
-- `git clone` on add-app still uses its existing path and does not read project-scope git settings;
-  wiring it is the deferred follow-up.
+- `git clone` on add-app now resolves the target project's effective `global` + `project` git
+  credential (never `app` scope) and materializes it into an ephemeral directory. A missing SSH
+  credential fails with a clear message; an HTTPS remote without one keeps the plain public clone;
+  `git://` remotes are unchanged.
 
 ## 17. Open questions
 
@@ -1458,7 +1493,57 @@ the test flow; and the `expectedAppRoot`-mismatch negative tests.
 No review finding reopened a locked owner decision. The final focused review confirmed both required
 changes and cleared the design gate.
 
-## 19. References
+## 19. Add-app clone credentials (follow-up)
+
+Stage `0024-add-app-git-credentials` closes the §3 deferral: adding an application from a remote now
+clones with the target project's effective git credential.
+
+- **Scope.** `SettingsService.projectGitAuth(projectId)` calls
+  `GitAuthStore.resolve(GitAuthStore.listFor(projectId))`; it reads only `global` and `project`
+  rows, never `app` scope, host auth, or provider keys, and returns the full `GitAuthResolution`
+  so `state === "error"` survives. `addApplication` maps an unreadable credential for the remote's
+  scheme to `ProvisioningError("clone_failed", 500, "the stored <KIND> credential for this project is unreadable")`
+  before creating a directory or invoking git.
+- **Scheme policy.** `ssh://` and scp-like remotes require an SSH credential; absent one fails with
+  `clone_failed` 502 and "no SSH git credential is configured for this project; add one in Settings
+  -> Git" without invoking git. `http(s)://` materializes the HTTPS credential when set and otherwise
+  runs the unchanged plain clone. `git://` is always the plain clone. The plain argv stays
+  `["clone","--depth","1","--",remote,target]`, but the plain branch still runs with the
+  `gitChildEnv` allowlist and a throwaway empty `HOME`, writes no credential files, and sets no
+  `GIT_ASKPASS`, so ambient git config/helpers/credentials cannot participate. `validateRemote`
+  rejects `?`/`#`, so a query/fragment token cannot reach argv, the manifest, stderr, or the notice.
+- **Materialization.** The clone calls the existing `writeGitCredentialFiles` with
+  `{ identity: {}, auth: <only the credential for the remote scheme>, visibleDir: <ephemeral dir>,
+  ownership: null }` and overlays `credentialEnv`; an HTTPS clone never writes the SSH key and an
+  SSH clone never writes the HTTPS token. `identity` is empty because a clone never commits; the SSH
+  wrapper, HTTPS askpass, host allowlist, host-key TOFU, and child env allowlist are identical to
+  the workbench path. The failure sanitizer still scrubs every secret in the resolved snapshot, not
+  only the materialized kind.
+- **Environment and hardening.** The credentialed child env is `gitChildEnv({ source: process.env,
+  home, sshCommand, askpass })` plus `credentialEnv`, with `HANSE_CREDENTIALS_READONLY=0` set
+  explicitly (so TOFU `known_hosts` stays inside the ephemeral directory). `process.env` is never
+  spread, in either branch; the credentialed argv is prefixed with
+  `gitConfigArgs({ sshCommand, askpass })`.
+- **Ephemeral directory lifecycle.** `src/git/temp-dir.ts` owns the module-level registry and the
+  single `process.once("exit")` sweep. The clone uses `createRuntimeDir("hanse-git-clone-")`,
+  asserts the result is not inside `workspaceRoot` (guarding a misconfigured `TMPDIR`), removes it
+  in `finally`, and `serve` calls `sweepStaleRuntimeDirs({ prefix: "hanse-git-clone-",
+  protectedRoot: workspace })` with the default one-hour age. The sweep skips registered
+  directories, other uids, symlinks, and the protected workspace root. `GitService` now uses the
+  same helper with `hanse-git-` and is behavior-neutral.
+- **Truthful errors.** The real exec captures stderr only (`stdio: ["ignore","ignore","pipe"]`) on
+  both branches, turns C0/C1 control characters into spaces, replaces the exact HTTPS
+  token/username and each non-empty private-key line with `***`, applies `redactUserinfo`, collapses
+  whitespace, trims, and caps to 300 characters after redaction. Only the sanitized `Error` is attached as the
+  `ProvisioningError` cause; the raw exec error (whose message embeds stderr) is never chained.
+  Empty/null stderr (for example `ENOENT`) falls back to the sanitized `error.message`. The clone
+  itself stays synchronous.
+- **Tests.** Offline tests cover the SSH env/files/modes/cleanup, HTTPS files and token absence,
+  the unchanged plain clones, missing SSH credential, sanitized exec and materializer failures,
+  nested clones, the workspace guard, the temp-dir sweep, `projectGitAuth` scoping/error status, and
+  both provisioning entry points. Real network clones remain a deployment smoke step.
+
+## 20. References
 
 - `docs/current-state.md` - current topology, git workbench, settings, and known limits.
 - `docs/conventions.md` - `.hanse` manifests and runtime layout.

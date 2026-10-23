@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { addApplication, createProject } from "../src/coordinator/provision.js";
 import { ensureMasterAgent } from "../src/master/bootstrap.js";
 import { MASTER_APP_ID, MASTER_APP_KEY, MASTER_PROJECT_ID } from "../src/master/constants.js";
@@ -263,6 +263,34 @@ describe("master tools", () => {
       "master.app_added",
       "master.file_written",
     ]);
+  });
+
+  it("resolves add-app credentials only for remote adds and reports a missing SSH key", async () => {
+    const value = fixture();
+    const created = (await callMasterTool(value.context, MASTER, "create_project", {
+      name: "Nova",
+    })) as { project: { id: string } };
+    const settings = value.context.settings;
+    if (settings === undefined) {
+      throw new Error("settings are required for this test");
+    }
+    const spy = vi.spyOn(settings, "projectGitAuth");
+    await callMasterTool(value.context, MASTER, "add_app", {
+      project_id: created.project.id,
+      name: "Worker",
+    });
+    expect(spy).not.toHaveBeenCalled();
+    await expectFailure(
+      () =>
+        callMasterTool(value.context, MASTER, "add_app", {
+          project_id: created.project.id,
+          name: "Remote",
+          remote: "git@github.com:owner/repo.git",
+        }),
+      "clone_failed",
+    );
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy).toHaveBeenCalledWith(created.project.id);
   });
 
   it("starts and restarts application agents but refuses the master itself", async () => {

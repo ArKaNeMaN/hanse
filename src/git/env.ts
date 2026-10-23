@@ -247,6 +247,11 @@ export async function validateRemoteUrl(url: string, appDir: string): Promise<vo
 
 const URL_USERINFO = /\b([a-z][a-z0-9+.-]*:\/\/)[^/\s@]+@/gi;
 
+/** Redact credentials embedded in a URL (`scheme://userinfo@host`). */
+export function redactUserinfo(value: string): string {
+  return value.replace(URL_USERINFO, "$1***@");
+}
+
 function redactRemote(value: string): string {
-  return value.replace(URL_USERINFO, "$1***@").slice(0, 400);
+  return redactUserinfo(value).slice(0, 400);
 }

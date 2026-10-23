@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -9,6 +9,7 @@ import {
   ProvisioningError,
 } from "../src/coordinator/provision.js";
 import { MASTER_DIR_NAME } from "../src/master/constants.js";
+import type { GitAuthResolution } from "../src/settings/git-auth.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
 
 const dirs: string[] = [];
@@ -126,6 +127,8 @@ describe("master provisioning", () => {
       "file:///etc",
       "/srv/repo",
       "https://user:token@host/x",
+      "https://host/repo.git?token=secret",
+      "https://host/repo.git#fragment",
     ]) {
       expectCode(
         () => addApplication(deps, { projectId: project.id, name: "x", remote }),
@@ -190,5 +193,99 @@ describe("master provisioning", () => {
       () => addApplication(projectDeleting, { projectId: project.id, name: "x" }),
       "deletion_in_progress",
     );
+  });
+});
+
+function resolution(
+  options: { https?: GitAuthResolution["gitAuth"]["https"]; httpsError?: boolean } = {},
+): GitAuthResolution {
+  const scoped = { global: "absent", project: "absent", app: "absent" } as const;
+  return {
+    ssh: { status: { state: "missing", kind: "ssh" }, scoped: { ...scoped } },
+    https: {
+      status: options.httpsError
+        ? { state: "error", kind: "https", message: "The stored HTTPS credential is unreadable." }
+        : { state: "missing", kind: "https" },
+      scoped: { ...scoped },
+    },
+    gitAuth: options.https === undefined ? {} : { https: options.https },
+    gitAuthHash: "hash",
+  };
+}
+
+describe("add-application clone credentials", () => {
+  it("resolves the project credential once and passes it to the clone seam", () => {
+    const deps = fixture();
+    const project = createProject(deps, { name: "Atlas" });
+    const calls: string[] = [];
+    const https = { hosts: ["github.com"], username: "user", token: "token-body" };
+    let received: unknown;
+    const clone = (_remote: string, target: string, auth: { https?: typeof https }): void => {
+      mkdirSync(target, { recursive: true });
+      received = auth;
+    };
+    addApplication(
+      {
+        ...deps,
+        resolveGitAuth: (projectId) => {
+          calls.push(projectId);
+          return resolution({ https });
+        },
+        clone,
+      },
+      { projectId: project.id, name: "Worker", remote: "https://github.com/o/r.git" },
+    );
+    expect(calls).toEqual([project.id]);
+    expect(received).toEqual({ https });
+  });
+
+  it("rejects an unreadable credential for the remote kind before cloning", () => {
+    const deps = fixture();
+    const project = createProject(deps, { name: "Atlas" });
+    let cloned = false;
+    try {
+      addApplication(
+        {
+          ...deps,
+          resolveGitAuth: () => resolution({ httpsError: true }),
+          clone: () => {
+            cloned = true;
+          },
+        },
+        { projectId: project.id, name: "Worker", remote: "https://github.com/o/r.git" },
+      );
+      throw new Error("expected a clone failure");
+    } catch (error) {
+      expect(error).toBeInstanceOf(ProvisioningError);
+      expect((error as ProvisioningError).code).toBe("clone_failed");
+      expect((error as ProvisioningError).status).toBe(500);
+      expect((error as ProvisioningError).message).toContain("unreadable");
+    }
+    expect(cloned).toBe(false);
+    expect(
+      lstatSync(path.join(project.rootPath, "apps", "worker"), { throwIfNoEntry: false }),
+    ).toBeUndefined();
+    const apps = deps.db.prepare("SELECT COUNT(*) AS count FROM apps").get() as { count: number };
+    expect(apps.count).toBe(0);
+  });
+
+  it("does not resolve credentials for a local add and keeps two-argument clones assignable", () => {
+    const deps = fixture();
+    const project = createProject(deps, { name: "Atlas" });
+    let resolved = false;
+    const localClone = (_remote: string, _target: string): void => {};
+    const app = addApplication(
+      {
+        ...deps,
+        clone: localClone,
+        resolveGitAuth: () => {
+          resolved = true;
+          return resolution();
+        },
+      },
+      { projectId: project.id, name: "Worker" },
+    );
+    expect(app.appKey).toBe("worker");
+    expect(resolved).toBe(false);
   });
 });

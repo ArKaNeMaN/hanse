@@ -26,6 +26,7 @@ import {
 } from "../git/op.js";
 import { validateGitRequest } from "../git/request.js";
 import { GitService } from "../git/service.js";
+import { sweepStaleRuntimeDirs } from "../git/temp-dir.js";
 import type { ProjectContext } from "../http/handler.js";
 import { createHttpServer } from "../http/server.js";
 import { upsertPrincipalWithToken } from "../identity/principals.js";
@@ -557,6 +558,7 @@ export async function runnerCommand(
 /** Serve the web dashboard and HTTP API for every project found in the workspace. */
 export async function serveCommand(options: ServeOptions, ctx: CommandContext): Promise<number> {
   const workspace = path.resolve(ctx.cwd, options.workspace);
+  sweepStaleRuntimeDirs({ prefix: "hanse-git-clone-", protectedRoot: workspace });
   let secretKey: Buffer;
   try {
     secretKey = loadOrCreateKey(secretKeyPath(ctx.stateHome));

@@ -1118,10 +1118,15 @@ function provisioningDeps(context: MasterToolContext): {
   db: SqliteDatabase;
   workspaceRoot: string;
   deletion?: ProvisioningDeletionGuard;
+  resolveGitAuth?: (projectId: string) => ReturnType<SettingsService["projectGitAuth"]>;
 } {
+  const settings = context.settings;
   return {
     db: context.db,
     workspaceRoot: context.workspaceRoot,
     ...(context.deletion === undefined ? {} : { deletion: context.deletion }),
+    ...(settings === undefined
+      ? {}
+      : { resolveGitAuth: (projectId: string) => settings.projectGitAuth(projectId) }),
   };
 }

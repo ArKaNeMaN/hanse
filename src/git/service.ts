@@ -1,21 +1,22 @@
 import { execFile, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, statSync } from "node:fs";
 import { access, realpath } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import path from "node:path";
 import {
   GitEnvError,
   gitChildEnv,
   gitConfigArgs,
   isSafeRemoteName,
+  redactUserinfo,
   shellQuote,
   validateRemoteUrl,
 } from "./env.js";
 import { GitError, type GitErrorCode } from "./errors.js";
 import type { GitTestRequest, GitTestResult } from "./request.js";
 import { RunnerGitClient, type RunnerGitClientOptions } from "./runner-client.js";
+import { createRuntimeDir } from "./temp-dir.js";
 
-export { gitChildEnv, validateRemoteUrl } from "./env.js";
+export { gitChildEnv, redactUserinfo, validateRemoteUrl } from "./env.js";
 export type { GitErrorCode } from "./errors.js";
 export { GitError } from "./errors.js";
 
@@ -155,31 +156,6 @@ interface GitRuntime {
   askpass?: string;
 }
 
-const TEMP_DIRS = new Set<string>();
-let cleanupRegistered = false;
-
-function createRuntimeDir(): string {
-  const dir = mkdtempSync(path.join(tmpdir(), "hanse-git-"));
-  chmodSync(dir, 0o700);
-  TEMP_DIRS.add(dir);
-  if (!cleanupRegistered) {
-    cleanupRegistered = true;
-    process.once("exit", () => {
-      for (const entry of TEMP_DIRS) {
-        try {
-          rmSync(entry, { recursive: true, force: true });
-        } catch {
-          // Best-effort cleanup during process exit.
-        }
-      }
-      TEMP_DIRS.clear();
-    });
-  }
-  return dir;
-}
-
-const URL_USERINFO = /\b([a-z][a-z0-9+.-]*:\/\/)[^/\s@]+@/gi;
-
 function hasControlChars(value: string, allowNewlineAndTab: boolean): boolean {
   for (const character of value) {
     const code = character.codePointAt(0) ?? 0;
@@ -191,11 +167,6 @@ function hasControlChars(value: string, allowNewlineAndTab: boolean): boolean {
     }
   }
   return false;
-}
-
-/** Redact credentials embedded in a URL (`scheme://userinfo@host`). */
-export function redactUserinfo(value: string): string {
-  return value.replace(URL_USERINFO, "$1***@");
 }
 
 function redactAndTruncate(value: string): string {
@@ -990,7 +961,7 @@ export class GitService {
     if (this.#runtime !== undefined) {
       return this.#runtime;
     }
-    const runtimeDir = createRuntimeDir();
+    const runtimeDir = createRuntimeDir("hanse-git-");
     const home = path.join(runtimeDir, "home");
     mkdirSync(home, { recursive: true, mode: 0o700 });
     chmodSync(home, 0o700);

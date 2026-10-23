@@ -258,6 +258,18 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   in Settings -> Git and materialized into the application HOME; see
   [`docs/design/git-credentials.md`](design/git-credentials.md). Fetch/push use the effective
   credential, not a runner environment variable.
+- Adding an application from a remote (`remote` on the project page or the master `add_app` tool)
+  clones synchronously with the target project's effective `global` + `project` git credential
+  (never `app` scope). The coordinator writes the credential into a short-lived `0700` directory
+  under its temp root, uses the same SSH wrapper/HTTPS askpass, host allowlist, and child-env
+  allowlist as fetch/push, and removes the directory in `finally`; stale `hanse-git-clone-*`
+  directories are swept at startup (skipping registered dirs, other uids, symlinks, and the
+  workspace). SSH remotes require an SSH credential (clear failure otherwise), HTTPS remotes use the
+  token when configured and otherwise clone publicly, and `git://` is unchanged. Every branch uses
+  the git env allowlist with an empty `HOME` and never spreads `process.env`; plain clones write no
+  credential files. Remotes with `?`/`#` are rejected. Clone stderr is sanitized on both branches
+  (secrets, userinfo, and control characters removed, capped at 300 characters) and surfaced in the
+  `clone_failed` message.
 - `POST /api/projects/:projectId/apps/:appKey/git/test` tests **draft** SSH/HTTPS values in the same
   runner one-shot sandbox (`git ls-remote`) without saving settings or touching the managed directory.
   It is app-page-only, supports an optional remote (defaults to `origin`), and returns ref counts plus
@@ -668,7 +680,8 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
 - Project and application creation share `src/coordinator/provision.ts` with the web forms: reserved
   directory/id refusal, single-segment project directories, `isValidAppId` app keys, strict
   containment, symlink-safe manifest writes, YAML-serialized names, validated clone remotes
-  (`http(s)`, `ssh`, `git`, scp-like; no local/file/userinfo), and clone-failure cleanup.
+  (`http(s)`, `ssh`, `git`, scp-like; no local/file/userinfo/query/fragment), and clone-failure
+  cleanup.
 - Settings writes accept only the seven registry keys (no provider keys or git credentials), validate
   the target scope, and report pending restarts. `start_app` and `restart_app` refuse the master
   itself; a stopped app is not started by `restart_app`.
@@ -1019,6 +1032,10 @@ Settings stage verification:
   B0 compatibility host does not enforce the read-only app directory.
 - The writer lock is a single-node file lock (`O_EXCL` + pid liveness), not a distributed lock.
 - `git clone` in the add-app endpoint is synchronous (`execFileSync`) and blocks the event loop.
+  It uses the target project's global/project credential; an SSH remote without one fails with a
+  clear message, an HTTPS remote without one clones publicly, and there is no ambient fallback. A
+  crash can leave a `0700` credential directory in the coordinator temp root until the startup
+  sweep, and a `noexec` temp root cannot run the SSH wrapper/askpass.
 - The git workbench requires the application directory to be its own repository root; applications
   inside a larger repository show a "Not a repository root" state.
 - "Commit all" stages and commits untracked files (ignored files stay out); there is no per-file

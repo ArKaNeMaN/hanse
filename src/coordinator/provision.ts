@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
+  chmodSync,
   lstatSync,
   mkdirSync,
   readFileSync,
@@ -13,9 +14,17 @@ import path from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { isValidAppId } from "../agent/spec.js";
 import { ConfigError } from "../config/load.js";
+import { gitChildEnv, gitConfigArgs, redactUserinfo } from "../git/env.js";
+import {
+  credentialEnv,
+  type GitCredentialAuth,
+  writeGitCredentialFiles,
+} from "../git/materialize.js";
+import { createRuntimeDir } from "../git/temp-dir.js";
 import { isMasterProject, masterAppDir } from "../master/constants.js";
 import { writeRegularFileNoFollow } from "../master/workspace-files.js";
 import { isInside, resolveAppPath } from "../runtime/app-path.js";
+import type { GitAuthResolution } from "../settings/git-auth.js";
 import type { SqliteDatabase } from "../store/index.js";
 
 export type ProvisioningErrorCode =
@@ -69,8 +78,10 @@ export interface ProvisioningDeps {
   db: SqliteDatabase;
   workspaceRoot: string;
   deletion?: ProvisioningDeletionGuard;
+  /** Resolve the project's effective git credential (global + project scope). */
+  resolveGitAuth?: (projectId: string) => GitAuthResolution;
   /** Test seam for `git clone`; production runs git in the coordinator. */
-  clone?: (remote: string, target: string) => void;
+  clone?: (remote: string, target: string, auth: GitCredentialAuth) => void;
 }
 
 export interface CreateProjectInput {
@@ -263,6 +274,13 @@ function validateRemote(value: unknown): string {
   if (/^[a-z]+:\/\/[^/]*@/i.test(remote)) {
     throw new ProvisioningError("invalid_argument", 400, "remote must not embed credentials");
   }
+  if (remote.includes("?") || remote.includes("#")) {
+    throw new ProvisioningError(
+      "invalid_argument",
+      400,
+      "remote must not include query parameters or fragments",
+    );
+  }
   if (!REMOTE_SCHEME.test(remote) && !REMOTE_SCP.test(remote)) {
     throw new ProvisioningError(
       "invalid_argument",
@@ -271,6 +289,51 @@ function validateRemote(value: unknown): string {
     );
   }
   return remote;
+}
+
+type RemoteCredentialKind = "ssh" | "https" | "none";
+
+function remoteCredentialKind(remote: string): RemoteCredentialKind {
+  if (remote.length === 0) {
+    return "none";
+  }
+  if (/^ssh:\/\//i.test(remote) || REMOTE_SCP.test(remote)) {
+    return "ssh";
+  }
+  if (/^https?:\/\//i.test(remote)) {
+    return "https";
+  }
+  return "none";
+}
+
+const SSH_CREDENTIAL_MISSING =
+  "no SSH git credential is configured for this project; add one in Settings -> Git";
+
+function cloneAuthFor(
+  deps: ProvisioningDeps,
+  projectId: string,
+  remote: string,
+): GitCredentialAuth {
+  const kind = remoteCredentialKind(remote);
+  if (kind === "none") {
+    return {};
+  }
+  const resolution = deps.resolveGitAuth?.(projectId);
+  const auth = resolution?.gitAuth ?? {};
+  if (resolution !== undefined) {
+    const status = kind === "ssh" ? resolution.ssh.status : resolution.https.status;
+    if (status.state === "error") {
+      throw new ProvisioningError(
+        "clone_failed",
+        500,
+        `the stored ${kind.toUpperCase()} credential for this project is unreadable`,
+      );
+    }
+  }
+  if (kind === "ssh" && auth.ssh === undefined) {
+    throw new ProvisioningError("clone_failed", 502, SSH_CREDENTIAL_MISSING);
+  }
+  return auth;
 }
 
 function readManifest(projectRoot: string): Record<string, unknown> {
@@ -524,11 +587,17 @@ export function addApplication(
     if (stat !== undefined) {
       throw new ProvisioningError("app_exists", 409, "application directory already exists");
     }
+    const cloneAuth = cloneAuthFor(deps, project.id, remote);
     const parent = path.dirname(resolved);
     ensureDirectoryPath(workspaceReal, path.relative(workspaceReal, parent));
     const temp = path.join(parent, `.hanse-clone-${randomUUID()}`);
     try {
-      (deps.clone ?? defaultClone)(remote, temp);
+      const clone =
+        deps.clone ??
+        ((cloneRemoteTarget: string, cloneTarget: string, auth: GitCredentialAuth) => {
+          cloneRemote(cloneRemoteTarget, cloneTarget, auth, { workspaceRoot: workspaceReal });
+        });
+      clone(remote, temp, cloneAuth);
       if (lstatSync(resolved, { throwIfNoEntry: false }) !== undefined) {
         throw new ProvisioningError("app_exists", 409, "application directory already exists");
       }
@@ -583,6 +652,159 @@ export function addApplication(
   return { id: appId, projectId: project.id, appKey, path: appPath, rootPath: projectRoot };
 }
 
-function defaultClone(remote: string, target: string): void {
-  execFileSync("git", ["clone", "--depth", "1", "--", remote, target], { stdio: "ignore" });
+export type CloneExec = (args: readonly string[], options: { env?: NodeJS.ProcessEnv }) => void;
+
+export interface CloneRemoteOptions {
+  exec?: CloneExec;
+  tempRoot?: string;
+  workspaceRoot?: string;
+}
+
+function defaultCloneExec(args: readonly string[], options: { env?: NodeJS.ProcessEnv }): void {
+  execFileSync("git", args, {
+    env: options.env,
+    stdio: ["ignore", "ignore", "pipe"],
+    encoding: "utf8",
+    maxBuffer: 8 * 1024 * 1024,
+  });
+}
+
+function errorText(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (value instanceof Uint8Array) {
+    return Buffer.from(value).toString("utf8");
+  }
+  return "";
+}
+
+function stripControlCharacters(value: string): string {
+  let result = "";
+  for (const character of value) {
+    const code = character.codePointAt(0) ?? 0;
+    result += code < 0x20 || (code >= 0x7f && code <= 0x9f) ? " " : character;
+  }
+  return result;
+}
+
+function sanitizeCloneError(error: unknown, auth: GitCredentialAuth): string {
+  const record =
+    typeof error === "object" && error !== null ? (error as Record<string, unknown>) : {};
+  let raw = errorText(record.stderr);
+  if (raw.trim().length === 0) {
+    raw = errorText(record.message);
+  }
+  const secrets: string[] = [];
+  if (auth.https !== undefined) {
+    secrets.push(auth.https.token, auth.https.username);
+  }
+  if (auth.ssh !== undefined) {
+    for (const line of auth.ssh.privateKey.split(/\r?\n/)) {
+      if (line.length > 0) {
+        secrets.push(line);
+      }
+    }
+  }
+  let sanitized = stripControlCharacters(raw);
+  for (const secret of secrets) {
+    if (secret.length > 0) {
+      sanitized = sanitized.split(secret).join("***");
+    }
+  }
+  sanitized = redactUserinfo(sanitized).replace(/\s+/g, " ").trim();
+  return (sanitized.length === 0 ? "git clone failed" : sanitized).slice(0, 300);
+}
+
+/**
+ * Clone `remote` into `target`, materializing the project credential when the remote needs one.
+ * Exported for tests; production runs it through the provisioning seams.
+ */
+export function cloneRemote(
+  remote: string,
+  target: string,
+  auth: GitCredentialAuth,
+  options: CloneRemoteOptions = {},
+): void {
+  const exec = options.exec ?? defaultCloneExec;
+  const kind = remoteCredentialKind(remote);
+  if (kind === "ssh" && auth.ssh === undefined) {
+    throw new ProvisioningError("clone_failed", 502, SSH_CREDENTIAL_MISSING);
+  }
+
+  const effectiveAuth: GitCredentialAuth =
+    kind === "ssh" && auth.ssh !== undefined
+      ? { ssh: auth.ssh }
+      : kind === "https" && auth.https !== undefined
+        ? { https: auth.https }
+        : {};
+  const credentialed = effectiveAuth.ssh !== undefined || effectiveAuth.https !== undefined;
+
+  const credentialsDir = createRuntimeDir("hanse-git-clone-", options.tempRoot);
+  try {
+    if (options.workspaceRoot !== undefined) {
+      const workspace = realpathSync(options.workspaceRoot);
+      if (isInside(workspace, realpathSync(credentialsDir))) {
+        throw new ProvisioningError(
+          "clone_failed",
+          500,
+          "the coordinator temporary directory is inside the workspace; set TMPDIR outside the workspace",
+        );
+      }
+    }
+    const home = path.join(credentialsDir, "home");
+    mkdirSync(home, { recursive: true, mode: 0o700 });
+    chmodSync(home, 0o700);
+    const sshCommand = path.join(credentialsDir, "ssh");
+    const askpass = path.join(credentialsDir, "askpass");
+    const env = credentialed
+      ? gitChildEnv({ source: process.env, home, sshCommand, askpass })
+      : gitChildEnv({ source: process.env, home, sshCommand });
+    if (credentialed) {
+      Object.assign(
+        env,
+        writeGitCredentialFiles(credentialsDir, {
+          identity: {},
+          auth: effectiveAuth,
+          visibleDir: credentialsDir,
+          ownership: null,
+        }),
+        credentialEnv(credentialsDir),
+      );
+    }
+    env.HANSE_CREDENTIALS_READONLY = "0";
+    const args = credentialed
+      ? [...gitConfigArgs({ sshCommand, askpass }), "clone", "--depth", "1", "--", remote, target]
+      : ["clone", "--depth", "1", "--", remote, target];
+    runClone(exec, args, { env }, auth);
+  } catch (error) {
+    if (error instanceof ProvisioningError) {
+      throw error;
+    }
+    throw cloneFailure(error, auth);
+  } finally {
+    rmSync(credentialsDir, { recursive: true, force: true });
+  }
+}
+
+function cloneFailure(error: unknown, auth: GitCredentialAuth): ProvisioningError {
+  return new ProvisioningError("clone_failed", 502, "failed to clone the application", {
+    cause: new Error(sanitizeCloneError(error, auth)),
+  });
+}
+
+function runClone(
+  exec: CloneExec,
+  args: readonly string[],
+  options: { env?: NodeJS.ProcessEnv },
+  auth: GitCredentialAuth,
+): void {
+  try {
+    exec(args, options);
+  } catch (error) {
+    if (error instanceof ProvisioningError) {
+      throw error;
+    }
+    throw cloneFailure(error, auth);
+  }
 }

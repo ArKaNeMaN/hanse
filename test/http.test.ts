@@ -2,13 +2,18 @@ import { randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { DeploymentLock } from "../src/coordinator/deployment-lock.js";
 import { getHandoff, type HandoffState } from "../src/coordinator/handoff.js";
 import { LifecycleActivity } from "../src/coordinator/lifecycle-activity.js";
 import { CoordinatorService } from "../src/coordinator/service.js";
 import { GitService } from "../src/git/service.js";
-import { type HttpDeps, type HttpRequest, handleRequest } from "../src/http/handler.js";
+import {
+  type HttpDeps,
+  type HttpRequest,
+  handleRequest,
+  provisioningDeps,
+} from "../src/http/handler.js";
 import { createHttpServer } from "../src/http/server.js";
 import { safeLocalPath } from "../src/http/ui.js";
 import { createPrincipal, upsertPrincipalWithToken } from "../src/identity/principals.js";
@@ -1116,6 +1121,21 @@ describe("http API and assets", () => {
     expect(response.status).toBe(404);
     expect(response.contentType).toContain("text/html");
     expect(response.body).toContain("Page not found");
+  });
+});
+
+describe("provisioning deps", () => {
+  it("wires the project git auth resolver when settings are present", () => {
+    const f = fixture();
+    const plain = provisioningDeps(deps(f));
+    expect(plain.resolveGitAuth).toBeUndefined();
+
+    const settings = new SettingsService({ db: f.db, secretKey: randomBytes(32) });
+    const spy = vi.spyOn(settings, "projectGitAuth");
+    const wired = provisioningDeps({ ...deps(f), settings });
+    expect(wired.resolveGitAuth).toBeDefined();
+    wired.resolveGitAuth?.("p");
+    expect(spy).toHaveBeenCalledWith("p");
   });
 });
 
