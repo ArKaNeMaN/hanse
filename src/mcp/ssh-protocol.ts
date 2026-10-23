@@ -1,5 +1,6 @@
 import type { CoordinatorService } from "../coordinator/service.js";
 import type { InstanceManager } from "../opencode/manager.js";
+import type { PreviewService } from "../preview/service.js";
 import { APP_SKILL_TOOLS, callAppSkillTool, isAppSkillToolName } from "../skills/app-tools.js";
 import type { SkillService } from "../skills/service.js";
 import { toSkillFailure } from "../skills/tool-errors.js";
@@ -7,7 +8,9 @@ import type { SshService } from "../ssh/service.js";
 import { SshError } from "../ssh/types.js";
 import type { SqliteDatabase } from "../store/database.js";
 import type { AgentTokenIdentity } from "./agent-tokens.js";
+import { callPreviewTool, isPreviewToolName, PREVIEW_TOOLS } from "./preview-protocol.js";
 import { handleRpc, type RpcRequest, type RpcResponse, TOOLS } from "./protocol.js";
+import { textResult } from "./result.js";
 
 export const SSH_TOOLS = [
   {
@@ -59,10 +62,6 @@ export const SSH_TOOLS = [
   },
 ];
 
-function textResult(value: unknown): { content: Array<{ type: "text"; text: string }> } {
-  return { content: [{ type: "text", text: JSON.stringify(value) }] };
-}
-
 function asString(value: unknown, field: string): string {
   if (typeof value !== "string" || value.length === 0) {
     throw new SshError("ssh_invalid_argument", `"${field}" must be a non-empty string`);
@@ -112,11 +111,16 @@ async function callSshTool(
   }
 }
 
+function notConfiguredPreview(): unknown {
+  return { ok: false, code: "preview_unavailable", message: "previews are not configured" };
+}
+
 /** Optional app-skill wiring for the non-master MCP surface; omitted contexts expose no app tools. */
 export interface AppSkillRpcOptions {
   db?: SqliteDatabase;
   skills?: SkillService;
   manager?: InstanceManager;
+  previews?: PreviewService;
 }
 
 /** Handle one JSON-RPC message for the coordinator MCP server. */
@@ -132,10 +136,12 @@ export async function handleRpcAsync(
   }
   const id = request.id;
   if (request.method === "tools/list") {
-    const tools =
-      options.skills !== undefined && options.db !== undefined
-        ? [...TOOLS, ...SSH_TOOLS, ...APP_SKILL_TOOLS]
-        : [...TOOLS, ...SSH_TOOLS];
+    const tools = [
+      ...TOOLS,
+      ...SSH_TOOLS,
+      ...(options.skills !== undefined && options.db !== undefined ? APP_SKILL_TOOLS : []),
+      ...(options.previews !== undefined ? PREVIEW_TOOLS : []),
+    ];
     return {
       jsonrpc: "2.0",
       id,
@@ -147,6 +153,26 @@ export async function handleRpcAsync(
   }
   const params = request.params ?? {};
   const name = typeof params.name === "string" ? params.name : "";
+  if (isPreviewToolName(name)) {
+    if (options.previews === undefined) {
+      return { jsonrpc: "2.0", id, result: textResult(notConfiguredPreview()) };
+    }
+    return {
+      jsonrpc: "2.0",
+      id,
+      result: textResult(
+        callPreviewTool(
+          {
+            previews: options.previews,
+            ...(options.manager === undefined ? {} : { manager: options.manager }),
+          },
+          agent,
+          name,
+          params.arguments,
+        ),
+      ),
+    };
+  }
   if (isAppSkillToolName(name)) {
     if (options.skills === undefined || options.db === undefined) {
       return {

@@ -59,6 +59,9 @@ const COMMANDS_CACHE_MS = 30000;
 const PALETTE_RENDER_LIMIT = 200;
 const SHELL_CONFIRM_BODY =
   "This command contains shell blocks, or its shell usage cannot be verified, and it runs on the server outside the agent permission flow.";
+const PREVIEW_POLL_MS = 60000;
+const PREVIEW_CLOSE_SPINNER_MS = 1000;
+const PREVIEW_HINT = "Demo only. Preview pages share the coordinator's origin and session.";
 
 const KNOWN_PART_TYPES = new Set([
   "text",
@@ -174,6 +177,10 @@ function main() {
   const commandConfirmAccept = document.getElementById("chat-command-confirm-accept");
   const commandConfirmCancel = document.getElementById("chat-command-confirm-cancel");
   const announcer = document.getElementById("chat-announcer");
+  const previewsWrapper = document.getElementById("chat-previews");
+  const previewsList = document.getElementById("chat-previews-list");
+  const previewsCount = document.getElementById("chat-previews-count");
+  const contextUsageHeading = document.getElementById("context-usage-title");
   const planList = document.getElementById("chat-plan-list");
   const planEmpty = document.getElementById("chat-plan-empty");
   const planSummary = document.getElementById("chat-plan-summary");
@@ -280,6 +287,13 @@ function main() {
   let hasStreamReady = false;
   let promptStale = false;
   let announceTimer = null;
+
+  let previewActiveKeys = null;
+  let previewHasRefreshed = false;
+  let previewRefreshInFlight = false;
+  let previewRefreshTimer = null;
+  let previewPollTimer = null;
+  const previewCardData = new WeakMap();
 
   let commands = [];
   let commandsStatus = "idle";
@@ -1154,6 +1168,284 @@ function main() {
     }, 300);
   }
 
+  function previewsUrl() {
+    return withProject(`${apiBase()}/previews`);
+  }
+
+  function previewCloseUrl(key) {
+    return withProject(`${apiBase()}/previews/${encodeURIComponent(key)}/close`);
+  }
+
+  function refreshPreviewCount() {
+    if (previewsCount === null) return;
+    previewsCount.textContent = `${previewActiveKeys === null ? 0 : previewActiveKeys.size} active`;
+  }
+
+  function bindPreviewClose(button) {
+    if (button.dataset.previewBound === "1") return;
+    button.dataset.previewBound = "1";
+    button.addEventListener("click", () => {
+      const row = button.closest(".chat-preview");
+      const key = row instanceof HTMLElement ? row.dataset.previewKey : undefined;
+      if (typeof key === "string" && key.length > 0) void closePreview(key, button);
+    });
+  }
+
+  function createPreviewClose(view) {
+    const button = element("button", "btn btn-ghost btn-icon btn-sm chat-preview__close");
+    button.type = "button";
+    button.setAttribute("aria-label", `Close preview ${view.name}`);
+    button.append(iconNode("x"));
+    bindPreviewClose(button);
+    return button;
+  }
+
+  function createPreviewRow(view) {
+    const row = element("li", "chat-preview");
+    row.dataset.previewKey = view.key;
+    const link = element("a", "chat-preview__link");
+    link.setAttribute("href", view.url);
+    link.setAttribute("target", "_blank");
+    link.setAttribute("rel", "noopener noreferrer");
+    link.title = view.name;
+    const name = element("span", "chat-preview__name", view.name);
+    const key = element("span", "chat-preview__key mono", view.key);
+    key.title = view.key;
+    link.append(
+      name,
+      key,
+      iconNode("external"),
+      element("span", "sr-only", "(opens in a new tab)"),
+    );
+    row.append(link, createPreviewClose(view));
+    return row;
+  }
+
+  function updatePreviewRow(row, view) {
+    const link = row.querySelector(".chat-preview__link");
+    if (link instanceof HTMLElement) {
+      link.setAttribute("href", view.url);
+      link.title = view.name;
+      const name = link.querySelector(".chat-preview__name");
+      if (name !== null) name.textContent = view.name;
+      const key = link.querySelector(".chat-preview__key");
+      if (key !== null) {
+        key.textContent = view.key;
+        key.title = view.key;
+      }
+    }
+    const close = row.querySelector(".chat-preview__close");
+    if (close instanceof HTMLButtonElement) {
+      close.setAttribute("aria-label", `Close preview ${view.name}`);
+      bindPreviewClose(close);
+    }
+  }
+
+  function hydratePreviews() {
+    if (previewsWrapper === null || previewsList === null) return;
+    const rows = Array.from(previewsList.querySelectorAll(".chat-preview"));
+    const keys = new Set();
+    for (const row of rows) {
+      if (!(row instanceof HTMLElement)) continue;
+      const close = row.querySelector(".chat-preview__close");
+      if (close instanceof HTMLButtonElement) {
+        close.hidden = false;
+        bindPreviewClose(close);
+      }
+      if (typeof row.dataset.previewKey === "string" && row.dataset.previewKey.length > 0) {
+        keys.add(row.dataset.previewKey);
+      }
+    }
+    previewActiveKeys = keys;
+    refreshPreviewCount();
+    if (rows.length === 0) {
+      previewsWrapper.hidden = true;
+      previewsList.replaceChildren();
+    }
+  }
+
+  function applyPreviewList(items) {
+    if (previewsWrapper === null || previewsList === null) return;
+    const views = [];
+    const seen = new Set();
+    for (const item of Array.isArray(items) ? items : []) {
+      if (item === null || typeof item !== "object") continue;
+      if (typeof item.key !== "string" || item.key.length === 0) continue;
+      if (typeof item.name !== "string") continue;
+      const url = safePreviewUrl(item.url);
+      if (url === null || seen.has(item.key)) continue;
+      seen.add(item.key);
+      views.push({ key: item.key, name: item.name, url });
+    }
+
+    const opens = [];
+    if (previewHasRefreshed && previewActiveKeys !== null) {
+      for (const view of views) {
+        if (!previewActiveKeys.has(view.key)) opens.push(view);
+      }
+    }
+
+    const desired = new Map(views.map((view) => [view.key, view]));
+    const existing = new Map();
+    for (const row of Array.from(previewsList.children)) {
+      if (!(row instanceof HTMLElement)) continue;
+      const key = row.dataset.previewKey;
+      if (key === undefined || !desired.has(key) || existing.has(key)) {
+        row.remove();
+        continue;
+      }
+      existing.set(key, row);
+      updatePreviewRow(row, desired.get(key));
+      const error = row.querySelector(".chat-preview__error");
+      if (error !== null) error.remove();
+    }
+    for (const view of views) {
+      if (existing.has(view.key)) continue;
+      const row = createPreviewRow(view);
+      previewsList.append(row);
+      existing.set(view.key, row);
+    }
+
+    const ordered = views
+      .map((view) => existing.get(view.key))
+      .filter((row) => row !== undefined);
+    const current = Array.from(previewsList.children).filter((row) =>
+      row.classList.contains("chat-preview"),
+    );
+    if (
+      current.length !== ordered.length ||
+      current.some((row, index) => row !== ordered[index])
+    ) {
+      const focused = document.activeElement;
+      for (const row of ordered) previewsList.append(row);
+      if (focused instanceof HTMLElement && focused.isConnected) focused.focus();
+    }
+
+    previewActiveKeys = new Set(views.map((view) => view.key));
+    previewsWrapper.hidden = views.length === 0;
+    if (views.length === 0) previewsList.replaceChildren();
+    refreshPreviewCount();
+    previewHasRefreshed = true;
+    if (opens.length > 0) announce(`Preview opened: ${opens[0].name}.`);
+    refreshPreviewCards();
+  }
+
+  function refreshPreviewCards() {
+    for (const node of partNodes.values()) {
+      if (!node.classList.contains("tool-call--preview")) continue;
+      const entry = previewCardData.get(node);
+      if (entry !== undefined) updatePreviewCard(node, entry.part, entry.key, true);
+    }
+  }
+
+  function removePreviewRow(row, key, index) {
+    const nameEl = row.querySelector(".chat-preview__name");
+    const name = nameEl === null ? key : nameEl.textContent || key;
+    row.remove();
+    if (previewActiveKeys !== null) previewActiveKeys.delete(key);
+    const remaining =
+      previewsList === null
+        ? []
+        : Array.from(previewsList.querySelectorAll(".chat-preview"));
+    if (remaining.length === 0) {
+      if (previewsWrapper !== null) previewsWrapper.hidden = true;
+      if (previewsList !== null) previewsList.replaceChildren();
+    }
+    refreshPreviewCount();
+    refreshPreviewCards();
+    announce(`Preview closed: ${name}.`);
+    const next = remaining[index] ?? remaining[index - 1] ?? null;
+    if (next !== null) {
+      const close = next.querySelector(".chat-preview__close");
+      if (close instanceof HTMLElement) close.focus();
+    } else if (contextUsageHeading instanceof HTMLElement) {
+      contextUsageHeading.focus();
+    }
+  }
+
+  async function closePreview(key, button) {
+    if (button.disabled) return;
+    const row = button.closest(".chat-preview");
+    if (!(row instanceof HTMLElement) || previewsList === null) return;
+    const siblings = Array.from(previewsList.children);
+    const index = siblings.indexOf(row);
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+    const spinnerTimer = window.setTimeout(() => {
+      if (button.isConnected) button.replaceChildren(element("span", "spinner"));
+    }, PREVIEW_CLOSE_SPINNER_MS);
+
+    let removed = false;
+    try {
+      const response = await fetch(previewCloseUrl(key), {
+        method: "POST",
+        cache: "no-store",
+        credentials: "same-origin",
+        headers: { accept: "application/json" },
+      });
+      if (response.ok || response.status === 404) removed = true;
+    } catch (error) {
+      void error;
+    } finally {
+      window.clearTimeout(spinnerTimer);
+    }
+
+    if (row.isConnected) {
+      if (removed) {
+        removePreviewRow(row, key, index);
+        return;
+      }
+      button.disabled = false;
+      button.removeAttribute("aria-busy");
+      button.replaceChildren(iconNode("x"));
+      let errorEl = row.querySelector(".chat-preview__error");
+      if (errorEl === null) {
+        errorEl = element("p", "field-error chat-preview__error", "Could not close preview. Try again.");
+        errorEl.setAttribute("role", "alert");
+        row.append(errorEl);
+      }
+    } else if (removed) {
+      if (previewActiveKeys !== null) previewActiveKeys.delete(key);
+      refreshPreviewCount();
+      refreshPreviewCards();
+    }
+  }
+
+  async function refreshPreviews() {
+    if (previewRefreshInFlight) return;
+    if (previewsWrapper === null || previewsList === null) return;
+    previewRefreshInFlight = true;
+    try {
+      const response = await fetch(previewsUrl(), {
+        cache: "no-store",
+        credentials: "same-origin",
+        headers: { accept: "application/json" },
+      });
+      if (!response.ok) return;
+      const data = await response.json();
+      applyPreviewList(data && Array.isArray(data.previews) ? data.previews : []);
+    } catch (error) {
+      void error;
+    } finally {
+      previewRefreshInFlight = false;
+    }
+  }
+
+  function schedulePreviewRefresh() {
+    if (previewRefreshTimer !== null) return;
+    previewRefreshTimer = window.setTimeout(() => {
+      previewRefreshTimer = null;
+      void refreshPreviews();
+    }, 50);
+  }
+
+  function startPreviewPolling() {
+    if (previewPollTimer !== null) return;
+    previewPollTimer = window.setInterval(() => {
+      if (!document.hidden) void refreshPreviews();
+    }, PREVIEW_POLL_MS);
+  }
+
   function showToast(message, tone) {
     const region = document.getElementById("toast-region");
     if (region === null) {
@@ -1982,6 +2274,61 @@ function main() {
     return { preview: firstLine.slice(0, 120), title: trimmed };
   }
 
+  function normalizePreviewTool(tool) {
+    const value = String(tool || "");
+    return value.startsWith("hanse_") ? value.slice("hanse_".length) : value;
+  }
+
+  function isPreviewOpenTool(tool) {
+    return normalizePreviewTool(tool) === "preview_open";
+  }
+
+  function isPreviewTool(tool) {
+    const name = normalizePreviewTool(tool);
+    return name === "preview_open" || name === "preview_close";
+  }
+
+  function isPreviewOpenPart(part) {
+    if (part === undefined || part === null || part.type !== "tool") return false;
+    return isPreviewOpenTool(partDataOf(part).tool);
+  }
+
+  function previewResult(data) {
+    const state = partState(data);
+    if (typeof state.output !== "string" || state.output.length === 0) return null;
+    let parsed;
+    try {
+      parsed = JSON.parse(state.output);
+    } catch (error) {
+      void error;
+      return null;
+    }
+    if (parsed === null || typeof parsed !== "object" || parsed.ok !== true) return null;
+    const preview = parsed.preview;
+    if (preview === null || typeof preview !== "object") return null;
+    if (typeof preview.key !== "string" || preview.key.length === 0) return null;
+    if (typeof preview.url !== "string" || preview.url.length === 0) return null;
+    return {
+      key: preview.key,
+      name: typeof preview.name === "string" ? preview.name : "",
+      url: preview.url,
+    };
+  }
+
+  function safePreviewUrl(value) {
+    if (typeof value !== "string" || !value.startsWith("/preview/")) return null;
+    let url;
+    try {
+      url = new URL(value, location.origin);
+    } catch (error) {
+      void error;
+      return null;
+    }
+    if (url.origin !== location.origin) return null;
+    if (!url.pathname.startsWith("/preview/")) return null;
+    return `${url.pathname}${url.search}${url.hash}`;
+  }
+
   function todoListFor(data, status) {
     const input = partInput(data);
     const metadata = partMetadata(data);
@@ -2100,6 +2447,25 @@ function main() {
           value = `Question · ${questions} waiting`;
         }
         break;
+      case "preview_open":
+      case "hanse_preview_open": {
+        const result = status === "completed" ? previewResult(data) : null;
+        if (result !== null) {
+          value = result.name.length > 0 ? result.name : result.key;
+        } else if (status === "running" || status === "pending") {
+          value = "Opening preview…";
+        } else {
+          value = stringField(input.name) || stringField(input.key) || title;
+        }
+        break;
+      }
+      case "preview_close":
+      case "hanse_preview_close": {
+        const name = stringField(input.name) || stringField(input.key);
+        if (status === "completed") value = name.length > 0 ? `Closed ${name}` : "Closed";
+        else value = name.length > 0 ? `Closing ${name}…` : "Closing preview…";
+        break;
+      }
       default:
         value = title;
         if (value.length === 0) {
@@ -2164,6 +2530,10 @@ function main() {
       task: "activity",
       todowrite: "check",
       question: "message",
+      preview_open: "eye",
+      preview_close: "eye",
+      hanse_preview_open: "eye",
+      hanse_preview_close: "eye",
     };
     return map[tool] || "terminal";
   }
@@ -2449,6 +2819,18 @@ function main() {
   function createPartNode(record, part) {
     const key = partKeyFor(record, part);
     if (part.type === "tool") {
+      if (isPreviewOpenPart(part)) {
+        const card = element("article", "tool-call tool-call--preview");
+        card.dataset.messageId = record.id;
+        card.dataset.partId = part.id;
+        card.dataset.partType = part.type;
+        card.dataset.toolKey = key;
+        card.append(
+          element("div", "tool-call__head"),
+          element("p", "hint tool-call__note", PREVIEW_HINT),
+        );
+        return card;
+      }
       if (isQuestionToolPart(part)) {
         const slot = element("div", "chat-question-slot");
         slot.dataset.messageId = record.id;
@@ -2540,6 +2922,7 @@ function main() {
         view: null,
         viewBody: null,
         viewOpen: false,
+        previewSignature: "",
       };
       partRenderState.set(key, state);
     }
@@ -2778,11 +3161,140 @@ function main() {
     state.viewOpen = false;
   }
 
+  function updatePreviewCard(node, part, key, force) {
+    const state = renderStateFor(key);
+    const data = partDataOf(part);
+    const displayTool = String(data.tool || "preview_open");
+    const tool = normalizePreviewTool(displayTool);
+    const status = toolStatus(data);
+    const preview = toolPreview(data, tool, status);
+    const input = partInput(data);
+    const result = status === "completed" ? previewResult(data) : null;
+    const safeUrl = result === null ? null : safePreviewUrl(result.url);
+    const previewKey =
+      result !== null
+        ? result.key
+        : typeof input.key === "string"
+          ? input.key
+          : "";
+    const closed =
+      result !== null &&
+      safeUrl !== null &&
+      previewActiveKeys !== null &&
+      !previewActiveKeys.has(result.key);
+    let bodyKind = "output";
+    if (status === "completed" && result !== null && safeUrl !== null) {
+      bodyKind = closed ? "closed" : "action";
+    } else if (status === "running" || status === "pending") {
+      bodyKind = "waiting";
+    }
+    const output = bodyKind === "output" ? toolOutputText(data, tool, status) : "";
+    const signature = [
+      displayTool,
+      status,
+      preview === null ? "" : `${preview.preview}\n${preview.title}`,
+      result === null ? "" : `${result.key}|${result.name}|${safeUrl || ""}`,
+      bodyKind,
+      output,
+    ].join("~");
+    if (state.rendered && state.previewSignature === signature) return true;
+    if (
+      !force &&
+      state.rendered &&
+      status === "running" &&
+      Date.now() - state.at < TOOL_OUTPUT_THROTTLE_MS
+    ) {
+      return false;
+    }
+    if ((status === "completed" || status === "error") && state.status !== status) {
+      schedulePreviewRefresh();
+    }
+
+    const focused = document.activeElement;
+    const hadFocus = focused !== null && node.contains(focused);
+    previewCardData.set(node, { part, key });
+    if (previewKey.length > 0) node.dataset.previewKey = previewKey;
+    else delete node.dataset.previewKey;
+
+    let statusChip = null;
+    const head = directChildByClass(node, "tool-call__head");
+    if (head !== null) {
+      const children = [iconNode(toolGlyph(displayTool)), element("span", "mono", displayTool)];
+      if (preview !== null) {
+        const path = element("span", "tool-call__path", preview.preview);
+        path.title = preview.title;
+        children.push(path);
+      }
+      statusChip = toolStatusChip(status);
+      statusChip.tabIndex = -1;
+      children.push(statusChip);
+      head.replaceChildren(...children);
+    }
+
+    let body = directChildByClass(node, "tool-call__preview");
+    let pre = directPre(node);
+    if (bodyKind === "action" || bodyKind === "closed") {
+      if (pre !== null) pre.remove();
+      if (body === null) {
+        body = element("div", "tool-call__preview");
+        const note = directChildByClass(node, "tool-call__note");
+        if (note === null) node.append(body);
+        else node.insertBefore(body, note);
+      }
+      const keyEl = element("span", "chat-preview__key mono", previewKey);
+      keyEl.title = previewKey;
+      let action;
+      if (bodyKind === "closed") {
+        action = element("span", "caption", "Closed");
+      } else {
+        const link = element("a", "btn btn-secondary btn-sm");
+        link.href = safeUrl;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.append(iconNode("external"), document.createTextNode("Open preview"));
+        action = link;
+      }
+      body.replaceChildren(keyEl, action);
+    } else if (bodyKind === "waiting") {
+      if (body !== null) body.remove();
+      if (pre !== null) pre.remove();
+    } else {
+      if (body !== null) body.remove();
+      if (pre === null) {
+        pre = element("pre");
+        const note = directChildByClass(node, "tool-call__note");
+        if (note === null) node.append(pre);
+        else node.insertBefore(pre, note);
+      }
+      if (pre.textContent !== output) pre.textContent = output;
+    }
+
+    if (hadFocus) {
+      const link = bodyKind === "action" ? node.querySelector(".tool-call__preview .btn") : null;
+      if (link instanceof HTMLElement) link.focus();
+      else if (statusChip instanceof HTMLElement) statusChip.focus();
+    }
+
+    state.rendered = true;
+    state.tool = tool;
+    state.status = status;
+    state.previewSignature = signature;
+    state.at = Date.now();
+    return true;
+  }
+
   function updateToolPart(node, part, key, force) {
     const state = renderStateFor(key);
     const data = partDataOf(part);
     const tool = String(data.tool || "tool");
     const status = toolStatus(data);
+    if (
+      isPreviewTool(tool) &&
+      (status === "completed" || status === "error") &&
+      state.status !== status
+    ) {
+      schedulePreviewRefresh();
+    }
     const preview = toolPreview(data, tool, status);
     const elapsed = toolElapsedText(data, status);
     const todos = tool === "todowrite" ? todoListFor(data, status) : null;
@@ -2965,6 +3477,7 @@ function main() {
     const key = partKeyFor(record, part);
     if (part.type === "text") return updateTextPart(node, part, key, force);
     if (isQuestionToolPart(part)) return updateInlineQuestionPart(node, record, part);
+    if (isPreviewOpenPart(part)) return updatePreviewCard(node, part, key, force);
     if (part.type === "tool") return updateToolPart(node, part, key, force);
     if (
       part.type === "reasoning" ||
@@ -3009,7 +3522,11 @@ function main() {
     }
     if (node !== undefined) {
       const questionSlot = node.classList.contains("chat-question-slot");
-      if (isQuestionToolPart(part) !== questionSlot && part.type === "tool") {
+      const previewCard = node.classList.contains("tool-call--preview");
+      if (
+        part.type === "tool" &&
+        (isQuestionToolPart(part) !== questionSlot || isPreviewOpenPart(part) !== previewCard)
+      ) {
         resetHighlightController({ reason: "part-removed", partID: part.id });
         node.remove();
         partNodes.delete(key);
@@ -8612,6 +9129,7 @@ function main() {
     }
     refreshRuntime().catch(() => {});
     startRuntimePolling();
+    void refreshPreviews();
   });
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Enter" || !(event.metaKey || event.ctrlKey)) return;
@@ -8788,10 +9306,13 @@ function main() {
     window.addEventListener("beforeunload", () => window.clearInterval(sshTimer));
   }
 
+  hydratePreviews();
   bootSessions();
   subscribe();
   hydrate().catch(() => {});
   refreshRuntime().catch(() => {});
+  void refreshPreviews();
+  startPreviewPolling();
   syncRuntimePolling();
 }
 

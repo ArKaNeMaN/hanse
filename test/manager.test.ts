@@ -38,6 +38,7 @@ import {
 } from "../src/opencode/manager.js";
 import type { OmoProfileInput, OmoProfileResult } from "../src/opencode/omo-profile.js";
 import type { VerifyPolicyOptions } from "../src/opencode/policy.js";
+import type { PreviewCleanup } from "../src/preview/types.js";
 import { hashValue } from "../src/settings/hash.js";
 import type {
   EffectiveSettings,
@@ -296,6 +297,7 @@ function fixture(
   skills?: SkillSource | ((db: SqliteDatabase) => SkillSource),
   lifecycle?: { deploymentLock?: DeploymentLock; lifecycleActivity?: LifecycleActivity },
   logger?: Logger,
+  previews?: PreviewCleanup,
 ): Fixture {
   const dir = mkdtempSync(path.join(tmpdir(), "hanse-manager-"));
   dirs.push(dir);
@@ -324,8 +326,25 @@ function fixture(
     ...(skillsSource === undefined ? {} : { skills: skillsSource }),
     ...(lifecycle === undefined ? {} : lifecycle),
     ...(logger === undefined ? {} : { logger }),
+    ...(previews === undefined ? {} : { previews }),
   });
   return { manager, runtime, db, dir };
+}
+
+function previewFixture(runtime: FakeAgentRuntime, previews: PreviewCleanup): Fixture {
+  return fixture(
+    runtime,
+    fakeSettings(),
+    fakeProfiles().source,
+    undefined,
+    async () => [],
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    previews,
+  );
 }
 
 function instanceState(db: SqliteDatabase): string | undefined {
@@ -1211,6 +1230,61 @@ describe("InstanceManager lifecycle", () => {
       deleting: number;
     };
     expect(stopped.deleting).toBe(1);
+  });
+
+  it("clears previews on stop, deletion, restart, reconcile, and container recreation", async () => {
+    const cleared: string[] = [];
+    const previews: PreviewCleanup = { clearApp: (appId) => cleared.push(appId) };
+
+    const stopped = previewFixture(new FakeAgentRuntime(), previews);
+    await stopped.manager.ensure(APP);
+    cleared.length = 0;
+    await stopped.manager.stopApp(APP.id);
+    expect(cleared).toEqual([APP.id]);
+
+    const deleted = previewFixture(new FakeAgentRuntime(), previews);
+    await deleted.manager.ensure(APP);
+    cleared.length = 0;
+    await deleted.manager.stopForDeletion(APP.id);
+    expect(cleared).toEqual([APP.id]);
+
+    const restarted = previewFixture(new FakeAgentRuntime(), previews);
+    await restarted.manager.ensure(APP);
+    cleared.length = 0;
+    await expect(restarted.manager.restartIfRunning(APP)).resolves.toBe(true);
+    expect(cleared).toEqual([APP.id]);
+
+    const reconciled = previewFixture(new FakeAgentRuntime(), previews);
+    await reconciled.manager.ensure(APP);
+    reconciled.runtime.statuses.delete(APP.id);
+    cleared.length = 0;
+    await reconciled.manager.reconcileStatuses();
+    expect(cleared).toEqual([APP.id]);
+
+    const recreated = previewFixture(new FakeAgentRuntime(), previews);
+    await recreated.manager.ensure(APP);
+    recreated.manager.detach();
+    const current = recreated.runtime.statuses.get(APP.id);
+    if (current === undefined) throw new Error("missing runtime status");
+    recreated.runtime.statuses.set(APP.id, { ...current, endpoint: null });
+    cleared.length = 0;
+    await recreated.manager.ensure(APP);
+    expect(cleared).toEqual([APP.id]);
+
+    class FailingDeleteRuntime extends FakeAgentRuntime {
+      failDelete = false;
+      override async delete(appId: string) {
+        if (this.failDelete) throw new Error("runtime unavailable");
+        return super.delete(appId);
+      }
+    }
+    const failingRuntime = new FailingDeleteRuntime();
+    const failing = previewFixture(failingRuntime, previews);
+    await failing.manager.ensure(APP);
+    failingRuntime.failDelete = true;
+    cleared.length = 0;
+    await expect(failing.manager.stopApp(APP.id)).rejects.toThrow("runtime unavailable");
+    expect(cleared).toEqual([]);
   });
 
   it("reconciles a stale running row after the container disappears", async () => {

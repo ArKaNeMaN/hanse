@@ -14,6 +14,7 @@ import { materializeGitCredentials } from "../git/materialize.js";
 import type { AppImageRollbackResult } from "../images/service.js";
 import type { Logger } from "../logging/logger.js";
 import { ensureAgentToken, mcpTokenPath, revokeAgentToken } from "../mcp/agent-tokens.js";
+import type { PreviewCleanup } from "../preview/types.js";
 import { type AppImageStatus, resolveAppBuild } from "../registry/index.js";
 import { appNetworkName, mapToHostPath } from "../runner/names.js";
 import { RUNNER_APP_PORT } from "../runner/validate.js";
@@ -227,6 +228,8 @@ export interface InstanceManagerOptions {
   deploymentLock?: DeploymentLock;
   /** Process-local destructive-operation counter exposed through `/readyz`. */
   lifecycleActivity?: LifecycleActivity;
+  /** Optional preview registry cleared whenever an app is stopped, recreated, or forgotten. */
+  previews?: PreviewCleanup;
 }
 
 interface MonitorEntry {
@@ -554,6 +557,9 @@ export class InstanceManager {
     }
 
     const image = resolveAgentImage(app);
+    if (existing !== undefined || current !== undefined) {
+      this.#options.previews?.clearApp(app.id);
+    }
     if (existing !== undefined) {
       this.#stopMonitor(app.id);
       clearEndpointAuthorization(existing.endpoint);
@@ -962,6 +968,7 @@ export class InstanceManager {
       await this.#options.runtime.status(appId).catch(() => undefined);
       throw error;
     }
+    this.#options.previews?.clearApp(appId);
     this.#stopMonitor(appId);
     this.#running.delete(appId);
     if (endpoint !== undefined && endpoint !== null) {
@@ -1406,6 +1413,7 @@ export class InstanceManager {
   }
 
   #forgetRunning(appId: string): void {
+    this.#options.previews?.clearApp(appId);
     const entry = this.#running.get(appId);
     if (entry === undefined) {
       return;

@@ -1,0 +1,222 @@
+{
+  "tool": "preview-qa",
+  "startedAt": "2026-10-23T13:21:19.381Z",
+  "status": "PASS",
+  "baseUrl": "http://127.0.0.1:41889",
+  "app": "web",
+  "project": "22222222-2222-4222-8222-222222222222",
+  "scenarios": [
+    {
+      "name": "empty rail",
+      "status": "PASS",
+      "checks": 7,
+      "durationMs": 828
+    },
+    {
+      "name": "empty rail joins an empty JS refresh",
+      "status": "PASS",
+      "checks": 2,
+      "durationMs": 761
+    },
+    {
+      "name": "empty rail at 390",
+      "status": "PASS",
+      "checks": 2,
+      "durationMs": 1035
+    },
+    {
+      "name": "three previews at 1440 dark",
+      "status": "PASS",
+      "checks": 15,
+      "durationMs": 802
+    },
+    {
+      "name": "three previews at 1440 light",
+      "status": "PASS",
+      "checks": 15,
+      "durationMs": 804
+    },
+    {
+      "name": "three previews at 390 dark",
+      "status": "PASS",
+      "checks": 15,
+      "durationMs": 1076
+    },
+    {
+      "name": "three previews at 390 light",
+      "status": "PASS",
+      "checks": 15,
+      "durationMs": 1065
+    },
+    {
+      "name": "eight previews at 1440 dark",
+      "status": "PASS",
+      "checks": 5,
+      "durationMs": 809
+    },
+    {
+      "name": "eight previews at 1440 light",
+      "status": "PASS",
+      "checks": 5,
+      "durationMs": 799
+    },
+    {
+      "name": "long name and 32-character key at 390",
+      "status": "PASS",
+      "checks": 4,
+      "durationMs": 1077
+    },
+    {
+      "name": "keyboard order and focus rings",
+      "status": "PASS",
+      "checks": 5,
+      "durationMs": 788
+    },
+    {
+      "name": "close the last preview",
+      "status": "PASS",
+      "checks": 3,
+      "durationMs": 1117
+    },
+    {
+      "name": "close failure keeps the row and shows inline alert",
+      "status": "PASS",
+      "checks": 4,
+      "durationMs": 868
+    },
+    {
+      "name": "close 404 removes the row silently",
+      "status": "PASS",
+      "checks": 1,
+      "durationMs": 864
+    },
+    {
+      "name": "close closed:false removes the row",
+      "status": "PASS",
+      "checks": 1,
+      "durationMs": 817
+    },
+    {
+      "name": "close in flight shows a spinner",
+      "status": "PASS",
+      "checks": 0,
+      "durationMs": 2347
+    },
+    {
+      "name": "focus follows the next close button",
+      "status": "PASS",
+      "checks": 1,
+      "durationMs": 786
+    },
+    {
+      "name": "completed preview card",
+      "status": "PASS",
+      "checks": 12,
+      "durationMs": 848
+    },
+    {
+      "name": "preview card running",
+      "status": "PASS",
+      "checks": 2,
+      "durationMs": 816
+    },
+    {
+      "name": "preview card error",
+      "status": "PASS",
+      "checks": 2,
+      "durationMs": 832
+    },
+    {
+      "name": "preview card unparseable",
+      "status": "PASS",
+      "checks": 2,
+      "durationMs": 852
+    },
+    {
+      "name": "preview card ok-false",
+      "status": "PASS",
+      "checks": 2,
+      "durationMs": 805
+    },
+    {
+      "name": "preview card javascript-url",
+      "status": "PASS",
+      "checks": 2,
+      "durationMs": 829
+    },
+    {
+      "name": "preview card cross-origin-url",
+      "status": "PASS",
+      "checks": 2,
+      "durationMs": 887
+    },
+    {
+      "name": "card focus falls to the status text when the key leaves",
+      "status": "PASS",
+      "checks": 4,
+      "durationMs": 879
+    },
+    {
+      "name": "rail drops unsafe preview URLs",
+      "status": "PASS",
+      "checks": 2,
+      "durationMs": 752
+    },
+    {
+      "name": "new rows announce their arrival",
+      "status": "PASS",
+      "checks": 1,
+      "durationMs": 1096
+    },
+    {
+      "name": "no-JS SSR with previews",
+      "status": "PASS",
+      "checks": 4,
+      "durationMs": 686
+    },
+    {
+      "name": "no-JS empty SSR",
+      "status": "PASS",
+      "checks": 3,
+      "durationMs": 646
+    },
+    {
+      "name": "preview 404 page",
+      "status": "PASS",
+      "checks": 1,
+      "durationMs": 676
+    },
+    {
+      "name": "preview 502 page",
+      "status": "PASS",
+      "checks": 1,
+      "durationMs": 664
+    }
+  ],
+  "screenshots": [
+    "docs/design/artifacts/previews/previews-empty-1440.png",
+    "docs/design/artifacts/previews/previews-empty-390.png",
+    "docs/design/artifacts/previews/previews-1440-dark.png",
+    "docs/design/artifacts/previews/previews-1440-light.png",
+    "docs/design/artifacts/previews/previews-390-dark.png",
+    "docs/design/artifacts/previews/previews-390-light.png",
+    "docs/design/artifacts/previews/previews-8-1440-dark.png",
+    "docs/design/artifacts/previews/previews-8-1440-light.png",
+    "docs/design/artifacts/previews/previews-long-name-390-dark.png",
+    "docs/design/artifacts/previews/previews-focus-visible-1440-dark.png",
+    "docs/design/artifacts/previews/previews-close-last-1440-dark.png",
+    "docs/design/artifacts/previews/previews-close-error-1440-dark.png",
+    "docs/design/artifacts/previews/preview-close-404-1440-dark.png",
+    "docs/design/artifacts/previews/previews-close-busy-1440-dark.png",
+    "docs/design/artifacts/previews/preview-card-completed-1440-dark.png",
+    "docs/design/artifacts/previews/preview-card-running-1440-dark.png",
+    "docs/design/artifacts/previews/preview-card-error-1440-dark.png",
+    "docs/design/artifacts/previews/preview-card-unparseable-1440-dark.png",
+    "docs/design/artifacts/previews/preview-card-closed-focus-1440-dark.png",
+    "docs/design/artifacts/previews/previews-nojs-1440-dark.png",
+    "docs/design/artifacts/previews/preview-404-1440-dark.png",
+    "docs/design/artifacts/previews/preview-502-1440-dark.png"
+  ],
+  "consoleErrors": [],
+  "finishedAt": "2026-10-23T13:21:47.830Z"
+}

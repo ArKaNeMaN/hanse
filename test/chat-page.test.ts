@@ -27,6 +27,7 @@ import {
   DeletionPendingError,
   type InstanceManager,
 } from "../src/opencode/manager.js";
+import { PreviewService } from "../src/preview/service.js";
 import { SettingsService } from "../src/settings/index.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
 
@@ -1644,5 +1645,120 @@ describe("async chat send", () => {
       "GET /session/ses_1/message",
       "POST /session/ses_1/prompt_async",
     ]);
+  });
+});
+
+describe("chat previews rail", () => {
+  function chatRequest(f: Fixture): HttpRequest {
+    return request({ query: { app: "storefront", project: "p1" }, headers: auth(f.token) });
+  }
+
+  function previewServiceFor(
+    entries: Array<{ key: string; name: string; port?: number }>,
+  ): PreviewService {
+    let clock = 1_700_000_000_000;
+    const service = new PreviewService({ now: () => (clock += 1_000) });
+    for (const entry of entries) {
+      service.open({
+        appId: "p1:storefront",
+        projectId: "p1",
+        appKey: "storefront",
+        key: entry.key,
+        name: entry.name,
+        port: entry.port ?? 3000,
+        targetHost: "storefront",
+      });
+    }
+    return service;
+  }
+
+  it("always renders the wrapper and hides it when there are no previews", async () => {
+    const f = fixture();
+    const response = await handleChat(f.deps, chatRequest(f));
+    expect(response.status).toBe(200);
+    expect(response.body).toContain('<div class="chat-context__group" id="chat-previews" hidden>');
+    expect(response.body).toContain('id="chat-previews-count">0 active<');
+    expect(response.body).not.toMatch(/<li class="chat-preview"/);
+  });
+
+  it("keeps the divider inside the hidden wrapper so an empty block leaves no rule", async () => {
+    const f = fixture();
+    const response = await handleChat(f.deps, chatRequest(f));
+    const start = response.body.indexOf('id="chat-previews"');
+    const end = response.body.indexOf('<section class="chat-context__section chat-context-usage"');
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const block = response.body.slice(start, end);
+    expect(block).toContain('<hr class="rule" />');
+    expect(block.match(/<hr class="rule" \/>/g)).toHaveLength(1);
+    expect(block).toContain('aria-labelledby="context-previews-title"');
+  });
+
+  it("renders one ruled row per preview with the server URL and new-tab link", async () => {
+    const f = fixture();
+    f.deps.previews = previewServiceFor([
+      { key: "api-docs", name: "API docs" },
+      { key: "storefront", name: "Storefront" },
+    ]);
+    const response = await handleChat(f.deps, chatRequest(f));
+    const body = response.body;
+    expect(body).toContain('<div class="chat-context__group" id="chat-previews">');
+    expect(body).toContain('id="chat-previews-count">2 active<');
+    expect(body).toContain('class="chat-preview" data-preview-key="api-docs"');
+    expect(body).toContain('class="chat-preview" data-preview-key="storefront"');
+    expect(body).toContain('href="/preview/p1/storefront/storefront/"');
+    expect(body).toContain('href="/preview/p1/storefront/api-docs/"');
+    expect(body).toContain('target="_blank" rel="noopener noreferrer"');
+    expect(body).toContain(
+      '<span class="chat-preview__key mono" title="storefront">storefront</span>',
+    );
+    expect(body).toContain("(opens in a new tab)");
+    expect(body).toContain('aria-label="Close preview Storefront" hidden');
+    expect(body).toContain('aria-label="Close preview API docs" hidden');
+    // Newest first: storefront was opened after api-docs.
+    expect(body.indexOf('data-preview-key="storefront"')).toBeLessThan(
+      body.indexOf('data-preview-key="api-docs"'),
+    );
+  });
+
+  it("escapes preview names in text, title, and the close accessible label", async () => {
+    const f = fixture();
+    f.deps.previews = previewServiceFor([{ key: "xss", name: "<script>alert(1)</script>" }]);
+    const response = await handleChat(f.deps, chatRequest(f));
+    expect(response.body).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
+    expect(response.body).toContain(
+      'aria-label="Close preview &lt;script&gt;alert(1)&lt;/script&gt;"',
+    );
+    expect(response.body).not.toContain("<script>alert(1)</script>");
+  });
+
+  it("inserts the block after Application and before Context usage", async () => {
+    const f = fixture();
+    f.deps.previews = previewServiceFor([{ key: "web", name: "Web" }]);
+    const response = await handleChat(f.deps, chatRequest(f));
+    const body = response.body;
+    const application = body.indexOf('id="context-app-title"');
+    const wrapper = body.indexOf('id="chat-previews"');
+    const heading = body.indexOf('id="context-previews-title"');
+    const usage = body.indexOf('id="context-usage-title"');
+    expect(application).toBeGreaterThan(-1);
+    expect(wrapper).toBeGreaterThan(application);
+    expect(heading).toBeGreaterThan(wrapper);
+    expect(usage).toBeGreaterThan(heading);
+  });
+
+  it("does not change the wrapper contract for multiple app scopes", async () => {
+    const f = fixture();
+    f.deps.previews = previewServiceFor([{ key: "p1-only", name: "P1 only" }]);
+    const other = await handleChat(
+      f.deps,
+      request({
+        query: { app: "storefront", project: "p2" },
+        headers: auth(f.token),
+      }),
+    );
+    expect(other.status).toBe(200);
+    expect(other.body).toContain('<div class="chat-context__group" id="chat-previews" hidden>');
+    expect(other.body).not.toContain('data-preview-key="p1-only"');
   });
 });

@@ -770,6 +770,21 @@ never scrolls away.
 - `.chat-context`: 320px supporting pane, sections separated by `.rule`; handoff routes stacked at
 12px gap. `.chat-context__section` groups the app card, handoffs, and shortcuts; `.context-handoff`
 is a compact link with a mono id, state pill, summary, and route.
+- **App previews (rail):** `.chat-context__group` is the flex-column wrapper that owns the preceding
+  `.rule`; `[hidden]` removes divider and section together, so an empty list renders no heading or
+  gap. `.chat-previews` is a list reset capped at `14rem` with contained scroll
+  (`overscroll-behavior: contain`); `.chat-preview` is a ruled ledger row
+  (`minmax(0,1fr) auto`, 4px block padding, last row no border). `.chat-preview__link` is a
+  two-row/two-column link grid (name over mono key, trailing external glyph, 2rem target, 2.75rem
+  below 768) with the `--wash-1` hover and a 2px `--focus` ring; `.chat-preview__name` is
+  `--text-sm`/500/`--text-1` with ellipsis, `.chat-preview__key` is `--text-mono-sm`/`--text-3` with
+  ellipsis. `.chat-preview__close` is the 32px ghost icon button (44px below 768) and is
+  `display: none` while `[hidden]` for no-JS. `.chat-preview__error` spans both columns.
+- **App previews (tool card):** `.tool-call--preview` is the static (non-`<details>`) `.tool-call`
+  surface; `.tool-call__head` clones the `summary` row (flex, 2rem min, 12px padding, 8px gap) and
+  carries the `tabindex="-1"` status chip used as the focus fallback; `.tool-call__preview` is the
+  wrapping key plus `Open preview` action row; `.tool-call__note` is the demo hint with 12px inline
+  padding. No accent edge, no disclosure behavior, no port.
 - `.session-item`: full-width list button, title plus mono short id/time; hover wash, active
 `--wash-2` plus a brass check and `aria-current`.
 - `.chat-thread__meta`: session title, mono short id, live status, message count, working indicator,

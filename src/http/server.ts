@@ -7,6 +7,7 @@ import http, {
 import net from "node:net";
 import path from "node:path";
 import type { Duplex } from "node:stream";
+import { findApp } from "./apps.js";
 import { isHumanCookie } from "./auth.js";
 import { handleChat, streamSessionEvents } from "./chat.js";
 import { handleCommands, isCommandsRoute } from "./commands.js";
@@ -16,6 +17,13 @@ import { handleGit } from "./git.js";
 import { type HttpDeps, handleRequest } from "./handler.js";
 import { handleImages } from "./images.js";
 import { handleInternalMcp } from "./internal-mcp.js";
+import {
+  previewNotFoundPage,
+  proxyPreviewHttp,
+  proxyPreviewUpgrade,
+  rejectUpgrade,
+} from "./preview-proxy.js";
+import { handlePreviews, isPreviewsRoute } from "./previews.js";
 import { handlePrompts, streamAppEvents } from "./prompts.js";
 import { handleSettings, isSettingsRoute } from "./settings.js";
 import { handleSkills, isSkillsRoute } from "./skills.js";
@@ -30,6 +38,23 @@ const MAX_BODY_BYTES = 64 * 1024;
 const MAX_SKILLS_BODY_BYTES = 4 * 1024 * 1024;
 // A master write_file carries up to 256 KiB of text plus JSON escaping and the RPC envelope.
 const MAX_INTERNAL_MCP_BODY_BYTES = 1024 * 1024;
+const PREVIEW_PATH = /^\/preview\/([^/]+)\/([^/]+)\/([^/]+)(\/.*)?$/;
+
+function decodePreviewSegment(value: string | undefined): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return undefined;
+  }
+}
+
+function writePreviewNotFound(response: ServerResponse): void {
+  response.writeHead(404, { "content-type": "text/html; charset=utf-8" });
+  response.end(previewNotFoundPage());
+}
 
 function bodyLimitFor(url: string): number {
   if (url.startsWith("/api/skills")) {
@@ -132,6 +157,58 @@ export function createHttpServer(deps: HttpDeps): Server {
       return;
     }
 
+    if (url.pathname === "/preview" || url.pathname.startsWith("/preview/")) {
+      const match = PREVIEW_PATH.exec(url.pathname);
+      if (match === null) {
+        writePreviewNotFound(response);
+        return;
+      }
+      if (!isHumanCookie(deps, request.headers.cookie)) {
+        const method = request.method ?? "GET";
+        if (method === "GET" || method === "HEAD") {
+          const next = encodeURIComponent(`${url.pathname}${url.search}`);
+          response.writeHead(302, { location: `/login?next=${next}` });
+          response.end();
+          return;
+        }
+        response.writeHead(401, { "content-type": "application/json; charset=utf-8" });
+        response.end(JSON.stringify({ error: "sign in required", code: "preview_auth_required" }));
+        return;
+      }
+      const previews = deps.previews;
+      const projectId = decodePreviewSegment(match[1]);
+      const appKey = decodePreviewSegment(match[2]);
+      const key = decodePreviewSegment(match[3]);
+      if (
+        previews === undefined ||
+        projectId === undefined ||
+        appKey === undefined ||
+        key === undefined
+      ) {
+        writePreviewNotFound(response);
+        return;
+      }
+      const found = findApp(deps, projectId, appKey);
+      const preview = found === undefined ? undefined : previews.get(found.app.id, key);
+      if (
+        found === undefined ||
+        preview === undefined ||
+        preview.appId !== found.app.id ||
+        preview.projectId !== found.project.id ||
+        preview.appKey !== found.app.appKey
+      ) {
+        writePreviewNotFound(response);
+        return;
+      }
+      if (match[4] === undefined) {
+        response.writeHead(302, { location: `${url.pathname}/${url.search}` });
+        response.end();
+        return;
+      }
+      proxyPreviewHttp(deps, request, response, preview);
+      return;
+    }
+
     void readBody(request, bodyLimitFor(request.url ?? ""))
       .then(async (body) => {
         const httpRequest = {
@@ -189,6 +266,7 @@ export function createHttpServer(deps: HttpDeps): Server {
         const isContext = isContextRoute(httpRequest.method, url.pathname);
         const isCommands = isCommandsRoute(httpRequest.method, url.pathname);
         const isRuntime = /^\/api\/apps\/[^/]+\/runtime$/.test(url.pathname);
+        const isPreviews = isPreviewsRoute(httpRequest.method, url.pathname);
         const isChat =
           !isRuntime && (url.pathname === "/chat" || url.pathname.startsWith("/api/apps/"));
         const result = isImages
@@ -209,9 +287,11 @@ export function createHttpServer(deps: HttpDeps): Server {
                         ? await handleContext(deps, httpRequest)
                         : isCommands
                           ? await handleCommands(deps, httpRequest)
-                          : isChat
-                            ? await handleChat(deps, httpRequest)
-                            : handleRequest(deps, httpRequest);
+                          : isPreviews
+                            ? await handlePreviews(deps, httpRequest)
+                            : isChat
+                              ? await handleChat(deps, httpRequest)
+                              : handleRequest(deps, httpRequest);
         response.writeHead(result.status, {
           "content-type": result.contentType,
           ...(result.headers ?? {}),
@@ -240,6 +320,64 @@ export function createHttpServer(deps: HttpDeps): Server {
     const url = request.url ?? "";
     if (/^\/api\/apps\/[^/]+\/terminal(?:\?|$)/.test(url)) {
       void proxyTerminalUpgrade(deps, request, socket, head).catch(() => socket.destroy());
+      return;
+    }
+    const upgradeUrl = new URL(url, "http://localhost");
+    if (upgradeUrl.pathname === "/preview" || upgradeUrl.pathname.startsWith("/preview/")) {
+      const match = PREVIEW_PATH.exec(upgradeUrl.pathname);
+      if (match === null) {
+        rejectUpgrade(socket, 404, "Not Found");
+        return;
+      }
+      if (!isHumanCookie(deps, request.headers.cookie)) {
+        rejectUpgrade(socket, 401, "Unauthorized");
+        return;
+      }
+      const previews = deps.previews;
+      const projectId = decodePreviewSegment(match[1]);
+      const appKey = decodePreviewSegment(match[2]);
+      const key = decodePreviewSegment(match[3]);
+      if (
+        previews === undefined ||
+        projectId === undefined ||
+        appKey === undefined ||
+        key === undefined
+      ) {
+        rejectUpgrade(socket, 404, "Not Found");
+        return;
+      }
+      const found = findApp(deps, projectId, appKey);
+      const preview = found === undefined ? undefined : previews.get(found.app.id, key);
+      if (
+        found === undefined ||
+        preview === undefined ||
+        preview.appId !== found.app.id ||
+        preview.projectId !== found.project.id ||
+        preview.appKey !== found.app.appKey
+      ) {
+        rejectUpgrade(socket, 404, "Not Found");
+        return;
+      }
+      const origin = request.headers.origin;
+      if (origin !== undefined) {
+        const host = request.headers.host;
+        if (origin === "null" || host === undefined || host.length === 0) {
+          rejectUpgrade(socket, 403, "Forbidden");
+          return;
+        }
+        let originHost: string;
+        try {
+          originHost = new URL(origin).host;
+        } catch {
+          rejectUpgrade(socket, 403, "Forbidden");
+          return;
+        }
+        if (originHost !== host) {
+          rejectUpgrade(socket, 403, "Forbidden");
+          return;
+        }
+      }
+      proxyPreviewUpgrade(deps, request, socket, head, preview);
       return;
     }
     if (!url.startsWith("/ide") || !isHumanCookie(deps, request.headers.cookie)) {

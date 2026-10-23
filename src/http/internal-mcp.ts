@@ -72,6 +72,7 @@ export async function handleInternalMcp(
       db: deps.db,
       ...(deps.skills === undefined ? {} : { skills: deps.skills }),
       ...(deps.manager === undefined ? {} : { manager: deps.manager }),
+      ...(deps.previews === undefined ? {} : { previews: deps.previews }),
     },
   );
   if (response === undefined) {

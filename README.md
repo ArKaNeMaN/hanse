@@ -35,6 +35,9 @@ and requirements) to each other through the coordinator - like independent teams
   APIs, exposed through the managed `hanse_web` MCP server only when configured.
 - Explicit "restart required" markers and a restart action; settings never restart agents silently.
 - Integrated chat with agents: sessions, messages, SSE updates, tool-call/diff rendering.
+- Demo app previews: an agent exposes a service running in its app container at `/preview/...`, with
+  an MCP tool, a chat tool-card link, and a conditional context-rail list (runner mode; same-origin
+  demo risk accepted).
 - Session context usage meter, manual compaction, and opt-in threshold-based auto-compaction with
   hierarchical settings and a server-side per-session context monitor.
 - Application page with a lightweight git workbench: status, fetch, fast-forward update, local branch

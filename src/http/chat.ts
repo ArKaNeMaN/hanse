@@ -15,6 +15,7 @@ import {
 } from "../opencode/client.js";
 import { authorizationFor } from "../opencode/endpoint-auth.js";
 import { DeletionPendingError } from "../opencode/manager.js";
+import type { PreviewView } from "../preview/types.js";
 import type { RegisteredApp } from "../registry/index.js";
 import { appDir, findApp, toManagedApp } from "./apps.js";
 import { humanFrom, principalFrom } from "./auth.js";
@@ -197,6 +198,33 @@ function renderNoApps(site: SiteModel, chrome: PageChrome): string {
   });
 }
 
+function renderPreviewRows(previews: PreviewView[]): string {
+  return previews
+    .map(
+      (preview) => `<li class="chat-preview" data-preview-key="${escapeHtml(preview.key)}">
+        <a class="chat-preview__link" href="${escapeHtml(preview.url)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(preview.name)}">
+          <span class="chat-preview__name">${escapeHtml(preview.name)}</span>
+          <span class="chat-preview__key mono" title="${escapeHtml(preview.key)}">${escapeHtml(preview.key)}</span>
+          ${icon("external")}
+          <span class="sr-only">(opens in a new tab)</span>
+        </a>
+        <button class="btn btn-ghost btn-icon btn-sm chat-preview__close" type="button" aria-label="Close preview ${escapeHtml(preview.name)}" hidden>${icon("x")}</button>
+      </li>`,
+    )
+    .join("");
+}
+
+function renderPreviewSection(previews: PreviewView[]): string {
+  return `<div class="chat-context__group" id="chat-previews"${previews.length === 0 ? " hidden" : ""}>
+        <hr class="rule" />
+        <section class="chat-context__section" aria-labelledby="context-previews-title">
+          <div class="cluster summary-row"><h2 class="overline" id="context-previews-title">Previews</h2><span class="caption" id="chat-previews-count">${previews.length} active</span></div>
+          <p class="hint">Demo only. Preview pages share the coordinator's origin and session.</p>
+          <ul class="chat-previews" id="chat-previews-list" role="list">${renderPreviewRows(previews)}</ul>
+        </section>
+      </div>`;
+}
+
 function renderChatPage(
   site: SiteModel,
   found: {
@@ -205,6 +233,7 @@ function renderChatPage(
   },
   principal: Principal,
   chrome: PageChrome,
+  previews: PreviewView[],
 ): string {
   const { project, app } = found;
   const ref = site.apps.get(app.id);
@@ -354,6 +383,7 @@ function renderChatPage(
             : ""
         }
       </section>
+      ${renderPreviewSection(previews)}
       <section class="chat-context__section chat-context-usage" id="chat-context-usage" aria-labelledby="context-usage-title">
         <div class="cluster summary-row"><h2 class="overline" id="context-usage-title" tabindex="-1">Context</h2><span class="caption" id="chat-context-summary">—</span></div>
         <div class="chat-context-usage__meter" id="chat-context-meter" role="meter" aria-label="Context usage" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-valuetext="Unknown"><span class="chat-context-usage__fill" id="chat-context-meter-fill" aria-hidden="true"></span></div>
@@ -553,7 +583,11 @@ export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<
     if (found === undefined) {
       return html(404, renderNotFound(site, chrome));
     }
-    return html(200, renderChatPage(site, found, principal, chrome));
+    if (request.host !== undefined) {
+      deps.previews?.recordOperatorHost(found.app.id, request.host);
+    }
+    const previews = deps.previews?.views(found.app.id) ?? [];
+    return html(200, renderChatPage(site, found, principal, chrome, previews));
   }
 
   const sessionsMatch = /^\/api\/apps\/([^/]+)\/sessions$/.exec(request.path);

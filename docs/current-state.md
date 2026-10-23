@@ -461,6 +461,41 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   allowed; a managed search/fetch driver denies the corresponding built-in and allows
   `hanse_web_search`/`hanse_web_fetch`.
 
+## App previews (demo)
+
+- An app agent can expose an HTTP service running inside its own container to the operator with
+  `preview_open`/`preview_close`/`preview_list` on the `hanse` MCP surface. The tools are app-token
+  bound; the only target input is a port. `preview_open` requires the app to be running, accepts
+  `key` (lowercase slug), `name`, and `port` (`1024..65535`, not `4100`), and returns the URL plus
+  `base_path`/`base_path_without_trailing_slash` and `operator_host`/`operator_hostname`.
+- Previews are app-scoped and in memory: max 8 per app, 2-hour absolute TTL with lazy pruning,
+  upsert by key, explicit close, and no persistence across a coordinator restart. Stop, restart,
+  deletion, out-of-band reconcile, and container recreation clear the app's previews.
+- The operator opens `/preview/<projectId>/<appKey>/<key>/...`; the route is cookie-only (like
+  `/ide`), forwards the full path and query unchanged, and proxies HTTP and WebSocket to the app
+  container on its own network. The proxy streams both directions, strips `cookie`/`authorization`
+  upstream, drops origin-wide response headers (`set-cookie`, `clear-site-data`,
+  `service-worker-allowed`, HSTS, `alt-svc`, `report-to`, `reporting-endpoints`, `nel`,
+  `www-authenticate`), and uses a 64 KiB/allowlist filter on the WebSocket 101. The WebSocket
+  upgrade also checks `Origin` host = `Host` (absent allowed).
+- The app must serve under the returned base: Vite `base = base_path`; Next
+  `basePath = base_path_without_trailing_slash` plus `trailingSlash: true`, with
+  `allowedHosts`/`allowedDevOrigins` from `operator_hostname`. The proxy does not rewrite
+  HTML/CSS/JS.
+- The chat tool card gets an always-visible `Open preview` action on a completed success result, and
+  the context rail renders a `Previews` block only while the app has active previews. The operator
+  can close a preview from the rail; the block and divider disappear when the list empties.
+- Demo-only: previews are served from the coordinator origin, so the previewed app shares the
+  operator's session. This is an accepted residual risk for the MVP, not a security boundary. The UI
+  carries a persistent demo warning and links use `noopener`.
+- Runner-mode only: `HANSE_RUNNER_URL` must be configured. In supervisor mode the MCP tools return
+  `preview_unavailable`, the list/close API returns `503`, and no preview UI is shown.
+- Human-only API: `GET /api/apps/:app/previews?project=...` and
+  `POST /api/apps/:app/previews/:key/close?project=...`.
+- Tests: `test/preview-service.test.ts`, `test/preview-mcp.test.ts`, `test/preview-http.test.ts`,
+  `test/preview-proxy.test.ts`, `test/chat-page.test.ts`, and `test/manager.test.ts`; browser
+  evidence is in `docs/design/artifacts/previews/`.
+
 ## Settings and web tools
 
 - Human-only settings pages: `/settings`, `/projects/:id/settings`, and
@@ -1008,6 +1043,11 @@ Settings stage verification:
   `git-op` command (agent-default does). A per-repository in-memory lock in the coordinator
   serializes UI actions but does not cover agents or the IDE writing to the same repository.
 - The IDE chat can be moved to the right sidebar only by a one-time user action (VS Code limitation).
+- App previews are demo-only and same-origin: the previewed app runs in the operator's Hanse origin
+  and can call same-origin APIs; `Set-Cookie` responses are dropped, but direct cookie writes and
+  `/logout` remain possible. Previews are runner-mode only, in-memory (lost on coordinator restart),
+  2 hours/max 8, and the agent must configure the framework base path. Host ports, subdomains,
+  sandboxing, and per-app authentication are not implemented.
 - Settings without JavaScript submit non-Git forms and fall back to the redirect/toast path; inline
   errors and preserved values need the script. Git credential forms are JSON-only and require JS.
 - Applied settings/profile hashes were not persisted before migration v10. A running instance from an

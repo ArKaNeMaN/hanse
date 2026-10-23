@@ -1,5 +1,25 @@
 # Open questions
 
+> Stage: `0023-app-previews`. Owner decisions were collected on 2026-10-23, before the plan was
+> written. There are no open items for this stage.
+
+## Stage `0023-app-previews` - resolved owner decisions
+
+1. **Routing** - path-based preview on the coordinator; wildcard subdomains and host-port publishing
+   are rejected for this stage. The feature is demo-only.
+2. **Same-origin risk** - accepted for the MVP. The previewed app runs in the operator's Hanse
+   origin; the design records the mandatory guards and the residual risk, and the UI carries a demo
+   warning.
+3. **TTL** - delegated to the architect. Decision: 2 hours absolute, lazy pruning, explicit close,
+   and clearing on app stop/restart/delete and coordinator restart.
+4. **Limit** - 8 previews per application.
+5. **Operator close** - allowed from the chat context rail, in addition to the agent's
+   `preview_close` tool.
+6. **Scope** - previews are app-scoped, not session-scoped; they stay visible across chat sessions
+   of the same application.
+7. **UI delegation** - the chat rail and tool-card design is produced by the visual-engineering
+   agent and recorded in `docs/design/app-previews.md` §8.
+
 > Stage: `0021-slash-commands`. Owner decisions were collected on 2026-10-23, before the plan was
 > written. There are no open items for this stage.
 

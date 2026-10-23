@@ -38,6 +38,7 @@ import { runRemoteMcpServer } from "../mcp/remote.js";
 import { runMcpServer } from "../mcp/server.js";
 import { InstanceManager, resolveBaselinePlugins } from "../opencode/manager.js";
 import { OmoProfileStore } from "../opencode/omo-profile.js";
+import { PreviewService } from "../preview/service.js";
 import { discoverProject, registerProject } from "../registry/index.js";
 import { DockerClient } from "../runner/docker.js";
 import { runRunner } from "../runner/server.js";
@@ -646,11 +647,14 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
   }
 
   const skills = new SkillService({ db });
+  const previews =
+    runnerUrl !== undefined && runnerUrl.length > 0 ? new PreviewService() : undefined;
   const manager = new InstanceManager(db, path.resolve(agentsHome()), {
     runtime,
     settings,
     omoProfiles,
     skills,
+    ...(previews === undefined ? {} : { previews }),
     workspaceRoot: workspace,
     ...(hostWorkspace === undefined ? {} : { hostWorkspace }),
     ...(hostAgents === undefined ? {} : { hostAgents }),
@@ -714,6 +718,7 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
     settings,
     ssh,
     skills,
+    ...(previews === undefined ? {} : { previews }),
     agentsHome: path.resolve(agentsHome()),
     baselinePlugins: resolveBaselinePlugins(),
     ...(runnerUrl === undefined || runnerUrl.length === 0

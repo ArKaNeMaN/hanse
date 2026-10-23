@@ -44,6 +44,7 @@
   policy, detached execution, and security analysis. Status: approved (oracle PASS after 2 rounds);
   plan reviewed (momus PASS); implemented and verified (journal 0025); commit pending.
 - [App-agent skill authoring](./app-skill-authoring.md) - app-scope create/list/get/update/enable/override tools over the existing app MCP surface, token-bound targets, by-id authorization, content-free audit, manual restart, and accepted self-modification risk. Status: approved (oracle PASS after three rounds); plan reviewed (momus PASS); implemented and verified (journal 0024); all five gates pass; committed.
+- [App previews (demo)](./app-previews.md) - path-based reverse proxy for an app's in-container HTTP service, app-scoped ephemeral previews opened over MCP, a chat tool-card action and conditional context-rail block, hardened stream/header handling, and an accepted same-origin risk. Status: approved (oracle PASS after three rounds); plan reviewed (momus PASS); implemented; automated verification passed; local runner-backed smoke passed (journal 0026); deployment Vite/Next smoke pending; no commit yet.
 - [Managed agent skills](./agent-skills.md) - global/project/application skill registry, deterministic per-instance materialization into `opencode`'s config skill roots, restart semantics, human-only API, and scope-aware Web UI. Status: approved (oracle PASS after seven rounds).
 - [Skill bundles and the skill workspace](./skill-bundles.md) - `references/*.md` bundles, structured frontmatter metadata, a dedicated side-by-side source/preview workspace, inventory-only list pages, and a backward-compatible materialization hash. Status: approved (oracle PASS after five rounds); plan reviewed (momus PASS); implemented and verified (journal 0020).
 - [Hanse master agent](./hanse-master.md) - a built-in assistant for operating Hanse: reserved application identity, read-only app directory, allowlisted MCP tools, shared provisioning, confined workspace files, and a reduced operator surface. Status: approved (oracle, three rounds; final delta cleared); implemented and verified (journal 0021).
@@ -85,6 +86,8 @@ Query parameters:
 - `skills/` - managed skill inventory, workspace, create, repair, inherited, and no-JavaScript
   captures at 390/768/1024/1440, dark and light, plus `report.json` (see
   [`artifacts/skills/README.md`](./artifacts/skills/README.md)).
+- `previews/` - deterministic app-preview chat states (empty, 1/3/8, tool card, close/error, 404/502,
+  long name, 390/1440, dark/light) plus `report.json`; run `node docs/design/preview-qa.mjs`.
 
 ## Chat QA
 
