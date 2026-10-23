@@ -40,7 +40,7 @@ Binding for this design:
 | Settings IA | Sticky scope/section navigation, four job-based sections (Agent, Web tools, Git, Restart), and one collapsed **setting row** per setting. Scope tables and editors are inside the row disclosure. |
 | Settings actions | At rest: zero submit buttons. One primary `Save` per open row; `Inherit` and `Clear` are secondary in the open row and disabled (with a visible reason) when they are no-ops. Global scope hides `Inherit`. |
 | Settings validation | Non-Git forms post via `settings.js` with `Accept: application/json`; errors render inline in the row and keep values/focus. No-JS falls back to the current redirect + toast. Git credential forms are JS-required (existing JSON contract) and carry a `<noscript>` notice. |
-| Terminal | Full-height page on vendored xterm.js 6.0.0 + `@xterm/addon-fit` 0.11.0. Binary input frames, text control frames, `TERM=xterm-256color`, 5000-line scrollback, fit/resize, copy/paste, reconnect backoff, close reasons, stopped-agent state. No tabs, splits, search, or persistence. |
+| Terminal | Full-height page on vendored xterm.js 6.0.0 + `@xterm/addon-fit` 0.11.0 + `@xterm/addon-unicode11` 0.9.0 + `@xterm/addon-unicode-graphemes` 0.4.0. Binary input frames, text control frames, `TERM=xterm-256color`, 5000-line scrollback, fit/resize, copy/paste, reconnect backoff, close reasons, stopped-agent state. No tabs, splits, search, or persistence. |
 | Runtime state | One vocabulary: `starting`, `running`, `stopped`, `error`. `error` no longer renders as Stopped; `starting` no longer renders as Stopped; error counts become real. |
 | Restart route | Calls `manager.restartIfRunning()`, never bare `stopApp()`. Reports restart failure instead of claiming success. |
 | Chat runtime | `/api/apps/:app/runtime` is the only source for both runtime chips. Hydration, sending, and errors no longer guess runtime state. |
@@ -887,7 +887,9 @@ Load order on the terminal page (all `defer`):
 1. `/assets/app.js` (already in `documentPage`).
 2. `/assets/vendor/xterm/xterm-6.0.0.js` (UMD global `Terminal`).
 3. `/assets/vendor/xterm/addon-fit-0.11.0.js` (UMD global `FitAddon.FitAddon`).
-4. `/assets/terminal.js`.
+4. `/assets/vendor/xterm/addon-unicode11-0.9.0.js` (UMD global `Unicode11Addon.Unicode11Addon`).
+5. `/assets/vendor/xterm/addon-unicode-graphemes-0.4.0.js` (UMD global `UnicodeGraphemesAddon.UnicodeGraphemesAddon`).
+6. `/assets/terminal.js`.
 
 Stylesheet order:
 
@@ -904,7 +906,7 @@ const fit = new FitAddon.FitAddon();
 const term = new Terminal({
   fontFamily: monoToken,
   fontSize: pxFromRemToken("--text-mono"),
-  lineHeight: 1.5,
+  lineHeight: 1,
   letterSpacing: 0,
   cursorBlink: !prefersReducedMotion,
   cursorStyle: "bar",
@@ -912,13 +914,20 @@ const term = new Terminal({
   screenReaderMode: true,
   allowTransparency: false,
   convertEol: false,
-  allowProposedApi: false,
+  allowProposedApi: true,
   theme: readTerminalTheme(),
 });
 term.loadAddon(fit);
+term.loadAddon(new Unicode11Addon.Unicode11Addon());
+term.loadAddon(new UnicodeGraphemesAddon.UnicodeGraphemesAddon());
 term.open(host);
 fit.fit();
 ```
+
+The proposed unicode API is enabled for the terminal instance. The Unicode 15 graphemes
+provider is active; `terminal.js` falls back to the stable Unicode 11 provider when the
+graphemes addon cannot load. This keeps emoji, VS16, and ZWJ sequences from drifting the
+cursor on terminals that use the default Unicode 6 table.
 
 - `readTerminalTheme()` reads computed CSS custom properties from `document.documentElement` and
   returns the token values, so light/dark stay in sync with the rest of the product. It is called at
@@ -1067,7 +1076,7 @@ There is no "start agent" endpoint today. The terminal must not fake one.
   - Remove `#terminal-output` and `#terminal-input`.
   - `#terminal` keeps `data-terminal-ws`, `data-app-key`, `data-project-id`; adds
     `data-runtime-state`.
-  - Scripts: the two vendor scripts before `terminal.js`.
+  - Scripts: the four vendor scripts before `terminal.js`.
   - Styles: the xterm stylesheet.
 - `assets/terminal.js` is rewritten as the xterm controller. No framework, no dependency beyond the
   vendored UMD globals.
@@ -1075,6 +1084,8 @@ There is no "start agent" endpoint today. The terminal must not fake one.
   - `/assets/vendor/xterm/xterm-6.0.0.css` -> `text/css; charset=utf-8`
   - `/assets/vendor/xterm/xterm-6.0.0.js` -> `text/javascript; charset=utf-8`
   - `/assets/vendor/xterm/addon-fit-0.11.0.js` -> `text/javascript; charset=utf-8`
+  - `/assets/vendor/xterm/addon-unicode11-0.9.0.js` -> `text/javascript; charset=utf-8`
+  - `/assets/vendor/xterm/addon-unicode-graphemes-0.4.0.js` -> `text/javascript; charset=utf-8`
 - `src/runner/server.ts` currently passes no env to `createExec`; add
   `env: { TERM: "xterm-256color", COLORTERM: "truecolor", LANG: "C.UTF-8" }`. The runner exec test
   must assert all three values.

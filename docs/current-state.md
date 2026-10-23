@@ -203,7 +203,9 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   `/assets/chat-highlight-worker.js`, `/assets/git.js`, `/assets/git-settings.js`,
   `/assets/settings.js`, `/assets/skill-detail.js`, `/assets/markdown.js`, `/assets/vendor/prism/prism-1.30.0.min.js`,
   `/assets/vendor/xterm/xterm-6.0.0.js`, `/assets/vendor/xterm/xterm-6.0.0.css`,
-  `/assets/vendor/xterm/addon-fit-0.11.0.js`, and `/assets/favicon.svg`.
+  `/assets/vendor/xterm/addon-fit-0.11.0.js`,
+  `/assets/vendor/xterm/addon-unicode11-0.9.0.js`,
+  `/assets/vendor/xterm/addon-unicode-graphemes-0.4.0.js`, and `/assets/favicon.svg`.
 - `assets/app.js` adds shell drawer, native-dialog, theme, toast, password-visibility, and
   submit-busy behavior. `assets/chat.js` is an ESM module that owns the chat workspace (sessions,
   messages, typed SSE, composer, queue, questions, OMO cards, safe markdown/tables, syntax-highlighted
@@ -679,8 +681,9 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   Only managed app containers resolved by `appId` are reachable.
 - Closing or reloading the terminal closes only the exec stream; the app container keeps running.
 - The page is a full-height xterm.js 6.0.0 terminal (vendored, fit addon) with ANSI/alternate-screen
-  rendering, 5000-line scrollback, a light/dark theme from the design tokens, copy/paste, and
-  FitAddon/ResizeObserver sizing. Output is binary frames; keyboard/paste input is sent as binary
+  rendering, a 1.0 line height, 5000-line scrollback with the viewport scrollbar hidden, Unicode 15
+  grapheme-cluster widths (Unicode11 + graphemes addons), a light/dark theme from the design tokens,
+  copy/paste, and FitAddon/ResizeObserver sizing. Output is binary frames; keyboard/paste input is sent as binary
   UTF-8 frames, while resize is a JSON control text frame applied through Docker's
   `/exec/{id}/resize`. The runner sets `TERM=xterm-256color`, `COLORTERM=truecolor`, and
   `LANG=C.UTF-8` for the exec.
@@ -883,8 +886,10 @@ Settings stage verification:
   and per-app passwords. B1.5 git runs in a no-secret one-shot container from the app image; the
   coordinator keeps only the human-only UI/API and a runner client. The B1.4 operator terminal is
   human-only and scoped to managed app containers; it now uses a real xterm.js renderer (ANSI,
-  alternate screen, 5000-line scrollback, resize, IME, copy/paste). Reconnect starts a new ephemeral
-  shell; there is no search/web-links addon or persistent session multiplexer. "Human-only" prompt
+  alternate screen, 5000-line scrollback, Unicode 15 grapheme widths, resize, IME, copy/paste).
+  Reconnect starts a new ephemeral shell; there is no search/web-links addon or persistent session
+  multiplexer. The Unicode 15 graphemes addon is experimental upstream; the stable Unicode 11
+  provider is the fallback, and the terminal enables the proposed unicode API for both. "Human-only" prompt
   routes remain a Hanse-route guarantee, not a hard boundary: an agent with `bash` can call the
   upstream prompt API directly, including a v2 `always` reply that creates a durable project-scoped
   saved permission.
