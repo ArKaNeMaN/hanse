@@ -567,7 +567,9 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   `Disabled`/`Invalid` filters, one row per name, collision/issue indicators, and a restart rail.
   Inline editors and the old fragment contract are gone. The dedicated workspace shows the scope
   chain, metadata groups, references, and side-by-side source/preview at >=1024; below that it uses
-  Source/Preview tabs and a file selector. Save/discard are explicit, references and metadata are
+  Source/Preview tabs and a file selector. Every Details field has a one-line hint and linked error
+  description; a collapsible field guide gives short examples. The bundle form and danger zone use
+  the normal stack gap. Save/discard are explicit, references and metadata are
   edited in the bundle form, and delete/override/disable/revert remain normal human-only forms.
   Without JavaScript metadata/license/compatibility/reference controls are disabled and unnamed,
   all file editors are stacked, and a hidden bundle snapshot preserves the bundle; the preview

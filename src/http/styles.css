@@ -7350,26 +7350,11 @@
 
 .terminal-host .xterm-viewport {
   background-color: var(--inset) !important;
-  scrollbar-color: var(--line-strong) transparent;
-  scrollbar-width: thin;
+  scrollbar-width: none;
 }
 
 .terminal-host .xterm-viewport::-webkit-scrollbar {
-  inline-size: var(--space-2);
-  block-size: var(--space-2);
-}
-
-.terminal-host .xterm-viewport::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.terminal-host .xterm-viewport::-webkit-scrollbar-thumb {
-  background: var(--line-strong);
-  border-radius: var(--radius-pill);
-}
-
-.terminal-host .xterm-viewport::-webkit-scrollbar-thumb:hover {
-  background: var(--text-3);
+  display: none;
 }
 
 .terminal-empty {
@@ -7471,6 +7456,41 @@
 
 .skill-details__meta {
   justify-content: flex-end;
+}
+
+.skill-details__intro {
+  margin: 0;
+}
+
+.skill-details__intro a {
+  color: var(--text-2);
+  text-decoration: underline;
+  text-decoration-color: var(--line-strong);
+  text-underline-offset: 3px;
+}
+
+.skill-details__intro a:hover {
+  color: var(--text-1);
+}
+
+.skill-field-guide {
+  padding: 0 var(--space-3) var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-1);
+  scroll-margin-block-start:
+    calc(var(--space-10) + var(--space-12) + var(--space-4) + var(--space-2));
+}
+
+.skill-field-guide__table td {
+  block-size: auto;
+  padding-block: var(--space-2);
+  vertical-align: top;
+}
+
+.skill-field-guide__table td:first-child {
+  color: var(--text-1);
+  font-weight: 600;
 }
 
 .skill-details__chevron,
@@ -8018,12 +8038,8 @@
     flex: 1 1 auto;
   }
 
-  .skill-bundle-form {
+  .skill-edit-workspace {
     padding-block-end: var(--space-24);
-  }
-
-  .skill-danger {
-    margin-block-end: var(--space-16);
   }
 }
 

@@ -710,6 +710,8 @@ describe("skill workspace", () => {
     expect(body).toContain("Delete and re-create");
     expect(body).toContain(`action="/api/skills/${forged}/delete"`);
     expect(body).toContain('name="confirm_name"');
+    expect(body).toContain('class="stack skill-readonly-workspace"');
+    expect(body).toContain('</div>\n        <section class="card skill-danger"');
   });
 
   it("renders the editable workspace with details, bundle form, source, preview, and danger zone", async () => {
@@ -766,6 +768,83 @@ describe("skill workspace", () => {
       ],
     });
     expect(Object.keys(bundle)).not.toContain("metadataRaw");
+  });
+
+  it("shows field hints, a linked field guide, and a stack gap before the danger zone", async () => {
+    const f = fixture();
+    const row = f.skills.create(
+      "global",
+      {},
+      {
+        name: "guided-skill",
+        description: "Guided description",
+        content: "Guided body",
+        license: "MIT",
+        compatibility: "Node >= 20",
+        metadata: {
+          domain: "engineering",
+          role: "reviewer",
+          scope: "repository",
+          "output-format": "report",
+          triggers: "release, ship",
+          "related-skills": "testing",
+          version: "1.0.0",
+          author: "platform-team",
+        },
+        references: [{ path: "references/guide.md", content: "Guide body" }],
+      },
+      "owner",
+    );
+    const body = await page(f, `/skills/${row.id}`);
+
+    expect(body).toContain("Only name, description, and the SKILL.md body are required");
+    expect(body).toContain('href="#skill-field-guide" data-skill-guide-open');
+    expect(body).toContain('id="skill-field-guide"');
+    expect(body).toContain("data-skill-field-guide");
+    expect(body).toContain("What to write");
+    expect(body).toContain('data-label="Field"');
+    expect(body).toContain("references/testing.md");
+    expect(body).toContain("SKILL.md body");
+
+    for (const key of [
+      "domain",
+      "role",
+      "scope",
+      "output-format",
+      "triggers",
+      "related-skills",
+      "version",
+      "author",
+    ]) {
+      expect(body).toContain(`id="skill-metadata-${key}-hint"`);
+      expect(body).toContain(`aria-describedby="skill-metadata-${key}-hint"`);
+    }
+    for (const hint of [
+      "skill-description-hint",
+      "skill-enabled-hint",
+      "skill-license-hint",
+      "skill-compatibility-hint",
+      "skill-content-hint",
+      "skill-custom-metadata-hint",
+      "skill-references-hint",
+    ]) {
+      expect(body).toContain(`id="${hint}"`);
+    }
+    expect(body).toContain('aria-describedby="skill-description-hint"');
+    expect(body).toContain('aria-describedby="skill-enabled-hint"');
+    expect(body).toContain('aria-describedby="skill-content-hint"');
+    expect(body).toContain(
+      'data-skill-reference-content aria-describedby="skill-ref-0-content-hint"',
+    );
+
+    const formStart = body.indexOf('<form class="stack skill-bundle-form"');
+    const formEnd = body.indexOf("</form>", formStart);
+    const danger = body.indexOf("data-skill-danger");
+    expect(formStart).toBeGreaterThan(-1);
+    expect(formEnd).toBeGreaterThan(formStart);
+    expect(danger).toBeGreaterThan(formEnd);
+    expect(body.slice(0, formStart)).toContain('class="stack skill-edit-workspace"');
+    expect(body).toContain('</form>\n        <section class="card skill-danger"');
   });
 
   it("renders metadata, license, compatibility, and reference controls disabled and unnamed", async () => {
@@ -967,7 +1046,7 @@ describe("skill workspace", () => {
     expect(response.status).toBe(422);
     expect(response.body).toContain("Submitted description");
     expect(response.body).toContain("content must not be empty");
-    expect(response.body).toContain('aria-describedby="skill-content-error"');
+    expect(response.body).toContain('aria-describedby="skill-content-hint skill-content-error"');
   });
 
   it("runs no-JS override, disable, enable, revert, discard, and delete actions", async () => {
@@ -1090,6 +1169,8 @@ describe("create page", () => {
     const global = await page(f, "/skills/new", { scope: "global" });
     expect(global).toContain("New skill");
     expect(global).toContain('name="name"');
+    expect(global).toContain('id="skill-name-hint"');
+    expect(global).toContain('aria-describedby="skill-name-hint"');
     expect(global).toContain("Create skill");
     expect(global).toContain("Back to skills");
     expect(global).toContain("data-skill-editbar");

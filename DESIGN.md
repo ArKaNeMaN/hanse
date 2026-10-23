@@ -929,7 +929,17 @@ color, type, space, radius, shadow, or motion token.
   `.table--stack` still owns the <768 single-column row layout.
 - **Details:** `.skill-details` is a native `<details>` card; `.skill-fieldset` groups the identity,
   classification, discovery, and license fields; `.skill-details-grid` is one column and becomes
-  two columns at >=1024. `.skill-metadata-row` is a wrapping key/value row.
+  two columns at >=1024. `.skill-metadata-row` is a wrapping key/value row. Every known field carries
+  a visible one-line `.hint` directly beneath it, associated with the control through
+  `aria-describedby` (hint id plus error id when invalid); `.skill-details__intro` states which
+  fields are required and links to the field guide.
+- **Field guide:** `.skill-field-guide` is a collapsed `.disclosure` inside Details, using the normal
+  `table table--stack` with `data-label` cells so it stacks on mobile. Its anchor opens the
+  disclosure before scrolling; without JavaScript the anchor scrolls to the guide summary, where
+  the disclosure can still be opened. The guide is static text and adds no form controls.
+- **Danger zone:** `.skill-edit-workspace` and `.skill-readonly-workspace` are `.stack` containers,
+  so the bundle form and `.skill-danger` are separated by the normal `--space-4` gap rather than an
+  ad-hoc margin; the danger-zone form is never nested inside the bundle form.
 - **Workspace shell:** `.skill-files` hosts the source/preview card; `.skill-workspace` is the grid.
   At >=1280 it is `14rem | minmax(0,1fr) | minmax(0,1fr)` with `.skill-file-list` as the rail; at
   1024-1279 the file list becomes a horizontal tab strip above a two-column source/preview split;
@@ -1171,7 +1181,9 @@ spacing value.
 `.terminal-toolbar__status`, `.terminal-toolbar__actions`, `.terminal-banner`, `.terminal-host`,
 `.terminal-empty`.
 - Skills: `.skill-toolbar`, `.skill-inventory-table`, `.skill-state`, `.skill-details`,
-`.skill-fieldset`, `.skill-details-grid`, `.skill-metadata-row`, `.skill-files`, `.skill-workspace`,
+`.skill-details__intro`, `.skill-fieldset`, `.skill-details-grid`, `.skill-field-guide`,
+`.skill-field-guide__table`, `.skill-metadata-row`, `.skill-edit-workspace`,
+`.skill-readonly-workspace`, `.skill-files`, `.skill-workspace`,
 `.skill-file-list`, `.skill-file-list__head`, `.skill-file-tabs`, `.skill-file-tab`,
 `.skill-file-tab__name`, `.skill-file-tab__size`, `.skill-file-dirty`, `.skill-file-picker`,
 `.skill-add-reference`, `.skill-panes`, `.skill-source-pane`, `.skill-file-head`,

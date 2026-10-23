@@ -1287,6 +1287,14 @@ function init() {
     if (target === null) {
       return;
     }
+    const guideLink = target.closest("[data-skill-guide-open]");
+    if (guideLink !== null) {
+      const guide = scope.querySelector("[data-skill-field-guide]");
+      if (guide instanceof HTMLDetailsElement) {
+        guide.open = true;
+      }
+      return;
+    }
     const fileTab = target.closest("[data-skill-file-tab]");
     if (fileTab !== null) {
       event.preventDefault();

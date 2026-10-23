@@ -47,15 +47,56 @@ const KNOWN_METADATA: Array<{
   key: string;
   label: string;
   group: "classification" | "discovery" | "version";
+  hint: string;
 }> = [
-  { key: "domain", label: "Domain", group: "classification" },
-  { key: "role", label: "Role", group: "classification" },
-  { key: "scope", label: "Operating scope", group: "classification" },
-  { key: "output-format", label: "Output format", group: "classification" },
-  { key: "triggers", label: "Triggers", group: "discovery" },
-  { key: "related-skills", label: "Related skills", group: "discovery" },
-  { key: "version", label: "Version", group: "version" },
-  { key: "author", label: "Author", group: "version" },
+  {
+    key: "domain",
+    label: "Domain",
+    group: "classification",
+    hint: "The broad area the skill belongs to, such as engineering or operations.",
+  },
+  {
+    key: "role",
+    label: "Role",
+    group: "classification",
+    hint: "The role the agent plays while using the skill.",
+  },
+  {
+    key: "scope",
+    label: "Operating scope",
+    group: "classification",
+    hint: "What part of the work it covers, such as one repository or a whole project.",
+  },
+  {
+    key: "output-format",
+    label: "Output format",
+    group: "classification",
+    hint: "The expected result shape: mixed, code, report, document, plan, or decision.",
+  },
+  {
+    key: "triggers",
+    label: "Triggers",
+    group: "discovery",
+    hint: "Comma-separated cues that tell the agent when to load the skill.",
+  },
+  {
+    key: "related-skills",
+    label: "Related skills",
+    group: "discovery",
+    hint: "Comma-separated skill names worth loading alongside this one.",
+  },
+  {
+    key: "version",
+    label: "Version",
+    group: "version",
+    hint: "A short version label, such as 1.0.0.",
+  },
+  {
+    key: "author",
+    label: "Author",
+    group: "version",
+    hint: "The person or team responsible for the skill.",
+  },
 ];
 
 const KNOWN_METADATA_KEYS = new Set(KNOWN_METADATA.map((entry) => entry.key));
@@ -1788,16 +1829,30 @@ function metadataField(options: {
   label: string;
   value: string;
   id: string;
+  hint: string;
   error?: string;
   datalist?: string;
 }): string {
-  const describedBy =
-    options.error === undefined ? "" : ` aria-describedby="${escapeHtml(options.id)}-error"`;
+  const hintId = `${options.id}-hint`;
+  const describedBy = fieldDescribedBy(
+    hintId,
+    options.error === undefined ? undefined : `${options.id}-error`,
+  );
   return `<div class="field">
     <label class="label" for="${escapeHtml(options.id)}">${escapeHtml(options.label)}</label>
     <input class="input" id="${escapeHtml(options.id)}" type="text" value="${escapeHtml(options.value)}"${options.datalist === undefined ? "" : ` list="${escapeHtml(options.datalist)}"`} disabled data-skill-metadata-key="${escapeHtml(options.key)}"${describedBy} />
     ${fieldError(options.id, options.error)}
+    ${fieldHint(hintId, options.hint)}
   </div>`;
+}
+
+function fieldDescribedBy(...ids: Array<string | undefined>): string {
+  const present = ids.filter((id): id is string => id !== undefined);
+  return present.length === 0 ? "" : ` aria-describedby="${escapeHtml(present.join(" "))}"`;
+}
+
+function fieldHint(id: string, text: string): string {
+  return `<p class="hint" id="${escapeHtml(id)}">${escapeHtml(text)}</p>`;
 }
 
 function fieldError(id: string, message: string | undefined): string {
@@ -1819,6 +1874,108 @@ interface WorkspaceError {
   field?: string;
 }
 
+const FIELD_GUIDE_ROWS: Array<{ field: string; write: string; example: string }> = [
+  {
+    field: "Name",
+    write: "A stable lowercase slug set when the skill is created.",
+    example: "release-checklist",
+  },
+  {
+    field: "Description",
+    write: "One sentence on what the skill does and when to load it.",
+    example: "Review a release before it ships.",
+  },
+  {
+    field: "Enabled",
+    write: "Whether the skill is active at this context.",
+    example: "On",
+  },
+  {
+    field: "Domain",
+    write: "The broad area the skill belongs to.",
+    example: "engineering",
+  },
+  {
+    field: "Role",
+    write: "The role the agent plays while using the skill.",
+    example: "reviewer",
+  },
+  {
+    field: "Operating scope",
+    write: "What part of the work the skill covers.",
+    example: "repository",
+  },
+  {
+    field: "Output format",
+    write: "The expected result shape: mixed, code, report, document, plan, or decision.",
+    example: "report",
+  },
+  {
+    field: "Triggers",
+    write: "Comma-separated cues for when to load the skill.",
+    example: "release, ship, cut a version",
+  },
+  {
+    field: "Related skills",
+    write: "Comma-separated skill names to load alongside this one.",
+    example: "testing, changelog",
+  },
+  {
+    field: "Version",
+    write: "A short version label.",
+    example: "1.0.0",
+  },
+  {
+    field: "Author",
+    write: "The person or team responsible for the skill.",
+    example: "platform-team",
+  },
+  {
+    field: "License",
+    write: "An SPDX identifier or short license name.",
+    example: "MIT",
+  },
+  {
+    field: "Compatibility",
+    write: "Runtime or tool requirements.",
+    example: "Node >= 20",
+  },
+  {
+    field: "Custom metadata",
+    write: "Extra key/value pairs used by your own tooling.",
+    example: "owner: platform-team",
+  },
+  {
+    field: "References",
+    write: "Flat Markdown files under references/ that the skill can point to.",
+    example: "references/testing.md",
+  },
+  {
+    field: "SKILL.md body",
+    write: "The procedure: steps, checks, and when to stop.",
+    example: "1. Confirm the version. 2. Run the checks.",
+  },
+];
+
+function fieldGuide(): string {
+  const rows = FIELD_GUIDE_ROWS.map(
+    (row) => `<tr>
+      <td data-label="Field">${escapeHtml(row.field)}</td>
+      <td data-label="What to write">${escapeHtml(row.write)}</td>
+      <td data-label="Example"><span class="mono">${escapeHtml(row.example)}</span></td>
+    </tr>`,
+  ).join("");
+  return `<details class="disclosure skill-field-guide" id="skill-field-guide" data-skill-field-guide>
+    <summary>Field guide${icon("chevron-down", "disclosure__chevron")}</summary>
+    <div class="table-wrap">
+      <table class="table table--stack skill-field-guide__table">
+        <thead><tr><th scope="col">Field</th><th scope="col">What to write</th><th scope="col">Example</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  </details>`;
+}
+
 function detailsCard(
   values: WorkspaceValues,
   row: SkillRow,
@@ -1838,6 +1995,7 @@ function detailsCard(
         label: entry.label,
         value: metadataValue(metadata, entry.key),
         id: `skill-metadata-${entry.key}`,
+        hint: entry.hint,
         ...(field === "metadata" ? { error: error?.message } : {}),
         ...(entry.key === "output-format" ? { datalist: "skill-output-formats" } : {}),
       }),
@@ -1850,6 +2008,7 @@ function detailsCard(
         label: entry.label,
         value: metadataValue(metadata, entry.key),
         id: `skill-metadata-${entry.key}`,
+        hint: entry.hint,
         ...(field === "metadata" ? { error: error?.message } : {}),
       }),
     )
@@ -1861,6 +2020,7 @@ function detailsCard(
         label: entry.label,
         value: metadataValue(metadata, entry.key),
         id: `skill-metadata-${entry.key}`,
+        hint: entry.hint,
         ...(field === "metadata" ? { error: error?.message } : {}),
       }),
     )
@@ -1873,8 +2033,8 @@ function detailsCard(
       : custom
           .map(
             ([key, value]) => `<div class="cluster skill-metadata-row" data-skill-metadata-row>
-              <input class="input" type="text" value="${escapeHtml(key)}" disabled data-skill-metadata-key-input aria-label="Metadata key" />
-              <input class="input" type="text" value="${escapeHtml(value)}" disabled data-skill-metadata-value-input aria-label="Metadata value" />
+              <input class="input" type="text" value="${escapeHtml(key)}" disabled data-skill-metadata-key-input aria-label="Metadata key" aria-describedby="skill-custom-metadata-hint" />
+              <input class="input" type="text" value="${escapeHtml(value)}" disabled data-skill-metadata-value-input aria-label="Metadata value" aria-describedby="skill-custom-metadata-hint" />
               ${editable ? '<button class="btn btn-ghost btn-sm" type="button" data-skill-remove-metadata aria-label="Remove metadata">Remove</button>' : ""}
             </div>`,
           )
@@ -1884,9 +2044,9 @@ function detailsCard(
       ? ""
       : `<div class="field">
           <label class="label" for="skill-metadata-raw">Raw metadata JSON</label>
-          <textarea class="textarea font-mono" id="skill-metadata-raw" rows="6" disabled data-skill-metadata-raw>${escapeHtml(values.bundle.metadataRaw)}</textarea>
+          <textarea class="textarea font-mono" id="skill-metadata-raw" rows="6" disabled data-skill-metadata-raw aria-describedby="skill-metadata-raw-hint${field === "metadata" ? " skill-metadata-raw-error" : ""}">${escapeHtml(values.bundle.metadataRaw)}</textarea>
           ${fieldError("skill-metadata-raw", field === "metadata" ? error?.message : undefined)}
-          <p class="hint">The stored metadata is invalid. Repair it as a JSON object, or clear it to start over.</p>
+          ${fieldHint("skill-metadata-raw-hint", "The stored metadata is invalid. Repair it as a JSON object, or clear it to start over.")}
           ${editable ? '<button class="btn btn-secondary btn-sm" type="button" data-skill-clear-metadata>Clear metadata</button>' : ""}
         </div>`;
   const disabled = editable ? "" : " disabled";
@@ -1895,29 +2055,33 @@ function detailsCard(
   return `<details class="card skill-details" id="skill-details" open data-skill-details>
     <summary class="card__head"><h2 class="card__title">Details</h2><span class="cluster skill-details__meta"><span class="hint">Identity, classification, discovery, license</span><span class="skill-details__chevron" aria-hidden="true">${icon("chevron-right")}</span></span></summary>
     <div class="card__body stack">
+      <p class="hint skill-details__intro">Only name, description, and the SKILL.md body are required; the rest are optional. <a href="#skill-field-guide" data-skill-guide-open>Field guide</a>.</p>
       <fieldset class="skill-fieldset">
         <legend class="label">Identity</legend>
         ${
           includeName
             ? `<div class="field">
           <label class="label" for="skill-name">Name</label>
-          <input class="input mono" id="skill-name" type="text" value="${escapeHtml(row.name)}" readonly disabled />
-          <p class="hint">Names are immutable. Delete and re-create the skill to rename it.</p>
+          <input class="input mono" id="skill-name" type="text" value="${escapeHtml(row.name)}" readonly disabled aria-describedby="skill-name-hint" />
+          ${fieldHint("skill-name-hint", "Names are immutable. Delete and re-create the skill to rename it.")}
         </div>`
             : ""
         }
         <div class="field">
           <div class="cluster"><label class="label" for="skill-description">Description</label>${counter}</div>
-          <textarea class="textarea" id="skill-description" rows="3" maxlength="${SKILL_LIMITS.description}"${descriptionName}${disabled} required data-skill-counter="${SKILL_LIMITS.description}" data-skill-field="description"${descriptionError === undefined ? "" : ' aria-describedby="skill-description-error"'}>${escapeHtml(values.description)}</textarea>
+          <textarea class="textarea" id="skill-description" rows="3" maxlength="${SKILL_LIMITS.description}"${descriptionName}${disabled} required data-skill-counter="${SKILL_LIMITS.description}" data-skill-field="description"${fieldDescribedBy("skill-description-hint", descriptionError === undefined ? undefined : "skill-description-error")}>${escapeHtml(values.description)}</textarea>
           ${fieldError("skill-description", descriptionError)}
-          <p class="hint">What the skill does and when the agent should use it.</p>
+          ${fieldHint("skill-description-hint", "What the skill does and when the agent should use it.")}
         </div>
-        <label class="check">
-          <input type="hidden" name="enabled" value="0"${disabled} />
-          <input class="checkbox" type="checkbox" name="enabled" value="1"${values.enabled ? " checked" : ""}${disabled} data-skill-field="enabled" />
-          <span>Enabled</span>
-        </label>
-        ${fieldError("skill-enabled", enabledError)}
+        <div class="field">
+          <label class="check">
+            <input type="hidden" name="enabled" value="0"${disabled} />
+            <input class="checkbox" type="checkbox" name="enabled" value="1"${values.enabled ? " checked" : ""}${disabled} data-skill-field="enabled"${fieldDescribedBy("skill-enabled-hint", enabledError === undefined ? undefined : "skill-enabled-error")} />
+            <span>Enabled</span>
+          </label>
+          ${fieldError("skill-enabled", enabledError)}
+          ${fieldHint("skill-enabled-hint", "Uncheck to hide this skill at this context without deleting it.")}
+        </div>
       </fieldset>
       <fieldset class="skill-fieldset">
         <legend class="label">Classification</legend>
@@ -1926,28 +2090,31 @@ function detailsCard(
       <fieldset class="skill-fieldset">
         <legend class="label">Discovery</legend>
         <div class="grid skill-details-grid">${discovery}</div>
-        <p class="hint">Triggers and related skills are comma-separated strings.</p>
       </fieldset>
       <fieldset class="skill-fieldset">
         <legend class="label">Version and license</legend>
         <div class="grid skill-details-grid">${versionFields}</div>
         <div class="field">
           <label class="label" for="skill-license">License</label>
-          <input class="input" id="skill-license" type="text" value="${escapeHtml(values.bundle.license ?? "")}" maxlength="${SKILL_LIMITS.license}" disabled data-skill-field="license" />
+          <input class="input" id="skill-license" type="text" value="${escapeHtml(values.bundle.license ?? "")}" maxlength="${SKILL_LIMITS.license}" disabled data-skill-field="license"${fieldDescribedBy("skill-license-hint", field === "license" ? "skill-license-error" : undefined)} />
           ${fieldError("skill-license", field === "license" ? error?.message : undefined)}
+          ${fieldHint("skill-license-hint", "An SPDX identifier or short license name, such as MIT.")}
         </div>
         <div class="field">
           <label class="label" for="skill-compatibility">Compatibility</label>
-          <input class="input" id="skill-compatibility" type="text" value="${escapeHtml(values.bundle.compatibility ?? "")}" maxlength="${SKILL_LIMITS.compatibility}" disabled data-skill-field="compatibility" />
+          <input class="input" id="skill-compatibility" type="text" value="${escapeHtml(values.bundle.compatibility ?? "")}" maxlength="${SKILL_LIMITS.compatibility}" disabled data-skill-field="compatibility"${fieldDescribedBy("skill-compatibility-hint", field === "compatibility" ? "skill-compatibility-error" : undefined)} />
           ${fieldError("skill-compatibility", field === "compatibility" ? error?.message : undefined)}
+          ${fieldHint("skill-compatibility-hint", "Runtime or tool requirements, such as Node 20 or a specific agent version.")}
         </div>
       </fieldset>
       <fieldset class="skill-fieldset">
         <legend class="label">Custom metadata</legend>
         <div class="stack--tight" data-skill-custom-metadata>${customRows}</div>
         ${rawMetadata}
+        ${fieldHint("skill-custom-metadata-hint", "Extra key/value pairs are preserved as-is for tooling you control.")}
         ${editable ? '<button class="btn btn-secondary btn-sm" type="button" data-skill-add-metadata>Add metadata</button>' : ""}
       </fieldset>
+      ${fieldGuide()}
       <datalist id="skill-output-formats">
         <option value="mixed"></option><option value="code"></option><option value="report"></option><option value="document"></option><option value="plan"></option><option value="decision"></option>
       </datalist>
@@ -1967,8 +2134,9 @@ function referenceEditor(
   const size = Buffer.byteLength(content, "utf8");
   const body = editable
     ? `<div class="cluster"><label class="label" for="${escapeHtml(contentId)}">Reference body</label><span class="mono" data-skill-counter-output="ref-${index}">${content.length} / ${SKILL_LIMITS.referenceContent}</span></div>
-      <textarea class="textarea font-mono skill-source" id="${escapeHtml(contentId)}" rows="12" maxlength="${SKILL_LIMITS.referenceContent}" disabled spellcheck="false" data-skill-counter="${SKILL_LIMITS.referenceContent}" data-skill-reference-content>${escapeHtml(content)}</textarea>
-      ${fieldError(contentId, error)}`
+      <textarea class="textarea font-mono skill-source" id="${escapeHtml(contentId)}" rows="12" maxlength="${SKILL_LIMITS.referenceContent}" disabled spellcheck="false" data-skill-counter="${SKILL_LIMITS.referenceContent}" data-skill-reference-content aria-describedby="${escapeHtml(contentId)}-hint${error === undefined ? "" : ` ${escapeHtml(contentId)}-error`}">${escapeHtml(content)}</textarea>
+      ${fieldError(contentId, error)}
+      ${fieldHint(`${contentId}-hint`, "Markdown reference loaded only when the skill points to this file.")}`
     : `<div class="cluster"><span class="label" id="${escapeHtml(contentId)}-label">Reference body</span><span class="hint mono" data-skill-file-size>${size} bytes</span></div>
       <pre class="skill-source prose--pre" data-skill-source-static tabindex="0" aria-labelledby="${escapeHtml(contentId)}-label">${escapeHtml(content)}</pre>`;
   return `<section class="skill-source-pane" id="skill-file-ref-${index}" data-skill-file data-skill-file-id="skill-file-ref-${index}" data-skill-file-kind="reference" data-skill-reference data-skill-file-path="${escapeHtml(reference.path)}">
@@ -2026,8 +2194,8 @@ function sourceWorkspace(
         </aside>`;
   const source = editable
     ? `<div class="cluster"><label class="label" for="skill-content">SKILL.md body</label><span class="hint mono" data-skill-file-size>${contentSize} bytes</span><span class="mono" data-skill-counter-output="content">${values.content.length} / ${SKILL_LIMITS.content}</span></div>
-      <p class="hint">The frontmatter is generated from Details; edit only the body here.</p>
-      <textarea class="textarea font-mono skill-source" id="skill-content" name="content" rows="20" maxlength="${SKILL_LIMITS.content}" required spellcheck="false" data-skill-counter="${SKILL_LIMITS.content}" data-skill-field="content"${contentError === undefined ? "" : ' aria-describedby="skill-content-error"'}>${escapeHtml(values.content)}</textarea>
+      ${fieldHint("skill-content-hint", "The frontmatter is generated from Details; edit only the body here.")}
+      <textarea class="textarea font-mono skill-source" id="skill-content" name="content" rows="20" maxlength="${SKILL_LIMITS.content}" required spellcheck="false" data-skill-counter="${SKILL_LIMITS.content}" data-skill-field="content"${fieldDescribedBy("skill-content-hint", contentError === undefined ? undefined : "skill-content-error")}>${escapeHtml(values.content)}</textarea>
       ${fieldError("skill-content", contentError)}`
     : `<div class="cluster"><span class="label" id="skill-content-label">SKILL.md body</span><span class="hint mono" data-skill-file-size>${contentSize} bytes</span></div>
       <pre class="skill-source prose--pre" data-skill-source-static tabindex="0" aria-labelledby="skill-content-label">${escapeHtml(values.content)}</pre>`;
@@ -2070,27 +2238,27 @@ function sourceWorkspace(
         ${editable ? '<button class="btn btn-secondary btn-sm" type="button" data-skill-add-reference>Add reference</button>' : ""}
         <span class="hint" data-skill-reference-aggregate>${references.length} of ${SKILL_LIMITS.references} files &middot; ${aggregate} of ${SKILL_LIMITS.referenceAggregate} characters</span>
       </div>
-      <p class="hint">References are flat references/&lt;slug&gt;.md files, up to ${SKILL_LIMITS.references} files and ${SKILL_LIMITS.referenceAggregate} characters total.</p>
+      <p class="hint" id="skill-references-hint">References are flat references/&lt;slug&gt;.md files, up to ${SKILL_LIMITS.references} files and ${SKILL_LIMITS.referenceAggregate} characters total.</p>
       ${fieldError("skill-references", referencesError)}
       <template data-skill-reference-template>
         <section class="skill-source-pane" data-skill-file data-skill-file-kind="reference" data-skill-reference>
           <div class="cluster skill-file-head">
             <div class="field skill-file-path-field">
               <label class="label" data-skill-reference-path-label>Path</label>
-              <input class="input mono" type="text" disabled data-skill-reference-path placeholder="references/example.md" aria-label="Reference path" maxlength="${SKILL_LIMITS.referencePath}" spellcheck="false" autocomplete="off" />
+              <input class="input mono" type="text" disabled data-skill-reference-path placeholder="references/example.md" aria-label="Reference path" aria-describedby="skill-references-hint" maxlength="${SKILL_LIMITS.referencePath}" spellcheck="false" autocomplete="off" />
             </div>
             <span class="hint mono" data-skill-file-size>0 bytes</span>
             <button class="btn btn-ghost btn-sm" type="button" data-skill-remove-reference aria-label="Remove this reference file">Remove this file</button>
           </div>
           <div class="cluster"><span class="label" data-skill-reference-content-label>Reference body</span><span class="mono" data-skill-counter-output>0 / ${SKILL_LIMITS.referenceContent}</span></div>
-          <textarea class="textarea font-mono skill-source" rows="12" maxlength="${SKILL_LIMITS.referenceContent}" disabled spellcheck="false" data-skill-counter="${SKILL_LIMITS.referenceContent}" data-skill-reference-content aria-label="Reference content"></textarea>
+          <textarea class="textarea font-mono skill-source" rows="12" maxlength="${SKILL_LIMITS.referenceContent}" disabled spellcheck="false" data-skill-counter="${SKILL_LIMITS.referenceContent}" data-skill-reference-content aria-label="Reference content" aria-describedby="skill-references-hint"></textarea>
           <p class="hint">Paths are canonical references/&lt;slug&gt;.md files.</p>
         </section>
       </template>
       <template data-skill-metadata-template>
         <div class="cluster skill-metadata-row" data-skill-metadata-row>
-          <input class="input" type="text" disabled data-skill-metadata-key-input placeholder="custom-key" aria-label="Metadata key" />
-          <input class="input" type="text" disabled data-skill-metadata-value-input placeholder="value" aria-label="Metadata value" />
+          <input class="input" type="text" disabled data-skill-metadata-key-input placeholder="custom-key" aria-label="Metadata key" aria-describedby="skill-custom-metadata-hint" />
+          <input class="input" type="text" disabled data-skill-metadata-value-input placeholder="value" aria-label="Metadata value" aria-describedby="skill-custom-metadata-hint" />
           <button class="btn btn-ghost btn-sm" type="button" data-skill-remove-metadata aria-label="Remove metadata">Remove</button>
         </div>
       </template>
@@ -2230,31 +2398,36 @@ function renderWorkspacePage(options: {
       ? ""
       : `<p class="field-error" role="alert" data-skill-conflict>This name already exists at this scope. <a href="/skills/${options.conflictId}?from=${encodeURIComponent(contextPage)}">Open the existing skill</a>.</p>`;
   const errorSummaryHtml = options.error === undefined ? "" : errorSummary(options.error);
-  const form = editable
-    ? `<form class="stack skill-bundle-form" method="post" action="${options.create ? "/api/skills" : `/api/skills/${row.id}`}" data-skill-form data-skill-mode="${options.create ? "create" : "update"}" data-skill-name="${escapeHtml(row.name)}">
-        ${options.create ? hiddenTargetFields(state.contextScope, state.contextTarget, returnTo) : `<input type="hidden" name="return_to" value="${escapeHtml(workspacePath(row))}" />`}
-        <input type="hidden" name="bundle" value="${escapeHtml(formValues)}" data-skill-bundle />
-        ${editBar(true, options.create ? "create" : "update")}
-        ${
-          options.create
-            ? `<div class="field">
-              <label class="label" for="skill-name">Name</label>
-              <input class="input mono" id="skill-name" name="name" type="text" value="${escapeHtml(values.name ?? "")}" required maxlength="${SKILL_LIMITS.name}" pattern="[a-z0-9]+(?:-[a-z0-9]+)*" autocomplete="off" spellcheck="false" placeholder="release-checklist"${options.error?.field === "name" ? ' aria-describedby="skill-name-error"' : ""} />
-              ${fieldError("skill-name", options.error?.field === "name" ? options.error.message : undefined)}
-              <p class="hint">Lowercase letters, digits, and single hyphens.</p>
-            </div>`
-            : ""
-        }
-        ${errorSummaryHtml}
-        ${conflict}
-        ${detailsCard(values, row, true, options.error, !options.create)}
-        ${sourceWorkspace(values, true, options.error)}
-      </form>
-      ${dangerZone(row, contextPage, !options.create, options.error)}`
-    : `<div class="stack skill-readonly" data-skill-readonly data-skill-name="${escapeHtml(row.name)}">
-        ${detailsCard(values, row, false, options.error, true)}
-        ${sourceWorkspace(values, false, options.error)}
-      </div>${state.name === "invalid-owned-name" ? dangerZone(row, contextPage, true, options.error) : ""}`;
+  const workspace = editable
+    ? `<div class="stack skill-edit-workspace" data-skill-edit-workspace>
+        <form class="stack skill-bundle-form" method="post" action="${options.create ? "/api/skills" : `/api/skills/${row.id}`}" data-skill-form data-skill-mode="${options.create ? "create" : "update"}" data-skill-name="${escapeHtml(row.name)}">
+          ${options.create ? hiddenTargetFields(state.contextScope, state.contextTarget, returnTo) : `<input type="hidden" name="return_to" value="${escapeHtml(workspacePath(row))}" />`}
+          <input type="hidden" name="bundle" value="${escapeHtml(formValues)}" data-skill-bundle />
+          ${editBar(true, options.create ? "create" : "update")}
+          ${
+            options.create
+              ? `<div class="field">
+                <label class="label" for="skill-name">Name</label>
+                <input class="input mono" id="skill-name" name="name" type="text" value="${escapeHtml(values.name ?? "")}" required maxlength="${SKILL_LIMITS.name}" pattern="[a-z0-9]+(?:-[a-z0-9]+)*" autocomplete="off" spellcheck="false" placeholder="release-checklist"${fieldDescribedBy("skill-name-hint", options.error?.field === "name" ? "skill-name-error" : undefined)} />
+                ${fieldError("skill-name", options.error?.field === "name" ? options.error.message : undefined)}
+                ${fieldHint("skill-name-hint", "Lowercase letters, digits, and single hyphens.")}
+              </div>`
+              : ""
+          }
+          ${errorSummaryHtml}
+          ${conflict}
+          ${detailsCard(values, row, true, options.error, !options.create)}
+          ${sourceWorkspace(values, true, options.error)}
+        </form>
+        ${dangerZone(row, contextPage, !options.create, options.error)}
+      </div>`
+    : `<div class="stack skill-readonly-workspace" data-skill-readonly-workspace>
+        <div class="stack skill-readonly" data-skill-readonly data-skill-name="${escapeHtml(row.name)}">
+          ${detailsCard(values, row, false, options.error, true)}
+          ${sourceWorkspace(values, false, options.error)}
+        </div>
+        ${state.name === "invalid-owned-name" ? dangerZone(row, contextPage, true, options.error) : ""}
+      </div>`;
   const issues =
     !options.create && row.storedIssues.length > 0
       ? issueList(row.storedIssues, state.editable)
@@ -2272,7 +2445,7 @@ function renderWorkspacePage(options: {
     ${restart}
     ${collisions}
     ${issues}
-    ${options.create ? `<div class="stack">${form}</div>` : form}`;
+    ${workspace}`;
   return appShell({
     title: options.create ? "New skill" : row.name,
     active: "skills",
