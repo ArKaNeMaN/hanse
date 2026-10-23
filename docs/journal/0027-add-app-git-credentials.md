@@ -105,10 +105,33 @@ New/extended coverage:
 - `npm run build`: pass (`tsc`, Tailwind CSS).
 - `npm run check:sensitive`: pass ("Sensitive-data check passed.").
 
+## Post-review fixes
+
+The final diff review found one blocker: the plain-clone branch returned before the sanitizing
+wrapper, so a public HTTPS/`git://` failure chained the raw `execFileSync` error (newlines and raw
+stderr) through `addApplication`. Both branches now go through one `runClone` wrapper, and a
+regression test covers a failing plain clone with userinfo, control characters, and a >300-char
+stderr. The same review's should-fix items were folded in: the plain branch also uses the
+`gitChildEnv` allowlist with an empty `HOME`; the temp-dir sweep skips registered dirs, other uids,
+symlinks, and the protected workspace root; `validateRemote` rejects query/fragment remotes; and the
+D7 wording now matches the conditional wiring when `settings` is absent (never in production
+`serve`).
+
 ## Deployment and residual risk
 
-Deployment is pending. Live smoke after deploy: add an application from an SSH remote with a
-project-scope deploy key; an SSH remote without a credential must report the clear message; a wrong
-key must report sanitized `Permission denied (publickey)`. A `noexec` coordinator temp root cannot
-run the wrapper/askpass. A crash between `mkdtemp` and `finally` can leave a `0700` credential
-directory until the startup sweep. The clone remains synchronous and blocks the event loop.
+Deployed to the deployment host as `sha-9086feb` on 2026-10-23 after all four images were published;
+a pre-deploy backup of `state`, `workspace`, `agents`, and `.env` was taken and rollback tags were
+created. Health: the three static services are healthy; `/healthz`, `/login`, assets, authenticated
+`/`, `/projects`, `/settings`, `/api/projects` are 200 and anonymous `/` is 303.
+
+Live smoke: adding an application from `git@github.com:ArKaNeMaN/hanse.git` with the existing global
+SSH credential succeeded (clone + `.hanse/app.yaml` written). Adding an application from a
+nonexistent repository returned 502 with the sanitized git reason (`Repository not found` /
+`Could not read from remote repository`) instead of a bare `Command failed`, and left no directory.
+The successful smoke app was then deleted and its leftover source directory removed manually; the
+deletion endpoint itself removed the manifest/DB row (`warnings: []`).
+
+Residual risk: a `noexec` coordinator temp root cannot run the wrapper/askpass; a crash between
+`mkdtemp` and `finally` can leave a `0700` credential directory until the startup sweep; the clone
+stays synchronous and blocks the event loop. The master authentication-oracle capability and the
+same-uid IDE visibility window remain accepted (ADR 0014).
