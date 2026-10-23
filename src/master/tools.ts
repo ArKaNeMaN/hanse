@@ -21,29 +21,42 @@ import type {
   SettingsScope,
   SettingsTarget,
 } from "../settings/types.js";
+import { isSameSkillTarget, skillRowTarget } from "../skills/access.js";
 import {
-  type EffectiveSkill,
   SkillConflictError,
-  type SkillInput,
-  type SkillReference,
   type SkillRow,
   type SkillScope,
   type SkillService,
-  type SkillSummary,
   type SkillTarget,
-  type SkillUpdate,
   SkillValidationError,
-  validateSkillContent,
-  validateSkillDescription,
 } from "../skills/index.js";
-import type { SqliteDatabase } from "../store/index.js";
 import {
-  isMasterApp,
-  isMasterProject,
-  MASTER_APP_ID,
-  MASTER_APP_KEY,
-  MASTER_PROJECT_ID,
-} from "./constants.js";
+  assertOverridableSource,
+  assertSkillTarget,
+  replacementConfirmationError,
+  skillConflictError,
+} from "../skills/tool-access.js";
+import { SkillToolError, unknownSkillError } from "../skills/tool-errors.js";
+import {
+  asBoolean,
+  asPositiveInteger,
+  asString,
+  skillInputFromArgs,
+  skillUpdatePatchFromArgs,
+} from "../skills/tool-inputs.js";
+import {
+  listEffectiveEntry,
+  listRowEntry,
+  pendingRestart,
+  type SkillToolContext,
+  skillDetail,
+  skillMutationEnrichment,
+  skillSummary,
+} from "../skills/tool-projection.js";
+import { recordEvent } from "../store/events.js";
+import type { SqliteDatabase } from "../store/index.js";
+import { runtimeState } from "../store/runtime-state.js";
+import { isMasterApp, MASTER_APP_ID, MASTER_APP_KEY, MASTER_PROJECT_ID } from "./constants.js";
 import {
   listWorkspaceDir,
   readWorkspaceFile,
@@ -62,13 +75,10 @@ export class MasterToolError extends Error {
   }
 }
 
-export interface MasterToolContext {
-  db: SqliteDatabase;
+export interface MasterToolContext extends SkillToolContext {
   workspaceRoot: string;
   settings?: SettingsService;
-  manager?: InstanceManager;
   deletion?: DeletionService;
-  skills?: SkillService;
 }
 
 interface ProjectRow {
@@ -328,13 +338,6 @@ export function isMasterToolName(name: string): boolean {
   return MASTER_TOOL_NAMES.has(name);
 }
 
-function asString(value: unknown, field: string): string {
-  if (typeof value !== "string" || value.length === 0) {
-    throw new MasterToolError("invalid_argument", `"${field}" must be a non-empty string`);
-  }
-  return value;
-}
-
 function asOptionalString(value: unknown, field: string): string | undefined {
   if (value === undefined || value === null || value === "") {
     return undefined;
@@ -355,14 +358,6 @@ function appRow(db: SqliteDatabase, projectId: string, appKey: string): AppRow |
        FROM apps WHERE project_id = ? AND app_key = ?`,
     )
     .get(projectId, appKey) as AppRow | undefined;
-}
-
-function runtimeState(db: SqliteDatabase, appId: string): string {
-  const row = db
-    .prepare("SELECT COALESCE(runtime_state, state) AS state FROM instances WHERE app_id = ?")
-    .get(appId) as { state: string } | undefined;
-  const state = row?.state ?? "stopped";
-  return state === "failed" ? "error" : state;
 }
 
 function managedApp(workspaceRoot: string, project: ProjectRow, app: AppRow): ManagedApp {
@@ -387,24 +382,6 @@ function managedApp(workspaceRoot: string, project: ProjectRow, app: AppRow): Ma
         }
       : {}),
   };
-}
-
-function pendingRestart(
-  manager: InstanceManager | undefined,
-  appId: string,
-): { pending: boolean; reasons: string[] } {
-  return manager?.pendingRestart(appId) ?? { pending: false, reasons: [] };
-}
-
-function recordEvent(db: SqliteDatabase, type: string, payload: Record<string, unknown>): void {
-  const serialized = JSON.stringify(payload);
-  const body =
-    Buffer.byteLength(serialized, "utf8") > 8 * 1024
-      ? JSON.stringify({ truncated: true, keys: Object.keys(payload) })
-      : serialized;
-  db.prepare(
-    "INSERT INTO events (scope, type, payload, created_at) VALUES ('master', ?, ?, ?)",
-  ).run(type, body, new Date().toISOString());
 }
 
 function targetFor(args: Record<string, unknown>, scope: SettingsScope): SettingsTarget {
@@ -500,243 +477,6 @@ function asSkillScope(value: unknown): SkillScope {
   throw new MasterToolError("invalid_argument", 'scope must be "global", "project", or "app"');
 }
 
-function asOptionalStringOrNull(value: unknown, field: string): string | null | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  if (value === null || typeof value === "string") {
-    return value;
-  }
-  throw new MasterToolError("invalid_argument", `"${field}" must be a string or null`);
-}
-
-function asOptionalMetadata(value: unknown): Record<string, string> | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new MasterToolError("invalid_argument", '"metadata" must be a plain object');
-  }
-  for (const [key, entry] of Object.entries(value)) {
-    if (typeof entry !== "string") {
-      throw new MasterToolError("invalid_argument", `metadata value for ${key} must be a string`);
-    }
-  }
-  return value as Record<string, string>;
-}
-
-function asOptionalReferences(value: unknown): SkillReference[] | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  if (!Array.isArray(value)) {
-    throw new MasterToolError("invalid_argument", '"references" must be an array');
-  }
-  const references: SkillReference[] = [];
-  for (const [index, entry] of value.entries()) {
-    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
-      throw new MasterToolError(
-        "invalid_argument",
-        `references[${index}] must be an object with path and content`,
-      );
-    }
-    const record = entry as Record<string, unknown>;
-    if (typeof record.path !== "string" || typeof record.content !== "string") {
-      throw new MasterToolError(
-        "invalid_argument",
-        `references[${index}] must have string path and content`,
-      );
-    }
-    references.push({ path: record.path, content: record.content });
-  }
-  return references;
-}
-
-function skillInputFromArgs(args: Record<string, unknown>): SkillInput {
-  if (args.enabled !== undefined) {
-    throw new MasterToolError(
-      "invalid_argument",
-      "enabled is not settable; create_skill always creates an enabled skill",
-    );
-  }
-  const name = asString(args.name, "name");
-  const description = asString(args.description, "description");
-  const content = asString(args.content, "content");
-  const license = asOptionalStringOrNull(args.license, "license");
-  const compatibility = asOptionalStringOrNull(args.compatibility, "compatibility");
-  const metadata = asOptionalMetadata(args.metadata);
-  const references = asOptionalReferences(args.references);
-  return {
-    name,
-    description,
-    content,
-    ...(license === undefined ? {} : { license }),
-    ...(compatibility === undefined ? {} : { compatibility }),
-    ...(metadata === undefined ? {} : { metadata }),
-    ...(references === undefined ? {} : { references }),
-  };
-}
-
-/** Validate a skill target before and inside the creation transaction. */
-function assertSkillTarget(db: SqliteDatabase, scope: SkillScope, target: SkillTarget): void {
-  if (scope === "global") {
-    return;
-  }
-  const project = projectRow(db, target.projectId ?? "");
-  if (project === undefined) {
-    throw new MasterToolError("unknown_project", "project not found");
-  }
-  if (isMasterProject(project.id)) {
-    throw new MasterToolError("master_protected", "the master project cannot own agent skills");
-  }
-  if (scope === "app" && isMasterApp(project.id, target.appKey ?? "")) {
-    throw new MasterToolError("master_protected", "the master application cannot own agent skills");
-  }
-  if (project.deleting === 1) {
-    throw new MasterToolError("deletion_pending", "the project is pending deletion");
-  }
-  if (scope !== "app") {
-    return;
-  }
-  const app = appRow(db, project.id, target.appKey ?? "");
-  if (app === undefined) {
-    throw new MasterToolError("unknown_app", "application not found");
-  }
-  if (app.deleting === 1) {
-    throw new MasterToolError("deletion_pending", "the application is pending deletion");
-  }
-}
-
-function skillSummary(row: SkillRow): Record<string, unknown> {
-  return {
-    id: row.id,
-    scope: row.scope,
-    projectId: row.projectId,
-    appKey: row.appKey,
-    name: row.name,
-    description: row.description,
-    license: row.license,
-    compatibility: row.compatibility,
-    metadata: row.metadata,
-    enabled: row.enabled,
-    references: row.references.map((reference) => ({
-      path: reference.path,
-      size: Buffer.byteLength(reference.content, "utf8"),
-    })),
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt,
-    updatedBy: row.updatedBy,
-  };
-}
-
-function shadowedByScopes(
-  db: SqliteDatabase,
-  scope: SkillScope,
-  target: SkillTarget,
-  name: string,
-): SkillScope[] {
-  if (scope === "app") {
-    return [];
-  }
-  const scopes: SkillScope[] = [];
-  if (scope === "global") {
-    const project = db
-      .prepare(
-        `SELECT 1 FROM skills s
-         JOIN projects p ON p.id = s.project_id
-         WHERE s.scope = 'project' AND s.name = ? AND p.deleting = 0
-         LIMIT 1`,
-      )
-      .get(name);
-    if (project !== undefined) {
-      scopes.push("project");
-    }
-    const app = db
-      .prepare(
-        `SELECT 1 FROM skills s
-         JOIN apps a ON a.project_id = s.project_id AND a.app_key = s.app_key
-         JOIN projects p ON p.id = a.project_id
-         WHERE s.scope = 'app' AND s.name = ? AND a.deleting = 0 AND p.deleting = 0
-         LIMIT 1`,
-      )
-      .get(name);
-    if (app !== undefined) {
-      scopes.push("app");
-    }
-    return scopes;
-  }
-  const app = db
-    .prepare(
-      `SELECT 1 FROM skills s
-       JOIN apps a ON a.project_id = s.project_id AND a.app_key = s.app_key
-       JOIN projects p ON p.id = a.project_id
-       WHERE s.scope = 'app' AND s.name = ? AND s.project_id = ?
-         AND a.deleting = 0 AND p.deleting = 0
-       LIMIT 1`,
-    )
-    .get(name, target.projectId ?? "");
-  if (app !== undefined) {
-    scopes.push("app");
-  }
-  return scopes;
-}
-
-function appsInScope(
-  db: SqliteDatabase,
-  scope: SkillScope,
-  target: SkillTarget,
-): { total: number; running: number } {
-  const clauses = ["a.deleting = 0", "p.deleting = 0"];
-  const params: string[] = [];
-  if (scope !== "global") {
-    clauses.push("p.id = ?");
-    params.push(target.projectId ?? "");
-  }
-  if (scope === "app") {
-    clauses.push("a.app_key = ?");
-    params.push(target.appKey ?? "");
-  }
-  const rows = db
-    .prepare(
-      `SELECT a.id FROM apps a
-       JOIN projects p ON p.id = a.project_id
-       WHERE ${clauses.join(" AND ")}`,
-    )
-    .all(...params) as Array<{ id: string }>;
-  let running = 0;
-  for (const row of rows) {
-    const state = runtimeState(db, row.id);
-    if (state === "running" || state === "starting") {
-      running += 1;
-    }
-  }
-  return { total: rows.length, running };
-}
-
-function skillConflictError(
-  skills: SkillService,
-  scope: SkillScope,
-  target: SkillTarget,
-  name: string,
-): MasterToolError {
-  let existing: ReturnType<SkillService["resolve"]>["rows"][number] | undefined;
-  try {
-    existing = skills.resolve(target).rows.find((row) => row.scope === scope && row.name === name);
-  } catch {
-    existing = undefined;
-  }
-  if (existing !== undefined) {
-    return new MasterToolError(
-      "skill_exists",
-      `a skill named "${name}" already exists at ${scope} scope (id ${existing.id}, updated by ${existing.updatedBy ?? "unknown"} at ${existing.updatedAt}); choose a different name or ask the operator to edit it`,
-    );
-  }
-  return new MasterToolError(
-    "skill_exists",
-    `a skill named "${name}" already exists at ${scope} scope; choose a different name or ask the operator to edit it`,
-  );
-}
-
 function assertGlobalConfirmation(scope: SkillScope, args: Record<string, unknown>): void {
   if (scope === "global") {
     if (args.confirm_global === undefined || args.confirm_global === false) {
@@ -755,20 +495,6 @@ function assertGlobalConfirmation(scope: SkillScope, args: Record<string, unknow
   }
 }
 
-function asPositiveInteger(value: unknown, field: string): number {
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) {
-    throw new MasterToolError("invalid_argument", `"${field}" must be a positive integer`);
-  }
-  return value;
-}
-
-function asBoolean(value: unknown, field: string): boolean {
-  if (typeof value !== "boolean") {
-    throw new MasterToolError("invalid_argument", `"${field}" must be a boolean`);
-  }
-  return value;
-}
-
 function asOverrideScope(value: unknown): "project" | "app" {
   if (value === "project" || value === "app") {
     return value;
@@ -776,199 +502,8 @@ function asOverrideScope(value: unknown): "project" | "app" {
   throw new MasterToolError("invalid_argument", 'scope must be "project" or "app"');
 }
 
-function skillRowTarget(row: SkillRow): SkillTarget {
-  if (row.scope === "global") {
-    return {};
-  }
-  if (row.scope === "project") {
-    return { projectId: row.projectId };
-  }
-  return { projectId: row.projectId, appKey: row.appKey };
-}
-
 function assertSkillRowMutable(db: SqliteDatabase, row: SkillRow): void {
   assertSkillTarget(db, row.scope, skillRowTarget(row));
-}
-
-function skillDetail(row: SkillRow): Record<string, unknown> {
-  return {
-    ...skillSummary(row),
-    content: row.content,
-    metadataRaw: row.metadataRaw,
-    references: row.references.map((reference) => ({
-      path: reference.path,
-      content: reference.content,
-      size: Buffer.byteLength(reference.content, "utf8"),
-    })),
-    storedIssues: row.storedIssues,
-  };
-}
-
-function listEffectiveEntry(entry: EffectiveSkill, target: SkillTarget): Record<string, unknown> {
-  return {
-    id: entry.id,
-    projectId: entry.source === "global" ? "" : (target.projectId ?? ""),
-    appKey: entry.source === "app" ? (target.appKey ?? "") : "",
-    name: entry.name,
-    description: entry.description,
-    license: entry.license,
-    compatibility: entry.compatibility,
-    metadata: entry.metadata,
-    enabled: true,
-    references: entry.references,
-    storedIssues: [],
-    source: entry.source,
-    shadows: entry.shadows,
-    updatedAt: entry.updatedAt,
-    updatedBy: entry.updatedBy,
-  };
-}
-
-function listRowEntry(row: SkillSummary): Record<string, unknown> {
-  return {
-    id: row.id,
-    scope: row.scope,
-    projectId: row.projectId,
-    appKey: row.appKey,
-    name: row.name,
-    description: row.description,
-    license: row.license,
-    compatibility: row.compatibility,
-    metadata: row.metadata,
-    enabled: row.enabled,
-    references: row.references,
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt,
-    updatedBy: row.updatedBy,
-    storedIssues: row.storedIssues,
-  };
-}
-
-interface SkillMutationEnrichment {
-  effective?: boolean;
-  storedIssues?: SkillRow["storedIssues"];
-  shadows: SkillScope[];
-  shadowedBy: SkillScope[];
-  appsInScope: { total: number; running: number };
-  pendingRestart?: { pending: boolean; reasons: string[] };
-  warnings?: string[];
-}
-
-function skillMutationEnrichment(
-  context: MasterToolContext,
-  skills: SkillService,
-  row: SkillRow,
-  target: SkillTarget,
-  includeState: boolean,
-): SkillMutationEnrichment {
-  const warnings = new Set<string>();
-  let effective = false;
-  let shadows: SkillScope[] = [];
-  try {
-    const winner = skills.resolve(target).effective.find((entry) => entry.id === row.id);
-    if (winner !== undefined) {
-      effective = true;
-      shadows = winner.shadows;
-    }
-  } catch {
-    warnings.add("post_create_enrichment");
-  }
-  let shadowedBy: SkillScope[] = [];
-  if (effective) {
-    try {
-      shadowedBy = shadowedByScopes(context.db, row.scope, target, row.name);
-    } catch {
-      warnings.add("post_create_enrichment");
-    }
-  }
-  let scopeApps = { total: 0, running: 0 };
-  try {
-    scopeApps = appsInScope(context.db, row.scope, target);
-  } catch {
-    warnings.add("post_create_enrichment");
-  }
-  let pending: { pending: boolean; reasons: string[] } | undefined;
-  if (row.scope === "app") {
-    try {
-      pending = pendingRestart(context.manager, `${row.projectId}:${row.appKey}`);
-    } catch {
-      pending = { pending: false, reasons: [] };
-      warnings.add("post_create_enrichment");
-    }
-  }
-  return {
-    ...(includeState ? { effective, storedIssues: row.storedIssues } : {}),
-    shadows,
-    shadowedBy,
-    appsInScope: scopeApps,
-    ...(pending === undefined ? {} : { pendingRestart: pending }),
-    ...(warnings.size === 0 ? {} : { warnings: [...warnings] }),
-  };
-}
-
-function skillUpdatePatchFromArgs(args: Record<string, unknown>): SkillUpdate {
-  const patch: SkillUpdate = {};
-  if (args.description !== undefined) {
-    patch.description = asString(args.description, "description");
-  }
-  if (args.content !== undefined) {
-    patch.content = asString(args.content, "content");
-  }
-  if (args.license !== undefined) {
-    const license = asOptionalStringOrNull(args.license, "license");
-    if (license !== undefined) {
-      patch.license = license;
-    }
-  }
-  if (args.compatibility !== undefined) {
-    const compatibility = asOptionalStringOrNull(args.compatibility, "compatibility");
-    if (compatibility !== undefined) {
-      patch.compatibility = compatibility;
-    }
-  }
-  if (args.metadata !== undefined) {
-    const metadata = asOptionalMetadata(args.metadata);
-    if (metadata !== undefined) {
-      patch.metadata = metadata;
-    }
-  }
-  if (args.references !== undefined) {
-    const references = asOptionalReferences(args.references);
-    if (references !== undefined) {
-      patch.references = references;
-    }
-  }
-  return patch;
-}
-
-function unknownSkillError(id: number): MasterToolError {
-  return new MasterToolError("unknown_skill", `skill ${id} not found`);
-}
-
-function replacementConfirmationError(row: SkillSummary): MasterToolError {
-  return new MasterToolError(
-    "replacement_confirmation_required",
-    `a skill named "${row.name}" already exists at the target (id ${row.id}, updated by ${row.updatedBy ?? "unknown"} at ${row.updatedAt}); pass confirm_replace: true to replace it`,
-  );
-}
-
-function assertOverridableSource(source: SkillRow): void {
-  if (source.storedIssues.length > 0) {
-    throw new MasterToolError(
-      "invalid_skill",
-      `source skill ${source.id} has stored issues; repair it before overriding`,
-    );
-  }
-  validateSkillDescription(source.description);
-  validateSkillContent(source.content);
-}
-
-function isSameSkillTarget(row: SkillRow, scope: "project" | "app", target: SkillTarget): boolean {
-  return (
-    row.scope === scope &&
-    row.projectId === (target.projectId ?? "") &&
-    row.appKey === (scope === "app" ? (target.appKey ?? "") : "")
-  );
 }
 
 function lookupApp(
@@ -1045,6 +580,9 @@ function lifecycleError(error: unknown): MasterToolError {
   }
   if (error instanceof SettingsValidationError) {
     return new MasterToolError("invalid_argument", error.message);
+  }
+  if (error instanceof SkillToolError) {
+    return new MasterToolError(error.code, error.message);
   }
   if (error instanceof SkillValidationError) {
     return new MasterToolError(
@@ -1185,13 +723,18 @@ export async function callMasterTool(
         }
         const resolved = settings.resolve(target);
         const appId = inferred === "app" ? `${target.projectId}:${target.appKey}` : undefined;
-        recordEvent(context.db, cleared ? "master.setting_cleared" : "master.setting_changed", {
-          key,
-          scope: inferred,
-          projectId: target.projectId ?? "",
-          appKey: target.appKey ?? "",
-          ...(cleared ? {} : { value: args.value }),
-        });
+        recordEvent(
+          context.db,
+          "master",
+          cleared ? "master.setting_cleared" : "master.setting_changed",
+          {
+            key,
+            scope: inferred,
+            projectId: target.projectId ?? "",
+            appKey: target.appKey ?? "",
+            ...(cleared ? {} : { value: args.value }),
+          },
+        );
         return {
           ok: true,
           scope: inferred,
@@ -1219,7 +762,7 @@ export async function callMasterTool(
         settings.inherit(scope, target, key);
         const resolved = settings.resolve(target);
         const appId = scope === "app" ? `${target.projectId}:${target.appKey}` : undefined;
-        recordEvent(context.db, "master.setting_inherited", {
+        recordEvent(context.db, "master", "master.setting_inherited", {
           key,
           scope,
           projectId: target.projectId ?? "",
@@ -1249,7 +792,7 @@ export async function callMasterTool(
           created = context.db.transaction(() => {
             assertSkillTarget(context.db, scope, target);
             const row = skills.create(scope, target, input, "master");
-            recordEvent(context.db, "master.skill_created", {
+            recordEvent(context.db, "master", "master.skill_created", {
               skillId: row.id,
               scope: row.scope,
               projectId: row.projectId,
@@ -1332,7 +875,7 @@ export async function callMasterTool(
           assertGlobalConfirmation(row.scope, args);
           assertSkillRowMutable(context.db, row);
           const result = skills.update(id, patch, "master");
-          recordEvent(context.db, "master.skill_updated", {
+          recordEvent(context.db, "master", "master.skill_updated", {
             skillId: result.id,
             scope: result.scope,
             projectId: result.projectId,
@@ -1391,7 +934,7 @@ export async function callMasterTool(
           assertGlobalConfirmation(row.scope, args);
           assertSkillRowMutable(context.db, row);
           const result = skills.update(id, { enabled }, "master");
-          recordEvent(context.db, "master.skill_enabled", {
+          recordEvent(context.db, "master", "master.skill_enabled", {
             skillId: result.id,
             scope: result.scope,
             projectId: result.projectId,
@@ -1459,7 +1002,7 @@ export async function callMasterTool(
             throw replacementConfirmationError(targetRow);
           }
           const result = skills.override(sourceId, scope, target, enabled, "master");
-          recordEvent(context.db, "master.skill_overridden", {
+          recordEvent(context.db, "master", "master.skill_overridden", {
             sourceSkillId: sourceId,
             skillId: result.id,
             scope: result.scope,
@@ -1485,7 +1028,7 @@ export async function callMasterTool(
         assertNotDeleting(found.project, found.app);
         const manager = requireManager(context);
         await manager.ensure(managedApp(context.workspaceRoot, found.project, found.app));
-        recordEvent(context.db, "master.app_started", {
+        recordEvent(context.db, "master", "master.app_started", {
           projectId: found.project.id,
           appKey: found.app.app_key,
         });
@@ -1505,7 +1048,7 @@ export async function callMasterTool(
         const restarted = await manager.restartIfRunning(
           managedApp(context.workspaceRoot, found.project, found.app),
         );
-        recordEvent(context.db, "master.app_restarted", {
+        recordEvent(context.db, "master", "master.app_restarted", {
           projectId: found.project.id,
           appKey: found.app.app_key,
           restarted,
@@ -1525,7 +1068,7 @@ export async function callMasterTool(
             ? {}
             : { directory: asOptionalString(args.directory, "directory") }),
         });
-        recordEvent(context.db, "master.project_created", {
+        recordEvent(context.db, "master", "master.project_created", {
           projectId: project.id,
           name: project.name,
           rootPath: project.rootPath,
@@ -1543,7 +1086,7 @@ export async function callMasterTool(
             ? {}
             : { remote: asOptionalString(args.remote, "remote") }),
         });
-        recordEvent(context.db, "master.app_added", {
+        recordEvent(context.db, "master", "master.app_added", {
           projectId: app.projectId,
           appKey: app.appKey,
           path: app.path,
@@ -1556,7 +1099,7 @@ export async function callMasterTool(
         return { ok: true, ...readWorkspaceFile(context.workspaceRoot, args.path) };
       case "write_file": {
         const written = writeWorkspaceFile(context.workspaceRoot, args.path, args.content);
-        recordEvent(context.db, "master.file_written", {
+        recordEvent(context.db, "master", "master.file_written", {
           path: written.path,
           bytes: written.bytes,
           created: written.created,

@@ -1,6 +1,11 @@
 import type { CoordinatorService } from "../coordinator/service.js";
+import type { InstanceManager } from "../opencode/manager.js";
+import { APP_SKILL_TOOLS, callAppSkillTool, isAppSkillToolName } from "../skills/app-tools.js";
+import type { SkillService } from "../skills/service.js";
+import { toSkillFailure } from "../skills/tool-errors.js";
 import type { SshService } from "../ssh/service.js";
 import { SshError } from "../ssh/types.js";
+import type { SqliteDatabase } from "../store/database.js";
 import type { AgentTokenIdentity } from "./agent-tokens.js";
 import { handleRpc, type RpcRequest, type RpcResponse, TOOLS } from "./protocol.js";
 
@@ -107,22 +112,34 @@ async function callSshTool(
   }
 }
 
+/** Optional app-skill wiring for the non-master MCP surface; omitted contexts expose no app tools. */
+export interface AppSkillRpcOptions {
+  db?: SqliteDatabase;
+  skills?: SkillService;
+  manager?: InstanceManager;
+}
+
 /** Handle one JSON-RPC message for the coordinator MCP server. */
 export async function handleRpcAsync(
   service: CoordinatorService,
   ssh: SshService | undefined,
   agent: AgentTokenIdentity,
   request: RpcRequest,
+  options: AppSkillRpcOptions = {},
 ): Promise<RpcResponse | undefined> {
   if (request.id === undefined) {
     return undefined;
   }
   const id = request.id;
   if (request.method === "tools/list") {
+    const tools =
+      options.skills !== undefined && options.db !== undefined
+        ? [...TOOLS, ...SSH_TOOLS, ...APP_SKILL_TOOLS]
+        : [...TOOLS, ...SSH_TOOLS];
     return {
       jsonrpc: "2.0",
       id,
-      result: { tools: [...TOOLS, ...SSH_TOOLS] },
+      result: { tools },
     };
   }
   if (request.method !== "tools/call") {
@@ -130,6 +147,44 @@ export async function handleRpcAsync(
   }
   const params = request.params ?? {};
   const name = typeof params.name === "string" ? params.name : "";
+  if (isAppSkillToolName(name)) {
+    if (options.skills === undefined || options.db === undefined) {
+      return {
+        jsonrpc: "2.0",
+        id,
+        result: textResult({
+          ok: false,
+          code: "unavailable",
+          message: "skills are not configured",
+        }),
+      };
+    }
+    const rawArgs = params.arguments;
+    const args =
+      typeof rawArgs === "object" && rawArgs !== null && !Array.isArray(rawArgs)
+        ? (rawArgs as Record<string, unknown>)
+        : {};
+    try {
+      return {
+        jsonrpc: "2.0",
+        id,
+        result: textResult(
+          await callAppSkillTool(
+            {
+              db: options.db,
+              skills: options.skills,
+              ...(options.manager === undefined ? {} : { manager: options.manager }),
+            },
+            agent,
+            name,
+            args,
+          ),
+        ),
+      };
+    } catch (error) {
+      return { jsonrpc: "2.0", id, result: textResult(toSkillFailure(error)) };
+    }
+  }
   if (!name.startsWith("ssh_")) {
     return handleRpc(service, request, { fromAppKey: agent.appKey });
   }

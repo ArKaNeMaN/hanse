@@ -578,6 +578,16 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   states that it requires JavaScript. `assets/markdown.js` is the shared safe renderer used by chat
   and the skill preview; `assets/skill-detail.js` drives the workspace. `assets/skills.js` and the
   old dialog editor are removed.
+- Ordinary application agents can maintain their own app-scope skill bundles through the production
+  app MCP surface (`/internal/mcp`, via the remote bridge): `create_skill`, `list_skills`,
+  `get_skill`, `update_skill`, `set_skill_enabled`, and `override_skill`. The target is always the
+  verified token's `(projectId, appKey)`; no tool accepts `scope`, `project_id`, `app_key`, or
+  `confirm_global`, and sibling/global/project writes are refused. List and mutation results are
+  content-free; `get_skill` returns a body only for effective rows or the caller's own app rows.
+  Same-scope duplicates conflict, wider same-name rows are shadowed/overridable, and
+  delete/revert/rename remain operator-only. Every mutation stores
+  `updated_by = app:<projectId>:<appKey>` and one content-free `scope='app'` event, reports
+  `pendingRestart`, and never restarts an agent. Human `/api/skills*` authorization is unchanged.
 
 ## Master agent
 

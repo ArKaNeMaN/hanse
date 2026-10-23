@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { hashValue } from "../settings/hash.js";
 import type { SqliteDatabase } from "../store/index.js";
+import { skillVisibleAt } from "./access.js";
 import { scanCollisions } from "./collisions.js";
 import {
   assertInsideRoot,
@@ -244,16 +245,6 @@ function effectiveHash(effective: readonly EffectiveBundle[]): string | undefine
   return hashValue(values);
 }
 
-function sourceVisibleAt(source: SkillRow, location: SkillLocation): boolean {
-  if (source.scope === "global") {
-    return true;
-  }
-  if (source.scope === "project") {
-    return source.projectId === location.projectId;
-  }
-  return source.projectId === location.projectId && source.appKey === location.appKey;
-}
-
 const SELECT_COLUMNS =
   "id, scope, project_id, app_key, name, description, content, enabled, license, compatibility, metadata_json, created_at, updated_at, updated_by";
 
@@ -390,7 +381,7 @@ export class SkillService implements SkillSource {
       source === undefined ||
       !source.enabled ||
       !isSkillName(source.name) ||
-      !sourceVisibleAt(source, location)
+      !skillVisibleAt(source, { projectId: location.projectId, appKey: location.appKey })
     ) {
       throw new SkillValidationError("invalid_override_source");
     }

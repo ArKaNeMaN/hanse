@@ -15,11 +15,18 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { parse as parseYaml } from "yaml";
 import { hashValue } from "../src/settings/hash.js";
+import {
+  isOwnAppSkillRow,
+  isSameSkillTarget,
+  skillRowTarget,
+  skillVisibleAt,
+} from "../src/skills/access.js";
 import type {
   EffectiveBundle,
   SkillApplyOptions,
   SkillMetadata,
   SkillReference,
+  SkillRow,
   SkillScope,
   SkillTarget,
   SkillWarning,
@@ -1336,5 +1343,86 @@ describe("migration v13", () => {
     ).run(now, now);
     expect(db.prepare("SELECT name FROM skills").get()).toEqual({ name: "review" });
     db.close();
+  });
+});
+
+function skillRowFixture(input: {
+  id: number;
+  scope: SkillScope;
+  projectId: string;
+  appKey: string;
+}): SkillRow {
+  return {
+    ...input,
+    name: `skill-${input.id}`,
+    description: "description",
+    content: "content",
+    enabled: true,
+    license: null,
+    compatibility: null,
+    metadata: {},
+    references: [],
+    createdAt: "2026-10-23T00:00:00.000Z",
+    updatedAt: "2026-10-23T00:00:00.000Z",
+    updatedBy: null,
+    storedIssues: [],
+    metadataRaw: null,
+  };
+}
+
+describe("shared skill access predicates", () => {
+  const target = { projectId: "p", appKey: "web" };
+  const globalRow = skillRowFixture({ id: 1, scope: "global", projectId: "", appKey: "" });
+  const projectRow = skillRowFixture({ id: 2, scope: "project", projectId: "p", appKey: "" });
+  const callerAppRow = skillRowFixture({ id: 3, scope: "app", projectId: "p", appKey: "web" });
+  const siblingAppRow = skillRowFixture({ id: 4, scope: "app", projectId: "p", appKey: "api" });
+  const otherProjectRow = skillRowFixture({ id: 5, scope: "app", projectId: "q", appKey: "web" });
+
+  it("sees global rows at every target", () => {
+    expect(skillVisibleAt(globalRow, {})).toBe(true);
+    expect(skillVisibleAt(globalRow, { projectId: "p" })).toBe(true);
+    expect(skillVisibleAt(globalRow, target)).toBe(true);
+    expect(skillVisibleAt(globalRow, { projectId: "q", appKey: "web" })).toBe(true);
+    expect(isOwnAppSkillRow(globalRow, target)).toBe(false);
+    expect(skillRowTarget(globalRow)).toEqual({});
+    expect(isSameSkillTarget(globalRow, "project", { projectId: "" })).toBe(false);
+    expect(isSameSkillTarget(globalRow, "app", target)).toBe(false);
+  });
+
+  it("sees project rows only inside their own project", () => {
+    expect(skillVisibleAt(projectRow, { projectId: "p" })).toBe(true);
+    expect(skillVisibleAt(projectRow, target)).toBe(true);
+    expect(skillVisibleAt(projectRow, {})).toBe(false);
+    expect(skillVisibleAt(projectRow, { projectId: "q" })).toBe(false);
+    expect(skillVisibleAt(projectRow, { projectId: "q", appKey: "web" })).toBe(false);
+    expect(isOwnAppSkillRow(projectRow, target)).toBe(false);
+    expect(skillRowTarget(projectRow)).toEqual({ projectId: "p" });
+    expect(isSameSkillTarget(projectRow, "project", { projectId: "p" })).toBe(true);
+    expect(isSameSkillTarget(projectRow, "project", { projectId: "q" })).toBe(false);
+    expect(isSameSkillTarget(projectRow, "app", target)).toBe(false);
+  });
+
+  it("sees the caller's app row only at its own target", () => {
+    expect(skillVisibleAt(callerAppRow, target)).toBe(true);
+    expect(skillVisibleAt(callerAppRow, { projectId: "p" })).toBe(false);
+    expect(skillVisibleAt(callerAppRow, { projectId: "q", appKey: "web" })).toBe(false);
+    expect(isOwnAppSkillRow(callerAppRow, target)).toBe(true);
+    expect(skillRowTarget(callerAppRow)).toEqual({ projectId: "p", appKey: "web" });
+    expect(isSameSkillTarget(callerAppRow, "app", target)).toBe(true);
+    expect(isSameSkillTarget(callerAppRow, "app", { projectId: "p", appKey: "api" })).toBe(false);
+    expect(isSameSkillTarget(callerAppRow, "project", { projectId: "p" })).toBe(false);
+  });
+
+  it("hides sibling-app and other-project rows from the caller", () => {
+    expect(skillVisibleAt(siblingAppRow, target)).toBe(false);
+    expect(isOwnAppSkillRow(siblingAppRow, target)).toBe(false);
+    expect(skillRowTarget(siblingAppRow)).toEqual({ projectId: "p", appKey: "api" });
+    expect(isSameSkillTarget(siblingAppRow, "app", target)).toBe(false);
+
+    expect(skillVisibleAt(otherProjectRow, target)).toBe(false);
+    expect(skillVisibleAt(otherProjectRow, { projectId: "q", appKey: "web" })).toBe(true);
+    expect(isOwnAppSkillRow(otherProjectRow, target)).toBe(false);
+    expect(skillRowTarget(otherProjectRow)).toEqual({ projectId: "q", appKey: "web" });
+    expect(isSameSkillTarget(otherProjectRow, "app", target)).toBe(false);
   });
 });

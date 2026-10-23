@@ -68,6 +68,11 @@ export async function handleInternalMcp(
     deps.ssh,
     agent,
     payload as Parameters<typeof handleRpcAsync>[3],
+    {
+      db: deps.db,
+      ...(deps.skills === undefined ? {} : { skills: deps.skills }),
+      ...(deps.manager === undefined ? {} : { manager: deps.manager }),
+    },
   );
   if (response === undefined) {
     return { status: 204, contentType: "application/json; charset=utf-8", body: "" };
