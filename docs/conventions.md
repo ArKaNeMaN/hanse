@@ -63,9 +63,11 @@ live in `settings`, and per-scope SSH/HTTPS credentials live encrypted in `setti
 (migration v8). They are materialized into the application HOME at start; do not commit them to
 `.hanse/project.yaml`, `.hanse/app.yaml`, a Dockerfile, or a repository `.git/config`.
 
-Agent skills are also Settings, not manifests. They live in the coordinator `skills` table
-(migration v12) at global, project, and application scope, resolve global -> project -> application
-by name, and are materialized into each instance's config root at agent start. Do not add skill
+Agent skills are also Settings, not manifests. A managed skill is a bundle: a generated `SKILL.md`
+plus flat `references/<slug>.md` files, with optional license/compatibility and a metadata map. The
+coordinator stores the bundle in the `skills` and `skill_references` tables (migration v13) at
+global, project, and application scope, resolves global -> project -> application by name, and
+materializes the complete bundle into each instance's config root at agent start. Do not add skill
 content to `.hanse/`, and do not treat a repository `.opencode/skills` directory as the managed
 registry: it is user content that the coordinator never reads or modifies, and a same-named entry
 there is reported as a collision rather than overridden.
@@ -85,7 +87,8 @@ Per-app agent state lives outside the coordinator state, under `HANSE_AGENTS_HOM
 ├── data/ state/ cache/    XDG data/state/cache and opencode DB
 ├── config/                XDG_CONFIG_HOME
 │   └── opencode/
-│       ├── skills/<name>/SKILL.md   coordinator-materialized managed skills
+│       ├── skills/<name>/SKILL.md   coordinator-materialized managed bundle
+│       ├── skills/<name>/references/<slug>.md
 │       ├── skill/                   legacy alias, always emptied
 │       ├── .hanse-skills-initialized
 │       └── skills-replaced/         first-materialization preserve area

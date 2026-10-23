@@ -3520,7 +3520,7 @@ async function scenarioRead(browser, target) {
     );
     check(!rendered.rawXml, "read body never contains raw <path>/<content> XML");
     check(
-      rendered.bodyText.includes("def bundle_bytes"),
+      rendered.bodyText.includes("def summarize_items"),
       "read body renders the parsed source text",
     );
     check(

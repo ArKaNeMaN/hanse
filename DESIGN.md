@@ -918,6 +918,46 @@ primitives; no new color, type, spacing, radius, or shadow token is introduced.
   below 768px; approval actions stack below 639px; tables use `.table--stack`; no horizontal page
   overflow at 360px.
 
+### 5.22 Skill inventory and workspace
+
+The skill inventory and workspace compose the existing card, table, settings-nav, badge, status,
+field, and button primitives. They add only structural `.skill-*` classes and introduce no new
+color, type, space, radius, shadow, or motion token.
+
+- **Inventory:** `.skill-inventory-table` is the server-rendered table with a two-line description
+  clamp; `.skill-toolbar` spaces the search and filter row. `.skill-state` is a normal badge.
+  `.table--stack` still owns the <768 single-column row layout.
+- **Details:** `.skill-details` is a native `<details>` card; `.skill-fieldset` groups the identity,
+  classification, discovery, and license fields; `.skill-details-grid` is one column and becomes
+  two columns at >=1024. `.skill-metadata-row` is a wrapping key/value row.
+- **Workspace shell:** `.skill-files` hosts the source/preview card; `.skill-workspace` is the grid.
+  At >=1280 it is `14rem | minmax(0,1fr) | minmax(0,1fr)` with `.skill-file-list` as the rail; at
+  1024-1279 the file list becomes a horizontal tab strip above a two-column source/preview split;
+  below 1024 it is one column with a Source | Preview tab strip. All file editors are rendered
+  stacked in the server HTML, so no-JS pages never hide an editor.
+- **Files:** `.skill-file-list`, `.skill-file-list__head`, `.skill-file-tabs`, `.skill-file-tab`,
+  `.skill-file-tab__name`, `.skill-file-tab__size`, `.skill-file-dirty` (dot plus visually hidden
+  "Unsaved changes"), `.skill-file-picker` (native `<select>` below 1024 with JavaScript), and
+  `.skill-add-reference`. JavaScript sets `data-skill-enhanced="true"` on `.skill-workspace` to
+  collapse the stacked panes; without it the rail and panes remain a plain stacked document.
+- **Source and preview:** `.skill-panes`, `.skill-source-pane`, `.skill-file-head`,
+  `.skill-file-path-field`, and `.skill-source` carry the editors (minimum 24rem desktop, 16rem
+  mobile). `.skill-preview-pane` shares the card shell and uses a 1px inline-start divider at
+  >=1024, a block-start divider below. `.skill-preview-head`, `.skill-prose`,
+  `.skill-frontmatter`, `__summary`, `__body`, and `__pre` style the safe renderer output and the
+  generated-frontmatter disclosure. The preview measure is `--reading-measure` (68ch).
+- **Source/preview tabs:** `.skill-viewtabs` and `__group` hold the `Source | Preview` segmented
+  control, shown only below 1024 with JavaScript. The active view is `.skill-workspace
+  [data-skill-view="source|preview"]`; >=1024 always shows both panes.
+- **Save/discard:** `.skill-editbar` is sticky at the top of the scroll container on desktop and
+  fixed above the safe area below 1024, with a 44px target floor. `[data-skill-status]` is the
+  text status (`All changes saved` / `Unsaved changes`); it is never color-only.
+  `.skill-reference-foot` and `.skill-danger` close the workspace. `.skill-state` remains a badge.
+- **Accessibility:** file and view tabs use `role="tablist"`/`tab`, roving tabindex, and
+  `aria-selected`; all icon-only actions carry an accessible name; the source and preview regions
+  are labelled; the dirty dot always carries visually hidden text. Motion is limited to existing
+  color/opacity transitions.
+
 ---
 
 ## 6. Motion & Interaction
@@ -1130,6 +1170,15 @@ spacing value.
 `.terminal-toolbar`, `.terminal-toolbar__title`, `.terminal-toolbar__meta`,
 `.terminal-toolbar__status`, `.terminal-toolbar__actions`, `.terminal-banner`, `.terminal-host`,
 `.terminal-empty`.
+- Skills: `.skill-toolbar`, `.skill-inventory-table`, `.skill-state`, `.skill-details`,
+`.skill-fieldset`, `.skill-details-grid`, `.skill-metadata-row`, `.skill-files`, `.skill-workspace`,
+`.skill-file-list`, `.skill-file-list__head`, `.skill-file-tabs`, `.skill-file-tab`,
+`.skill-file-tab__name`, `.skill-file-tab__size`, `.skill-file-dirty`, `.skill-file-picker`,
+`.skill-add-reference`, `.skill-panes`, `.skill-source-pane`, `.skill-file-head`,
+`.skill-file-path-field`, `.skill-source`, `.skill-preview-pane`, `.skill-preview-head`,
+`.skill-viewtabs`, `.skill-viewtabs__group`, `.skill-prose`, `.skill-frontmatter`,
+`.skill-frontmatter__summary`, `.skill-frontmatter__body`, `.skill-frontmatter__pre`,
+`.skill-reference-foot`, `.skill-danger`, `.skill-editbar`.
 
 No product screen may introduce a new hex, px font size, radius, or spacing value. If a new pattern
 is needed twice, add it here and to `styles.css` first.

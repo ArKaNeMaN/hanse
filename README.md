@@ -22,9 +22,10 @@ and requirements) to each other through the coordinator - like independent teams
   hosted by a separate agent runtime container on the default toolchain image.
 - Global/project/application settings in the coordinator DB, with an encrypted provider-key store, a
   selectable model that also applies to OMO agents/categories, and human-only settings pages.
-- Global/project/application agent skills in the coordinator DB, materialized into each isolated
-  instance's `opencode` config root, with structured collision warnings, explicit restart semantics,
-  deletion integration, and human-only scope pages.
+- Global/project/application agent skill bundles in the coordinator DB: a generated `SKILL.md`
+  plus `references/*.md`, structured metadata, an inventory and dedicated source/preview workspace,
+  deterministic materialization into each isolated instance, collision warnings, explicit restart
+  semantics, and deletion integration.
 - Optional per-tool web drivers: built-in OMO/opencode tools or the DeepSeek standalone Search/Fetch
   APIs, exposed through the managed `hanse_web` MCP server only when configured.
 - Explicit "restart required" markers and a restart action; settings never restart agents silently.

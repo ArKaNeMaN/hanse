@@ -112,6 +112,10 @@ const ASSETS: Record<string, { file: string; contentType: string }> = {
     contentType: "text/javascript; charset=utf-8",
   },
   "/assets/images.js": { file: "images.js", contentType: "text/javascript; charset=utf-8" },
+  "/assets/markdown.js": {
+    file: "markdown.js",
+    contentType: "text/javascript; charset=utf-8",
+  },
   "/assets/vendor/prism/prism-1.30.0.min.js": {
     file: "vendor/prism/prism-1.30.0.min.js",
     contentType: "text/javascript; charset=utf-8",
@@ -133,8 +137,8 @@ const ASSETS: Record<string, { file: string; contentType: string }> = {
     file: "settings.js",
     contentType: "text/javascript; charset=utf-8",
   },
-  "/assets/skills.js": {
-    file: "skills.js",
+  "/assets/skill-detail.js": {
+    file: "skill-detail.js",
     contentType: "text/javascript; charset=utf-8",
   },
   "/assets/terminal.js": {

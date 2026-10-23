@@ -24,9 +24,9 @@ import { proxyTerminalUpgrade } from "./terminal.js";
 const IDE_PORT = Number(process.env.HANSE_IDE_PORT ?? 8080);
 const IDE_HOST = process.env.HANSE_IDE_HOST ?? "127.0.0.1";
 const MAX_BODY_BYTES = 64 * 1024;
-// Skill content is capped at 48,000 characters; URL-encoded forms can expand that
-// several-fold for non-ASCII text, so only the skills routes accept a larger body.
-const MAX_SKILLS_BODY_BYTES = 512 * 1024;
+// A bundle can hold a 48,000-character body plus 192,000 characters of references;
+// percent-encoded multi-byte text expands several-fold, so skills routes get 4 MiB.
+const MAX_SKILLS_BODY_BYTES = 4 * 1024 * 1024;
 
 function bodyLimitFor(url: string): number {
   return url.startsWith("/api/skills") ? MAX_SKILLS_BODY_BYTES : MAX_BODY_BYTES;

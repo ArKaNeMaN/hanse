@@ -14,6 +14,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { computeSpecHash } from "../src/agent/spec.js";
 import { DeploymentInProgressError, DeploymentLock } from "../src/coordinator/deployment-lock.js";
 import { LifecycleActivity } from "../src/coordinator/lifecycle-activity.js";
+import type { Logger } from "../src/logging/logger.js";
 import { mintAgentToken, verifyAgentToken } from "../src/mcp/agent-tokens.js";
 import type {
   ContextMonitorLike,
@@ -50,6 +51,7 @@ import {
   SkillService,
   type SkillSource,
   type SkillTarget,
+  type SkillWarning,
 } from "../src/skills/index.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
 import type { WebToolConfig } from "../src/web/types.js";
@@ -213,12 +215,14 @@ interface FakeSkills {
   applies: Array<{ target: SkillTarget; xdgConfigHome: string; options: SkillApplyOptions }>;
   hashes: SkillTarget[];
   setHash(hash: string | undefined): void;
+  setWarnings(warnings: SkillWarning[]): void;
   failProbe?: Error;
   failApply?: Error;
 }
 
 function fakeSkills(initialHash: string | undefined = "skills-hash", order?: string[]): FakeSkills {
   let hash = initialHash;
+  let warnings: SkillWarning[] = [];
   const probes: FakeSkills["probes"] = [];
   const applies: FakeSkills["applies"] = [];
   const hashes: SkillTarget[] = [];
@@ -235,7 +239,7 @@ function fakeSkills(initialHash: string | undefined = "skills-hash", order?: str
     written: [],
     removed: [],
     preserved: [],
-    warnings: [],
+    warnings: [...warnings],
   });
   const fake: FakeSkills = {
     probes,
@@ -243,6 +247,9 @@ function fakeSkills(initialHash: string | undefined = "skills-hash", order?: str
     hashes,
     setHash(next) {
       hash = next;
+    },
+    setWarnings(next) {
+      warnings = next;
     },
     source: {
       resolve: (target) => resolved(target),
@@ -288,6 +295,7 @@ function fixture(
   },
   skills?: SkillSource | ((db: SqliteDatabase) => SkillSource),
   lifecycle?: { deploymentLock?: DeploymentLock; lifecycleActivity?: LifecycleActivity },
+  logger?: Logger,
 ): Fixture {
   const dir = mkdtempSync(path.join(tmpdir(), "hanse-manager-"));
   dirs.push(dir);
@@ -315,6 +323,7 @@ function fixture(
     ...monitorOptions,
     ...(skillsSource === undefined ? {} : { skills: skillsSource }),
     ...(lifecycle === undefined ? {} : lifecycle),
+    ...(logger === undefined ? {} : { logger }),
   });
   return { manager, runtime, db, dir };
 }
@@ -878,6 +887,142 @@ describe("InstanceManager lifecycle", () => {
       pending: true,
       reasons: ["settings_changed"],
     });
+  });
+
+  it("marks restart-required for effective metadata and reference edits, not shadowed or tombstone bundle edits", async () => {
+    let registry: SkillService | undefined;
+    const { manager } = fixture(
+      new FakeAgentRuntime(),
+      fakeSettings(),
+      fakeProfiles().source,
+      undefined,
+      async () => [],
+      undefined,
+      undefined,
+      (db) => {
+        registry = new SkillService({ db });
+        return registry;
+      },
+    );
+    if (registry === undefined) throw new Error("missing skill registry");
+    const target = { projectId: "p", appKey: "web" };
+    const globalAlpha = registry.create(
+      "global",
+      {},
+      {
+        name: "alpha",
+        description: "global alpha",
+        content: "global alpha body",
+        metadata: { version: "1.0.0" },
+        references: [{ path: "references/global.md", content: "global ref" }],
+      },
+      "test",
+    );
+    const appAlpha = registry.create(
+      "app",
+      target,
+      { name: "alpha", description: "app alpha", content: "app alpha body" },
+      "test",
+    );
+    const globalBeta = registry.create(
+      "global",
+      {},
+      {
+        name: "beta",
+        description: "global beta",
+        content: "global beta body",
+        metadata: { version: "1.0.0" },
+        references: [{ path: "references/global.md", content: "global ref" }],
+      },
+      "test",
+    );
+    const betaTombstone = registry.override(globalBeta.id, "app", target, false, "test");
+    await manager.ensure(APP);
+    expect(manager.pendingRestart(APP.id)).toEqual({ pending: false, reasons: [] });
+
+    registry.update(
+      globalAlpha.id,
+      {
+        metadata: { version: "2.0.0" },
+        references: [{ path: "references/global.md", content: "edited shadowed ref" }],
+      },
+      "test",
+    );
+    expect(manager.pendingRestart(APP.id)).toEqual({ pending: false, reasons: [] });
+
+    registry.update(
+      betaTombstone.id,
+      {
+        metadata: { version: "2.0.0" },
+        references: [{ path: "references/global.md", content: "edited disabled ref" }],
+      },
+      "test",
+    );
+    expect(manager.pendingRestart(APP.id)).toEqual({ pending: false, reasons: [] });
+
+    registry.update(appAlpha.id, { metadata: { author: "someone" } }, "test");
+    expect(manager.pendingRestart(APP.id)).toEqual({
+      pending: true,
+      reasons: ["settings_changed"],
+    });
+    await manager.restartIfRunning(APP);
+    expect(manager.pendingRestart(APP.id)).toEqual({ pending: false, reasons: [] });
+
+    registry.update(
+      appAlpha.id,
+      { references: [{ path: "references/app.md", content: "app ref" }] },
+      "test",
+    );
+    expect(manager.pendingRestart(APP.id)).toEqual({
+      pending: true,
+      reasons: ["settings_changed"],
+    });
+    await manager.restartIfRunning(APP);
+    expect(manager.pendingRestart(APP.id)).toEqual({ pending: false, reasons: [] });
+  });
+
+  it("logs skill warnings by code, name, and root", async () => {
+    const logged: Array<{ message: string; fields?: Record<string, unknown> }> = [];
+    const logger: Logger = {
+      debug: () => undefined,
+      info: () => undefined,
+      warn: (message, fields) => {
+        logged.push({ message, fields });
+      },
+      error: () => undefined,
+    };
+    const skills = fakeSkills("skills-one");
+    skills.setWarnings([
+      { code: "skill_collision", name: "alpha", root: "skills" },
+      { code: "skill_disabled_elsewhere", name: "legacy", root: "skill" },
+    ]);
+    const { manager } = fixture(
+      new FakeAgentRuntime(),
+      fakeSettings(),
+      fakeProfiles().source,
+      undefined,
+      async () => [],
+      undefined,
+      undefined,
+      skills.source,
+      undefined,
+      logger,
+    );
+
+    await manager.ensure(APP);
+
+    const warnings = logged.filter((entry) => entry.message === "skills_materialize_warnings");
+    expect(warnings.length).toBeGreaterThan(0);
+    const fields = warnings[0]?.fields as {
+      warnings: Array<Record<string, unknown>>;
+    };
+    expect(fields.warnings).toEqual([
+      { code: "skill_collision", name: "alpha", root: "skills" },
+      { code: "skill_disabled_elsewhere", name: "legacy", root: "skill" },
+    ]);
+    for (const warning of fields.warnings) {
+      expect(warning).not.toHaveProperty("id");
+    }
   });
 
   it("persists applied settings across detach and reattach", async () => {

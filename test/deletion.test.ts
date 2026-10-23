@@ -25,6 +25,7 @@ import { ImageServiceError } from "../src/images/service.js";
 import { sanitizeAppKey } from "../src/opencode/instance.js";
 import { registerProject } from "../src/registry/index.js";
 import type { ImageGcReport } from "../src/runner/image-gc.js";
+import { SkillService } from "../src/skills/index.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
 
 const PROJECT_ID = "11111111-1111-4111-8111-111111111111";
@@ -304,13 +305,22 @@ function insertSkill(
   projectId: string,
   appKey: string,
   name: string,
-): void {
+): number {
   const now = new Date().toISOString();
+  const result = db
+    .prepare(
+      `INSERT INTO skills
+         (scope, project_id, app_key, name, description, content, enabled, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 'description', 'content', 1, ?, ?)`,
+    )
+    .run(scope, projectId, appKey, name, now, now);
+  return Number(result.lastInsertRowid);
+}
+
+function insertSkillReference(db: SqliteDatabase, skillId: number, path: string): void {
   db.prepare(
-    `INSERT INTO skills
-       (scope, project_id, app_key, name, description, content, enabled, created_at, updated_at)
-     VALUES (?, ?, ?, ?, 'description', 'content', 1, ?, ?)`,
-  ).run(scope, projectId, appKey, name, now, now);
+    "INSERT INTO skill_references (skill_id, path, content) VALUES (?, ?, 'reference')",
+  ).run(skillId, path);
 }
 
 function insertTask(db: SqliteDatabase, id: string, appIdValue: string): void {
@@ -501,10 +511,14 @@ describe("DeletionService application deletion", () => {
 
   it("removes only the app-scoped skill rows and starts a re-added key clean", async () => {
     const f = fixture();
-    insertSkill(f.db, "global", "", "", "global-skill");
-    insertSkill(f.db, "project", f.projectId, "", "project-skill");
-    insertSkill(f.db, "app", f.projectId, "web", "web-skill");
-    insertSkill(f.db, "app", f.projectId, "api", "api-skill");
+    const globalId = insertSkill(f.db, "global", "", "", "global-skill");
+    const projectId = insertSkill(f.db, "project", f.projectId, "", "project-skill");
+    const webId = insertSkill(f.db, "app", f.projectId, "web", "web-skill");
+    const apiId = insertSkill(f.db, "app", f.projectId, "api", "api-skill");
+    insertSkillReference(f.db, globalId, "references/global.md");
+    insertSkillReference(f.db, projectId, "references/project.md");
+    insertSkillReference(f.db, webId, "references/web.md");
+    insertSkillReference(f.db, apiId, "references/api.md");
 
     await f.service.deleteApp(f.projectId, "web", { confirm: "web" });
 
@@ -516,11 +530,29 @@ describe("DeletionService application deletion", () => {
     ).toBe(1);
     expect(count(f.db, "skills", "scope = 'project' AND project_id = ?", f.projectId)).toBe(1);
     expect(count(f.db, "skills", "scope = 'global'")).toBe(1);
+    expect(count(f.db, "skill_references", "skill_id = ?", webId)).toBe(0);
+    expect(count(f.db, "skill_references", "skill_id = ?", apiId)).toBe(1);
+    expect(count(f.db, "skill_references", "skill_id = ?", projectId)).toBe(1);
+    expect(count(f.db, "skill_references", "skill_id = ?", globalId)).toBe(1);
 
     insertAppRow(f, "web", "apps/web");
     expect(
       count(f.db, "skills", "scope = 'app' AND project_id = ? AND app_key = 'web'", f.projectId),
     ).toBe(0);
+    expect(count(f.db, "skill_references", "skill_id = ?", webId)).toBe(0);
+  });
+
+  it("cascades references when a skill is deleted through the service", () => {
+    const f = fixture();
+    const skillId = insertSkill(f.db, "app", f.projectId, "web", "deleted-skill");
+    insertSkillReference(f.db, skillId, "references/first.md");
+    insertSkillReference(f.db, skillId, "references/second.md");
+    const registry = new SkillService({ db: f.db });
+
+    expect(registry.delete(skillId)).toBe(true);
+
+    expect(count(f.db, "skills", "id = ?", skillId)).toBe(0);
+    expect(count(f.db, "skill_references", "skill_id = ?", skillId)).toBe(0);
   });
 
   it("removes the app source only when deleteFiles is set", async () => {
@@ -597,18 +629,30 @@ describe("DeletionService project deletion", () => {
   it("removes project and app skill rows while preserving globals and other projects", async () => {
     const f = fixture();
     const other = addOtherProject(f);
-    insertSkill(f.db, "global", "", "", "global-skill");
-    insertSkill(f.db, "project", f.projectId, "", "project-skill");
-    insertSkill(f.db, "app", f.projectId, "web", "web-skill");
-    insertSkill(f.db, "app", f.projectId, "api", "api-skill");
-    insertSkill(f.db, "project", other.id, "", "other-project-skill");
-    insertSkill(f.db, "app", other.id, other.key, "other-app-skill");
+    const globalId = insertSkill(f.db, "global", "", "", "global-skill");
+    const projectSkillId = insertSkill(f.db, "project", f.projectId, "", "project-skill");
+    const webId = insertSkill(f.db, "app", f.projectId, "web", "web-skill");
+    const apiId = insertSkill(f.db, "app", f.projectId, "api", "api-skill");
+    const otherProjectId = insertSkill(f.db, "project", other.id, "", "other-project-skill");
+    const otherAppId = insertSkill(f.db, "app", other.id, other.key, "other-app-skill");
+    insertSkillReference(f.db, globalId, "references/global.md");
+    insertSkillReference(f.db, projectSkillId, "references/project.md");
+    insertSkillReference(f.db, webId, "references/web.md");
+    insertSkillReference(f.db, apiId, "references/api.md");
+    insertSkillReference(f.db, otherProjectId, "references/other-project.md");
+    insertSkillReference(f.db, otherAppId, "references/other-app.md");
 
     await f.service.deleteProject(f.projectId, { confirm: f.projectName });
 
     expect(count(f.db, "skills", "project_id = ?", f.projectId)).toBe(0);
     expect(count(f.db, "skills", "scope = 'global'")).toBe(1);
     expect(count(f.db, "skills", "project_id = ?", other.id)).toBe(2);
+    expect(
+      count(f.db, "skill_references", "skill_id IN (?, ?, ?)", projectSkillId, webId, apiId),
+    ).toBe(0);
+    expect(count(f.db, "skill_references", "skill_id = ?", globalId)).toBe(1);
+    expect(count(f.db, "skill_references", "skill_id = ?", otherProjectId)).toBe(1);
+    expect(count(f.db, "skill_references", "skill_id = ?", otherAppId)).toBe(1);
   });
 
   it("removes the project source only when deleteFiles is set", async () => {

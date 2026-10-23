@@ -414,4 +414,27 @@ CREATE TABLE skills (
 CREATE INDEX skills_scope ON skills(project_id, app_key);
 `,
   },
+  {
+    version: 13,
+    name: "skill-bundles",
+    sql: `
+ALTER TABLE skills ADD COLUMN license TEXT
+  CHECK (license IS NULL OR (length(license) BETWEEN 1 AND 256));
+ALTER TABLE skills ADD COLUMN compatibility TEXT
+  CHECK (compatibility IS NULL OR (length(compatibility) BETWEEN 1 AND 512));
+ALTER TABLE skills ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'
+  CHECK (json_valid(metadata_json) AND length(metadata_json) <= 16384);
+
+CREATE TABLE skill_references (
+  skill_id INTEGER NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+  path TEXT NOT NULL CHECK (
+    length(path) BETWEEN 15 AND 78
+    AND path GLOB 'references/*.md'
+    AND path NOT GLOB 'references/*/*'
+  ),
+  content TEXT NOT NULL CHECK (length(content) BETWEEN 1 AND 48000),
+  PRIMARY KEY (skill_id, path)
+);
+`,
+  },
 ];

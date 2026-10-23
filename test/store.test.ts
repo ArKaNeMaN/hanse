@@ -27,13 +27,13 @@ describe("store", () => {
     db.close();
   });
 
-  it("migrates to v12 with agent tokens, runner containers, app image versions, git credentials, SSH tables, applied runtime state, deletion markers, and skills", () => {
+  it("migrates to v13 with agent tokens, runner containers, app image versions, git credentials, SSH tables, applied runtime state, deletion markers, and skill bundles", () => {
     const db = openDatabase(tempDbPath());
     runMigrations(db);
     const versions = db.prepare("SELECT version FROM schema_migrations ORDER BY version").all() as {
       version: number;
     }[];
-    expect(versions.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+    expect(versions.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
     const secretTables = (
       db
         .prepare(
@@ -116,7 +116,16 @@ describe("store", () => {
       "created_at",
       "updated_at",
       "updated_by",
+      "license",
+      "compatibility",
+      "metadata_json",
     ]);
+    const referenceColumns = (
+      db.prepare("PRAGMA table_info(skill_references)").all() as {
+        name: string;
+      }[]
+    ).map((row) => row.name);
+    expect(referenceColumns).toEqual(["skill_id", "path", "content"]);
     const skillsSql = (
       db
         .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'skills'")

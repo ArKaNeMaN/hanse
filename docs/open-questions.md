@@ -1,5 +1,18 @@
 # Open questions
 
+> Stage: `0017-skill-bundles`. Owner decisions were collected on 2026-10-23, before the plan was
+> written. There are no open items for the core bundle/editor stage.
+
+## Stage `0017-skill-bundles` - resolved owner decisions
+
+1. **Bulk import** - deferred to a separate stage. This stage ships manual creation plus reference
+   editing; no folder/ZIP importer.
+2. **Reading the body** - the dedicated skill page uses side-by-side source and preview, not a
+   raw-only editor or a separate read-first mode. Mobile falls back to source/preview tabs.
+3. **Agent-assisted authoring** - deferred. Skill management stays human-only in this stage; a future
+   stage will compare a coordinator-level management agent with a narrow tool surface and human
+   approval, per-application opt-in grants, and an operator-only authoring assistant.
+
 > Stage: `0014-context-compaction`. Owner decisions were delegated and resolved autonomously on
 > 2026-10-21, before the plan review. There are no open items for this stage.
 

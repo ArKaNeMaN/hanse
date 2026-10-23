@@ -54,13 +54,13 @@ function insertProjectAndApp(db: ReturnType<typeof openDatabase>): void {
 describe("migration v6 app-images", () => {
   it("applies fresh migrations and defaults existing app inserts to missing", () => {
     const db = openDatabase(":memory:");
-    expect(runMigrations(db)).toBe(12);
+    expect(runMigrations(db)).toBe(13);
     expect(runMigrations(db)).toBe(0);
 
     const versions = db.prepare("SELECT version FROM schema_migrations ORDER BY version").all() as {
       version: number;
     }[];
-    expect(versions.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+    expect(versions.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
     const secretTables = (
       db
         .prepare(
@@ -132,7 +132,14 @@ describe("migration v6 app-images", () => {
       "created_at",
       "updated_at",
       "updated_by",
+      "license",
+      "compatibility",
+      "metadata_json",
     ]);
+    const referenceColumns = (
+      db.prepare("PRAGMA table_info(skill_references)").all() as Array<{ name: string }>
+    ).map((row) => row.name);
+    expect(referenceColumns).toEqual(["skill_id", "path", "content"]);
     const skillsSql = (
       db
         .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'skills'")
@@ -193,7 +200,7 @@ describe("migration v6 app-images", () => {
     insertProjectAndApp(db);
     expect(appColumns(db)).not.toContain("image_status");
 
-    expect(runMigrations(db)).toBe(7);
+    expect(runMigrations(db)).toBe(8);
 
     const row = db.prepare("SELECT image_status, image_error FROM apps WHERE id = 'a1'").get() as {
       image_status: string;
@@ -221,7 +228,7 @@ describe("migration v6 app-images", () => {
       "INSERT INTO instances (id, app_id, state, runtime_state, updated_at) VALUES ('a1','a1','running','running',?)",
     ).run(now);
 
-    expect(runMigrations(db)).toBe(3);
+    expect(runMigrations(db)).toBe(4);
 
     const row = db
       .prepare(
@@ -253,7 +260,7 @@ describe("migration v6 app-images", () => {
     expect(appColumns(db)).not.toContain("deleting");
     expect(projectColumns(db)).not.toContain("deleting");
 
-    expect(runMigrations(db)).toBe(2);
+    expect(runMigrations(db)).toBe(3);
 
     const app = db.prepare("SELECT deleting FROM apps WHERE id = 'a1'").get() as {
       deleting: number;
@@ -268,7 +275,7 @@ describe("migration v6 app-images", () => {
     db.close();
   });
 
-  it("upgrades a v11 database to v12 and is idempotent", () => {
+  it("upgrades a v11 database to v13 and is idempotent", () => {
     const db = openDatabase(":memory:");
     db.exec(
       "CREATE TABLE schema_migrations (" +
@@ -284,7 +291,7 @@ describe("migration v6 app-images", () => {
     insertProjectAndApp(db);
     expect(() => db.prepare("SELECT 1 FROM skills").get()).toThrow();
 
-    expect(runMigrations(db)).toBe(1);
+    expect(runMigrations(db)).toBe(2);
     expect(runMigrations(db)).toBe(0);
 
     const columns = (db.prepare("PRAGMA table_info(skills)").all() as Array<{ name: string }>).map(
@@ -302,6 +309,9 @@ describe("migration v6 app-images", () => {
       "created_at",
       "updated_at",
       "updated_by",
+      "license",
+      "compatibility",
+      "metadata_json",
     ]);
     const insert = db.prepare(
       `INSERT INTO skills
@@ -326,7 +336,7 @@ describe("migration v6 app-images", () => {
     );
     db.prepare(
       "INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?, ?, ?, ?)",
-    ).run(13, "future", "future-checksum", now);
+    ).run(14, "future", "future-checksum", now);
 
     expect(() => runMigrations(db)).toThrowError(SchemaTooNewError);
     try {
@@ -334,11 +344,11 @@ describe("migration v6 app-images", () => {
     } catch (error) {
       expect(error).toMatchObject({
         code: "schema_too_new",
-        applied: 13,
-        known: 12,
+        applied: 14,
+        known: 13,
       });
+      expect((error as Error).message).toContain("14");
       expect((error as Error).message).toContain("13");
-      expect((error as Error).message).toContain("12");
     }
     expect(() => db.prepare("SELECT 1 FROM skills").get()).toThrow();
     db.close();
@@ -357,7 +367,7 @@ describe("migration v6 app-images", () => {
       db.exec(migration.sql);
       record.run(migration.version, migration.name, migrationChecksum(migration.sql), now);
     }
-    record.run(13, "future", "future-checksum", now);
+    record.run(14, "future", "future-checksum", now);
 
     expect(() => runMigrations(db)).toThrowError(SchemaTooNewError);
     expect(() => db.prepare("SELECT 1 FROM skills").get()).toThrow();
@@ -382,7 +392,7 @@ describe("migration v6 app-images", () => {
     try {
       runMigrations(db);
     } catch (error) {
-      expect(error).toMatchObject({ code: "unknown_migration", version: 0, knownMax: 12 });
+      expect(error).toMatchObject({ code: "unknown_migration", version: 0, knownMax: 13 });
     }
     db.close();
   });
@@ -403,12 +413,105 @@ describe("migration v6 app-images", () => {
     db.close();
   });
 
-  it("starts a real v12 database unchanged", () => {
+  it("upgrades a real v12 database to v13 and preserves existing skills", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "hanse-v12-"));
     const file = path.join(dir, "coordinator.db");
     try {
       const first = openDatabase(file);
-      expect(runMigrations(first)).toBe(12);
+      first.exec(
+        "CREATE TABLE schema_migrations (" +
+          "version INTEGER PRIMARY KEY, name TEXT NOT NULL, checksum TEXT NOT NULL, applied_at TEXT NOT NULL)",
+      );
+      const record = first.prepare(
+        "INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?, ?, ?, ?)",
+      );
+      for (const migration of MIGRATIONS.filter((candidate) => candidate.version <= 12)) {
+        first.exec(migration.sql);
+        record.run(migration.version, migration.name, migrationChecksum(migration.sql), now);
+      }
+      first
+        .prepare(
+          "INSERT INTO skills (scope, project_id, app_key, name, description, content, created_at, updated_at) VALUES ('global','','','review','Review','Body',?,?)",
+        )
+        .run(now, now);
+      first.close();
+
+      const reopened = openDatabase(file);
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      try {
+        expect(runMigrations(reopened)).toBe(1);
+        expect(runMigrations(reopened)).toBe(0);
+        expect(warn).not.toHaveBeenCalled();
+      } finally {
+        warn.mockRestore();
+      }
+      const max = reopened
+        .prepare("SELECT MAX(version) AS version FROM schema_migrations")
+        .get() as { version: number };
+      expect(max.version).toBe(13);
+      const skill = reopened
+        .prepare("SELECT license, compatibility, metadata_json FROM skills WHERE name = 'review'")
+        .get() as { license: string | null; compatibility: string | null; metadata_json: string };
+      expect(skill).toEqual({ license: null, compatibility: null, metadata_json: "{}" });
+      const references = reopened
+        .prepare("SELECT COUNT(*) AS count FROM skill_references")
+        .get() as { count: number };
+      expect(references.count).toBe(0);
+      reopened.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("enforces v13 bundle constraints and cascades reference rows", () => {
+    const db = openDatabase(":memory:");
+    runMigrations(db);
+    const insertSkill = db.prepare(
+      `INSERT INTO skills
+         (scope, project_id, app_key, name, description, content, created_at, updated_at)
+       VALUES ('global', '', '', 'review', 'Review', 'Body', ?, ?)`,
+    );
+    insertSkill.run(now, now);
+    const id = Number(
+      (db.prepare("SELECT id FROM skills WHERE name = 'review'").get() as { id: number }).id,
+    );
+
+    expect(() =>
+      db.prepare("UPDATE skills SET metadata_json = 'not-json' WHERE id = ?").run(id),
+    ).toThrow();
+    expect(() => db.prepare("UPDATE skills SET license = '' WHERE id = ?").run(id)).toThrow();
+    expect(() =>
+      db.prepare("UPDATE skills SET compatibility = ? WHERE id = ?").run("x".repeat(513), id),
+    ).toThrow();
+    expect(() =>
+      db.prepare("UPDATE skills SET license = ? WHERE id = ?").run("x".repeat(257), id),
+    ).toThrow();
+    expect(() => db.prepare("UPDATE skills SET compatibility = '' WHERE id = ?").run(id)).toThrow();
+
+    const insertReference = db.prepare(
+      "INSERT INTO skill_references (skill_id, path, content) VALUES (?, ?, ?)",
+    );
+    expect(() => insertReference.run(id, "references/a.md", "")).toThrow();
+    expect(() => insertReference.run(id, "references/../a.md", "Body")).toThrow();
+    expect(() => insertReference.run(id, "references/nested/a.md", "Body")).toThrow();
+    expect(() => insertReference.run(id, "references/A.md", "Body")).not.toThrow();
+    db.prepare("DELETE FROM skill_references WHERE skill_id = ?").run(id);
+    insertReference.run(id, "references/a.md", "Body");
+    expect(() => insertReference.run(id, "references/a.md", "Other")).toThrow();
+    db.prepare("DELETE FROM skills WHERE id = ?").run(id);
+    const count = db
+      .prepare("SELECT COUNT(*) AS count FROM skill_references WHERE skill_id = ?")
+      .get(id) as { count: number };
+    expect(count.count).toBe(0);
+    db.close();
+  });
+
+  it("starts a real v13 database unchanged", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "hanse-v13-"));
+    const file = path.join(dir, "coordinator.db");
+    try {
+      const first = openDatabase(file);
+      expect(runMigrations(first)).toBe(13);
       first.close();
 
       const reopened = openDatabase(file);
@@ -422,7 +525,7 @@ describe("migration v6 app-images", () => {
       const max = reopened
         .prepare("SELECT MAX(version) AS version FROM schema_migrations")
         .get() as { version: number };
-      expect(max.version).toBe(12);
+      expect(max.version).toBe(13);
       reopened.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });

@@ -1451,7 +1451,6 @@ export class InstanceManager {
         code: warning.code,
         name: warning.name,
         root: warning.root,
-        id: warning.id,
       })),
     });
   }

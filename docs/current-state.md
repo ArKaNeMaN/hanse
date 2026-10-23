@@ -201,7 +201,7 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
 - Static assets are allowlisted: `/assets/app.css`, `/assets/app.js`, `/assets/chat.js`,
   `/assets/chat-core.js`, `/assets/chat-diff.js`, `/assets/chat-highlight.js`,
   `/assets/chat-highlight-worker.js`, `/assets/git.js`, `/assets/git-settings.js`,
-  `/assets/settings.js`, `/assets/skills.js`, `/assets/vendor/prism/prism-1.30.0.min.js`,
+  `/assets/settings.js`, `/assets/skill-detail.js`, `/assets/markdown.js`, `/assets/vendor/prism/prism-1.30.0.min.js`,
   `/assets/vendor/xterm/xterm-6.0.0.js`, `/assets/vendor/xterm/xterm-6.0.0.css`,
   `/assets/vendor/xterm/addon-fit-0.11.0.js`, and `/assets/favicon.svg`.
 - `assets/app.js` adds shell drawer, native-dialog, theme, toast, password-visibility, and
@@ -291,8 +291,8 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
 - The `hanse` MCP entry carries `timeout: 600000`; existing agents must be restarted (no image
   rebuild) to see the tools and the timeout.
 - Migration v8 (`setting_secrets`, drop legacy `secrets`) and migration v9 (SSH tables) apply in
-  order; migrations v10 (applied settings/profile state), v11 (deletion markers), and v12 (skills)
-  follow. The current schema versions are `[1..12]`.
+  order; migrations v10 (applied settings/profile state), v11 (deletion markers), v12 (skills), and
+  v13 (skill bundles) follow. The current schema versions are `[1..13]`.
 - Live on `deployment-host` (`sha-e2d89a2`): a temporary SSH target pinned and authenticated, an approval was
   approved, `echo QA_OK` and a 65 s `sleep` succeeded, upload/download round-tripped, a real
   `opencode` turn called `hanse_ssh_exec` and received the result after 65 s, and audit rows survived
@@ -505,26 +505,40 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
 
 ## Agent skills
 
-- Human-only scope pages `/skills`, `/projects/:id/skills`, and
-  `/projects/:id/apps/:appKey/skills`; JSON API under `/api/skills`
-  (`GET /api/skills?project=&app=`, `GET/POST /api/skills/:id`,
-  `POST /api/skills/:id/delete`, `DELETE /api/skills/:id`). Agent principals receive `403`, and
-  every mutation rejects a cross-site `Origin`.
-- Skills live in the coordinator DB table `skills` (migration v12), not in `.hanse/` manifests or
-  repositories. Rows are keyed by `(scope, project_id, app_key, name)` with empty strings for wider
-  scopes. DB `CHECK` constraints enforce the scope shape, name syntax, and description/content
-  lengths; there is no foreign key. App deletion removes app-scope rows, project deletion removes
-  all rows for the project, and global rows (`project_id = ''`) survive.
-- Effective resolution runs global -> project -> application by name, and the narrowest row wins. A
-  disabled narrower row is a tombstone that hides an inherited skill; a narrower enabled row
-  re-enables it. `EffectiveSkill` carries the winning row id, its source scope, and the wider scopes
-  it shadows.
+- Human-only inventory pages `/skills`, `/projects/:id/skills`, and
+  `/projects/:id/apps/:appKey/skills`, plus the dedicated `GET /skills/new` and `GET /skills/:id`
+  workspace. The JSON API is `GET /api/skills?project=&app=`, `GET /api/skills/:id`,
+  `POST /api/skills` (`create`/`override`), `POST /api/skills/:id`
+  (`update`/`discard`/legacy `delete`), `POST /api/skills/:id/delete`, and
+  `DELETE /api/skills/:id`. Agent principals receive `403`; every mutation rejects a cross-site
+  `Origin`; `return_to` and `from` are validated local scope paths.
+- Skills live in the coordinator DB tables `skills` and `skill_references` (migration v13), not in
+  `.hanse/` manifests or repositories. `skills` rows are keyed by
+  `(scope, project_id, app_key, name)` with empty strings for wider scopes, and add nullable
+  `license`/`compatibility` plus a `metadata_json` string map. `skill_references` stores a canonical
+  `references/<slug>.md` path and content with `ON DELETE CASCADE`. App deletion removes app-scope
+  rows, project deletion removes all rows for the project, and global rows (`project_id = ''`)
+  survive.
+- A skill is a bundle: a generated `SKILL.md` plus zero or more flat `references/<slug>.md` files.
+  The slug is 1-64 lowercase-hyphen characters, the full path 15-78, with at most 20 references,
+  48,000 characters each and 192,000 aggregate. The body is 48,000 characters; `description` may
+  contain newlines; metadata is a string-to-string map with the known family keys and preserved
+  custom keys. The generated frontmatter emits `name`, description, optional `license`/
+  `compatibility`, then metadata in deterministic order with JSON-quoted scalars.
+- Effective resolution runs global -> project -> application by name, and the narrowest **valid**
+  row wins. An invalid-name row is not a resolution candidate but remains in the inventory for
+  repair; invalid metadata, invalid references, or invalid bundle bounds make the row ineligible,
+  so a wider valid row can win. A disabled narrower row is a tombstone that hides an inherited
+  skill; a narrower enabled row re-enables it. Invalid rows stay visible as `Invalid here`, or as
+  `Invalid local override` when a wider valid row is effective; the workspace shows the issues and
+  the appropriate repair mode. `SkillWarning` remains limited to collision/resolution conditions;
+  stored-row issues are `SkillStoredIssue` entries.
 - Each instance receives
-  `<agents>/<project>/<app>/config/opencode/skills/<name>/SKILL.md` with generated frontmatter; the
-  description is emitted as a JSON string literal. The legacy `config/opencode/skill/` alias is
-  emptied, every effective directory is rebuilt from scratch (nested content, files, and symlinks
-  at that path are removed without being followed), and the `cache/opencode/skills` root is
-  untouched. Repository `.opencode/skills` is never modified.
+  `<agents>/<project>/<app>/config/opencode/skills/<name>/SKILL.md` plus
+  `<name>/references/<slug>.md` files. The legacy `config/opencode/skill/` alias is emptied, the
+  whole effective bundle is rebuilt from the DB (references first, `SKILL.md` last), unexpected
+  entries are removed without following symlinks, and the `cache/opencode/skills` root is untouched.
+  Repository `.opencode/skills` is never modified.
 - The first apply for an instance moves pre-existing entries outside the effective set in the
   Hanse-owned roots to `config/opencode/skills-replaced/` and writes
   `.hanse-skills-initialized`; later applies remove unexpected entries. `skills-replaced/` is not
@@ -535,23 +549,31 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   instance as `error`. Materialization failures surface as `skills_materialize_failed`. The manager
   refuses to start an application whose sanitized state segment collides with a sibling, so two
   apps cannot share a skills root.
-- `/api/skills*` routes accept up to 512 KiB request bodies, while the general server bound stays
-  64 KiB, so a 48,000-character non-ASCII skill fits a URL-encoded form. Per-field limits are
-  unchanged.
-- Skills join the launch hash only when the effective set is non-empty
-  (`settingsHashFor(snapshot, profile, skillsHash?)`). A zero-skill install keeps its previous hash
-  and does not become restart-required. Adding, editing, enabling, disabling, or deleting an
-  effective skill marks affected running apps `Restart required`; editing a shadowed or disabled
-  row does not. Restarts are never automatic.
+- The effective hash includes `name`, `description`, `content`, and, only when non-empty,
+  `license`, `compatibility`, `metadata`, and path-sorted `references`. A legacy single-file skill
+  with no new fields keeps its pre-v13 hash and generated `SKILL.md` bytes, so upgrading does not
+  mark agents restart-required. Adding or changing an effective bundle marks affected running apps
+  `Restart required`; a shadowed or disabled row does not. Restarts are never automatic.
+- `/api/skills*` routes accept up to 4 MiB request bodies, while the general server bound stays
+  64 KiB. The extra room covers the bundle form and worst-case percent-encoding; per-field and
+  per-bundle limits are enforced by the service.
 - Collision scanning covers the app repository `.opencode/skill` and `.opencode/skills`,
   `<HOME>/.claude/skills`, `<HOME>/.agents/skills`, `<XDG_CACHE_HOME>/opencode/skills`, and
   `file://` baseline plugin `<root>/skills`, excluding the Hanse-owned config roots. Results are
   structured `skill_collision`/`skill_disabled_elsewhere` warnings, bounded to 20 with a
   `truncated` count. There is no precedence guarantee against those non-managed roots; the managed
   skill is still written.
-- Scope pages are server-rendered with a scope switcher and save/toggle/override/delete in place
-  through `x-hanse-fragment: skills`, which returns `{ok, surface, counts}`; delete uses a native
-  confirmation dialog. Without JavaScript the same forms post and redirect with a notice.
+- The inventory is server-rendered with scope navigation, search, `All`/`Defined here`/`Inherited`/
+  `Disabled`/`Invalid` filters, one row per name, collision/issue indicators, and a restart rail.
+  Inline editors and the old fragment contract are gone. The dedicated workspace shows the scope
+  chain, metadata groups, references, and side-by-side source/preview at >=1024; below that it uses
+  Source/Preview tabs and a file selector. Save/discard are explicit, references and metadata are
+  edited in the bundle form, and delete/override/disable/revert remain normal human-only forms.
+  Without JavaScript metadata/license/compatibility/reference controls are disabled and unnamed,
+  all file editors are stacked, and a hidden bundle snapshot preserves the bundle; the preview
+  states that it requires JavaScript. `assets/markdown.js` is the shared safe renderer used by chat
+  and the skill preview; `assets/skill-detail.js` drives the workspace. `assets/skills.js` and the
+  old dialog editor are removed.
 
 ## Handoffs (agent-to-agent requests)
 
@@ -666,7 +688,7 @@ Host `./agents` is mounted at `/data/agents` read-write in `hanse` and read-only
 | `HANSE_IDE=0` | serve | do not spawn code-server in the coordinator |
 | `HANSE_IDE_HOST` / `HANSE_IDE_PORT` | serve | proxy target for `/ide` (default `127.0.0.1:8080`) |
 | `HANSE_IDE_BIN` | serve | code-server binary |
-| `HANSE_ASSETS` | serve | directory for `app.css`, `app.js`, `chat.js`, `chat-core.js`, `chat-diff.js`, `chat-highlight.js`, `chat-highlight-worker.js`, `git.js`, `git-settings.js`, `settings.js`, `skills.js`, `vendor/prism/prism-1.30.0.min.js`, and `favicon.svg` |
+| `HANSE_ASSETS` | serve | directory for `app.css`, `app.js`, `chat.js`, `chat-core.js`, `chat-diff.js`, `chat-highlight.js`, `chat-highlight-worker.js`, `git.js`, `git-settings.js`, `settings.js`, `skill-detail.js`, `markdown.js`, `vendor/prism/prism-1.30.0.min.js`, and `favicon.svg` |
 | `HANSE_DB` / `HANSE_PROJECT_ID` / `HANSE_APP_KEY` | `hanse mcp` | MCP server binding |
 | `HANSE_API_BASE` | extension | coordinator base URL (`http://hanse:8787`) |
 
@@ -696,7 +718,9 @@ a materialized root listed the managed names and descriptions (local 1.18.35; de
 1.19.3). The skills stage is deployed as coordinator/agent/ide/runner `sha-33523f1` (2026-10-22,
 journal 0018): migration v12 applied, `demo-app` materialized an empty set, a temporary global skill
 was created, listed by `opencode debug skill`, then deleted and removed after restart, and the B1/B2
-probes passed.
+probes passed. The skill bundles stage is verified by the four gates,
+`node docs/design/skills-qa.mjs` (12 scenarios, 505 assertions, 29 screenshots), and a real
+`opencode debug skill` bundle load; it has not been deployed from this checkout.
 B1 core live smoke on `deployment-host`: coordinator/IDE/runner healthy, per-app `demo-app` container running,
 `scripts/agent-runtime-probe.sh b1` passes, coordinator recreate reattaches the app network, and the
 app agent has no `/data/state`, Docker socket, operator/runtime token, or sibling app access.

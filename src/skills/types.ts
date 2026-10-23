@@ -1,6 +1,28 @@
 export type SkillScope = "global" | "project" | "app";
 
-export interface SkillRow {
+export interface SkillReference {
+  /** Canonical stored path: references/<slug>.md. */
+  path: string;
+  /** Exact text written; CRLF/CR normalized to LF at input. */
+  content: string;
+}
+
+export type SkillMetadata = Record<string, string>;
+
+export type SkillStoredIssue =
+  | { code: "invalid_skill_name" }
+  | { code: "invalid_skill_metadata"; detail: string }
+  | { code: "invalid_skill_reference"; path: string; detail: string }
+  | { code: "invalid_skill_bundle"; detail: string };
+
+export interface SkillBundle {
+  license: string | null;
+  compatibility: string | null;
+  metadata: SkillMetadata;
+  references: SkillReference[];
+}
+
+export interface SkillRow extends SkillBundle {
   id: number;
   scope: SkillScope;
   /** `''` for wider scopes, matching the DB scope key. */
@@ -14,40 +36,32 @@ export interface SkillRow {
   createdAt: string;
   updatedAt: string;
   updatedBy: string | null;
+  storedIssues: SkillStoredIssue[];
+  /** Raw invalid metadata_json, when parsing failed; null otherwise. */
+  metadataRaw: string | null;
 }
 
 export interface EffectiveSkill {
-  /** id of the winning enabled row (used by override/disable actions). */
   id: number;
   name: string;
   description: string;
   content: string;
-  /** Scope of the winning row. */
+  license: string | null;
+  compatibility: string | null;
+  metadata: SkillMetadata;
+  /** Summary projection; contents are not loaded for the inventory. */
+  references: SkillReferenceView[];
   source: SkillScope;
   /** Wider scopes shadowed by this skill, wide to narrow. */
   shadows: SkillScope[];
+  /** Timestamp of the winning stored row. */
+  updatedAt: string;
+  updatedBy: string | null;
 }
 
-export type SkillWarningCode =
-  | "skill_collision"
-  | "skill_disabled_elsewhere"
-  | "invalid_skill_name";
-
-export interface SkillWarning {
-  code: SkillWarningCode;
-  name?: string;
-  root?: string;
-  id?: number;
-}
-
-export interface ResolvedSkills {
-  scope: SkillScope;
-  effective: EffectiveSkill[];
-  /** Rows owned by the page's scope, including disabled tombstones. */
-  rows: SkillRow[];
-  /** Names hidden by a tombstone at this scope; `id` is the tombstone row. */
-  disabled: Array<{ id: number; name: string; source: SkillScope | null; disabledBy: SkillScope }>;
-  warnings: SkillWarning[];
+/** Internal bundle used by hash, probe, and apply. */
+export interface EffectiveBundle extends Omit<EffectiveSkill, "references"> {
+  references: SkillReference[];
 }
 
 export interface SkillInput {
@@ -55,13 +69,70 @@ export interface SkillInput {
   description: string;
   content: string;
   enabled?: boolean;
+  license?: string | null;
+  compatibility?: string | null;
+  metadata?: SkillMetadata;
+  references?: SkillReference[];
 }
 
-/** Partial patch for `POST /api/skills/:id`; only supplied fields are validated and written. */
 export interface SkillUpdate {
   description?: string;
   content?: string;
   enabled?: boolean;
+  license?: string | null;
+  compatibility?: string | null;
+  /** Full replacement; `{}` clears. */
+  metadata?: SkillMetadata;
+  /** Full replacement; `[]` clears. */
+  references?: SkillReference[];
+}
+
+export interface SkillReferenceView {
+  path: string;
+  /** UTF-8 byte size of the stored content. */
+  size: number;
+}
+
+export interface SkillSummary {
+  id: number;
+  scope: SkillScope;
+  projectId: string;
+  appKey: string;
+  name: string;
+  description: string;
+  content: string;
+  license: string | null;
+  compatibility: string | null;
+  metadata: SkillMetadata;
+  references: SkillReferenceView[];
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+  updatedBy: string | null;
+  storedIssues: SkillStoredIssue[];
+}
+
+export interface SkillDetail extends Omit<SkillSummary, "references"> {
+  references: Array<SkillReferenceView & { content: string }>;
+  /** Raw invalid metadata_json for repair, when present. */
+  metadataRaw: string | null;
+}
+
+export type SkillWarningCode = "skill_collision" | "skill_disabled_elsewhere";
+
+export interface SkillWarning {
+  code: SkillWarningCode;
+  name?: string;
+  root?: string;
+}
+
+export interface ResolvedSkills {
+  scope: SkillScope;
+  effective: EffectiveSkill[];
+  rows: SkillSummary[];
+  /** Names hidden by a tombstone at this scope; `id` is the tombstone row. */
+  disabled: Array<{ id: number; name: string; source: SkillScope | null; disabledBy: SkillScope }>;
+  warnings: SkillWarning[];
 }
 
 export interface SkillTarget {

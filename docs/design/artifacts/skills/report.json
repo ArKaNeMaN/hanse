@@ -1,51 +1,134 @@
 {
   "tool": "skills-qa",
-  "startedAt": "2026-10-21T22:47:56.743Z",
+  "startedAt": "2026-10-23T00:05:32.974Z",
   "status": "PASS",
-  "assertions": 49,
-  "screenshots": [
-    "docs/design/artifacts/skills/skills-global-1440-dark.png",
-    "docs/design/artifacts/skills/skills-project-1440-dark.png",
-    "docs/design/artifacts/skills/skills-app-1440-dark.png",
-    "docs/design/artifacts/skills/skills-global-390-dark.png",
-    "docs/design/artifacts/skills/skills-project-390-dark.png",
-    "docs/design/artifacts/skills/skills-app-390-dark.png",
-    "docs/design/artifacts/skills/skills-dialog-1440-dark.png",
-    "docs/design/artifacts/skills/skills-dialog-390-dark.png",
-    "docs/design/artifacts/skills/skills-editor-1440-dark.png"
+  "assertions": {
+    "total": 505,
+    "passed": 505,
+    "failed": 0
+  },
+  "scenarios": [
+    {
+      "name": "renderer-fixture",
+      "status": "PASS",
+      "assertions": 25
+    },
+    {
+      "name": "inventory",
+      "status": "PASS",
+      "assertions": 212
+    },
+    {
+      "name": "workspace-layout",
+      "status": "PASS",
+      "assertions": 104
+    },
+    {
+      "name": "preview-safety",
+      "status": "PASS",
+      "assertions": 18
+    },
+    {
+      "name": "workspace-editing",
+      "status": "PASS",
+      "assertions": 42
+    },
+    {
+      "name": "invalid-repair",
+      "status": "PASS",
+      "assertions": 15
+    },
+    {
+      "name": "read-only-context",
+      "status": "PASS",
+      "assertions": 26
+    },
+    {
+      "name": "create",
+      "status": "PASS",
+      "assertions": 18
+    },
+    {
+      "name": "create-narrow",
+      "status": "PASS",
+      "assertions": 4
+    },
+    {
+      "name": "nojs-workspace",
+      "status": "PASS",
+      "assertions": 30
+    },
+    {
+      "name": "nojs-create-conflict",
+      "status": "PASS",
+      "assertions": 7
+    },
+    {
+      "name": "nojs-create-422",
+      "status": "PASS",
+      "assertions": 4
+    }
   ],
-  "routes": [
+  "screenshots": [
+    "docs/design/artifacts/skills/renderer-1024-dark.png",
+    "docs/design/artifacts/skills/inventory-global-1440-dark.png",
+    "docs/design/artifacts/skills/inventory-project-1440-dark.png",
+    "docs/design/artifacts/skills/inventory-app-1440-dark.png",
+    "docs/design/artifacts/skills/inventory-global-390-dark.png",
+    "docs/design/artifacts/skills/inventory-project-390-dark.png",
+    "docs/design/artifacts/skills/inventory-app-390-dark.png",
+    "docs/design/artifacts/skills/inventory-global-1440-light.png",
+    "docs/design/artifacts/skills/inventory-project-1440-light.png",
+    "docs/design/artifacts/skills/inventory-app-1440-light.png",
+    "docs/design/artifacts/skills/inventory-global-390-light.png",
+    "docs/design/artifacts/skills/inventory-project-390-light.png",
+    "docs/design/artifacts/skills/inventory-app-390-light.png",
+    "docs/design/artifacts/skills/workspace-1440-dark.png",
+    "docs/design/artifacts/skills/workspace-1024-dark.png",
+    "docs/design/artifacts/skills/workspace-768-dark.png",
+    "docs/design/artifacts/skills/workspace-390-dark.png",
+    "docs/design/artifacts/skills/workspace-1440-light.png",
+    "docs/design/artifacts/skills/workspace-1024-light.png",
+    "docs/design/artifacts/skills/workspace-768-light.png",
+    "docs/design/artifacts/skills/workspace-390-light.png",
+    "docs/design/artifacts/skills/workspace-dirty-1440-dark.png",
+    "docs/design/artifacts/skills/workspace-error-1440-dark.png",
+    "docs/design/artifacts/skills/workspace-repair-1440-dark.png",
+    "docs/design/artifacts/skills/workspace-inherited-1440-dark.png",
+    "docs/design/artifacts/skills/create-1440-dark.png",
+    "docs/design/artifacts/skills/create-390-light.png",
+    "docs/design/artifacts/skills/nojs-workspace-1024-dark.png",
+    "docs/design/artifacts/skills/create-conflict-1440-dark.png"
+  ],
+  "consoleErrors": [
     {
-      "slug": "global",
-      "viewport": "1440",
-      "url": "/skills"
+      "expected": true,
+      "text": "Failed to load resource: the server responded with a status of 400 (Bad Request)"
     },
     {
-      "slug": "project",
-      "viewport": "1440",
-      "url": "/projects/p/skills"
+      "expected": true,
+      "text": "Failed to load resource: the server responded with a status of 422 (Unprocessable Entity)"
     },
     {
-      "slug": "app",
-      "viewport": "1440",
-      "url": "/projects/p/apps/web/skills"
+      "expected": true,
+      "text": "Failed to load resource: the server responded with a status of 409 (Conflict)"
     },
     {
-      "slug": "global",
-      "viewport": "390",
-      "url": "/skills"
-    },
-    {
-      "slug": "project",
-      "viewport": "390",
-      "url": "/projects/p/skills"
-    },
-    {
-      "slug": "app",
-      "viewport": "390",
-      "url": "/projects/p/apps/web/skills"
+      "expected": true,
+      "text": "Failed to load resource: the server responded with a status of 409 (Conflict)"
     }
   ],
   "errors": [],
-  "baseUrl": "http://127.0.0.1:42187"
+  "fixture": {
+    "project": "p1",
+    "application": "web",
+    "baseUrl": "http://127.0.0.1:38071",
+    "seeded": [
+      "global",
+      "project",
+      "app"
+    ],
+    "synthetic": true
+  },
+  "finishedAt": "2026-10-23T00:06:17.602Z"
 }

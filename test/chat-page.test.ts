@@ -485,14 +485,29 @@ describe("chat page", () => {
     expect(response.body).toContain("tool-todo__item");
     expect(response.body).toContain("tool-call__truncated");
     expect(response.body).toContain("tool-call__view");
-    expect(response.body).toContain("message__table-wrap");
     expect(response.body).toContain("apply_patch");
     expect(response.body).toContain('from "./chat-core.js"');
     expect(response.body).toContain('from "./chat-diff.js"');
     expect(response.body).toContain('from "./chat-highlight.js"');
+    expect(response.body).toContain('from "./markdown.js"');
     expect(response.body).toContain("extractToolView");
     expect(response.body).toContain("mountToolView");
     expect(response.body).not.toContain("innerHTML");
+  });
+
+  it("serves the shared markdown renderer from the asset allowlist", () => {
+    const f = fixture();
+    const response = handleRequest(f.deps, {
+      method: "GET",
+      path: "/assets/markdown.js",
+      headers: {},
+    });
+    expect(response.status).toBe(200);
+    expect(response.contentType).toContain("text/javascript");
+    expect(response.body).toContain("message__table-wrap");
+    expect(response.body).toContain("function renderMarkdown(");
+    expect(response.body).toContain("function element(");
+    expect(response.body).not.toMatch(/\.innerHTML\s*=/);
   });
 
   it("polls the runtime endpoint and never guesses the runtime chip", () => {

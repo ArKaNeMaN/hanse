@@ -14,8 +14,8 @@ import {
   writeSync,
 } from "node:fs";
 import path from "node:path";
-import type { EffectiveSkill } from "./types.js";
-import { isSkillName } from "./validation.js";
+import type { EffectiveBundle, SkillMetadata } from "./types.js";
+import { isSkillName, isSkillReferencePath, validateSkillReferenceContent } from "./validation.js";
 
 const MAX_ERROR_DETAIL = 500;
 
@@ -24,7 +24,7 @@ export interface RebuildOptions {
   appRoot: string;
   /** Hanse-owned opencode root (`.../opencode` or the probe staging root). */
   opencodeRoot: string;
-  effective: readonly EffectiveSkill[];
+  effective: readonly EffectiveBundle[];
   /** Move pre-existing entries to `skills-replaced/` when the marker is absent. */
   preserveFirstDeploy: boolean;
 }
@@ -166,11 +166,68 @@ function writeAtomic(file: string, content: string): void {
   }
 }
 
+const KNOWN_METADATA_KEYS = [
+  "author",
+  "version",
+  "domain",
+  "triggers",
+  "role",
+  "scope",
+  "output-format",
+  "related-skills",
+] as const;
+
+const SAFE_METADATA_KEY = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
+
+function yamlScalar(value: string): string {
+  return JSON.stringify(value);
+}
+
+function metadataKey(key: string): string {
+  return SAFE_METADATA_KEY.test(key) ? key : yamlScalar(key);
+}
+
+function orderedMetadataKeys(metadata: SkillMetadata): string[] {
+  const known = new Set<string>(KNOWN_METADATA_KEYS);
+  const keys = KNOWN_METADATA_KEYS.filter((key) => {
+    const value = metadata[key];
+    return value !== undefined && value.trim().length > 0;
+  });
+  const custom = Object.keys(metadata)
+    .filter((key) => !known.has(key) && metadata[key]?.trim().length)
+    .sort(compareStrings);
+  return [...keys, ...custom];
+}
+
 /** Deterministic `SKILL.md` document for one effective skill. */
-export function buildSkillDocument(
-  skill: Pick<EffectiveSkill, "name" | "description" | "content">,
-) {
-  return `---\nname: ${skill.name}\ndescription: ${JSON.stringify(skill.description)}\n---\n\n${skill.content}\n`;
+export function buildSkillDocument(skill: {
+  name: string;
+  description: string;
+  content: string;
+  license?: string | null;
+  compatibility?: string | null;
+  metadata?: SkillMetadata;
+}): string {
+  const lines = ["---", `name: ${skill.name}`, `description: ${yamlScalar(skill.description)}`];
+  const license = skill.license?.trim() ?? "";
+  if (license.length > 0) {
+    lines.push(`license: ${yamlScalar(license)}`);
+  }
+  const compatibility = skill.compatibility?.trim() ?? "";
+  if (compatibility.length > 0) {
+    lines.push(`compatibility: ${yamlScalar(compatibility)}`);
+  }
+  const metadata = skill.metadata ?? {};
+  const keys = orderedMetadataKeys(metadata);
+  if (keys.length > 0) {
+    lines.push("metadata:");
+    for (const key of keys) {
+      const value = metadata[key]?.trim() ?? "";
+      lines.push(`  ${metadataKey(key)}: ${yamlScalar(value)}`);
+    }
+  }
+  lines.push("---", "", `${skill.content}\n`);
+  return lines.join("\n");
 }
 
 /**
@@ -194,6 +251,19 @@ export function rebuildSkills(options: RebuildOptions): RebuildResult {
       throw new Error(
         `skills_materialize_failed: invalid skill name ${JSON.stringify(skill.name)}`,
       );
+    }
+    for (const reference of skill.references) {
+      if (!isSkillReferencePath(reference.path)) {
+        throw new Error(
+          `skills_materialize_failed: invalid reference path ${JSON.stringify(reference.path)}`,
+        );
+      }
+      try {
+        validateSkillReferenceContent(reference.content);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        throw new Error(`skills_materialize_failed: ${detail}`);
+      }
     }
   }
 
@@ -241,6 +311,24 @@ export function rebuildSkills(options: RebuildOptions): RebuildResult {
     const directory = path.join(skillsRoot, skill.name);
     removeEntry(appRootReal, directory);
     ensureRealDirectory(appRootReal, directory);
+    const references = [...skill.references].sort((left, right) =>
+      compareStrings(left.path, right.path),
+    );
+    if (references.length > 0) {
+      ensureRealDirectory(appRootReal, path.join(directory, "references"));
+    }
+    for (const reference of references) {
+      const segments = reference.path.split("/");
+      const file = path.resolve(directory, ...segments);
+      if (!isInside(directory, file)) {
+        throw new Error(
+          `skills_materialize_failed: reference path escapes the skill directory ${JSON.stringify(reference.path)}`,
+        );
+      }
+      writeAtomic(file, reference.content ?? "");
+      written.push(path.posix.join("skills", skill.name, reference.path));
+    }
+    // SKILL.md is written last so a crash mid-bundle is not discoverable.
     const file = path.join(directory, "SKILL.md");
     writeAtomic(file, buildSkillDocument(skill));
     written.push(path.posix.join("skills", skill.name, "SKILL.md"));

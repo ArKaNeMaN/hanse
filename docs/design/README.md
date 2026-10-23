@@ -40,6 +40,7 @@
   accounting, provider context limits, manual compaction, and threshold-based auto-compaction.
   Status: approved (oracle PASS).
 - [Managed agent skills](./agent-skills.md) - global/project/application skill registry, deterministic per-instance materialization into `opencode`'s config skill roots, restart semantics, human-only API, and scope-aware Web UI. Status: approved (oracle PASS after seven rounds).
+- [Skill bundles and the skill workspace](./skill-bundles.md) - `references/*.md` bundles, structured frontmatter metadata, a dedicated side-by-side source/preview workspace, inventory-only list pages, and a backward-compatible materialization hash. Status: approved (oracle PASS after five rounds); plan reviewed (momus PASS); implemented and verified (journal 0020).
 - [Deployment safety and release identity](./deployment-safety.md) - external deployment lock, schema guard, readiness/version, async restart, MCP-token reconciliation, CI-gated publishes, full-SHA/revision identity, and independent image tags. Status: approved (oracle PASS); plan reviewed (momus PASS); implemented and verified (journal 0019).
 - [Architecture overview](./overview.md) - the coordinator architecture and stage plan.
 - [Agent runtime isolation and per-app toolchains](./agent-runtime.md) - staged B0/B1/B2 runtime split, layered agent images, per-app containers, app image builds, and deployment constraints. Status: proposed, revised after design review.
@@ -73,6 +74,9 @@ Query parameters:
   captures (see [`artifacts/git/README.md`](./artifacts/git/README.md)).
 - `ux/` - UX polish captures for the application page, settings, and terminal at 390/768/1024/1440,
   dark and light, plus `report.json` (see [`artifacts/ux/README.md`](./artifacts/ux/README.md)).
+- `skills/` - managed skill inventory, workspace, create, repair, inherited, and no-JavaScript
+  captures at 390/768/1024/1440, dark and light, plus `report.json` (see
+  [`artifacts/skills/README.md`](./artifacts/skills/README.md)).
 
 ## Chat QA
 
@@ -86,6 +90,16 @@ or page error. `--live` runs a real managed-agent smoke when `CHAT_QA_URL`, `CHA
 `node docs/design/ux-qa.mjs` is the UX polish browser gate. It targets `UX_QA_URL`/`UX_QA_TOKEN`
 with the seeded fixture described in [`artifacts/ux/README.md`](./artifacts/ux/README.md) and writes
 the same kind of report and screenshots.
+
+`node docs/design/skills-qa.mjs` is the browser gate for the skill bundles and workspace. It
+self-starts the throwaway fixture in [`skills-qa-server.mts`](./skills-qa-server.mts) with the
+repository's local `tsx`, seeds a temporary SQLite database with synthetic global/project/application
+skills (including inherited, disabled, and invalid-metadata rows), and writes screenshots plus
+`report.json` to [`artifacts/skills/`](./artifacts/skills/README.md). It covers inventory,
+side-by-side and narrow workspace layouts, save/discard, JSON 400 focus, reference and metadata
+editing, invalid-metadata repair, inherited override/disable/revert, create 409/422, the no-JS
+stacked-editor and snapshot round-trip, and the shared safe Markdown renderer. It exits 1 on any
+failed assertion, missing screenshot, unexpected console error, or page error.
 
 All scripts resolve an installed Playwright module and Chromium build; they add no Playwright
 dependency to the product.

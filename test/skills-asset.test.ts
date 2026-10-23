@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -37,23 +37,32 @@ function deps(): HttpDeps {
   };
 }
 
-describe("skills asset", () => {
-  it("is allowlisted and implements the fragment surface swap", () => {
+describe("skills assets", () => {
+  it("serves the shared markdown renderer used by the skill preview", () => {
+    const response = handleRequest(deps(), {
+      method: "GET",
+      path: "/assets/markdown.js",
+      headers: {},
+    });
+    expect(response.status).toBe(200);
+    expect(response.contentType).toBe("text/javascript; charset=utf-8");
+    expect(response.body).toContain("renderMarkdown");
+    expect(response.body).not.toContain("x-hanse-fragment");
+  });
+
+  it("removes the old fragment asset from the allowlist", () => {
     const response = handleRequest(deps(), {
       method: "GET",
       path: "/assets/skills.js",
       headers: {},
     });
-    expect(response.status).toBe(200);
-    expect(response.contentType).toBe("text/javascript; charset=utf-8");
-    expect(response.body).toContain("x-hanse-fragment");
-    expect(response.body).toContain('"skills"');
-    expect(response.body).toContain("skills-surface");
-    expect(response.body).toContain("data-skill-form");
-    expect(response.body).toContain("replaceWith");
-    expect(response.body).toContain("data-skill-delete");
-    expect(response.body).toContain("data-skill-counter");
-    expect(response.body).not.toContain("innerHTML = message");
+    expect(response.status).toBe(404);
+  });
+
+  it("allowlists the workspace script and keeps the removed fragment asset out", () => {
+    const source = readFileSync(new URL("../src/http/handler.ts", import.meta.url), "utf8");
+    expect(source).toContain('"/assets/skill-detail.js"');
+    expect(source).not.toContain('"/assets/skills.js"');
   });
 
   it("still returns 404 for an unknown skills asset", () => {

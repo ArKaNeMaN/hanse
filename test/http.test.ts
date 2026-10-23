@@ -791,7 +791,7 @@ describe("http API and assets", () => {
         status: "ok",
         version: expect.any(String),
         revision: "unknown",
-        schemaVersion: 12,
+        schemaVersion: 13,
         deploying: false,
         inFlightLifecycle: 0,
       });
@@ -938,15 +938,21 @@ describe("http API and assets", () => {
     expect(settingsJs.body).toContain("data-settings-driver");
     expect(settingsJs.body).toContain("data-driver-fields");
 
-    const skillsJs = handleRequest(deps(f), {
+    const markdownJs = handleRequest(deps(f), {
+      method: "GET",
+      path: "/assets/markdown.js",
+      headers: {},
+    });
+    expect(markdownJs.status).toBe(200);
+    expect(markdownJs.contentType).toContain("text/javascript");
+    expect(markdownJs.body).toContain("renderMarkdown");
+
+    const removedSkillsJs = handleRequest(deps(f), {
       method: "GET",
       path: "/assets/skills.js",
       headers: {},
     });
-    expect(skillsJs.status).toBe(200);
-    expect(skillsJs.contentType).toContain("text/javascript");
-    expect(skillsJs.body).toContain("x-hanse-fragment");
-    expect(skillsJs.body).toContain("skills-surface");
+    expect(removedSkillsJs.status).toBe(404);
 
     const missing = handleRequest(deps(f), {
       method: "GET",
