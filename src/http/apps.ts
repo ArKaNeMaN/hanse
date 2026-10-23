@@ -1,3 +1,5 @@
+import path from "node:path";
+import { isMasterApp } from "../master/constants.js";
 import type { ManagedApp } from "../opencode/manager.js";
 import type { RegisteredApp } from "../registry/index.js";
 import { resolveAppPath } from "../runtime/app-path.js";
@@ -43,12 +45,21 @@ export function appDir(
 }
 
 export function toManagedApp(found: FoundApp): ManagedApp {
+  const directory = appDir(found.project, found.app);
+  const master = isMasterApp(found.project.id, found.app.appKey);
   return {
     id: found.app.id,
     projectId: found.project.id,
     appKey: found.app.appKey,
-    appDir: appDir(found.project, found.app),
+    appDir: directory,
     imageStatus: found.app.imageStatus,
     imageRef: found.app.imageRef,
+    ...(master
+      ? {
+          instructions: [path.join(directory, "AGENTS.md")],
+          gitCredentials: false,
+          appDirReadOnly: true,
+        }
+      : {}),
   };
 }

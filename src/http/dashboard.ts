@@ -1,5 +1,6 @@
 import { type Handoff, type HandoffState, listHandoffs } from "../coordinator/handoff.js";
 import type { CoordinatorService } from "../coordinator/service.js";
+import { isMasterProject, masterChatHref } from "../master/constants.js";
 import type { InstanceManager } from "../opencode/manager.js";
 import type { RegisteredApp } from "../registry/index.js";
 import type { SqliteDatabase } from "../store/index.js";
@@ -33,6 +34,7 @@ export interface ProjectView {
   baseBranch: string;
   createdAt: string;
   deleting: boolean;
+  builtin?: boolean;
   apps: RegisteredApp[];
   handoffs: Handoff[];
 }
@@ -162,6 +164,7 @@ export function buildSite(deps: DashboardDeps): SiteModel {
       baseBranch: details?.baseBranch ?? "main",
       createdAt: details?.createdAt ?? new Date(0).toISOString(),
       deleting: project.deleting === true,
+      builtin: isMasterProject(project.id),
       apps: projectApps,
       handoffs: listHandoffs(deps.db, project.id),
     };
@@ -198,6 +201,9 @@ export function buildSite(deps: DashboardDeps): SiteModel {
   let appCount = 0;
   let handoffCount = 0;
   for (const project of projects) {
+    if (project.builtin === true) {
+      continue;
+    }
     handoffCount += project.handoffs.length;
     appCount += project.apps.length;
     for (const handoff of project.handoffs) {
@@ -239,6 +245,11 @@ export function buildSite(deps: DashboardDeps): SiteModel {
     appCount,
     handoffCount,
   };
+}
+
+/** Projects shown to the operator: everything except the reserved master project. */
+export function operatorProjects(site: SiteModel): ProjectView[] {
+  return site.projects.filter((project) => project.builtin !== true);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -544,7 +555,7 @@ function handoffDialogs(handoffs: Handoff[], site: SiteModel, returnTo: string):
 /* ------------------------------------------------------------------------- */
 
 export function renderOverview(site: SiteModel, chrome: PageChrome): string {
-  const projects = [...site.projects].sort((a, b) =>
+  const projects = [...operatorProjects(site)].sort((a, b) =>
     projectLastActivity(b).localeCompare(projectLastActivity(a)),
   );
   const recent = sortedHandoffs(allHandoffs(site)).slice(0, 8);
@@ -554,15 +565,15 @@ export function renderOverview(site: SiteModel, chrome: PageChrome): string {
     overline: "Workbench",
     title: "Fleet overview",
     description: "Current state of every project, application, and handoff in this workspace.",
-    meta: [`${plural(site.projects.length, "project")}`, `${plural(site.appCount, "application")}`],
+    meta: [`${plural(projects.length, "project")}`, `${plural(site.appCount, "application")}`],
     actions:
-      site.projects.length === 0
+      projects.length === 0
         ? undefined
         : `<button class="btn btn-primary" type="button" data-dialog-open="new-project">${icon("plus")}New project</button>`,
   });
 
   const empty =
-    site.projects.length === 0
+    projects.length === 0
       ? `${emptyState({
           iconName: "folder",
           title: "No projects yet",
@@ -573,7 +584,7 @@ export function renderOverview(site: SiteModel, chrome: PageChrome): string {
       : "";
 
   const watch = `<div class="watch-strip watch-strip--4">
-    <div class="watch"><p class="watch__value">${site.projects.length}</p><p class="watch__label">Projects</p></div>
+    <div class="watch"><p class="watch__value">${projects.length}</p><p class="watch__label">Projects</p></div>
     <div class="watch"><p class="watch__value">${site.appCount}</p><p class="watch__label">Applications</p></div>
     <div class="watch"><p class="watch__value">${site.runningCount}</p><p class="watch__label">Agents running</p></div>
     <div class="watch"><p class="watch__value">${site.pendingCount}</p><p class="watch__label">Handoffs waiting</p></div>
@@ -594,7 +605,7 @@ export function renderOverview(site: SiteModel, chrome: PageChrome): string {
     .join("");
 
   const projectLedger =
-    site.projects.length === 0
+    projects.length === 0
       ? ""
       : `<section class="card" aria-labelledby="project-ledger-title">
           <div class="card__head">
@@ -658,7 +669,7 @@ export function renderOverview(site: SiteModel, chrome: PageChrome): string {
           .join("")}</div>`;
 
   const body =
-    site.projects.length === 0
+    projects.length === 0
       ? `${empty}${newProjectDialog()}`
       : `${watch}
         <div class="workbench-grid section">
@@ -711,7 +722,8 @@ export function renderProjects(
 ): string {
   const query = (options.q ?? "").trim();
   const needle = query.toLowerCase();
-  const filtered = site.projects.filter((project) => {
+  const operator = operatorProjects(site);
+  const filtered = operator.filter((project) => {
     if (needle.length === 0) {
       return true;
     }
@@ -726,9 +738,9 @@ export function renderProjects(
     title: "Projects",
     description:
       "Every project discovered under the workspace root, with its applications and handoff activity.",
-    meta: [`${plural(site.projects.length, "project")}`, `${plural(site.appCount, "application")}`],
+    meta: [`${plural(operator.length, "project")}`, `${plural(site.appCount, "application")}`],
     actions:
-      site.projects.length === 0
+      operator.length === 0
         ? undefined
         : `<button class="btn btn-primary" type="button" data-dialog-open="new-project">${icon("plus")}New project</button>`,
   });
@@ -741,7 +753,7 @@ export function renderProjects(
   </form>`;
 
   let content: string;
-  if (site.projects.length === 0) {
+  if (operator.length === 0) {
     content = `${emptyState({
       iconName: "folder",
       title: "No projects yet",
@@ -806,6 +818,52 @@ export function renderProject(
   const project = site.projects.find((candidate) => candidate.id === projectId);
   if (project === undefined) {
     return undefined;
+  }
+  if (project.builtin === true) {
+    const app = project.apps[0];
+    const runtime = app === undefined ? "stopped" : (site.runtime.get(app.id) ?? "stopped");
+    const chatHref =
+      app === undefined
+        ? masterChatHref()
+        : `/chat?app=${encodeURIComponent(app.appKey)}&project=${encodeURIComponent(project.id)}`;
+    const appSettingsHref =
+      app === undefined
+        ? `/projects/${encodeURIComponent(project.id)}/settings`
+        : `/projects/${encodeURIComponent(project.id)}/apps/${encodeURIComponent(app.appKey)}/settings`;
+    const appSkillsHref =
+      app === undefined
+        ? `/projects/${encodeURIComponent(project.id)}/skills`
+        : `/projects/${encodeURIComponent(project.id)}/apps/${encodeURIComponent(app.appKey)}/skills`;
+    const header = pageHeader({
+      overline: "Master",
+      title: "Hanse master",
+      description: "Built-in assistant that configures and operates this Hanse instance.",
+      meta: [runtime, app?.path ?? project.rootPath],
+      actions: `<a class="btn btn-primary" href="${escapeHtml(chatHref)}">${icon("message")}Open chat</a><a class="btn btn-secondary" href="${escapeHtml(appSettingsHref)}">${icon("settings")}Settings</a>`,
+    });
+    const body = `<div class="watch-strip watch-strip--2">
+      <div class="watch"><p class="watch__value">${runtimePill(runtime)}</p><p class="watch__label">Runtime</p></div>
+      <div class="watch"><p class="watch__value">${escapeHtml(app?.kind ?? "master")}</p><p class="watch__label">Kind</p></div>
+    </div>
+    <section class="card section" aria-labelledby="master-card-title">
+      <div class="card__head"><h2 class="card__title" id="master-card-title">Master agent</h2><span class="badge badge--mono">system</span></div>
+      <div class="card__body stack--tight">
+        <p class="small">The master runs as an isolated agent. It creates projects and applications, writes their instructions, changes non-secret settings, and starts or restarts application agents through its Hanse tools.</p>
+        <p class="small">Its own directory is coordinator-managed and read-only inside its container. Its instructions are rewritten from the coordinator on every start.</p>
+        <p class="small">Provider keys, git credentials, skill editing, image builds, and deletion stay operator-only UI actions.</p>
+      </div>
+      <div class="card__foot"><a class="btn btn-secondary btn-sm" href="${escapeHtml(chatHref)}">${icon("message")}Open chat</a><a class="btn btn-ghost btn-sm" href="${escapeHtml(appSettingsHref)}">${icon("settings")}Application settings</a><a class="btn btn-ghost btn-sm" href="${escapeHtml(appSkillsHref)}">${icon("code")}Skills</a></div>
+    </section>`;
+    return shell(site, chrome, {
+      title: "Hanse master",
+      active: "project",
+      activeProjectId: project.id,
+      breadcrumb: [{ label: "Workbench", href: "/" }, { label: "Master" }],
+      header,
+      body,
+      settingsHref: appSettingsHref,
+      skillsHref: appSkillsHref,
+    });
   }
   const counts = handoffCounts(project.handoffs);
   const waiting = sortedHandoffs(

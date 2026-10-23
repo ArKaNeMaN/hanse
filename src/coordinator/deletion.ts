@@ -13,6 +13,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { ConfigError, HANSE_DIR, PROJECT_CONFIG_FILENAME } from "../config/load.js";
 import type { RunnerImageRecord } from "../images/client.js";
 import type { Logger } from "../logging/logger.js";
+import { isMasterProject } from "../master/constants.js";
 import { sanitizeAppKey } from "../opencode/instance.js";
 import type { ImageGcReport } from "../runner/image-gc.js";
 import { isInside, resolveAppPath, resolveWithinRoot } from "../runtime/app-path.js";
@@ -221,6 +222,9 @@ export class DeletionService {
     appKey: string,
     options: DeleteOptions,
   ): Promise<DeleteResult> {
+    if (isMasterProject(projectId)) {
+      throw new DeletionError(409, "master_protected", "the master agent cannot be deleted");
+    }
     const project = this.#findProject(projectId);
     if (project === undefined) {
       throw new DeletionError(404, "project_not_found", "project not found");
@@ -355,6 +359,9 @@ export class DeletionService {
   }
 
   async deleteProject(projectId: string, options: DeleteOptions): Promise<DeleteResult> {
+    if (isMasterProject(projectId)) {
+      throw new DeletionError(409, "master_protected", "the master project cannot be deleted");
+    }
     const project = this.#findProject(projectId);
     if (project === undefined) {
       throw new DeletionError(404, "project_not_found", "project not found");

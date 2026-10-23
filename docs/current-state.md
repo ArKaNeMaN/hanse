@@ -1,6 +1,6 @@
 # Hanse - Current State (read this first)
 
-> Last updated: 2026-10-22. This is the canonical description of what is **implemented right now**.
+> Last updated: 2026-10-23. This is the canonical description of what is **implemented right now**.
 > If this document and the code disagree, the code wins - update this document.
 > History and rationale: `docs/design/overview.md`, `docs/plans/0001-core.md`,
 > `docs/journal/0001-core.md`. Deployment: `docs/deployment.md`.
@@ -575,6 +575,48 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   and the skill preview; `assets/skill-detail.js` drives the workspace. `assets/skills.js` and the
   old dialog editor are removed.
 
+## Master agent
+
+- One built-in master agent runs as the reserved project `hanse-master` and application `master`
+  (`hanse-master:master`), created idempotently at coordinator start after project discovery. Its
+  app directory is `<workspace>/.hanse-master`; its state is `<agents>/hanse-master/master`. It starts
+  lazily on first chat use like any application.
+- The reserved rows use the same runtime, settings, skills, OMO, context, token, and restart
+  machinery as an application. `kind = 'master'` is display-only; the reserved ids are authoritative
+  for dispatch, hiding, deletion refusal, and provisioning guards.
+- The master app directory is mounted **read-only** inside its agent container through a new
+  `appDirReadOnly` runtime-spec field (B1 runner bind `:ro`); its state directory stays read-write.
+  The coordinator owns and rewrites `<workspace>/.hanse-master/AGENTS.md` on every start and passes it
+  through the opencode `instructions` overlay. Git credentials are not materialized for the master;
+  model-provider auth is, as for every agent.
+- `/internal/mcp` dispatches a separate allowlist when the presented token resolves to
+  `hanse-master:master`: `list_projects`, `get_app`, `get_settings`, `set_setting`,
+  `inherit_setting`, `create_project`, `add_app`, `start_app`, `restart_app`, `list_dir`, `read_file`,
+  `write_file`. SSH and handoff tools are rejected as `unknown_tool`; there is no fall-through.
+  Failures return `{ok:false, code, message}` text content.
+- Workspace file tools are workspace-relative and confined with realpath/symlink checks,
+  `O_NOFOLLOW`, regular-file checks, 256 KiB read/write caps, 500-entry listings, UTF-8/NUL checks,
+  and denials for `.git`, `.hanse/project.yaml`, `.hanse/app.yaml`, and the master `AGENTS.md`.
+  Writes are atomic and recorded as `events` rows with `scope = 'master'` (path and size, never
+  content).
+- Project and application creation share `src/coordinator/provision.ts` with the web forms: reserved
+  directory/id refusal, single-segment project directories, `isValidAppId` app keys, strict
+  containment, symlink-safe manifest writes, YAML-serialized names, validated clone remotes
+  (`http(s)`, `ssh`, `git`, scp-like; no local/file/userinfo), and clone-failure cleanup.
+- Settings writes accept only the seven registry keys (no provider keys or git credentials), validate
+  the target scope, and report pending restarts. `start_app` and `restart_app` refuse the master
+  itself; a stopped app is not started by `restart_app`.
+- UI: a **Master** navigation entry opens its chat. The master is hidden from the overview ledger,
+  project index, sidebar project lists, `/api/projects`, and chat's default selection. Direct
+  project/app/settings/skills URLs still resolve with a reduced master page (no git workbench or
+  `/assets/git.js`, no image panel, no manifest card, no add-app/new-handoff controls, no danger
+  zone). Settings and skills scope pickers intentionally list the master so it can be configured.
+- Deletion is refused at the service and HTTP layers (`409 master_protected`) even when deletion is
+  unconfigured. A discovered project may not use the reserved id, and no project or app may point at
+  the reserved directory.
+- `POST /internal/mcp` accepts up to 1 MiB so a maximum `write_file` fits; all other routes keep
+  their existing limits. The stage adds no migration and no dependency.
+
 ## Handoffs (agent-to-agent requests)
 
 - Coordinator MCP server: `hanse mcp` (stdio, bound to one app via `HANSE_DB`, `HANSE_PROJECT_ID`,
@@ -647,6 +689,9 @@ Host `./agents` is mounted at `/data/agents` read-write in `hanse` and read-only
   into one-shot git containers.
 - The reconciled opencode `auth.json`, opencode Basic-auth password, and per-app MCP token live under
   that app's state (`0600`).
+- `<workspace>/.hanse-master/AGENTS.md` - the coordinator-owned master instructions. The directory is
+  the master application's mount and is read-only inside that agent container; the coordinator
+  rewrites the file on every start.
 - The coordinator-generated OMO profile is `<app-home>/.omo/omo.jsonc`; OMO state is per app.
 - Each app container sees only its own `/data/agents/<project>/<app>` root.
 - The IDE never sees this volume.
@@ -872,6 +917,14 @@ Settings stage verification:
 - Codegraph indexes are per application (`<app>/.codegraph/`) and are not built automatically;
   per-app HOME keeps the global codegraph state separate.
 - No TLS; intended for a trusted LAN (VPN/reverse proxy for remote access).
+- The master agent has no deletion, file removal/move, git, image-build, skill-editing, or
+  provider-key/git-credential tool. Manifest changes are limited to the provisioning tools; renaming
+  projects, removing apps, and changing base branches remain UI/manifest jobs. A changed master
+  `AGENTS.md` needs an explicit master restart because instructions are not part of the settings
+  hash. The master reads text files only, can read workspace content that itself contains secrets,
+  and can send what it reads to its configured model provider and web tools; its SSH/handoff tools
+  are denied, no git credentials are materialized, and it has no state volume or Docker socket. The
+  B0 compatibility host does not enforce the read-only app directory.
 - The writer lock is a single-node file lock (`O_EXCL` + pid liveness), not a distributed lock.
 - `git clone` in the add-app endpoint is synchronous (`execFileSync`) and blocks the event loop.
 - The git workbench requires the application directory to be its own repository root; applications

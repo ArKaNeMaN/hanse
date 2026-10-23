@@ -724,7 +724,7 @@ export class RunnerService {
         "hanse.agents.root": spec.hostAgentsRoot,
       },
       binds: [
-        `${spec.hostAppDir}:${spec.containerAppDir}:rw`,
+        `${spec.hostAppDir}:${spec.containerAppDir}:${spec.appDirReadOnly === true ? "ro" : "rw"}`,
         `${spec.hostAgentsRoot}:${spec.containerAgentsRoot}:rw`,
       ],
       tmpfs: {

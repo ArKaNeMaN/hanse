@@ -22,6 +22,13 @@ export interface AppRuntimeSpec {
   image: string;
   pathMode: "host" | "container";
   appDir: string;
+  /**
+   * Mount the application directory read-only inside the agent container.
+   *
+   * Omitted for ordinary applications so their spec hashes stay unchanged; set only for the
+   * coordinator-owned master application.
+   */
+  appDirReadOnly?: boolean;
   stateDir: string;
   networkName: string;
   port?: number;
@@ -273,6 +280,7 @@ export function computeSpecHash(spec: SpecHashInput): string {
     image: spec.image,
     pathMode: spec.pathMode,
     appDir: spec.appDir,
+    ...(spec.appDirReadOnly === true ? { appDirReadOnly: true } : {}),
     stateDir: spec.stateDir,
     networkName: spec.networkName,
     env: hashableEnv(spec.env),
@@ -312,12 +320,17 @@ export function validateAppRuntimeSpec(
   const port = parsePort(value.port);
   const appDir = parsePath(value.appDir, "appDir", workspaceRoot);
   const stateDir = parsePath(value.stateDir, "stateDir", agentsRoot);
+  if (value.appDirReadOnly !== undefined && typeof value.appDirReadOnly !== "boolean") {
+    throw invalid("appDirReadOnly must be a boolean");
+  }
+  const appDirReadOnly = value.appDirReadOnly === true;
   const envRoots = pathMode === "container" ? { agentsRoot, appDir } : undefined;
   const base: SpecHashInput = {
     appId,
     image,
     pathMode,
     appDir,
+    ...(appDirReadOnly ? { appDirReadOnly: true } : {}),
     stateDir,
     networkName,
     ...(port === undefined ? {} : { port }),

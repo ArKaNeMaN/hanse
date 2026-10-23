@@ -1,5 +1,8 @@
 import { CoordinatorService } from "../coordinator/service.js";
+import { isMasterAppId } from "../master/constants.js";
 import { verifyAgentToken } from "../mcp/agent-tokens.js";
+import { handleMasterRpc } from "../mcp/master.js";
+import type { RpcRequest } from "../mcp/protocol.js";
 import { handleRpcAsync } from "../mcp/ssh-protocol.js";
 import type { HttpDeps, HttpRequest, HttpResponse } from "./handler.js";
 
@@ -40,6 +43,23 @@ export async function handleInternalMcp(
   }
   if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
     return rpcError(400, -32700, "parse error");
+  }
+  if (isMasterAppId(agent.appId)) {
+    const response = await handleMasterRpc(
+      {
+        db: deps.db,
+        workspaceRoot: deps.workspaceRoot,
+        ...(deps.settings === undefined ? {} : { settings: deps.settings }),
+        ...(deps.manager === undefined ? {} : { manager: deps.manager }),
+        ...(deps.deletion === undefined ? {} : { deletion: deps.deletion }),
+      },
+      agent,
+      payload as RpcRequest,
+    );
+    if (response === undefined) {
+      return { status: 204, contentType: "application/json; charset=utf-8", body: "" };
+    }
+    return json(200, response);
   }
   const service = new CoordinatorService(deps.db, agent.projectId);
   const response = await handleRpcAsync(

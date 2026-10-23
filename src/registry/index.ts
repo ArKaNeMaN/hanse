@@ -2,6 +2,7 @@ import { lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
 import { APP_CONFIG_FILENAME, ConfigError, HANSE_DIR, loadProject } from "../config/load.js";
+import { isMasterProject, MASTER_DIR_NAME } from "../master/constants.js";
 import { isInside, resolveAppPath } from "../runtime/app-path.js";
 import {
   boundedErrorMessage,
@@ -108,8 +109,27 @@ export function registerProject(
   rootPath: string,
   workspaceRoot: string = rootPath,
 ): RegisteredProject {
+  if (isMasterProject(project.id)) {
+    throw new ConfigError(
+      "VALIDATION_FAILED",
+      `project id "${project.id}" is reserved for the built-in master agent`,
+    );
+  }
+  let reservedDir: string | undefined;
+  try {
+    reservedDir = path.join(realpathSync(workspaceRoot), MASTER_DIR_NAME);
+  } catch {
+    reservedDir = undefined;
+  }
   const prepared = project.apps.map((entry) => {
     const appDir = resolveAppPath({ appPath: entry.path, projectRoot: rootPath, workspaceRoot });
+    if (reservedDir !== undefined && isInside(reservedDir, appDir)) {
+      throw new ConfigError(
+        "PATH_OUTSIDE_ROOT",
+        "application path is inside the reserved master directory",
+        { path: entry.path },
+      );
+    }
     return { entry, inspection: resolveAppBuild(appDir) };
   });
 

@@ -1,13 +1,15 @@
-import { execFileSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import path from "node:path";
-import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
-import { ConfigError } from "../config/load.js";
 import { decideApproval } from "../coordinator/approval.js";
 import type { DeletionService } from "../coordinator/deletion.js";
 import type { DeploymentLock } from "../coordinator/deployment-lock.js";
 import type { LifecycleActivity } from "../coordinator/lifecycle-activity.js";
+import {
+  addApplication,
+  createProject,
+  type ProvisioningDeletionGuard,
+  ProvisioningError,
+} from "../coordinator/provision.js";
 import type { CoordinatorService } from "../coordinator/service.js";
 import type { GitService } from "../git/service.js";
 import { authenticate } from "../identity/auth.js";
@@ -15,7 +17,6 @@ import type { Principal } from "../identity/principals.js";
 import type { ImageService } from "../images/service.js";
 import { verifyAgentToken } from "../mcp/agent-tokens.js";
 import type { InstanceManager } from "../opencode/manager.js";
-import { resolveAppPath } from "../runtime/app-path.js";
 import type { SettingsService } from "../settings/index.js";
 import type { SkillService } from "../skills/index.js";
 import type { SshService } from "../ssh/service.js";
@@ -466,6 +467,18 @@ function routeRuntimeStatus(deps: HttpDeps, request: HttpRequest): HttpResponse 
   });
 }
 
+function provisioningDeps(deps: HttpDeps): {
+  db: HttpDeps["db"];
+  workspaceRoot: string;
+  deletion?: ProvisioningDeletionGuard;
+} {
+  return {
+    db: deps.db,
+    workspaceRoot: deps.workspaceRoot,
+    ...(deps.deletion === undefined ? {} : { deletion: deps.deletion }),
+  };
+}
+
 function route(deps: HttpDeps, request: HttpRequest): HttpResponse {
   const assetResponse = asset(request);
   if (assetResponse !== undefined) {
@@ -548,7 +561,9 @@ function route(deps: HttpDeps, request: HttpRequest): HttpResponse {
   }
 
   if (request.method === "GET" && request.path === "/api/projects") {
-    return json(200, { projects: projectViews(deps) });
+    return json(200, {
+      projects: projectViews(deps).filter((project) => project.builtin !== true),
+    });
   }
   if (request.method === "GET" && request.path === "/api/handoffs") {
     const site = buildSite(deps);
@@ -607,40 +622,30 @@ function route(deps: HttpDeps, request: HttpRequest): HttpResponse {
       if (name.length === 0) {
         return browserError(request, "/projects", "Project name is required.");
       }
-      const slug =
-        name
-          .toLowerCase()
-          .replace(/[^a-z0-9._-]+/g, "-")
-          .replace(/^-+|-+$/g, "") || `project-${Date.now()}`;
-      const dir = path.join(deps.workspaceRoot, slug);
-      const resolvedRoot = path.resolve(dir);
-      if (
-        deps.deletion !== undefined &&
-        (deps.deletion.isActive() || deps.deletion.isDeletingPath(resolvedRoot))
-      ) {
-        return deletionConflict(
-          request,
-          "/projects",
-          "A deletion is in progress for this location; try again when it finishes.",
-          "deletion_in_progress",
-        );
+      try {
+        const project = createProject(provisioningDeps(deps), { name });
+        return browser
+          ? redirectWithNotice(`/projects/${project.id}`, "Project created.", "success")
+          : redirect("/");
+      } catch (error) {
+        if (error instanceof ProvisioningError) {
+          if (error.code === "deletion_in_progress") {
+            return deletionConflict(
+              request,
+              "/projects",
+              "A deletion is in progress for this location; try again when it finishes.",
+              "deletion_in_progress",
+            );
+          }
+          const message =
+            error.code === "project_exists" ? "Project already exists." : error.message;
+          if (!browser) {
+            return json(error.status, { error: message, code: error.code });
+          }
+          return browserError(request, "/projects", message);
+        }
+        throw error;
       }
-      const configPath = path.join(dir, ".hanse", "project.yaml");
-      if (existsSync(configPath)) {
-        return browserError(request, "/projects", "Project already exists.");
-      }
-      const id = randomUUID();
-      mkdirSync(path.dirname(configPath), { recursive: true });
-      writeFileSync(configPath, `id: ${id}\nname: ${name}\nbase_branch: main\napps: []\n`, "utf8");
-      const now = new Date().toISOString();
-      deps.db
-        .prepare(
-          "INSERT INTO projects (id, name, base_branch, root_path, created_at, updated_at) VALUES (?, ?, 'main', ?, ?, ?)",
-        )
-        .run(id, name, dir, now, now);
-      return browser
-        ? redirectWithNotice(`/projects/${id}`, "Project created.", "success")
-        : redirect("/");
     });
   }
 
@@ -658,31 +663,6 @@ function route(deps: HttpDeps, request: HttpRequest): HttpResponse {
       if (name.length === 0) {
         return browserError(request, returnTo, "Application name is required.");
       }
-      const slug =
-        name
-          .toLowerCase()
-          .replace(/[^a-z0-9._-]+/g, "-")
-          .replace(/^-+|-+$/g, "") || `app-${Date.now()}`;
-      const appPath = (fields.path ?? "").trim() || `apps/${slug}`;
-      let dir: string;
-      try {
-        dir = resolveAppPath({
-          appPath,
-          projectRoot: project.rootPath,
-          workspaceRoot: project.workspaceRoot,
-        });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        return browser
-          ? redirectWithNotice(returnTo, message, "error")
-          : json(400, {
-              error: message,
-              ...(error instanceof ConfigError ? { code: error.code } : {}),
-            });
-      }
-      const remote = (fields.remote ?? "").trim();
-      const appKey = path.basename(appPath);
-      const appId = `${project.id}:${appKey}`;
       const projectRow = deps.db
         .prepare("SELECT deleting FROM projects WHERE id = ?")
         .get(project.id) as { deleting: number } | undefined;
@@ -694,73 +674,46 @@ function route(deps: HttpDeps, request: HttpRequest): HttpResponse {
           "deletion_incomplete",
         );
       }
-      const existingApp = deps.db
-        .prepare("SELECT deleting FROM apps WHERE project_id = ? AND app_key = ?")
-        .get(project.id, appKey) as { deleting: number } | undefined;
-      if (existingApp?.deleting === 1) {
-        return deletionConflict(
-          request,
-          returnTo,
-          "This application is being deleted; finish the deletion first.",
-          "deletion_incomplete",
-        );
-      }
-      if (
-        deps.deletion !== undefined &&
-        (deps.deletion.isDeletingProject(project.id) ||
-          deps.deletion.isDeletingApp(appId) ||
-          deps.deletion.isDeletingAppState(project.id, appKey) ||
-          deps.deletion.isDeletingPath(path.resolve(dir)))
-      ) {
-        return deletionConflict(
-          request,
-          returnTo,
-          "A deletion is in progress for this application; try again when it finishes.",
-          "deletion_in_progress",
-        );
-      }
       try {
-        if (remote.length > 0) {
-          mkdirSync(path.dirname(dir), { recursive: true });
-          execFileSync("git", ["clone", "--depth", "1", remote, dir], { stdio: "ignore" });
-        } else {
-          mkdirSync(dir, { recursive: true });
-        }
-        mkdirSync(path.join(dir, ".hanse"), { recursive: true });
-        const appYaml = path.join(dir, ".hanse", "app.yaml");
-        if (!existsSync(appYaml)) {
-          writeFileSync(appYaml, `name: ${name}\nkind: app\ncontract: AGENTS.md\n`, "utf8");
-        }
-      } catch (error) {
-        const message = `failed to add application: ${error instanceof Error ? error.message : String(error)}`;
+        addApplication(provisioningDeps(deps), {
+          projectId: project.id,
+          name,
+          ...((fields.path ?? "").trim().length === 0 ? {} : { path: (fields.path ?? "").trim() }),
+          ...((fields.remote ?? "").trim().length === 0
+            ? {}
+            : { remote: (fields.remote ?? "").trim() }),
+        });
         return browser
-          ? redirectWithNotice(returnTo, message, "error")
-          : json(502, { error: message });
-      }
-      try {
-        const manifestPath = path.join(project.rootPath, ".hanse", "project.yaml");
-        const manifest = parseYaml(readFileSync(manifestPath, "utf8")) as {
-          apps?: Array<Record<string, unknown>>;
-        } & Record<string, unknown>;
-        manifest.apps = Array.isArray(manifest.apps) ? manifest.apps : [];
-        if (!manifest.apps.some((entry) => entry?.path === appPath)) {
-          manifest.apps.push({ path: appPath, ...(remote.length > 0 ? { remote } : {}) });
-        }
-        writeFileSync(manifestPath, stringifyYaml(manifest), "utf8");
+          ? redirectWithNotice(returnTo, "Application added.", "success")
+          : redirect("/");
       } catch (error) {
-        const message = `failed to update manifest: ${error instanceof Error ? error.message : String(error)}`;
-        return browser
-          ? redirectWithNotice(returnTo, message, "error")
-          : json(500, { error: message });
+        if (error instanceof ProvisioningError) {
+          if (error.code === "deletion_in_progress") {
+            return deletionConflict(
+              request,
+              returnTo,
+              "A deletion is in progress for this application; try again when it finishes.",
+              "deletion_in_progress",
+            );
+          }
+          if (!browser) {
+            if (error.status === 400 && error.configCode !== undefined) {
+              return json(400, { error: error.message, code: error.configCode });
+            }
+            return json(error.status, { error: error.message, code: error.code });
+          }
+          const message =
+            error.code === "clone_failed"
+              ? `failed to add application: ${error.message}`
+              : error.code === "invalid_manifest" ||
+                  error.code === "project_manifest_missing" ||
+                  error.code === "io_error"
+                ? `failed to update manifest: ${error.message}`
+                : error.message;
+          return redirectWithNotice(returnTo, message, "error");
+        }
+        throw error;
       }
-      deps.db
-        .prepare(
-          "INSERT INTO apps (id, project_id, app_key, path, kind, contract, created_at) VALUES (?, ?, ?, ?, 'app', 'AGENTS.md', ?) ON CONFLICT(id) DO UPDATE SET path = excluded.path, kind = excluded.kind",
-        )
-        .run(`${project.id}:${appKey}`, project.id, appKey, appPath, new Date().toISOString());
-      return browser
-        ? redirectWithNotice(returnTo, "Application added.", "success")
-        : redirect("/");
     });
   }
 

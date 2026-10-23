@@ -155,6 +155,12 @@ export interface ManagedApp {
   appDir: string;
   imageStatus?: AppImageStatus;
   imageRef?: string | null;
+  /** Extra opencode instruction files for this instance. */
+  instructions?: string[];
+  /** Set false to skip git credential materialization for this instance. */
+  gitCredentials?: boolean;
+  /** Mount the application directory read-only inside the agent container. */
+  appDirReadOnly?: boolean;
 }
 
 /** Injectable subset of `SettingsService` used for launch snapshots and live context policy. */
@@ -584,21 +590,23 @@ export class InstanceManager {
       const snapshot = settings.snapshot({ projectId: app.projectId, appKey: app.appKey });
       web = snapshot.resolved.effective.web;
       model = snapshot.resolved.effective.llm.model.value ?? DEFAULT_MODEL;
-      try {
-        gitEnv = materializeGitCredentials({
-          agentsRoot: this.#runtimeRoot,
-          appRoot: path.dirname(isolated.HOME),
-          home: isolated.HOME,
-          projectId: app.projectId,
-          appKey: app.appKey,
-          identity: {
-            name: snapshot.resolved.effective.git.user.name.value,
-            email: snapshot.resolved.effective.git.user.email.value,
-          },
-          auth: snapshot.gitAuth,
-        });
-      } catch (error) {
-        throw materializeFailure(error);
+      if (app.gitCredentials !== false) {
+        try {
+          gitEnv = materializeGitCredentials({
+            agentsRoot: this.#runtimeRoot,
+            appRoot: path.dirname(isolated.HOME),
+            home: isolated.HOME,
+            projectId: app.projectId,
+            appKey: app.appKey,
+            identity: {
+              name: snapshot.resolved.effective.git.user.name.value,
+              email: snapshot.resolved.effective.git.user.email.value,
+            },
+            auth: snapshot.gitAuth,
+          });
+        } catch (error) {
+          throw materializeFailure(error);
+        }
       }
       const profile = await omoProfiles.ensure(
         {
@@ -660,6 +668,7 @@ export class InstanceManager {
       coordinatorCommand: [process.execPath, process.argv[1] ?? "", "mcp"],
       codegraphCommand: resolveCodegraphCommand(),
       environment: coordinatorEnvironment,
+      ...(app.instructions === undefined ? {} : { instructions: app.instructions }),
       plugins: baselinePlugins,
       permission,
       model,
@@ -699,6 +708,7 @@ export class InstanceManager {
       image,
       pathMode: hostPaths ? "host" : "container",
       appDir: specAppDir,
+      ...(app.appDirReadOnly === true ? { appDirReadOnly: true } : {}),
       stateDir: specStateDir,
       networkName: specNetworkName,
       ...(specPort === undefined ? {} : { port: specPort }),

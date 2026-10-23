@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { ServerResponse } from "node:http";
 import type { Handoff } from "../coordinator/handoff.js";
 import type { Principal } from "../identity/principals.js";
+import { isMasterApp } from "../master/constants.js";
 import {
   createSession,
   deleteSession,
@@ -17,7 +18,13 @@ import { DeletionPendingError } from "../opencode/manager.js";
 import type { RegisteredApp } from "../registry/index.js";
 import { appDir, findApp, toManagedApp } from "./apps.js";
 import { humanFrom, principalFrom } from "./auth.js";
-import { buildSite, type PageChrome, renderNotFound, type SiteModel } from "./dashboard.js";
+import {
+  buildSite,
+  operatorProjects,
+  type PageChrome,
+  renderNotFound,
+  type SiteModel,
+} from "./dashboard.js";
 import { lifecycleErrorResponse, mapLifecycleHttpError } from "./errors.js";
 import type { HttpDeps, HttpRequest, HttpResponse } from "./handler.js";
 import {
@@ -152,6 +159,7 @@ function renderContextHandoffs(site: SiteModel, appId: string, appKey: string): 
 
 function appOptions(site: SiteModel, selectedProjectId: string, selectedAppKey: string): string {
   return site.projects
+    .filter((project) => project.builtin !== true || project.id === selectedProjectId)
     .map((project) => {
       const options = project.apps
         .map((app) => {
@@ -202,8 +210,8 @@ function renderChatPage(
   const ref = site.apps.get(app.id);
   const runtime = site.runtime.get(app.id) ?? "stopped";
   const handoffs = contextHandoffs(site, app.id);
-  const path = ref?.path ?? app.path;
   const folder = appDir(project, app);
+  const path = isMasterApp(project.id, app.appKey) ? folder : (ref?.path ?? app.path);
   const appHref = `/projects/${encodeURIComponent(project.id)}/apps/${encodeURIComponent(app.appKey)}`;
   const settingsHref = `/projects/${encodeURIComponent(project.id)}/apps/${encodeURIComponent(app.appKey)}/settings`;
   const pendingRestart = site.pendingRestart.get(app.id) ?? false;
@@ -504,9 +512,12 @@ export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<
     const site = buildSite(deps);
     const chrome = pageChrome(principal, request);
     if (appKey === undefined || appKey.length === 0) {
-      const first = site.projects.flatMap((project) =>
+      const candidates = operatorProjects(site).flatMap((project) =>
         project.apps.map((app) => ({ project, app })),
-      )[0];
+      );
+      const first =
+        candidates[0] ??
+        site.projects.flatMap((project) => project.apps.map((app) => ({ project, app })))[0];
       if (first === undefined) {
         return html(200, renderNoApps(site, chrome));
       }

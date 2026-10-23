@@ -27,9 +27,17 @@ const MAX_BODY_BYTES = 64 * 1024;
 // A bundle can hold a 48,000-character body plus 192,000 characters of references;
 // percent-encoded multi-byte text expands several-fold, so skills routes get 4 MiB.
 const MAX_SKILLS_BODY_BYTES = 4 * 1024 * 1024;
+// A master write_file carries up to 256 KiB of text plus JSON escaping and the RPC envelope.
+const MAX_INTERNAL_MCP_BODY_BYTES = 1024 * 1024;
 
 function bodyLimitFor(url: string): number {
-  return url.startsWith("/api/skills") ? MAX_SKILLS_BODY_BYTES : MAX_BODY_BYTES;
+  if (url.startsWith("/api/skills")) {
+    return MAX_SKILLS_BODY_BYTES;
+  }
+  if (url.startsWith("/internal/mcp")) {
+    return MAX_INTERNAL_MCP_BODY_BYTES;
+  }
+  return MAX_BODY_BYTES;
 }
 
 class PayloadTooLargeError extends Error {

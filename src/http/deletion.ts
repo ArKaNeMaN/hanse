@@ -1,4 +1,5 @@
 import { type DeleteOptions, DeletionError } from "../coordinator/deletion.js";
+import { isMasterProject } from "../master/constants.js";
 import { verifyAgentToken } from "../mcp/agent-tokens.js";
 import { principalFrom } from "./auth.js";
 import { lifecycleErrorResponse } from "./errors.js";
@@ -187,6 +188,12 @@ export async function handleDeletion(
   const target = targetFor(request.method, request.path);
   if (target === undefined) {
     return undefined;
+  }
+  if (isMasterProject(target.projectId)) {
+    const message = "The master agent cannot be deleted.";
+    return wantsHtml(request)
+      ? redirectWithNotice(defaultLocation(target), message, "error")
+      : json(409, { error: message, code: "master_protected" });
   }
   if (deps.deletion === undefined) {
     return deletionUnavailable(request);

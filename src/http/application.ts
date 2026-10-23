@@ -1,3 +1,4 @@
+import { isMasterApp } from "../master/constants.js";
 import type { RegisteredApp } from "../registry/index.js";
 import { appDir } from "./apps.js";
 import type { PageChrome, SiteModel } from "./dashboard.js";
@@ -308,6 +309,7 @@ export function renderApplication(
     return undefined;
   }
 
+  const master = isMasterApp(project.id, app.appKey);
   const runtime = site.runtime.get(app.id) ?? "stopped";
   const appDeleting = app.deleting;
   const projectDeleting = project.deleting === true;
@@ -340,8 +342,10 @@ export function renderApplication(
   const header = pageHeader({
     overline: "Application",
     title: app.appKey,
-    description: "Repository state and lightweight git actions for this application.",
-    meta: [project.name, app.kind ?? "app", app.path],
+    description: master
+      ? "Built-in Hanse assistant. Configure it like an agent; workspace work goes through its tools."
+      : "Repository state and lightweight git actions for this application.",
+    meta: [project.name, app.kind ?? "app", master ? folder : app.path],
     actions: appActions,
   });
 
@@ -426,7 +430,18 @@ export function renderApplication(
     ? applicationProjectDeleteDialog(project.id, project.name, appHref)
     : applicationDeleteDialog(project.id, app.appKey, appDeleting);
 
-  const body = `${stateStrip}${deletionBanner}<div id="git-panel" data-project-id="${escapeHtml(project.id)}" data-app-key="${escapeHtml(app.appKey)}" data-api-base="${escapeHtml(apiBase)}">
+  const masterBody = `${stateStrip}<section class="card section" id="master-panel" aria-labelledby="master-panel-title">
+    <div class="card__head"><h2 class="card__title" id="master-panel-title">Master workspace</h2><span class="badge badge--mono">system</span></div>
+    <div class="card__body stack--tight">
+      <div class="stack--tight"><span class="overline">Directory</span><span class="mono">${escapeHtml(folder)}</span></div>
+      <p class="small">The master's directory is coordinator-managed and read-only inside its container. Its instructions are rewritten on every coordinator start.</p>
+      <p class="small">Workspace changes go through the master's Hanse tools. Provider keys, git credentials, skill editing, image builds, and deletion are operator-only UI actions.</p>
+    </div>
+    <div class="card__foot"><a class="btn btn-secondary btn-sm" href="${escapeHtml(settingsHref)}">${icon("settings")}Application settings</a><a class="btn btn-ghost btn-sm" href="${escapeHtml(`/projects/${encodeURIComponent(project.id)}/apps/${encodeURIComponent(app.appKey)}/skills`)}">${icon("code")}Skills</a></div>
+  </section>`;
+  const body = master
+    ? masterBody
+    : `${stateStrip}${deletionBanner}<div id="git-panel" data-project-id="${escapeHtml(project.id)}" data-app-key="${escapeHtml(app.appKey)}" data-api-base="${escapeHtml(apiBase)}">
     <p id="git-live" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>
     <div class="workbench-grid workbench-grid--detail section">
       <div class="stack">
@@ -481,7 +496,7 @@ export function renderApplication(
     operatorName: chrome.operatorName,
     notice: chrome.notice,
     header,
-    scripts: ["/assets/git.js", "/assets/images.js"],
+    scripts: master ? [] : ["/assets/git.js", "/assets/images.js"],
     body,
     settingsHref,
     skillsHref: `/projects/${encodeURIComponent(project.id)}/apps/${encodeURIComponent(app.appKey)}/skills`,

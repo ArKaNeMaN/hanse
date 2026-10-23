@@ -1,4 +1,5 @@
 import type { HandoffState } from "../coordinator/handoff.js";
+import { isMasterProject, masterChatHref } from "../master/constants.js";
 
 /**
  * Shared HTML primitives for the hanse web UI.
@@ -369,7 +370,7 @@ function navItem(options: {
 }
 
 function sidebarProjects(options: ShellOptions): string {
-  const all = options.projects;
+  const all = options.projects.filter((project) => !isMasterProject(project.id));
   let shown = all.slice(0, 6);
   if (
     options.activeProjectId !== undefined &&
@@ -406,6 +407,12 @@ function sidebar(options: ShellOptions): string {
       label: "Projects",
       iconName: "folder",
       active: options.active === "projects",
+    }) +
+    navItem({
+      href: masterChatHref(),
+      label: "Master",
+      iconName: "gauge",
+      active: false,
     }) +
     navItem({
       href: "/handoffs",
