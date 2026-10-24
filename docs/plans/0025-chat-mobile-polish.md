@@ -1,8 +1,9 @@
 # 0025 - Mobile chat polish and turn control
 
-- Status: implemented; automated gates green; browser QA blocked by missing Chromium host libs
-  (journal 0029); real-device mobile QA pending; no commit yet. Design review PASS (`oracle` round 7);
-  plan review PASS (`momus` round 3)
+- Status: implemented; automated gates green; stage committed as `5a0a121`; background stream recovery
+  follow-up in journal 0030; browser QA blocked by missing Chromium host libs (journal 0029);
+  real-device mobile QA pending. Design review PASS (`oracle` round 7); plan review PASS (`momus`
+  round 3)
 - Design: [`docs/design/chat-mobile-polish.md`](../design/chat-mobile-polish.md)
 - Design reviewer: `oracle`; plan reviewer: `momus`
 - Owner decisions: closed (design §9); no open questions

@@ -18,6 +18,7 @@ import {
   rekeyOptimistic,
   resolveActiveStatusLabel,
   runtimeChip as runtimeChipSpec,
+  shouldResubscribe,
   toolStatusChip as toolStatusChipSpec,
 } from "./chat-core.js";
 import {
@@ -72,6 +73,8 @@ const PREVIEW_HINT = "Demo only. Preview pages share the coordinator's origin an
 const ABORT_SUPPRESS_MS = 15000;
 const ABORT_SETTLE_INTERVAL_MS = 1000;
 const ABORT_SETTLE_MAX_MS = 10000;
+const STREAM_HIDDEN_RECONNECT_MS = 10000;
+const STREAM_CONNECTING_RECONNECT_MS = 5000;
 
 const KNOWN_PART_TYPES = new Set([
   "text",
@@ -230,6 +233,7 @@ function main() {
   let sessionId = null;
   let eventSource = null;
   let failures = 0;
+  let hiddenSince = null;
   let creatingSession = false;
   const deletingSessions = new Set();
   let queueStripSignature = "";
@@ -4451,8 +4455,12 @@ function main() {
 
   function closeStream() {
     if (eventSource !== null) {
-      eventSource.close();
+      const source = eventSource;
       eventSource = null;
+      source.onopen = null;
+      source.onmessage = null;
+      source.onerror = null;
+      source.close();
     }
     if (reconcileTimer !== null) {
       window.clearTimeout(reconcileTimer);
@@ -4471,12 +4479,16 @@ function main() {
       setConnection("Paused", "paused");
       return;
     }
-    eventSource = new EventSource(eventsUrl());
-    eventSource.onopen = () => {
+    setConnection("Connecting", "reconnecting");
+    const source = new EventSource(eventsUrl());
+    eventSource = source;
+    source.onopen = () => {
+      if (eventSource !== source) return;
       failures = 0;
       setConnection("Live", "live");
     };
-    eventSource.onmessage = (event) => {
+    source.onmessage = (event) => {
+      if (eventSource !== source) return;
       let payload;
       try {
         payload = JSON.parse(event.data);
@@ -4486,7 +4498,12 @@ function main() {
       }
       handleStreamEvent(payload);
     };
-    eventSource.onerror = () => {
+    source.onerror = () => {
+      if (eventSource !== source) return;
+      if (document.hidden) {
+        setConnection("Reconnecting", "reconnecting");
+        return;
+      }
       failures += 1;
       if (failures >= 3) {
         closeStream();
@@ -4496,6 +4513,12 @@ function main() {
         setConnection("Reconnecting", "reconnecting");
       }
     };
+  }
+
+  function reconnectStream() {
+    subscribe();
+    hydrate().catch(() => {});
+    loadMessages({ reason: "reconnect", silent: true }).catch(() => {});
   }
 
   function scheduleReconcile(delay) {
@@ -9686,18 +9709,46 @@ function main() {
   }
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) {
+      hiddenSince = Date.now();
       stopRuntimePolling();
       return;
     }
+    const hiddenMs = hiddenSince === null ? 0 : Date.now() - hiddenSince;
+    hiddenSince = null;
     if (flushPending) {
       flushPending = false;
       const prepend = prependPending;
       prependPending = false;
       flushFrame({ full: true, prepend });
     }
+    if (
+      shouldResubscribe({
+        hasSource: eventSource !== null,
+        readyState: eventSource === null ? null : eventSource.readyState,
+        hiddenMs,
+        hiddenReconnectMs: STREAM_HIDDEN_RECONNECT_MS,
+        connectingReconnectMs: STREAM_CONNECTING_RECONNECT_MS,
+      })
+    ) {
+      reconnectStream();
+    }
     refreshRuntime().catch(() => {});
     startRuntimePolling();
     void refreshPreviews();
+  });
+  window.addEventListener("pagehide", (event) => {
+    if (event.persisted) closeStream();
+  });
+  window.addEventListener("pageshow", (event) => {
+    if (!event.persisted) return;
+    hiddenSince = null;
+    reconnectStream();
+    refreshRuntime().catch(() => {});
+    startRuntimePolling();
+    void refreshPreviews();
+  });
+  window.addEventListener("online", () => {
+    if (eventSource === null || eventSource.readyState !== 1) reconnectStream();
   });
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Enter" || !(event.metaKey || event.ctrlKey)) return;
@@ -9789,10 +9840,7 @@ function main() {
   if (streamRetry !== null) {
     streamRetry.addEventListener("click", () => {
       streamRetry.hidden = true;
-      setConnection("Connecting", "reconnecting");
-      subscribe();
-      hydrate().catch(() => {});
-      loadMessages({ silent: true }).catch(() => {});
+      reconnectStream();
     });
   }
   window.addEventListener("beforeunload", closeStream);

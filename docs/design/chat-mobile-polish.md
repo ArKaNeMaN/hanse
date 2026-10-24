@@ -1,9 +1,10 @@
 # Design - Mobile chat polish and turn control
 
 Status: **implemented and verified (automated)** (2026-10-24); browser QA blocked by the container's
-missing Chromium host libraries; real-device mobile QA pending. Design review: rounds 1-6 CHANGES
-REQUESTED, findings folded; **round 7 PASS** (non-blocking notes folded). Plan:
-`docs/plans/0025-chat-mobile-polish.md`; journal: `docs/journal/0029-chat-mobile-polish.md`.
+missing Chromium host libraries; real-device mobile QA pending. Background stream recovery follow-up
+in journal 0030. Design review: rounds 1-6 CHANGES REQUESTED, findings folded; **round 7 PASS**
+(non-blocking notes folded). Plan: `docs/plans/0025-chat-mobile-polish.md`; journal:
+`docs/journal/0029-chat-mobile-polish.md`.
 
 Scope: the chat client (`assets/chat.js`, `assets/chat-core.js`), chat markup and routes
 (`src/http/chat.ts`), the shared page shell (`src/http/ui.ts`), prompt warnings
@@ -636,3 +637,22 @@ Round 7 review: **PASS**. Non-blocking notes folded:
 | 3 | §8(a) “showing Working” is not discriminating | §8(a) now asserts the `sessionStorage` block entry is removed and the queued prompt promotes. |
 
 **Gate cleared:** design review PASS. The plan is written next.
+
+## Follow-up 2026-10-24: background stream recovery
+
+**Problem.** After a phone browser was backgrounded and restored, the chat stayed `Paused`. The
+app SSE's `onerror` counted hidden-tab failures, so three errors closed the source; the
+`visibilitychange` handler restarted runtime polling but never checked or replaced the SSE source.
+bfcache restores and network changes had the same gap.
+
+**Decision.** Hidden-tab errors set `Reconnecting` without consuming the three-strike budget. On
+return, `shouldResubscribe()` replaces a missing/`CLOSED` source, a source still `CONNECTING` after
+5 s, or any source after 10 s hidden (half-open protection), while a healthy `OPEN` source survives
+a short hide. `pageshow` (persisted) and `online` use the same reconnect path. Reconnect closes the
+old source, detaches its handlers, opens a fresh one, and hydrates prompts plus the last message
+page. The pure decision is `assets/chat-core.js:shouldResubscribe`; browser coverage is the
+`reconnect` scenario in `docs/design/chat-qa.mjs`.
+
+**Verification.** Unit tests cover missing/`CLOSED`, short/long hides, `CONNECTING` grace, and
+invalid values. The deterministic browser scenario is added but cannot launch Chromium in this
+container; real iOS/Android QA remains pending. Journal: `docs/journal/0030-chat-stream-recovery.md`.

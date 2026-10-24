@@ -21,6 +21,7 @@ import {
   rekeyOptimistic,
   resolveActiveStatusLabel,
   runtimeChip,
+  shouldResubscribe,
   toolStatusChip,
 } from "../assets/chat-core.js";
 
@@ -2224,5 +2225,48 @@ describe("autoscrollStep", () => {
     expect(autoscrollStep(0, Number.NaN)).toBe(0);
     expect(autoscrollStep(Number.NaN, Number.NaN)).toBe(0);
     expect(autoscrollStep(0, 100, Number.NaN)).toBe(25);
+  });
+});
+
+describe("shouldResubscribe", () => {
+  it("replaces a missing or closed source", () => {
+    expect(shouldResubscribe()).toBe(true);
+    expect(shouldResubscribe({ hasSource: false, readyState: null })).toBe(true);
+    expect(shouldResubscribe({ hasSource: true, readyState: 2 })).toBe(true);
+  });
+
+  it("keeps a healthy open source across a short hide", () => {
+    expect(shouldResubscribe({ hasSource: true, readyState: 1, hiddenMs: 0 })).toBe(false);
+    expect(shouldResubscribe({ hasSource: true, readyState: 1, hiddenMs: 9_999 })).toBe(false);
+  });
+
+  it("replaces an open source after a long hide", () => {
+    expect(shouldResubscribe({ hasSource: true, readyState: 1, hiddenMs: 30_000 })).toBe(true);
+    expect(
+      shouldResubscribe({
+        hasSource: true,
+        readyState: 1,
+        hiddenMs: 1_000,
+        hiddenReconnectMs: 1_000,
+      }),
+    ).toBe(true);
+  });
+
+  it("gives a still-connecting source a grace period", () => {
+    expect(shouldResubscribe({ hasSource: true, readyState: 0, hiddenMs: 4_999 })).toBe(false);
+    expect(shouldResubscribe({ hasSource: true, readyState: 0, hiddenMs: 5_000 })).toBe(true);
+  });
+
+  it("clamps invalid hidden durations and thresholds", () => {
+    expect(shouldResubscribe({ hasSource: true, readyState: 1, hiddenMs: -1 })).toBe(false);
+    expect(shouldResubscribe({ hasSource: true, readyState: 1, hiddenMs: Number.NaN })).toBe(false);
+    expect(
+      shouldResubscribe({
+        hasSource: true,
+        readyState: 1,
+        hiddenMs: 10,
+        hiddenReconnectMs: Number.NaN,
+      }),
+    ).toBe(false);
   });
 });

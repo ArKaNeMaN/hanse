@@ -389,6 +389,7 @@ function installFakeEventSource() {
       this.onmessage = null;
       this.onerror = null;
       window.__qaEventSource = this;
+      window.__qaEventSourceCount = (window.__qaEventSourceCount || 0) + 1;
       window.setTimeout(() => {
         this.readyState = 1;
         if (this.onopen) this.onopen({});
@@ -398,6 +399,11 @@ function installFakeEventSource() {
 
     emit(payload) {
       if (this.onmessage) this.onmessage({ data: JSON.stringify(payload) });
+    }
+
+    fail() {
+      this.readyState = 2;
+      if (this.onerror) this.onerror({});
     }
 
     close() {
@@ -5400,6 +5406,81 @@ async function scenarioReasoning(browser, target) {
   }
 }
 
+async function scenarioReconnect(browser, target) {
+  const sessionID = THREADS.main;
+  const { context, page, errors } = await newPage(browser, target);
+  try {
+    await installRoutes(page, { sessionId: sessionID, messages: [] });
+    await gotoChat(page, target, sessionID);
+    await page.waitForFunction(
+      () =>
+        window.__qaEventSourceCount >= 1 &&
+        document.getElementById("chat-live")?.textContent === "Live",
+      undefined,
+      { timeout: 3_000 },
+    );
+    const before = await page.evaluate(() => ({
+      count: window.__qaEventSourceCount,
+      live: document.getElementById("chat-live")?.textContent ?? "",
+    }));
+
+    await page.evaluate(() => {
+      Object.defineProperty(document, "hidden", { configurable: true, get: () => true });
+      Object.defineProperty(document, "visibilityState", {
+        configurable: true,
+        get: () => "hidden",
+      });
+      document.dispatchEvent(new Event("visibilitychange"));
+      const source = window.__qaEventSource;
+      if (!source) throw new Error("FakeEventSource is not installed");
+      source.fail();
+      source.fail();
+      source.fail();
+    });
+
+    const hidden = await page.evaluate(() => ({
+      count: window.__qaEventSourceCount,
+      live: document.getElementById("chat-live")?.textContent ?? "",
+      retryHidden: document.getElementById("chat-stream-retry")?.hidden ?? null,
+    }));
+    check(hidden.count === before.count, "background errors do not open a replacement stream");
+    check(
+      hidden.retryHidden === true,
+      `background errors do not expose the paused Retry control (${hidden.live})`,
+    );
+
+    await page.evaluate(() => {
+      Object.defineProperty(document, "hidden", { configurable: true, get: () => false });
+      Object.defineProperty(document, "visibilityState", {
+        configurable: true,
+        get: () => "visible",
+      });
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await page.waitForFunction(
+      (count) =>
+        window.__qaEventSourceCount === count + 1 &&
+        document.getElementById("chat-live")?.textContent === "Live",
+      before.count,
+      { timeout: 3_000 },
+    );
+    const after = await page.evaluate(() => ({
+      count: window.__qaEventSourceCount,
+      live: document.getElementById("chat-live")?.textContent ?? "",
+      retryHidden: document.getElementById("chat-stream-retry")?.hidden ?? null,
+    }));
+    check(after.count === before.count + 1, "returning to the page opens one replacement stream");
+    check(after.live === "Live", `the replacement stream returns to Live (${after.live})`);
+    check(after.retryHidden === true, "the Retry control stays hidden after recovery");
+    await shot(page, "reconnect-after-background-1440-dark");
+
+    checkNoErrors(errors);
+    return { before, hidden, after };
+  } finally {
+    await context.close();
+  }
+}
+
 async function scenarioStop(browser, target) {
   const sessionID = THREADS.send;
   const fixture = sendFixture();
@@ -5680,6 +5761,7 @@ try {
     await runScenario("plan-visibility", () => scenarioPlanVisibility(browser, target));
     await runScenario("reasoning", () => scenarioReasoning(browser, target));
     await runScenario("stop", () => scenarioStop(browser, target));
+    await runScenario("reconnect", () => scenarioReconnect(browser, target));
   }
 } catch (error) {
   report.status = "FAIL";

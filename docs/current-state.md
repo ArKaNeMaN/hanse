@@ -447,6 +447,10 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   queued prompts remain queued behind a per-session block (mirrored to `sessionStorage`) so an idle
   session does not show a phantom `Working` turn. Context snapshots seed `session.status` after a
   reload; a real `idle → busy|retry` transition clears the block.
+- Background stream recovery (0030): hidden-tab SSE errors do not consume the three-strike `Paused`
+  budget; returning from hidden/bfcache, or going online, replaces a missing/`CLOSED` source (and a
+  `CONNECTING` source after 5 s or any source after 10 s hidden) and hydrates prompts plus the last
+  message page. Stale source handlers are detached before the replacement.
 - Plan rail: the Plan section, its divider, and the `Plan N/M` chip are hidden until the active
   session renders at least one Todo; cached Todos survive a failed refresh (“Not updating”), and the
   Saved-permissions divider follows its section.

@@ -38,8 +38,9 @@
   cursor-based scroll-up history, overlap-aware snapshot merge, and the in-feed generation row.
 - [Mobile chat polish and turn control](./chat-mobile-polish.md) - touch composer focus/viewport,
   coarse-pointer Enter, Stop/abort, queue-state guarding, policy diagnostic filtering, plan
-  visibility, smooth autoscroll, reasoning type/timer, and the elapsed seed. Status: implemented;
-  automated gates green; browser QA blocked by host Chromium libs; device QA pending.
+  visibility, smooth autoscroll, reasoning type/timer, elapsed seed, and background stream recovery.
+  Status: implemented; automated gates green; browser QA blocked by host Chromium libs; device QA
+  pending; stream recovery follow-up in journal 0030.
 - [Context usage and compaction](./context-compaction.md) - server-side per-session context
   accounting, provider context limits, manual compaction, and threshold-based auto-compaction.
   Status: approved (oracle PASS).

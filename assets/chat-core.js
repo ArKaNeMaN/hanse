@@ -1817,6 +1817,39 @@ export function autoscrollStep(current, target, ease = 0.25) {
   return Math.min(nextTarget, position + Math.max(1, (nextTarget - position) * ratio));
 }
 
+/**
+ * Whether a returning page must replace the app event stream.
+ *
+ * EventSource cannot prove a socket survived a suspended tab. A missing or CLOSED source is
+ * always replaced. A source that stayed hidden long enough may be half-open, so it is replaced
+ * too; a short hide leaves an OPEN source alone. A source still CONNECTING after the grace period
+ * is replaced because the browser may have stopped retrying it.
+ *
+ * @param {{ hasSource?: boolean, readyState?: number | null, hiddenMs?: number,
+ *   hiddenReconnectMs?: number, connectingReconnectMs?: number }} [input]
+ * @returns {boolean}
+ */
+export function shouldResubscribe(input) {
+  const state = input === null || typeof input !== "object" ? {} : input;
+  if (state.hasSource !== true) return true;
+  if (state.readyState === 2) return true; // EventSource.CLOSED
+  const hiddenMs =
+    typeof state.hiddenMs === "number" && Number.isFinite(state.hiddenMs)
+      ? Math.max(0, state.hiddenMs)
+      : 0;
+  const hiddenReconnectMs =
+    typeof state.hiddenReconnectMs === "number" && Number.isFinite(state.hiddenReconnectMs)
+      ? state.hiddenReconnectMs
+      : 30000;
+  const connectingReconnectMs =
+    typeof state.connectingReconnectMs === "number" &&
+    Number.isFinite(state.connectingReconnectMs)
+      ? state.connectingReconnectMs
+      : 5000;
+  if (hiddenMs >= hiddenReconnectMs) return true;
+  return state.readyState === 0 && hiddenMs >= connectingReconnectMs; // EventSource.CONNECTING
+}
+
 /* ------------------------------------------------------------------------- */
 /* Context usage                                                             */
 /* ------------------------------------------------------------------------- */
