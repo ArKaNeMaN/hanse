@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   applySnapshot,
   autoCompactText,
+  autoscrollFollow,
+  autoscrollStep,
   classifyOmo,
+  composerAction,
   contextChipLabel,
   contextDetail,
   contextErrorText,
@@ -10,8 +13,11 @@ import {
   contextStateClass,
   contextSummary,
   deriveQueue,
+  elapsedSeed,
   formatTokenCount,
   parseMarkdownTable,
+  provisionalPartType,
+  reasoningElapsedMs,
   rekeyOptimistic,
   resolveActiveStatusLabel,
   runtimeChip,
@@ -537,6 +543,52 @@ describe("deriveQueue", () => {
       });
       expect(deriveQueue(store, { sessionStatusType: "busy" }).activeID).toBe("u2");
     }
+  });
+
+  it("keeps every pending prompt queued when promotion is blocked on an idle session", () => {
+    const store = makeStore({
+      messages: [
+        user("u1"),
+        assistant("a1", [textPart("a1t", "done")], {
+          parentID: "u1",
+          finish: "stop",
+          time: { created: 1, completed: 2 },
+        }),
+        user("u2"),
+        user("u3"),
+      ],
+      activePromptID: "u2",
+    });
+
+    expect(deriveQueue(store, { sessionStatusType: "idle", allowPromotion: false })).toEqual({
+      activeID: null,
+      queuedIDs: ["u2", "u3"],
+      turnContinues: false,
+      nextActivePromptID: null,
+    });
+    expect(deriveQueue(store, { sessionStatusType: "idle" })).toEqual({
+      activeID: "u2",
+      queuedIDs: ["u3"],
+      turnContinues: false,
+      nextActivePromptID: "u2",
+    });
+  });
+
+  it("keeps the turn-continues result when promotion is blocked during a live turn", () => {
+    const store = makeStore({
+      messages: [
+        user("u1"),
+        assistant("a1", [textPart("a1t", "streaming")], { parentID: "u1", time: { created: 1 } }),
+        user("u2"),
+      ],
+    });
+
+    expect(deriveQueue(store, { sessionStatusType: "busy", allowPromotion: false })).toEqual({
+      activeID: null,
+      queuedIDs: ["u2"],
+      turnContinues: true,
+      nextActivePromptID: null,
+    });
   });
 });
 
@@ -1375,6 +1427,33 @@ describe("applySnapshot", () => {
     expect(explicit.messages.has("u1")).toBe(false);
     expect(explicit.messages.get("u2")?.parts.get("u2p")?.data.text).toBe("new");
   });
+
+  it("forwards allowPromotion so a snapshot rebuild cannot re-promote a pending prompt", () => {
+    const snapshot = [
+      snapMessage("u1", "user", [snapPart("u1p", "text", { text: "one" })], {
+        time: { completed: 1 },
+      }),
+      snapMessage("a1", "assistant", [snapPart("a1p", "text", { text: "done" })], {
+        parentID: "u1",
+        finish: "stop",
+        time: { created: 1, completed: 2 },
+      }),
+      snapMessage("u2", "user", [snapPart("u2p", "text", { text: "two" })]),
+    ];
+
+    const blocked = applySnapshot(makeStore({ messages: [] }), snapshot, {
+      sessionStatusType: "idle",
+      allowPromotion: false,
+    }).store;
+    expect(blocked.activePromptID).toBeNull();
+    expect(blocked.queue).toEqual(["u2"]);
+
+    const promoted = applySnapshot(makeStore({ messages: [] }), snapshot, {
+      sessionStatusType: "idle",
+    }).store;
+    expect(promoted.activePromptID).toBe("u2");
+    expect(promoted.queue).toEqual([]);
+  });
 });
 
 describe("rekeyOptimistic", () => {
@@ -1570,6 +1649,43 @@ describe("rekeyOptimistic", () => {
     });
 
     expect(store.messages.get("msg_1")?.optimistic).toBe("unknown");
+  });
+
+  it("forwards allowPromotion so an acceptance rekey cannot re-promote a pending prompt", () => {
+    const current = makeStore({
+      messages: [
+        user("u1"),
+        assistant("a1", [textPart("a1t", "done")], {
+          parentID: "u1",
+          finish: "stop",
+          time: { created: 1, completed: 2 },
+        }),
+        {
+          ...user("local_1", [{ id: "local_p", type: "text", text: "hi", provisional: true }]),
+          optimistic: "sending",
+        },
+      ],
+    });
+
+    const blocked = rekeyOptimistic(current, {
+      tempID: "local_1",
+      serverID: "msg_1",
+      sessionStatusType: "idle",
+      allowPromotion: false,
+      bufferedEvents: [rawMessageUpdated({ id: "msg_1", role: "user" })],
+    }).store;
+    expect(blocked.activePromptID).toBeNull();
+    expect(blocked.queue).toEqual(["msg_1"]);
+    expect(blocked.messages.get("msg_1")?.optimistic).toBe("queued");
+
+    const promoted = rekeyOptimistic(current, {
+      tempID: "local_1",
+      serverID: "msg_1",
+      sessionStatusType: "idle",
+      bufferedEvents: [rawMessageUpdated({ id: "msg_1", role: "user" })],
+    }).store;
+    expect(promoted.activePromptID).toBe("msg_1");
+    expect(promoted.queue).toEqual([]);
   });
 });
 
@@ -1802,6 +1918,31 @@ describe("resolveActiveStatusLabel", () => {
     expect(resolveActiveStatusLabel({ statusType: "idle" })).toBe("Ready");
     expect(resolveActiveStatusLabel({})).toBe("Ready");
   });
+
+  it("returns Ready for a blocked idle/unknown status before the queue fallback", () => {
+    expect(
+      resolveActiveStatusLabel({
+        statusType: "idle",
+        queueLength: 2,
+        activePromptID: "msg_2",
+        queueBlocked: true,
+      }),
+    ).toBe("Ready");
+    expect(
+      resolveActiveStatusLabel({ statusType: "unknown", queueLength: 1, queueBlocked: true }),
+    ).toBe("Ready");
+    expect(resolveActiveStatusLabel({ queueLength: 1, queueBlocked: true })).toBe("Ready");
+    expect(resolveActiveStatusLabel({ statusType: "idle", queueLength: 1 })).toBe("Working");
+  });
+
+  it("keeps the higher-priority labels for a blocked busy, retry, or waiting session", () => {
+    expect(resolveActiveStatusLabel({ statusType: "busy", queueBlocked: true })).toBe("Thinking");
+    expect(
+      resolveActiveStatusLabel({ statusType: "busy", unsealedText: true, queueBlocked: true }),
+    ).toBe("Working");
+    expect(resolveActiveStatusLabel({ statusType: "retry", queueBlocked: true })).toBe("Retrying");
+    expect(resolveActiveStatusLabel({ waiting: true, queueBlocked: true })).toBe("Waiting for you");
+  });
 });
 
 describe("context usage helpers", () => {
@@ -1924,5 +2065,164 @@ describe("context usage helpers", () => {
     );
     expect(contextErrorText(null)).toBe("Compaction failed.");
     expect(contextErrorText("upstream_body_should_not_leak")).toBe("Compaction failed.");
+  });
+});
+
+describe("composerAction", () => {
+  const idle = {
+    turnActive: false,
+    hasDraft: false,
+    sessionId: "ses_1",
+    acceptanceBusy: false,
+    promptsWaiting: false,
+    abortPending: false,
+  };
+
+  it("returns an enabled Send for an idle empty composer", () => {
+    expect(composerAction(idle)).toEqual({ mode: "send", disabled: false });
+    expect(composerAction({ ...idle, hasDraft: true })).toEqual({
+      mode: "send",
+      disabled: false,
+    });
+  });
+
+  it("returns an enabled Stop for a live turn with an empty composer", () => {
+    expect(composerAction({ ...idle, turnActive: true })).toEqual({
+      mode: "stop",
+      disabled: false,
+    });
+  });
+
+  it("returns Send while a draft exists even during a live turn", () => {
+    expect(composerAction({ ...idle, turnActive: true, hasDraft: true })).toEqual({
+      mode: "send",
+      disabled: false,
+    });
+  });
+
+  it("keeps Stop available with a pending prompt dock", () => {
+    expect(composerAction({ ...idle, turnActive: true, promptsWaiting: true })).toEqual({
+      mode: "stop",
+      disabled: false,
+    });
+  });
+
+  it("disables Send while an acceptance is busy or a prompt is waiting", () => {
+    expect(composerAction({ ...idle, acceptanceBusy: true })).toEqual({
+      mode: "send",
+      disabled: true,
+    });
+    expect(composerAction({ ...idle, promptsWaiting: true })).toEqual({
+      mode: "send",
+      disabled: true,
+    });
+  });
+
+  it("disables Stop while an abort is pending", () => {
+    expect(composerAction({ ...idle, turnActive: true, abortPending: true })).toEqual({
+      mode: "stop",
+      disabled: true,
+    });
+  });
+
+  it("returns Send without a session", () => {
+    expect(composerAction({ ...idle, turnActive: true, sessionId: null })).toEqual({
+      mode: "send",
+      disabled: false,
+    });
+  });
+
+  it("defaults a missing input to Send enabled", () => {
+    expect(composerAction()).toEqual({ mode: "send", disabled: false });
+  });
+});
+
+describe("elapsedSeed", () => {
+  it("prefers a finite assistant creation time in ms or seconds", () => {
+    expect(elapsedSeed(1_700_000_000_000, 1_600_000_000_000)).toBe(1_700_000_000_000);
+    expect(elapsedSeed(1_700_000_000, 1_600_000_000)).toBe(1_700_000_000_000);
+  });
+
+  it("falls back to activation when the assistant time is missing or non-finite", () => {
+    expect(elapsedSeed(undefined, 1_700_000_000)).toBe(1_700_000_000_000);
+    expect(elapsedSeed(Number.NaN, 1_700_000_000_000)).toBe(1_700_000_000_000);
+    expect(elapsedSeed(null, 1_700_000_000_000)).toBe(1_700_000_000_000);
+  });
+
+  it("returns null when both sources are invalid", () => {
+    expect(elapsedSeed(undefined, undefined)).toBeNull();
+    expect(elapsedSeed(Number.NaN, Number.POSITIVE_INFINITY)).toBeNull();
+    expect(elapsedSeed(null, null)).toBeNull();
+  });
+});
+
+describe("provisionalPartType", () => {
+  it("accepts only the two known provable part types", () => {
+    expect(provisionalPartType("text")).toBe("text");
+    expect(provisionalPartType("reasoning")).toBe("reasoning");
+    expect(provisionalPartType("tool")).toBeNull();
+    expect(provisionalPartType(undefined)).toBeNull();
+    expect(provisionalPartType(null)).toBeNull();
+  });
+});
+
+describe("reasoningElapsedMs", () => {
+  it("returns the difference for a finite start and end", () => {
+    expect(reasoningElapsedMs(1_700_000_000_000, 1_700_000_005_000)).toBe(5000);
+  });
+
+  it("uses now when end is missing", () => {
+    expect(reasoningElapsedMs(1_700_000_000_000, undefined, 1_700_000_003_000)).toBe(3000);
+    expect(reasoningElapsedMs(1_700_000_000_000, null, 1_700_000_001_500)).toBe(1500);
+  });
+
+  it("normalizes second-based timestamps", () => {
+    expect(reasoningElapsedMs(1_700_000_000, 1_700_000_005)).toBe(5000);
+  });
+
+  it("returns null without a finite start", () => {
+    expect(reasoningElapsedMs(undefined, 1_700_000_005_000)).toBeNull();
+    expect(reasoningElapsedMs(Number.NaN, 1_700_000_005_000)).toBeNull();
+  });
+
+  it("clamps an end before the start to zero", () => {
+    expect(reasoningElapsedMs(1_700_000_010_000, 1_700_000_000_000)).toBe(0);
+  });
+});
+
+describe("autoscrollFollow", () => {
+  it("follows when pinned or forced and never on a prepend", () => {
+    expect(autoscrollFollow({ pinned: true })).toBe(true);
+    expect(autoscrollFollow({ forceBottom: true })).toBe(true);
+    expect(autoscrollFollow({ pinned: false })).toBe(false);
+    expect(autoscrollFollow({ pinned: true, prepend: true })).toBe(false);
+    expect(autoscrollFollow({ forceBottom: true, prepend: true })).toBe(false);
+    expect(autoscrollFollow()).toBe(false);
+  });
+});
+
+describe("autoscrollStep", () => {
+  it("snaps to the target within the half-pixel threshold", () => {
+    expect(autoscrollStep(100, 100.5)).toBe(100.5);
+    expect(autoscrollStep(100, 100.6)).toBeGreaterThanOrEqual(100.6);
+  });
+
+  it("eases toward the target with a minimum one-pixel step", () => {
+    expect(autoscrollStep(0, 100)).toBe(25);
+    expect(autoscrollStep(0, 100, 0.5)).toBe(50);
+    expect(autoscrollStep(0, 100, 0)).toBe(1);
+    expect(autoscrollStep(99.8, 100, 0.01)).toBe(100);
+  });
+
+  it("never overshoots the target", () => {
+    expect(autoscrollStep(99.8, 100, 1)).toBe(100);
+    expect(autoscrollStep(0, 10, 2)).toBe(10);
+  });
+
+  it("guards non-finite inputs", () => {
+    expect(autoscrollStep(Number.NaN, 100)).toBe(100);
+    expect(autoscrollStep(0, Number.NaN)).toBe(0);
+    expect(autoscrollStep(Number.NaN, Number.NaN)).toBe(0);
+    expect(autoscrollStep(0, 100, Number.NaN)).toBe(25);
   });
 });

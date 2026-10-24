@@ -309,6 +309,30 @@ describe("prompts HTTP", () => {
     );
   });
 
+  it("filters policy verification diagnostics but keeps real policy findings", async () => {
+    const f = fixture();
+    const upstream = await fakeOpencode();
+    upstream.reply("GET", "/question", [question()]);
+    upstream.reply("GET", "/permission", [permission()]);
+    upstream.reply("GET", "/api/question/request", { error: "boom" }, 500);
+    upstream.reply("GET", "/api/permission/request", { data: [v2Permission()] });
+    const realFinding = 'agent "custom-auditor": external_directory does not deny /etc/hostname';
+    useUpstream(f.deps, upstream.endpoint, [
+      "policy_unverified: agent policy verification failed",
+      "  policy_unverified: agent policy verification timed out",
+      realFinding,
+    ]);
+
+    const response = await handlePrompts(
+      f.deps,
+      request({ query: { project: "p1" }, headers: auth(f.token) }),
+    );
+
+    expect(response.status).toBe(200);
+    const body = JSON.parse(response.body) as { warnings: string[] };
+    expect(body.warnings).toEqual(["v2 questions are unavailable", realFinding]);
+  });
+
   it("keeps available sources and warns about failed ones", async () => {
     const f = fixture();
     const upstream = await fakeOpencode();

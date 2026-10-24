@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  abortSession,
   deleteSavedPermission,
   deleteSession,
   listMessagePage,
@@ -575,6 +576,69 @@ describe("endpoint authorization", () => {
 
     const expected = `Basic ${Buffer.from("opencode:hunter2", "utf8").toString("base64")}`;
     expect(seen).toEqual([expected, expected]);
+  });
+});
+
+describe("abort client", () => {
+  it("posts to the abort route with auth and parses a true body", async () => {
+    const seen: Array<{ method?: string; url?: string; body: string; auth?: string }> = [];
+    const server = await upstream((request, response, body) => {
+      seen.push({
+        method: request.method,
+        url: request.url,
+        body,
+        auth: request.headers.authorization,
+      });
+      json(response, true);
+    });
+    setEndpointAuthorization(server.endpoint, "opencode", "hunter2");
+
+    await expect(abortSession(server.endpoint, "ses_1")).resolves.toBe(true);
+
+    expect(seen).toEqual([
+      {
+        method: "POST",
+        url: "/session/ses_1/abort",
+        body: "",
+        auth: `Basic ${Buffer.from("opencode:hunter2", "utf8").toString("base64")}`,
+      },
+    ]);
+  });
+
+  it("returns false for an already-idle turn", async () => {
+    const server = await upstream((_request, response) => {
+      json(response, false);
+    });
+
+    await expect(abortSession(server.endpoint, "ses_1")).resolves.toBe(false);
+    expect(server.calls.map((call) => `${call.method} ${call.url}`)).toEqual([
+      "POST /session/ses_1/abort",
+    ]);
+  });
+
+  it("keeps an upstream 404 as a typed error", async () => {
+    const server = await upstream((_request, response) => {
+      response.writeHead(404, { "content-type": "application/json" });
+      response.end('{"error":"no session"}');
+    });
+
+    const error = await abortSession(server.endpoint, "ses_1").catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(OpencodeHttpError);
+    expect((error as OpencodeHttpError).status).toBe(404);
+    expect((error as OpencodeHttpError).path).toBe("/session/ses_1/abort");
+  });
+
+  it("keeps a transport failure as a typed status-0 error", async () => {
+    const server = await upstream((request) => {
+      request.socket.destroy();
+    });
+
+    const error = await abortSession(server.endpoint, "ses_1").catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(OpencodeHttpError);
+    expect((error as OpencodeHttpError).status).toBe(0);
+    expect((error as OpencodeHttpError).path).toBe("/session/ses_1/abort");
   });
 });
 

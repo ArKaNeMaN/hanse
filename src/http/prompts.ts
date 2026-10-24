@@ -536,11 +536,14 @@ async function handlePromptsList(
   }
   const policyWarnings = deps.manager?.policyWarnings(found.app.id) ?? [];
   warnings.push(...policyWarnings);
+  const visibleWarnings = warnings.filter(
+    (warning) => !warning.trim().startsWith("policy_unverified:"),
+  );
   return json(200, {
     questions,
     permissions,
     truncated,
-    ...(warnings.length === 0 ? {} : { warnings }),
+    ...(visibleWarnings.length === 0 ? {} : { warnings: visibleWarnings }),
   });
 }
 

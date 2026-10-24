@@ -102,16 +102,20 @@ function fixture(projects = true): Fixture {
     settings,
     getProjects: () =>
       (
-        db.prepare("SELECT id, name, root_path FROM projects ORDER BY rowid").all() as Array<{
+        db
+          .prepare("SELECT id, name, root_path, deleting FROM projects ORDER BY rowid")
+          .all() as Array<{
           id: string;
           name: string;
           root_path: string;
+          deleting: number;
         }>
       ).map((row) => ({
         id: row.id,
         name: row.name,
         rootPath: row.root_path,
         workspaceRoot: "/tmp",
+        deleting: row.deleting === 1,
         service: new CoordinatorService(db, row.id),
       })),
   };
@@ -270,6 +274,10 @@ describe("chat page", () => {
     expect(response.body).toContain('data-project-id="p1"');
     expect(response.body).toContain('data-runtime-url="/api/apps/storefront/runtime?project=p1"');
     expect(response.body).toContain('id="chat-composer"');
+    expect(response.body).toContain(
+      '<meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content" />',
+    );
+    expect(response.body).toContain('enterkeyhint="enter"');
     expect(response.body).toContain('id="chat-context"');
     expect(response.body).toContain("data-chat-context-toggle");
     expect(response.body).toContain("/assets/chat.js");
@@ -306,9 +314,13 @@ describe("chat page", () => {
     expect(response.body).toContain('id="chat-policy-chip"');
     expect(response.body).toContain('id="chat-waiting"');
     expect(response.body).toContain('id="chat-plan-chip"');
-    expect(response.body).toContain('id="chat-plan-section"');
+    expect(response.body).toContain('<hr class="rule" id="chat-plan-divider" hidden />');
+    expect(response.body).toContain(
+      'id="chat-plan-section" aria-labelledby="context-plan-title" hidden',
+    );
     expect(response.body).toContain('id="context-plan-title"');
     expect(response.body).toContain('id="chat-plan-list"');
+    expect(response.body).toContain('<hr class="rule" id="chat-saved-divider" hidden />');
     expect(response.body).toContain('id="chat-saved-section"');
     expect(response.body).toContain('id="chat-saved-list"');
     expect(response.body).toContain('class="btn btn-ghost btn-sm chat-context-chip"');
@@ -911,6 +923,177 @@ console.log(JSON.stringify(Object.keys(Prism.languages)));`;
 
     expect(response.status).toBe(502);
     expect(JSON.parse(response.body).error).toContain("opencode DELETE /session/ses_1");
+  });
+});
+
+describe("abort route", () => {
+  const abortPath = "/api/apps/storefront/sessions/ses_1/abort";
+
+  function abortRequest(overrides: Partial<HttpRequest> = {}): HttpRequest {
+    return request({
+      method: "POST",
+      path: abortPath,
+      query: { project: "p1" },
+      ...overrides,
+    });
+  }
+
+  function managerFor(
+    endpoint: string | undefined,
+    counters: { ensure: number; endpoint: number },
+  ): InstanceManager {
+    return {
+      ensure: async () => {
+        counters.ensure += 1;
+        return endpoint ?? "http://127.0.0.1:1";
+      },
+      endpointFor: () => {
+        counters.endpoint += 1;
+        return endpoint;
+      },
+    } as unknown as InstanceManager;
+  }
+
+  function newCounters(): { ensure: number; endpoint: number } {
+    return { ensure: 0, endpoint: 0 };
+  }
+
+  it("forbids an agent principal before any app or runtime lookup", async () => {
+    const f = fixture();
+    const upstream = await fakeOpencode();
+    const counters = newCounters();
+    f.deps.manager = managerFor(upstream.endpoint, counters);
+    const { token } = createPrincipal(f.db, { kind: "agent", name: "bot" });
+
+    const response = await handleChat(f.deps, abortRequest({ headers: auth(token) }));
+
+    expect(response.status).toBe(403);
+    expect(JSON.parse(response.body)).toEqual({
+      error: "only a human principal may abort a session",
+    });
+    expect(counters).toEqual({ ensure: 0, endpoint: 0 });
+    expect(upstream.calls).toEqual([]);
+  });
+
+  it("rejects every non-POST method without touching the runtime", async () => {
+    const f = fixture();
+    const upstream = await fakeOpencode();
+    const counters = newCounters();
+    f.deps.manager = managerFor(upstream.endpoint, counters);
+
+    for (const method of ["GET", "PUT", "DELETE", "PATCH"]) {
+      const response = await handleChat(f.deps, abortRequest({ method, headers: auth(f.token) }));
+      expect(response.status, method).toBe(405);
+      expect(JSON.parse(response.body)).toEqual({ error: "method not allowed" });
+    }
+    expect(counters).toEqual({ ensure: 0, endpoint: 0 });
+    expect(upstream.calls).toEqual([]);
+  });
+
+  it("returns 404 for an unknown application without starting it", async () => {
+    const f = fixture();
+    const upstream = await fakeOpencode();
+    const counters = newCounters();
+    f.deps.manager = managerFor(upstream.endpoint, counters);
+
+    const response = await handleChat(
+      f.deps,
+      abortRequest({
+        path: "/api/apps/nope/sessions/ses_1/abort",
+        headers: auth(f.token),
+      }),
+    );
+
+    expect(response.status).toBe(404);
+    expect(JSON.parse(response.body)).toEqual({
+      error: "unknown application: nope",
+      code: "unknown_app",
+    });
+    expect(counters).toEqual({ ensure: 0, endpoint: 0 });
+    expect(upstream.calls).toEqual([]);
+  });
+
+  it("returns 409 when the app or its project is pending deletion", async () => {
+    const markers = [
+      { table: "apps", id: "p1:storefront" },
+      { table: "projects", id: "p1" },
+    ] as const;
+    for (const marker of markers) {
+      const f = fixture();
+      const upstream = await fakeOpencode();
+      const counters = newCounters();
+      f.deps.manager = managerFor(upstream.endpoint, counters);
+      f.db.prepare(`UPDATE ${marker.table} SET deleting = 1 WHERE id = ?`).run(marker.id);
+
+      const response = await handleChat(f.deps, abortRequest({ headers: auth(f.token) }));
+
+      expect(response.status, marker.table).toBe(409);
+      expect(JSON.parse(response.body)).toEqual({
+        error: "application is pending deletion",
+        code: "deletion_pending",
+      });
+      expect(counters).toEqual({ ensure: 0, endpoint: 0 });
+      expect(upstream.calls).toEqual([]);
+    }
+  });
+
+  it("returns 503 when the agent is not running and never calls ensure", async () => {
+    const f = fixture();
+    const counters = newCounters();
+    f.deps.manager = managerFor(undefined, counters);
+
+    const response = await handleChat(f.deps, abortRequest({ headers: auth(f.token) }));
+
+    expect(response.status).toBe(503);
+    expect(JSON.parse(response.body)).toEqual({
+      error: "agent is not running",
+      code: "agent_not_running",
+    });
+    expect(counters).toEqual({ ensure: 0, endpoint: 1 });
+  });
+
+  it("aborts through the running endpoint without starting the agent", async () => {
+    const f = fixture();
+    const upstream = await fakeOpencode(200, "true");
+    const counters = newCounters();
+    f.deps.manager = managerFor(upstream.endpoint, counters);
+
+    const response = await handleChat(f.deps, abortRequest({ headers: auth(f.token) }));
+
+    expect(response.status).toBe(200);
+    expect(JSON.parse(response.body)).toEqual({ aborted: true });
+    expect(upstream.calls).toEqual([{ method: "POST", url: "/session/ses_1/abort", body: "" }]);
+    expect(counters).toEqual({ ensure: 0, endpoint: 1 });
+  });
+
+  it("maps an upstream 404 to session_not_found", async () => {
+    const f = fixture();
+    const upstream = await fakeOpencode(404, '{"error":"no session"}');
+    f.deps.manager = managerFor(upstream.endpoint, newCounters());
+
+    const response = await handleChat(f.deps, abortRequest({ headers: auth(f.token) }));
+
+    expect(response.status).toBe(404);
+    expect(JSON.parse(response.body)).toEqual({
+      error: "session not found",
+      code: "session_not_found",
+    });
+  });
+
+  it("maps any other upstream failure to abort_failed", async () => {
+    for (const status of [500, 502]) {
+      const f = fixture();
+      const upstream = await fakeOpencode(status, '{"error":"boom"}');
+      f.deps.manager = managerFor(upstream.endpoint, newCounters());
+
+      const response = await handleChat(f.deps, abortRequest({ headers: auth(f.token) }));
+
+      expect(response.status, String(status)).toBe(502);
+      expect(JSON.parse(response.body)).toEqual({
+        error: "could not stop the turn",
+        code: "abort_failed",
+      });
+    }
   });
 });
 

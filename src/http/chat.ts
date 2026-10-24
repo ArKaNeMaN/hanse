@@ -4,6 +4,7 @@ import type { Handoff } from "../coordinator/handoff.js";
 import type { Principal } from "../identity/principals.js";
 import { isMasterApp } from "../master/constants.js";
 import {
+  abortSession,
   createSession,
   deleteSession,
   listMessagePage,
@@ -336,7 +337,7 @@ function renderChatPage(
     <form class="composer" id="chat-composer" data-no-busy>
       <div class="composer__row">
         <label class="sr-only" for="chat-prompt">Message ${escapeHtml(app.appKey)} agent</label>
-        <textarea class="textarea" id="chat-prompt" name="prompt" rows="1" required placeholder="Message ${escapeHtml(app.appKey)} agent" aria-describedby="chat-composer-hint" role="combobox" aria-autocomplete="list" aria-haspopup="listbox" aria-controls="chat-command-listbox" aria-expanded="false"></textarea>
+        <textarea class="textarea" id="chat-prompt" name="prompt" rows="1" required enterkeyhint="enter" placeholder="Message ${escapeHtml(app.appKey)} agent" aria-describedby="chat-composer-hint" role="combobox" aria-autocomplete="list" aria-haspopup="listbox" aria-controls="chat-command-listbox" aria-expanded="false"></textarea>
         <button class="btn btn-ghost btn-icon" id="chat-commands-button" type="button" aria-label="Commands" aria-haspopup="listbox" aria-expanded="false" aria-controls="chat-command-listbox" title="Commands">${icon("slash")}</button>
         <button class="btn btn-primary" id="chat-send" type="submit">${icon("send")}<span class="btn__label">Send</span></button>
       </div>
@@ -402,13 +403,13 @@ function renderChatPage(
         </div>
         <p class="field-error" id="chat-context-error" role="alert" hidden></p>
       </section>
-      <hr class="rule" />
-      <section class="chat-context__section chat-plan-section" id="chat-plan-section" aria-labelledby="context-plan-title">
+      <hr class="rule" id="chat-plan-divider" hidden />
+      <section class="chat-context__section chat-plan-section" id="chat-plan-section" aria-labelledby="context-plan-title" hidden>
         <div class="cluster summary-row"><h2 class="overline" id="context-plan-title" tabindex="-1">Plan</h2><span class="caption" id="chat-plan-summary">No plan yet</span></div>
         <p class="chat-plan__empty" id="chat-plan-empty">Send a message to start a session.</p>
         <ul class="chat-plan__list" id="chat-plan-list" hidden></ul>
       </section>
-      <hr class="rule" />
+      <hr class="rule" id="chat-saved-divider" hidden />
       <section class="chat-context__section" id="chat-saved-section" aria-labelledby="context-saved-title" hidden>
         <div class="cluster summary-row"><h2 class="overline" id="context-saved-title">Saved permissions</h2><span class="badge" id="chat-saved-badge" hidden>New</span></div>
         <p class="caption">Durable project grants. Revoke to restore the policy.</p>
@@ -446,6 +447,7 @@ function renderChatPage(
     pageClass: "page--chat",
     bodyClass: "page__body--chat",
     moduleScripts: ["/assets/chat.js"],
+    viewport: "width=device-width, initial-scale=1, interactive-widget=resizes-content",
     topbarActions,
     body: `<div class="chat-shell chat-shell--workspace" id="chat-shell" data-app-key="${escapeHtml(app.appKey)}" data-project-id="${escapeHtml(project.id)}" data-runtime-url="${escapeHtml(`/api/apps/${encodeURIComponent(app.appKey)}/runtime?project=${encodeURIComponent(project.id)}`)}" data-ide-url="${escapeHtml(ideFolderUrl(folder))}" data-app-url="${escapeHtml(appHref)}"${master ? ' data-master="1"' : ""} data-app-initials="${escapeHtml(initials(app.appKey))}" data-operator-initials="${escapeHtml(initials(principal.name))}" data-chat-sessions="closed" data-chat-context="closed">
       <h1 class="sr-only">Chat with ${escapeHtml(app.appKey)}</h1>
@@ -593,7 +595,13 @@ export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<
   const sessionsMatch = /^\/api\/apps\/([^/]+)\/sessions$/.exec(request.path);
   const sessionMatch = /^\/api\/apps\/([^/]+)\/sessions\/([^/]+)$/.exec(request.path);
   const messagesMatch = /^\/api\/apps\/([^/]+)\/sessions\/([^/]+)\/messages$/.exec(request.path);
-  if (sessionsMatch === null && sessionMatch === null && messagesMatch === null) {
+  const abortMatch = /^\/api\/apps\/([^/]+)\/sessions\/([^/]+)\/abort$/.exec(request.path);
+  if (
+    sessionsMatch === null &&
+    sessionMatch === null &&
+    messagesMatch === null &&
+    abortMatch === null
+  ) {
     return json(404, { error: "not found" });
   }
   const principal = principalFrom(deps, request);
@@ -603,14 +611,40 @@ export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<
   if (deps.manager === undefined) {
     return json(503, { error: "agent runtime is not configured" });
   }
+  if (abortMatch !== null && principal.kind !== "human") {
+    return json(403, { error: "only a human principal may abort a session" });
+  }
+  if (abortMatch !== null && request.method !== "POST") {
+    return json(405, { error: "method not allowed" });
+  }
   if (sessionMatch !== null && request.method === "DELETE" && principal.kind !== "human") {
     return json(403, { error: "only a human principal may delete a session" });
   }
 
-  const appKey = safeDecode((sessionsMatch ?? sessionMatch ?? messagesMatch)?.[1] ?? "");
+  const appKey = safeDecode(
+    (sessionsMatch ?? sessionMatch ?? messagesMatch ?? abortMatch)?.[1] ?? "",
+  );
   const found = findApp(deps, projectId, appKey);
   if (found === undefined) {
     return json(404, { error: `unknown application: ${appKey}`, code: "unknown_app" });
+  }
+  if (abortMatch !== null) {
+    if (found.app.deleting || found.project.deleting) {
+      return json(409, { error: "application is pending deletion", code: "deletion_pending" });
+    }
+    const endpoint = deps.manager.endpointFor(found.app.id);
+    if (endpoint === undefined) {
+      return json(503, { error: "agent is not running", code: "agent_not_running" });
+    }
+    const sessionId = safeDecode(abortMatch[2] ?? "");
+    try {
+      return json(200, { aborted: await abortSession(endpoint, sessionId) });
+    } catch (error) {
+      if (error instanceof OpencodeHttpError && error.status === 404) {
+        return json(404, { error: "session not found", code: "session_not_found" });
+      }
+      return json(502, { error: "could not stop the turn", code: "abort_failed" });
+    }
   }
   const asyncSend =
     messagesMatch !== null && request.method === "POST" && request.query?.async === "1";

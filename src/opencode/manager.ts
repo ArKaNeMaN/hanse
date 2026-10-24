@@ -757,6 +757,15 @@ export class InstanceManager {
     this.#running.set(app.id, entry);
     this.#startMonitor(app, entry);
     entry.policyWarnings = await this.#verifyPolicy(app, isolated, baselinePlugins, endpoint);
+    const policyDiagnostics = entry.policyWarnings.filter((warning) =>
+      warning.trim().startsWith("policy_unverified:"),
+    );
+    if (policyDiagnostics.length > 0) {
+      this.#options.logger?.warn("policy_verification_failed", {
+        appId: app.id,
+        warnings: policyDiagnostics.slice(0, 5).map((warning) => warning.slice(0, 300)),
+      });
+    }
     if (model !== undefined) {
       const verifyModel = this.#options.modelVerifier ?? verifyAgentModels;
       entry.modelWarnings = await verifyModel(endpoint, model);

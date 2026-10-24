@@ -2383,6 +2383,12 @@
     resize: none;
   }
 
+  @media (pointer: coarse) {
+    .composer .textarea {
+      font-size: 1rem;
+    }
+  }
+
   .composer__hint {
     display: flex;
     justify-content: space-between;
@@ -3378,7 +3384,7 @@
   }
 
   .chat-shell--workspace {
-    block-size: 100%;
+    block-size: calc(100% - var(--chat-keyboard-inset, 0px));
     min-block-size: 0;
   }
 

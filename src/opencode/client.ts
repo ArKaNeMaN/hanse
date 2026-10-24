@@ -316,6 +316,23 @@ export async function summarizeSession(
   return body;
 }
 
+export async function abortSession(
+  endpoint: string,
+  sessionId: string,
+  options?: OpencodeRequestOptions,
+): Promise<boolean> {
+  const path = `/session/${encodeURIComponent(sessionId)}/abort`;
+  const requestOptions: OpencodeRequestOptions = {
+    maxBytes: options?.maxBytes ?? OPENCODE_MAX_BODY_BYTES,
+    timeoutMs: options?.timeoutMs ?? OPENCODE_REPLY_TIMEOUT_MS,
+  };
+  const body = await sendJson<unknown>(endpoint, path, undefined, requestOptions);
+  if (typeof body !== "boolean") {
+    throw new OpencodeHttpError(path, 0, "response body is not a boolean");
+  }
+  return body;
+}
+
 export function createSession(endpoint: string, title?: string): Promise<OpencodeSession> {
   return call<OpencodeSession>(endpoint, "/session", {
     method: "POST",

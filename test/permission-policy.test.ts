@@ -3,7 +3,8 @@ import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { InstanceManager } from "../src/opencode/manager.js";
+import type { Logger } from "../src/logging/logger.js";
+import { InstanceManager, type InstanceManagerOptions } from "../src/opencode/manager.js";
 import {
   type AgentPermissionRule,
   buildPermissionPolicy,
@@ -261,7 +262,10 @@ describe("policy verification", () => {
   });
 });
 
-async function managerFixture(handler: Parameters<typeof createServer>[1]): Promise<{
+async function managerFixture(
+  handler: Parameters<typeof createServer>[1],
+  overrides: Partial<InstanceManagerOptions> = {},
+): Promise<{
   manager: InstanceManager;
   db: SqliteDatabase;
 }> {
@@ -287,6 +291,7 @@ async function managerFixture(handler: Parameters<typeof createServer>[1]): Prom
     verificationTimeoutMs: 50,
     verificationRetries: 0,
     workspaceRoot: "/srv",
+    ...overrides,
   });
   return { manager, db };
 }
@@ -341,6 +346,93 @@ describe("manager policy warnings", () => {
     expect(manager.policyWarnings(APP.id)).toEqual([
       "policy_unverified: agent policy verification timed out",
     ]);
+    await manager.stopAll();
+  });
+
+  function capturePolicyLogs(): {
+    logger: Logger;
+    entries: Array<{ message: string; fields?: Record<string, unknown> }>;
+  } {
+    const entries: Array<{ message: string; fields?: Record<string, unknown> }> = [];
+    return {
+      entries,
+      logger: {
+        debug: () => undefined,
+        info: () => undefined,
+        warn: (message, fields) => {
+          entries.push({ message, fields });
+        },
+        error: () => undefined,
+      },
+    };
+  }
+
+  it("logs a failed verification once and still exposes the warning", async () => {
+    const { logger, entries } = capturePolicyLogs();
+    const { manager } = await managerFixture(
+      (_incoming, outgoing) => {
+        outgoing.writeHead(500, { "content-type": "application/json" });
+        outgoing.end("boom");
+      },
+      { logger },
+    );
+
+    await manager.ensure(APP);
+
+    expect(manager.policyWarnings(APP.id)).toEqual([
+      "policy_unverified: agent policy verification failed",
+    ]);
+    const logs = entries.filter((entry) => entry.message === "policy_verification_failed");
+    expect(logs).toHaveLength(1);
+    expect(logs[0]?.fields).toEqual({
+      appId: APP.id,
+      warnings: ["policy_unverified: agent policy verification failed"],
+    });
+    await manager.stopAll();
+  });
+
+  it("logs a timed-out verification once and still exposes the warning", async () => {
+    const { logger, entries } = capturePolicyLogs();
+    const { manager } = await managerFixture(
+      () => {
+        // Never respond; the verification timeout must not block startup.
+      },
+      { logger },
+    );
+
+    await manager.ensure(APP);
+
+    expect(manager.policyWarnings(APP.id)).toEqual([
+      "policy_unverified: agent policy verification timed out",
+    ]);
+    const logs = entries.filter((entry) => entry.message === "policy_verification_failed");
+    expect(logs).toHaveLength(1);
+    expect(logs[0]?.fields).toEqual({
+      appId: APP.id,
+      warnings: ["policy_unverified: agent policy verification timed out"],
+    });
+    await manager.stopAll();
+  });
+
+  it("bounds logged diagnostics and leaves policyWarnings unchanged", async () => {
+    const { logger, entries } = capturePolicyLogs();
+    const diagnostic = `policy_unverified: ${"x".repeat(400)}`;
+    const { manager } = await managerFixture(
+      () => {
+        // The injected verifier replaces the runtime policy fetch.
+      },
+      { logger, verify: async () => [diagnostic, 'agent "x": policy mismatch'] },
+    );
+
+    await manager.ensure(APP);
+
+    expect(manager.policyWarnings(APP.id)).toEqual([diagnostic, 'agent "x": policy mismatch']);
+    const logs = entries.filter((entry) => entry.message === "policy_verification_failed");
+    expect(logs).toHaveLength(1);
+    const fields = logs[0]?.fields as { appId: string; warnings: string[] };
+    expect(fields.appId).toBe(APP.id);
+    expect(fields.warnings).toEqual([diagnostic.slice(0, 300)]);
+    expect(fields.warnings[0]?.length).toBeLessThanOrEqual(300);
     await manager.stopAll();
   });
 });

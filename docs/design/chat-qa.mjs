@@ -487,6 +487,8 @@ async function newPage(browser, target, options = {}) {
     deviceScaleFactor: 1,
     colorScheme: options.colorScheme ?? "dark",
     reducedMotion: options.reducedMotion ?? "no-preference",
+    hasTouch: options.hasTouch === true,
+    isMobile: options.isMobile === true,
   });
   const targetUrl = new URL(target.baseUrl);
   await context.addCookies([
@@ -565,6 +567,7 @@ async function installRoutes(page, config) {
     compactCalls: [],
     commandGets: [],
     commandPosts: [],
+    abortCalls: [],
   };
 
   const messages = typeof config.messages === "function" ? config.messages : () => config.messages;
@@ -614,7 +617,14 @@ async function installRoutes(page, config) {
       return json(route, { permissions: [] });
     }
     if (pathname.endsWith("/todo") && method === "GET") {
-      return json(route, { todos: config.todos ?? [], truncated: false });
+      const todos =
+        typeof config.todos === "function"
+          ? await config.todos({ state })
+          : (config.todos ?? state.todos ?? []);
+      return json(route, {
+        todos: Array.isArray(todos) ? todos : [],
+        truncated: false,
+      });
     }
     if (pathname.endsWith("/context") && method === "GET") {
       const sessionID = sessionIDFromPath(pathname, "context");
@@ -711,6 +721,22 @@ async function installRoutes(page, config) {
         },
         202,
       );
+    }
+    if (pathname.includes("/sessions/") && pathname.endsWith("/abort") && method === "POST") {
+      const sessionID = sessionIDFromPath(pathname, "abort");
+      const call = {
+        sessionID,
+        at: Date.now(),
+        body: request.postData(),
+      };
+      state.abortCalls.push(call);
+      const configured =
+        typeof config.abort === "function" ? await config.abort({ state, call }) : config.abort;
+      const result = configured ?? { status: 200, body: { aborted: true } };
+      if (typeof result.delayMs === "number" && result.delayMs > 0) {
+        await wait(result.delayMs);
+      }
+      return json(route, result.body ?? { aborted: true }, result.status ?? 200);
     }
     if (pathname.includes("/messages") && method === "GET") {
       state.messageGets.push(Date.now());
@@ -4988,6 +5014,531 @@ async function scenarioDiffTimeout(browser, target) {
 }
 
 // ---------------------------------------------------------------------------
+// Mobile polish, plan visibility, reasoning, and Stop
+// ---------------------------------------------------------------------------
+
+async function composerUi(page) {
+  return page.evaluate(() => {
+    const text = (node) => (node ? (node.textContent ?? "").replace(/\s+/g, " ").trim() : "");
+    const send = document.getElementById("chat-send");
+    const prompt = document.getElementById("chat-prompt");
+    return {
+      label: text(send?.querySelector(".btn__label")),
+      type: send?.getAttribute("type") ?? null,
+      disabled: send?.disabled ?? null,
+      promptValue: prompt?.value ?? null,
+      promptDisabled: prompt?.disabled ?? null,
+      dockHidden: document.getElementById("chat-prompt-dock")?.hidden ?? null,
+      sendError: text(document.getElementById("chat-send-error")),
+      sendErrorHidden: document.getElementById("chat-send-error")?.hidden ?? null,
+      agentErrors: Array.from(document.querySelectorAll(".message")).filter((node) =>
+        text(node).includes("Agent error"),
+      ).length,
+      errorToasts: Array.from(document.querySelectorAll("#toast-region .toast")).filter(
+        (node) => node.dataset.tone === "error",
+      ).length,
+      toasts: Array.from(document.querySelectorAll("#toast-region .toast")).map((node) => ({
+        text: text(node.querySelector(".toast__copy")),
+        tone: node.dataset.tone ?? null,
+      })),
+      announcer: text(document.getElementById("chat-announcer")),
+    };
+  });
+}
+
+async function scenarioMobileComposer(browser, target) {
+  const fixture = sendFixture();
+  const { context, page, errors } = await newPage(browser, target, {
+    width: 390,
+    height: 844,
+    hasTouch: true,
+    isMobile: true,
+  });
+  try {
+    const routeState = await installRoutes(page, {
+      sessionId: THREADS.send,
+      messages: fixture.messages,
+    });
+    await gotoChat(page, target, THREADS.send);
+    await page.waitForSelector("#chat-prompt");
+
+    const coarse = await page.evaluate(() => window.matchMedia("(pointer: coarse)").matches);
+    check(
+      coarse,
+      "BLOCKED: Playwright hasTouch/isMobile did not make (pointer: coarse) match in this Chromium",
+    );
+
+    const prompt = page.locator("#chat-prompt");
+    await prompt.focus();
+    await prompt.pressSequentially("Mobile line");
+    await prompt.press("Enter");
+    await wait(250);
+
+    const afterEnter = await composerUi(page);
+    check(
+      typeof afterEnter.promptValue === "string" && afterEnter.promptValue.includes("\n"),
+      `coarse Enter inserts a newline (${JSON.stringify(afterEnter.promptValue)})`,
+    );
+    assertEqual(routeState.postCalls, 0, "coarse Enter never POSTs");
+    assertEqual(
+      await page.evaluate(
+        () => document.getElementById("chat-composer-hint-text")?.textContent ?? "",
+      ),
+      "Enter for a new line · Send button to send",
+      "coarse hint text",
+    );
+    check(
+      afterEnter.label === "Send" && afterEnter.type === "submit",
+      `the idle composer keeps Send (${afterEnter.label}/${afterEnter.type})`,
+    );
+    await shot(page, "mobile-composer-newline-390-dark");
+
+    await page.locator("#chat-send").click();
+    const postDeadline = Date.now() + 3_000;
+    while (routeState.postCalls === 0 && Date.now() < postDeadline) await wait(50);
+    await page.waitForFunction(
+      () => {
+        const button = document.getElementById("chat-send");
+        return (
+          button?.type === "submit" &&
+          (button.textContent ?? "").includes("Send") &&
+          button.disabled === false
+        );
+      },
+      undefined,
+      { timeout: 3_000 },
+    );
+    const afterSend = await composerUi(page);
+    assertEqual(routeState.postCalls, 1, "tapping Send POSTs exactly once");
+    assertEqual(afterSend.label, "Send", "the button returns to Send when idle");
+    assertEqual(afterSend.type, "submit", "the idle button is a submit control");
+    check(
+      afterSend.promptValue === "",
+      `the composer clears after a send (${JSON.stringify(afterSend.promptValue)})`,
+    );
+    await shot(page, "mobile-composer-sent-390-dark");
+    checkNoErrors(errors);
+    return { afterEnter, afterSend, postCalls: routeState.postCalls };
+  } finally {
+    await context.close();
+  }
+}
+
+async function planUi(page) {
+  return page.evaluate(() => {
+    const text = (node) => (node ? (node.textContent ?? "").replace(/\s+/g, " ").trim() : "");
+    return {
+      sectionHidden: document.getElementById("chat-plan-section")?.hidden ?? null,
+      dividerHidden: document.getElementById("chat-plan-divider")?.hidden ?? null,
+      chipHidden: document.getElementById("chat-plan-chip")?.hidden ?? null,
+      chipLabel: text(document.getElementById("chat-plan-chip-label")),
+      summary: text(document.getElementById("chat-plan-summary")),
+      items: document.querySelectorAll(".chat-plan__item").length,
+    };
+  });
+}
+
+async function scenarioPlanVisibility(browser, target) {
+  const sessionID = THREADS.main;
+  const { context, page, errors } = await newPage(browser, target);
+  try {
+    await installRoutes(page, {
+      sessionId: sessionID,
+      messages: [],
+      todos: [],
+    });
+    await gotoChat(page, target, sessionID);
+    await page.waitForSelector("#chat-plan-section");
+    await wait(300);
+
+    const hidden = await planUi(page);
+    check(hidden.sectionHidden === true, "the plan section starts hidden without Todos");
+    check(hidden.dividerHidden === true, "the plan divider starts hidden without Todos");
+    check(hidden.chipHidden === true, "the plan chip starts hidden without Todos");
+    await shot(page, "plan-hidden-1440-dark");
+
+    await emit(page, {
+      type: "todo.updated",
+      seq: 1,
+      streamID: "qa-stream",
+      sessionID,
+      todos: [{ content: "Ship the plan", status: "in_progress", priority: "high" }],
+    });
+    await page.waitForFunction(
+      () => document.getElementById("chat-plan-section")?.hidden === false,
+      undefined,
+      { timeout: 2_000 },
+    );
+    const visible = await planUi(page);
+    check(visible.sectionHidden === false, "one in-progress Todo reveals the plan section");
+    check(visible.dividerHidden === false, "one in-progress Todo reveals the plan divider");
+    check(visible.chipHidden === false, "one in-progress Todo reveals the plan chip");
+    check(
+      visible.chipLabel.startsWith("Plan 0/1"),
+      `the plan chip starts at Plan 0/1 (${visible.chipLabel})`,
+    );
+    assertEqual(visible.items, 1, "the plan list renders one Todo");
+    await shot(page, "plan-visible-1440-dark");
+
+    await emit(page, {
+      type: "todo.updated",
+      seq: 2,
+      streamID: "qa-stream",
+      sessionID,
+      todos: [],
+    });
+    await page.waitForFunction(
+      () => document.getElementById("chat-plan-section")?.hidden === true,
+      undefined,
+      { timeout: 2_000 },
+    );
+    const emptied = await planUi(page);
+    check(emptied.sectionHidden === true, "an empty Todo list hides the plan section");
+    check(emptied.dividerHidden === true, "an empty Todo list hides the plan divider");
+    check(emptied.chipHidden === true, "an empty Todo list hides the plan chip");
+    await shot(page, "plan-emptied-1440-dark");
+
+    await emit(page, {
+      type: "todo.updated",
+      seq: 3,
+      streamID: "qa-stream",
+      sessionID,
+      todos: [{ content: "Recovered plan", status: "completed", priority: "medium" }],
+    });
+    await page.waitForFunction(
+      () => document.getElementById("chat-plan-section")?.hidden === false,
+      undefined,
+      { timeout: 2_000 },
+    );
+    const recovered = await planUi(page);
+    check(recovered.sectionHidden === false, "a later Todo recovers the plan section");
+    check(recovered.dividerHidden === false, "a later Todo recovers the plan divider");
+    check(recovered.chipHidden === false, "a later Todo recovers the plan chip");
+    check(
+      recovered.chipLabel.startsWith("Plan 1/1"),
+      `the recovered chip counts the completed Todo (${recovered.chipLabel})`,
+    );
+    await shot(page, "plan-recovered-1440-dark");
+
+    checkNoErrors(errors);
+    return { hidden, visible, emptied, recovered };
+  } finally {
+    await context.close();
+  }
+}
+
+async function reasoningUi(page) {
+  return page.evaluate(() => {
+    const text = (node) => (node ? (node.textContent ?? "").replace(/\s+/g, " ").trim() : "");
+    const detail = document.querySelector('.tool-call[data-part-id="prt_reason_live"]');
+    return {
+      assistantBodies: Array.from(
+        document.querySelectorAll(
+          ".message:not(.message--user):not(.message--system) .message__body",
+        ),
+      )
+        .map(text)
+        .join(" "),
+      detailExists: detail !== null,
+      detailType: detail?.dataset.partType ?? null,
+      elapsedText: text(detail?.querySelector(".tool-call__elapsed")),
+      elapsedExists: detail !== null && detail.querySelector(".tool-call__elapsed") !== null,
+    };
+  });
+}
+
+async function scenarioReasoning(browser, target) {
+  const sessionID = THREADS.send;
+  const fixture = sendFixture();
+  const marker = "QA_REASONING_DELTA_MARKER";
+  const { context, page, errors } = await newPage(browser, target);
+  try {
+    const routeState = await installRoutes(page, {
+      sessionId: sessionID,
+      messages: fixture.messages,
+    });
+    await gotoChat(page, target, sessionID);
+    await page.waitForSelector(".message");
+    await waitForStableMessageGets(routeState);
+    await wait(300);
+
+    const reasoningStart = Date.now() - 2_000;
+    const syncAfterDelta = await page.evaluate(
+      (event) => {
+        const source = window.__qaEventSource;
+        if (!source) throw new Error("FakeEventSource is not installed");
+        source.emit(event);
+        const text = (node) => (node ? (node.textContent ?? "").replace(/\s+/g, " ").trim() : "");
+        return {
+          assistantBodies: Array.from(
+            document.querySelectorAll(
+              ".message:not(.message--user):not(.message--system) .message__body",
+            ),
+          )
+            .map(text)
+            .join(" "),
+          reasoningDetails: document.querySelectorAll('.tool-call[data-part-id="prt_reason_live"]')
+            .length,
+        };
+      },
+      {
+        type: "message.part.delta",
+        seq: 1,
+        streamID: "qa-stream",
+        sessionID,
+        messageID: "msg_sa",
+        partID: "prt_reason_live",
+        field: "text",
+        delta: marker,
+        partType: "reasoning",
+      },
+    );
+    check(
+      !syncAfterDelta.assistantBodies.includes(marker),
+      "a reasoning delta is never written into assistant prose",
+    );
+    check(
+      syncAfterDelta.reasoningDetails === 0,
+      `no reasoning details exists before the snapshot flush (${syncAfterDelta.reasoningDetails})`,
+    );
+    await wait(250);
+
+    // D8 creates a provisional reasoning part, so the invariant is that the delta never
+    // renders as assistant prose and that there is no elapsed timer until time.start exists.
+    const before = await reasoningUi(page);
+    check(
+      !before.assistantBodies.includes(marker),
+      "a reasoning delta never renders in an assistant .message__body",
+    );
+    check(!before.elapsedExists, "no reasoning elapsed span exists before a time.start snapshot");
+    check(
+      before.detailType === null || before.detailType === "reasoning",
+      `the provisional part is reasoning, not text (${before.detailType})`,
+    );
+
+    await emit(page, {
+      type: "message.part.updated",
+      seq: 2,
+      streamID: "qa-stream",
+      sessionID,
+      messageID: "msg_sa",
+      partID: "prt_reason_live",
+      partType: "reasoning",
+      part: {
+        id: "prt_reason_live",
+        sessionID,
+        messageID: "msg_sa",
+        type: "reasoning",
+        text: "Working through the QA reasoning state.",
+        time: { start: reasoningStart },
+      },
+    });
+    await page.waitForFunction(
+      () => {
+        const elapsed = document.querySelector(
+          '.tool-call[data-part-id="prt_reason_live"] .tool-call__elapsed',
+        );
+        return elapsed !== null && (elapsed.textContent ?? "").trim().length > 0;
+      },
+      undefined,
+      { timeout: 3_000 },
+    );
+    const liveFirst = (await reasoningUi(page)).elapsedText;
+    await wait(1_200);
+    const liveSecond = (await reasoningUi(page)).elapsedText;
+    check(liveFirst.length > 0, `the live reasoning timer starts from time.start (${liveFirst})`);
+    check(
+      liveSecond.length > 0 && liveSecond !== liveFirst,
+      `the live reasoning timer advances (${liveFirst} -> ${liveSecond})`,
+    );
+    await shot(page, "reasoning-live-1440-dark");
+
+    const reasoningEnd = Date.now();
+    await emit(page, {
+      type: "message.part.updated",
+      seq: 3,
+      streamID: "qa-stream",
+      sessionID,
+      messageID: "msg_sa",
+      partID: "prt_reason_live",
+      partType: "reasoning",
+      part: {
+        id: "prt_reason_live",
+        sessionID,
+        messageID: "msg_sa",
+        type: "reasoning",
+        text: "Working through the QA reasoning state.",
+        time: { start: reasoningStart, end: reasoningEnd },
+      },
+    });
+    await page.waitForFunction(
+      () => {
+        const elapsed = document.querySelector(
+          '.tool-call[data-part-id="prt_reason_live"] .tool-call__elapsed',
+        );
+        return elapsed !== null && (elapsed.textContent ?? "").trim().length > 0;
+      },
+      undefined,
+      { timeout: 3_000 },
+    );
+    const frozen = (await reasoningUi(page)).elapsedText;
+    await wait(1_200);
+    const frozenLater = (await reasoningUi(page)).elapsedText;
+    check(frozen.length > 0, `the completed reasoning timer keeps its final value (${frozen})`);
+    assertEqual(frozenLater, frozen, "the completed reasoning timer freezes");
+    await shot(page, "reasoning-frozen-1440-dark");
+
+    const after = await reasoningUi(page);
+    check(
+      !after.assistantBodies.includes(marker),
+      "the reasoning marker never leaks into assistant prose",
+    );
+    checkNoErrors(errors);
+    return { before, liveFirst, liveSecond, frozen, frozenLater };
+  } finally {
+    await context.close();
+  }
+}
+
+async function scenarioStop(browser, target) {
+  const sessionID = THREADS.send;
+  const fixture = sendFixture();
+  const dockQuestion = {
+    key: "v1:que_stop",
+    id: "que_stop",
+    sessionID,
+    source: "v1",
+    tooLarge: false,
+    questions: [
+      {
+        header: "Stop",
+        question: "Stop the current turn?",
+        options: [{ label: "Yes", description: "Stop it" }],
+        multiple: false,
+        custom: false,
+      },
+    ],
+  };
+  let aborted = false;
+  const { context, page, errors } = await newPage(browser, target);
+  try {
+    const routeState = await installRoutes(page, {
+      sessionId: sessionID,
+      messages: fixture.messages,
+      prompts: () => (aborted ? [] : [dockQuestion]),
+      abort: () => {
+        aborted = true;
+        return { status: 200, body: { aborted: true } };
+      },
+    });
+    await gotoChat(page, target, sessionID);
+    await page.waitForSelector("#chat-prompt-dock:not([hidden])");
+    const docked = await composerUi(page);
+    check(docked.dockHidden === false, "the question dock is visible before Stop");
+    check(
+      docked.label === "Send" && docked.type === "submit" && docked.disabled === true,
+      `Send waits behind the dock (${docked.label}/${docked.type}/${docked.disabled})`,
+    );
+
+    await emit(page, {
+      type: "session.status",
+      seq: 1,
+      streamID: "qa-stream",
+      sessionID,
+      status: { type: "busy" },
+    });
+    await page.waitForFunction(
+      () => {
+        const button = document.getElementById("chat-send");
+        return (button?.textContent ?? "").includes("Stop") && button.type === "button";
+      },
+      undefined,
+      { timeout: 2_000 },
+    );
+    const stopping = await composerUi(page);
+    check(
+      stopping.label === "Stop",
+      `a busy turn with an empty composer shows Stop (${stopping.label})`,
+    );
+    assertEqual(stopping.type, "button", "Stop is a button, not a submit control");
+    check(stopping.disabled === false, "Stop is enabled while the turn is active");
+    check(stopping.promptValue === "", "Stop only appears with an empty composer");
+    await shot(page, "stop-busy-dock-1440-dark");
+
+    await page.locator("#chat-send").click();
+    const abortDeadline = Date.now() + 3_000;
+    while (routeState.abortCalls.length === 0 && Date.now() < abortDeadline) await wait(50);
+    assertEqual(routeState.abortCalls.length, 1, "clicking Stop calls the abort route once");
+    assertEqual(
+      routeState.abortCalls[0]?.sessionID,
+      sessionID,
+      "the abort route targets the active session",
+    );
+    const abortBody = routeState.abortCalls[0]?.body ?? null;
+    check(
+      abortBody === null || abortBody === "",
+      `the abort route is called without a relevant request body (${JSON.stringify(abortBody)})`,
+    );
+    await page.waitForFunction(
+      () => document.getElementById("chat-prompt-dock")?.hidden === true,
+      undefined,
+      { timeout: 3_000 },
+    );
+
+    await emitMany(page, [
+      {
+        type: "session.error",
+        seq: 2,
+        streamID: "qa-stream",
+        sessionID,
+        name: "MessageAbortedError",
+        message: "Aborted",
+      },
+      {
+        type: "session.status",
+        seq: 3,
+        streamID: "qa-stream",
+        sessionID,
+        status: { type: "idle" },
+      },
+    ]);
+    await page.waitForFunction(
+      () => {
+        const button = document.getElementById("chat-send");
+        return (
+          button?.type === "submit" &&
+          (button.textContent ?? "").includes("Send") &&
+          button.disabled === false &&
+          document.getElementById("chat-prompt-dock")?.hidden === true
+        );
+      },
+      undefined,
+      { timeout: 4_000 },
+    );
+    const settled = await composerUi(page);
+    check(settled.agentErrors === 0, "an intentional abort inserts no Agent error card");
+    assertEqual(settled.errorToasts, 0, "an intentional abort shows no error toast");
+    check(
+      !settled.sendError.includes("Could not stop the turn") &&
+        !settled.sendError.includes("Agent error"),
+      `the abort adds no failure text (${settled.sendError})`,
+    );
+    assertEqual(settled.label, "Send", "Send returns after the abort settles");
+    assertEqual(settled.type, "submit", "Send is restored as a submit control");
+    check(settled.disabled === false, "Send is enabled after the abort settles");
+    check(settled.promptDisabled === false, "the composer stays enabled after the abort settles");
+    check(settled.dockHidden === true, "the pending dock is gone after the abort");
+    assertEqual(routeState.abortCalls.length, 1, "the abort route was never called again");
+    await shot(page, "stop-idle-after-abort-1440-dark");
+
+    checkNoErrors(errors);
+    return { docked, stopping, settled, abortCalls: routeState.abortCalls.length };
+  } finally {
+    await context.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Live smoke (real managed app)
 // ---------------------------------------------------------------------------
 
@@ -5125,6 +5676,10 @@ try {
     await runScenario("diff-streaming", () => scenarioDiffStreaming(browser, target));
     await runScenario("diff-adversarial", () => scenarioDiffAdversarial(browser, target));
     await runScenario("diff-timeout", () => scenarioDiffTimeout(browser, target));
+    await runScenario("mobile-composer", () => scenarioMobileComposer(browser, target));
+    await runScenario("plan-visibility", () => scenarioPlanVisibility(browser, target));
+    await runScenario("reasoning", () => scenarioReasoning(browser, target));
+    await runScenario("stop", () => scenarioStop(browser, target));
   }
 } catch (error) {
   report.status = "FAIL";

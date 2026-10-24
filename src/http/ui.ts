@@ -58,6 +58,7 @@ const ICONS = {
   stamp:
     '<path d="M5 22h14" /><path d="M19.27 13.73A2.5 2.5 0 0 0 17.5 13h-11A2.5 2.5 0 0 0 4 15.5V17a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-1.5c0-.66-.26-1.3-.73-1.77Z" /><path d="M14 13V8.5C14 7 15 7 15 5a3 3 0 0 0-6 0c0 2 1 2 1 3.5V13" />',
   send: '<path d="m22 2-7 20-4-9-9-4Z" /><path d="M22 2 11 13" />',
+  stop: '<rect x="6" y="6" width="12" height="12" rx="1" />',
   activity: '<path d="M22 12h-4l-3 9L9 3l-3 9H2" />',
   gauge: '<path d="m12 14 4-4" /><path d="M3.34 19a10 10 0 1 1 17.32 0" />',
   hourglass:
@@ -288,12 +289,13 @@ export function documentPage(options: {
   scripts?: string[];
   styles?: string[];
   moduleScripts?: string[];
+  viewport?: string;
 }): string {
   return `<!doctype html>
 <html lang="en" data-theme="dark">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="${escapeHtml(options.viewport ?? "width=device-width, initial-scale=1")}" />
     <meta name="color-scheme" content="dark light" />
     <title>${escapeHtml(options.title)}</title>
     <script>
@@ -347,6 +349,7 @@ export interface ShellOptions {
   scripts?: string[];
   styles?: string[];
   moduleScripts?: string[];
+  viewport?: string;
   notice?: Notice;
   topbarActions?: string;
   settingsHref?: string;
@@ -500,6 +503,7 @@ export function appShell(options: ShellOptions): string {
     scripts: options.scripts,
     styles: options.styles,
     moduleScripts: options.moduleScripts,
+    viewport: options.viewport,
     body: `<a class="skip-link" href="#main">Skip to content</a>
     <div class="app-shell" data-nav="closed" id="shell">
       ${sidebar(options)}

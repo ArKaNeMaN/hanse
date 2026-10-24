@@ -1,7 +1,10 @@
 import {
   applySnapshot,
   autoCompactText,
+  autoscrollFollow,
+  autoscrollStep,
   classifyOmo,
+  composerAction,
   contextChipLabel,
   contextDetail,
   contextErrorText,
@@ -9,6 +12,9 @@ import {
   contextStateClass,
   contextSummary,
   deriveQueue,
+  elapsedSeed,
+  provisionalPartType,
+  reasoningElapsedMs,
   rekeyOptimistic,
   resolveActiveStatusLabel,
   runtimeChip as runtimeChipSpec,
@@ -48,6 +54,7 @@ const OMO_CLASSIFY_QUIET_MS = 100;
 const OMO_DETAILS_CHAR_LIMIT = 600;
 const OMO_DETAILS_LINE_LIMIT = 8;
 const MESSAGES_PAGE_SIZE = 30;
+const AUTOSCROLL_THRESHOLD_PX = 32;
 const HISTORY_SCROLL_THRESHOLD_PX = 120;
 const HISTORY_MAX_CONTINUE_PAGES = 3;
 const RUNTIME_POLL_MS = 10000;
@@ -62,6 +69,9 @@ const SHELL_CONFIRM_BODY =
 const PREVIEW_POLL_MS = 60000;
 const PREVIEW_CLOSE_SPINNER_MS = 1000;
 const PREVIEW_HINT = "Demo only. Preview pages share the coordinator's origin and session.";
+const ABORT_SUPPRESS_MS = 15000;
+const ABORT_SETTLE_INTERVAL_MS = 1000;
+const ABORT_SETTLE_MAX_MS = 10000;
 
 const KNOWN_PART_TYPES = new Set([
   "text",
@@ -85,6 +95,18 @@ const HIDDEN_PART_TYPES = new Set([
   "snapshot",
   "agent",
 ]);
+
+/*
+ * Abort bookkeeping lives outside the thread store: applySnapshot and
+ * rekeyOptimistic rebuild `store`, so a store field would be dropped. The set is
+ * per session and mirrored to sessionStorage so a reload keeps the queue quiet
+ * until a real new turn starts.
+ */
+const queuePromotionBlocked = new Set();
+let abortPending = null;
+const suppressAbortUntil = new Map();
+let abortSettleTimer = null;
+let abortSettleStartedAt = 0;
 
 function main() {
   const shell = document.getElementById("chat-shell");
@@ -187,8 +209,10 @@ function main() {
   const planChip = document.getElementById("chat-plan-chip");
   const planChipLabel = document.getElementById("chat-plan-chip-label");
   const planSection = document.getElementById("chat-plan-section");
+  const planDivider = document.getElementById("chat-plan-divider");
   const planHeading = document.getElementById("context-plan-title");
   const savedSection = document.getElementById("chat-saved-section");
+  const savedDivider = document.getElementById("chat-saved-divider");
   const savedList = document.getElementById("chat-saved-list");
   const savedBadge = document.getElementById("chat-saved-badge");
   const waitingEl = document.getElementById("chat-waiting");
@@ -216,6 +240,12 @@ function main() {
   let historyRequest = null;
   let prependPending = false;
   let historyScrollFrame = null;
+  let scrollPinned = false;
+  let scrollRaf = null;
+  let lastScrollTop = null;
+  let smoothScrollActive = false;
+  let scrollPaused = false;
+  let programmaticScroll = null;
 
   let store = createThreadStore(null);
   const sessionRuntime = new Map();
@@ -224,6 +254,8 @@ function main() {
   let partNodes = new Map();
   const partOwner = new Map();
   const partRenderState = new Map();
+  const reasoningElapsed = new Map();
+  let reasoningTimer = null;
   const omoClassifyTimers = new Map();
   const omoCardState = new WeakMap();
   let dirtyMessages = new Set();
@@ -288,6 +320,10 @@ function main() {
   let promptStale = false;
   let announceTimer = null;
 
+  const coarsePointerQuery = window.matchMedia("(pointer: coarse)");
+  let composerMode = "send";
+  let chatViewportFrame = null;
+
   let previewActiveKeys = null;
   let previewHasRefreshed = false;
   let previewRefreshInFlight = false;
@@ -314,6 +350,7 @@ function main() {
   let todoState = "idle";
   let planProgress = { completed: 0, total: 0 };
   let lastPlanSummary = "";
+  let planVisible = false;
 
   let savedPermissions = [];
   let savedHydrated = false;
@@ -664,12 +701,8 @@ function main() {
 
   function statusSeedTime(prompt) {
     if (prompt === null) return null;
-    const activated = promptActivation.get(prompt.id);
-    if (typeof activated === "number") return activated;
     const assistant = firstAssistantForPrompt(prompt.id);
-    const created = assistant?.time?.created;
-    if (typeof created !== "number") return null;
-    return created < 1_000_000_000_000 ? created * 1000 : created;
+    return elapsedSeed(assistant?.time?.created, promptActivation.get(prompt.id));
   }
 
   function activeStatusLabel() {
@@ -690,6 +723,7 @@ function main() {
       unsealedText: lastAssistantHasUnsealed("text"),
       queueLength: store.queue.length,
       activePromptID: store.activePromptID,
+      queueBlocked: sessionId !== null && queuePromotionBlocked.has(sessionId),
     });
   }
 
@@ -750,9 +784,10 @@ function main() {
   function startElapsed() {
     if (elapsedStartedAt !== null) return;
     const prompt = operatorPromptRecord();
-    elapsedPromptID = prompt === null ? null : prompt.id;
     const seed = statusSeedTime(prompt);
-    elapsedStartedAt = seed === null ? Date.now() : seed;
+    if (seed === null) return;
+    elapsedPromptID = prompt === null ? null : prompt.id;
+    elapsedStartedAt = seed;
     ensureElapsedTimer();
     tickElapsed();
   }
@@ -815,8 +850,66 @@ function main() {
     return currentStatusType();
   }
 
+  const queueBlockedStorageKey = `hanse-chat-queue-blocked:${projectId}:${appKey}`;
+
+  function loadQueueBlocks() {
+    queuePromotionBlocked.clear();
+    try {
+      const raw = window.sessionStorage.getItem(queueBlockedStorageKey);
+      if (raw === null) return;
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return;
+      for (const id of parsed) {
+        if (typeof id === "string" && id.length > 0) queuePromotionBlocked.add(id);
+      }
+    } catch (error) {
+      void error;
+    }
+  }
+
+  function saveQueueBlocks() {
+    try {
+      if (queuePromotionBlocked.size === 0) {
+        window.sessionStorage.removeItem(queueBlockedStorageKey);
+      } else {
+        window.sessionStorage.setItem(
+          queueBlockedStorageKey,
+          JSON.stringify([...queuePromotionBlocked]),
+        );
+      }
+    } catch (error) {
+      void error;
+    }
+  }
+
+  function blockQueuePromotion(id) {
+    if (typeof id !== "string" || id.length === 0) return;
+    if (queuePromotionBlocked.has(id)) return;
+    queuePromotionBlocked.add(id);
+    saveQueueBlocks();
+  }
+
+  function unblockQueuePromotion(id) {
+    if (typeof id !== "string" || id.length === 0) return;
+    if (!queuePromotionBlocked.delete(id)) return;
+    saveQueueBlocks();
+  }
+
+  function queuePromotionAllowedFor(id, status) {
+    if (typeof id !== "string" || !queuePromotionBlocked.has(id)) return true;
+    const type = statusTypeOf(status);
+    return !(type === "idle" || type === undefined || type === "unknown");
+  }
+
+  function queuePromotionAllowed() {
+    return queuePromotionAllowedFor(sessionId, store.agentStatus);
+  }
+
   function recomputeQueue() {
-    const derived = deriveQueue(store, { sessionStatusType: sessionStatusType() });
+    const derived = deriveQueue(store, {
+      sessionStatusType: sessionStatusType(),
+      allowPromotion: queuePromotionAllowed(),
+    });
     store.queue = [...derived.queuedIDs];
     store.activePromptID = derived.nextActivePromptID;
     for (const id of store.order) {
@@ -1473,19 +1566,83 @@ function main() {
     return promptEl instanceof HTMLTextAreaElement && promptEl.value.trim().length > 0;
   }
 
+  function isCoarsePointer() {
+    return coarsePointerQuery.matches;
+  }
+
+  function syncChatViewport() {
+    if (chatViewportFrame !== null) return;
+    chatViewportFrame = window.requestAnimationFrame(() => {
+      chatViewportFrame = null;
+      const viewport = window.visualViewport;
+      let inset = 0;
+      if (viewport !== null && viewport !== undefined && Math.abs(viewport.scale - 1) <= 0.01) {
+        inset = Math.max(0, Math.round(window.innerHeight - viewport.height - viewport.offsetTop));
+      }
+      document.documentElement.style.setProperty("--chat-keyboard-inset", `${inset}px`);
+    });
+  }
+
+  function setComposerButtonIcon(name) {
+    if (!(sendButton instanceof HTMLButtonElement)) return;
+    const svg = sendButton.querySelector("svg.icon");
+    if (svg === null) {
+      sendButton.prepend(iconNode(name));
+      return;
+    }
+    const use = svg.querySelector("use");
+    if (use === null) {
+      svg.replaceWith(iconNode(name));
+      return;
+    }
+    use.setAttribute("href", `#i-${name}`);
+  }
+
+  function setComposerButtonLabel(label) {
+    if (!(sendButton instanceof HTMLButtonElement)) return;
+    let labelEl = sendButton.querySelector(".btn__label");
+    if (labelEl === null) {
+      labelEl = element("span", "btn__label");
+      sendButton.append(labelEl);
+    }
+    labelEl.textContent = label;
+  }
+
+  function updateComposerAction() {
+    if (!(sendButton instanceof HTMLButtonElement)) return;
+    const statusType = currentStatusType();
+    const action = composerAction({
+      turnActive: statusType === "busy" || statusType === "retry",
+      hasDraft: composerHasDraft(),
+      sessionId,
+      acceptanceBusy: acceptanceInFlight() || acceptanceUnknown(),
+      promptsWaiting: activePromptEntries().length > 0,
+      abortPending: sessionId !== null && abortPending === sessionId,
+    });
+    composerMode = action.mode;
+    const stop = action.mode === "stop";
+    sendButton.type = stop ? "button" : "submit";
+    sendButton.disabled = action.disabled;
+    sendButton.classList.toggle("btn-danger", stop);
+    sendButton.classList.toggle("btn-primary", !stop);
+    sendButton.setAttribute("aria-label", stop ? "Stop the current turn" : "Send message");
+    sendButton.title = stop ? "Stop the current turn" : "Send message";
+    setComposerButtonIcon(stop ? "stop" : "send");
+    setComposerButtonLabel(stop ? "Stop" : "Send");
+  }
+
   function syncComposer() {
     const promptsWaiting = activePromptEntries().length > 0;
-    const sending = acceptanceInFlight() || acceptanceUnknown();
-    if (sendButton instanceof HTMLButtonElement) {
-      sendButton.disabled = sending || promptsWaiting;
-    }
     if (waitingEl !== null) waitingEl.hidden = !promptsWaiting;
     updateWorkingStatus();
     if (composerHintText !== null) {
       composerHintText.textContent = promptsWaiting
         ? "Answer the request above to continue."
-        : "Enter to send / Shift+Enter for a new line";
+        : isCoarsePointer()
+          ? "Enter for a new line · Send button to send"
+          : "Enter to send / Shift+Enter for a new line";
     }
+    updateComposerAction();
     setNewSessionBusy(creatingSession);
     renderSessions();
     updateInputNeeded();
@@ -2063,6 +2220,30 @@ function main() {
       }
       contextBySession.set(target, snapshot);
       renderContext(snapshot);
+      const snapshotStatus = typeof snapshot.status === "string" ? snapshot.status : undefined;
+      const graceActive = (suppressAbortUntil.get(target) ?? 0) > Date.now();
+      if (
+        snapshotStatus === "idle" &&
+        (abortPending === target || (graceActive && currentStatusType() !== "idle"))
+      ) {
+        if (abortPending === target) abortPending = null;
+        store.agentStatus = { type: "idle" };
+        stopAbortSettlePoll();
+        settleSessionIdle();
+        clearSessionPrompts(target);
+        scheduleFlush();
+        hydrate().catch(() => {});
+      } else if (store.agentStatus === null || store.agentStatus === undefined) {
+        if (
+          snapshotStatus === "busy" ||
+          snapshotStatus === "retry" ||
+          snapshotStatus === "idle"
+        ) {
+          store.agentStatus = { type: snapshotStatus };
+          recomputeQueue();
+          updateComposerAction();
+        }
+      }
     } catch (error) {
       if (target !== sessionId || epoch !== contextEpoch) return;
       if (contextSeqBySession.get(target) !== sequence) return;
@@ -2575,6 +2756,40 @@ function main() {
     if (typeof data.content === "string" && data.content.length > 0) return data.content;
     if (typeof data.patch === "string" && data.patch.length > 0) return data.patch;
     return "No output";
+  }
+
+  function forgetReasoningElapsed(key) {
+    if (!reasoningElapsed.delete(key)) return;
+    syncReasoningTimer();
+  }
+
+  function tickReasoningElapsed() {
+    for (const entry of reasoningElapsed.values()) {
+      if (entry.el === null || !entry.el.isConnected) continue;
+      const ms = reasoningElapsedMs(entry.start, entry.end);
+      const text = ms === null ? "" : formatElapsed(ms);
+      if (entry.el.textContent !== text) entry.el.textContent = text;
+      entry.el.hidden = text.length === 0;
+    }
+  }
+
+  function syncReasoningTimer() {
+    let live = false;
+    for (const entry of reasoningElapsed.values()) {
+      if (entry.start === null) continue;
+      if (typeof entry.end !== "number" || !Number.isFinite(entry.end)) {
+        live = true;
+        break;
+      }
+    }
+    if (live) {
+      if (reasoningTimer === null) {
+        reasoningTimer = window.setInterval(tickReasoningElapsed, 1000);
+      }
+    } else if (reasoningTimer !== null) {
+      window.clearInterval(reasoningTimer);
+      reasoningTimer = null;
+    }
   }
 
   function partDataOf(part) {
@@ -3411,6 +3626,8 @@ function main() {
     const state = renderStateFor(key);
     const data = partDataOf(part);
     const kind = part.type;
+    const reasoningStart = kind === "reasoning" ? epochMs(data.time?.start) : null;
+    const reasoningEnd = kind === "reasoning" ? epochMs(data.time?.end) : null;
     const label = detailLabel(part);
     const preview = detailPreview(kind, data);
     const view = kind === "patch" ? patchPartView(data) : null;
@@ -3437,6 +3654,7 @@ function main() {
       notice,
       bodyKind,
       viewKey,
+      kind === "reasoning" ? `${reasoningStart ?? ""}:${reasoningEnd ?? ""}` : "",
     ].join("|");
     if (state.rendered && state.signature === signature) return true;
     if (!force && state.rendered && Date.now() - state.at < MARKDOWN_THROTTLE_MS) return false;
@@ -3452,7 +3670,21 @@ function main() {
       previewEl.title = preview.title;
       summaryChildren.push(previewEl);
     }
+    const elapsedEl =
+      kind === "reasoning" && reasoningStart !== null
+        ? element("span", "tool-call__elapsed mono", "")
+        : null;
+    if (elapsedEl !== null) summaryChildren.push(elapsedEl);
     summary.replaceChildren(...summaryChildren);
+    if (kind === "reasoning") {
+      if (reasoningStart === null || elapsedEl === null) {
+        forgetReasoningElapsed(key);
+      } else {
+        reasoningElapsed.set(key, { el: elapsedEl, start: reasoningStart, end: reasoningEnd });
+        tickReasoningElapsed();
+        syncReasoningTimer();
+      }
+    }
     if (bodyKind === "view" && allocated !== null) {
       applyViewBody(node, part, state, allocated, viewKey);
     } else {
@@ -3501,12 +3733,14 @@ function main() {
     if (isSystemRecord(record) || isPendingRecord(record)) {
       const hiddenNode = partNodes.get(key);
       if (hiddenNode !== undefined && hiddenNode.parentNode !== null) hiddenNode.remove();
+      forgetReasoningElapsed(key);
       return true;
     }
     let node = partNodes.get(key);
     if (!isVisibleRecordPart(part)) {
       if (node !== undefined) {
         resetHighlightController({ reason: "part-removed", partID: part.id });
+        forgetReasoningElapsed(key);
         node.remove();
         partNodes.delete(key);
         partRenderState.delete(key);
@@ -3515,6 +3749,7 @@ function main() {
     }
     if (node !== undefined && node.dataset.partType !== part.type) {
       resetHighlightController({ reason: "part-removed", partID: part.id });
+      forgetReasoningElapsed(key);
       node.remove();
       partNodes.delete(key);
       partRenderState.delete(key);
@@ -3528,6 +3763,7 @@ function main() {
         (isQuestionToolPart(part) !== questionSlot || isPreviewOpenPart(part) !== previewCard)
       ) {
         resetHighlightController({ reason: "part-removed", partID: part.id });
+        forgetReasoningElapsed(key);
         node.remove();
         partNodes.delete(key);
         partRenderState.delete(key);
@@ -3558,6 +3794,7 @@ function main() {
         const partNode = partNodes.get(key);
         if (partNode !== undefined) {
           resetHighlightController({ reason: "part-removed", partID });
+          forgetReasoningElapsed(key);
           partNode.remove();
           partNodes.delete(key);
           partRenderState.delete(key);
@@ -3683,6 +3920,11 @@ function main() {
       partRenderState.delete(oldKey);
       partRenderState.set(newKey, state);
     }
+    const reasoning = reasoningElapsed.get(oldKey);
+    if (reasoning !== undefined) {
+      reasoningElapsed.delete(oldKey);
+      reasoningElapsed.set(newKey, reasoning);
+    }
     if (partOwner.get(oldPartID) === oldMessageID) partOwner.delete(oldPartID);
     partOwner.set(newPartID, newMessageID);
   }
@@ -3713,6 +3955,7 @@ function main() {
     const key = `${messageID}:${partID}`;
     const node = partNodes.get(key);
     if (node !== undefined) node.remove();
+    forgetReasoningElapsed(key);
     partNodes.delete(key);
     partRenderState.delete(key);
     if (partOwner.get(partID) === messageID) partOwner.delete(partID);
@@ -3816,6 +4059,10 @@ function main() {
       serverID,
       bufferedEvents: buffered,
       sessionStatusType: active ? sessionStatusType() : statusTypeOf(baseStore.agentStatus),
+      allowPromotion: queuePromotionAllowedFor(
+        targetID,
+        active ? store.agentStatus : baseStore.agentStatus,
+      ),
     });
     const record = result.store.messages.get(serverID);
     if (record === undefined) return false;
@@ -3947,6 +4194,7 @@ function main() {
         if (wanted.has(messageID)) continue;
         const partID = separator < 0 ? key : key.slice(separator + 1);
         resetHighlightController({ reason: "part-removed", partID });
+        forgetReasoningElapsed(key);
         node.remove();
         partNodes.delete(key);
         partRenderState.delete(key);
@@ -3960,6 +4208,7 @@ function main() {
           const partID = key.slice(id.length + 1);
           if (validParts.has(partID)) continue;
           resetHighlightController({ reason: "part-removed", partID });
+          forgetReasoningElapsed(key);
           node.remove();
           partNodes.delete(key);
           partRenderState.delete(key);
@@ -4019,7 +4268,81 @@ function main() {
 
   function isAtBottom() {
     if (scrollEl === null) return true;
-    return scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight < 80;
+    return (
+      scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight <
+      AUTOSCROLL_THRESHOLD_PX
+    );
+  }
+
+  function prefersReducedMotion() {
+    return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  }
+
+  function recordProgrammaticScroll() {
+    if (scrollEl === null) return;
+    programmaticScroll = { expected: scrollEl.scrollTop, expiresAt: Date.now() + 250 };
+  }
+
+  function consumeProgrammaticScroll(observed) {
+    if (programmaticScroll === null) return false;
+    if (programmaticScroll.expiresAt < Date.now()) {
+      programmaticScroll = null;
+      return false;
+    }
+    if (Math.abs(observed - programmaticScroll.expected) < 1) {
+      programmaticScroll = null;
+      return true;
+    }
+    return false;
+  }
+
+  function cancelBottomScroll() {
+    if (scrollRaf !== null) {
+      window.cancelAnimationFrame(scrollRaf);
+      scrollRaf = null;
+    }
+    smoothScrollActive = false;
+  }
+
+  function requestBottomScroll(options) {
+    if (scrollEl === null) return;
+    const settings = options || {};
+    const force = settings.force === true;
+    if (!force && !scrollPinned) return;
+    if (force) {
+      scrollPinned = true;
+      scrollPaused = false;
+    }
+    if (settings.instant === true || prefersReducedMotion()) {
+      cancelBottomScroll();
+      scrollEl.scrollTop = scrollEl.scrollHeight;
+      lastScrollTop = scrollEl.scrollTop;
+      scrollPinned = true;
+      recordProgrammaticScroll();
+      return;
+    }
+    if (scrollRaf !== null) {
+      scrollPinned = true;
+      return;
+    }
+    smoothScrollActive = true;
+    const step = () => {
+      scrollRaf = null;
+      if (scrollEl === null || !smoothScrollActive || !scrollPinned) {
+        smoothScrollActive = false;
+        return;
+      }
+      const target = Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight);
+      const current = scrollEl.scrollTop;
+      const next = autoscrollStep(current, target);
+      if (next !== current) scrollEl.scrollTop = next;
+      if (target - next <= 0.5) {
+        smoothScrollActive = false;
+        return;
+      }
+      scrollRaf = window.requestAnimationFrame(step);
+    };
+    scrollRaf = window.requestAnimationFrame(step);
   }
 
   function captureScrollAnchor(force = false) {
@@ -4052,6 +4375,7 @@ function main() {
     if (node === undefined) return;
     const top = node.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top;
     scrollEl.scrollTop += top - anchor.offset;
+    recordProgrammaticScroll();
   }
 
   function scheduleFlush() {
@@ -4087,12 +4411,13 @@ function main() {
     forceFinalRender = false;
     applyPendingDeltas();
     updateWorkingStatus();
-    const atBottom = prepend ? false : isAtBottom();
-    const anchor = prepend
-      ? captureScrollAnchor(true)
-      : atBottom
-        ? null
-        : captureScrollAnchor();
+    if (!prepend && isAtBottom()) scrollPinned = true;
+    const follow = autoscrollFollow({
+      prepend,
+      forceBottom: settings.forceBottom === true,
+      pinned: scrollPinned,
+    });
+    const anchor = prepend ? captureScrollAnchor(true) : follow ? null : captureScrollAnchor();
     const previousCount = lastRenderedCount;
     const full = settings.full === true;
     if (full) markAllDirty();
@@ -4103,9 +4428,12 @@ function main() {
       const label = messageCountLabel(count);
       if (countEl.textContent !== label) countEl.textContent = label;
     }
-    if (!prepend && (settings.forceBottom === true || atBottom)) {
-      if (scrollEl !== null) scrollEl.scrollTop = scrollEl.scrollHeight;
-      if (newMessages !== null) newMessages.hidden = true;
+    if (follow) {
+      requestBottomScroll({
+        force: true,
+        instant: settings.forceBottom === true && settings.instant === true,
+      });
+      if (!prepend && newMessages !== null) newMessages.hidden = true;
     } else {
       restoreScrollAnchor(anchor);
       if (!prepend && count > previousCount && newMessages !== null) newMessages.hidden = false;
@@ -4184,6 +4512,141 @@ function main() {
       idleReconcileTimer = null;
       hydrateMessages({ reason: "idle", silent: true }).catch(() => {});
     }, IDLE_RECONCILE_MS);
+  }
+
+  function settleSessionIdle() {
+    flushPendingUserClassifications();
+    sealAllParts();
+    recomputeQueue();
+    resetElapsed();
+    updateComposerAction();
+    scheduleIdleReconcile();
+    followUpHydration = false;
+  }
+
+  function clearSessionPrompts(id) {
+    if (typeof id !== "string" || id.length === 0) return;
+    for (const [key, entry] of [...prompts.entries()]) {
+      if (entry === undefined || entry.request === undefined) continue;
+      if (entry.request.sessionID !== id) continue;
+      prompts.delete(key);
+      promptDrafts.delete(key);
+      promptErrors.delete(key);
+      promptBusy.delete(key);
+    }
+    renderPromptDock();
+    refreshInlineQuestions();
+    renderQueue();
+    syncComposer();
+  }
+
+  function stopAbortSettlePoll() {
+    if (abortSettleTimer === null) return;
+    window.clearInterval(abortSettleTimer);
+    abortSettleTimer = null;
+  }
+
+  function abortUrl(id) {
+    return withProject(`${apiBase()}/sessions/${encodeURIComponent(id)}/abort`);
+  }
+
+  function isIntentionalAbortEvent(payload) {
+    if (payload === null || typeof payload !== "object") return false;
+    if (payload.name === "MessageAbortedError") return true;
+    if (typeof payload.message !== "string") return false;
+    const message = payload.message.trim().toLowerCase();
+    if (message.length === 0) return false;
+    if (
+      message.includes("unreachable") ||
+      message.includes("upstream") ||
+      message.includes("econn") ||
+      message.includes("socket hang up") ||
+      message.includes("network") ||
+      message.includes("fetch failed") ||
+      message.includes("timed out") ||
+      message.includes("timeout") ||
+      message.includes("gateway") ||
+      message.includes("502") ||
+      message.includes("503") ||
+      message.includes("504")
+    ) {
+      return false;
+    }
+    return (
+      message.includes("operation was aborted") ||
+      message.includes("aborted by user") ||
+      message.includes("interrupted by user") ||
+      message.includes("cancelled by user") ||
+      message.includes("canceled by user") ||
+      message.includes("request was cancelled") ||
+      message.includes("request was canceled") ||
+      message.includes("aborterror")
+    );
+  }
+
+  function startAbortSettlePoll(id) {
+    if (typeof id !== "string" || abortPending !== id) return;
+    stopAbortSettlePoll();
+    abortSettleStartedAt = Date.now();
+    refreshContext(id).catch(() => {});
+    abortSettleTimer = window.setInterval(() => {
+      if (abortPending !== id) {
+        stopAbortSettlePoll();
+        return;
+      }
+      if (Date.now() - abortSettleStartedAt >= ABORT_SETTLE_MAX_MS) {
+        stopAbortSettlePoll();
+        abortPending = null;
+        updateComposerAction();
+        if (sessionId === id) {
+          hydrateMessages({ reason: "abort-deadline", silent: true }).catch(() => {});
+        }
+        clearSessionPrompts(id);
+        hydrate().catch(() => {});
+        showSendError("Stopped; status is reconciling.");
+        return;
+      }
+      refreshContext(id).catch(() => {});
+    }, ABORT_SETTLE_INTERVAL_MS);
+  }
+
+  async function abortTurn() {
+    const id = sessionId;
+    if (id === null || id.length === 0 || abortPending !== null) return;
+    abortPending = id;
+    suppressAbortUntil.set(id, Date.now() + ABORT_SUPPRESS_MS);
+    updateComposerAction();
+    try {
+      const data = await api(abortUrl(id), { method: "POST" });
+      const aborted = data !== null && typeof data === "object" && data.aborted === true;
+      if (aborted) {
+        blockQueuePromotion(id);
+        clearSessionPrompts(id);
+        recomputeQueue();
+        updateComposerAction();
+        startAbortSettlePoll(id);
+        return;
+      }
+      abortPending = null;
+      unblockQueuePromotion(id);
+      suppressAbortUntil.delete(id);
+      updateComposerAction();
+      refreshContext(id).catch(() => {});
+      showSendError("The turn was already idle.");
+    } catch (error) {
+      const status =
+        error !== null && typeof error === "object" && typeof error.status === "number"
+          ? error.status
+          : 0;
+      abortPending = null;
+      unblockQueuePromotion(id);
+      suppressAbortUntil.delete(id);
+      updateComposerAction();
+      refreshContext(id).catch(() => {});
+      showSendError(
+        status === 503 ? "The agent is not running." : "Could not stop the turn.",
+      );
+    }
   }
 
   function requestFollowUpHydration() {
@@ -4352,6 +4815,16 @@ function main() {
         runtime = {};
         sessionRuntime.set(payload.sessionID, runtime);
       }
+      const previousType = statusTypeOf(runtime.agentStatus);
+      const nextType = statusTypeOf(payload.status);
+      if (
+        (nextType === "busy" || nextType === "retry") &&
+        previousType === "idle" &&
+        abortPending !== payload.sessionID
+      ) {
+        unblockQueuePromotion(payload.sessionID);
+        suppressAbortUntil.delete(payload.sessionID);
+      }
       runtime.agentStatus = payload.status;
       if (runtime.historyCursor === undefined) runtime.historyCursor = null;
       if (runtime.historyLoaded === undefined) runtime.historyLoaded = false;
@@ -4366,16 +4839,20 @@ function main() {
     if (nextType === "busy" || nextType === "retry") notePromptActivation();
     store.agentStatus = next;
     if (nextType === "idle") {
-      flushPendingUserClassifications();
-      sealAllParts();
-      recomputeQueue();
-      if (followUpHydration) {
-        followUpHydration = false;
-      }
-      scheduleIdleReconcile();
+      if (abortPending === payload.sessionID) abortPending = null;
+      stopAbortSettlePoll();
+      settleSessionIdle();
     } else {
+      if (
+        (nextType === "busy" || nextType === "retry") &&
+        abortPending === null &&
+        previous === "idle"
+      ) {
+        unblockQueuePromotion(payload.sessionID);
+        suppressAbortUntil.delete(payload.sessionID);
+      }
       recomputeQueue();
-      updateWorkingStatus();
+      updateComposerAction();
     }
     scheduleFlush();
   }
@@ -4575,10 +5052,12 @@ function main() {
       if (record.role === "user" && userPlaceholderPartID(record) !== null) return;
       let part = record.parts.get(payload.partID);
       if (part === undefined) {
+        const type = provisionalPartType(payload.partType);
+        if (type === null) return;
         part = {
           id: payload.partID,
-          type: "text",
-          data: { id: payload.partID, type: "text", text: "", provisional: true },
+          type,
+          data: { id: payload.partID, type, text: "", provisional: true },
           provisional: true,
           partial: false,
           sealed: false,
@@ -4647,6 +5126,26 @@ function main() {
 
     if (type === "session.error") {
       if (typeof payload.sessionID === "string" && payload.sessionID !== sessionId) return;
+      const eventSession =
+        typeof payload.sessionID === "string" ? payload.sessionID : sessionId;
+      const graceUntil =
+        eventSession === null ? 0 : (suppressAbortUntil.get(eventSession) ?? 0);
+      if (graceUntil > Date.now() && isIntentionalAbortEvent(payload)) {
+        store.agentStatus = { type: "idle" };
+        abortPending = null;
+        stopAbortSettlePoll();
+        if (eventSession !== null) clearSessionPrompts(eventSession);
+        settleSessionIdle();
+        scheduleFlush();
+        hydrate().catch(() => {});
+        announce("Stopped.");
+        return;
+      }
+      if (eventSession !== null) {
+        suppressAbortUntil.delete(eventSession);
+        stopAbortSettlePoll();
+        if (abortPending === eventSession) abortPending = null;
+      }
       const rawMessage = typeof payload.message === "string" ? payload.message.trim() : "";
       const message =
         rawMessage.length > 0 ? rawMessage : "The agent failed without an error message.";
@@ -7039,10 +7538,12 @@ function main() {
     if (savedSection === null || savedList === null) return;
     if (savedPermissions.length === 0) {
       savedSection.hidden = true;
+      if (savedDivider !== null) savedDivider.hidden = savedSection.hidden;
       savedList.replaceChildren();
       return;
     }
     savedSection.hidden = false;
+    if (savedDivider !== null) savedDivider.hidden = savedSection.hidden;
     const fragment = document.createDocumentFragment();
     for (const permission of savedPermissions) {
       const row = element("div", "chat-saved__row");
@@ -7153,9 +7654,16 @@ function main() {
     }
   }
 
+  function setPlanVisibility(visible) {
+    planVisible = visible;
+    if (planSection !== null) planSection.hidden = !visible;
+    if (planDivider !== null) planDivider.hidden = !visible;
+    updatePlanChip();
+  }
+
   function updatePlanChip() {
     if (planChip === null) return;
-    planChip.hidden = sessionId === null;
+    planChip.hidden = !planVisible || sessionId === null;
     if (planChipLabel !== null && planProgress !== null) {
       planChipLabel.textContent = `Plan ${planProgress.completed}/${planProgress.total}`;
     }
@@ -7222,7 +7730,7 @@ function main() {
       planList.replaceChildren();
       planSummary.textContent = "No plan yet";
       planProgress = { completed: 0, total: 0 };
-      updatePlanChip();
+      setPlanVisibility(false);
       return;
     }
     const cached = todoCache.get(sessionId);
@@ -7233,7 +7741,7 @@ function main() {
       planList.hidden = true;
       planSummary.textContent = "Loading";
       planProgress = { completed: 0, total: 0 };
-      updatePlanChip();
+      setPlanVisibility(false);
       return;
     }
     if (todoState === "error" && cached === undefined) {
@@ -7242,7 +7750,7 @@ function main() {
       planList.hidden = true;
       planSummary.textContent = "Not updating";
       planProgress = { completed: 0, total: 0 };
-      updatePlanChip();
+      setPlanVisibility(false);
       return;
     }
     const todos = cached === undefined ? [] : cached.todos;
@@ -7253,7 +7761,7 @@ function main() {
       planList.replaceChildren();
       planSummary.textContent = "No plan yet";
       planProgress = { completed: 0, total: 0 };
-      updatePlanChip();
+      setPlanVisibility(false);
       return;
     }
     let pending = 0;
@@ -7308,7 +7816,7 @@ function main() {
       lastPlanSummary = summary;
       if (todoState === "ready") announce(`Plan: ${summary}.`);
     }
-    updatePlanChip();
+    setPlanVisibility(true);
   }
 
   function currentLastSeq() {
@@ -7440,6 +7948,7 @@ function main() {
         capturedTurnGeneration: turnGeneration,
         sessionStatusType: currentStatusType(),
         sessionID: target,
+        allowPromotion: queuePromotionAllowed(),
       });
       store = result.store;
       const nextCursor = data.nextCursor ?? null;
@@ -7469,6 +7978,7 @@ function main() {
       flushFrame({
         full: true,
         forceBottom: initial || settings.forceBottom === true || resetWindow,
+        instant: initial || settings.forceBottom === true || resetWindow,
       });
       messagesHydratedSession = target;
       for (const correlationKey of Array.from(deferredUnavailable)) {
@@ -7608,6 +8118,7 @@ function main() {
           position: "older",
           sessionStatusType: currentStatusType(),
           sessionID: target,
+          allowPromotion: queuePromotionAllowed(),
         });
         store = result.store;
         historyLoaded = true;
@@ -7689,6 +8200,13 @@ function main() {
   function resetFeedDom() {
     resetHighlightController({ reason: "feed-reset" });
     clearAllOmoClassifyTimers();
+    cancelBottomScroll();
+    scrollPinned = false;
+    scrollPaused = false;
+    lastScrollTop = null;
+    programmaticScroll = null;
+    reasoningElapsed.clear();
+    syncReasoningTimer();
     historyRequest = null;
     messageNodes = new Map();
     partNodes = new Map();
@@ -7719,7 +8237,12 @@ function main() {
   async function selectSession(id, options) {
     const settings = options || {};
     const previous = sessionId;
-    if (previous !== null && previous !== id) saveCurrentRuntime();
+    if (previous !== null && previous !== id) {
+      saveCurrentRuntime();
+      if (abortPending === previous) abortPending = null;
+      suppressAbortUntil.delete(previous);
+      stopAbortSettlePoll();
+    }
     hydrationSeq += 1;
     historyRequestSeq += 1;
     historyRequest = null;
@@ -7779,6 +8302,9 @@ function main() {
   function startDraft(options) {
     const settings = options || {};
     saveCurrentRuntime();
+    abortPending = null;
+    if (sessionId !== null) suppressAbortUntil.delete(sessionId);
+    stopAbortSettlePoll();
     hydrationSeq += 1;
     historyRequestSeq += 1;
     historyRequest = null;
@@ -7885,6 +8411,10 @@ function main() {
       acceptanceBySession.delete(id);
       contextBySession.delete(id);
       contextSeqBySession.delete(id);
+      unblockQueuePromotion(id);
+      if (abortPending === id) abortPending = null;
+      suppressAbortUntil.delete(id);
+      stopAbortSettlePoll();
       if (contextPollSession === id) clearContextTimers();
       if (contextCompactingSession === id) contextCompactingSession = null;
       if (wasActive) {
@@ -8732,6 +9262,7 @@ function main() {
   async function sendPrompt() {
     if (!(promptEl instanceof HTMLTextAreaElement)) return;
     if (acceptanceInFlight() || acceptanceUnknown()) return;
+    const wasFocused = document.activeElement === promptEl;
     const dispatched = await dispatchComposerDraft();
     if (dispatched === "handled") return;
     if (activePromptEntries().length > 0) {
@@ -8810,7 +9341,13 @@ function main() {
         recomputeQueue();
         syncComposer();
         refreshRuntime().catch(() => {});
-        if (sessionId === id && promptEl instanceof HTMLTextAreaElement) promptEl.focus();
+        if (
+          sessionId === id &&
+          wasFocused &&
+          (document.activeElement === document.body || document.activeElement === null)
+        ) {
+          promptEl.focus();
+        }
         refreshSessions().catch(() => {});
       } catch (error) {
         state.posting = false;
@@ -9030,6 +9567,7 @@ function main() {
     promptEl.addEventListener("input", () => {
       resizePrompt();
       syncPaletteFromDraft();
+      updateComposerAction();
     });
     promptEl.addEventListener("keydown", (event) => {
       if (event.isComposing) return;
@@ -9061,12 +9599,26 @@ function main() {
         return;
       }
       if (event.key !== "Enter") return;
-      if (event.metaKey || event.ctrlKey || !event.shiftKey) {
+      if (event.metaKey || event.ctrlKey) {
         event.preventDefault();
         sendPrompt();
+        return;
       }
+      if (isCoarsePointer()) return;
+      if (event.shiftKey) return;
+      event.preventDefault();
+      sendPrompt();
     });
     resizePrompt();
+  }
+  if (sendButton instanceof HTMLButtonElement) {
+    sendButton.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+    });
+    sendButton.addEventListener("click", () => {
+      if (composerMode !== "stop") return;
+      abortTurn().catch(() => {});
+    });
   }
   if (composer !== null) {
     composer.addEventListener("submit", (event) => {
@@ -9098,8 +9650,24 @@ function main() {
   }
   if (scrollEl !== null) {
     scrollEl.addEventListener("scroll", () => {
-      if (isAtBottom() && newMessages !== null) newMessages.hidden = true;
-      if (scrollEl.scrollTop > HISTORY_SCROLL_THRESHOLD_PX) return;
+      const top = scrollEl.scrollTop;
+      const previous = lastScrollTop;
+      lastScrollTop = top;
+      const programmatic = consumeProgrammaticScroll(top);
+      if (previous !== null && top < previous - 1 && !programmatic) {
+        scrollPinned = false;
+        scrollPaused = true;
+        cancelBottomScroll();
+      }
+      if (isAtBottom()) {
+        if (newMessages !== null) newMessages.hidden = true;
+        if (!programmatic) {
+          scrollPaused = false;
+          scrollPinned = true;
+        }
+      }
+      if (smoothScrollActive) return;
+      if (top > HISTORY_SCROLL_THRESHOLD_PX) return;
       if (historyScrollFrame !== null) return;
       historyScrollFrame = window.requestAnimationFrame(() => {
         historyScrollFrame = null;
@@ -9111,9 +9679,9 @@ function main() {
   }
   if (newMessages !== null) {
     newMessages.addEventListener("click", () => {
-      if (scrollEl !== null) scrollEl.scrollTop = scrollEl.scrollHeight;
+      requestBottomScroll({ force: true });
       newMessages.hidden = true;
-      if (promptEl instanceof HTMLTextAreaElement) promptEl.focus();
+      if (!isCoarsePointer() && promptEl instanceof HTMLTextAreaElement) promptEl.focus();
     });
   }
   document.addEventListener("visibilitychange", () => {
@@ -9304,6 +9872,22 @@ function main() {
       if (!document.hidden) void refreshSshApprovals();
     }, 5000);
     window.addEventListener("beforeunload", () => window.clearInterval(sshTimer));
+  }
+
+  loadQueueBlocks();
+  syncChatViewport();
+  if (window.visualViewport !== null && window.visualViewport !== undefined) {
+    window.visualViewport.addEventListener("resize", syncChatViewport);
+    window.visualViewport.addEventListener("scroll", syncChatViewport);
+  }
+  window.addEventListener("resize", syncChatViewport);
+  window.addEventListener("orientationchange", syncChatViewport);
+  document.addEventListener("focusin", syncChatViewport);
+  document.addEventListener("focusout", syncChatViewport);
+  if (typeof coarsePointerQuery.addEventListener === "function") {
+    coarsePointerQuery.addEventListener("change", () => syncComposer());
+  } else if (typeof coarsePointerQuery.addListener === "function") {
+    coarsePointerQuery.addListener(() => syncComposer());
   }
 
   hydratePreviews();

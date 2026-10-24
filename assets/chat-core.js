@@ -430,7 +430,7 @@ export function classifyOmo(message) {
  * Derive the active/queued prompt boundary from feed order, `parentID`, and turn state.
  *
  * @param {ThreadStore} store
- * @param {{ sessionStatusType?: string }} [status]
+ * @param {{ sessionStatusType?: string, allowPromotion?: boolean }} [status]
  * @returns {{
  *   activeID: string | null,
  *   queuedIDs: string[],
@@ -509,6 +509,15 @@ export function deriveQueue(store, status = {}) {
     return {
       activeID: null,
       queuedIDs: [],
+      turnContinues: false,
+      nextActivePromptID: null,
+    };
+  }
+
+  if (status?.allowPromotion === false) {
+    return {
+      activeID: null,
+      queuedIDs: pending,
       turnContinues: false,
       nextActivePromptID: null,
     };
@@ -918,7 +927,8 @@ function presentationState(store, id, derived, preserveInFlight = true) {
  *   discardedContent?: boolean,
  *   sessionID?: string,
  *   position?: "replace" | "tail" | "older",
- *   keepOptimistic?: "all" | "transient"
+ *   keepOptimistic?: "all" | "transient",
+ *   allowPromotion?: boolean
  * }} [options]
  * @returns {{ store: ThreadStore, contentDiscarded: boolean, turnChanged: boolean }}
  */
@@ -1142,7 +1152,10 @@ export function applySnapshot(currentStore, snapshotMessages, options = {}) {
 
   const sessionStatusType =
     asString(options?.sessionStatusType) ?? asString(store.agentStatus?.type);
-  const derived = deriveQueue(store, { sessionStatusType });
+  const derived = deriveQueue(store, {
+    sessionStatusType,
+    allowPromotion: options?.allowPromotion,
+  });
   store.queue = [...derived.queuedIDs];
   store.activePromptID = derived.nextActivePromptID;
   for (const id of order) {
@@ -1338,7 +1351,8 @@ function applyBufferedEvent(record, event, placeholderID) {
  *   tempID: string,
  *   serverID: string,
  *   bufferedEvents?: Array<Record<string, unknown>>,
- *   sessionStatusType?: string
+ *   sessionStatusType?: string,
+ *   allowPromotion?: boolean
  * }} options
  * @returns {{ store: ThreadStore, consumed: boolean }}
  */
@@ -1414,7 +1428,10 @@ export function rekeyOptimistic(store, options) {
 
   const sessionStatusType =
     asString(options?.sessionStatusType) ?? asString(nextStore.agentStatus?.type);
-  const derived = deriveQueue(nextStore, { sessionStatusType });
+  const derived = deriveQueue(nextStore, {
+    sessionStatusType,
+    allowPromotion: options?.allowPromotion,
+  });
   nextStore.queue = [...derived.queuedIDs];
   nextStore.activePromptID = derived.nextActivePromptID;
 
@@ -1655,6 +1672,21 @@ export function toolStatusChip(status) {
   }
 }
 
+/**
+ * @param {{
+ *   waiting?: boolean,
+ *   sending?: boolean,
+ *   paused?: boolean,
+ *   statusType?: string,
+ *   runningTool?: string,
+ *   unsealedReasoning?: boolean,
+ *   unsealedText?: boolean,
+ *   queueLength?: number,
+ *   activePromptID?: string | null,
+ *   queueBlocked?: boolean
+ * }} [input]
+ * @returns {string}
+ */
 export function resolveActiveStatusLabel(input) {
   const state = input === null || typeof input !== "object" ? {} : input;
   if (state.waiting === true) return "Waiting for you";
@@ -1669,12 +1701,120 @@ export function resolveActiveStatusLabel(input) {
     return state.unsealedText === true ? "Working" : "Thinking";
   }
   if (
+    state.queueBlocked === true &&
+    (state.statusType === "idle" ||
+      state.statusType === undefined ||
+      state.statusType === "unknown")
+  ) {
+    return "Ready";
+  }
+  if (
     (typeof state.queueLength === "number" && state.queueLength > 0) ||
     (state.activePromptID !== null && state.activePromptID !== undefined)
   ) {
     return "Working";
   }
   return "Ready";
+}
+
+/* ------------------------------------------------------------------------- */
+/* Chat interaction helpers                                                  */
+/* ------------------------------------------------------------------------- */
+
+/**
+ * @param {unknown} value
+ * @returns {number | null}
+ */
+function normalizeEpochMs(value) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  return value < 1e12 ? value * 1000 : value;
+}
+
+/**
+ * Primary composer button mode and disabled state.
+ *
+ * @param {{
+ *   turnActive?: boolean,
+ *   hasDraft?: boolean,
+ *   sessionId?: string | null,
+ *   acceptanceBusy?: boolean,
+ *   promptsWaiting?: boolean,
+ *   abortPending?: boolean
+ * }} [input]
+ * @returns {{ mode: "stop" | "send", disabled: boolean }}
+ */
+export function composerAction(input) {
+  const state = input === null || typeof input !== "object" ? {} : input;
+  const stop =
+    state.turnActive === true &&
+    state.hasDraft === false &&
+    state.sessionId !== null &&
+    state.acceptanceBusy === false;
+  const disabled = stop
+    ? state.abortPending === true
+    : state.acceptanceBusy === true || state.promptsWaiting === true;
+  return { mode: stop ? "stop" : "send", disabled };
+}
+
+/**
+ * Real turn-start time in ms: assistant creation first, activation fallback.
+ *
+ * @param {unknown} assistantCreated
+ * @param {unknown} activated
+ * @returns {number | null}
+ */
+export function elapsedSeed(assistantCreated, activated) {
+  return normalizeEpochMs(assistantCreated) ?? normalizeEpochMs(activated);
+}
+
+/**
+ * @param {unknown} partType
+ * @returns {"text" | "reasoning" | null}
+ */
+export function provisionalPartType(partType) {
+  return partType === "text" || partType === "reasoning" ? partType : null;
+}
+
+/**
+ * Elapsed reasoning time in ms, or null without a finite start.
+ *
+ * @param {unknown} start
+ * @param {unknown} end
+ * @param {number} [now]
+ * @returns {number | null}
+ */
+export function reasoningElapsedMs(start, end, now = Date.now()) {
+  const startMs = normalizeEpochMs(start);
+  if (startMs === null) return null;
+  const endMs = normalizeEpochMs(end) ?? (Number.isFinite(now) ? now : Date.now());
+  return Math.max(0, endMs - startMs);
+}
+
+/**
+ * Follow the live bottom unless the frame is a prepend or the feed is unpinned.
+ *
+ * @param {{ prepend?: boolean, forceBottom?: boolean, pinned?: boolean }} [input]
+ * @returns {boolean}
+ */
+export function autoscrollFollow(input) {
+  const state = input === null || typeof input !== "object" ? {} : input;
+  return state.prepend !== true && (state.forceBottom === true || state.pinned === true);
+}
+
+/**
+ * One eased scroll step toward the target, never overshooting it.
+ *
+ * @param {number} current
+ * @param {number} target
+ * @param {number} [ease]
+ * @returns {number}
+ */
+export function autoscrollStep(current, target, ease = 0.25) {
+  const nextTarget = Number.isFinite(target) ? target : 0;
+  const position = Number.isFinite(current) ? current : nextTarget;
+  const ratio = Number.isFinite(ease) ? ease : 0.25;
+  if (nextTarget - position <= 0.5) return nextTarget;
+  return Math.min(nextTarget, position + Math.max(1, (nextTarget - position) * ratio));
 }
 
 /* ------------------------------------------------------------------------- */

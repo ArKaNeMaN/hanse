@@ -1,6 +1,6 @@
 # Hanse - Current State (read this first)
 
-> Last updated: 2026-10-23. This is the canonical description of what is **implemented right now**.
+> Last updated: 2026-10-24. This is the canonical description of what is **implemented right now**.
 > If this document and the code disagree, the code wins - update this document.
 > History and rationale: `docs/design/overview.md`, `docs/plans/0001-core.md`,
 > `docs/journal/0001-core.md`. Deployment: `docs/deployment.md`.
@@ -421,7 +421,8 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   dropped) and deduplicated per attempt (`session.status: busy` resets the dedupe). The client inserts
   an `Agent error` card into the feed, marks the active and queued prompts `Failed`, drops them from
   the queue, releases the composer, and settles the session to idle, so a failed turn never looks
-  hung.
+  hung. A `MessageAbortedError` during an intentional Stop is the exception: it settles as `Stopped.`
+  without the error card/toast, failed prompts, or queue drop (0025).
 - The chat workspace renders GFM pipe tables (alignment, escaped pipes/code spans, 16-column and
   200-row caps, no raw HTML), one-line tool previews, a `todowrite` checklist, streamed bash output
   with a 64 KiB live-tail window and truncation notice, and collapsed `Thinking` reasoning. OMO
@@ -433,6 +434,32 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   1920); below 1024 both are 100%. The feed/composer share horizontal padding, tables/tool bodies use
   the full feed width, and assistant prose stays near a 68ch reading measure. There is no horizontal
   page overflow at 390.
+- Mobile chat polish (0025): the chat page alone sets `interactive-widget=resizes-content`; a
+  `visualViewport` inset drives `--chat-keyboard-inset` on the chat shell, and a scale guard avoids
+  treating pinch zoom as a keyboard. Coarse-pointer textareas use 16px, plain Enter inserts a newline,
+  and tapping Send no longer moves focus out of the composer. The primary button is the sole
+  `composerAction` renderer: it becomes Stop when the composer is empty and `session.status` is
+  `busy`/`retry`, and Send otherwise.
+- Stop/interrupt: `POST /api/apps/:app/sessions/:sid/abort?project=<id>` is human-only, resolves the
+  running endpoint with `manager.endpointFor` (never `ensure`), and maps not-running/deletion/upstream
+  failures to `503`/`409`/`502`. An intentional `MessageAbortedError` is suppressed (no Agent error
+  card, toast, failed prompts, or queue drop); prompt docks are cleared/reconciled, and unanswered
+  queued prompts remain queued behind a per-session block (mirrored to `sessionStorage`) so an idle
+  session does not show a phantom `Working` turn. Context snapshots seed `session.status` after a
+  reload; a real `idle → busy|retry` transition clears the block.
+- Plan rail: the Plan section, its divider, and the `Plan N/M` chip are hidden until the active
+  session renders at least one Todo; cached Todos survive a failed refresh (“Not updating”), and the
+  Saved-permissions divider follows its section.
+- Feed motion and reasoning: near-bottom following uses a 32px threshold and a cancellable rAF ease
+  (instant on initial load/session switch and reduced motion); programmatic anchor/instant writes do
+  not count as user intent, and history pagination is skipped while a smooth follow is active.
+  Reasoning deltas use the server-provided `partType` (an unknown-type early delta is dropped rather
+  than rendered as text), and an in-progress reasoning block shows a live elapsed value frozen at
+  completion. The request elapsed timer starts only from the assistant `time.created` (activation is
+  the fallback), so a page reload never starts it from page-open time.
+- Policy diagnostics: `/prompts` filters `policy_unverified:` warnings (verification failure/timeout)
+  from the chat banner while keeping real policy findings; the manager logs the stripped diagnostic
+  once per start.
 - Sessions are created lazily: opening a chat or pressing "New session" only starts a draft, and the
   first message creates the upstream session. Deletion is human-only (`403` for agent principals),
   proxies opencode `DELETE /session/:id`, and the UI selects the next session or returns to the draft
@@ -452,16 +479,17 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   - Prompt sources are v1 and v2 (`source` on every request/reply); v2 replies use the
     session-scoped upstream routes. `tooLarge` requests are dismiss-only.
   - The session **Plan** panel shows opencode's Todo list in the context rail (with a `Plan N/M`
-    chip below 1360), updates on `todo.updated`, and is read-only. v2 saved permissions are listed
-    and revocable in the context rail.
+    chip below 1360), updates on `todo.updated`, and is read-only. It is hidden until the session
+    renders its first Todo. v2 saved permissions are listed and revocable in the context rail.
   - A top-bar stamp/count surfaces requests waiting in other sessions of the same app, with
-    per-session flags in the sessions rail. Policy warnings from `/prompts` render as a banner/chip.
+    per-session flags in the sessions rail. Policy warnings from `/prompts` render as a banner/chip;
+    `policy_unverified:` verification diagnostics are filtered out (0025).
 - API for prompts, Todo, and events (human-only; agent principals get `403`):
   `GET /api/apps/:app/prompts`, `POST /api/apps/:app/questions/:id/reply|reject`,
   `POST /api/apps/:app/permissions/:id/reply`,
   `GET/DELETE /api/apps/:app/permissions/saved[/:id]`,
-  `GET /api/apps/:app/sessions/:sid/todo`, and the typed app-level SSE
-  `GET /api/apps/:app/events`; all accept `?project=<projectId>`. The old raw
+  `GET /api/apps/:app/sessions/:sid/todo`, `POST /api/apps/:app/sessions/:sid/abort`, and the typed
+  app-level SSE `GET /api/apps/:app/events`; all accept `?project=<projectId>`. The old raw
   `GET /api/apps/:app/sessions/:sid/events` remains for compatibility but is no longer used by the
   chat client. The typed app SSE keeps its heartbeat, backpressure, and `session.activity`
   compatibility frames for older clients.
