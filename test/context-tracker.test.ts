@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { OpencodeMessage, OpencodeSession } from "../src/opencode/client.js";
 import {
+  CHILD_ACTIVITY_WINDOW_MS,
   CONTEXT_SESSION_INACTIVITY_MS,
+  type ContextEvent,
   type ContextPolicy,
   type ContextTokens,
   ContextTracker,
@@ -73,6 +75,23 @@ function assistantMessage(
       ...(summary ? { summary: true } : {}),
     },
     parts: [],
+  };
+}
+
+function toolPart(
+  sessionID: string,
+  partID: string,
+  tool: string,
+  status: string,
+  messageID = "m",
+): ContextEvent {
+  return {
+    type: "message.part.updated",
+    sessionID,
+    messageID,
+    partID,
+    partType: "tool",
+    part: { id: partID, messageID, type: "tool", tool, state: { status } },
   };
 }
 
@@ -369,6 +388,181 @@ describe("ContextTracker hydration", () => {
     expect(snapshot.model).toBeNull();
     expect(snapshot.lastCompactedAt).toBeNull();
     expect(tracker.isTopLevel("s")).toBe(false);
+  });
+});
+
+describe("ContextTracker session graph", () => {
+  const sessions: OpencodeSession[] = [
+    { id: "parent" },
+    { id: "child", parentID: "parent" },
+    { id: "grand", parentID: "child" },
+  ];
+
+  it("maps parents and children and fails closed for unknown sessions", () => {
+    const tracker = new ContextTracker();
+    tracker.setSessionParents(sessions);
+
+    expect(tracker.isTopLevel("parent")).toBe(true);
+    expect(tracker.isTopLevel("child")).toBe(false);
+    expect(tracker.isTopLevel("missing")).toBe(false);
+    expect(tracker.parentOf("child")).toBe("parent");
+    expect(tracker.parentOf("grand")).toBe("child");
+    expect(tracker.parentOf("parent")).toBeUndefined();
+  });
+
+  it("reports busy, retry, and compacting children as active", () => {
+    const tracker = new ContextTracker();
+    tracker.setSessionParents(sessions);
+    tracker.applyEvent(
+      { type: "session.status", sessionID: "child", status: { type: "busy" } },
+      10,
+    );
+    expect(tracker.hasActiveChildren("parent", 11)).toBe(true);
+
+    tracker.applyEvent(
+      { type: "session.status", sessionID: "child", status: { type: "retry" } },
+      12,
+    );
+    expect(tracker.hasActiveChildren("parent", 13)).toBe(true);
+
+    tracker.applyEvent({ type: "session.idle", sessionID: "child" }, 14);
+    tracker.applyEvent(
+      {
+        type: "message.part.updated",
+        sessionID: "child",
+        messageID: "m",
+        partID: "c",
+        partType: "compaction",
+        part: { id: "c", messageID: "m", type: "compaction" },
+      },
+      15,
+    );
+    expect(tracker.hasActiveChildren("parent", 16)).toBe(true);
+  });
+
+  it("does not report a known idle child as active", () => {
+    const tracker = new ContextTracker();
+    tracker.setSessionParents(sessions);
+    tracker.applyEvent({ type: "session.idle", sessionID: "child" }, 10);
+
+    expect(tracker.hasActiveChildren("parent", 11)).toBe(false);
+  });
+
+  it("treats a recently updated unknown child as active and an old one as idle", () => {
+    const tracker = new ContextTracker();
+    tracker.setSessionParents([
+      { id: "parent" },
+      { id: "child", parentID: "parent", time: { updated: 1_000_000 } },
+    ]);
+
+    expect(tracker.hasActiveChildren("parent", 1_000_001)).toBe(true);
+    expect(tracker.hasActiveChildren("parent", 1_000_000 + CHILD_ACTIVITY_WINDOW_MS)).toBe(false);
+  });
+
+  it("uses live activity for a known unknown child", () => {
+    const tracker = new ContextTracker();
+    tracker.setSessionParents([
+      { id: "parent" },
+      { id: "child", parentID: "parent", time: { created: 0 } },
+    ]);
+    tracker.applyEvent(
+      { type: "session.error", sessionID: "child", message: "transient" },
+      500_000,
+    );
+
+    expect(tracker.hasActiveChildren("parent", 500_001)).toBe(true);
+    expect(tracker.hasActiveChildren("parent", 500_000 + CHILD_ACTIVITY_WINDOW_MS)).toBe(false);
+  });
+
+  it("does not report a missing child as active", () => {
+    const tracker = new ContextTracker();
+    tracker.setSessionParents([{ id: "parent" }]);
+
+    expect(tracker.hasActiveChildren("parent", 1)).toBe(false);
+  });
+});
+
+describe("ContextTracker pending tasks", () => {
+  it("tracks task and call_omo_agent parts until they finish", () => {
+    const tracker = new ContextTracker();
+    tracker.applyEvent(toolPart("s", "p1", "task", "pending"), 1);
+    expect(tracker.hasPendingTask("s")).toBe(true);
+
+    tracker.applyEvent(toolPart("s", "p2", "call_omo_agent", "running"), 2);
+    expect(tracker.hasPendingTask("s")).toBe(true);
+
+    tracker.applyEvent(toolPart("s", "p1", "task", "completed"), 3);
+    expect(tracker.hasPendingTask("s")).toBe(true);
+    tracker.applyEvent(toolPart("s", "p2", "call_omo_agent", "error"), 4);
+    expect(tracker.hasPendingTask("s")).toBe(false);
+  });
+
+  it("ignores non-spawn tools", () => {
+    const tracker = new ContextTracker();
+    tracker.applyEvent(toolPart("s", "p1", "bash", "running"), 1);
+
+    expect(tracker.hasPendingTask("s")).toBe(false);
+  });
+
+  it("clears pending tasks on session.idle", () => {
+    const tracker = new ContextTracker();
+    tracker.applyEvent(toolPart("s", "p1", "task", "running"), 1);
+    expect(tracker.hasActiveCompactionBlocker("s", 2)).toBe(true);
+
+    tracker.applyEvent({ type: "session.idle", sessionID: "s" }, 3);
+    expect(tracker.hasPendingTask("s")).toBe(false);
+    expect(tracker.hasActiveCompactionBlocker("s", 4)).toBe(false);
+  });
+
+  it("clears pending tasks on session.status idle", () => {
+    const tracker = new ContextTracker();
+    tracker.applyEvent(toolPart("s", "p1", "task", "running"), 1);
+    expect(tracker.hasPendingTask("s")).toBe(true);
+
+    tracker.applyEvent({ type: "session.status", sessionID: "s", status: { type: "idle" } }, 2);
+    expect(tracker.hasPendingTask("s")).toBe(false);
+  });
+
+  it("clears pending tasks on session.compacted and compaction success", () => {
+    const compacted = new ContextTracker();
+    compacted.applyEvent(toolPart("s", "p1", "task", "running"), 1);
+    compacted.applyEvent({ type: "session.compacted", sessionID: "s" }, 2);
+    expect(compacted.hasPendingTask("s")).toBe(false);
+
+    const succeeded = new ContextTracker();
+    succeeded.applyEvent(toolPart("s", "p1", "task", "running"), 1);
+    succeeded.markCompactionSuccess("s", 2);
+    expect(succeeded.hasPendingTask("s")).toBe(false);
+  });
+
+  it("reconstructs pending tasks from hydrated history", () => {
+    const tracker = new ContextTracker();
+    const messages: OpencodeMessage[] = [
+      {
+        info: { id: "m1", role: "assistant" },
+        parts: [
+          { id: "p1", type: "tool", tool: "task", state: { status: "running" } },
+          { id: "p2", type: "tool", tool: "bash", state: { status: "running" } },
+          { id: "p3", type: "tool", tool: "call_omo_agent", state: { status: "completed" } },
+        ],
+      },
+    ];
+    tracker.hydrate("s", messages, [{ id: "s" }], 100);
+
+    expect(tracker.hasPendingTask("s")).toBe(true);
+  });
+
+  it("does not reconstruct completed hydration tasks", () => {
+    const tracker = new ContextTracker();
+    const messages: OpencodeMessage[] = [
+      {
+        info: { id: "m1", role: "assistant" },
+        parts: [{ id: "p1", type: "tool", tool: "task", state: { status: "completed" } }],
+      },
+    ];
+    tracker.hydrate("s", messages, [{ id: "s" }], 100);
+
+    expect(tracker.hasPendingTask("s")).toBe(false);
   });
 });
 

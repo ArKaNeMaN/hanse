@@ -17,6 +17,7 @@ import {
   CompactInProgressError,
   type ContextSnapshot,
   ModelUnavailableError,
+  NotTopLevelError,
   SessionBusyError,
   SessionNotFoundError,
 } from "../src/opencode/context.js";
@@ -128,6 +129,9 @@ function snapshot(sessionID = "ses_1"): ContextSnapshot {
     percent: 62,
     model: { providerID: "deepseek", modelID: "deepseek-flash" },
     status: "idle",
+    topLevel: true,
+    activeChildren: false,
+    pendingTask: false,
     updatedAt: "2026-10-21T00:00:00.000Z",
     lastCompactedAt: null,
     lastError: null,
@@ -273,6 +277,10 @@ describe("GET context", () => {
 
     expect(response.status).toBe(200);
     expect(JSON.parse(response.body)).toEqual(snapshot());
+    const body = JSON.parse(response.body);
+    expect(body.topLevel).toBe(true);
+    expect(body.activeChildren).toBe(false);
+    expect(body.pendingTask).toBe(false);
     expect(stub.calls.ensure).toEqual([]);
     expect(stub.calls.snapshots).toEqual([{ appId: "p1:storefront", sessionId: "ses_1" }]);
     expect(stub.calls.compacts).toEqual([]);
@@ -485,6 +493,12 @@ describe("POST compact", () => {
       error: new ModelUnavailableError(),
       code: "model_unavailable",
       message: "no model is available for compaction",
+    },
+    {
+      name: "not top level",
+      error: new NotTopLevelError(),
+      code: "not_top_level",
+      message: "compaction is only available for top-level sessions",
     },
   ];
   for (const conflict of conflicts) {

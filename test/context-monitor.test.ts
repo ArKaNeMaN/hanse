@@ -5,7 +5,9 @@ import {
   ContextMonitor,
   type ContextMonitorClientHooks,
   type ContextPolicy,
+  NotTopLevelError,
   parseModelString,
+  SessionBusyError,
   SessionNotFoundError,
 } from "../src/opencode/context.js";
 import {
@@ -233,6 +235,28 @@ function statusEvent(sessionID: string, type: "idle" | "busy" | "retry"): unknow
   return { type: "session.status", properties: { sessionID, status: { type } } };
 }
 
+function toolPart(
+  sessionID: string,
+  partID: string,
+  tool: string,
+  status: string,
+  messageID = "m1",
+): unknown {
+  return {
+    type: "message.part.updated",
+    properties: {
+      part: {
+        id: partID,
+        sessionID,
+        messageID,
+        type: "tool",
+        tool,
+        state: { status },
+      },
+    },
+  };
+}
+
 function compactedEvent(sessionID: string): unknown {
   return { type: "session.compacted", properties: { sessionID } };
 }
@@ -425,6 +449,42 @@ describe("ContextMonitor auto-compaction", () => {
     expect(upstream.summarizeBodies).toHaveLength(0);
   });
 
+  it("defers while a child is busy and fires once when the last child goes idle", async () => {
+    const upstream = await fakeUpstream();
+    upstream.setSessions([{ id: "parent" }, { id: "child", parentID: "parent" }]);
+    await startMonitor(upstream);
+
+    upstream.emit(statusEvent("parent", "idle"));
+    upstream.emit(messageUpdated("parent", "m1", { input: 950 }));
+    upstream.emit(statusEvent("child", "busy"));
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(upstream.summarizeBodies).toHaveLength(0);
+
+    upstream.emit(statusEvent("child", "idle"));
+    await waitFor(() => upstream.summarizeBodies.length === 1);
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(upstream.summarizeBodies).toHaveLength(1);
+    expect(
+      upstream.requests.filter((request) => request.path.endsWith("/session/parent/summarize")),
+    ).toHaveLength(1);
+  });
+
+  it("defers while a task part is running and fires after it completes and the session is idle", async () => {
+    const upstream = await fakeUpstream();
+    upstream.setSessions([{ id: "s" }]);
+    await startMonitor(upstream);
+
+    upstream.emit(statusEvent("s", "idle"));
+    upstream.emit(toolPart("s", "p-task", "task", "running"));
+    upstream.emit(messageUpdated("s", "m1", { input: 950 }));
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(upstream.summarizeBodies).toHaveLength(0);
+
+    upstream.emit(toolPart("s", "p-task", "task", "completed"));
+    upstream.emit(statusEvent("s", "idle"));
+    await waitFor(() => upstream.summarizeBodies.length === 1);
+  });
+
   it("does not trigger when auto-compaction is disabled", async () => {
     const upstream = await fakeUpstream();
     upstream.setSessions([{ id: "s" }]);
@@ -526,6 +586,58 @@ describe("ContextMonitor manual compaction", () => {
     upstream.emit(messageUpdated("s", "m2", { input: 950 }));
     await new Promise((resolve) => setTimeout(resolve, 80));
     expect(upstream.summarizeBodies).toHaveLength(1);
+  });
+
+  it("rejects a child session with NotTopLevelError without summarizing", async () => {
+    const upstream = await fakeUpstream();
+    upstream.setSessions([{ id: "parent" }, { id: "child", parentID: "parent" }]);
+    upstream.setMessages([]);
+    const monitor = monitorFor(upstream, { policy: policy() });
+
+    await expect(monitor.compact("child")).rejects.toBeInstanceOf(NotTopLevelError);
+    await expect(monitor.compact("child")).rejects.toMatchObject({ code: "not_top_level" });
+    expect(upstream.summarizeBodies).toHaveLength(0);
+    expect((await monitor.snapshot("child")).state).not.toBe("compacting");
+  });
+
+  it("rejects a top-level session while a child is busy", async () => {
+    const upstream = await fakeUpstream();
+    upstream.setSessions([{ id: "parent" }, { id: "child", parentID: "parent" }]);
+    upstream.setMessages([]);
+    const monitor = await startMonitor(upstream);
+
+    upstream.emit(statusEvent("child", "busy"));
+    await new Promise((resolve) => setTimeout(resolve, 40));
+
+    await expect(monitor.compact("parent")).rejects.toBeInstanceOf(SessionBusyError);
+    expect(upstream.summarizeBodies).toHaveLength(0);
+    expect((await monitor.snapshot("parent")).state).not.toBe("compacting");
+  });
+
+  it("rejects when a child becomes busy during hydration and clears the claim", async () => {
+    const upstream = await fakeUpstream();
+    upstream.setSessions([{ id: "parent" }, { id: "child", parentID: "parent" }]);
+    let release: (() => void) | undefined;
+    const monitor = await startMonitor(upstream, {
+      client: {
+        listMessagePage: () =>
+          new Promise((resolve) => {
+            release = () => resolve({ messages: [] });
+          }),
+      },
+    });
+
+    const pending = monitor.compact("parent");
+    await waitFor(() => release !== undefined);
+    upstream.emit(statusEvent("child", "busy"));
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    release?.();
+
+    await expect(pending).rejects.toBeInstanceOf(SessionBusyError);
+    expect(upstream.summarizeBodies).toHaveLength(0);
+    const snapshot = await monitor.snapshot("parent");
+    expect(snapshot.state).not.toBe("compacting");
+    expect(snapshot.lastError).toBeNull();
   });
 
   it("maps a hung summarize to compaction_timeout", async () => {

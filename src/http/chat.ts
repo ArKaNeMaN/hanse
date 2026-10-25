@@ -108,6 +108,7 @@ import {
   writeDraft,
 } from "../chat/state.js";
 import type { Handoff } from "../coordinator/handoff.js";
+import { projectHandoffMessages } from "../coordinator/handoff-messages.js";
 import type { Principal } from "../identity/principals.js";
 import { isMasterApp } from "../master/constants.js";
 import {
@@ -2478,8 +2479,12 @@ export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<
         appKey: found.app.appKey,
         projectId: found.project.id,
       });
+      const projectHistory = (messages: Parameters<typeof project>[0]): void => {
+        project(messages);
+        projectHandoffMessages(deps.db, sessionId, messages);
+      };
       if (limit === undefined) {
-        const messages = await listMessages(endpoint, sessionId, { project });
+        const messages = await listMessages(endpoint, sessionId, { project: projectHistory });
         const payload = { messages };
         if (projectedResponseBytes(payload) > PROJECTED_RESPONSE_MAX_BYTES) {
           return json(502, {
@@ -2493,7 +2498,9 @@ export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<
         const page = await readProjectedPage(
           endpoint,
           sessionId,
-          before === undefined ? { limit, project } : { limit, before, project },
+          before === undefined
+            ? { limit, project: projectHistory }
+            : { limit, before, project: projectHistory },
         );
         const payload = { messages: page.messages, nextCursor: page.nextCursor ?? null };
         if (projectedResponseBytes(payload) > PROJECTED_RESPONSE_MAX_BYTES) {

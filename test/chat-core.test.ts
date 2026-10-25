@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  agentInitials,
   ancestorIds,
   applySnapshot,
   autoCompactText,
@@ -18,15 +19,25 @@ import {
   deriveQueue,
   elapsedSeed,
   firstRootId,
+  formatByteCount,
   formatTokenCount,
+  handoffBodyFromText,
+  handoffFromInfo,
+  handoffNoteFromText,
+  normalizeHandoffMeta,
+  normalizeToolName,
   parseMarkdownTable,
+  parseToolJsonOutput,
   provisionalPartType,
   reasoningElapsedMs,
   rekeyOptimistic,
   resolveActiveStatusLabel,
   runtimeChip,
   shouldResubscribe,
+  toolDisplayName,
+  toolFailure,
   toolStatusChip,
+  toolSummaryText,
 } from "../assets/chat-core.js";
 
 interface PartInit {
@@ -2484,5 +2495,144 @@ describe("collectSubtreeIds", () => {
   it("returns an empty array for an invalid id", () => {
     expect(collectSubtreeIds(tree, "")).toEqual([]);
     expect(collectSubtreeIds(tree, 42)).toEqual([]);
+  });
+});
+
+describe("handoff message metadata", () => {
+  const valid = {
+    id: "h1",
+    direction: "request",
+    agent: "source-app",
+    from: "source-app",
+    to: "target-app",
+    summary: "do the thing",
+    body: "full spec",
+  };
+
+  it("normalizes valid metadata and rejects malformed input", () => {
+    expect(normalizeHandoffMeta(valid)).toMatchObject(valid);
+    expect(normalizeHandoffMeta({ ...valid, direction: "other" })).toBeNull();
+    expect(normalizeHandoffMeta({ ...valid, id: "" })).toBeNull();
+    expect(normalizeHandoffMeta({ ...valid, agent: 42 })).toBeNull();
+    expect(normalizeHandoffMeta("nope")).toBeNull();
+  });
+
+  it("reads info.hanse.handoff", () => {
+    expect(handoffFromInfo({ hanse: { handoff: valid } })).toMatchObject(valid);
+    expect(handoffFromInfo({ hanse: { attachments: [] } })).toBeNull();
+    expect(handoffFromInfo(null)).toBeNull();
+  });
+
+  it("extracts the request body from the dispatcher envelope", () => {
+    const text = [
+      "[Hanse handoff request]",
+      "Handoff ID: h1",
+      "From application: source-app",
+      "",
+      "Specification:",
+      "## Goal",
+      "Do **the thing**.",
+      "",
+      'When the work is finished, call the "deliver_handoff" tool exactly once with:',
+      '- id: "h1"',
+    ].join("\n");
+    expect(handoffBodyFromText(text, "request")).toBe("## Goal\nDo **the thing**.");
+  });
+
+  it("extracts the reply body and operator note", () => {
+    const text = [
+      "[Hanse handoff reply]",
+      "Handoff ID: h1",
+      "",
+      "Result:",
+      "Fixed it.",
+      "",
+      "Operator note (trusted):",
+      "Check the logs.",
+      "",
+      "Continue your work with this reply in mind.",
+    ].join("\n");
+    expect(handoffBodyFromText(text, "reply")).toBe("Fixed it.");
+    expect(handoffNoteFromText(text)).toBe("Check the logs.");
+  });
+
+  it("returns an empty body when the envelope is absent", () => {
+    expect(handoffBodyFromText("plain operator prompt", "request")).toBe("");
+    expect(handoffBodyFromText("plain operator prompt", "reply")).toBe("");
+    expect(handoffBodyFromText(undefined, "request")).toBe("");
+    expect(handoffNoteFromText("no note")).toBe("");
+  });
+
+  it("derives agent initials with the server rules", () => {
+    expect(agentInitials("hanse-deploy")).toBe("HD");
+    expect(agentInitials("web")).toBe("WE");
+    expect(agentInitials("")).toBe("AG");
+  });
+});
+
+describe("hanse tool rendering helpers", () => {
+  it("normalizes prefixed MCP tool names", () => {
+    expect(normalizeToolName("hanse_ssh_exec")).toBe("ssh_exec");
+    expect(normalizeToolName("hanse_web_search")).toBe("web_search");
+    expect(normalizeToolName("bash")).toBe("bash");
+    expect(toolDisplayName("hanse_ssh_exec")).toBe("SSH exec");
+    expect(toolDisplayName("bash")).toBe("bash");
+  });
+
+  it("parses JSON output only for JSON objects and arrays", () => {
+    expect(parseToolJsonOutput('{"ok":true}')).toEqual({ ok: true });
+    expect(parseToolJsonOutput("[1,2]")).toEqual([1, 2]);
+    expect(parseToolJsonOutput("plain text")).toBeNull();
+    expect(parseToolJsonOutput("")).toBeNull();
+    expect(parseToolJsonOutput("null")).toBeNull();
+    expect(parseToolJsonOutput("{broken")).toBeNull();
+  });
+
+  it("detects a returned ok:false failure", () => {
+    expect(toolFailure({ ok: false, code: "ssh_host_not_allowed", message: "no" })).toEqual({
+      code: "ssh_host_not_allowed",
+      message: "no",
+    });
+    expect(toolFailure({ ok: true })).toBeNull();
+    expect(toolFailure({ ok: false })).toBeNull();
+    expect(toolFailure(null)).toBeNull();
+  });
+
+  it("formats byte counts", () => {
+    expect(formatByteCount(512)).toBe("512 B");
+    expect(formatByteCount(1536)).toBe("1.5 KiB");
+    expect(formatByteCount(5 * 1024 * 1024)).toBe("5 MiB");
+    expect(formatByteCount(undefined)).toBe("");
+  });
+
+  it("summarizes SSH and handoff calls", () => {
+    expect(toolSummaryText("hanse_ssh_exec", { host_id: "prod", command: "uptime" }, null)).toBe(
+      "uptime @ prod",
+    );
+    expect(
+      toolSummaryText(
+        "hanse_request_sibling_change",
+        { to: "deploy-app", summary: "ship it" },
+        null,
+      ),
+    ).toBe("deploy-app: ship it");
+    expect(toolSummaryText("hanse_list_apps", {}, { ok: true, apps: [{}, {}] })).toBe(
+      "2 applications",
+    );
+    expect(toolSummaryText("hanse_ssh_list_hosts", {}, [{ name: "a" }, { name: "b" }])).toBe(
+      "2 hosts",
+    );
+  });
+
+  it("summarizes skill, preview, and web calls", () => {
+    expect(toolSummaryText("hanse_create_skill", { name: "review-work" }, null)).toBe(
+      "review-work",
+    );
+    expect(toolSummaryText("hanse_list_skills", {}, { ok: true, effective: [{}] })).toBe("1 skill");
+    expect(toolSummaryText("hanse_preview_list", {}, { ok: true, previews: [{}, {}] })).toBe(
+      "2 previews",
+    );
+    expect(toolSummaryText("hanse_web_search", { query: "nftables" }, null)).toBe("nftables");
+    expect(toolSummaryText("bash", { command: "ls" }, null)).toBeNull();
   });
 });

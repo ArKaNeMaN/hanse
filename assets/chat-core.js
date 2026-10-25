@@ -57,6 +57,7 @@
  * @property {{ created?: number, completed?: number }} [time]
  * @property {"sending" | "queued" | "accepted" | "unknown" | "failed"} [optimistic] Presentation only.
  * @property {OmoSystemMeta} [system] Derived, never persisted.
+ * @property {HandoffMessageMeta} [handoff] Dispatcher-inserted request/reply; renders as an agent message.
  * @property {AttachmentView[]} [attachments] File-only strip; history info.hanse.attachments.
  * @property {string[]} partOrder
  * @property {Map<string, PartRecord>} parts
@@ -923,7 +924,8 @@ export function deriveQueue(store, status = {}) {
         parentIndex >= 0 &&
         parent !== undefined &&
         parent.role === "user" &&
-        (parent.system === undefined || parent.system === null)
+        (parent.system === undefined || parent.system === null) &&
+        (parent.handoff === undefined || parent.handoff === null)
       ) {
         boundary = parentIndex;
       }
@@ -937,6 +939,9 @@ export function deriveQueue(store, status = {}) {
       continue;
     }
     if (record.system !== undefined && record.system !== null) {
+      continue;
+    }
+    if (record.handoff !== undefined && record.handoff !== null) {
       continue;
     }
     if (record.classificationPending === true) {
@@ -1170,6 +1175,143 @@ function mergeOptimisticRecord(server, local) {
 }
 
 /**
+ * Handoff metadata projected by the coordinator onto either `info.hanse.handoff` (history) or a
+ * typed `message.updated` frame. The dispatcher sends these as ordinary user prompts, so the chat
+ * uses this marker to render them as messages from the sending agent instead of the operator.
+ *
+ * @typedef {Object} HandoffMessageMeta
+ * @property {string} id
+ * @property {"request" | "reply"} direction
+ * @property {string} agent Sending application key.
+ * @property {string} from
+ * @property {string} to
+ * @property {string} [state]
+ * @property {string} summary
+ * @property {string} [body] Full spec/result on history projections.
+ * @property {"completed" | "blocked" | "failed" | null} [outcome]
+ * @property {string} [replyState]
+ * @property {"agent" | "operator"} [origin]
+ * @property {string | null} [operatorNote]
+ */
+
+const HANDOFF_KEY_MAX = 200;
+const HANDOFF_SUMMARY_MAX = 500;
+const HANDOFF_BODY_MAX = 64 * 1024;
+const HANDOFF_NOTE_MAX = 4 * 1024;
+
+function boundedString(value, limit) {
+  return typeof value === "string" ? value.slice(0, limit) : undefined;
+}
+
+function boundedNullableString(value, limit) {
+  if (value === null) return null;
+  return boundedString(value, limit);
+}
+
+/**
+ * Validate and bound one handoff metadata object. Returns null for malformed input.
+ *
+ * @param {unknown} value
+ * @returns {HandoffMessageMeta | null}
+ */
+export function normalizeHandoffMeta(value) {
+  if (!isRecord(value)) return null;
+  const direction = value.direction === "request" || value.direction === "reply" ? value.direction : null;
+  const id = boundedString(value.id, HANDOFF_KEY_MAX);
+  const agent = boundedString(value.agent, HANDOFF_KEY_MAX);
+  const from = boundedString(value.from, HANDOFF_KEY_MAX);
+  const to = boundedString(value.to, HANDOFF_KEY_MAX);
+  const summary = boundedString(value.summary, HANDOFF_SUMMARY_MAX);
+  if (direction === null || !id || !agent || !from || !to || summary === undefined) return null;
+  const meta = { id, direction, agent, from, to, summary };
+  const state = boundedString(value.state, 40);
+  if (state !== undefined) meta.state = state;
+  const body = boundedString(value.body, HANDOFF_BODY_MAX);
+  if (body !== undefined) meta.body = body;
+  if (value.outcome === "completed" || value.outcome === "blocked" || value.outcome === "failed") {
+    meta.outcome = value.outcome;
+  } else if (value.outcome === null) {
+    meta.outcome = null;
+  }
+  const replyState = boundedString(value.replyState, 40);
+  if (replyState !== undefined) meta.replyState = replyState;
+  if (value.origin === "agent" || value.origin === "operator") meta.origin = value.origin;
+  const operatorNote = boundedNullableString(value.operatorNote, HANDOFF_NOTE_MAX);
+  if (operatorNote !== undefined) meta.operatorNote = operatorNote;
+  return meta;
+}
+
+/**
+ * Read handoff metadata from a history message `info.hanse.handoff`.
+ *
+ * @param {unknown} info
+ * @returns {HandoffMessageMeta | null}
+ */
+export function handoffFromInfo(info) {
+  if (!isRecord(info)) return null;
+  const hanse = isRecord(info.hanse) ? info.hanse : null;
+  if (hanse === null) return null;
+  return normalizeHandoffMeta(hanse.handoff);
+}
+
+/**
+ * Extract the human body from a dispatcher-generated handoff prompt. The envelopes are stable
+ * (`[Hanse handoff request]` / `[Hanse handoff reply]`); this is the live-event fallback because
+ * typed events carry only lightweight handoff metadata.
+ *
+ * @param {string} text
+ * @param {"request" | "reply"} direction
+ * @returns {string}
+ */
+export function handoffBodyFromText(text, direction) {
+  const source = typeof text === "string" ? text.replace(/\r\n?/g, "\n") : "";
+  if (source.length === 0) return "";
+  if (direction === "request") {
+    const marker = "\nSpecification:\n";
+    const start = source.indexOf(marker);
+    if (start < 0) return "";
+    const from = start + marker.length;
+    const end = source.indexOf("\n\nWhen the work is finished", from);
+    return (end < 0 ? source.slice(from) : source.slice(from, end)).trim();
+  }
+  const marker = "\nResult:\n";
+  const start = source.indexOf(marker);
+  if (start < 0) return "";
+  const from = start + marker.length;
+  let end = source.length;
+  for (const stop of [
+    "\n\nOperator note (trusted):\n",
+    "\n\nContinue your work with this reply in mind.",
+  ]) {
+    const index = source.indexOf(stop, from);
+    if (index >= 0) end = Math.min(end, index);
+  }
+  return source.slice(from, end).trim();
+}
+
+/** Operator note embedded in a relaunched reply prompt, when the live event omits it. */
+export function handoffNoteFromText(text) {
+  const source = typeof text === "string" ? text.replace(/\r\n?/g, "\n") : "";
+  const marker = "\nOperator note (trusted):\n";
+  const start = source.indexOf(marker);
+  if (start < 0) return "";
+  const from = start + marker.length;
+  const end = source.indexOf("\n\nContinue your work with this reply in mind.", from);
+  return (end < 0 ? source.slice(from) : source.slice(from, end)).trim();
+}
+
+/** Same initials rules as the server-rendered `initials()` helper. */
+export function agentInitials(name) {
+  const words = String(name ?? "")
+    .split(/[\s._-]+/)
+    .map((word) => word.trim())
+    .filter((word) => word.length > 0);
+  if (words.length === 0) return "AG";
+  if (words.length === 1) return (words[0] ?? "AG").slice(0, 2).toUpperCase();
+  return `${(words[0] ?? "").slice(0, 1)}${(words[1] ?? "").slice(0, 1)}`.toUpperCase();
+}
+
+/**
  * History snapshots carry file-only attachments on `info.hanse.attachments`.
  *
  * @param {unknown} info
@@ -1258,9 +1400,14 @@ function buildSnapshotMessages(snapshotMessages, currentMessages) {
       version: (asNumber(previous?.version) ?? 0) + 1,
     };
     if (role === "user") {
-      const system = classifyOmo(entry);
-      if (system !== null) {
-        record.system = system;
+      const handoff = handoffFromInfo(info);
+      if (handoff !== null) {
+        record.handoff = handoff;
+      } else {
+        const system = classifyOmo(entry);
+        if (system !== null) {
+          record.system = system;
+        }
       }
       const attachments = attachmentsFromInfo(info);
       if (attachments !== undefined) record.attachments = attachments;
@@ -2149,6 +2296,225 @@ export function runtimeChip(state) {
       return { state: "failed", icon: "alert-triangle", label: "Error" };
     default:
       return unknownChip();
+  }
+}
+
+/**
+ * Built-in coordinator MCP tools reach opencode as `hanse_<name>`; managed web tools as
+ * `hanse_web_<name>`. Rendering keys off the normalized name so one renderer covers both the
+ * prefixed runtime id and any unprefixed fixture.
+ */
+export function normalizeToolName(tool) {
+  const value = String(tool ?? "");
+  return value.startsWith("hanse_") ? value.slice("hanse_".length) : value;
+}
+
+export function isHanseTool(tool) {
+  return String(tool ?? "").startsWith("hanse_");
+}
+
+const HANSE_TOOL_LABELS = {
+  ssh_exec: "SSH exec",
+  ssh_upload: "SSH upload",
+  ssh_download: "SSH download",
+  ssh_list_hosts: "SSH hosts",
+  request_sibling_change: "Handoff request",
+  list_apps: "Apps",
+  handoff_status: "Handoff status",
+  deliver_handoff: "Handoff reply",
+  create_skill: "Create skill",
+  list_skills: "Skills",
+  get_skill: "Skill",
+  update_skill: "Update skill",
+  set_skill_enabled: "Toggle skill",
+  override_skill: "Override skill",
+  preview_open: "Preview",
+  preview_close: "Preview close",
+  preview_list: "Previews",
+  web_search: "Web search",
+  web_fetch: "Web fetch",
+  list_projects: "Projects",
+  get_app: "App",
+  get_settings: "Settings",
+  set_setting: "Set setting",
+  inherit_setting: "Inherit setting",
+  start_app: "Start app",
+  restart_app: "Restart app",
+  create_project: "Create project",
+  add_app: "Add app",
+  list_dir: "List directory",
+  read_file: "Read file",
+  write_file: "Write file",
+};
+
+export function toolDisplayName(tool) {
+  const raw = String(tool ?? "tool");
+  if (!isHanseTool(raw)) return raw;
+  const name = normalizeToolName(raw);
+  return HANSE_TOOL_LABELS[name] ?? name.replaceAll("_", " ");
+}
+
+export function parseToolJsonOutput(output) {
+  if (typeof output !== "string") return null;
+  const trimmed = output.trim();
+  if (trimmed.length === 0 || (trimmed[0] !== "{" && trimmed[0] !== "[")) return null;
+  try {
+    const value = JSON.parse(trimmed);
+    return value !== null && typeof value === "object" ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+export function toolFailure(value) {
+  if (!isRecord(value) || value.ok !== false) return null;
+  const code = typeof value.code === "string" ? value.code : "";
+  const message = typeof value.message === "string" ? value.message : "";
+  if (code.length === 0 && message.length === 0) return null;
+  return { code, message };
+}
+
+export function formatByteCount(value) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return "";
+  if (value < 1024) return `${Math.round(value)} B`;
+  const units = ["KiB", "MiB", "GiB", "TiB"];
+  let amount = value / 1024;
+  let index = 0;
+  while (amount >= 1024 && index < units.length - 1) {
+    amount /= 1024;
+    index += 1;
+  }
+  const rounded = amount >= 10 ? Math.round(amount) : Math.round(amount * 10) / 10;
+  return `${rounded} ${units[index]}`;
+}
+
+export function shortIdentifier(value, length = 8) {
+  const text = String(value ?? "");
+  return text.length <= length ? text : text.slice(0, length);
+}
+
+function inputString(input, key) {
+  return isRecord(input) && typeof input[key] === "string" ? input[key] : "";
+}
+
+function outputArray(value, key) {
+  return isRecord(value) && Array.isArray(value[key]) ? value[key] : null;
+}
+
+export function toolSummaryText(tool, input, output) {
+  const name = normalizeToolName(tool);
+  const out = isRecord(output) ? output : null;
+  const skill = out !== null && isRecord(out.skill) ? out.skill : null;
+  const host = inputString(input, "host_id");
+  const withHost = (value) => (host.length > 0 ? `${value} @ ${host}` : value);
+  switch (name) {
+    case "ssh_exec": {
+      const command = inputString(input, "command");
+      return command.length > 0 ? withHost(command) : host.length > 0 ? `on ${host}` : null;
+    }
+    case "ssh_upload": {
+      const local = inputString(input, "local_path");
+      const remote = inputString(input, "remote_path");
+      if (local.length === 0 && remote.length === 0) return null;
+      return withHost(`${local || "?"} → ${remote || "?"}`);
+    }
+    case "ssh_download": {
+      const local = inputString(input, "local_path");
+      const remote = inputString(input, "remote_path");
+      if (local.length === 0 && remote.length === 0) return null;
+      return withHost(`${remote || "?"} → ${local || "?"}`);
+    }
+    case "ssh_list_hosts": {
+      if (Array.isArray(output)) return `${output.length} host${output.length === 1 ? "" : "s"}`;
+      return "SSH hosts";
+    }
+    case "request_sibling_change": {
+      const to = inputString(input, "to");
+      const summary = inputString(input, "summary");
+      if (to.length === 0 && summary.length === 0) return null;
+      return [to, summary].filter((part) => part.length > 0).join(": ");
+    }
+    case "list_apps": {
+      const apps = out === null ? null : outputArray(out, "apps");
+      return apps === null ? "Applications" : `${apps.length} application${apps.length === 1 ? "" : "s"}`;
+    }
+    case "handoff_status": {
+      const handoff = out !== null && isRecord(out.handoff) ? out.handoff : null;
+      const id = handoff !== null && typeof handoff.id === "string" ? handoff.id : inputString(input, "id");
+      return id.length > 0 ? `#${shortIdentifier(id)}` : null;
+    }
+    case "deliver_handoff": {
+      const id = inputString(input, "id");
+      const outcome = inputString(input, "outcome");
+      return id.length > 0
+        ? `#${shortIdentifier(id)}${outcome.length > 0 ? ` · ${outcome}` : ""}`
+        : null;
+    }
+    case "create_skill":
+      return inputString(input, "name") || (skill !== null && typeof skill.name === "string" ? skill.name : null);
+    case "get_skill":
+    case "update_skill":
+    case "set_skill_enabled":
+    case "override_skill": {
+      if (skill !== null && typeof skill.name === "string" && skill.name.length > 0) return skill.name;
+      const id = inputString(input, "skill_id") || inputString(input, "source_skill_id");
+      return id.length > 0 ? `skill #${id}` : null;
+    }
+    case "list_skills": {
+      const effective = out === null ? null : outputArray(out, "effective");
+      return effective === null
+        ? "Skills"
+        : `${effective.length} skill${effective.length === 1 ? "" : "s"}`;
+    }
+    case "preview_list": {
+      const previews = out === null ? null : outputArray(out, "previews");
+      return previews === null
+        ? "Previews"
+        : `${previews.length} preview${previews.length === 1 ? "" : "s"}`;
+    }
+    case "web_search":
+      return (out !== null && typeof out.query === "string" ? out.query : "") || inputString(input, "query") || null;
+    case "web_fetch":
+      return (out !== null && typeof out.url === "string" ? out.url : "") || inputString(input, "url") || null;
+    case "list_projects": {
+      const projects = out === null ? null : outputArray(out, "projects");
+      return projects === null
+        ? "Projects"
+        : `${projects.length} project${projects.length === 1 ? "" : "s"}`;
+    }
+    case "get_app": {
+      const app = out !== null && isRecord(out.app) ? out.app : null;
+      return app !== null && typeof app.appKey === "string"
+        ? app.appKey
+        : inputString(input, "app_key") || inputString(input, "project_id") || null;
+    }
+    case "get_settings":
+      return inputString(input, "app_key") || inputString(input, "project_id") || "Settings";
+    case "set_setting":
+    case "inherit_setting":
+      return inputString(input, "key") || null;
+    case "start_app":
+    case "restart_app":
+      return inputString(input, "app_key") || inputString(input, "project_id") || null;
+    case "create_project": {
+      const project = out !== null && isRecord(out.project) ? out.project : null;
+      return project !== null && typeof project.name === "string"
+        ? project.name
+        : inputString(input, "name") || null;
+    }
+    case "add_app": {
+      const app = out !== null && isRecord(out.app) ? out.app : null;
+      return app !== null && typeof app.appKey === "string"
+        ? app.appKey
+        : inputString(input, "app_key") || inputString(input, "name") || null;
+    }
+    case "list_dir":
+      return inputString(input, "path") || "workspace";
+    case "read_file":
+    case "write_file":
+      return inputString(input, "path") || null;
+    default:
+      return null;
   }
 }
 

@@ -13,6 +13,7 @@ import {
   autoCompactText,
   autoscrollFollow,
   autoscrollStep,
+  agentInitials,
   buildSessionTree,
   canRedeliverAsFile,
   canSendDraft,
@@ -33,13 +34,21 @@ import {
   firstRootId,
   flushDraftTransport,
   formatAttachmentSize,
+  formatByteCount,
+  handoffBodyFromText,
+  handoffFromInfo,
+  handoffNoteFromText,
+  isHanseTool,
   isHiddenSyntheticTextPart,
   isSlashCommandOnly,
   normalizeAttachment,
   normalizeAttachments,
   normalizeAttachmentWarnings,
+  normalizeHandoffMeta,
   normalizePendingSends,
   normalizeStreamWarning,
+  normalizeToolName,
+  parseToolJsonOutput,
   pendingSendActions,
   pendingSendLabel,
   provisionalPartType,
@@ -50,8 +59,12 @@ import {
   runtimeChip as runtimeChipSpec,
   safeAttachmentUrl,
   sessionDraftBadge,
+  shortIdentifier,
   shouldResubscribe,
+  toolDisplayName,
+  toolFailure,
   toolStatusChip as toolStatusChipSpec,
+  toolSummaryText,
 } from "./chat-core.js";
 import {
   commandBlockedByPending,
@@ -344,6 +357,7 @@ function main() {
   let reasoningTimer = null;
   const omoClassifyTimers = new Map();
   const omoCardState = new WeakMap();
+  const handoffCardState = new WeakMap();
   let dirtyMessages = new Set();
   let dirtyParts = new Set();
   let orderDirty = false;
@@ -803,6 +817,7 @@ function main() {
         record !== undefined &&
         record.role === "user" &&
         record.system == null &&
+        record.handoff == null &&
         record.optimistic !== "queued"
       ) {
         return record;
@@ -818,6 +833,7 @@ function main() {
           parent !== undefined &&
           parent.role === "user" &&
           parent.system == null &&
+          parent.handoff == null &&
           parent.optimistic !== "queued"
         ) {
           return parent;
@@ -3951,8 +3967,11 @@ function main() {
     if (snapshot.state === "compacting" || contextCompactingSession === sessionId) {
       return "Compaction in progress.";
     }
+    if (snapshot.topLevel === false) return "Compaction is only available for top-level sessions.";
     if (snapshot.status === "busy") return "Wait for the agent to finish.";
     if (snapshot.status === "retry") return "Wait for the agent to retry.";
+    if (snapshot.activeChildren === true) return "Wait for child sessions to finish.";
+    if (snapshot.pendingTask === true) return "Wait for the active task to finish.";
     if (!contextHasModel(snapshot)) return "No model is known for this session.";
     return null;
   }
@@ -4225,6 +4244,7 @@ function main() {
     if (status === 403) return "You do not have permission to compact this session.";
     if (status === 404) return "Session not found.";
     if (status === 409) {
+      if (code === "not_top_level") return "Compaction is only available for top-level sessions.";
       if (code === "session_busy") return "Wait for the agent to finish before compacting.";
       if (code === "compact_in_progress") return "Compaction is already in progress.";
       if (code === "model_unavailable") return "No model is available for this session.";
@@ -4417,6 +4437,8 @@ function main() {
     const filediff =
       metadata.filediff && typeof metadata.filediff === "object" ? metadata.filediff : {};
     const title = stringField(state.title) || stringField(data.title);
+    const summary = toolSummaryText(tool, input, parseToolJsonOutput(stringField(state.output)));
+    if (summary !== null) return previewValue(summary);
     let value = "";
     switch (tool) {
       case "bash":
@@ -4564,6 +4586,7 @@ function main() {
   }
 
   function toolGlyph(tool) {
+    const name = normalizeToolName(tool);
     const map = {
       bash: "terminal",
       read: "code",
@@ -4582,8 +4605,37 @@ function main() {
       preview_close: "eye",
       hanse_preview_open: "eye",
       hanse_preview_close: "eye",
+      ssh_exec: "terminal",
+      ssh_upload: "external",
+      ssh_download: "external",
+      ssh_list_hosts: "layers",
+      request_sibling_change: "branch",
+      list_apps: "layers",
+      handoff_status: "inbox",
+      deliver_handoff: "send",
+      create_skill: "layers",
+      list_skills: "layers",
+      get_skill: "layers",
+      update_skill: "layers",
+      set_skill_enabled: "layers",
+      override_skill: "layers",
+      preview_list: "eye",
+      web_search: "search",
+      web_fetch: "search",
+      list_projects: "dashboard",
+      get_app: "layers",
+      get_settings: "settings",
+      set_setting: "settings",
+      inherit_setting: "settings",
+      start_app: "activity",
+      restart_app: "refresh",
+      create_project: "folder",
+      add_app: "plus",
+      list_dir: "folder",
+      read_file: "code",
+      write_file: "code",
     };
-    return map[tool] || "terminal";
+    return map[name] || "terminal";
   }
 
   function detailLabel(part) {
@@ -4712,12 +4764,21 @@ function main() {
     return record.role === "user" && record.system !== undefined && record.system !== null;
   }
 
+  function isHandoffRecord(record) {
+    return record.role === "user" && record.handoff !== undefined && record.handoff !== null;
+  }
+
   function isPendingRecord(record) {
     return record.role === "user" && record.classificationPending === true;
   }
 
   function recordNeedsNode(record) {
-    return recordHasVisiblePart(record) || isSystemRecord(record) || isPendingRecord(record);
+    return (
+      recordHasVisiblePart(record) ||
+      isSystemRecord(record) ||
+      isHandoffRecord(record) ||
+      isPendingRecord(record)
+    );
   }
 
   function isOptimisticRecord(record) {
@@ -4725,6 +4786,7 @@ function main() {
   }
 
   function messageMode(record) {
+    if (isHandoffRecord(record)) return "handoff";
     if (isSystemRecord(record)) return "system";
     if (isPendingRecord(record)) return "pending";
     return record.role;
@@ -4758,15 +4820,28 @@ function main() {
   function renderMessageMeta(record, node) {
     const mode = messageMode(record);
     const system = isSystemRecord(record) ? record.system : null;
+    const handoff = isHandoffRecord(record) ? record.handoff : null;
     const signature = `${mode}|${messageTime(record)}|${node.dataset.optimistic || ""}|${
       system === null ? "" : `${system.kind}|${system.title}`
-    }`;
+    }|${handoff === null ? "" : `${handoff.id}|${handoff.direction}|${handoff.agent}|${handoff.summary}`}`;
     if (node.dataset.metaSignature === signature) return;
     node.dataset.metaSignature = signature;
     const meta = node.querySelector(".message__meta");
     if (meta === null) return;
     const children = [];
-    if (mode === "system") {
+    if (mode === "handoff") {
+      const avatar = element("span", "avatar avatar--sm", agentInitials(handoff.agent));
+      avatar.setAttribute("aria-hidden", "true");
+      children.push(avatar);
+      children.push(element("span", "message__role", handoff.agent));
+      children.push(
+        element(
+          "span",
+          "message__kind",
+          handoff.direction === "request" ? "handoff request" : "handoff reply",
+        ),
+      );
+    } else if (mode === "system") {
       children.push(iconNode("settings", "icon--sm"));
       children.push(element("span", "message__role", "OMO"));
       children.push(element("span", "message__kind", system.kind));
@@ -4849,6 +4924,155 @@ function main() {
     omoCardState.delete(node);
   }
 
+  const HANDOFF_CARD_DETAIL_CHARS = 900;
+  const HANDOFF_CARD_DETAIL_LINES = 14;
+
+  function recordTextContent(record) {
+    const chunks = [];
+    for (const partID of record.partOrder) {
+      const part = record.parts.get(partID);
+      if (part === undefined || part.type !== "text" || partIgnored(part)) continue;
+      const text = partTextValue(part);
+      if (text.length > 0) chunks.push(text);
+    }
+    return chunks.join("\n");
+  }
+
+  function handoffCardContent(record) {
+    const handoff = record.handoff;
+    const raw = recordTextContent(record);
+    const body =
+      typeof handoff.body === "string" && handoff.body.length > 0
+        ? handoff.body
+        : handoffBodyFromText(raw, handoff.direction);
+    const note =
+      typeof handoff.operatorNote === "string" && handoff.operatorNote.length > 0
+        ? handoff.operatorNote
+        : handoff.direction === "reply"
+          ? handoffNoteFromText(raw)
+          : "";
+    return { body, note };
+  }
+
+  function handoffNeedsDetails(body) {
+    return (
+      body.length > HANDOFF_CARD_DETAIL_CHARS || body.split("\n").length > HANDOFF_CARD_DETAIL_LINES
+    );
+  }
+
+  function handoffPreview(body) {
+    const firstLine = body.split("\n").find((line) => line.trim().length > 0) ?? "";
+    return collapsePreview(firstLine.replace(/^#+\s*/, ""));
+  }
+
+  function handoffOutcomeTone(outcome) {
+    if (outcome === "completed") return "success";
+    if (outcome === "blocked") return "warning";
+    if (outcome === "failed") return "error";
+    return "neutral";
+  }
+
+  function handoffCardSignature(record) {
+    const handoff = record.handoff;
+    const { body, note } = handoffCardContent(record);
+    return [
+      handoff.id,
+      handoff.direction,
+      handoff.agent,
+      handoff.from,
+      handoff.to,
+      handoff.state ?? "",
+      handoff.summary,
+      handoff.outcome ?? "",
+      handoff.replyState ?? "",
+      body,
+      note,
+    ].join("\u0001");
+  }
+
+  function renderHandoffCard(record, node) {
+    const handoff = record.handoff;
+    if (handoff === undefined || handoff === null) return;
+    const signature = handoffCardSignature(record);
+    let card = node.querySelector(".handoff-card");
+    if (card !== null && handoffCardState.get(node) === signature) return;
+    if (card === null) {
+      card = element("div", "handoff-card");
+      node.append(card);
+    }
+    handoffCardState.set(node, signature);
+    card.dataset.direction = handoff.direction;
+    if (handoff.outcome !== undefined && handoff.outcome !== null) {
+      card.dataset.outcome = handoff.outcome;
+    }
+
+    const head = element("div", "handoff-card__head");
+    const route = element("span", "handoff-card__route");
+    route.append(
+      element("span", "mono", handoff.from),
+      iconNode("arrow-right", "icon--sm"),
+      element("span", "mono", handoff.to),
+    );
+    head.append(
+      route,
+      element(
+        "span",
+        "handoff-card__kind",
+        handoff.direction === "request" ? "Request" : "Reply",
+      ),
+    );
+    if (handoff.direction === "reply" && handoff.outcome !== undefined && handoff.outcome !== null) {
+      const outcome = element("span", "handoff-card__outcome", handoff.outcome);
+      outcome.dataset.tone = handoffOutcomeTone(handoff.outcome);
+      head.append(outcome);
+    }
+    const link = element("a", "handoff-card__link mono", `#${handoff.id.slice(0, 8)}`);
+    link.href = `/handoffs?q=${encodeURIComponent(handoff.id)}`;
+    link.target = "_blank";
+    link.rel = "noreferrer noopener";
+    link.title = "Open this handoff in the inbox";
+    head.append(link);
+
+    const summary = element("p", "handoff-card__summary", handoff.summary);
+    const { body, note } = handoffCardContent(record);
+    const bodyEl = element("div", "message__body handoff-card__body");
+    if (body.length > 0) {
+      renderMarkdown(bodyEl, body);
+    } else {
+      bodyEl.append(element("p", "hint", "No handoff body is available yet."));
+    }
+    const parts = [head, summary];
+    if (handoffNeedsDetails(body)) {
+      const details = element("details", "handoff-card__details");
+      details.append(
+        element(
+          "summary",
+          "handoff-card__preview",
+          handoffPreview(body) || (handoff.direction === "request" ? "Request body" : "Reply body"),
+        ),
+        bodyEl,
+      );
+      parts.push(details);
+    } else {
+      parts.push(bodyEl);
+    }
+    if (note.length > 0) {
+      const noteEl = element("div", "handoff-card__note");
+      noteEl.append(element("p", "overline", "Operator note"));
+      const noteBody = element("div", "message__body");
+      renderMarkdown(noteBody, note);
+      noteEl.append(noteBody);
+      parts.push(noteEl);
+    }
+    card.replaceChildren(...parts);
+  }
+
+  function removeHandoffCard(node) {
+    const card = node.querySelector(".handoff-card");
+    if (card !== null) card.remove();
+    handoffCardState.delete(node);
+  }
+
   function detachRecordPartNodes(record, node) {
     for (const partID of record.partOrder) {
       const partNode = partNodes.get(`${record.id}:${partID}`);
@@ -4883,6 +5107,7 @@ function main() {
     const mode = messageMode(record);
     const classes = ["message"];
     if (mode === "user") classes.push("message--user");
+    else if (mode === "handoff") classes.push("message--handoff");
     else if (mode === "system") classes.push("message--system");
     else if (mode === "pending") classes.push("message--pending");
     const node = element("article", classes.join(" "));
@@ -5129,6 +5354,14 @@ function main() {
         node.append(pre);
       }
       return pre;
+    }
+    if (kind === "structured") {
+      let host = directChildByClass(node, "tool-call__structured");
+      if (host === null) {
+        host = element("div", "tool-call__structured");
+        node.append(host);
+      }
+      return host;
     }
     if (kind === "pre") {
       let pre = directPre(node);
@@ -5429,6 +5662,667 @@ function main() {
     return true;
   }
 
+  function safeExternalUrl(value) {
+    if (typeof value !== "string") return null;
+    const trimmed = value.trim();
+    if (!/^https?:\/\//i.test(trimmed)) return null;
+    try {
+      const url = new URL(trimmed);
+      return url.protocol === "http:" || url.protocol === "https:" ? url.href : null;
+    } catch (error) {
+      void error;
+      return null;
+    }
+  }
+
+  function toolLink(href, text, className) {
+    const link = element("a", className === undefined ? "tool-link" : className, text);
+    link.href = href;
+    if (!href.startsWith("/")) {
+      link.target = "_blank";
+      link.rel = "noreferrer noopener";
+    }
+    return link;
+  }
+
+  function toolUrlLink(value, text) {
+    const external = safeExternalUrl(value);
+    if (external !== null) return toolLink(external, text ?? value);
+    const preview = safePreviewUrl(value);
+    if (preview !== null) return toolLink(preview, text ?? value);
+    return element("span", "mono", text ?? String(value ?? ""));
+  }
+
+  function toolBadge(text, tone) {
+    const badge = element("span", "badge tool-badge", text);
+    if (tone !== undefined) badge.dataset.tone = tone;
+    return badge;
+  }
+
+  function toolPre(text, className) {
+    const pre = element("pre", className === undefined ? "tool-code" : `tool-code ${className}`);
+    pre.textContent = text;
+    return pre;
+  }
+
+  function toolKeyValues(entries) {
+    const list = element("dl", "tool-kv");
+    for (const [label, value] of entries) {
+      if (value === undefined || value === null || value === "") continue;
+      list.append(element("dt", "", label), element("dd", "mono", String(value)));
+    }
+    return list;
+  }
+
+  function toolSection(label, content, className) {
+    const section = element(
+      "section",
+      className === undefined ? "tool-block" : `tool-block ${className}`,
+    );
+    if (label.length > 0) section.append(element("p", "overline", label));
+    section.append(content);
+    return section;
+  }
+
+  function toolTable(headers, rows) {
+    const wrap = element("div", "tool-table-wrap");
+    const table = element("table", "tool-table");
+    const head = element("thead");
+    const headRow = element("tr");
+    for (const header of headers) {
+      const cell = element("th", "", header);
+      cell.setAttribute("scope", "col");
+      headRow.append(cell);
+    }
+    head.append(headRow);
+    table.append(head);
+    if (rows.length > 0) {
+      const body = element("tbody");
+      for (const row of rows) {
+        const tr = element("tr");
+        for (const value of row) {
+          const td = element("td");
+          if (value instanceof Node) td.append(value);
+          else td.textContent = String(value ?? "");
+          tr.append(td);
+        }
+        body.append(tr);
+      }
+      table.append(body);
+    }
+    wrap.append(table);
+    return wrap;
+  }
+
+  function toolMarkdown(text) {
+    const body = element("div", "message__body tool-markdown");
+    renderMarkdown(body, text);
+    return body;
+  }
+
+  function toolDetails(summary, content) {
+    const details = element("details", "tool-details");
+    details.append(element("summary", "", summary), content);
+    return details;
+  }
+
+  function toolJsonBlock(value) {
+    let text = "";
+    try {
+      text = JSON.stringify(value, null, 2);
+    } catch (error) {
+      void error;
+      text = String(value);
+    }
+    return toolPre(text, "tool-code--json");
+  }
+
+  function handoffTone(state) {
+    if (state === "delivered") return "success";
+    if (state === "awaiting_approval") return "warning";
+    if (
+      state === "rejected" ||
+      state === "failed" ||
+      state === "expired" ||
+      state === "cancelled"
+    ) {
+      return "error";
+    }
+    if (state === "queued" || state === "dispatching" || state === "in_progress") return "info";
+    return "neutral";
+  }
+
+  function toolFailureCard(failure) {
+    const card = element("div", "tool-error");
+    const head = element("div", "tool-error__head");
+    head.append(iconNode("alert-triangle", "icon--sm"));
+    head.append(
+      element(
+        "span",
+        "tool-error__code mono",
+        failure.code.length > 0 ? failure.code : "error",
+      ),
+    );
+    card.append(head);
+    if (failure.message.length > 0) {
+      card.append(element("p", "tool-error__message", failure.message));
+    }
+    return card;
+  }
+
+  function approvalPendingCard(value, input) {
+    const card = element("div", "tool-approval");
+    const head = element("div", "tool-approval__head");
+    head.append(iconNode("stamp", "icon--sm"), element("span", "", "Waiting for operator approval"));
+    card.append(head);
+    if (typeof value.message === "string" && value.message.length > 0) {
+      card.append(element("p", "tool-approval__message", value.message));
+    }
+    card.append(
+      toolKeyValues([
+        ["Host", stringField(input.host_id)],
+        ["Expires", stringField(value.expires_at)],
+      ]),
+    );
+    card.append(
+      element(
+        "p",
+        "tool-approval__hint",
+        "Approve or reject the request on the SSH page, then retry the same call.",
+      ),
+    );
+    return card;
+  }
+
+  function renderHandoffSummary(host, handoff) {
+    const id = stringField(handoff.id);
+    const state = stringField(handoff.state);
+    const head = element("div", "tool-route");
+    if (id.length > 0) {
+      head.append(
+        toolLink(`/handoffs?q=${encodeURIComponent(id)}`, `#${shortIdentifier(id)}`, "mono"),
+      );
+    }
+    if (state.length > 0) head.append(toolBadge(state.replaceAll("_", " "), handoffTone(state)));
+    if (head.childNodes.length > 0) host.append(head);
+    const summary = stringField(handoff.summary);
+    if (summary.length > 0) host.append(element("p", "tool-summary", summary));
+    host.append(
+      toolKeyValues([
+        ["Outcome", stringField(handoff.outcome)],
+        ["Reply", stringField(handoff.replyState)],
+        ["From", shortIdentifier(stringField(handoff.fromAppId))],
+        ["To", shortIdentifier(stringField(handoff.toAppId))],
+      ]),
+    );
+    const result = stringField(handoff.result);
+    if (result.length > 0) host.append(toolSection("Result", toolMarkdown(result)));
+    const error = stringField(handoff.error);
+    if (error.length > 0) {
+      host.append(toolSection("Error", toolFailureCard({ code: "", message: error })));
+    }
+    const note = stringField(handoff.operatorNote);
+    if (note.length > 0) host.append(toolSection("Operator note", toolMarkdown(note)));
+  }
+
+  function renderSkillSummary(host, value, tool) {
+    const skill = value.skill && typeof value.skill === "object" ? value.skill : null;
+    if (skill === null) {
+      host.append(toolJsonBlock(value));
+      return;
+    }
+    host.append(
+      toolKeyValues([
+        ["Name", stringField(skill.name)],
+        ["Scope", stringField(skill.scope)],
+        ["App", stringField(skill.appKey)],
+        ["Enabled", skill.enabled === true ? "yes" : "no"],
+        ["References", Array.isArray(skill.references) ? skill.references.length : ""],
+      ]),
+    );
+    const description = stringField(skill.description);
+    if (description.length > 0) host.append(element("p", "tool-summary", description));
+    const content = stringField(skill.content);
+    if (content.length > 0) host.append(toolDetails("Skill body", toolMarkdown(content)));
+    const pending = value.pendingRestart;
+    if (pending && typeof pending === "object" && pending.pending === true) {
+      const reasons = Array.isArray(pending.reasons)
+        ? pending.reasons.filter((reason) => typeof reason === "string")
+        : [];
+      host.append(
+        toolSection(
+          "Restart required",
+          element(
+            "p",
+            "tool-note",
+            reasons.length > 0 ? reasons.join(" · ") : "Restart the app to apply.",
+          ),
+        ),
+      );
+    }
+    const scope = value.appsInScope;
+    if (scope && typeof scope === "object") {
+      host.append(
+        element(
+          "p",
+          "hint",
+          `${Number(scope.running) || 0} of ${Number(scope.total) || 0} apps in scope are running.`,
+        ),
+      );
+    }
+    if (tool === "get_skill" && content.length === 0) {
+      host.append(element("p", "hint", "This skill has no body."));
+    }
+  }
+
+  function renderStructuredToolBody(host, context) {
+    const { tool, data, status, output, value } = context;
+    const name = normalizeToolName(tool);
+    const input = partInput(data);
+    host.replaceChildren();
+    if (status === "error") {
+      host.append(
+        toolFailureCard({
+          code: "",
+          message: stringField(partState(data).error) || output || "The tool call failed.",
+        }),
+      );
+      return;
+    }
+    if (context.approvalPending) {
+      host.append(approvalPendingCard(value, input));
+      return;
+    }
+    const failure = toolFailure(value);
+    if (failure !== null) {
+      host.append(toolFailureCard(failure));
+      return;
+    }
+    if (Array.isArray(value)) {
+      if (name === "ssh_list_hosts") {
+        if (value.length === 0) {
+          host.append(element("p", "hint", "No SSH hosts are available to this application."));
+          return;
+        }
+        host.append(
+          toolTable(
+            ["Host", "Address", "User", "Approval"],
+            value.map((entry) => {
+              const row = entry && typeof entry === "object" ? entry : {};
+              const approval =
+                row.requireApproval === true
+                  ? row.grant !== null && row.grant !== undefined
+                    ? "granted"
+                    : Number(row.pendingApprovals) > 0
+                      ? "pending"
+                      : "required"
+                  : "not required";
+              const address = `${stringField(row.address)}${
+                row.port === undefined ? "" : `:${row.port}`
+              }`;
+              return [
+                stringField(row.name) || shortIdentifier(stringField(row.id)),
+                address,
+                stringField(row.username),
+                approval,
+              ];
+            }),
+          ),
+        );
+        return;
+      }
+      host.append(toolJsonBlock(value));
+      return;
+    }
+    if (value === null || typeof value !== "object") {
+      host.append(toolPre(output));
+      return;
+    }
+    switch (name) {
+      case "ssh_exec": {
+        host.append(
+          toolKeyValues([
+            ["Host", stringField(value.host)],
+            ["Exit code", value.exit_code],
+            ["Duration", typeof value.duration_ms === "number" ? `${value.duration_ms} ms` : ""],
+          ]),
+        );
+        const command = stringField(value.command) || stringField(input.command);
+        if (command.length > 0) {
+          host.append(toolSection("Command", toolPre(command, "tool-code--command")));
+        }
+        const stdout = stringField(value.stdout);
+        if (stdout.length > 0) host.append(toolSection("stdout", toolPre(stdout, "tool-code--out")));
+        const stderr = stringField(value.stderr);
+        if (stderr.length > 0) host.append(toolSection("stderr", toolPre(stderr, "tool-code--err")));
+        const truncated =
+          value.truncated && typeof value.truncated === "object" ? value.truncated : {};
+        if (truncated.stdout === true || truncated.stderr === true) {
+          host.append(element("p", "hint", "Output was truncated by the SSH result cap."));
+        }
+        return;
+      }
+      case "ssh_upload":
+      case "ssh_download": {
+        host.append(
+          toolKeyValues([
+            ["Host", stringField(value.host)],
+            ["Path", stringField(value.path)],
+            ["Size", formatByteCount(value.bytes)],
+          ]),
+        );
+        return;
+      }
+      case "request_sibling_change": {
+        const state = stringField(value.state) || stringField(value.status);
+        const head = element("div", "tool-route");
+        const to = stringField(input.to);
+        if (to.length > 0) head.append(element("span", "mono", to));
+        if (state.length > 0) head.append(toolBadge(state.replaceAll("_", " "), handoffTone(state)));
+        const id = stringField(value.handoffId);
+        if (id.length > 0) {
+          head.append(
+            toolLink(`/handoffs?q=${encodeURIComponent(id)}`, `#${shortIdentifier(id)}`, "mono"),
+          );
+        }
+        if (head.childNodes.length > 0) host.append(head);
+        const summary = stringField(input.summary);
+        if (summary.length > 0) host.append(element("p", "tool-summary", summary));
+        const spec = stringField(input.spec);
+        if (spec.length > 0) host.append(toolSection("Specification", toolMarkdown(spec)));
+        if (state === "awaiting_approval") {
+          host.append(element("p", "hint", "The request is waiting for operator approval."));
+        } else if (state === "rejected" || state === "denied") {
+          host.append(element("p", "hint", "The request was rejected."));
+        }
+        return;
+      }
+      case "handoff_status":
+      case "deliver_handoff": {
+        const handoff = value.handoff && typeof value.handoff === "object" ? value.handoff : null;
+        if (handoff === null) {
+          host.append(element("p", "hint", "No handoff with that id was found."));
+          return;
+        }
+        renderHandoffSummary(host, handoff);
+        return;
+      }
+      case "list_apps": {
+        const apps = Array.isArray(value.apps) ? value.apps : [];
+        if (apps.length === 0) {
+          host.append(element("p", "hint", "This project has no applications."));
+          return;
+        }
+        host.append(
+          toolTable(
+            ["Application", "Kind"],
+            apps.map((entry) => {
+              const row = entry && typeof entry === "object" ? entry : {};
+              const appKey = stringField(row.appKey);
+              const projectId = stringField(row.projectId);
+              const link =
+                appKey.length > 0
+                  ? toolLink(
+                      `/chat?app=${encodeURIComponent(appKey)}&project=${encodeURIComponent(projectId)}`,
+                      appKey,
+                      "mono",
+                    )
+                  : element("span", "mono", shortIdentifier(stringField(row.id)));
+              return [link, stringField(row.kind) || "agent"];
+            }),
+          ),
+        );
+        return;
+      }
+      case "list_skills": {
+        const effective = Array.isArray(value.effective) ? value.effective : [];
+        if (effective.length === 0) {
+          host.append(element("p", "hint", "No skills are effective in this scope."));
+          return;
+        }
+        host.append(
+          toolTable(
+            ["Skill", "Source", "Description"],
+            effective.map((entry) => {
+              const row = entry && typeof entry === "object" ? entry : {};
+              return [
+                element("span", "mono", stringField(row.name)),
+                stringField(row.source),
+                stringField(row.description),
+              ];
+            }),
+          ),
+        );
+        return;
+      }
+      case "create_skill":
+      case "get_skill":
+      case "update_skill":
+      case "set_skill_enabled":
+      case "override_skill": {
+        renderSkillSummary(host, value, name);
+        return;
+      }
+      case "preview_list": {
+        const previews = Array.isArray(value.previews) ? value.previews : [];
+        if (previews.length === 0) {
+          host.append(element("p", "hint", "This application has no active previews."));
+          return;
+        }
+        host.append(
+          toolTable(
+            ["Preview", "Key", "Port", "Base path"],
+            previews.map((entry) => {
+              const row = entry && typeof entry === "object" ? entry : {};
+              const label = stringField(row.name) || stringField(row.key);
+              return [
+                toolUrlLink(stringField(row.url), label),
+                element("span", "mono", stringField(row.key)),
+                String(row.port ?? ""),
+                element("span", "mono", stringField(row.base_path)),
+              ];
+            }),
+          ),
+        );
+        return;
+      }
+      case "preview_close":
+        host.append(
+          element(
+            "p",
+            value.closed === true ? "tool-note" : "hint",
+            value.closed === true ? "Preview closed." : "No matching preview was open.",
+          ),
+        );
+        return;
+      case "web_search": {
+        const results = Array.isArray(value.results) ? value.results : [];
+        if (results.length === 0) {
+          host.append(element("p", "hint", "No results."));
+          return;
+        }
+        const list = element("ul", "tool-results");
+        for (const entry of results) {
+          const row = entry && typeof entry === "object" ? entry : {};
+          const item = element("li", "tool-result");
+          const title = stringField(row.title) || stringField(row.url);
+          item.append(toolUrlLink(stringField(row.url), title, "tool-result__title"));
+          const url = stringField(row.url);
+          if (url.length > 0) item.append(element("span", "tool-result__url mono", url));
+          const meta = [stringField(row.siteName), stringField(row.publishedAt)].filter(
+            (part) => part.length > 0,
+          );
+          if (meta.length > 0) item.append(element("span", "tool-result__meta", meta.join(" · ")));
+          const snippet = stringField(row.snippet);
+          if (snippet.length > 0) item.append(element("p", "tool-result__snippet", snippet));
+          const content = stringField(row.content);
+          if (content.length > 0) item.append(toolDetails("Page content", toolPre(content)));
+          list.append(item);
+        }
+        host.append(list);
+        return;
+      }
+      case "web_fetch": {
+        const title = stringField(value.title) || stringField(value.url);
+        host.append(toolUrlLink(stringField(value.url), title, "tool-summary tool-link"));
+        const content = stringField(value.content);
+        if (content.length > 0) host.append(toolPre(content, "tool-code--page"));
+        return;
+      }
+      case "list_projects": {
+        const projects = Array.isArray(value.projects) ? value.projects : [];
+        if (projects.length === 0) {
+          host.append(element("p", "hint", "No projects."));
+          return;
+        }
+        host.append(
+          toolTable(
+            ["Project", "Apps", "Notes"],
+            projects.map((entry) => {
+              const row = entry && typeof entry === "object" ? entry : {};
+              const apps = Array.isArray(row.apps) ? row.apps.length : 0;
+              const notes = [
+                row.builtin === true ? "builtin" : "",
+                row.deleting === true ? "deleting" : "",
+              ]
+                .filter((note) => note.length > 0)
+                .join(" · ");
+              return [stringField(row.name), String(apps), notes];
+            }),
+          ),
+        );
+        return;
+      }
+      case "get_app": {
+        const app = value.app && typeof value.app === "object" ? value.app : {};
+        const project = value.project && typeof value.project === "object" ? value.project : {};
+        host.append(
+          toolKeyValues([
+            ["Application", stringField(app.appKey)],
+            ["Project", stringField(project.name) || stringField(project.id)],
+            ["Kind", stringField(app.kind)],
+            ["Path", stringField(app.path)],
+          ]),
+        );
+        return;
+      }
+      case "get_settings": {
+        const target =
+          value.target && typeof value.target === "object" ? value.target : {};
+        host.append(
+          toolKeyValues([
+            ["Scope", stringField(value.scope)],
+            ["Project", stringField(target.projectId)],
+            ["App", stringField(target.appKey)],
+          ]),
+        );
+        host.append(toolDetails("Effective settings", toolJsonBlock(value.settings ?? {})));
+        return;
+      }
+      case "set_setting":
+      case "inherit_setting": {
+        host.append(
+          toolKeyValues([
+            ["Key", stringField(value.key)],
+            ["Scope", stringField(value.scope)],
+            [
+              "Effective",
+              typeof value.effective === "object"
+                ? JSON.stringify(value.effective)
+                : value.effective,
+            ],
+          ]),
+        );
+        if (value.cleared === true) host.append(element("p", "hint", "The value was cleared."));
+        return;
+      }
+      case "start_app":
+      case "restart_app": {
+        host.append(
+          toolKeyValues([
+            ["State", stringField(value.state)],
+            ["Restarted", value.restarted === true ? "yes" : value.restarted === false ? "no" : ""],
+            ["Pending restart", value.pendingRestart?.pending === true ? "yes" : ""],
+          ]),
+        );
+        return;
+      }
+      case "create_project": {
+        const project = value.project && typeof value.project === "object" ? value.project : {};
+        host.append(
+          toolKeyValues([
+            ["Project", stringField(project.name)],
+            ["Id", stringField(project.id)],
+            ["Root", stringField(project.rootPath)],
+          ]),
+        );
+        return;
+      }
+      case "add_app": {
+        const app = value.app && typeof value.app === "object" ? value.app : {};
+        host.append(
+          toolKeyValues([
+            ["Application", stringField(app.appKey)],
+            ["Project", stringField(app.projectId)],
+            ["Path", stringField(app.path)],
+          ]),
+        );
+        return;
+      }
+      case "list_dir": {
+        const entries = Array.isArray(value.entries) ? value.entries : [];
+        host.append(
+          toolKeyValues([
+            ["Path", stringField(value.path) || "workspace"],
+            ["Entries", String(entries.length)],
+          ]),
+        );
+        if (entries.length > 0) {
+          host.append(
+            toolTable(
+              ["Name", "Type", "Size"],
+              entries.map((entry) => {
+                const row = entry && typeof entry === "object" ? entry : {};
+                return [
+                  element("span", "mono", stringField(row.name)),
+                  stringField(row.type),
+                  row.type === "file" ? formatByteCount(row.size) : "",
+                ];
+              }),
+            ),
+          );
+        }
+        if (value.truncated === true) {
+          host.append(element("p", "hint", "The listing was truncated."));
+        }
+        return;
+      }
+      case "read_file": {
+        host.append(
+          toolKeyValues([
+            ["Path", stringField(value.path)],
+            ["Size", formatByteCount(value.bytes)],
+          ]),
+        );
+        const content = stringField(value.content);
+        if (content.length > 0) host.append(toolPre(content, "tool-code--file"));
+        return;
+      }
+      case "write_file": {
+        host.append(
+          toolKeyValues([
+            ["Path", stringField(value.path)],
+            ["Size", formatByteCount(value.bytes)],
+            ["Created", value.created === true ? "yes" : "no"],
+          ]),
+        );
+        return;
+      }
+      default:
+        host.append(toolJsonBlock(value));
+    }
+  }
+
   function updateToolPart(node, part, key, force) {
     const state = renderStateFor(key);
     const data = partDataOf(part);
@@ -5455,11 +6349,23 @@ function main() {
         allocated.kind === "files");
     const bodyText =
       allocated !== null && allocated.kind === "plain" ? allocated.text : output;
+    const parsedOutput =
+      status === "running" || status === "pending" ? null : parseToolJsonOutput(output);
+    const structured =
+      status !== "running" &&
+      status !== "pending" &&
+      (isHanseTool(tool) || parsedOutput !== null);
+    const failure = parsedOutput === null ? null : toolFailure(parsedOutput);
+    const approvalPending =
+      parsedOutput !== null &&
+      typeof parsedOutput === "object" &&
+      parsedOutput.code === "ssh_approval_pending";
     let bodyKind = "pre";
     if (part.omitted === true) bodyKind = "none";
     else if (hasViewBody) bodyKind = "view";
     else if (tool === "todowrite") bodyKind = "todo";
     else if (tool === "bash") bodyKind = "bash";
+    else if (structured) bodyKind = "structured";
     const viewKey =
       bodyKind === "view" && allocated !== null ? viewKeyFor(part, status, allocated) : "";
     const notice = buildTruncationNotice(part, status, {
@@ -5474,7 +6380,11 @@ function main() {
       status,
       preview === null ? "" : `${preview.preview}\n${preview.title}`,
       elapsed,
-      bodyKind === "view" || bodyKind === "none" ? "" : bodyText,
+      bodyKind === "view" || bodyKind === "none"
+        ? ""
+        : bodyKind === "structured"
+          ? output
+          : bodyText,
       todos === null ? "" : JSON.stringify(todos),
       notice,
       bodyKind,
@@ -5494,12 +6404,21 @@ function main() {
     const hadFocus = summary.contains(document.activeElement);
     const summaryChildren = [
       iconNode(toolGlyph(tool)),
-      element("span", "mono", tool),
+      element("span", "mono", toolDisplayName(tool)),
     ];
     if (preview !== null) {
       const previewEl = element("span", "tool-call__path", preview.preview);
       previewEl.title = preview.title;
       summaryChildren.push(previewEl);
+    }
+    if (approvalPending) {
+      const badge = element("span", "badge tool-call__result", "approval");
+      badge.dataset.tone = "warning";
+      summaryChildren.push(badge);
+    } else if (failure !== null) {
+      const badge = element("span", "badge tool-call__result", "returned error");
+      badge.dataset.tone = "error";
+      summaryChildren.push(badge);
     }
     summaryChildren.push(toolStatusChip(status));
     if (elapsed.length > 0) {
@@ -5513,6 +6432,19 @@ function main() {
       ensureToolBody(node, state, "none");
     } else if (bodyKind === "view" && allocated !== null) {
       applyViewBody(node, part, state, allocated, viewKey);
+    } else if (bodyKind === "structured") {
+      clearViewState(part, state);
+      const host = ensureToolBody(node, state, "structured");
+      if (host !== null) {
+        renderStructuredToolBody(host, {
+          tool,
+          data,
+          status,
+          output,
+          value: parsedOutput,
+          approvalPending,
+        });
+      }
     } else {
       clearViewState(part, state);
       const body = ensureToolBody(node, state, bodyKind);
@@ -5897,6 +6829,7 @@ function main() {
     const mode = messageMode(record);
     node.dataset.role = record.role;
     node.classList.toggle("message--user", mode === "user");
+    node.classList.toggle("message--handoff", mode === "handoff");
     node.classList.toggle("message--system", mode === "system");
     node.classList.toggle("message--pending", mode === "pending");
     if (record.optimistic !== undefined) {
@@ -5908,10 +6841,16 @@ function main() {
       delete node.dataset.state;
       delete node.dataset.optimistic;
     }
-    if (mode === "system") {
+    if (mode === "handoff") {
       detachRecordPartNodes(record, node);
+      removeOmoCard(node);
+      renderHandoffCard(record, node);
+    } else if (mode === "system") {
+      detachRecordPartNodes(record, node);
+      removeHandoffCard(node);
       renderOmoCard(record, node);
     } else {
+      removeHandoffCard(node);
       removeOmoCard(node);
       if (mode === "pending") detachRecordPartNodes(record, node);
     }
@@ -6891,6 +7830,16 @@ function main() {
   function classifyLiveUserMessage(record) {
     if (record === undefined || record.role !== "user") return;
     clearOmoClassifyTimer(record.id);
+    if (record.handoff !== undefined && record.handoff !== null) {
+      if (record.system !== undefined) {
+        delete record.system;
+        record.version += 1;
+        dirtyMessages.add(record.id);
+        recomputeQueue();
+        scheduleFlush();
+      }
+      return;
+    }
     if (isOptimisticRecord(record)) {
       markOptimisticOperator(record);
       return;
@@ -6927,6 +7876,7 @@ function main() {
 
   function scheduleUserClassification(record) {
     if (record === undefined || record.role !== "user") return;
+    if (record.handoff !== undefined && record.handoff !== null) return;
     if (isOptimisticRecord(record)) {
       markOptimisticOperator(record);
       return;
@@ -7106,9 +8056,38 @@ function main() {
       const wasUser = existing !== undefined && existing.role === "user";
       const { record } = ensureLiveMessage(payload.messageID, role);
       record.role = role;
+      if (payload.handoff !== undefined && payload.handoff !== null) {
+        const handoff = normalizeHandoffMeta(payload.handoff);
+        if (handoff !== null) {
+          const previous = record.handoff;
+          if (
+            previous !== undefined &&
+            previous !== null &&
+            previous.id === handoff.id &&
+            handoff.body === undefined &&
+            previous.body !== undefined
+          ) {
+            handoff.body = previous.body;
+          }
+          if (
+            previous !== undefined &&
+            previous !== null &&
+            previous.id === handoff.id &&
+            handoff.operatorNote === undefined &&
+            previous.operatorNote !== undefined
+          ) {
+            handoff.operatorNote = previous.operatorNote;
+          }
+          record.handoff = handoff;
+          if (record.system !== undefined) delete record.system;
+        }
+      }
       if (role === "user") {
         if (isOptimisticRecord(record)) markOptimisticOperator(record);
-        else if (existing === undefined || !wasUser) {
+        else if (
+          (record.handoff === undefined || record.handoff === null) &&
+          (existing === undefined || !wasUser)
+        ) {
           record.classificationPending = true;
           scheduleUserClassification(record);
         }

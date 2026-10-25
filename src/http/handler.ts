@@ -124,6 +124,10 @@ const ASSETS: Record<string, { file: string; contentType: string }> = {
     file: "git-settings.js",
     contentType: "text/javascript; charset=utf-8",
   },
+  "/assets/handoff.js": {
+    file: "handoff.js",
+    contentType: "text/javascript; charset=utf-8",
+  },
   "/assets/images.js": { file: "images.js", contentType: "text/javascript; charset=utf-8" },
   "/assets/markdown.js": {
     file: "markdown.js",

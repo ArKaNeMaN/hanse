@@ -282,6 +282,7 @@ function shell(
     body: string;
     settingsHref?: string;
     skillsHref?: string;
+    moduleScripts?: string[];
   },
 ): string {
   return appShell({
@@ -297,6 +298,7 @@ function shell(
     notice: chrome.notice,
     settingsHref: options.settingsHref,
     skillsHref: options.skillsHref,
+    moduleScripts: options.moduleScripts,
   });
 }
 
@@ -1163,6 +1165,7 @@ export function renderProject(
     body,
     settingsHref: `/projects/${encodeURIComponent(project.id)}/settings`,
     skillsHref: `/projects/${encodeURIComponent(project.id)}/skills`,
+    moduleScripts: ["/assets/handoff.js"],
   });
 }
 
@@ -1347,6 +1350,7 @@ export function renderHandoffs(
     header,
     body: content,
     skillsHref: "/skills",
+    moduleScripts: ["/assets/handoff.js"],
   });
 }
 

@@ -19,6 +19,7 @@ export const MAX_CONTEXT_PARTS_PER_SESSION = 512;
 export const MAX_CONTEXT_PENDING_STEPS = 128;
 export const COMPACTION_FAILURE_COOLDOWN_MS = 5 * 60 * 1000;
 export const PROVIDER_LIMIT_FAILURE_BACKOFF_MS = 60 * 1000;
+export const CHILD_ACTIVITY_WINDOW_MS = 5 * 60 * 1000;
 
 export type ContextState = "unknown" | "ready" | "compacting";
 export type ContextSessionStatus = "idle" | "busy" | "retry" | "unknown";
@@ -54,6 +55,9 @@ export interface ContextSnapshot {
   percent: number | null;
   model: OpencodeModel | null;
   status: ContextSessionStatus;
+  topLevel: boolean;
+  activeChildren: boolean;
+  pendingTask: boolean;
   updatedAt: string;
   lastCompactedAt: string | null;
   lastError: CompactionErrorCode | null;
@@ -80,6 +84,8 @@ export interface AutoCompactState {
   lastCompactedAt: number | null;
   postCompactionPending: boolean;
   ineffective: boolean;
+  activeChildren?: boolean;
+  pendingTask?: boolean;
 }
 
 export interface AutoCompactDecision {
@@ -152,6 +158,7 @@ interface SessionRecord {
   messages: Map<string, MessageMeta>;
   parts: Map<string, PartMeta>;
   pendingSteps: Map<string, ContextTokens>;
+  pendingTaskParts: Set<string>;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -166,6 +173,14 @@ function asString(value: unknown): string | undefined {
 
 function asFinite(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function isSpawnToolName(value: unknown): boolean {
+  return value === "task" || value === "call_omo_agent";
+}
+
+function spawnToolFromPart(part: Record<string, unknown> | undefined): boolean {
+  return part?.type === "tool" && isSpawnToolName(part.tool);
 }
 
 function nonNegative(value: unknown): number | undefined {
@@ -310,6 +325,7 @@ export function autoCompactDecision(
   if (state.model === null) return unchanged;
   if (state.limit === null || !Number.isFinite(state.limit) || state.limit <= 0) return unchanged;
   if (state.used === null || !Number.isFinite(state.used) || state.used < 0) return unchanged;
+  if (state.activeChildren === true || state.pendingTask === true) return unchanged;
   if (!Number.isFinite(policy.percent)) return unchanged;
 
   const rawPercent = (state.used / state.limit) * 100;
@@ -500,6 +516,7 @@ function freshRecord(now: number): SessionRecord {
     messages: new Map(),
     parts: new Map(),
     pendingSteps: new Map(),
+    pendingTaskParts: new Set(),
   };
 }
 
@@ -513,9 +530,20 @@ function insertBounded<K, V>(map: Map<K, V>, key: K, value: V, max: number): voi
   }
 }
 
+function insertBoundedSet(set: Set<string>, value: string, max: number): void {
+  set.add(value);
+  while (set.size > max) {
+    const first = set.values().next();
+    if (first.done === true) break;
+    set.delete(first.value);
+  }
+}
+
 export class ContextTracker {
   readonly #sessions = new Map<string, SessionRecord>();
-  readonly #parents = new Map<string, boolean>();
+  readonly #parents = new Map<string, string | null>();
+  readonly #children = new Map<string, Set<string>>();
+  readonly #sessionUpdated = new Map<string, number>();
 
   get sessionCount(): number {
     return this.#sessions.size;
@@ -527,16 +555,65 @@ export class ContextTracker {
 
   setSessionParents(sessions: OpencodeSession[]): void {
     this.#parents.clear();
+    this.#children.clear();
+    this.#sessionUpdated.clear();
     for (const session of sessions) {
       const sessionID = asString(session.id);
       if (sessionID === undefined) continue;
       const parentID = asString(session.parentID);
-      insertBounded(this.#parents, sessionID, parentID === undefined, MAX_CONTEXT_SESSIONS);
+      insertBounded(this.#parents, sessionID, parentID ?? null, MAX_CONTEXT_SESSIONS);
+      if (parentID !== undefined) {
+        const children = this.#children.get(parentID);
+        if (children === undefined) {
+          this.#children.set(parentID, new Set([sessionID]));
+        } else {
+          insertBoundedSet(children, sessionID, MAX_CONTEXT_SESSIONS);
+        }
+      }
+      const updated = asFinite(session.time?.updated) ?? asFinite(session.time?.created);
+      if (updated !== undefined) {
+        insertBounded(this.#sessionUpdated, sessionID, updated, MAX_CONTEXT_SESSIONS);
+      }
     }
   }
 
   isTopLevel(sessionID: string): boolean {
-    return this.#parents.get(sessionID) ?? false;
+    return this.#parents.get(sessionID) === null;
+  }
+
+  parentOf(sessionID: string): string | undefined {
+    return this.#parents.get(sessionID) ?? undefined;
+  }
+
+  hasActiveChildren(sessionID: string, now: number = Date.now()): boolean {
+    const children = this.#children.get(sessionID);
+    if (children === undefined) return false;
+    for (const childID of children) {
+      const record = this.#sessions.get(childID);
+      if (
+        record !== undefined &&
+        (record.status === "busy" || record.status === "retry" || record.compacting)
+      ) {
+        return true;
+      }
+      if ((record?.status ?? "unknown") !== "unknown") continue;
+      const lastActivity = Math.max(
+        record?.lastActivityAt ?? Number.NEGATIVE_INFINITY,
+        this.#sessionUpdated.get(childID) ?? Number.NEGATIVE_INFINITY,
+      );
+      if (Number.isFinite(lastActivity) && now - lastActivity < CHILD_ACTIVITY_WINDOW_MS) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  hasPendingTask(sessionID: string): boolean {
+    return (this.#sessions.get(sessionID)?.pendingTaskParts.size ?? 0) > 0;
+  }
+
+  hasActiveCompactionBlocker(sessionID: string, now: number = Date.now()): boolean {
+    return this.hasActiveChildren(sessionID, now) || this.hasPendingTask(sessionID);
   }
 
   setModelLimit(
@@ -619,6 +696,9 @@ export class ContextTracker {
       percent: contextPercent(used, record.limit),
       model: record.model === null ? null : { ...record.model },
       status: record.status,
+      topLevel: this.isTopLevel(sessionID),
+      activeChildren: this.hasActiveChildren(sessionID, now),
+      pendingTask: this.hasPendingTask(sessionID),
       updatedAt: new Date(record.updatedAt).toISOString(),
       lastCompactedAt:
         record.lastCompactedAt === null ? null : new Date(record.lastCompactedAt).toISOString(),
@@ -655,6 +735,8 @@ export class ContextTracker {
         lastCompactedAt: record.lastCompactedAt,
         postCompactionPending: record.postCompactionPending,
         ineffective: record.ineffective,
+        activeChildren: this.hasActiveChildren(sessionID, now),
+        pendingTask: this.hasPendingTask(sessionID),
       },
       policy,
       now,
@@ -674,6 +756,12 @@ export class ContextTracker {
     record.lastError = null;
     record.ineffective = false;
     record.postCompactionPending = false;
+    this.#touch(record, now);
+  }
+
+  clearCompacting(sessionID: string, now: number = Date.now()): void {
+    const record = this.#ensure(sessionID, now);
+    record.compacting = false;
     this.#touch(record, now);
   }
 
@@ -699,6 +787,7 @@ export class ContextTracker {
     record.ineffective = false;
     record.postCompactionPending = true;
     record.pendingSteps.clear();
+    record.pendingTaskParts.clear();
     this.#touch(record, now);
   }
 
@@ -787,8 +876,20 @@ export class ContextTracker {
 
       for (const rawPart of message.parts) {
         const part = asRecord(rawPart);
-        if (asString(part?.type) !== "compaction") continue;
-        const partTime = timestamp(part?.time) ?? infoTime;
+        if (part === undefined) continue;
+        if (spawnToolFromPart(part)) {
+          const partID = asString(part.id);
+          const status = asString(asRecord(part.state)?.status);
+          if (partID !== undefined) {
+            if (status === "pending" || status === "running") {
+              insertBoundedSet(record.pendingTaskParts, partID, MAX_CONTEXT_PARTS_PER_SESSION);
+            } else if (status === "completed" || status === "error") {
+              record.pendingTaskParts.delete(partID);
+            }
+          }
+        }
+        if (asString(part.type) !== "compaction") continue;
+        const partTime = timestamp(part.time) ?? infoTime;
         if (orderNewer({ time: partTime, index }, boundary)) {
           boundary = { time: partTime, index };
         }
@@ -963,6 +1064,17 @@ export class ContextTracker {
       record.lastError = null;
       return;
     }
+    if (partType === "tool") {
+      if (isSpawnToolName(part.tool)) {
+        const status = asString(asRecord(part.state)?.status);
+        if (status === "pending" || status === "running") {
+          insertBoundedSet(record.pendingTaskParts, partID, MAX_CONTEXT_PARTS_PER_SESSION);
+        } else if (status === "completed" || status === "error") {
+          record.pendingTaskParts.delete(partID);
+        }
+      }
+      return;
+    }
     if (partType !== "step-finish") return;
 
     const tokens = parseTokens(part.tokens) ?? parseTokens(part.usage) ?? parseTokens(event.usage);
@@ -983,12 +1095,14 @@ export class ContextTracker {
     const type = status?.type;
     const record = this.#ensure(sessionID, now);
     record.status = type === "idle" || type === "busy" || type === "retry" ? type : "unknown";
+    if (type === "idle") record.pendingTaskParts.clear();
     this.#touch(record, now);
   }
 
   #sessionIdle(sessionID: string, now: number): void {
     const record = this.#ensure(sessionID, now);
     record.status = "idle";
+    record.pendingTaskParts.clear();
     this.#touch(record, now);
   }
 
@@ -1003,6 +1117,7 @@ export class ContextTracker {
     record.ineffective = false;
     record.postCompactionPending = true;
     record.pendingSteps.clear();
+    record.pendingTaskParts.clear();
     this.#touch(record, now);
   }
 }
@@ -1067,6 +1182,15 @@ export class SessionBusyError extends Error {
   constructor() {
     super("session is busy");
     this.name = "SessionBusyError";
+  }
+}
+
+export class NotTopLevelError extends Error {
+  readonly code = "not_top_level";
+
+  constructor() {
+    super("compaction is only available for top-level sessions");
+    this.name = "NotTopLevelError";
   }
 }
 
@@ -1137,6 +1261,10 @@ function eventSessionId(event: HanseEvent): string | undefined {
   if (!("sessionID" in event)) return undefined;
   const value = event.sessionID;
   return typeof value === "string" ? value : undefined;
+}
+
+function isIdleStatusEvent(event: HanseEvent): boolean {
+  return event.type === "session.status" && asRecord(event.status)?.type === "idle";
 }
 
 interface CompactionAttempt {
@@ -1260,8 +1388,21 @@ export class ContextMonitor implements ContextMonitorLike {
       throw error;
     }
     if (this.#stopped) throw new AgentNotRunningError();
-    const snapshot = this.#tracker.snapshot(sessionId, policy, this.#now());
-    const model = snapshot.model ?? parseModelString(policy.model);
+    const hydratedAt = this.#now();
+    if (!this.#tracker.isTopLevel(sessionId)) {
+      this.#tracker.clearCompacting(sessionId, hydratedAt);
+      throw new NotTopLevelError();
+    }
+    const hydrated = this.#tracker.snapshot(sessionId, policy, hydratedAt);
+    if (
+      hydrated.status === "busy" ||
+      hydrated.status === "retry" ||
+      this.#tracker.hasActiveCompactionBlocker(sessionId, hydratedAt)
+    ) {
+      this.#tracker.clearCompacting(sessionId, hydratedAt);
+      throw new SessionBusyError();
+    }
+    const model = hydrated.model ?? parseModelString(policy.model);
     if (model === null) {
       this.#tracker.markCompactionUnavailable(sessionId, this.#now());
       throw new ModelUnavailableError();
@@ -1341,6 +1482,9 @@ export class ContextMonitor implements ContextMonitorLike {
     }
     const now = this.#now();
     this.#tracker.applyEvent(event as unknown as ContextEvent, now);
+    if (event.type === "message.part.updated" && spawnToolFromPart(asRecord(event.part))) {
+      this.#parentRefreshAt = null;
+    }
     if (event.type === "session.compacted") {
       const attempt = this.#attempts.get(event.sessionID);
       if (attempt !== undefined) attempt.compactedAfterStart = true;
@@ -1351,6 +1495,11 @@ export class ContextMonitor implements ContextMonitorLike {
     void this.#maybeAuto(sessionId).catch(() => {
       this.#log("context monitor: auto-compaction evaluation failed");
     });
+    if (event.type === "session.compacted" || isIdleStatusEvent(event)) {
+      void this.#maybeAutoParent(sessionId).catch(() => {
+        this.#log("context monitor: parent auto-compaction evaluation failed");
+      });
+    }
   }
 
   #policy(): ContextPolicy {
@@ -1424,6 +1573,7 @@ export class ContextMonitor implements ContextMonitorLike {
     const now = this.#now();
     const snapshot = this.#tracker.snapshot(sessionId, policy, now);
     if (snapshot.state === "compacting" || snapshot.status !== "idle") return;
+    if (this.#tracker.hasActiveCompactionBlocker(sessionId, now)) return;
     if (snapshot.model !== null) await this.#ensureLimit(sessionId, snapshot.model);
     if (this.#stopped) return;
     const decision = this.#tracker.evaluateAutoCompact(sessionId, policy, this.#now());
@@ -1431,8 +1581,21 @@ export class ContextMonitor implements ContextMonitorLike {
     this.#claimAuto(sessionId, policy);
   }
 
+  async #maybeAutoParent(sessionId: string): Promise<void> {
+    if (this.#stopped) return;
+    const policy = this.#policy();
+    if (!policy.enabled) return;
+    const parentsOk = await this.#refreshParents();
+    if (!parentsOk || this.#stopped) return;
+    if (this.#tracker.isTopLevel(sessionId)) return;
+    const parentID = this.#tracker.parentOf(sessionId);
+    if (parentID === undefined) return;
+    await this.#maybeAuto(parentID);
+  }
+
   #claimAuto(sessionId: string, policy: ContextPolicy): void {
     if (this.#attempts.has(sessionId)) return;
+    if (this.#tracker.hasActiveCompactionBlocker(sessionId, this.#now())) return;
     const now = this.#now();
     const snapshot = this.#tracker.snapshot(sessionId, policy, now);
     if (snapshot.state === "compacting") return;

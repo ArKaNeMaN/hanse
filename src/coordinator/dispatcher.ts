@@ -277,6 +277,7 @@ export class HandoffDispatcher {
     );
     updateHandoff(this.#db, handoff.id, {
       replyState: "delivered",
+      replyMessageId: id,
       replyDeliveredSessionId: session.id,
       replyDeliveredAt: new Date(this.#now()).toISOString(),
       replyError: null,

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { ServerResponse } from "node:http";
 import { createEventAttachmentResolver } from "../attachments/projection.js";
 import { appStreams } from "../attachments/streams.js";
+import { createHandoffEventResolver } from "../coordinator/handoff-messages.js";
 import {
   deleteSavedPermission,
   listPermissions,
@@ -777,6 +778,7 @@ export async function streamAppEvents(
       signal: controller.signal,
       maxFrameBytes: APP_STREAM_MAX_FRAME_BYTES,
       attachments: resolver,
+      handoffs: createHandoffEventResolver(deps.db),
       isPriority: () => appStreams.isActive(found.app.id, streamID),
       onAttached: () => {
         response.writeHead(200, {

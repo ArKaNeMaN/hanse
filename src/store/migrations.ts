@@ -587,4 +587,16 @@ CREATE INDEX attachment_deliveries_session_state
   ON attachment_deliveries(app_id, session_id, state);
 `,
   },
+  {
+    version: 17,
+    name: "handoff-message-lookup",
+    sql: `
+CREATE INDEX handoffs_dispatch_message ON handoffs(dispatch_message_id)
+  WHERE dispatch_message_id IS NOT NULL;
+CREATE INDEX handoffs_reply_message ON handoffs(reply_message_id)
+  WHERE reply_message_id IS NOT NULL;
+CREATE INDEX handoffs_reply_delivered_session ON handoffs(reply_delivered_session_id)
+  WHERE reply_delivered_session_id IS NOT NULL;
+`,
+  },
 ];

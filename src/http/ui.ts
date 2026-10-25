@@ -696,7 +696,7 @@ export function handoffDialog(input: HandoffDialogInput): string {
       ? ""
       : `<div class="stack--tight">
           <p class="overline">Result${input.outcome === null ? "" : ` (${escapeHtml(input.outcome)})`}</p>
-          <div class="prose prose--pre">${escapeHtml(input.result)}</div>
+          <div class="prose handoff-md" data-markdown>${escapeHtml(input.result)}</div>
         </div>`;
   const reply =
     input.replyState === "none"
@@ -717,7 +717,7 @@ export function handoffDialog(input: HandoffDialogInput): string {
           ${
             input.operatorNote === null || input.operatorNote.length === 0
               ? ""
-              : `<div class="stack--tight"><p class="overline">Operator note</p><div class="prose prose--pre">${escapeHtml(input.operatorNote)}</div></div>`
+              : `<div class="stack--tight"><p class="overline">Operator note</p><div class="prose handoff-md" data-markdown>${escapeHtml(input.operatorNote)}</div></div>`
           }
         </div>`;
 
@@ -734,7 +734,7 @@ export function handoffDialog(input: HandoffDialogInput): string {
     </div>
     <div class="stack--tight">
       <p class="overline">Specification</p>
-      <div class="prose prose--pre">${escapeHtml(input.spec)}</div>
+      <div class="prose handoff-md" data-markdown>${escapeHtml(input.spec)}</div>
     </div>
     <div class="stack--tight">
       <p class="overline">Attempts</p>
@@ -758,7 +758,7 @@ export function handoffDialog(input: HandoffDialogInput): string {
   if (input.approvalKind !== null) {
     const approve = input.approvalKind === "reply" ? "Approve reply" : "Approve handoff";
     const reject = input.approvalKind === "reply" ? "Reject reply" : "Reject handoff";
-    return `<dialog class="dialog" id="${safeDialogId}" aria-labelledby="${safeTitleId}">
+    return `<dialog class="dialog dialog--wide handoff-dialog" id="${safeDialogId}" aria-labelledby="${safeTitleId}">
       <div class="dialog__frame">
         <header class="dialog__head">
           <h2 class="dialog__title" id="${safeTitleId}">${title}</h2>
@@ -819,7 +819,7 @@ export function handoffDialog(input: HandoffDialogInput): string {
       ? ""
       : `<div class="stack--tight">${relaunch}${smallActions.length === 0 ? "" : `<div class="cluster">${smallActions}</div>`}</div>`;
 
-  return `<dialog class="dialog" id="${safeDialogId}" aria-labelledby="${safeTitleId}">
+  return `<dialog class="dialog dialog--wide handoff-dialog" id="${safeDialogId}" aria-labelledby="${safeTitleId}">
     <div class="dialog__frame">
       <header class="dialog__head">
         <h2 class="dialog__title" id="${safeTitleId}">${title}</h2>

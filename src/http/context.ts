@@ -3,6 +3,7 @@ import {
   AgentNotRunningError,
   CompactInProgressError,
   ModelUnavailableError,
+  NotTopLevelError,
   SessionBusyError,
   SessionNotFoundError,
 } from "../opencode/context.js";
@@ -124,6 +125,12 @@ export async function handleContext(deps: HttpDeps, request: HttpRequest): Promi
   try {
     await deps.manager.compactSession(found.app.id, sessionId);
   } catch (error) {
+    if (error instanceof NotTopLevelError) {
+      return json(409, {
+        error: "compaction is only available for top-level sessions",
+        code: "not_top_level",
+      });
+    }
     if (error instanceof SessionBusyError) {
       return json(409, { error: "session is busy", code: "session_busy" });
     }

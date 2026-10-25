@@ -5,7 +5,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import { transitionHandoff, updateHandoff } from "../src/coordinator/handoff.js";
 import { setHandoffPolicy } from "../src/coordinator/policy.js";
 import { CoordinatorService } from "../src/coordinator/service.js";
-import { buildSite, renderProject } from "../src/http/dashboard.js";
+import { GitService } from "../src/git/service.js";
+import { buildSite, renderHandoffs, renderProject } from "../src/http/dashboard.js";
+import { handleRequest } from "../src/http/handler.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
 
 const dirs: string[] = [];
@@ -61,6 +63,7 @@ describe("handoff UI", () => {
       replyState: "waiting_operator",
       replyError: "source session no longer exists",
       replyDeliveredSessionId: null,
+      operatorNote: "Look <at> this",
     });
 
     const site = buildSite({
@@ -75,6 +78,54 @@ describe("handoff UI", () => {
     expect(html).toContain("Reply waiting");
     expect(html).toContain("Start in a new session");
     expect(html).toContain("source session no longer exists");
+    expect(html).toContain('class="dialog dialog--wide handoff-dialog"');
+    expect(html).toContain('<div class="prose handoff-md" data-markdown>do X</div>');
+    expect(html).toContain('<div class="prose handoff-md" data-markdown>done</div>');
+    expect(html).toContain(
+      '<div class="prose handoff-md" data-markdown>Look &lt;at&gt; this</div>',
+    );
+    expect(html).toContain('<script type="module" src="/assets/handoff.js"></script>');
+    db.close();
+  });
+
+  it("loads the hydrator on the handoffs inbox and escapes spec Markdown", () => {
+    const { db, dir, service } = fixture();
+    service.requestSiblingChange({
+      fromAppKey: "a",
+      toAppKey: "b",
+      summary: "need X",
+      spec: "<script>alert(1)</script>",
+    });
+    const site = buildSite({
+      db,
+      getProjects: () => [{ id: "p", name: "P", rootPath: dir, workspaceRoot: dir, service }],
+    });
+    const html = renderHandoffs(site, { chrome: { operatorName: "operator" } });
+
+    expect(html).toContain('class="dialog dialog--wide handoff-dialog"');
+    expect(html).toContain(
+      '<div class="prose handoff-md" data-markdown>&lt;script&gt;alert(1)&lt;/script&gt;</div>',
+    );
+    expect(html).not.toContain("<script>alert(1)</script>");
+    expect(html).toContain('<script type="module" src="/assets/handoff.js"></script>');
+    db.close();
+  });
+
+  it("serves the handoff Markdown hydrator from the static allowlist", () => {
+    const { db, dir } = fixture();
+    const response = handleRequest(
+      {
+        db,
+        workspaceRoot: dir,
+        git: new GitService({ workspaceRoot: dir }),
+        getProjects: () => [],
+      },
+      { method: "GET", path: "/assets/handoff.js", headers: {} },
+    );
+    expect(response.status).toBe(200);
+    expect(response.contentType).toBe("text/javascript; charset=utf-8");
+    expect(response.body).toContain("renderMarkdown");
+    expect(response.body).toContain("[data-markdown]");
     db.close();
   });
 });

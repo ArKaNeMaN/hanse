@@ -554,6 +554,108 @@
     font-weight: 600;
   }
 
+  /* Rendered Markdown inside surfaces that reuse the prose measure. */
+  .handoff-md {
+    min-inline-size: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .handoff-md > :first-child {
+    margin-block-start: 0;
+  }
+
+  .handoff-md > :last-child {
+    margin-block-end: 0;
+  }
+
+  .handoff-md h3,
+  .handoff-md h4,
+  .handoff-md h5 {
+    margin: var(--space-4) 0 var(--space-2);
+    color: var(--text-1);
+    font-family: var(--font-display);
+    font-weight: 600;
+    line-height: 1.25;
+    letter-spacing: -0.01em;
+  }
+
+  .handoff-md h3 {
+    font-size: var(--text-h2);
+  }
+
+  .handoff-md h4 {
+    font-size: var(--text-h3);
+  }
+
+  .handoff-md h5 {
+    font-size: var(--text-body);
+  }
+
+  .handoff-md ul,
+  .handoff-md ol {
+    margin: 0 0 var(--space-3);
+    padding-inline-start: var(--space-5);
+  }
+
+  .handoff-md li + li {
+    margin-block-start: var(--space-1);
+  }
+
+  .handoff-md blockquote {
+    margin: 0 0 var(--space-3);
+    padding-inline-start: var(--space-3);
+    border-inline-start: 1px solid var(--line-strong);
+    color: var(--text-2);
+  }
+
+  .handoff-md hr {
+    margin: var(--space-4) 0;
+    border: 0;
+    border-block-start: 1px solid var(--line);
+  }
+
+  .handoff-md code {
+    padding: 0 var(--space-1);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-xs);
+    background: var(--inset);
+    color: var(--text-1);
+    font-family: var(--font-mono);
+    font-size: var(--text-mono);
+  }
+
+  .handoff-md pre {
+    max-inline-size: 100%;
+    max-block-size: 15rem;
+    margin: 0 0 var(--space-3);
+    padding: var(--space-3);
+    overflow: auto;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: var(--inset);
+  }
+
+  .handoff-md pre code {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    font-size: var(--text-mono-sm);
+    line-height: 1.5;
+    white-space: pre;
+  }
+
+  .handoff-md a {
+    color: var(--text-1);
+    text-decoration: underline;
+    text-decoration-color: var(--line-strong);
+    text-underline-offset: 3px;
+  }
+
+  .handoff-md a:hover {
+    color: var(--brass);
+    text-decoration-color: var(--brass);
+  }
+
   /* ------------------------------------------------------------------ */
   /* App shell                                                          */
   /* ------------------------------------------------------------------ */
@@ -1842,6 +1944,10 @@
     background: var(--scrim);
   }
 
+  .dialog--wide {
+    max-inline-size: min(72rem, calc(100vw - var(--space-8)));
+  }
+
   .dialog__frame {
     display: flex;
     flex-direction: column;
@@ -1919,6 +2025,10 @@
     display: flex;
     justify-content: flex-end;
     gap: var(--space-2);
+  }
+
+  .handoff-dialog .dialog__body {
+    max-block-size: 70dvh;
   }
 
   .toast-region {
@@ -2358,6 +2468,269 @@
     line-height: 1.5;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
+  }
+
+  .tool-call__structured {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    min-inline-size: 0;
+    padding: var(--space-3);
+  }
+
+  .tool-call__structured > :first-child {
+    margin-block-start: 0;
+  }
+
+  .tool-call__structured > :last-child {
+    margin-block-end: 0;
+  }
+
+  .tool-kv {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    gap: var(--space-1) var(--space-3);
+    margin: 0;
+    font-size: var(--text-sm);
+  }
+
+  .tool-kv dt {
+    color: var(--text-3);
+    font-family: var(--font-mono);
+    font-size: var(--text-micro);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .tool-kv dd {
+    margin: 0;
+    color: var(--text-1);
+    overflow-wrap: anywhere;
+  }
+
+  .tool-block {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    min-inline-size: 0;
+  }
+
+  .tool-block > .overline {
+    margin: 0;
+  }
+
+  .tool-code {
+    max-inline-size: 100%;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-xs);
+    background: var(--surface-2);
+  }
+
+  .tool-call pre.tool-code--err {
+    color: var(--danger);
+  }
+
+  .tool-call pre.tool-code--command {
+    color: var(--text-1);
+  }
+
+  .tool-call pre.tool-code--page,
+  .tool-call pre.tool-code--file {
+    max-block-size: 20rem;
+  }
+
+  .tool-table-wrap {
+    max-inline-size: 100%;
+    overflow-x: auto;
+  }
+
+  .tool-table {
+    inline-size: 100%;
+    border-collapse: collapse;
+    font-size: var(--text-sm);
+  }
+
+  .tool-table th,
+  .tool-table td {
+    padding: var(--space-1) var(--space-2);
+    border-block-end: 1px solid var(--line);
+    text-align: start;
+    vertical-align: top;
+    overflow-wrap: anywhere;
+  }
+
+  .tool-table th {
+    color: var(--text-3);
+    font-family: var(--font-mono);
+    font-size: var(--text-micro);
+    font-weight: 500;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .tool-table tbody tr:last-child td {
+    border-block-end: 0;
+  }
+
+  .tool-error,
+  .tool-approval {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    padding: var(--space-2) var(--space-3);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-xs);
+    background: var(--wash-1);
+  }
+
+  .tool-error {
+    border-color: color-mix(in oklab, var(--danger) 40%, var(--line));
+  }
+
+  .tool-approval {
+    border-color: color-mix(in oklab, var(--warning) 40%, var(--line));
+  }
+
+  .tool-error__head,
+  .tool-approval__head {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    font-size: var(--text-sm);
+    font-weight: 600;
+  }
+
+  .tool-error__head {
+    color: var(--danger);
+  }
+
+  .tool-approval__head {
+    color: var(--warning);
+  }
+
+  .tool-error__code {
+    font-size: var(--text-micro);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .tool-error__message,
+  .tool-approval__message {
+    margin: 0;
+    color: var(--text-1);
+    font-size: var(--text-sm);
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+  }
+
+  .tool-approval__hint {
+    margin: 0;
+    color: var(--text-3);
+    font-size: var(--text-micro);
+  }
+
+  .tool-route {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .tool-summary {
+    margin: 0;
+    color: var(--text-1);
+    font-size: var(--text-sm);
+    font-weight: 600;
+    overflow-wrap: anywhere;
+  }
+
+  .tool-note {
+    margin: 0;
+    color: var(--text-2);
+    font-size: var(--text-sm);
+  }
+
+  .tool-link {
+    color: var(--text-1);
+    text-decoration: underline;
+    text-decoration-color: var(--line-strong);
+    text-underline-offset: 2px;
+  }
+
+  .tool-link:hover {
+    text-decoration-color: var(--brass);
+  }
+
+  .tool-badge[data-tone="success"],
+  .tool-call__result[data-tone="success"] {
+    border-color: color-mix(in oklab, var(--success) 45%, var(--line));
+    color: var(--success);
+  }
+
+  .tool-badge[data-tone="info"] {
+    border-color: color-mix(in oklab, var(--info) 45%, var(--line));
+    color: var(--info);
+  }
+
+  .tool-badge[data-tone="warning"],
+  .tool-call__result[data-tone="warning"] {
+    border-color: color-mix(in oklab, var(--warning) 45%, var(--line));
+    color: var(--warning);
+  }
+
+  .tool-badge[data-tone="error"],
+  .tool-call__result[data-tone="error"] {
+    border-color: color-mix(in oklab, var(--danger) 45%, var(--line));
+    color: var(--danger);
+  }
+
+  .tool-results {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .tool-result {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    min-inline-size: 0;
+  }
+
+  .tool-result__title {
+    color: var(--text-1);
+    font-weight: 600;
+    text-decoration: underline;
+    text-decoration-color: var(--line-strong);
+    text-underline-offset: 2px;
+  }
+
+  .tool-result__url,
+  .tool-result__meta {
+    color: var(--text-3);
+    font-size: var(--text-micro);
+    overflow-wrap: anywhere;
+  }
+
+  .tool-result__snippet {
+    margin: 0;
+    color: var(--text-2);
+    font-size: var(--text-sm);
+    overflow-wrap: anywhere;
+  }
+
+  .tool-details > summary {
+    color: var(--text-3);
+    font-size: var(--text-sm);
+    cursor: pointer;
+  }
+
+  .tool-markdown {
+    max-inline-size: 100%;
+    font-size: var(--text-sm);
   }
 
   .composer {
@@ -5603,6 +5976,128 @@
 
   .message--system .message__meta {
     color: var(--text-3);
+  }
+
+  .message--handoff {
+    gap: var(--space-2);
+  }
+
+  .message--handoff .message__meta {
+    color: var(--text-2);
+  }
+
+  .message--handoff .message__kind {
+    font-family: var(--font-mono);
+    font-size: var(--text-micro);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .handoff-card {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    min-inline-size: 0;
+    max-inline-size: 100%;
+    padding: var(--space-3);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    background: var(--inset);
+  }
+
+  .handoff-card__head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-1) var(--space-2);
+  }
+
+  .handoff-card__route {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    min-inline-size: 0;
+    color: var(--text-2);
+    font-size: var(--text-sm);
+  }
+
+  .handoff-card__route .icon {
+    inline-size: 0.75rem;
+    block-size: 0.75rem;
+    color: var(--text-3);
+  }
+
+  .handoff-card__kind,
+  .handoff-card__outcome {
+    display: inline-flex;
+    align-items: center;
+    padding: 0 var(--space-2);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-xs);
+    background: var(--surface-2);
+    color: var(--text-3);
+    font-family: var(--font-mono);
+    font-size: var(--text-micro);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+
+  .handoff-card__outcome[data-tone="success"] {
+    border-color: color-mix(in oklab, var(--success) 45%, var(--line));
+    color: var(--success);
+  }
+
+  .handoff-card__outcome[data-tone="warning"] {
+    border-color: color-mix(in oklab, var(--warning) 45%, var(--line));
+    color: var(--warning);
+  }
+
+  .handoff-card__outcome[data-tone="error"] {
+    border-color: color-mix(in oklab, var(--danger) 45%, var(--line));
+    color: var(--danger);
+  }
+
+  .handoff-card__link {
+    margin-inline-start: auto;
+    color: var(--text-3);
+    text-decoration: none;
+  }
+
+  .handoff-card__link:hover {
+    color: var(--text-1);
+  }
+
+  .handoff-card__summary {
+    margin: 0;
+    color: var(--text-1);
+    font-size: var(--text-sm);
+    font-weight: 600;
+    overflow-wrap: anywhere;
+  }
+
+  .handoff-card__body {
+    max-inline-size: 100%;
+    font-size: var(--text-sm);
+  }
+
+  .handoff-card__details > summary {
+    color: var(--text-3);
+    font-size: var(--text-sm);
+    cursor: pointer;
+  }
+
+  .handoff-card__preview {
+    overflow-wrap: anywhere;
+  }
+
+  .handoff-card__note {
+    padding-block-start: var(--space-2);
+    border-block-start: 1px solid var(--line);
+  }
+
+  .handoff-card__note .overline {
+    margin: 0 0 var(--space-1);
   }
 
   .omo-card {

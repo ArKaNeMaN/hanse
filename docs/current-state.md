@@ -211,7 +211,8 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
 - Static assets are allowlisted: `/assets/app.css`, `/assets/app.js`, `/assets/chat.js`,
   `/assets/chat-core.js`, `/assets/chat-commands.js`, `/assets/chat-diff.js`, `/assets/chat-highlight.js`,
   `/assets/chat-highlight-worker.js`, `/assets/git.js`, `/assets/git-settings.js`,
-  `/assets/settings.js`, `/assets/skill-detail.js`, `/assets/markdown.js`, `/assets/vendor/prism/prism-1.30.0.min.js`,
+  `/assets/handoff.js`, `/assets/settings.js`, `/assets/skill-detail.js`, `/assets/markdown.js`,
+  `/assets/vendor/prism/prism-1.30.0.min.js`,
   `/assets/vendor/xterm/xterm-6.0.0.js`, `/assets/vendor/xterm/xterm-6.0.0.css`,
   `/assets/vendor/xterm/addon-fit-0.11.0.js`,
   `/assets/vendor/xterm/addon-unicode11-0.9.0.js`,
@@ -319,7 +320,7 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   order; migrations v10 (applied settings/profile state), v11 (deletion markers), v12 (skills),
   v13 (skill bundles), v14 (session-bound handoffs, reply routing, and handoff policy), and v15
   (chat drafts, session state, and pending sends) and v16 (file-only attachments and deliveries)
-  follow. The current schema versions are `[1..16]`.
+  follow. The current schema versions are `[1..17]` (v17 adds handoff message-id lookup indexes).
 - Live on `deployment-host` (`sha-e2d89a2`): a temporary SSH target pinned and authenticated, an approval was
   approved, `echo QA_OK` and a 65 s `sleep` succeeded, upload/download round-tripped, a real
   `opencode` turn called `hanse_ssh_exec` and received the result after 65 s, and audit rows survived
@@ -346,7 +347,13 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   text and running tool output, renders tool calls (output/error/previews), reasoning, patches,
   syntax-highlighted `edit`/`apply_patch` diffs, `write` content, and completed `read` output
   (parsed path, line numbers, code, and status footer), GFM pipe tables, and OMO system cards, and
-  sends prompts optimistically. Diff highlighting is lazy and open-only: a checked-in
+  sends prompts optimistically. Built-in coordinator tools are rendered from their JSON results:
+  normalized `hanse_*` names and glyphs, SSH exec (host, command, exit code, stdout/stderr),
+  transfers, host lists, handoff requests/status/replies, skill lists/mutations, previews, managed
+  web search/fetch, and master tools; unknown JSON falls back to pretty-printed JSON instead of a
+  raw one-line string. Handoff-dispatcher messages are annotated by the coordinator
+  (`info.hanse.handoff`) and render as a sender-agent card with the request/reply body as safe
+  Markdown; they are excluded from the operator queue. Diff highlighting is lazy and open-only: a checked-in
   PrismJS 1.30.0 bundle runs in a module Web Worker with a 250 ms per-stream budget, 8/64 KiB
   language-aware stream caps, a 120k-node page budget, and plain fallback. Diffs are capped at
   64 KiB per file / 128 KiB total / 50 files / 2,000 rendered lines; highlighting is hunk-local and
@@ -876,7 +883,9 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   handoffs stay unbound (and are failed by the binding deadline).
 - Operator UI: `/handoffs` has `All`/`Waiting`/`Active`/`Closed`/`Replies` filters, inline approvals,
   and a detail dialog with source/target session links, policy, outcome, reply state, and the
-  relaunch/retry/cancel actions. Project pages have a **Handoff policy** card.
+  relaunch/retry/cancel actions. The review/detail dialog is wide and renders the spec, result, and
+  operator note as safe Markdown through the shared browser renderer. Project pages have a
+  **Handoff policy** card.
 - Human-only API: `POST /api/handoffs/:id/decision` (optional `approval_kind=dispatch|reply`),
   `POST /api/handoffs/:id/reply/relaunch|deliver|cancel`, `POST /api/handoffs/:id/cancel`,
   `POST /api/projects/:id/handoff-policy`, `POST /api/projects/:id/handoff-policy/delete`, and
@@ -991,7 +1000,7 @@ Host `./agents` is mounted at `/data/agents` read-write in `hanse` and read-only
 | `HANSE_IDE=0` | serve | do not spawn code-server in the coordinator |
 | `HANSE_IDE_HOST` / `HANSE_IDE_PORT` | serve | proxy target for `/ide` (default `127.0.0.1:8080`) |
 | `HANSE_IDE_BIN` | serve | code-server binary |
-| `HANSE_ASSETS` | serve | directory for `app.css`, `app.js`, `chat.js`, `chat-core.js`, `chat-diff.js`, `chat-highlight.js`, `chat-highlight-worker.js`, `git.js`, `git-settings.js`, `settings.js`, `skill-detail.js`, `markdown.js`, `vendor/prism/prism-1.30.0.min.js`, and `favicon.svg` |
+| `HANSE_ASSETS` | serve | directory for `app.css`, `app.js`, `chat.js`, `chat-core.js`, `chat-diff.js`, `chat-highlight.js`, `chat-highlight-worker.js`, `git.js`, `git-settings.js`, `handoff.js`, `settings.js`, `skill-detail.js`, `markdown.js`, `vendor/prism/prism-1.30.0.min.js`, and `favicon.svg` |
 | `HANSE_DB` / `HANSE_PROJECT_ID` / `HANSE_APP_KEY` | `hanse mcp` | MCP server binding |
 | `HANSE_API_BASE` | extension | coordinator base URL (`http://hanse:8787`) |
 
@@ -1007,7 +1016,7 @@ coordinator; operators do not set them.
 
 ## Verification
 
-`npm run lint && npm run typecheck && npm test && npm run build` (all green; 1480 tests in 94
+`npm run lint && npm run typecheck && npm test && npm run build` (all green; 2276 tests in 128
 files). The UX polish pass deployed as `sha-88faab7`; the settings live-save follow-up deployed as
 `sha-d2fcc3b`; the runtime-state reconciliation fix deployed as coordinator `sha-98033f5` on
 2026-10-21. The project/application deletion stage is verified by the four gates; it has not been

@@ -139,6 +139,23 @@ describe("autoCompactDecision guards", () => {
     }
   });
 
+  it("does not trigger while children are active or a task is pending", () => {
+    const activeChildren = baseState({ activeChildren: true });
+    const activeDecision = autoCompactDecision(activeChildren, policy(), 1000);
+    expect(activeDecision.trigger).toBe(false);
+    expect(activeDecision.armed).toBe(activeChildren.armed);
+
+    const pendingTask = baseState({ pendingTask: true });
+    const pendingDecision = autoCompactDecision(pendingTask, policy(), 1000);
+    expect(pendingDecision.trigger).toBe(false);
+    expect(pendingDecision.armed).toBe(pendingTask.armed);
+
+    expect(
+      autoCompactDecision(baseState({ activeChildren: false, pendingTask: false }), policy(), 1000)
+        .trigger,
+    ).toBe(true);
+  });
+
   it("re-arms when the model changes", () => {
     const effective = policy();
     let state = baseState({ armed: false, armKey: armKey(80) });

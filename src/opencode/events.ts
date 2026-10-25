@@ -1,6 +1,7 @@
 import { appStreamBudget, type RawStreamBudget } from "../attachments/budget.js";
 import type { EventAttachmentResolver } from "../attachments/projection.js";
 import type { AttachmentView } from "../attachments/types.js";
+import type { HandoffEventResolver, HandoffMessageMeta } from "../coordinator/handoff-messages.js";
 import {
   MAX_HEADER_LENGTH,
   MAX_LABEL_LENGTH,
@@ -173,6 +174,7 @@ export type HanseEvent =
       model?: { providerID: string; modelID: string };
       summary?: boolean;
       attachments?: AttachmentView[];
+      handoff?: HandoffMessageMeta;
     }
   | {
       type: "message.part.updated";
@@ -227,6 +229,7 @@ export type EnvelopedHanseEvent = HanseEvent & { seq: number; streamID: string }
 export interface EventProjectorOptions {
   includeUsage?: boolean;
   attachments?: EventAttachmentResolver;
+  handoffs?: HandoffEventResolver;
 }
 
 export interface EventStreamOptions {
@@ -234,6 +237,7 @@ export interface EventStreamOptions {
   maxFrameBytes?: number;
   includeUsage?: boolean;
   attachments?: EventAttachmentResolver;
+  handoffs?: HandoffEventResolver;
   budget?: RawStreamBudget;
   isPriority?: () => boolean;
   /** Called after the upstream reader is attached, before any frame is read. */
@@ -1418,6 +1422,7 @@ function salvageIdentity(prefix: string): SalvagedIdentity {
 export class EventProjector {
   private readonly includeUsage: boolean;
   private readonly attachments: EventAttachmentResolver | undefined;
+  private readonly handoffs: HandoffEventResolver | undefined;
   private readonly eventIds = new Set<string>();
   private readonly askedKeys = new Set<string>();
   private readonly partTypes = new Map<string, PartType>();
@@ -1433,6 +1438,7 @@ export class EventProjector {
   constructor(options: EventProjectorOptions = {}) {
     this.includeUsage = options.includeUsage === true;
     this.attachments = options.attachments;
+    this.handoffs = options.handoffs;
   }
 
   project(raw: unknown): HanseEvent[] {
@@ -1666,13 +1672,13 @@ export class EventProjector {
       }
     }
     const attachments = this.attachments?.attachmentsForMessage(messageID);
-    if (attachments !== undefined && attachments.length > 0) {
-      const withAttachments: Extract<HanseEvent, { type: "message.updated" }> = {
-        ...event,
-        attachments,
-      };
-      if (jsonBytes(withAttachments) <= MAX_MESSAGE_INFO_BYTES) {
-        return [withAttachments, { type: "session.activity", sessionID, cause: "message" }];
+    const handoff = role === "user" ? this.handoffs?.handoffForMessage(messageID) : undefined;
+    if ((attachments !== undefined && attachments.length > 0) || handoff !== undefined) {
+      const enriched: Extract<HanseEvent, { type: "message.updated" }> = { ...event };
+      if (attachments !== undefined && attachments.length > 0) enriched.attachments = attachments;
+      if (handoff !== undefined) enriched.handoff = handoff;
+      if (jsonBytes(enriched) <= MAX_MESSAGE_INFO_BYTES) {
+        return [enriched, { type: "session.activity", sessionID, cause: "message" }];
       }
     }
     return [event, { type: "session.activity", sessionID, cause: "message" }];
@@ -1996,6 +2002,7 @@ export function createEventStream(
   const projector = new EventProjector({
     includeUsage: options.includeUsage,
     ...(options.attachments === undefined ? {} : { attachments: options.attachments }),
+    ...(options.handoffs === undefined ? {} : { handoffs: options.handoffs }),
   });
   const reader = body.getReader();
   const warned = new Set<string>();
