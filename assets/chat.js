@@ -1,4 +1,5 @@
 import {
+  ancestorIds,
   applyOmittedPart,
   applySnapshot,
   attachmentIsMutable,
@@ -12,9 +13,11 @@ import {
   autoCompactText,
   autoscrollFollow,
   autoscrollStep,
+  buildSessionTree,
   canRedeliverAsFile,
   canSendDraft,
   classifyOmo,
+  collectSubtreeIds,
   composerAction,
   contextChipLabel,
   contextDetail,
@@ -27,6 +30,7 @@ import {
   draftIsEmpty,
   draftTextForSave,
   elapsedSeed,
+  firstRootId,
   flushDraftTransport,
   formatAttachmentSize,
   isHiddenSyntheticTextPart,
@@ -355,6 +359,7 @@ function main() {
   let idleReconcileTimer = null;
   let followUpHydration = false;
   let sessionsSignature = "";
+  const expandedSessions = new Set();
   let sessionsFailed = false;
   let sessionsLoaded = false;
   let runtimeState = null;
@@ -2048,14 +2053,17 @@ function main() {
     return JSON.stringify({
       sessionId,
       needle,
+      expanded: [...expandedSessions].sort(),
       sessions: sessions.map((session) => {
         const id = String(session.id);
+        const parentID = typeof session.parentID === "string" ? session.parentID : null;
         const draft =
           session.draft !== null && typeof session.draft === "object"
             ? session.draft
             : null;
         return [
           id,
+          parentID,
           sessionLabel(session),
           promptCountForSession(id),
           draft === null
@@ -3445,43 +3453,181 @@ function main() {
     }
   }
 
-  function renderSessions() {
+  function findSessionNode(id) {
+    if (sessionsList === null) return null;
+    for (const node of sessionsList.querySelectorAll(".session-node")) {
+      if (node instanceof HTMLElement && node.dataset.sessionId === id) return node;
+    }
+    return null;
+  }
+
+  function expandActiveAncestors() {
+    if (sessionId === null) return;
+    const tree = buildSessionTree(sessions);
+    let changed = false;
+    for (const id of ancestorIds(tree, sessionId)) {
+      if (expandedSessions.has(id)) continue;
+      expandedSessions.add(id);
+      changed = true;
+    }
+    if (changed) sessionsSignature = "";
+  }
+
+  function captureSessionFocus() {
+    if (sessionsList === null) return null;
+    const active = document.activeElement;
+    if (!(active instanceof HTMLElement) || !sessionsList.contains(active)) return null;
+    const node = active.closest(".session-node");
+    if (!(node instanceof HTMLElement)) return null;
+    const id = node.dataset.sessionId;
+    if (typeof id !== "string" || id.length === 0) return null;
+    let control = "session-item";
+    if (active.classList.contains("session-chevron")) control = "session-chevron";
+    else if (active.classList.contains("session-delete")) control = "session-delete";
+    return { id, control };
+  }
+
+  function focusSessionControl(node, control) {
+    if (!(node instanceof HTMLElement)) return false;
+    let target = node.querySelector(`.${control}`);
+    if (
+      target instanceof HTMLButtonElement &&
+      (target.disabled || target.getAttribute("aria-disabled") === "true")
+    ) {
+      target = node.querySelector(".session-item");
+    }
+    if (!(target instanceof HTMLElement)) target = node.querySelector(".session-item");
+    if (!(target instanceof HTMLElement)) return false;
+    target.focus({ preventScroll: true });
+    return true;
+  }
+
+  function restoreSessionFocus(focus) {
+    if (focus === null) return;
+    const node = findSessionNode(focus.id);
+    if (node !== null && focusSessionControl(node, focus.control)) return;
+    if (typeof sessionId === "string") {
+      const selected = findSessionNode(sessionId);
+      if (selected !== null && focusSessionControl(selected, "session-item")) return;
+    }
+    if (sessionSearch instanceof HTMLElement) sessionSearch.focus({ preventScroll: true });
+  }
+
+  function toggleSessionExpanded(id) {
+    const node = findSessionNode(id);
+    if (node === null) return;
+    const children = node.querySelector(".session-children");
+    if (!(children instanceof HTMLElement)) return;
+    const expanded = !expandedSessions.has(id);
+    if (expanded) expandedSessions.add(id);
+    else expandedSessions.delete(id);
+    children.hidden = !expanded;
+    const chevron = node.querySelector(".session-chevron");
+    if (chevron instanceof HTMLElement) {
+      chevron.setAttribute("aria-expanded", expanded ? "true" : "false");
+      chevron.replaceChildren(iconNode(expanded ? "chevron-down" : "chevron-right", "icon--sm"));
+    }
+    sessionsSignature = sessionsSignatureValue();
+    announce(expanded ? "Subagent sessions expanded." : "Subagent sessions collapsed.");
+  }
+
+  function renderSessions(options) {
     if (sessionsList === null || sessionsFailed || !sessionsLoaded) return;
+    const settings = options !== null && typeof options === "object" ? options : {};
     const signature = sessionsSignatureValue();
     if (signature === sessionsSignature) return;
     sessionsSignature = signature;
-    const needle = (sessionSearch === null ? "" : sessionSearch.value).trim().toLowerCase();
-    const visible = sessions.filter((session) => {
-      if (needle.length === 0) return true;
-      return (
-        sessionLabel(session).toLowerCase().includes(needle) ||
-        String(session.id).toLowerCase().includes(needle)
-      );
-    });
     if (sessions.length === 0) {
       showSessionsEmpty();
       return;
     }
-    if (visible.length === 0) {
+    const needle = (sessionSearch === null ? "" : sessionSearch.value).trim().toLowerCase();
+    const tree = buildSessionTree(sessions);
+    const matches = (session) =>
+      needle.length === 0 ||
+      sessionLabel(session).toLowerCase().includes(needle) ||
+      String(session.id).toLowerCase().includes(needle);
+    const visible = new Set();
+    const matched = [];
+    for (const [id, session] of tree.nodes) {
+      if (matches(session)) matched.push(id);
+    }
+    for (const id of matched) {
+      visible.add(id);
+      for (const ancestorID of ancestorIds(tree, id)) visible.add(ancestorID);
+    }
+    if (visible.size === 0) {
       sessionsList.replaceChildren(
         element("p", "chat-empty", "No sessions match this filter."),
       );
       return;
     }
-    const list = document.createDocumentFragment();
-    for (const session of visible) {
-      const id = String(session.id);
+    const waitingTotals = new Map();
+    const counted = new Set();
+    const countWaiting = (id) => {
+      if (counted.has(id)) return 0;
+      counted.add(id);
+      let total = id === sessionId ? 0 : promptCountForSession(id);
+      for (const childID of tree.childrenByParent.get(id) ?? []) {
+        total += countWaiting(childID);
+      }
+      waitingTotals.set(id, total);
+      return total;
+    };
+    for (const rootID of tree.roots) countWaiting(rootID);
+    const focused = captureSessionFocus();
+    const forcedOpen = needle.length > 0;
+    const rendered = new Set();
+    let renderKey = 0;
+    const renderNode = (id, depth) => {
+      if (rendered.has(id) || !visible.has(id)) return null;
+      const session = tree.nodes.get(id);
+      if (session === undefined) return null;
+      rendered.add(id);
+      const label = sessionLabel(session);
+      const childIDs = (tree.childrenByParent.get(id) ?? []).filter(
+        (childID) => visible.has(childID) && !rendered.has(childID),
+      );
+      const hasChildren = childIDs.length > 0;
+      const expanded = hasChildren && (forcedOpen || expandedSessions.has(id));
+      const node = element("div", "session-node");
+      node.dataset.sessionId = id;
+      node.dataset.depth = String(depth);
+      node.style.setProperty("--session-depth", String(Math.min(depth, 5)));
       const row = element("div", "session-row");
+      const childrenID = hasChildren ? `session-children-${renderKey}` : null;
+      if (hasChildren) renderKey += 1;
+      if (hasChildren) {
+        const chevron = element("button", "session-chevron");
+        chevron.type = "button";
+        chevron.setAttribute("aria-label", `Subagent sessions for ${label}`);
+        chevron.setAttribute("aria-expanded", expanded ? "true" : "false");
+        chevron.setAttribute("aria-controls", childrenID);
+        if (forcedOpen) chevron.setAttribute("aria-disabled", "true");
+        chevron.append(iconNode(expanded ? "chevron-down" : "chevron-right", "icon--sm"));
+        chevron.addEventListener("click", () => {
+          if (chevron.getAttribute("aria-disabled") === "true") return;
+          toggleSessionExpanded(id);
+        });
+        row.append(chevron);
+      } else {
+        const spacer = element("span", "session-chevron__spacer");
+        spacer.setAttribute("aria-hidden", "true");
+        row.append(spacer);
+      }
+      const active = id === sessionId;
       const button = element("button", "session-item");
       button.type = "button";
       button.dataset.sessionId = id;
-      const active = session.id === sessionId;
+      button.title = label;
       if (active) {
         button.classList.add("is-active");
         button.setAttribute("aria-current", "true");
       }
       const top = element("span", "session-item__top");
-      top.append(element("span", "session-item__title", sessionLabel(session)));
+      const title = element("span", "session-item__title", label);
+      title.title = label;
+      top.append(title);
       if (active) top.append(iconNode("check", "icon--sm"));
       const meta = element("span", "session-item__meta");
       meta.append(element("span", "mono", id.slice(0, 8)));
@@ -3499,7 +3645,7 @@ function main() {
         }
         meta.append(flag);
       }
-      const waitingCount = id === sessionId ? 0 : promptCountForSession(id);
+      const waitingCount = waitingTotals.get(id) ?? 0;
       if (waitingCount > 0) {
         const flag = element("span", "session-item__flag");
         flag.setAttribute("aria-label", `${waitingCount} requests need input`);
@@ -3515,7 +3661,7 @@ function main() {
       remove.type = "button";
       remove.dataset.sessionDelete = id;
       remove.title = "Delete session";
-      remove.setAttribute("aria-label", `Delete ${sessionLabel(session)}`);
+      remove.setAttribute("aria-label", `Delete ${label}`);
       remove.append(iconNode("trash", "icon--sm"));
       remove.disabled = deletingSessions.has(id);
       remove.addEventListener("click", () => {
@@ -3523,9 +3669,33 @@ function main() {
       });
 
       row.append(button, remove);
-      list.append(row);
+      node.append(row);
+      if (hasChildren) {
+        const children = element("div", "session-children");
+        children.id = childrenID;
+        children.setAttribute("role", "group");
+        children.setAttribute("aria-label", `Subagent sessions of ${label}`);
+        if (!expanded) children.hidden = true;
+        for (const childID of childIDs) {
+          const child = renderNode(childID, depth + 1);
+          if (child !== null) children.append(child);
+        }
+        node.append(children);
+      }
+      return node;
+    };
+    const fragment = document.createDocumentFragment();
+    for (const rootID of tree.roots) {
+      const node = renderNode(rootID, 0);
+      if (node !== null) fragment.append(node);
     }
-    sessionsList.replaceChildren(list);
+    sessionsList.replaceChildren(fragment);
+    restoreSessionFocus(focused);
+    if (settings.reveal === true && sessionId !== null) {
+      const activeNode = findSessionNode(sessionId);
+      const activeRow = activeNode === null ? null : activeNode.querySelector(".session-row");
+      if (activeRow instanceof HTMLElement) activeRow.scrollIntoView({ block: "nearest" });
+    }
   }
 
   function emptyThread() {
@@ -6495,10 +6665,14 @@ function main() {
   }
 
   function clearSessionPrompts(id) {
-    if (typeof id !== "string" || id.length === 0) return;
+    const values = Array.isArray(id) ? id : [id];
+    const wanted = new Set(
+      values.filter((value) => typeof value === "string" && value.length > 0),
+    );
+    if (wanted.size === 0) return;
     for (const [key, entry] of [...prompts.entries()]) {
       if (entry === undefined || entry.request === undefined) continue;
-      if (entry.request.sessionID !== id) continue;
+      if (!wanted.has(entry.request.sessionID)) continue;
       prompts.delete(key);
       promptDrafts.delete(key);
       promptErrors.delete(key);
@@ -10157,15 +10331,20 @@ function main() {
       sessions = Array.isArray(data.sessions) ? data.sessions : [];
       sessionsFailed = false;
       sessionsLoaded = true;
+      const tree = buildSessionTree(sessions);
+      expandActiveAncestors();
       if (sessions.length === 0) {
         if (sessionId !== null) startDraft({ focus: false, skipFlush: true });
         else showSessionsEmpty();
         return;
       }
       if (sessionId === null) {
-        sessionId = String(sessions[0].id);
+        sessionId = firstRootId(tree) ?? String(sessions[0].id);
       } else if (!sessions.some((session) => session.id === sessionId)) {
-        await selectSession(String(sessions[0].id), { focus: false, skipFlush: true });
+        await selectSession(firstRootId(tree) ?? String(sessions[0].id), {
+          focus: false,
+          skipFlush: true,
+        });
         return;
       }
       renderSessions();
@@ -10290,6 +10469,7 @@ function main() {
     hydrating = false;
     hydrationBuffer = null;
     sessionId = id;
+    expandActiveAncestors();
     if (previous !== id) resetDraftStateForSwitch();
     contextEpoch += 1;
     clearContextTimers();
@@ -10325,7 +10505,7 @@ function main() {
       sessionIdEl.title = id;
     }
     updateUrl();
-    renderSessions();
+    renderSessions({ reveal: true });
     renderPromptDock();
     loadTodo(id).catch(() => {});
     syncComposer();
@@ -10504,9 +10684,18 @@ function main() {
 
   async function removeSession(id) {
     if (deletingSessions.has(id)) return;
-    const session = sessions.find((candidate) => String(candidate.id) === id);
+    const tree = buildSessionTree(sessions);
+    const subtreeIDs = collectSubtreeIds(tree, id);
+    const removed = new Set(subtreeIDs);
+    const session =
+      tree.nodes.get(id) ?? sessions.find((candidate) => String(candidate.id) === id);
     const label = session === undefined ? `Session ${id.slice(0, 8)}` : sessionLabel(session);
-    if (!window.confirm(`Delete session "${label}"? This cannot be undone.`)) {
+    const descendantCount = Math.max(subtreeIDs.length - 1, 0);
+    const prompt =
+      descendantCount > 0
+        ? `Delete session "${label}" and ${descendantCount} subagent session(s)? This cannot be undone.`
+        : `Delete session "${label}"? This cannot be undone.`;
+    if (!window.confirm(prompt)) {
       return;
     }
     deletingSessions.add(id);
@@ -10514,31 +10703,42 @@ function main() {
     renderSessions();
     try {
       await api(sessionUrl(id), { method: "DELETE" });
-      const wasActive = sessionId === id;
-      sessions = sessions.filter((candidate) => String(candidate.id) !== id);
-      deletingSessions.delete(id);
-      sessionRuntime.delete(id);
-      acceptanceBySession.delete(id);
-      contextBySession.delete(id);
-      contextSeqBySession.delete(id);
-      localFailedBySession.delete(id);
-      cancelDeleteIfEmpty(id);
-      if (draftSaveSession === id) cancelDraftSaveTimer();
+      const wasActive = sessionId !== null && removed.has(sessionId);
+      sessions = sessions.filter((candidate) => !removed.has(String(candidate.id)));
+      for (const removedID of removed) {
+        deletingSessions.delete(removedID);
+        expandedSessions.delete(removedID);
+        sessionRuntime.delete(removedID);
+        acceptanceBySession.delete(removedID);
+        contextBySession.delete(removedID);
+        contextSeqBySession.delete(removedID);
+        localFailedBySession.delete(removedID);
+        lastSavedDraft.delete(removedID);
+        cancelDeleteIfEmpty(removedID);
+        unblockQueuePromotion(removedID);
+        if (abortPending === removedID) abortPending = null;
+        suppressAbortUntil.delete(removedID);
+        if (contextPollSession === removedID) clearContextTimers();
+        if (contextCompactingSession === removedID) contextCompactingSession = null;
+      }
+      if (draftSaveSession !== null && removed.has(draftSaveSession)) cancelDraftSaveTimer();
       resetEnsureSession();
-      unblockQueuePromotion(id);
-      if (abortPending === id) abortPending = null;
-      suppressAbortUntil.delete(id);
       stopAbortSettlePoll();
-      if (contextPollSession === id) clearContextTimers();
-      if (contextCompactingSession === id) contextCompactingSession = null;
+      clearSessionPrompts(subtreeIDs);
+      sessionsSignature = "";
       if (wasActive) {
-        if (sessions.length > 0) {
-          await selectSession(String(sessions[0].id), { focus: false, skipFlush: true });
+        const next =
+          firstRootId(buildSessionTree(sessions)) ??
+          (sessions.length > 0 ? String(sessions[0].id) : null);
+        if (next !== null) {
+          await selectSession(next, { focus: false, skipFlush: true });
         } else {
           startDraft({ focus: false, skipFlush: true });
+          refreshSessions().catch(() => {});
         }
       } else {
         renderSessions();
+        refreshSessions().catch(() => {});
       }
     } catch (error) {
       deletingSessions.delete(id);
@@ -10557,6 +10757,8 @@ function main() {
       sessions = Array.isArray(data.sessions) ? data.sessions : [];
       sessionsFailed = false;
       sessionsLoaded = true;
+      const tree = buildSessionTree(sessions);
+      expandActiveAncestors();
       renderSessions();
       if (sessions.length === 0) {
         startDraft({ focus: false });
@@ -10568,7 +10770,7 @@ function main() {
           ? requested
           : sessionId !== null && sessions.some((session) => session.id === sessionId)
             ? sessionId
-            : String(sessions[0].id);
+            : firstRootId(tree) ?? String(sessions[0].id);
       await selectSession(wanted, { focus: false });
     } catch (error) {
       showSessionsError(error, bootSessions);

@@ -5,6 +5,8 @@ import { authorizationFor } from "./endpoint-auth.js";
 export interface OpencodeSession {
   id: string;
   title?: string;
+  parentID?: string;
+  time?: { created?: number; updated?: number };
   [key: string]: unknown;
 }
 

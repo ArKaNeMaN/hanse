@@ -34,6 +34,10 @@ const DEFAULT_APP = "web";
 const PROJECT_ID = process.env.CHAT_QA_PROJECT ?? DEFAULT_PROJECT_ID;
 const APP = path.basename(process.env.CHAT_QA_APP ?? DEFAULT_APP);
 const LIVE = process.argv.includes("--live");
+const CHAT_QA_ONLY = (process.env.CHAT_QA_ONLY ?? "")
+  .split(",")
+  .map((name) => name.trim())
+  .filter((name) => name.length > 0);
 
 const EXTERNAL_URL = process.env.CHAT_QA_URL;
 const EXTERNAL_TOKEN = process.env.CHAT_QA_TOKEN;
@@ -574,6 +578,8 @@ async function installRoutes(page, config) {
     commandGets: [],
     commandPosts: [],
     abortCalls: [],
+    sessionGets: [],
+    deleteCalls: [],
   };
 
   const messages = typeof config.messages === "function" ? config.messages : () => config.messages;
@@ -611,10 +617,21 @@ async function installRoutes(page, config) {
       return json(route, { ok: true });
     }
     if (pathname.endsWith("/sessions") && method === "GET") {
-      return json(route, { sessions: sessions() });
+      const list = sessions();
+      state.sessionGets.push({ at: Date.now(), ids: list.map((session) => String(session.id)) });
+      return json(route, { sessions: list });
     }
     if (pathname.endsWith("/sessions") && method === "POST") {
       return json(route, { id: config.sessionId, title: "Chat QA", time: { updated: Date.now() } });
+    }
+    if (pathname.includes("/sessions/") && method === "DELETE") {
+      const match = /\/sessions\/([^/]+)$/.exec(pathname);
+      const sessionID = match === null ? null : decodeURIComponent(match[1]);
+      state.deleteCalls.push({ at: Date.now(), sessionID });
+      if (sessionID !== null && typeof config.onDeleteSession === "function") {
+        config.onDeleteSession(sessionID, state);
+      }
+      return json(route, { deleted: true });
     }
     if (pathname.endsWith("/prompts") && method === "GET") {
       return json(route, { questions: prompts(state), permissions: [] });
@@ -1085,6 +1102,95 @@ function mainFixture() {
     },
   ];
   return { messages, todo };
+}
+
+function sessionTreeFixture() {
+  const now = Date.now();
+  const sessions = [
+    { id: "ses_parent", title: "Parent task", time: { updated: now - 1_000 } },
+    {
+      id: "ses_child1",
+      title: "Explore child",
+      parentID: "ses_parent",
+      time: { updated: now - 2_000 },
+    },
+    {
+      id: "ses_child2",
+      title: "Review child",
+      parentID: "ses_parent",
+      time: { updated: now - 3_000 },
+    },
+    {
+      id: "ses_grand",
+      title: "Grandchild check",
+      parentID: "ses_child1",
+      time: { updated: now - 4_000 },
+    },
+    { id: "ses_leaf", title: "Leaf task", time: { updated: now - 5_000 } },
+    {
+      id: "ses_orphan",
+      title: "Orphan child",
+      parentID: "ses_missing",
+      time: { updated: now - 6_000 },
+    },
+    { id: "ses_other", title: "Unrelated task", time: { updated: now - 7_000 } },
+  ];
+  const messages = [
+    {
+      info: {
+        id: "msg_tree_user",
+        sessionID: "ses_parent",
+        role: "user",
+        time: { created: now - 500 },
+      },
+      parts: [
+        {
+          id: "prt_tree_user",
+          sessionID: "ses_parent",
+          messageID: "msg_tree_user",
+          type: "text",
+          text: "Show the session tree fixture.",
+        },
+      ],
+    },
+    {
+      info: {
+        id: "msg_tree_assistant",
+        sessionID: "ses_parent",
+        role: "assistant",
+        parentID: "msg_tree_user",
+        time: { created: now - 400 },
+        finish: "stop",
+      },
+      parts: [
+        {
+          id: "prt_tree_assistant",
+          sessionID: "ses_parent",
+          messageID: "msg_tree_assistant",
+          type: "text",
+          text: "The session tree fixture is loaded.",
+        },
+      ],
+    },
+  ];
+  const childQuestion = {
+    key: "v1:que_tree_child1",
+    id: "que_tree_child1",
+    sessionID: "ses_child1",
+    source: "v1",
+    tooLarge: false,
+    questions: [
+      {
+        header: "Child check",
+        question: "A hidden child is waiting",
+        options: [{ label: "Continue", description: "Continue the child session" }],
+        multiple: false,
+        custom: false,
+      },
+    ],
+    tool: { messageID: "msg_tree_assistant", callID: "call_tree_question" },
+  };
+  return { sessions, messages, childQuestion };
 }
 
 function questionFixture() {
@@ -2678,6 +2784,441 @@ async function scenarioMain(browser, target) {
     checkNoErrors(errors);
 
     return { metrics, tools, mobile };
+  } finally {
+    await context.close();
+  }
+}
+
+async function scenarioSessionTree(browser, target) {
+  const fixture = sessionTreeFixture();
+  const sessions = fixture.sessions;
+  const promptQuestions = [fixture.childQuestion];
+
+  const removeLoadedSubtree = (rootID) => {
+    const childrenByParent = new Map();
+    for (const session of sessions) {
+      const parentID = typeof session.parentID === "string" ? session.parentID : null;
+      if (parentID === null) continue;
+      const bucket = childrenByParent.get(parentID) ?? [];
+      bucket.push(String(session.id));
+      childrenByParent.set(parentID, bucket);
+    }
+    const removed = new Set([rootID]);
+    const stack = [rootID];
+    while (stack.length > 0) {
+      const id = stack.pop();
+      for (const childID of childrenByParent.get(id) ?? []) {
+        if (removed.has(childID)) continue;
+        removed.add(childID);
+        stack.push(childID);
+      }
+    }
+    const kept = sessions.filter((session) => !removed.has(String(session.id)));
+    sessions.splice(0, sessions.length, ...kept);
+    return removed;
+  };
+
+  const { context, page, errors } = await newPage(browser, target);
+  try {
+    const routeState = await installRoutes(page, {
+      sessionId: "ses_parent",
+      sessions: () => sessions,
+      messages: fixture.messages,
+      prompts: () => promptQuestions,
+      onDeleteSession: (sessionID) => {
+        removeLoadedSubtree(sessionID);
+      },
+    });
+    page.on("dialog", (dialog) => {
+      dialog.accept().catch(() => {});
+    });
+
+    const treeState = () =>
+      page.evaluate(() => {
+        const nodes = Array.from(document.querySelectorAll("#session-list .session-node"));
+        const text = (node) => (node ? (node.textContent ?? "").replace(/\s+/g, " ").trim() : "");
+        const isVisible = (node) => node instanceof HTMLElement && node.getClientRects().length > 0;
+        const entries = {};
+        for (const node of nodes) {
+          const id = node.dataset.sessionId;
+          if (typeof id !== "string") continue;
+          const row =
+            Array.from(node.children).find((child) => child.classList.contains("session-row")) ??
+            null;
+          const children =
+            Array.from(node.children).find((child) =>
+              child.classList.contains("session-children"),
+            ) ?? null;
+          const chevron = row?.querySelector(".session-chevron") ?? null;
+          const item = row?.querySelector(".session-item") ?? null;
+          entries[id] = {
+            depth: Number(node.dataset.depth),
+            visible: isVisible(node),
+            chevron:
+              chevron === null
+                ? null
+                : {
+                    expanded: chevron.getAttribute("aria-expanded"),
+                    disabled: chevron.getAttribute("aria-disabled"),
+                    controls: chevron.getAttribute("aria-controls"),
+                  },
+            spacer: node.querySelector(".session-chevron__spacer") !== null,
+            childrenHidden: children === null ? null : children.hidden,
+            active: item?.getAttribute("aria-current") === "true",
+            waitText: text(row?.querySelector(".session-item__flag")),
+          };
+        }
+        const activeItem = Array.from(document.querySelectorAll(".session-item")).find(
+          (node) => node.getAttribute("aria-current") === "true",
+        );
+        return {
+          ids: Object.keys(entries),
+          visibleIds: Object.keys(entries).filter((id) => entries[id].visible),
+          entries,
+          active: activeItem?.dataset.sessionId ?? null,
+        };
+      });
+
+    const waitForVisible = async (sessionID, want = true) => {
+      await page.waitForFunction(
+        ({ id, expect }) => {
+          const node = document.querySelector(`.session-node[data-session-id="${id}"]`);
+          const visible = node instanceof HTMLElement && node.getClientRects().length > 0;
+          return expect ? visible : !visible;
+        },
+        { id: sessionID, expect: want },
+        { timeout: 3_000 },
+      );
+    };
+
+    await gotoChat(page, target);
+    await page.waitForSelector("#session-list .session-node");
+    await page.waitForSelector('.session-item[aria-current="true"]');
+    let state = await treeState();
+    check(
+      ["ses_parent", "ses_leaf", "ses_orphan", "ses_other"].includes(state.active),
+      `default selection is a root (${state.active})`,
+    );
+    assertEqual(state.active, "ses_parent", "default selection is the first root");
+    check(state.entries.ses_parent?.chevron !== null, "the parent row has a chevron");
+    assertEqual(
+      state.entries.ses_parent?.chevron?.expanded,
+      "false",
+      "the parent starts collapsed",
+    );
+    assertEqual(
+      state.entries.ses_parent?.childrenHidden,
+      true,
+      "the parent's children container starts hidden",
+    );
+    check(state.entries.ses_child1?.visible === false, "child1 is hidden initially");
+    await shot(page, "session-tree-initial-1440-dark");
+
+    await page
+      .locator('.session-node[data-session-id="ses_parent"] > .session-row > .session-chevron')
+      .click();
+    await waitForVisible("ses_child1");
+    state = await treeState();
+    assertEqual(
+      state.entries.ses_parent?.chevron?.expanded,
+      "true",
+      "the parent chevron reports expanded",
+    );
+    assertEqual(
+      state.entries.ses_parent?.childrenHidden,
+      false,
+      "the parent's children container is revealed",
+    );
+    check(state.entries.ses_child1?.visible === true, "child1 is visible after expanding");
+    check(state.entries.ses_child2?.visible === true, "child2 is visible after expanding");
+
+    const parentControls = state.entries.ses_parent?.chevron?.controls;
+    check(
+      typeof parentControls === "string" && parentControls.length > 0,
+      `the parent chevron has aria-controls (${parentControls})`,
+    );
+    check(
+      await page.evaluate((id) => document.getElementById(id) !== null, parentControls),
+      "the parent aria-controls target exists",
+    );
+
+    await page
+      .locator('.session-node[data-session-id="ses_child1"] > .session-row > .session-chevron')
+      .click();
+    await waitForVisible("ses_grand");
+    state = await treeState();
+    assertEqual(state.entries.ses_grand?.depth, 2, "the grandchild renders at depth 2");
+    assertEqual(
+      state.entries.ses_child1?.chevron?.expanded,
+      "true",
+      "child1 reports expanded for its grandchild",
+    );
+
+    await page
+      .locator('.session-node[data-session-id="ses_child1"] > .session-row > .session-chevron')
+      .click();
+    await waitForVisible("ses_grand", false);
+    state = await treeState();
+    assertEqual(
+      state.entries.ses_child1?.chevron?.expanded,
+      "false",
+      "collapsing child1 flips aria-expanded",
+    );
+    check(state.entries.ses_grand?.visible === false, "the grandchild is hidden after collapsing");
+    assertEqual(state.entries.ses_orphan?.depth, 0, "the orphan renders as a root");
+    check(state.entries.ses_orphan?.chevron === null, "the orphan root has no chevron");
+    check(state.entries.ses_orphan?.spacer === true, "the orphan root keeps the spacer");
+    assertEqual(state.entries.ses_leaf?.depth, 0, "the leaf renders as a root");
+    check(state.entries.ses_leaf?.chevron === null, "the leaf has no chevron");
+    check(state.entries.ses_leaf?.spacer === true, "the leaf keeps the spacer");
+
+    await gotoChat(page, target, "ses_grand");
+    await page.waitForSelector('#session-list .session-node[data-session-id="ses_grand"]');
+    await waitForVisible("ses_grand");
+    state = await treeState();
+    assertEqual(state.active, "ses_grand", "the deep link selects the grandchild");
+    check(state.entries.ses_grand?.active === true, "the active grandchild row has aria-current");
+    assertEqual(
+      state.entries.ses_parent?.chevron?.expanded,
+      "true",
+      "the parent ancestor is expanded for the deep link",
+    );
+    assertEqual(
+      state.entries.ses_child1?.chevron?.expanded,
+      "true",
+      "the immediate ancestor is expanded for the deep link",
+    );
+    check(state.entries.ses_grand?.visible === true, "the deep-linked grandchild is visible");
+
+    await page.locator("#session-search").fill("Grandchild");
+    await page.waitForFunction(
+      () => {
+        const other = document.querySelector('.session-node[data-session-id="ses_other"]');
+        return other === null || other.getClientRects().length === 0;
+      },
+      undefined,
+      { timeout: 3_000 },
+    );
+    await wait(100);
+    state = await treeState();
+    check(state.entries.ses_grand?.visible === true, "the search match stays visible");
+    check(state.entries.ses_parent?.visible === true, "the match's parent is visible");
+    check(state.entries.ses_child1?.visible === true, "the match's immediate ancestor is visible");
+    check(!state.visibleIds.includes("ses_child2"), "the sibling of the match is hidden");
+    check(!state.visibleIds.includes("ses_other"), "the unrelated root is hidden by search");
+    assertEqual(
+      state.entries.ses_parent?.chevron?.disabled,
+      "true",
+      "the forced-open parent chevron is aria-disabled",
+    );
+    assertEqual(
+      state.entries.ses_parent?.chevron?.expanded,
+      "true",
+      "the forced-open parent chevron stays expanded",
+    );
+    assertEqual(
+      state.entries.ses_child1?.chevron?.disabled,
+      "true",
+      "the forced-open ancestor chevron is aria-disabled",
+    );
+    assertEqual(
+      state.entries.ses_child1?.chevron?.expanded,
+      "true",
+      "the forced-open ancestor chevron stays expanded",
+    );
+    await shot(page, "session-tree-search-1440-dark");
+
+    await page.locator("#session-search").fill("");
+    await waitForVisible("ses_child2");
+    state = await treeState();
+    assertEqual(
+      state.entries.ses_parent?.chevron?.expanded,
+      "true",
+      "clearing the search restores the parent expansion",
+    );
+    assertEqual(
+      state.entries.ses_child1?.chevron?.expanded,
+      "true",
+      "clearing the search restores the ancestor expansion",
+    );
+    check(
+      state.entries.ses_grand?.visible === true,
+      "the grandchild returns after clearing search",
+    );
+    check(state.entries.ses_child2?.visible === true, "the sibling returns after clearing search");
+    assertEqual(
+      state.entries.ses_parent?.chevron?.disabled,
+      null,
+      "clearing the search removes aria-disabled from the parent chevron",
+    );
+
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await shot(page, "session-tree-1440-dark");
+    await page.evaluate(() => {
+      document.documentElement.dataset.theme = "light";
+    });
+    await wait(100);
+    await shot(page, "session-tree-1440-light");
+    await page.evaluate(() => {
+      document.documentElement.dataset.theme = "dark";
+    });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.locator("[data-chat-sessions-toggle]").click();
+    await wait(350);
+    await shot(page, "session-tree-390-dark");
+    await page.setViewportSize({ width: 320, height: 844 });
+    await wait(350);
+    await shot(page, "session-tree-320-dark");
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await wait(350);
+
+    const badControls = await page.evaluate(() =>
+      Array.from(document.querySelectorAll("#session-list .session-chevron"))
+        .filter((chevron) => chevron.getClientRects().length > 0)
+        .map((chevron) => {
+          const controls = chevron.getAttribute("aria-controls");
+          return {
+            controls,
+            exists: controls !== null && document.getElementById(controls) !== null,
+          };
+        })
+        .filter((entry) => !entry.exists),
+    );
+    assertEqual(badControls, [], "every visible chevron points at an existing children group");
+
+    await page.locator('.session-item[data-session-id="ses_leaf"]').focus();
+    const leafIndex = sessions.findIndex((session) => String(session.id) === "ses_leaf");
+    sessions[leafIndex].title = "Leaf task refreshed";
+    const getsBeforeFocusRefresh = routeState.sessionGets.length;
+    await page.evaluate(() => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    await page.waitForFunction(
+      () =>
+        (document.querySelector('.session-item[data-session-id="ses_leaf"] .session-item__title')
+          ?.textContent ?? "") === "Leaf task refreshed",
+      undefined,
+      { timeout: 3_000 },
+    );
+    const focusState = await page.evaluate(() => {
+      const active = document.activeElement;
+      return {
+        tag: active?.tagName ?? null,
+        className: typeof active?.className === "string" ? active.className : "",
+        sessionID: active?.closest?.(".session-node")?.dataset.sessionId ?? null,
+        itemID: active?.dataset?.sessionId ?? null,
+      };
+    });
+    check(
+      routeState.sessionGets.length > getsBeforeFocusRefresh,
+      "the focus refresh fetched the sessions list",
+    );
+    assertEqual(focusState.sessionID, "ses_leaf", "keyboard focus stays on the focused row");
+    check(
+      focusState.className.includes("session-item"),
+      `keyboard focus is restored to the session button (${focusState.className})`,
+    );
+
+    await page
+      .locator('.session-node[data-session-id="ses_parent"] > .session-row > .session-chevron')
+      .click();
+    await waitForVisible("ses_child1", false);
+    await page.waitForFunction(
+      () => {
+        const row = document.querySelector(
+          '.session-node[data-session-id="ses_parent"] > .session-row',
+        );
+        return (row?.querySelector(".session-item__flag")?.textContent ?? "").includes("1 waiting");
+      },
+      undefined,
+      { timeout: 5_000 },
+    );
+    state = await treeState();
+    assertEqual(
+      state.entries.ses_parent?.chevron?.expanded,
+      "false",
+      "the parent stays collapsed while its child waits",
+    );
+    check(!state.visibleIds.includes("ses_child1"), "the waiting child is hidden under the parent");
+    assertEqual(
+      state.entries.ses_parent?.waitText,
+      "1 waiting",
+      "the parent shows the aggregate wait",
+    );
+    assertEqual(
+      await page.evaluate(
+        () =>
+          document
+            .querySelector(
+              '.session-node[data-session-id="ses_parent"] > .session-row > .session-item .session-item__flag',
+            )
+            ?.getAttribute("aria-label") ?? null,
+      ),
+      "1 requests need input",
+      "the aggregate wait flag has an accessible label",
+    );
+    await shot(page, "session-tree-waiting-1440-dark");
+
+    const deleteCountBefore = routeState.deleteCalls.length;
+    const getsBeforeDelete = routeState.sessionGets.length;
+    await page
+      .locator('.session-node[data-session-id="ses_parent"] > .session-row > .session-delete')
+      .click();
+    await page.waitForFunction(
+      () => {
+        const ids = Array.from(document.querySelectorAll("#session-list .session-node")).map(
+          (node) => node.dataset.sessionId,
+        );
+        return ["ses_parent", "ses_child1", "ses_child2", "ses_grand"].every(
+          (id) => !ids.includes(id),
+        );
+      },
+      undefined,
+      { timeout: 5_000 },
+    );
+    const deleteDeadline = Date.now() + 5_000;
+    while (routeState.sessionGets.length <= getsBeforeDelete && Date.now() < deleteDeadline) {
+      await wait(50);
+    }
+    await wait(300);
+    state = await treeState();
+    assertEqual(
+      routeState.deleteCalls.length,
+      deleteCountBefore + 1,
+      "the delete confirmation issued one DELETE",
+    );
+    assertEqual(
+      routeState.deleteCalls.at(-1)?.sessionID,
+      "ses_parent",
+      "the DELETE targets the parent session",
+    );
+    for (const removedID of ["ses_parent", "ses_child1", "ses_child2", "ses_grand"]) {
+      check(!state.ids.includes(removedID), `${removedID} is removed from the tree`);
+      check(!state.visibleIds.includes(removedID), `${removedID} is no longer visible`);
+    }
+    for (const survivor of ["ses_leaf", "ses_orphan", "ses_other"]) {
+      check(state.ids.includes(survivor), `${survivor} survives the subtree delete`);
+      check(state.visibleIds.includes(survivor), `${survivor} stays visible`);
+    }
+    assertEqual(state.active, "ses_leaf", "the first remaining root is selected");
+    check(state.entries.ses_leaf?.active === true, "the new active row has aria-current");
+    const lastSessionGet = routeState.sessionGets.at(-1);
+    check(
+      lastSessionGet !== undefined &&
+        !lastSessionGet.ids.includes("ses_parent") &&
+        !lastSessionGet.ids.includes("ses_child1") &&
+        lastSessionGet.ids.includes("ses_leaf"),
+      "the post-delete sessions refresh does not resurrect the subtree",
+    );
+    await shot(page, "session-tree-after-delete-1440-dark");
+
+    checkNoErrors(errors);
+    return {
+      activeAfterDelete: state.active,
+      sessionsAfterDelete: state.ids,
+      deleteCalls: routeState.deleteCalls.length,
+      focus: focusState,
+    };
   } finally {
     await context.close();
   }
@@ -5729,39 +6270,38 @@ try {
   if (LIVE) {
     await runScenario("live-smoke", () => scenarioLive(browser, target));
   } else {
-    await runScenario("main", () => scenarioMain(browser, target));
-    await runScenario("questions", () => scenarioQuestions(browser, target));
-    await runScenario("send", () => scenarioSend(browser, target));
-    await runScenario("commands-palette", () => scenarioCommandsPalette(browser, target));
-    await runScenario("commands-shell-confirm", () =>
-      scenarioCommandsShellConfirm(browser, target),
-    );
-    await runScenario("commands-shell-unknown", () =>
-      scenarioCommandsShellUnknown(browser, target),
-    );
-    await runScenario("commands-stale-400", () => scenarioCommandsStale400(browser, target));
-    await runScenario("commands-unknown-literal", () =>
-      scenarioCommandsUnknownLiteral(browser, target),
-    );
-    await runScenario("commands-master", () => scenarioCommandsMaster(browser, target));
-    await runScenario("commands-popup", () => scenarioCommandsPopup(browser, target));
-    await runScenario("commands-widths", () => scenarioCommandsWidths(browser, target));
-    await runScenario("context-states", () => scenarioContextStates(browser, target));
-    await runScenario("context-compact", () => scenarioContextCompact(browser, target));
-    await runScenario("context-switch-race", () => scenarioContextSwitchRace(browser, target));
-    await runScenario("context-retry", () => scenarioContextRetry(browser, target));
-    await runScenario("diffs", () => scenarioDiffs(browser, target));
-    await runScenario("read", () => scenarioRead(browser, target));
-    await runScenario("diff-error", () => scenarioDiffError(browser, target));
-    await runScenario("diff-lazy", () => scenarioDiffLazy(browser, target));
-    await runScenario("diff-streaming", () => scenarioDiffStreaming(browser, target));
-    await runScenario("diff-adversarial", () => scenarioDiffAdversarial(browser, target));
-    await runScenario("diff-timeout", () => scenarioDiffTimeout(browser, target));
-    await runScenario("mobile-composer", () => scenarioMobileComposer(browser, target));
-    await runScenario("plan-visibility", () => scenarioPlanVisibility(browser, target));
-    await runScenario("reasoning", () => scenarioReasoning(browser, target));
-    await runScenario("stop", () => scenarioStop(browser, target));
-    await runScenario("reconnect", () => scenarioReconnect(browser, target));
+    const run = (name, fn) =>
+      CHAT_QA_ONLY.length === 0 || CHAT_QA_ONLY.includes(name)
+        ? runScenario(name, fn)
+        : Promise.resolve();
+    await run("main", () => scenarioMain(browser, target));
+    await run("questions", () => scenarioQuestions(browser, target));
+    await run("send", () => scenarioSend(browser, target));
+    await run("commands-palette", () => scenarioCommandsPalette(browser, target));
+    await run("commands-shell-confirm", () => scenarioCommandsShellConfirm(browser, target));
+    await run("commands-shell-unknown", () => scenarioCommandsShellUnknown(browser, target));
+    await run("commands-stale-400", () => scenarioCommandsStale400(browser, target));
+    await run("commands-unknown-literal", () => scenarioCommandsUnknownLiteral(browser, target));
+    await run("commands-master", () => scenarioCommandsMaster(browser, target));
+    await run("commands-popup", () => scenarioCommandsPopup(browser, target));
+    await run("commands-widths", () => scenarioCommandsWidths(browser, target));
+    await run("context-states", () => scenarioContextStates(browser, target));
+    await run("context-compact", () => scenarioContextCompact(browser, target));
+    await run("context-switch-race", () => scenarioContextSwitchRace(browser, target));
+    await run("context-retry", () => scenarioContextRetry(browser, target));
+    await run("diffs", () => scenarioDiffs(browser, target));
+    await run("read", () => scenarioRead(browser, target));
+    await run("diff-error", () => scenarioDiffError(browser, target));
+    await run("diff-lazy", () => scenarioDiffLazy(browser, target));
+    await run("diff-streaming", () => scenarioDiffStreaming(browser, target));
+    await run("diff-adversarial", () => scenarioDiffAdversarial(browser, target));
+    await run("diff-timeout", () => scenarioDiffTimeout(browser, target));
+    await run("mobile-composer", () => scenarioMobileComposer(browser, target));
+    await run("plan-visibility", () => scenarioPlanVisibility(browser, target));
+    await run("reasoning", () => scenarioReasoning(browser, target));
+    await run("stop", () => scenarioStop(browser, target));
+    await run("reconnect", () => scenarioReconnect(browser, target));
+    await run("session-tree", () => scenarioSessionTree(browser, target));
   }
 } catch (error) {
   report.status = "FAIL";

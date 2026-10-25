@@ -132,7 +132,7 @@
     --chat-feed-ratio: 75%;
     --chat-feed-min: 60ch;
     --chat-feed-max: 96rem;
-    --chat-sessions: 16rem;
+    --chat-sessions: 17rem;
     --chat-context: 20rem;
     --pane-drawer-w: 20rem;
 
@@ -3426,12 +3426,65 @@
     display: none;
   }
 
+  .session-node {
+    display: flex;
+    flex-direction: column;
+    min-inline-size: 0;
+  }
+
   .session-row {
     display: flex;
     align-items: stretch;
     gap: var(--space-1);
     min-inline-size: 0;
+    padding-inline-start: calc(var(--session-depth, 0) * 10px);
     border-radius: var(--radius-sm);
+  }
+
+  .session-chevron {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    align-self: center;
+    inline-size: 1.5rem;
+    block-size: 1.5rem;
+    padding: 0;
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-3);
+    cursor: pointer;
+    transition:
+      background-color var(--dur-micro) var(--ease-out),
+      color var(--dur-micro) var(--ease-out);
+  }
+
+  .session-chevron:hover {
+    background: var(--wash-1);
+    color: var(--text-1);
+  }
+
+  .session-chevron[aria-disabled="true"] {
+    opacity: 0.35;
+    cursor: default;
+  }
+
+  .session-chevron__spacer {
+    flex: 0 0 auto;
+    inline-size: 1.5rem;
+    block-size: 1.5rem;
+  }
+
+  .session-children {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    min-inline-size: 0;
+  }
+
+  .session-children[hidden] {
+    display: none;
   }
 
   .session-item {
@@ -3521,8 +3574,10 @@
 
   .session-item__meta {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: var(--space-2);
+    min-inline-size: 0;
     color: var(--text-3);
     font-size: var(--text-micro);
   }
@@ -6683,6 +6738,7 @@
       inset-block: var(--topbar-h) 0;
       inset-inline-start: 0;
       inline-size: var(--chat-sessions);
+      max-inline-size: calc(100vw - 2rem);
       border-inline-end: 1px solid var(--line-strong);
       box-shadow: var(--shadow-overlay);
       opacity: 0;

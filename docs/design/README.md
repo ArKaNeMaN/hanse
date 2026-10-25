@@ -48,6 +48,10 @@
   storage, inline image/video/PDF delivery gated by model capabilities, file-only paths for the
   agent, history/SSE base64 projection, server-side message drafts, eager empty-session creation,
   and delete-if-empty semantics. Status: implemented/verified - design review PASS (round 16); Stages A/B/C complete (2198 tests, Stage A/B/C browser QA, security findings fixed).
+- [Chat session tree](./chat-session-tree.md) - group `opencode` subagent sessions under their
+  parent in the chat rail with disclosure chevrons, multi-level nesting, active-ancestor expansion,
+  orphan/cycle handling, subtree delete cleanup, and a deferred realtime follow-up. Status:
+  implemented and verified (journal 0032); design review PASS (`oracle` round 3).
 - [Slash commands](./slash-commands.md) - a thin opencode server-command proxy and a small
   Hanse-native command registry merged into one chat palette, with the wire contract, collision
   policy, detached execution, and security analysis. Status: approved (oracle PASS after 2 rounds);
@@ -99,6 +103,11 @@ Query parameters:
   long name, 390/1440, dark/light) plus `report.json`; run `node docs/design/preview-qa.mjs`.
 
 ## Chat QA
+
+`CHAT_QA_ONLY=session-tree node docs/design/chat-qa.mjs` runs only the session-tree scenario; its
+report is copied to `artifacts/chat/session-tree-report.json`. The full deterministic run currently
+stops at the pre-existing `main` queue-strip assertion (`2 rows` vs `1`), reproduced on clean HEAD;
+existing scenarios are unchanged.
 
 `node docs/design/chat-qa.mjs` is the phase-6 browser gate for the chat UX overhaul. It self-starts
 a throwaway server (or targets `CHAT_QA_URL`/`CHAT_QA_TOKEN`), intercepts `/api/apps/**` with

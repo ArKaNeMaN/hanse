@@ -49,6 +49,17 @@ context GET returns `503 agent_not_running`, then the 750ms retry renders the ch
 non-2xx API response makes Chromium log one resource error; those expected 409/503 logs are filtered,
 and any other console/page error still fails the gate.
 
+## Session tree
+
+`CHAT_QA_ONLY=session-tree node docs/design/chat-qa.mjs` runs only the deterministic session-tree
+scenario and copies its report to `session-tree-report.json` so the canonical `report.json` remains
+the full baseline. It covers initial collapse, expand/collapse with `aria-expanded`, a depth-2
+grandchild, orphan/leaf roots, a grandchild deep link, search with forced-open ancestors,
+clearing search, the collapsed-parent aggregate wait flag, focus restoration after a refresh, a
+parent subtree delete with the post-delete refresh, and 1440/390/320 layouts. The full default run
+currently stops at the pre-existing `main` queue-strip assertion (`2 rows` vs `1`), reproduced on
+clean HEAD; existing scenarios are unchanged.
+
 ## Captures
 
 | File | Covers |
@@ -91,6 +102,14 @@ and any other console/page error still fails the gate.
 | `context-compact-409-1440-dark.png` | A fixed `409 compact_in_progress`: inline alert, error toast, no compacting chip, and the button re-enabled after one POST. |
 | `context-switch-race-1440-dark.png` | A delayed session-A context response arriving after switching to B: every sampled chip label stays `Context 30%` (B), never A's 62%. |
 | `context-retry-1440-dark.png` | A `stream.ready` context GET returning `503 agent_not_running` hides the chip, then the 750ms retry renders `Context 62%` after a second GET. |
+| `session-tree-initial-1440-dark.png` | The tree initially collapsed: first-root selection, a parent chevron, hidden children, and orphan/leaf roots with spacers. |
+| `session-tree-1440-dark.png` | The expanded parent/child tree with the active grandchild deep link and restored expansion after search. |
+| `session-tree-1440-light.png` | The same tree in light theme. |
+| `session-tree-search-1440-dark.png` | Search "Grandchild": match plus ancestors only, forced-open ancestor chevrons with `aria-disabled`, unrelated roots hidden. |
+| `session-tree-waiting-1440-dark.png` | A collapsed parent showing the aggregate `1 waiting` flag for a hidden child question. |
+| `session-tree-390-dark.png` | The sessions drawer at 390 with the expanded tree. |
+| `session-tree-320-dark.png` | The sessions drawer at 320 with the expanded tree and wrapped meta. |
+| `session-tree-after-delete-1440-dark.png` | After deleting the parent: the whole subtree is gone, the first remaining root (`Leaf task`) is active, and the post-delete refresh does not resurrect the subtree. |
 
 ## Accepted gaps
 

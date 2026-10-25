@@ -83,6 +83,7 @@ import {
 import { streamUploadBody, UploadStreamError } from "../attachments/upload.js";
 import { attachmentView, draftAttachmentViews, parseAttachmentRefs } from "../attachments/views.js";
 import { KeyedMutex, sessionLockKey, sessionLocks } from "../chat/locks.js";
+import { collectSessionSubtreeIDs } from "../chat/session-tree.js";
 import {
   bumpLastActivity,
   deletePending,
@@ -119,6 +120,7 @@ import {
   listMessagePage,
   listMessages,
   listSessions,
+  listSessionsBounded,
   OpencodeHttpError,
   type OpencodeMessage,
   patchSessionTitle,
@@ -380,7 +382,7 @@ function renderChatPage(
       <input class="input" id="session-search" type="search" placeholder="Filter sessions" autocomplete="off" />
     </div>
     <p class="field-error chat-sessions__error" id="session-error" role="alert" hidden></p>
-    <div class="chat-sessions__list" id="session-list" aria-live="polite">
+    <div class="chat-sessions__list" id="session-list">
       <div class="skeleton-stack chat-sessions__skeleton" aria-hidden="true">
         <span class="skeleton skeleton--title"></span>
         <span class="skeleton"></span>
@@ -863,6 +865,19 @@ function removeLocalSessionRows(deps: HttpDeps, found: FoundApp, sessionId: stri
   removeSessionFolder(
     sessionFolder(deps.agentsHome, found.project.id, found.app.appKey, sessionId),
   );
+}
+
+function markHandoffsDeleted(deps: HttpDeps, sessionId: string): void {
+  const now = new Date().toISOString();
+  deps.db
+    .prepare(
+      `UPDATE handoffs SET
+         source_session_deleted_at = COALESCE(source_session_deleted_at, ?),
+         updated_at = ?
+       WHERE (source_session_id = ? OR reply_delivered_session_id = ?)
+         AND source_session_deleted_at IS NULL`,
+    )
+    .run(now, now, sessionId, sessionId);
 }
 
 async function handleDraft(
@@ -2423,25 +2438,35 @@ export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<
     }
     if (sessionMatch !== null && request.method === "DELETE") {
       return await sessionLocks.run(sessionLockKey(found.app.id, sessionId), async () => {
+        let ids = [sessionId];
+        try {
+          const listed = await listSessionsBounded(endpoint);
+          if (Array.isArray(listed)) {
+            ids = collectSessionSubtreeIDs(listed, sessionId);
+          }
+        } catch {
+          // Best effort: a failed, oversized, or timed-out listing falls back to the requested id;
+          // the upstream delete still cascades to descendants.
+          ids = [sessionId];
+        }
         try {
           await deleteSession(endpoint, sessionId);
         } catch (error) {
           if (!isSessionGone(error)) throw error;
         }
-        removeLocalSessionRows(deps, found, sessionId);
-        try {
-          const now = new Date().toISOString();
-          deps.db
-            .prepare(
-              `UPDATE handoffs SET
-                 source_session_deleted_at = COALESCE(source_session_deleted_at, ?),
-                 updated_at = ?
-               WHERE (source_session_id = ? OR reply_delivered_session_id = ?)
-                 AND source_session_deleted_at IS NULL`,
-            )
-            .run(now, now, sessionId, sessionId);
-        } catch {
-          // Handoff bookkeeping is best-effort; the upstream session is already deleted.
+        for (const id of ids) {
+          try {
+            removeLocalSessionRows(deps, found, id);
+          } catch {
+            // Best effort per id; the upstream session is already deleted.
+          }
+        }
+        for (const id of ids) {
+          try {
+            markHandoffsDeleted(deps, id);
+          } catch {
+            // Best effort per id; the upstream session is already deleted.
+          }
         }
         return json(200, { deleted: true });
       });

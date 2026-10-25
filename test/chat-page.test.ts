@@ -1,6 +1,14 @@
 import { execFileSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -215,6 +223,59 @@ async function fakeOpencodeHandler(
 function noContent(response: ServerResponse): void {
   response.writeHead(204);
   response.end();
+}
+
+function createSessionFolder(agentsHome: string, sessionId: string): string {
+  const folder = path.join(agentsHome, "p1", "storefront", "attachments", sessionId);
+  mkdirSync(folder, { recursive: true });
+  writeFileSync(path.join(folder, "note.txt"), sessionId, "utf8");
+  return folder;
+}
+
+function seedSessionChatRows(db: SqliteDatabase, sessionId: string): void {
+  const now = new Date().toISOString();
+  const appId = "p1:storefront";
+  db.prepare(
+    "INSERT INTO message_drafts (app_id, session_id, text, updated_at) VALUES (?, ?, ?, ?)",
+  ).run(appId, sessionId, `draft-${sessionId}`, now);
+  db.prepare(
+    `INSERT INTO session_state
+       (app_id, session_id, has_messages, last_activity_at, created_at, updated_at)
+     VALUES (?, ?, 1, ?, ?, ?)`,
+  ).run(appId, sessionId, now, now, now);
+  db.prepare(
+    `INSERT INTO app_attachments
+       (id, app_id, session_id, original_name, state, created_at, updated_at)
+     VALUES (?, ?, ?, 'file.txt', 'available', ?, ?)`,
+  ).run(`att_${sessionId}`, appId, sessionId, now, now);
+  db.prepare(
+    `INSERT INTO attachment_deliveries
+       (id, attachment_id, app_id, session_id, part_id, message_id, state, created_at, updated_at)
+     VALUES (?, ?, ?, ?, NULL, ?, 'sent', ?, ?)`,
+  ).run(`del_${sessionId}`, `att_${sessionId}`, appId, sessionId, `msg_${sessionId}`, now, now);
+  db.prepare(
+    `INSERT INTO pending_sends
+       (id, app_id, session_id, message_id, text, attachments_json, state, created_at, updated_at)
+     VALUES (?, ?, ?, ?, 'queued', '[]', 'unknown', ?, ?)`,
+  ).run(`pend_${sessionId}`, appId, sessionId, `msg_pending_${sessionId}`, now, now);
+}
+
+function countSessionRows(db: SqliteDatabase, table: string, sessionId: string): number {
+  const row = db
+    .prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE app_id = ? AND session_id = ?`)
+    .get("p1:storefront", sessionId) as { count: number };
+  return row.count;
+}
+
+function insertParentHandoff(db: SqliteDatabase, sourceSessionId: string): void {
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO handoffs
+       (id, project_id, from_app_id, to_app_id, state, summary, spec,
+        idempotency_key, attempts, source_session_id, created_at, updated_at)
+     VALUES ('handoff_parent', 'p1', 'p1:storefront', 'p1:api', 'pending', 'summary', 'spec',
+             'idem-parent', 0, ?, ?, ?)`,
+  ).run(sourceSessionId, now, now);
 }
 
 function asyncRequest(overrides: Partial<HttpRequest> = {}): HttpRequest {
@@ -877,7 +938,157 @@ console.log(JSON.stringify(Object.keys(Prism.languages)));`;
 
     expect(response.status).toBe(200);
     expect(JSON.parse(response.body)).toEqual({ deleted: true });
-    expect(upstream.calls).toEqual([{ method: "DELETE", url: "/session/ses_1", body: "" }]);
+    expect(upstream.calls).toEqual([
+      { method: "GET", url: "/session", body: "" },
+      { method: "DELETE", url: "/session/ses_1", body: "" },
+    ]);
+  });
+
+  it("cleans the whole upstream subtree on delete", async () => {
+    const f = fixture();
+    const agentsHome = mkdtempSync(path.join(tmpdir(), "hanse-agents-"));
+    dirs.push(agentsHome);
+    f.deps.agentsHome = agentsHome;
+    const parentFolder = createSessionFolder(agentsHome, "ses_parent");
+    const childFolder = createSessionFolder(agentsHome, "ses_child");
+    const otherFolder = createSessionFolder(agentsHome, "ses_other");
+    for (const id of ["ses_parent", "ses_child", "ses_other"]) seedSessionChatRows(f.db, id);
+    insertParentHandoff(f.db, "ses_parent");
+
+    const sessions = [
+      { id: "ses_parent", title: "Parent" },
+      { id: "ses_child", title: "Child", parentID: "ses_parent" },
+      { id: "ses_other", title: "Other" },
+    ];
+    const upstream = await fakeOpencodeHandler((incoming, outgoing) => {
+      if (incoming.method === "GET" && incoming.url === "/session") {
+        outgoing.writeHead(200, { "content-type": "application/json" });
+        outgoing.end(JSON.stringify(sessions));
+        return;
+      }
+      if (incoming.method === "DELETE" && incoming.url === "/session/ses_parent") {
+        outgoing.writeHead(200, { "content-type": "application/json" });
+        outgoing.end("true");
+        return;
+      }
+      outgoing.writeHead(404);
+      outgoing.end("missing");
+    });
+    useUpstream(f.deps, upstream.endpoint);
+
+    const response = await handleChat(
+      f.deps,
+      request({
+        method: "DELETE",
+        path: "/api/apps/storefront/sessions/ses_parent",
+        query: { project: "p1" },
+        headers: auth(f.token),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(JSON.parse(response.body)).toEqual({ deleted: true });
+    expect(upstream.calls.map((call) => `${call.method} ${call.url}`)).toEqual([
+      "GET /session",
+      "DELETE /session/ses_parent",
+    ]);
+
+    const tables = [
+      "message_drafts",
+      "session_state",
+      "app_attachments",
+      "attachment_deliveries",
+      "pending_sends",
+    ];
+    for (const table of tables) {
+      expect(countSessionRows(f.db, table, "ses_parent")).toBe(0);
+      expect(countSessionRows(f.db, table, "ses_child")).toBe(0);
+      expect(countSessionRows(f.db, table, "ses_other")).toBe(1);
+    }
+    expect(existsSync(parentFolder)).toBe(false);
+    expect(existsSync(childFolder)).toBe(false);
+    expect(existsSync(otherFolder)).toBe(true);
+    const handoff = f.db
+      .prepare("SELECT source_session_deleted_at AS deletedAt FROM handoffs WHERE id = ?")
+      .get("handoff_parent") as { deletedAt: string | null };
+    expect(handoff.deletedAt).not.toBeNull();
+  });
+
+  it("deletes only the requested id when the session list is not an array", async () => {
+    const f = fixture();
+    const agentsHome = mkdtempSync(path.join(tmpdir(), "hanse-agents-"));
+    dirs.push(agentsHome);
+    f.deps.agentsHome = agentsHome;
+    const parentFolder = createSessionFolder(agentsHome, "ses_parent");
+    const childFolder = createSessionFolder(agentsHome, "ses_child");
+    seedSessionChatRows(f.db, "ses_parent");
+    seedSessionChatRows(f.db, "ses_child");
+    const upstream = await fakeOpencode();
+    useUpstream(f.deps, upstream.endpoint);
+
+    const response = await handleChat(
+      f.deps,
+      request({
+        method: "DELETE",
+        path: "/api/apps/storefront/sessions/ses_parent",
+        query: { project: "p1" },
+        headers: auth(f.token),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(JSON.parse(response.body)).toEqual({ deleted: true });
+    expect(upstream.calls).toEqual([
+      { method: "GET", url: "/session", body: "" },
+      { method: "DELETE", url: "/session/ses_parent", body: "" },
+    ]);
+    expect(countSessionRows(f.db, "message_drafts", "ses_parent")).toBe(0);
+    expect(countSessionRows(f.db, "message_drafts", "ses_child")).toBe(1);
+    expect(existsSync(parentFolder)).toBe(false);
+    expect(existsSync(childFolder)).toBe(true);
+  });
+
+  it("still deletes when the session listing fails", async () => {
+    const f = fixture();
+    const agentsHome = mkdtempSync(path.join(tmpdir(), "hanse-agents-"));
+    dirs.push(agentsHome);
+    f.deps.agentsHome = agentsHome;
+    const folder = createSessionFolder(agentsHome, "ses_1");
+    seedSessionChatRows(f.db, "ses_1");
+    const upstream = await fakeOpencodeHandler((incoming, outgoing) => {
+      if (incoming.method === "GET" && incoming.url === "/session") {
+        outgoing.writeHead(500, { "content-type": "application/json" });
+        outgoing.end('{"error":"boom"}');
+        return;
+      }
+      if (incoming.method === "DELETE" && incoming.url === "/session/ses_1") {
+        outgoing.writeHead(200, { "content-type": "application/json" });
+        outgoing.end("true");
+        return;
+      }
+      outgoing.writeHead(404);
+      outgoing.end("missing");
+    });
+    useUpstream(f.deps, upstream.endpoint);
+
+    const response = await handleChat(
+      f.deps,
+      request({
+        method: "DELETE",
+        path: "/api/apps/storefront/sessions/ses_1",
+        query: { project: "p1" },
+        headers: auth(f.token),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(JSON.parse(response.body)).toEqual({ deleted: true });
+    expect(upstream.calls.map((call) => `${call.method} ${call.url}`)).toEqual([
+      "GET /session",
+      "DELETE /session/ses_1",
+    ]);
+    expect(countSessionRows(f.db, "message_drafts", "ses_1")).toBe(0);
+    expect(existsSync(folder)).toBe(false);
   });
 
   it("forbids an agent principal from deleting a session", async () => {

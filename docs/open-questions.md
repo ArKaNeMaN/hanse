@@ -1,5 +1,26 @@
 # Open questions
 
+> Stage: `0027-chat-session-tree`. Owner decisions were collected on 2026-10-25, after design review
+> round 1 and before the plan was written. There are no open items for this stage.
+
+## Stage `0027-chat-session-tree` - resolved owner decisions
+
+1. **Expansion and reload** - collapsed by default; only the active session's ancestor chain is
+   expanded automatically. Expansion is not persisted across reloads in this stage.
+2. **Ordering** - keep the upstream `opencode` order for roots and siblings. Do not reorder roots by
+   subtree activity; that is a separate follow-up.
+3. **Waiting on children** - a parent shows one aggregate waiting count over its whole subtree
+   (including its own), excluding the active session. A child shows its own count. The top-bar
+   `input needed` count is unchanged.
+4. **Delete** - deleting a parent deletes its whole subtree, confirms with the child count, and
+   selects the first root if the active session was deleted. Client state and server-side
+   session-scoped rows/folders for descendants are cleaned; an upstream refresh reconciles.
+5. **Search** - show matching nodes plus their ancestor chain. Forced-open ancestors are not
+   collapsible while the filter is active; unrelated descendants stay hidden.
+6. **Title width** - widen the sessions rail from `16rem` to `17rem` (the largest width that
+   preserves the 1440 feed budgets) and add a full-title tooltip.
+   Indentation is 10px per visual level, clamped at five levels. No `agent` badge in this stage.
+
 > Stage: `0023-app-previews`. Owner decisions were collected on 2026-10-23, before the plan was
 > written. There are no open items for this stage.
 

@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  ancestorIds,
   applySnapshot,
   autoCompactText,
   autoscrollFollow,
   autoscrollStep,
+  buildSessionTree,
   classifyOmo,
+  collectSubtreeIds,
   composerAction,
   contextChipLabel,
   contextDetail,
@@ -14,6 +17,7 @@ import {
   contextSummary,
   deriveQueue,
   elapsedSeed,
+  firstRootId,
   formatTokenCount,
   parseMarkdownTable,
   provisionalPartType,
@@ -2268,5 +2272,217 @@ describe("shouldResubscribe", () => {
         hiddenReconnectMs: Number.NaN,
       }),
     ).toBe(false);
+  });
+});
+
+describe("buildSessionTree", () => {
+  it("keeps a flat list in upstream order", () => {
+    const sessions = [{ id: "a" }, { id: "b" }, { id: "c" }];
+    const tree = buildSessionTree(sessions);
+
+    expect(tree.roots).toEqual(["a", "b", "c"]);
+    expect([...tree.nodes.keys()]).toEqual(["a", "b", "c"]);
+    expect(tree.nodes.get("a")).toBe(sessions[0]);
+    expect(tree.childrenByParent.size).toBe(0);
+  });
+
+  it("nests a three-level chain and preserves sibling order", () => {
+    const tree = buildSessionTree([
+      { id: "root" },
+      { id: "child1", parentID: "root" },
+      { id: "child2", parentID: "root" },
+      { id: "grand", parentID: "child1" },
+    ]);
+
+    expect(tree.roots).toEqual(["root"]);
+    expect(tree.childrenByParent.get("root")).toEqual(["child1", "child2"]);
+    expect(tree.childrenByParent.get("child1")).toEqual(["grand"]);
+    expect(tree.childrenByParent.has("child2")).toBe(false);
+  });
+
+  it("promotes a session to a root when its parent is absent", () => {
+    const tree = buildSessionTree([{ id: "a" }, { id: "b", parentID: "missing" }]);
+
+    expect(tree.roots).toEqual(["a", "b"]);
+    expect(tree.childrenByParent.size).toBe(0);
+  });
+
+  it("promotes empty, blank, and non-string parentID values to roots", () => {
+    const tree = buildSessionTree([
+      { id: "a", parentID: "" },
+      { id: "b", parentID: "   " },
+      { id: "c", parentID: 42 },
+      { id: "d", parentID: null },
+      { id: "e" },
+    ]);
+
+    expect(tree.roots).toEqual(["a", "b", "c", "d", "e"]);
+    expect(tree.childrenByParent.size).toBe(0);
+  });
+
+  it("promotes a self-parented session to a root", () => {
+    const tree = buildSessionTree([
+      { id: "a", parentID: "a" },
+      { id: "b", parentID: "b" },
+    ]);
+
+    expect(tree.roots).toEqual(["a", "b"]);
+    expect(tree.childrenByParent.size).toBe(0);
+  });
+
+  it("promotes the first node of a two-node cycle and visits every node once", () => {
+    const tree = buildSessionTree([
+      { id: "a", parentID: "b" },
+      { id: "b", parentID: "a" },
+    ]);
+
+    expect(tree.roots).toEqual(["a"]);
+    expect(tree.nodes.size).toBe(2);
+    const subtree = collectSubtreeIds(tree, "a");
+    expect(subtree).toEqual(["a", "b"]);
+    expect(new Set(subtree).size).toBe(subtree.length);
+    expect(new Set(subtree)).toEqual(new Set(["a", "b"]));
+  });
+
+  it("promotes the first node of a three-node cycle and keeps traversal finite", () => {
+    const tree = buildSessionTree([
+      { id: "a", parentID: "c" },
+      { id: "b", parentID: "a" },
+      { id: "c", parentID: "b" },
+    ]);
+
+    expect(tree.roots).toEqual(["a"]);
+    const subtree = collectSubtreeIds(tree, "a");
+    expect(subtree).toEqual(["a", "b", "c"]);
+    expect(new Set(subtree).size).toBe(subtree.length);
+  });
+
+  it("keeps the first occurrence of a duplicate id and its grouping", () => {
+    const tree = buildSessionTree([
+      { id: "root", title: "first" },
+      { id: "child", parentID: "root", title: "child first" },
+      { id: "root", title: "duplicate" },
+      { id: "child", parentID: "missing", title: "child duplicate" },
+    ]);
+
+    expect(tree.nodes.size).toBe(2);
+    expect(tree.nodes.get("root")?.title).toBe("first");
+    expect(tree.nodes.get("child")?.title).toBe("child first");
+    expect(tree.roots).toEqual(["root"]);
+    expect(tree.childrenByParent.get("root")).toEqual(["child"]);
+  });
+
+  it("skips invalid and duplicate ids without dropping valid siblings", () => {
+    const tree = buildSessionTree([
+      { id: "" },
+      { id: "a" },
+      { id: "a" },
+      { id: 42 },
+      null,
+      { id: "b" },
+    ]);
+
+    expect(tree.roots).toEqual(["a", "b"]);
+    expect(tree.nodes.size).toBe(2);
+  });
+});
+
+describe("firstRootId", () => {
+  it("returns the first root in upstream order", () => {
+    expect(firstRootId(buildSessionTree([{ id: "a" }, { id: "b" }]))).toBe("a");
+    expect(firstRootId(buildSessionTree([{ id: "child", parentID: "root" }, { id: "root" }]))).toBe(
+      "root",
+    );
+  });
+
+  it("returns the promoted cycle node for a cycle-only list", () => {
+    const tree = buildSessionTree([
+      { id: "a", parentID: "b" },
+      { id: "b", parentID: "a" },
+    ]);
+    expect(firstRootId(tree)).toBe("a");
+  });
+
+  it("returns null for an empty or malformed tree", () => {
+    expect(firstRootId(buildSessionTree([]))).toBeNull();
+    expect(firstRootId(null)).toBeNull();
+    expect(firstRootId(undefined)).toBeNull();
+    expect(firstRootId({})).toBeNull();
+  });
+});
+
+describe("ancestorIds", () => {
+  const tree = buildSessionTree([
+    { id: "root" },
+    { id: "child", parentID: "root" },
+    { id: "grand", parentID: "child" },
+  ]);
+
+  it("returns an empty chain for a root", () => {
+    expect(ancestorIds(tree, "root")).toEqual([]);
+  });
+
+  it("returns the immediate parent for a child", () => {
+    expect(ancestorIds(tree, "child")).toEqual(["root"]);
+  });
+
+  it("returns the full chain root-first for a deep node", () => {
+    expect(ancestorIds(tree, "grand")).toEqual(["root", "child"]);
+  });
+
+  it("returns an empty chain for an unknown or invalid id", () => {
+    expect(ancestorIds(tree, "missing")).toEqual([]);
+    expect(ancestorIds(tree, "")).toEqual([]);
+    expect(ancestorIds(null, "root")).toEqual([]);
+  });
+
+  it("stops at a cycle without repeating nodes", () => {
+    const cyclic = buildSessionTree([
+      { id: "a", parentID: "b" },
+      { id: "b", parentID: "a" },
+    ]);
+    expect(ancestorIds(cyclic, "a")).toEqual(["b"]);
+  });
+});
+
+describe("collectSubtreeIds", () => {
+  const tree = buildSessionTree([
+    { id: "root" },
+    { id: "child1", parentID: "root" },
+    { id: "child2", parentID: "root" },
+    { id: "grand", parentID: "child1" },
+  ]);
+
+  it("returns only the id for a leaf", () => {
+    expect(collectSubtreeIds(tree, "child2")).toEqual(["child2"]);
+  });
+
+  it("returns a deep chain root-first", () => {
+    expect(collectSubtreeIds(tree, "child1")).toEqual(["child1", "grand"]);
+  });
+
+  it("returns the root first, then descendants in upstream order", () => {
+    expect(collectSubtreeIds(tree, "root")).toEqual(["root", "child1", "grand", "child2"]);
+  });
+
+  it("is cycle-safe and never duplicates a node", () => {
+    const cyclic = buildSessionTree([
+      { id: "a", parentID: "c" },
+      { id: "b", parentID: "a" },
+      { id: "c", parentID: "b" },
+    ]);
+    const subtree = collectSubtreeIds(cyclic, "a");
+    expect(subtree).toEqual(["a", "b", "c"]);
+    expect(new Set(subtree).size).toBe(subtree.length);
+  });
+
+  it("includes an id that is absent from the tree", () => {
+    expect(collectSubtreeIds(tree, "missing")).toEqual(["missing"]);
+    expect(collectSubtreeIds(null, "missing")).toEqual(["missing"]);
+  });
+
+  it("returns an empty array for an invalid id", () => {
+    expect(collectSubtreeIds(tree, "")).toEqual([]);
+    expect(collectSubtreeIds(tree, 42)).toEqual([]);
   });
 });

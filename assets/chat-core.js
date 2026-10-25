@@ -2789,3 +2789,166 @@ export function contextErrorText(code) {
   }
   return "Compaction failed.";
 }
+
+/**
+ * One session row as the sessions rail consumes it. Extra fields are preserved untouched.
+ *
+ * @typedef {Object} TreeSession
+ * @property {string} id
+ * @property {string} [parentID]
+ * @property {string} [title]
+ * @property {{ created?: number, updated?: number }} [time]
+ */
+
+/**
+ * @typedef {Object} SessionTree
+ * @property {Map<string, TreeSession>} nodes First occurrence per valid string id.
+ * @property {Map<string, string[]>} childrenByParent Child ids per parent id, in upstream order.
+ * @property {string[]} roots Top-level ids in upstream order; cycle nodes are promoted.
+ */
+
+/**
+ * A parent link is usable only when it is a non-blank string that is not the node's own id.
+ *
+ * @param {unknown} value
+ * @param {string} id
+ * @returns {string | undefined}
+ */
+function usableParentID(value, id) {
+  if (!isRecord(value)) return undefined;
+  const parentID = asString(value.parentID);
+  if (parentID === undefined || parentID.trim().length === 0 || parentID === id) return undefined;
+  return parentID;
+}
+
+/**
+ * Group a flat session list into a parent/child tree.
+ *
+ * Invalid ids are skipped and the first occurrence of a duplicate id wins. A node is a root when
+ * its `parentID` is missing, blank, not a string, points at itself, or points at an unknown id.
+ * Cycles are promoted at the first unreachable node in upstream order, so every valid node is
+ * reachable from `roots` and no node is visited twice.
+ *
+ * @param {unknown} sessions
+ * @returns {SessionTree}
+ */
+export function buildSessionTree(sessions) {
+  const list = Array.isArray(sessions) ? sessions : [];
+  const nodes = new Map();
+  const order = [];
+  for (const session of list) {
+    if (!isRecord(session)) continue;
+    const id = asString(session.id);
+    if (id === undefined || id.length === 0 || nodes.has(id)) continue;
+    nodes.set(id, session);
+    order.push(id);
+  }
+
+  const childrenByParent = new Map();
+  const rootIDs = new Set();
+  for (const id of order) {
+    const parentID = usableParentID(nodes.get(id), id);
+    if (parentID === undefined || !nodes.has(parentID)) {
+      rootIDs.add(id);
+      continue;
+    }
+    const children = childrenByParent.get(parentID);
+    if (children === undefined) childrenByParent.set(parentID, [id]);
+    else children.push(id);
+  }
+
+  const visited = new Set();
+  const walk = (start) => {
+    const stack = [start];
+    while (stack.length > 0) {
+      const current = stack.pop();
+      if (visited.has(current)) continue;
+      visited.add(current);
+      const children = childrenByParent.get(current);
+      if (!Array.isArray(children)) continue;
+      for (let index = children.length - 1; index >= 0; index -= 1) {
+        stack.push(children[index]);
+      }
+    }
+  };
+
+  for (const id of order) {
+    if (rootIDs.has(id)) walk(id);
+  }
+  for (const id of order) {
+    if (visited.has(id)) continue;
+    rootIDs.add(id);
+    walk(id);
+  }
+
+  return {
+    nodes,
+    childrenByParent,
+    roots: order.filter((id) => rootIDs.has(id)),
+  };
+}
+
+/**
+ * The first root in upstream order, or null for an empty or malformed tree.
+ *
+ * @param {SessionTree | null | undefined} tree
+ * @returns {string | null}
+ */
+export function firstRootId(tree) {
+  const roots = tree?.roots;
+  if (!Array.isArray(roots) || roots.length === 0) return null;
+  return asString(roots[0]) ?? null;
+}
+
+/**
+ * Ancestor ids of a session, ordered root -> immediate parent. Empty when the id is unknown.
+ *
+ * @param {SessionTree | null | undefined} tree
+ * @param {unknown} id
+ * @returns {string[]}
+ */
+export function ancestorIds(tree, id) {
+  const nodes = tree?.nodes instanceof Map ? tree.nodes : new Map();
+  const nodeID = asString(id);
+  if (nodeID === undefined || nodeID.length === 0 || !nodes.has(nodeID)) return [];
+  const ancestors = [];
+  const seen = new Set([nodeID]);
+  let current = nodeID;
+  while (true) {
+    const parentID = usableParentID(nodes.get(current), current);
+    if (parentID === undefined || !nodes.has(parentID) || seen.has(parentID)) break;
+    ancestors.push(parentID);
+    seen.add(parentID);
+    current = parentID;
+  }
+  return ancestors.reverse();
+}
+
+/**
+ * A session id followed by its descendants in upstream order, cycle-safe. The id is always first,
+ * even when it is absent from the tree.
+ *
+ * @param {SessionTree | null | undefined} tree
+ * @param {unknown} id
+ * @returns {string[]}
+ */
+export function collectSubtreeIds(tree, id) {
+  const nodeID = asString(id);
+  if (nodeID === undefined || nodeID.length === 0) return [];
+  const childrenByParent = tree?.childrenByParent instanceof Map ? tree.childrenByParent : new Map();
+  const collected = [];
+  const seen = new Set();
+  const stack = [nodeID];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (seen.has(current)) continue;
+    seen.add(current);
+    collected.push(current);
+    const children = childrenByParent.get(current);
+    if (!Array.isArray(children)) continue;
+    for (let index = children.length - 1; index >= 0; index -= 1) {
+      stack.push(children[index]);
+    }
+  }
+  return collected;
+}
