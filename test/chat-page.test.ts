@@ -293,6 +293,7 @@ describe("chat page", () => {
     expect(response.body).toContain('class="chat-working__queued"');
     expect(response.body).toContain('<optgroup label="Alpha">');
     expect(response.body).toContain("Message storefront agent");
+    expect(response.body).not.toMatch(/id="chat-prompt"[^>]*\brequired\b/);
     expect(response.body).toContain('href="/projects/p1/apps/storefront"');
     expect(response.body).toContain(">Application</a>");
     expect(response.body).toContain(
@@ -922,7 +923,7 @@ console.log(JSON.stringify(Object.keys(Prism.languages)));`;
     );
 
     expect(response.status).toBe(502);
-    expect(JSON.parse(response.body).error).toContain("opencode DELETE /session/ses_1");
+    expect(JSON.parse(response.body).error).toContain("opencode /session/ses_1 -> 500");
   });
 });
 
@@ -1413,7 +1414,7 @@ describe("async chat send", () => {
     expect(JSON.parse(overResponse.body).code).toBe("message_too_large");
   });
 
-  it("returns 413 when the JSON body exceeds the 64 KiB server cap", async () => {
+  it("returns 413 when the JSON body exceeds the 256 KiB chat route cap", async () => {
     const f = fixture();
     const upstream = await fakeOpencodeHandler((_incoming, outgoing) => noContent(outgoing));
     useUpstream(f.deps, upstream.endpoint);
@@ -1427,7 +1428,7 @@ describe("async chat send", () => {
       {
         method: "POST",
         headers: { authorization: `Bearer ${f.token}`, "content-type": "application/json" },
-        body: JSON.stringify({ text: "x".repeat(70 * 1024) }),
+        body: JSON.stringify({ text: "x".repeat(300 * 1024) }),
       },
     );
     expect(response.status).toBe(413);
@@ -1690,12 +1691,18 @@ describe("async chat send", () => {
   it("sends the default effective model on the blocking path", async () => {
     const f = fixture();
     const message = {
-      info: { id: "msg_1", role: "user" },
+      info: { id: "msg_1", role: "assistant" },
       parts: [{ type: "text", text: "hello" }],
     };
     const upstream = await fakeOpencodeHandler((incoming, outgoing, body) => {
       if (incoming.method === "POST" && incoming.url === "/session/ses_1/message") {
-        expect(JSON.parse(body)).toEqual({
+        const sent = JSON.parse(body) as {
+          messageID?: string;
+          parts: unknown;
+          model: unknown;
+        };
+        expect(sent.messageID).toMatch(/^msg_[0-9a-f]{32}$/);
+        expect(sent).toMatchObject({
           parts: [{ type: "text", text: "hello" }],
           model: { providerID: "deepseek", modelID: "deepseek-flash" },
         });
@@ -1717,7 +1724,16 @@ describe("async chat send", () => {
       }),
     );
     expect(response.status).toBe(200);
-    expect(JSON.parse(response.body)).toEqual({ message });
+    const blocking = JSON.parse(response.body) as {
+      messageID: string;
+      userMessageID: string;
+      info: unknown;
+      parts: unknown;
+    };
+    expect(blocking.messageID).toBe("msg_1");
+    expect(blocking.userMessageID).toMatch(/^msg_[0-9a-f]{32}$/);
+    expect(blocking.info).toEqual(message.info);
+    expect(blocking.parts).toEqual(message.parts);
     expect(upstream.calls).toHaveLength(1);
     expect(upstream.calls[0]?.url).toBe("/session/ses_1/message");
   });

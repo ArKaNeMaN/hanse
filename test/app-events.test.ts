@@ -611,7 +611,7 @@ describe("app event stream", () => {
     }
   });
 
-  it("salvages identity from a >8 MiB frame and emits message.part.omitted", async () => {
+  it("salvages identity from a >32 MiB frame and emits message.part.omitted and a warning", async () => {
     const f = await fixture();
     const upstream = await fakeEventUpstream();
     useUpstream(f.deps, upstream.endpoint);
@@ -636,7 +636,7 @@ describe("app event stream", () => {
               tool: "bash",
               state: {
                 status: "running",
-                metadata: { output: "x".repeat(9 * 1024 * 1024) },
+                metadata: { output: "x".repeat(33 * 1024 * 1024) },
               },
             },
           },
@@ -658,13 +658,13 @@ describe("app event stream", () => {
         projected.some(
           (event) => event.type === "stream.warning" && event.code === "frame_too_large",
         ),
-      ).toBe(false);
+      ).toBe(true);
     } finally {
       await stream.close();
     }
   });
 
-  it("warns with the salvaged session id when a >8 MiB frame is not a part", async () => {
+  it("warns with the salvaged session id when a >32 MiB frame is not a part", async () => {
     const f = await fixture();
     const upstream = await fakeEventUpstream();
     useUpstream(f.deps, upstream.endpoint);
@@ -678,7 +678,7 @@ describe("app event stream", () => {
       upstream.send(
         jsonFrame({
           type: "unknown",
-          properties: { sessionID: "ses_only", padding: "x".repeat(9 * 1024 * 1024) },
+          properties: { sessionID: "ses_only", padding: "x".repeat(33 * 1024 * 1024) },
         }),
       );
 

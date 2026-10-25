@@ -34,6 +34,21 @@
  */
 
 /**
+ * One attachment as the server projects it (upload, draft, history, or typed event).
+ *
+ * @typedef {Object} AttachmentView
+ * @property {string} id
+ * @property {string} name
+ * @property {string} mime
+ * @property {number} size
+ * @property {"image" | "video" | "pdf" | "file"} kind
+ * @property {"auto" | "inline" | "file"} mode
+ * @property {"draft" | "in_flight" | "sent" | "missing"} state
+ * @property {string} downloadURL
+ * @property {boolean} inline
+ */
+
+/**
  * @typedef {Object} MessageRecord
  * @property {string} id
  * @property {"user" | "assistant"} role
@@ -42,6 +57,7 @@
  * @property {{ created?: number, completed?: number }} [time]
  * @property {"sending" | "queued" | "accepted" | "unknown" | "failed"} [optimistic] Presentation only.
  * @property {OmoSystemMeta} [system] Derived, never persisted.
+ * @property {AttachmentView[]} [attachments] File-only strip; history info.hanse.attachments.
  * @property {string[]} partOrder
  * @property {Map<string, PartRecord>} parts
  * @property {boolean} [classificationPending] Live OMO buffer flag (optional).
@@ -169,6 +185,447 @@ function isIgnoredPart(part) {
  */
 function isSyntheticPart(part) {
   return part.synthetic === true || partData(part).synthetic === true;
+}
+
+const ATTACHMENT_KINDS = new Set(["image", "video", "pdf", "file"]);
+const ATTACHMENT_MODES = new Set(["auto", "inline", "file"]);
+const ATTACHMENT_STATES = new Set(["draft", "in_flight", "sent", "missing"]);
+const INLINE_ATTACHMENT_KINDS = new Set(["image", "video", "pdf"]);
+const MANIFEST_MARKER = "attachment-manifest";
+const SYNTHETIC_READ_PREFIX = "Called the Read tool";
+const ATTACHMENT_WARNING_TEXT = Object.freeze({
+  attachment_inline_unsupported:
+    "This model cannot display this attachment inline; it was sent as a file instead.",
+  attachment_inline_too_large:
+    "This attachment is too large to send inline; it was sent as a file instead.",
+  attachment_capability_unknown:
+    "The model capabilities could not be confirmed; the attachment was sent as a file instead.",
+  attachment_context_large:
+    "This message is large for the model context; it was sent anyway.",
+});
+const ATTACHMENT_DOWNGRADE_CODES = new Set([
+  "attachment_inline_unsupported",
+  "attachment_inline_too_large",
+  "attachment_capability_unknown",
+]);
+const STREAM_WARNING_TEXT = Object.freeze({
+  stream_limit:
+    "Too many live streams are open for this app (8). Close another chat tab, then retry; history still loads here.",
+  frame_too_large: "A live update was too large and was skipped; refreshing it from history.",
+  delta_too_large: "A very large text update was skipped; refreshing it from history.",
+  invalid_json: "A live update could not be read; refreshing from history.",
+});
+
+/**
+ * The coordinator's synthetic manifest text part is never part of the feed.
+ *
+ * @param {Record<string, unknown>} part
+ * @returns {boolean}
+ */
+export function isAttachmentManifestPart(part) {
+  if (!isRecord(part)) return false;
+  const data = partData(part);
+  const metadata = isRecord(data.metadata) ? data.metadata : undefined;
+  return (
+    (data.synthetic === true || part.synthetic === true) &&
+    metadata !== undefined &&
+    metadata.hanse === MANIFEST_MARKER
+  );
+}
+
+/**
+ * Text parts the feed never shows: the synthetic attachment manifest and opencode's synthetic
+ * `Called the Read tool...` text added for `file:` inline parts. Both arrive as `synthetic: true`.
+ *
+ * @param {Record<string, unknown>} part
+ * @returns {boolean}
+ */
+export function isHiddenSyntheticTextPart(part) {
+  if (!isRecord(part)) return false;
+  if (part.type !== "text" && partData(part).type !== "text") return false;
+  if (isAttachmentManifestPart(part)) return true;
+  if (!isSyntheticPart(part)) return false;
+  const text = partText(part);
+  return text === undefined || text.startsWith(SYNTHETIC_READ_PREFIX) || text.length === 0;
+}
+
+/**
+ * @param {unknown} value
+ * @returns {"image" | "video" | "pdf" | "file"}
+ */
+export function attachmentKindForMime(value) {
+  const mime = typeof value === "string" ? value.toLowerCase() : "";
+  if (
+    mime === "image/png" ||
+    mime === "image/jpeg" ||
+    mime === "image/gif" ||
+    mime === "image/webp"
+  ) {
+    return "image";
+  }
+  if (mime.startsWith("video/")) return "video";
+  if (mime === "application/pdf") return "pdf";
+  return "file";
+}
+
+/**
+ * Normalize one server attachment view (or a local optimistic clone). Invalid ids are dropped.
+ *
+ * @param {unknown} value
+ * @returns {AttachmentView | null}
+ */
+export function normalizeAttachment(value) {
+  if (!isRecord(value)) return null;
+  const id = asString(value.id);
+  if (id === undefined || id.length === 0) return null;
+  const kind = ATTACHMENT_KINDS.has(value.kind) ? value.kind : attachmentKindForMime(value.mime);
+  const mode = ATTACHMENT_MODES.has(value.mode) ? value.mode : "auto";
+  const state = ATTACHMENT_STATES.has(value.state) ? value.state : "draft";
+  const mime = asString(value.mime) ?? "";
+  return {
+    id,
+    name: asString(value.name) ?? "",
+    mime,
+    size: typeof value.size === "number" && Number.isFinite(value.size)
+      ? Math.max(0, value.size)
+      : 0,
+    kind,
+    mode,
+    state,
+    downloadURL: asString(value.downloadURL) ?? "",
+    inline: value.inline === true,
+  };
+}
+
+/**
+ * @param {unknown} value
+ * @returns {AttachmentView[]}
+ */
+export function normalizeAttachments(value) {
+  if (!Array.isArray(value)) return [];
+  const out = [];
+  const seen = new Set();
+  for (const raw of value) {
+    const attachment = normalizeAttachment(raw);
+    if (attachment === null || seen.has(attachment.id)) continue;
+    seen.add(attachment.id);
+    out.push(attachment);
+  }
+  return out;
+}
+
+/**
+ * Pending-send rows carry only `[{id, mode?}]`, not a full view.
+ *
+ * @param {unknown} value
+ * @returns {Array<{ id: string, mode?: "auto" | "inline" | "file" }>}
+ */
+export function normalizeAttachmentRefs(value) {
+  if (!Array.isArray(value)) return [];
+  const out = [];
+  const seen = new Set();
+  for (const raw of value) {
+    const id = typeof raw === "string" ? raw : isRecord(raw) ? asString(raw.id) : undefined;
+    if (id === undefined || id.length === 0 || seen.has(id)) continue;
+    seen.add(id);
+    const mode = isRecord(raw) && ATTACHMENT_MODES.has(raw.mode) ? raw.mode : undefined;
+    out.push(mode === undefined ? { id } : { id, mode });
+  }
+  return out;
+}
+
+/**
+ * A draft attachment is mutable (remove/PATCH) only while nothing has been delivered.
+ *
+ * @param {unknown} value
+ * @returns {boolean}
+ */
+export function attachmentIsMutable(value) {
+  return isRecord(value) && value.state === "draft";
+}
+
+/**
+ * @param {unknown} value Chips or attachment views.
+ * @returns {boolean}
+ */
+export function attachmentsUploading(value) {
+  if (!Array.isArray(value)) return false;
+  return value.some(
+    (item) => isRecord(item) && (item.status === "uploading" || item.state === "in_flight"),
+  );
+}
+
+/**
+ * Only image/video/PDF attachments may be sent to the model inline.
+ *
+ * @param {unknown} kind
+ * @returns {boolean}
+ */
+export function attachmentSupportsInlineMode(kind) {
+  return INLINE_ATTACHMENT_KINDS.has(kind);
+}
+
+/**
+ * Composer mode choices. Empty for file-only kinds, which show a static "File only" badge.
+ *
+ * @param {unknown} kind
+ * @returns {Array<{ value: "auto" | "inline" | "file", label: string }>}
+ */
+export function attachmentModeOptions(kind) {
+  if (!attachmentSupportsInlineMode(kind)) return [];
+  return [
+    { value: "auto", label: "Auto" },
+    { value: "inline", label: "Send to model" },
+    { value: "file", label: "File only" },
+  ];
+}
+
+/**
+ * Resolve a control value to a legal mode for the attachment kind.
+ *
+ * @param {unknown} kind
+ * @param {unknown} value
+ * @returns {"auto" | "inline" | "file"}
+ */
+export function attachmentModeValue(kind, value) {
+  if (!attachmentSupportsInlineMode(kind)) return "file";
+  if (value === "inline" || value === "file") return value;
+  return "auto";
+}
+
+/**
+ * @param {unknown} kind
+ * @param {unknown} mode
+ * @returns {string}
+ */
+export function attachmentModeLabel(kind, mode) {
+  if (!attachmentSupportsInlineMode(kind)) return "File only";
+  if (mode === "inline") return "Inline";
+  if (mode === "file") return "File only";
+  return "Auto";
+}
+
+/**
+ * Send payload: ready ids plus their per-delivery mode. Auto omits `mode`; file-only kinds are
+ * forced to `file`. Never sends paths or parts.
+ *
+ * @param {unknown} value
+ * @returns {Array<{ id: string, mode?: "inline" | "file" }>}
+ */
+export function attachmentSendPayload(value) {
+  if (!Array.isArray(value)) return [];
+  const out = [];
+  const seen = new Set();
+  for (const raw of value) {
+    if (!isRecord(raw)) continue;
+    const id = asString(raw.id);
+    if (id === undefined || id.length === 0 || seen.has(id)) continue;
+    if (raw.status !== undefined && raw.status !== "ready") continue;
+    seen.add(id);
+    let mode = ATTACHMENT_MODES.has(raw.mode) ? raw.mode : undefined;
+    if (raw.kind !== undefined && !attachmentSupportsInlineMode(raw.kind)) mode = "file";
+    if (mode === "auto") mode = undefined;
+    out.push(mode === undefined ? { id } : { id, mode });
+  }
+  return out;
+}
+
+/**
+ * Normalize the send response's warning codes into visible, non-blocking messages.
+ *
+ * @param {unknown} value
+ * @returns {Array<{ code: string, message: string, downgrade: boolean }>}
+ */
+export function normalizeAttachmentWarnings(value) {
+  if (!Array.isArray(value)) return [];
+  const out = [];
+  const seen = new Set();
+  for (const raw of value) {
+    const code = typeof raw === "string" ? raw : isRecord(raw) ? asString(raw.code) : undefined;
+    if (code === undefined || code.length === 0 || seen.has(code)) continue;
+    seen.add(code);
+    const supplied =
+      isRecord(raw) && typeof raw.message === "string" ? raw.message.trim() : "";
+    const message =
+      supplied.length > 0
+        ? supplied
+        : (ATTACHMENT_WARNING_TEXT[code] ?? `Attachment warning: ${code}.`);
+    const downgrade =
+      (isRecord(raw) && raw.downgrade === true) || ATTACHMENT_DOWNGRADE_CODES.has(code);
+    out.push({ code, message, downgrade });
+  }
+  return out;
+}
+
+/**
+ * A sent or inline attachment can be delivered again as a file-only copy. A missing or in-flight
+ * attachment cannot.
+ *
+ * @param {unknown} value
+ * @returns {boolean}
+ */
+export function canRedeliverAsFile(value) {
+  if (!isRecord(value)) return false;
+  const id = asString(value.id);
+  if (id === undefined || id.length === 0) return false;
+  if (value.state === "missing" || value.state === "in_flight") return false;
+  return value.state === "sent" || value.inline === true || value.mode === "inline";
+}
+
+/**
+ * Redelivery body: a new message with the same attachment forced to file mode.
+ *
+ * @param {unknown} value
+ * @returns {Array<{ id: string, mode: "file" }>}
+ */
+export function redeliveryAttachmentPayload(value) {
+  if (!canRedeliverAsFile(value)) return [];
+  const id = asString(value.id);
+  return id === undefined ? [] : [{ id, mode: "file" }];
+}
+
+/**
+ * Map one projected inline `file` part to the attachment-card view. Returns null for parts without
+ * trusted attachment metadata or with a data/unknown URL, so raw base64 is never rendered.
+ *
+ * @param {unknown} value
+ * @returns {AttachmentView | null}
+ */
+export function attachmentViewFromFilePart(value) {
+  if (!isRecord(value)) return null;
+  const data = partData(value);
+  if (value.type !== "file" && data.type !== "file") return null;
+  const metadata = isRecord(data.attachment) ? data.attachment : null;
+  if (metadata === null) return null;
+  const id = asString(metadata.id);
+  if (id === undefined || id.length === 0) return null;
+  const downloadURL =
+    safeAttachmentUrl(data.url) ?? safeAttachmentUrl(metadata.downloadURL) ?? null;
+  if (downloadURL === null) return null;
+  const mime = asString(data.mime) ?? asString(metadata.mime) ?? "";
+  const name =
+    asString(data.filename) ?? asString(data.name) ?? asString(metadata.name) ?? "";
+  const kind =
+    mime.length > 0
+      ? attachmentKindForMime(mime)
+      : ATTACHMENT_KINDS.has(metadata.kind)
+        ? metadata.kind
+        : "file";
+  return normalizeAttachment({
+    id,
+    name,
+    mime,
+    size: metadata.size,
+    kind,
+    mode: metadata.mode,
+    state: metadata.state ?? "sent",
+    downloadURL,
+    inline: true,
+  });
+}
+
+/**
+ * @param {unknown} value
+ * @returns {{ code: string, message: string, limit: boolean, sessionID?: string } | null}
+ */
+export function normalizeStreamWarning(value) {
+  if (!isRecord(value)) return null;
+  const code = asString(value.code);
+  if (code === undefined || code.length === 0) return null;
+  const supplied = asString(value.message);
+  const message =
+    supplied !== undefined && supplied.trim().length > 0
+      ? supplied.trim()
+      : (STREAM_WARNING_TEXT[code] ?? "Live updates were interrupted; refreshing from history.");
+  const sessionID = asString(value.sessionID);
+  return {
+    code,
+    message,
+    limit: code === "stream_limit",
+    ...(sessionID === undefined ? {} : { sessionID }),
+  };
+}
+
+/**
+ * Normalize and apply one `message.part.omitted` event to a record. The placeholder is partial and
+ * omitted; a later history snapshot replaces it with the projected part.
+ *
+ * @param {Record<string, unknown>} record
+ * @param {unknown} value
+ * @returns {{ part: Record<string, unknown>, created: boolean } | null}
+ */
+export function applyOmittedPart(record, value) {
+  if (!isRecord(record) || !isRecord(value)) return null;
+  const messageID = asString(value.messageID);
+  const partID = asString(value.partID);
+  if (messageID === undefined || partID === undefined) return null;
+  const partType = asString(value.partType) ?? "text";
+  if (!(record.parts instanceof Map)) record.parts = new Map();
+  if (!Array.isArray(record.partOrder)) record.partOrder = [];
+  let part = record.parts.get(partID);
+  let created = false;
+  if (part === undefined || !isRecord(part)) {
+    part = {
+      id: partID,
+      type: partType,
+      data: {
+        id: partID,
+        type: partType,
+        text: "",
+        provisional: partType === "text",
+      },
+      provisional: partType === "text",
+      partial: true,
+      omitted: true,
+      sealed: false,
+      version: 1,
+    };
+    record.parts.set(partID, part);
+    if (!record.partOrder.includes(partID)) record.partOrder.push(partID);
+    created = true;
+  } else {
+    part.partial = true;
+    part.omitted = true;
+    part.version = (asNumber(part.version) ?? 1) + 1;
+  }
+  return { part, created };
+}
+
+/**
+ * Only same-origin paths and http(s) URLs may reach an href/src. Rejects `data:` and scripts.
+ *
+ * @param {unknown} value
+ * @returns {string | null}
+ */
+export function safeAttachmentUrl(value) {
+  if (typeof value !== "string") return null;
+  const url = value.trim();
+  if (url.length === 0) return null;
+  const lower = url.toLowerCase();
+  if (lower.startsWith("data:") || lower.startsWith("javascript:") || lower.startsWith("blob:")) {
+    return null;
+  }
+  if (url.startsWith("/") && !url.startsWith("//")) return url;
+  if (lower.startsWith("https://") || lower.startsWith("http://")) return url;
+  return null;
+}
+
+/**
+ * @param {unknown} value
+ * @returns {string}
+ */
+export function formatAttachmentSize(value) {
+  const bytes = typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : 0;
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let size = bytes / 1024;
+  let index = 0;
+  while (size >= 1024 && index < units.length - 1) {
+    size /= 1024;
+    index += 1;
+  }
+  const rounded = size >= 10 ? Math.round(size) : Math.round(size * 10) / 10;
+  return `${rounded} ${units[index]}`;
 }
 
 /**
@@ -368,7 +825,9 @@ export function classifyOmo(message) {
     return null;
   }
   const parts = messageParts(message);
-  const textParts = parts.filter(isTextPart);
+  const textParts = parts
+    .filter(isTextPart)
+    .filter((part) => !isAttachmentManifestPart(part));
   if (textParts.length === 0) {
     return null;
   }
@@ -596,6 +1055,9 @@ function cloneMessage(value) {
   const partOrder = Array.isArray(value.partOrder)
     ? value.partOrder.filter((partID) => typeof partID === "string")
     : [];
+  const attachments = Array.isArray(value.attachments)
+    ? normalizeAttachments(value.attachments)
+    : undefined;
   return {
     id,
     role,
@@ -609,6 +1071,7 @@ function cloneMessage(value) {
       : undefined,
     optimistic: asString(value.optimistic),
     system: isRecord(value.system) ? value.system : undefined,
+    ...(attachments === undefined ? {} : { attachments }),
     partOrder,
     parts,
     classificationPending: value.classificationPending === true ? true : undefined,
@@ -659,6 +1122,17 @@ function mergeOptimisticRecord(server, local) {
     merged.optimistic = local.optimistic;
   }
 
+  const serverAttachments = Array.isArray(server.attachments) ? server.attachments : undefined;
+  const localAttachments = Array.isArray(local.attachments) ? local.attachments : undefined;
+  const attachments =
+    serverAttachments !== undefined && serverAttachments.length > 0
+      ? serverAttachments
+      : localAttachments !== undefined && localAttachments.length > 0
+        ? localAttachments
+        : serverAttachments;
+  if (attachments !== undefined) merged.attachments = normalizeAttachments(attachments);
+  else delete merged.attachments;
+
   const serverHasText = Array.from(server.parts.values()).some((part) => part.type === "text");
   const orderedIDs = [];
   const seen = new Set();
@@ -693,6 +1167,22 @@ function mergeOptimisticRecord(server, local) {
   merged.parts = parts;
   merged.version = Math.max(server.version, local.version) + 1;
   return merged;
+}
+
+/**
+ * History snapshots carry file-only attachments on `info.hanse.attachments`.
+ *
+ * @param {unknown} info
+ * @returns {AttachmentView[] | undefined}
+ */
+function attachmentsFromInfo(info) {
+  if (!isRecord(info)) return undefined;
+  const hanse = isRecord(info.hanse) ? info.hanse : undefined;
+  if (hanse !== undefined && Array.isArray(hanse.attachments)) {
+    return normalizeAttachments(hanse.attachments);
+  }
+  if (Array.isArray(info.attachments)) return normalizeAttachments(info.attachments);
+  return undefined;
 }
 
 /**
@@ -772,6 +1262,8 @@ function buildSnapshotMessages(snapshotMessages, currentMessages) {
       if (system !== null) {
         record.system = system;
       }
+      const attachments = attachmentsFromInfo(info);
+      if (attachments !== undefined) record.attachments = attachments;
     }
     messages.set(id, record);
     snapshotIDs.add(id);
@@ -1284,6 +1776,9 @@ function applyBufferedEvent(record, event, placeholderID) {
         completed: asNumber(info.time.completed),
       };
     }
+    if (Array.isArray(info.attachments) && info.attachments.length > 0) {
+      record.attachments = normalizeAttachments(info.attachments);
+    }
     return placeholderID;
   }
   if (type !== "message.part.updated" && type !== "message.part.delta") {
@@ -1736,6 +2231,8 @@ function normalizeEpochMs(value) {
  * @param {{
  *   turnActive?: boolean,
  *   hasDraft?: boolean,
+ *   hasAttachments?: boolean,
+ *   attachmentCount?: number,
  *   sessionId?: string | null,
  *   acceptanceBusy?: boolean,
  *   promptsWaiting?: boolean,
@@ -1745,15 +2242,226 @@ function normalizeEpochMs(value) {
  */
 export function composerAction(input) {
   const state = input === null || typeof input !== "object" ? {} : input;
+  const hasAttachments =
+    state.hasAttachments === true ||
+    (typeof state.attachmentCount === "number" && state.attachmentCount > 0);
+  const hasDraft = state.hasDraft === true || hasAttachments;
   const stop =
     state.turnActive === true &&
-    state.hasDraft === false &&
+    hasDraft === false &&
     state.sessionId !== null &&
     state.acceptanceBusy === false;
   const disabled = stop
     ? state.abortPending === true
     : state.acceptanceBusy === true || state.promptsWaiting === true;
   return { mode: stop ? "stop" : "send", disabled };
+}
+
+const SLASH_COMMAND_ONLY = /^\/(?!\/)\S*$/;
+
+/**
+ * A draft that is only a slash-command token (or a bare `/`) never creates a session or a server
+ * draft. A later argument (`/help x`) is ordinary input.
+ *
+ * @param {unknown} text
+ * @returns {boolean}
+ */
+export function isSlashCommandOnly(text) {
+  if (typeof text !== "string") return false;
+  return SLASH_COMMAND_ONLY.test(text.trim());
+}
+
+/**
+ * Whitespace-only text is persisted as an empty draft so clearing the composer removes the row.
+ *
+ * @param {unknown} text
+ * @returns {string}
+ */
+export function draftTextForSave(text) {
+  if (typeof text !== "string") return "";
+  return text.trim().length === 0 ? "" : text;
+}
+
+/**
+ * Stage A emptiness: no text and no attachments (attachments arrive in Stage B).
+ *
+ * @param {{ text?: unknown, attachmentCount?: unknown }} [input]
+ * @returns {boolean}
+ */
+export function draftIsEmpty(input) {
+  const state = input === null || typeof input !== "object" ? {} : input;
+  const text = typeof state.text === "string" ? state.text.trim() : "";
+  const count =
+    typeof state.attachmentCount === "number" && Number.isFinite(state.attachmentCount)
+      ? Math.max(0, state.attachmentCount)
+      : 0;
+  return text.length === 0 && count === 0;
+}
+
+/**
+ * The send guard is `empty text && no attachments`, not empty text alone.
+ *
+ * @param {{ text?: unknown, attachmentCount?: unknown }} [input]
+ * @returns {boolean}
+ */
+export function canSendDraft(input) {
+  return !draftIsEmpty(input);
+}
+
+/**
+ * Rail/composer badge for the sessions-list augmentation.
+ * `emptyDraft` means session_state.has_messages=0 and a draft exists.
+ *
+ * @param {{ hasText?: unknown, attachmentCount?: unknown, emptyDraft?: unknown } | null} draft
+ * @returns {{ label: string, dot: boolean }}
+ */
+export function sessionDraftBadge(draft) {
+  if (draft === null || typeof draft !== "object") return { label: "", dot: false };
+  const hasText = draft.hasText === true;
+  const hasAttachments =
+    typeof draft.attachmentCount === "number" && draft.attachmentCount > 0;
+  const present = hasText || hasAttachments;
+  return {
+    label: present && draft.emptyDraft === true ? "Draft" : "",
+    dot: present,
+  };
+}
+
+/**
+ * Normalize the GET /draft `pendingSends` array. Unknown entries and unknown states are dropped or
+ * treated as `sending`; Stage A only needs id/text/state.
+ *
+ * @param {unknown} value
+ * @returns {Array<{ id: string, messageID: string | null, text: string, attachments: Array<{ id: string, mode?: "auto" | "inline" | "file" }>, attachmentIDs: string[], state: "sending" | "failed" | "unknown", updatedAt: unknown }>}
+ */
+export function normalizePendingSends(value) {
+  if (!Array.isArray(value)) return [];
+  const out = [];
+  for (const raw of value) {
+    if (raw === null || typeof raw !== "object") continue;
+    const id = typeof raw.id === "string" && raw.id.length > 0 ? raw.id : null;
+    if (id === null) continue;
+    const state =
+      raw.state === "failed" || raw.state === "unknown" ? raw.state : "sending";
+    const attachments = normalizeAttachmentRefs(
+      Array.isArray(raw.attachments) ? raw.attachments : raw.attachmentIDs,
+    );
+    out.push({
+      id,
+      messageID: typeof raw.messageID === "string" ? raw.messageID : null,
+      text: typeof raw.text === "string" ? raw.text : "",
+      attachments,
+      attachmentIDs: attachments.map((attachment) => attachment.id),
+      state,
+      updatedAt: raw.updatedAt ?? null,
+    });
+  }
+  return out;
+}
+
+/**
+ * Per-state pending-send actions. `sending` is read-only; `failed` can be retried directly;
+ * `unknown` retries with `{force:true}` after the explicit "Retry anyway" choice.
+ *
+ * @param {unknown} state
+ * @returns {{ readOnly: boolean, canRetry: boolean, canRestore: boolean, retryLabel: string, force: boolean }}
+ */
+export function pendingSendActions(state) {
+  if (state === "failed") {
+    return {
+      readOnly: false,
+      canRetry: true,
+      canRestore: true,
+      retryLabel: "Retry",
+      force: false,
+    };
+  }
+  if (state === "unknown") {
+    return {
+      readOnly: false,
+      canRetry: true,
+      canRestore: false,
+      retryLabel: "Retry anyway",
+      force: true,
+    };
+  }
+  return {
+    readOnly: true,
+    canRetry: false,
+    canRestore: false,
+    retryLabel: "",
+    force: false,
+  };
+}
+
+/**
+ * One-line banner label for a pending send.
+ *
+ * @param {{ state?: unknown, text?: unknown } | null} entry
+ * @returns {string}
+ */
+export function pendingSendLabel(entry) {
+  const state = entry === null || typeof entry !== "object" ? "sending" : entry.state;
+  const raw = entry !== null && typeof entry === "object" && typeof entry.text === "string"
+    ? entry.text.trim().replace(/\s+/g, " ")
+    : "";
+  const count =
+    entry !== null &&
+    typeof entry === "object" &&
+    Array.isArray(entry.attachments) &&
+    entry.attachments.length > 0
+      ? entry.attachments.length
+      : entry !== null &&
+          typeof entry === "object" &&
+          Array.isArray(entry.attachmentIDs) &&
+          entry.attachmentIDs.length > 0
+        ? entry.attachmentIDs.length
+        : 0;
+  let preview = raw.length === 0 ? "" : `: ${raw.slice(0, 120)}`;
+  if (preview.length === 0 && count > 0) {
+    preview = `: ${count} ${count === 1 ? "attachment" : "attachments"}`;
+  }
+  if (state === "failed") return `Failed to send${preview}`;
+  if (state === "unknown") return `Delivery unknown${preview}`;
+  return `Sending${preview}`;
+}
+
+/**
+ * Client-side pre-check before POST delete-if-empty. The server re-checks everything; this only
+ * avoids a pointless request and never treats a failed read as deletable.
+ *
+ * @param {{
+ *   text?: unknown,
+ *   attachmentCount?: unknown,
+ *   hasPending?: boolean,
+ *   acceptanceBusy?: boolean,
+ *   draftLoaded?: boolean,
+ *   hasHistory?: boolean
+ * }} [input]
+ * @returns {boolean}
+ */
+export function draftAutoDeleteEligible(input) {
+  const state = input === null || typeof input !== "object" ? {} : input;
+  return (
+    draftIsEmpty(state) &&
+    state.hasPending !== true &&
+    state.acceptanceBusy !== true &&
+    state.draftLoaded === true &&
+    state.hasHistory !== true
+  );
+}
+
+/**
+ * A keepalive fetch is safe under the browser's ~64 KiB request cap; larger drafts use a normal
+ * fetch while the page is alive.
+ *
+ * @param {unknown} payloadBytes
+ * @param {number} [limitBytes]
+ * @returns {"keepalive" | "fetch"}
+ */
+export function flushDraftTransport(payloadBytes, limitBytes = 64 * 1024) {
+  if (typeof payloadBytes !== "number" || !Number.isFinite(payloadBytes)) return "fetch";
+  return payloadBytes <= limitBytes ? "keepalive" : "fetch";
 }
 
 /**

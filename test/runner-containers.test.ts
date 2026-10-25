@@ -272,6 +272,21 @@ describe("RunnerService per-app containers", () => {
     expect(docker.creates[0]?.env.HANSE_OPENCODE_PASSWORD_FILE).toBeUndefined();
   });
 
+  it("adds a nested read-only attachments bind and fails when its source is missing", async () => {
+    const { f, docker, service } = await harness();
+    mkdirSync(path.join(f.agents, "project", "a", "attachments"), { recursive: true });
+    await service.ensure(rawSpec(f, "a", { attachmentsReadOnly: true }), "project:a");
+    expect(docker.creates[0]?.binds).toEqual([
+      `${path.join(f.workspace, "project", "a")}:/data/workspace/project/a:rw`,
+      `${path.join(f.agents, "project", "a")}:/data/agents/project/a:rw`,
+      `${path.join(f.agents, "project", "a", "attachments")}:/data/agents/project/a/attachments:ro`,
+    ]);
+
+    await expect(
+      service.ensure(rawSpec(f, "b", { attachmentsReadOnly: true }), "project:b"),
+    ).rejects.toMatchObject({ status: 409, code: "attachments_root_missing" });
+  });
+
   it("allows only a validated per-app image carrying this app's build label", async () => {
     const { f, docker, service } = await harness();
     const image = "hanse-app-project-a:build-1";

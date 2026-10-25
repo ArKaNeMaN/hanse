@@ -44,6 +44,10 @@
 - [Context usage and compaction](./context-compaction.md) - server-side per-session context
   accounting, provider context limits, manual compaction, and threshold-based auto-compaction.
   Status: approved (oracle PASS).
+- [Chat attachments and message drafts](./attachments-and-drafts.md) - per-session attachment
+  storage, inline image/video/PDF delivery gated by model capabilities, file-only paths for the
+  agent, history/SSE base64 projection, server-side message drafts, eager empty-session creation,
+  and delete-if-empty semantics. Status: implemented/verified - design review PASS (round 16); Stages A/B/C complete (2198 tests, Stage A/B/C browser QA, security findings fixed).
 - [Slash commands](./slash-commands.md) - a thin opencode server-command proxy and a small
   Hanse-native command registry merged into one chat palette, with the wire contract, collision
   policy, detached execution, and security analysis. Status: approved (oracle PASS after 2 rounds);

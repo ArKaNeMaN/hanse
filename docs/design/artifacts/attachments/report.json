@@ -1,0 +1,828 @@
+{
+  "tool": "attachments-qa",
+  "mode": "deterministic",
+  "collect": true,
+  "startedAt": "2026-10-25T16:13:45.219Z",
+  "status": "PASS",
+  "baseUrl": "http://127.0.0.1:<ephemeral-test-port>",
+  "app": "storefront",
+  "project": "11111111-1111-4111-8111-111111111111",
+  "scenarios": [
+    {
+      "name": "attach-controls",
+      "status": "PASS",
+      "ms": 2223,
+      "checks": [
+        "uploading chip exposes a progressbar",
+        "progressbar role: expected \"progressbar\", got \"progressbar\"",
+        "progressbar minimum: expected \"0\", got \"0\"",
+        "progressbar maximum: expected \"100\", got \"100\"",
+        "progressbar has a numeric aria-valuenow (0)",
+        "progressbar has an accessible uploading label",
+        "an uploading chip cannot be removed",
+        "attach button, input, drag/drop, and paste each created a chip: expected [\"design.png\",\"notes.csv\",\"brief.pdf\",\"button.pdf\"], got [\"design.png\",\"notes.csv\",\"brief.pdf\",\"button.pdf\"]",
+        "every chip completed its upload",
+        "PATCH targets the image attachment: expected \"att_qa\", got \"att_qa\"",
+        "PATCH sends the selected mode: expected \"file\", got \"file\"",
+        "chip reflects the patched mode: expected \"file\", got \"file\"",
+        "chips survive reload from GET /draft: expected [\"design.png\",\"notes.csv\",\"brief.pdf\",\"button.pdf\"], got [\"design.png\",\"notes.csv\",\"brief.pdf\",\"button.pdf\"]"
+      ],
+      "data": {
+        "uploads": [
+          {
+            "sessionID": "ses_qa",
+            "name": "design.png",
+            "mime": "image/png",
+            "size": 68,
+            "id": "att_qa"
+          },
+          {
+            "sessionID": "ses_qa",
+            "name": "notes.csv",
+            "mime": "text/csv",
+            "size": 26,
+            "id": "att_qa_2"
+          },
+          {
+            "sessionID": "ses_qa",
+            "name": "brief.pdf",
+            "mime": "application/pdf",
+            "size": 33,
+            "id": "att_qa_3"
+          },
+          {
+            "sessionID": "ses_qa",
+            "name": "button.pdf",
+            "mime": "application/pdf",
+            "size": 33,
+            "id": "att_qa_4"
+          }
+        ],
+        "patches": [
+          {
+            "id": "att_qa",
+            "mode": "file",
+            "body": {
+              "mode": "file"
+            }
+          }
+        ],
+        "draftGets": 2,
+        "sessionDraft": {
+          "hasText": false,
+          "attachmentCount": 4,
+          "emptyDraft": true,
+          "updatedAt": "2026-10-25T16:13:47.934Z"
+        },
+        "progress": {
+          "role": "progressbar",
+          "now": "0",
+          "min": "0",
+          "max": "100",
+          "label": "Uploading design.png"
+        }
+      }
+    },
+    {
+      "name": "send-text-and-file-only",
+      "status": "PASS",
+      "ms": 2575,
+      "checks": [
+        "text send keeps the text: expected \"Look at this\", got \"Look at this\"",
+        "auto image send omits mode (Stage C server resolves it): expected [{\"id\":\"att_qa\"}], got [{\"id\":\"att_qa\"}]",
+        "optimistic row shows one attachment card: expected 1, got 1",
+        "optimistic card name: expected \"design.png\", got \"design.png\"",
+        "optimistic card has a download link",
+        "optimistic row keeps the operator text",
+        "history shows the attachment card: expected 1, got 1",
+        "history card name: expected \"design.png\", got \"design.png\"",
+        "history card download link points at the download route",
+        "history image thumbnail loaded",
+        "synthetic attachment-manifest text is hidden",
+        "attachment-only composer is empty: expected \"\", got \"\"",
+        "attachment-only send has empty text: expected \"\", got \"\"",
+        "file-only kind send forces mode file: expected [{\"id\":\"att_qa_2\",\"mode\":\"file\"}], got [{\"id\":\"att_qa_2\",\"mode\":\"file\"}]",
+        "attachment-only optimistic card: expected 1, got 1",
+        "attachment-only card name: expected \"notes.csv\", got \"notes.csv\"",
+        "CSV renders as a file card: expected \"file\", got \"file\"",
+        "attachment-only card has a download link",
+        "file-only history strip renders: expected 1, got 1",
+        "file-only history card name: expected \"notes.csv\", got \"notes.csv\"",
+        "file-only card has no image thumbnail: expected 0, got 0",
+        "file-only manifest is hidden"
+      ],
+      "data": {
+        "textSend": {
+          "text": "Look at this",
+          "attachments": [
+            {
+              "id": "att_qa"
+            }
+          ]
+        },
+        "fileSend": {
+          "text": "",
+          "attachments": [
+            {
+              "id": "att_qa_2",
+              "mode": "file"
+            }
+          ]
+        },
+        "optimisticText": {
+          "cards": 1,
+          "name": "design.png",
+          "download": "/api/apps/storefront/attachments/att_qa?project=11111111-1111-4111-8111-111111111111",
+          "text": "Look at this"
+        },
+        "history": {
+          "cards": 1,
+          "name": "design.png",
+          "download": "/api/apps/storefront/attachments/att_qa?project=11111111-1111-4111-8111-111111111111",
+          "manifestVisible": false,
+          "thumb": 1
+        },
+        "fileHistory": {
+          "cards": 1,
+          "name": "notes.csv",
+          "manifestVisible": false,
+          "thumbs": 0
+        },
+        "buttonSubmitCount": 1
+      }
+    },
+    {
+      "name": "remove-and-blocking",
+      "status": "PASS",
+      "ms": 4550,
+      "checks": [
+        "DELETE uses the attachment id: expected \"att_qa\", got \"att_qa\"",
+        "delete-if-empty targets the session: expected \"ses_remove\", got \"ses_remove\"",
+        "clearing a draft session returns to the empty state: expected \"New session\", got \"New session\"",
+        "uploading chip remove button is disabled",
+        "uploading chip remove tooltip explains the wait",
+        "uploading chip blocks Send (error: Wait for the attachments to finish uploading.)",
+        "uploading chip prevented the send: expected 0, got 0",
+        "Send button is disabled while uploading",
+        "Send button explains the blocking attachment"
+      ],
+      "data": {
+        "deletes": [
+          "att_qa"
+        ],
+        "draftPuts": [
+          {
+            "sessionID": "ses_remove",
+            "text": "",
+            "body": {
+              "text": ""
+            }
+          }
+        ],
+        "deleteIfEmpty": [
+          "ses_remove"
+        ],
+        "sendError": "Wait for the attachments to finish uploading.",
+        "sendDisabled": {
+          "disabled": true,
+          "title": "Resolve the attachments before sending"
+        },
+        "uploading": [
+          {
+            "name": "brief.pdf",
+            "status": "uploading",
+            "kind": "pdf",
+            "mode": null,
+            "removeDisabled": true,
+            "removeTitle": "Wait for the upload to finish",
+            "progress": {
+              "role": "progressbar",
+              "now": "0",
+              "min": "0",
+              "max": "100",
+              "label": "Uploading brief.pdf"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "foreign-and-missing",
+      "status": "PASS",
+      "ms": 1369,
+      "checks": [
+        "foreign attachment id surfaces 404 attachment_not_found (Attachment not found. (attachment_not_found))",
+        "foreign attachment 404 restores the chip",
+        "foreign id was sent in the request body (file-only kind forces file): expected [{\"id\":\"att_qa\",\"mode\":\"file\"}], got [{\"id\":\"att_qa\",\"mode\":\"file\"}]",
+        "missing file surfaces attachment_missing (The attachment file is missing. (attachment_missing))",
+        "attachment_missing 409 restores the chip",
+        "missing file id was sent in the request body (file-only kind forces file): expected [{\"id\":\"att_qa_2\",\"mode\":\"file\"}], got [{\"id\":\"att_qa_2\",\"mode\":\"file\"}]"
+      ],
+      "data": {
+        "foreignError": "Attachment not found. (attachment_not_found)",
+        "missingError": "The attachment file is missing. (attachment_missing)",
+        "sends": [
+          {
+            "text": "",
+            "attachments": [
+              {
+                "id": "att_qa",
+                "mode": "file"
+              }
+            ]
+          },
+          {
+            "text": "",
+            "attachments": [
+              {
+                "id": "att_qa_2",
+                "mode": "file"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "title-contract",
+      "status": "PASS",
+      "ms": 2918,
+      "checks": [
+        "attachment-first create sends the neutral title: expected {\"title\":\"Attachment\"}, got {\"title\":\"Attachment\"}",
+        "attachment-first upload used the created session",
+        "text-only create omits title ({})",
+        "draft text restored: expected \"keep me\", got \"keep me\"",
+        "title_required is surfaced (A title is required before sending attachments. (title_required))",
+        "failed send restored the draft text: expected \"keep me\", got \"keep me\"",
+        "failed send restored the attachment chip: expected 1, got 1",
+        "restored chip name: expected \"keep.png\", got \"keep.png\""
+      ],
+      "data": {
+        "attachmentFirst": {
+          "title": "Attachment"
+        },
+        "textOnly": {},
+        "titleError": "A title is required before sending attachments. (title_required)",
+        "restored": [
+          {
+            "name": "keep.png",
+            "status": "ready",
+            "kind": "image",
+            "mode": "auto",
+            "removeDisabled": false,
+            "removeTitle": "Remove",
+            "progress": null
+          }
+        ]
+      }
+    },
+    {
+      "name": "clear-race",
+      "status": "PASS",
+      "ms": 4879,
+      "checks": [
+        "attaching inside the window cancels delete-if-empty: expected 0, got 0",
+        "the upload still ran: expected 1, got 1",
+        "the session survived the race: expected \"ses_race_a\", got \"ses_race_a\"",
+        "the composer did not reset to a new session",
+        "upload-during-clear does not delete the session: expected 0, got 0",
+        "session remains selected after upload-during-clear: expected \"ses_race_b\", got \"ses_race_b\""
+      ],
+      "data": {
+        "raceA": {
+          "deleteIfEmpty": 0,
+          "uploads": [
+            {
+              "sessionID": "ses_race_a",
+              "name": "notes.csv",
+              "mime": "text/csv",
+              "size": 26,
+              "id": "att_qa"
+            }
+          ]
+        },
+        "raceB": {
+          "deleteIfEmpty": 0
+        }
+      }
+    },
+    {
+      "name": "responsive-visual",
+      "status": "PASS",
+      "ms": 5586,
+      "checks": [
+        "1440/dark: no horizontal overflow",
+        "1440/dark: composer stays in the viewport",
+        "1440/dark: attachment stack fits the composer",
+        "1440/dark: chips do not overflow: expected [], got []",
+        "1440/dark: color scheme: expected \"dark\", got \"dark\"",
+        "1440/light: no horizontal overflow",
+        "1440/light: composer stays in the viewport",
+        "1440/light: attachment stack fits the composer",
+        "1440/light: chips do not overflow: expected [], got []",
+        "1440/light: color scheme: expected \"light\", got \"light\"",
+        "390/dark: no horizontal overflow",
+        "390/dark: composer stays in the viewport",
+        "390/dark: attachment stack fits the composer",
+        "390/dark: chips do not overflow: expected [], got []",
+        "390/dark: color scheme: expected \"dark\", got \"dark\"",
+        "keyboard-operable attach added a chip",
+        "390/light: no horizontal overflow",
+        "390/light: composer stays in the viewport",
+        "390/light: attachment stack fits the composer",
+        "390/light: chips do not overflow: expected [], got []",
+        "390/light: color scheme: expected \"light\", got \"light\"",
+        "reduced motion media query is active",
+        "progress fill transition is removed under reduced motion ({\"matches\":true,\"transitionProperty\":\"none\",\"transitionDuration\":\"1e-05s\",\"animationName\":\"none\"})",
+        "progress fill has no animation under reduced motion"
+      ],
+      "data": [
+        {
+          "width": 1440,
+          "height": 900,
+          "colorScheme": "dark",
+          "layout": {
+            "clientWidth": 1440,
+            "clientHeight": 900,
+            "scrollHeight": 900,
+            "innerHeight": 900,
+            "overflowX": 0,
+            "composer": {
+              "left": 488,
+              "right": 1120,
+              "width": 632,
+              "top": 694.71875,
+              "bottom": 900,
+              "height": 205.28125
+            },
+            "attachments": {
+              "left": 570.421875,
+              "right": 1037.578125,
+              "width": 467.15625,
+              "top": 707.71875,
+              "bottom": 816.5,
+              "height": 108.78125
+            },
+            "chipOverflow": [],
+            "theme": "dark"
+          }
+        },
+        {
+          "width": 1440,
+          "height": 900,
+          "colorScheme": "light",
+          "layout": {
+            "clientWidth": 1440,
+            "clientHeight": 900,
+            "scrollHeight": 900,
+            "innerHeight": 900,
+            "overflowX": 0,
+            "composer": {
+              "left": 488,
+              "right": 1120,
+              "width": 632,
+              "top": 694.71875,
+              "bottom": 900,
+              "height": 205.28125
+            },
+            "attachments": {
+              "left": 570.421875,
+              "right": 1037.578125,
+              "width": 467.15625,
+              "top": 707.71875,
+              "bottom": 816.5,
+              "height": 108.78125
+            },
+            "chipOverflow": [],
+            "theme": "light"
+          }
+        },
+        {
+          "width": 390,
+          "height": 844,
+          "colorScheme": "dark",
+          "layout": {
+            "clientWidth": 390,
+            "clientHeight": 844,
+            "scrollHeight": 844,
+            "innerHeight": 844,
+            "overflowX": 0,
+            "composer": {
+              "left": 0,
+              "right": 390,
+              "width": 390,
+              "top": 635.5,
+              "bottom": 844,
+              "height": 208.5
+            },
+            "attachments": {
+              "left": 16,
+              "right": 374,
+              "width": 358,
+              "top": 644.5,
+              "bottom": 764.5,
+              "height": 120
+            },
+            "chipOverflow": [],
+            "theme": "dark"
+          }
+        },
+        {
+          "width": 390,
+          "height": 844,
+          "colorScheme": "light",
+          "layout": {
+            "clientWidth": 390,
+            "clientHeight": 844,
+            "scrollHeight": 844,
+            "innerHeight": 844,
+            "overflowX": 0,
+            "composer": {
+              "left": 0,
+              "right": 390,
+              "width": 390,
+              "top": 635.5,
+              "bottom": 844,
+              "height": 208.5
+            },
+            "attachments": {
+              "left": 16,
+              "right": 374,
+              "width": 358,
+              "top": 644.5,
+              "bottom": 764.5,
+              "height": 120
+            },
+            "chipOverflow": [],
+            "theme": "light"
+          }
+        },
+        {
+          "reducedMotion": {
+            "matches": true,
+            "transitionProperty": "none",
+            "transitionDuration": "1e-05s",
+            "animationName": "none"
+          }
+        }
+      ]
+    },
+    {
+      "name": "inline-delivery",
+      "status": "PASS",
+      "ms": 1317,
+      "checks": [
+        "inline-capable image offers Auto / Send to model / File only: expected [\"Auto\",\"Send to model\",\"File only\"], got [\"Auto\",\"Send to model\",\"File only\"]",
+        "Send to model PATCHes mode inline: expected \"inline\", got \"inline\"",
+        "explicit inline send carries mode inline: expected [{\"id\":\"att_qa\",\"mode\":\"inline\"}], got [{\"id\":\"att_qa\",\"mode\":\"inline\"}]",
+        "inline send renders the attachment warning strip",
+        "context advisory warning is visible: expected [\"attachment_context_large\"], got [\"attachment_context_large\"]",
+        "context advisory explains the large message",
+        "the projected inline file part renders an inline card",
+        "inline card meta says Inline: expected true, got true",
+        "inline card uses the short download URL",
+        "inline image thumbnail streams the short download URL",
+        "inline image thumbnail loaded through the download route",
+        "no data: URL reaches the feed ([])",
+        "the sent attachment is removed from the composer",
+        "history shows the inline projected card",
+        "history inline card points at the download route",
+        "synthetic attachment manifest stays hidden in history",
+        "history payload renders no data: URL"
+      ],
+      "data": {
+        "send": {
+          "text": "",
+          "attachments": [
+            {
+              "id": "att_qa",
+              "mode": "inline"
+            }
+          ]
+        },
+        "warning": {
+          "visible": true,
+          "items": [
+            {
+              "code": "attachment_context_large",
+              "downgrade": false,
+              "text": "This message is large for the model context; it was sent anyway."
+            }
+          ]
+        },
+        "live": {
+          "cards": [
+            {
+              "id": "att_qa",
+              "inline": true,
+              "state": "sent",
+              "kind": "image",
+              "meta": "68 B · image/png · Sent · Inline",
+              "name": "design.png",
+              "download": "/api/apps/storefront/attachments/att_qa?project=11111111-1111-4111-8111-111111111111",
+              "thumb": 1,
+              "thumbSrc": "/api/apps/storefront/attachments/att_qa?project=11111111-1111-4111-8111-111111111111",
+              "redeliver": true
+            }
+          ],
+          "dataUrls": [],
+          "text": "OPoperatordesign.png68 B · image/png · Sent · InlineDownloadSend again as file"
+        },
+        "history": {
+          "cards": [
+            {
+              "id": "att_qa",
+              "inline": true,
+              "state": "sent",
+              "kind": "image",
+              "meta": "68 B · image/png · Sent · Inline",
+              "name": "design.png",
+              "download": "/api/apps/storefront/attachments/att_qa?project=11111111-1111-4111-8111-111111111111",
+              "thumb": 1,
+              "thumbSrc": "/api/apps/storefront/attachments/att_qa?project=11111111-1111-4111-8111-111111111111",
+              "redeliver": true
+            }
+          ],
+          "dataUrls": [],
+          "text": "OPoperator04:14 PMdesign.png68 B · image/png · Sent · InlineDownloadSend again as file"
+        }
+      }
+    },
+    {
+      "name": "inline-downgrade",
+      "status": "PASS",
+      "ms": 953,
+      "checks": [
+        "downgrade scenario requested inline: expected [{\"id\":\"att_qa\",\"mode\":\"inline\"}], got [{\"id\":\"att_qa\",\"mode\":\"inline\"}]",
+        "downgrade warning strip is visible",
+        "both downgrade warnings render: expected [\"attachment_inline_unsupported\",\"attachment_capability_unknown\"], got [\"attachment_inline_unsupported\",\"attachment_capability_unknown\"]",
+        "downgrade warnings are marked as downgrades",
+        "downgrade warnings explain the fallback",
+        "downgraded attachment renders a file-only card",
+        "downgraded card is in the sent state: expected \"sent\", got \"sent\"",
+        "downgraded card meta says File only: expected true, got true",
+        "no inline card renders after a downgrade",
+        "downgraded card still downloads through the short route",
+        "downgrade renders no data: URL"
+      ],
+      "data": {
+        "send": {
+          "text": "",
+          "attachments": [
+            {
+              "id": "att_qa",
+              "mode": "inline"
+            }
+          ]
+        },
+        "warning": {
+          "visible": true,
+          "items": [
+            {
+              "code": "attachment_inline_unsupported",
+              "downgrade": true,
+              "text": "This model cannot display this attachment inline; it was sent as a file instead."
+            },
+            {
+              "code": "attachment_capability_unknown",
+              "downgrade": true,
+              "text": "The model capabilities could not be confirmed; the attachment was sent as a file instead."
+            }
+          ]
+        },
+        "fallback": {
+          "cards": [
+            {
+              "id": "att_qa",
+              "inline": false,
+              "state": "sent",
+              "kind": "image",
+              "meta": "68 B · image/png · Sent · File only",
+              "name": "design.png",
+              "download": "/api/apps/storefront/attachments/att_qa?project=11111111-1111-4111-8111-111111111111",
+              "thumb": 1,
+              "thumbSrc": "/api/apps/storefront/attachments/att_qa?project=11111111-1111-4111-8111-111111111111",
+              "redeliver": true
+            }
+          ],
+          "dataUrls": [],
+          "text": "OPoperatordesign.png68 B · image/png · Sent · File onlyDownloadSend again as file"
+        }
+      }
+    },
+    {
+      "name": "redeliver-as-file",
+      "status": "PASS",
+      "ms": 1052,
+      "checks": [
+        "a sent inline card offers Send again as file",
+        "redelivery control label: expected \"Send again as file\", got \"Send again as file\"",
+        "redelivery sends the same attachment with mode file: expected [{\"id\":\"att_qa\",\"mode\":\"file\"}], got [{\"id\":\"att_qa\",\"mode\":\"file\"}]",
+        "redelivery sends no operator text",
+        "redelivery appends a new message: expected 2, got 2",
+        "the original message and its delivery are unchanged: expected \"{\\\"info\\\":{\\\"id\\\":\\\"msg_seed_1\\\",\\\"sessionID\\\":\\\"ses_redeliver\\\",\\\"role\\\":\\\"user\\\",\\\"time\\\":{\\\"created\\\":1792944852200},\\\"hanse\\\":{\\\"attachments\\\":[{\\\"id\\\":\\\"att_qa\\\",\\\"name\\\":\\\"look.png\\\",\\\"mime\\\":\\\"image/png\\\",\\\"size\\\":68,\\\"kind\\\":\\\"image\\\",\\\"mode\\\":\\\"inline\\\",\\\"state\\\":\\\"sent\\\",\\\"downloadURL\\\":\\\"/api/apps/storefront/attachments/att_qa?project=11111111-1111-4111-8111-111111111111\\\",\\\"inline\\\":true}]}},\\\"parts\\\":[{\\\"id\\\":\\\"prt_msg_seed_1_text\\\",\\\"sessionID\\\":\\\"ses_redeliver\\\",\\\"messageID\\\":\\\"msg_seed_1\\\",\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"What is this?\\\"},{\\\"id\\\":\\\"prt_att_att_qa_1\\\",\\\"sessionID\\\":\\\"ses_redeliver\\\",\\\"messageID\\\":\\\"msg_seed_1\\\",\\\"type\\\":\\\"file\\\",\\\"mime\\\":\\\"image/png\\\",\\\"filename\\\":\\\"look.png\\\",\\\"url\\\":\\\"/api/apps/storefront/attachments/att_qa?project=11111111-1111-4111-8111-111111111111\\\",\\\"attachment\\\":{\\\"id\\\":\\\"att_qa\\\",\\\"size\\\":68,\\\"mode\\\":\\\"inline\\\",\\\"kind\\\":\\\"image\\\",\\\"inline\\\":true}},{\\\"id\\\":\\\"prt_msg_seed_1_manifest\\\",\\\"sessionID\\\":\\\"ses_redeliver\\\",\\\"messageID\\\":\\\"msg_seed_1\\\",\\\"type\\\":\\\"text\\\",\\\"synthetic\\\":true,\\\"metadata\\\":{\\\"hanse\\\":\\\"attachment-manifest\\\"},\\\"text\\\":\\\"Attached files (use these paths with your tools; \\\\\\\"inline\\\\\\\" files were also sent to you):\\\\n- <model-visible-root>/attachments/ses_redeliver/att_qa-look.png (image/png, 68 B, inline)\\\"}]}\", got \"{\\\"info\\\":{\\\"id\\\":\\\"msg_seed_1\\\",\\\"sessionID\\\":\\\"ses_redeliver\\\",\\\"role\\\":\\\"user\\\",\\\"time\\\":{\\\"created\\\":1792944852200},\\\"hanse\\\":{\\\"attachments\\\":[{\\\"id\\\":\\\"att_qa\\\",\\\"name\\\":\\\"look.png\\\",\\\"mime\\\":\\\"image/png\\\",\\\"size\\\":68,\\\"kind\\\":\\\"image\\\",\\\"mode\\\":\\\"inline\\\",\\\"state\\\":\\\"sent\\\",\\\"downloadURL\\\":\\\"/api/apps/storefront/attachments/att_qa?project=11111111-1111-4111-8111-111111111111\\\",\\\"inline\\\":true}]}},\\\"parts\\\":[{\\\"id\\\":\\\"prt_msg_seed_1_text\\\",\\\"sessionID\\\":\\\"ses_redeliver\\\",\\\"messageID\\\":\\\"msg_seed_1\\\",\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"What is this?\\\"},{\\\"id\\\":\\\"prt_att_att_qa_1\\\",\\\"sessionID\\\":\\\"ses_redeliver\\\",\\\"messageID\\\":\\\"msg_seed_1\\\",\\\"type\\\":\\\"file\\\",\\\"mime\\\":\\\"image/png\\\",\\\"filename\\\":\\\"look.png\\\",\\\"url\\\":\\\"/api/apps/storefront/attachments/att_qa?project=11111111-1111-4111-8111-111111111111\\\",\\\"attachment\\\":{\\\"id\\\":\\\"att_qa\\\",\\\"size\\\":68,\\\"mode\\\":\\\"inline\\\",\\\"kind\\\":\\\"image\\\",\\\"inline\\\":true}},{\\\"id\\\":\\\"prt_msg_seed_1_manifest\\\",\\\"sessionID\\\":\\\"ses_redeliver\\\",\\\"messageID\\\":\\\"msg_seed_1\\\",\\\"type\\\":\\\"text\\\",\\\"synthetic\\\":true,\\\"metadata\\\":{\\\"hanse\\\":\\\"attachment-manifest\\\"},\\\"text\\\":\\\"Attached files (use these paths with your tools; \\\\\\\"inline\\\\\\\" files were also sent to you):\\\\n- <model-visible-root>/attachments/ses_redeliver/att_qa-look.png (image/png, 68 B, inline)\\\"}]}\"",
+        "new delivery is file-only: expected false, got false",
+        "new delivery records mode file: expected \"file\", got \"file\"",
+        "the file-only redelivery has no inline file part",
+        "redelivery shows the duplicate warning"
+      ],
+      "data": {
+        "body": {
+          "attachments": [
+            {
+              "id": "att_qa",
+              "mode": "file"
+            }
+          ]
+        },
+        "before": {
+          "info": {
+            "id": "msg_seed_1",
+            "sessionID": "ses_redeliver",
+            "role": "user",
+            "time": {
+              "created": 1792944852200
+            },
+            "hanse": {
+              "attachments": [
+                {
+                  "id": "att_qa",
+                  "name": "look.png",
+                  "mime": "image/png",
+                  "size": 68,
+                  "kind": "image",
+                  "mode": "inline",
+                  "state": "sent",
+                  "downloadURL": "/api/apps/storefront/attachments/att_qa?project=11111111-1111-4111-8111-111111111111",
+                  "inline": true
+                }
+              ]
+            }
+          },
+          "parts": [
+            {
+              "id": "prt_msg_seed_1_text",
+              "sessionID": "ses_redeliver",
+              "messageID": "msg_seed_1",
+              "type": "text",
+              "text": "What is this?"
+            },
+            {
+              "id": "prt_att_att_qa_1",
+              "sessionID": "ses_redeliver",
+              "messageID": "msg_seed_1",
+              "type": "file",
+              "mime": "image/png",
+              "filename": "look.png",
+              "url": "/api/apps/storefront/attachments/att_qa?project=11111111-1111-4111-8111-111111111111",
+              "attachment": {
+                "id": "att_qa",
+                "size": 68,
+                "mode": "inline",
+                "kind": "image",
+                "inline": true
+              }
+            },
+            {
+              "id": "prt_msg_seed_1_manifest",
+              "sessionID": "ses_redeliver",
+              "messageID": "msg_seed_1",
+              "type": "text",
+              "synthetic": true,
+              "metadata": {
+                "hanse": "attachment-manifest"
+              },
+              "text": "Attached files (use these paths with your tools; \"inline\" files were also sent to you):\n- <model-visible-root>/attachments/ses_redeliver/att_qa-look.png (image/png, 68 B, inline)"
+            }
+          ]
+        },
+        "after": {
+          "info": {
+            "id": "msg_qa_2",
+            "sessionID": "ses_redeliver",
+            "role": "user",
+            "time": {
+              "created": 1792944853063
+            },
+            "hanse": {
+              "attachments": [
+                {
+                  "id": "att_qa",
+                  "name": "look.png",
+                  "mime": "image/png",
+                  "size": 68,
+                  "kind": "image",
+                  "mode": "file",
+                  "state": "sent",
+                  "downloadURL": "/api/apps/storefront/attachments/att_qa?project=11111111-1111-4111-8111-111111111111",
+                  "inline": false
+                }
+              ]
+            }
+          },
+          "parts": [
+            {
+              "id": "prt_msg_qa_2_manifest",
+              "sessionID": "ses_redeliver",
+              "messageID": "msg_qa_2",
+              "type": "text",
+              "synthetic": true,
+              "metadata": {
+                "hanse": "attachment-manifest"
+              },
+              "text": "Attached files (use these paths with your tools; \"inline\" files were also sent to you):\n- <model-visible-root>/attachments/ses_redeliver/att_qa-look.png (image/png, 68 B, file)"
+            }
+          ]
+        },
+        "warning": {
+          "visible": true,
+          "items": [
+            {
+              "code": "attachment_redelivered",
+              "downgrade": false,
+              "text": "Sent another copy of look.png as a file in a new message. The original message is unchanged."
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "stream-recovery",
+      "status": "PASS",
+      "ms": 2119,
+      "checks": [
+        "stream is open before the recovery event",
+        "the omitted part notice explains the history refresh",
+        "history hydration is bounded (1 request(s))",
+        "the stream stays open after a skipped frame"
+      ],
+      "data": {
+        "notice": {
+          "visible": true,
+          "text": "A large live update was skipped; refreshing that part from history.",
+          "buttons": []
+        },
+        "hydrationRequests": 1,
+        "seeded": "msg_stream"
+      }
+    },
+    {
+      "name": "stream-limit",
+      "status": "PASS",
+      "ms": 794,
+      "checks": [
+        "stream_limit notice is explicit",
+        "stream_limit offers retry and history actions",
+        "the client probed the events endpoint for the 429",
+        "connection state shows a paused feed (Live updates paused)"
+      ],
+      "data": {
+        "notice": {
+          "visible": true,
+          "text": "Too many live streams are open for this app (8). Close another chat tab, or keep reading history here.Retry liveRefresh history",
+          "buttons": [
+            "Retry live",
+            "Refresh history"
+          ]
+        },
+        "connection": "Live updates paused",
+        "eventGets": 1
+      }
+    }
+  ],
+  "screenshots": [
+    "docs/design/artifacts/attachments/attachments-uploading-1440-dark.png",
+    "docs/design/artifacts/attachments/attachments-chips-1440-dark.png",
+    "docs/design/artifacts/attachments/attachments-send-text-1440-dark.png",
+    "docs/design/artifacts/attachments/attachments-file-only-1440-dark.png",
+    "docs/design/artifacts/attachments/attachments-remove-1440-dark.png",
+    "docs/design/artifacts/attachments/attachments-uploading-block-1440-dark.png",
+    "docs/design/artifacts/attachments/attachments-foreign-404-1440-dark.png",
+    "docs/design/artifacts/attachments/attachments-missing-409-1440-dark.png",
+    "docs/design/artifacts/attachments/attachments-title-create-1440-dark.png",
+    "docs/design/artifacts/attachments/attachments-title-text-only-1440-dark.png",
+    "docs/design/artifacts/attachments/attachments-title-required-1440-dark.png",
+    "docs/design/artifacts/attachments/attachments-clear-race-1440-dark.png",
+    "docs/design/artifacts/attachments/attachments-upload-during-clear-1440-dark.png",
+    "docs/design/artifacts/attachments/attachments-1440-dark.png",
+    "docs/design/artifacts/attachments/attachments-1440-light.png",
+    "docs/design/artifacts/attachments/attachments-390-dark.png",
+    "docs/design/artifacts/attachments/attachments-keyboard-390-dark.png",
+    "docs/design/artifacts/attachments/attachments-390-light.png",
+    "docs/design/artifacts/attachments/attachments-reduced-motion-1440-dark.png",
+    "docs/design/artifacts/attachments/attachments-inline-1440-dark.png",
+    "docs/design/artifacts/attachments/attachments-downgrade-1440-dark.png",
+    "docs/design/artifacts/attachments/attachments-redelivery-1440-dark.png",
+    "docs/design/artifacts/attachments/attachments-stream-recovery-1440-dark.png",
+    "docs/design/artifacts/attachments/attachments-stream-limit-1440-dark.png"
+  ],
+  "consoleErrors": [],
+  "networkFailures": [],
+  "expectedHttpErrors": [
+    "console: Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "console: Failed to load resource: the server responded with a status of 409 (Conflict)",
+    "console: Failed to load resource: the server responded with a status of 409 (Conflict)",
+    "console: Failed to load resource: the server responded with a status of 429 (Too Many Requests)"
+  ],
+  "finishedAt": "2026-10-25T16:14:16.294Z"
+}

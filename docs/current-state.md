@@ -1,6 +1,6 @@
 # Hanse - Current State (read this first)
 
-> Last updated: 2026-10-24. This is the canonical description of what is **implemented right now**.
+> Last updated: 2026-10-25. This is the canonical description of what is **implemented right now**.
 > If this document and the code disagree, the code wins - update this document.
 > History and rationale: `docs/design/overview.md`, `docs/plans/0001-core.md`,
 > `docs/journal/0001-core.md`. Deployment: `docs/deployment.md`.
@@ -317,8 +317,9 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   rebuild) to see the tools and the timeout.
 - Migration v8 (`setting_secrets`, drop legacy `secrets`) and migration v9 (SSH tables) apply in
   order; migrations v10 (applied settings/profile state), v11 (deletion markers), v12 (skills),
-  v13 (skill bundles), and v14 (session-bound handoffs, reply routing, and handoff policy) follow.
-  The current schema versions are `[1..14]`.
+  v13 (skill bundles), v14 (session-bound handoffs, reply routing, and handoff policy), and v15
+  (chat drafts, session state, and pending sends) and v16 (file-only attachments and deliveries)
+  follow. The current schema versions are `[1..16]`.
 - Live on `deployment-host` (`sha-e2d89a2`): a temporary SSH target pinned and authenticated, an approval was
   approved, `echo QA_OK` and a 65 s `sleep` succeeded, upload/download round-tripped, a real
   `opencode` turn called `hanse_ssh_exec` and received the result after 65 s, and audit rows survived
@@ -352,14 +353,20 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   does not see code before a hunk. The optional `project` query is additive and disambiguates
   duplicate app keys. API:
   `GET/POST /api/apps/:app/sessions`, `DELETE /api/apps/:app/sessions/:sid`,
-  `GET/POST /api/apps/:app/sessions/:sid/messages`; all accept `?project=<projectId>`.
+  `GET/POST /api/apps/:app/sessions/:sid/messages`, `GET/PUT .../sessions/:sid/draft`,
+  `POST .../sessions/:sid/touch`, `POST .../sessions/:sid/delete-if-empty`,
+  `POST .../sessions/:sid/pending/:pid/retry`, `DELETE .../sessions/:sid/pending/:pid`,
+  `POST /api/apps/:app/attachments`, and `GET/PATCH/DELETE /api/apps/:app/attachments/:id`;
+  all accept `?project=<projectId>`.
   `GET .../messages` accepts optional `limit` (1..200) and `before` (an opaque upstream cursor);
   with `limit` it returns `{messages, nextCursor}` and the chat opens a 30-message tail. Without
   `limit` the legacy `{messages}` full-history response is unchanged.
-  `POST .../messages?async=1` accepts `{text}` and returns `202 {accepted, messageID, sessionID}`
-  without waiting for the turn; the blocking route without `async` keeps its `200 {message}`
-  response. Async text is capped at 32 KiB; an older upstream without `prompt_async` returns
-  `502 async_unavailable`, and the blocking route remains available.
+  `POST .../messages?async=1` accepts `{text?, attachments?}` and returns
+  `202 {accepted, messageID, sessionID, warnings?}` without waiting for the turn. The blocking route
+  returns `200 {messageID, userMessageID, info, parts}` (assistant `messageID` + generated user
+  `userMessageID`), with projected parts under 8 MiB or `{messageID, userMessageID, info:null,
+  truncated:true}` on overflow. Async text is capped at 32 KiB; an older upstream without
+  `prompt_async` returns `502 async_unavailable`, and the blocking route remains available.
 - The chat composer has one slash-command palette (`/` at the start or the `Commands` button). It
   merges opencode's v1 `GET /command` catalog with six Hanse actions; custom
   `.opencode/command(s)`, JSON commands, MCP prompts, and skills appear automatically.
@@ -471,10 +478,67 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
 - Policy diagnostics: `/prompts` filters `policy_unverified:` warnings (verification failure/timeout)
   from the chat banner while keeping real policy findings; the manager logs the stripped diagnostic
   once per start.
-- Sessions are created lazily: opening a chat or pressing "New session" only starts a draft, and the
-  first message creates the upstream session. Deletion is human-only (`403` for agent principals),
-  proxies opencode `DELETE /session/:id`, and the UI selects the next session or returns to the draft
-  when the active one is removed.
+- Sessions are created lazily, but eagerly on the first non-empty, non-slash composer input (400 ms
+  debounce; no prompt is dispatched), so a text draft survives reload as a real upstream session.
+  Migration v15 adds `message_drafts`, `session_state`, and `pending_sends`. The human-only draft
+  API is `GET/PUT /api/apps/:app/sessions/:sid/draft`, `POST .../touch`,
+  `POST .../delete-if-empty`, `POST .../pending/:pid/retry`, and `DELETE .../pending/:pid`; it
+  persists LWW drafts (32 KiB text; 256 KiB HTTP body cap), adds `draft {hasText, attachmentCount,
+  emptyDraft, updatedAt}` to `GET /sessions`, and never starts a stopped app for metadata
+  operations. A reachable upstream session with no state row is upserted with `has_messages=1` on a
+  first PUT/touch; an existing Hanse-created `has_messages=0` row is preserved.
+- Clearing the last draft auto-deletes an empty Hanse-created session after a ~1 s debounce; the
+  server re-checks `session_state`, draft/pending rows, and a one-message upstream page, and fails
+  closed on 5xx/transport. Sessions with history are never auto-deleted. A daily sweep removes
+  empty Hanse-created sessions after 7 days of inactivity, using the same fail-closed check and
+  never starting a stopped app. `touch` protects an unflushed draft from the sweep.
+- Every send creates a durable `pending_sends` row before dispatch and deletes the draft in the
+  same transaction under a per-session lock. A 202 is confirmed by the user-message event or a
+  bounded 0/2/5/10/20/30 s read schedule; `session.error` (except `MessageAbortedError`) marks every
+  `sending` row in that session `unknown`; a final definite 404 becomes `failed`; 5xx/transport
+  remains `unknown`. Failed rows offer Restore/Retry, unknown rows offer Retry anyway/Dismiss, and
+  only explicit Retry can dispatch a new message (force requires a duplicate-risk confirmation).
+  When the context monitor is not connected, one shared per-app `/event` fallback subscription is
+  opened before dispatch. The session rail shows `Draft` (or a dot for a session with history).
+  A client `session.error` marks only the local unsent acceptance row failed, not server-backed
+  queued/active rows.
+- File-only attachments (Stage B of plan 0026) live under
+  `<agentsHome>/<sanitize(project)>/<sanitize(appKey)>/attachments/<session>/<id>-<safeName>` and are
+  streamed through `POST /api/apps/:app/attachments` (raw body, `Content-Disposition` filename,
+  100 MiB/file, 25 MiB image, 5 GiB/app, 2 concurrent, 256 MiB global in-flight). Files are
+  sniffed, name-sanitized, committed to `app_attachments`, downloaded with `O_NOFOLLOW` + size
+  verification, and removed with the session/app. The model-visible path is
+  `/data/agents/<project>/<app>/attachments/...` in runner mode (nested read-only bind, policy
+  trusted root, spec-hash marker) and the host agents path in supervisor mode (weaker: the agent
+  shares the host filesystem). Uploads/reconciles are crash-safe: startup settles `uploading`
+  rows, `.tmp`/orphan files are swept, and missing files become `missing` and are excluded from
+  prompts/quota.
+- The chat composer has an attach button, hidden file input, drag/drop, and paste staging; chips show
+  progress/retry/remove and a file-only/Auto mode control. Draft GET returns attachments + quota;
+  sessions list `draft.attachmentCount`; sends accept `{text?, attachments:[{id,mode?}]}` (empty text
+  allowed iff attachments; max 10, 250 MiB), create `attachment_deliveries` in the same transaction
+  as the pending row/draft delete, and add a hidden synthetic `attachment-manifest` text part with
+  the model-visible path. A pre-existing default title is PATCHed before an attachment send;
+  failure is `409 title_required` with no pending/draft mutation, and attachment-first sessions use
+  the neutral `Attachment` title.
+- Inline media (Stage C): at send time the coordinator resolves the effective model's
+  `capabilities.input.{image,video,pdf}` + `capabilities.attachment`; supported image/PDF/video under
+  20 MiB is sent as a `FilePart` with a unique `prt_att_<attachmentId>_<deliveryId>`, MIME,
+  filename, and `file://` model-visible URL (never base64 in the JSON). Inline mode has 4 attachments
+  and a 40 MiB raw-base64 budget; unsupported/unknown/oversize modes fall back to file with
+  `attachment_inline_unsupported`/`attachment_capability_unknown`/`attachment_inline_too_large`,
+  and a non-blocking `attachment_context_large` advisory. File-only kinds stay file. History and
+  the app stream project known file parts to short download URLs and strip every unknown `data:`
+  URL; `info.hanse.attachments` carries all deliveries. History reads use 48 MiB page/per-message
+  caps, a 192 MiB heap-aware budget (2 s wait, then `503 history_busy`), single-message fallback,
+  and an 8 MiB projected response. The app SSE frame cap is 32 MiB with a 32 MiB raw/96 MiB heap
+  budget and 8 browser streams/app (`429 stream_limit`); internal monitor/fallback streams are a
+  separate class, and an active sender's `streamID` is prioritized. The legacy session SSE is
+  human-only, projected, and never forwards a `data:` URL. The bundled IDE extension uses
+  `?async=1`, a 30-message tail, merges attachments, hides the manifest, renders file-only cards,
+  and bounds post-202 reads.
+- Deletion is human-only (`403` for agent principals), proxies opencode `DELETE /session/:id`, and
+  the UI selects the next session or returns to the draft when the active one is removed.
 - The chat workspace renders interactive opencode prompts above the composer:
   - **Questions** support one or many questions, options, multi-select, custom answers, review, and
     dismissal. Questions correlated to a `question` tool part render inline at that part (and become
@@ -1014,6 +1078,16 @@ Settings stage verification:
   image GC remains the fallback. The deletion mutex is in-process/single-node, there is no CLI delete
   command, and the runner must be reachable.
 
+- App state paths, including attachment roots, use a sanitized `<project>/<app>` segment
+  (`[^A-Za-z0-9._-]` -> `-`). Two app keys that sanitize to the same segment (for example `web:api`
+  and `web-api`) would share a state/attachment root; provisioning and deletion already fail closed
+  on this collision, but the attachment paths themselves are not independently disambiguated.
+- Inline media is delivered as file parts to capable models; there is no video playback/Range
+  support, no audio input, and no server-side media generation. SVG/HTML are always file-only and
+  never thumbnailed/rendered inline. Supervisor mode is weaker than runner mode for attachment
+  immutability because the agent shares the host filesystem.
+- Inline media is verified with deterministic server/browser fixtures; a live vision/PDF/CSV smoke
+  against a real capable model (and real-device QA) remains a deployment-stage verification item.
 - Context accounting is in memory and lazily rehydrated; there is no historical usage chart, no
   per-message cost/billing UI, and child/subagent sessions are excluded from auto-compaction. Hanse
   keeps opencode's built-in auto-compaction, which may compact before the configured threshold for

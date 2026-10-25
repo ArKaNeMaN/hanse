@@ -1048,6 +1048,8 @@ export interface ContextMonitorLike {
   stop(): void;
   snapshot(sessionId: string): Promise<ContextSnapshot>;
   compact(sessionId: string): Promise<{ accepted: true }>;
+  /** Event-stream connection state; used to decide whether a pending send needs a fallback. */
+  state?(): "connecting" | "connected";
 }
 
 export class AgentNotRunningError extends Error {
@@ -1180,6 +1182,7 @@ export class ContextMonitor implements ContextMonitorLike {
   #backoffMs: number;
   #started = false;
   #stopped = false;
+  #connected = false;
 
   constructor(options: ContextMonitorOptions) {
     this.#endpoint = options.endpoint;
@@ -1205,6 +1208,10 @@ export class ContextMonitor implements ContextMonitorLike {
     if (this.#started || this.#stopped) return;
     this.#started = true;
     void this.#run();
+  }
+
+  state(): "connecting" | "connected" {
+    return this.#connected && !this.#stopped ? "connected" : "connecting";
   }
 
   stop(): void {
@@ -1293,6 +1300,7 @@ export class ContextMonitor implements ContextMonitorLike {
         await response.body?.cancel().catch(() => undefined);
         return;
       }
+      this.#connected = true;
       const stream = createEventStream(response.body, {
         includeUsage: true,
         maxFrameBytes: APP_STREAM_MAX_FRAME_BYTES,
@@ -1306,6 +1314,7 @@ export class ContextMonitor implements ContextMonitorLike {
         this.#observe(event);
       }
     } finally {
+      this.#connected = false;
       if (this.#sse === controller) this.#sse = null;
     }
   }

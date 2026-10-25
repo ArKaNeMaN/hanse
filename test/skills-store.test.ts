@@ -1333,7 +1333,7 @@ describe("migration v13", () => {
       );
     }
     expect(() => db.prepare("SELECT 1 FROM skills").get()).toThrow();
-    expect(runMigrations(db)).toBe(3);
+    expect(runMigrations(db)).toBe(5);
     expect(runMigrations(db)).toBe(0);
     const now = new Date(EPOCH).toISOString();
     db.prepare(

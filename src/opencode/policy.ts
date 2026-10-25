@@ -43,9 +43,17 @@ export interface PermissionRootOptions {
   xdgCacheHome?: string;
   home?: string;
   tmpdir?: string;
+  /** Explicit model-visible attachments root; the agent may read but never write it in runner mode. */
+  attachmentsRoot?: string;
   /** Baseline plugin specs; `file://` entries contribute a `<plugin-root>/skills` root. */
   baselinePlugins?: string[];
 }
+
+/**
+ * Policy generation version. Bumping it changes every launch/settings hash so the existing
+ * "Restart required" marker appears after a policy change.
+ */
+export const ATTACHMENTS_POLICY_VERSION = 1;
 
 /** A single rule as exposed by `GET /agent` in the final (merged) ruleset. */
 export interface AgentPermissionRule {
@@ -148,6 +156,7 @@ export function resolvePermissionPaths(options: PermissionRootOptions = {}): str
     path.join(xdgCacheHome, "opencode", "skills"),
     path.join(home, ".claude", "skills"),
     path.join(home, ".agents", "skills"),
+    ...(options.attachmentsRoot === undefined ? [] : [options.attachmentsRoot]),
     ...pluginSkillRoots(options.baselinePlugins ?? []),
   ];
   return roots.map(toPosix);

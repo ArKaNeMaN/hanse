@@ -37,7 +37,7 @@ import {
   verifyAgentModels,
 } from "../src/opencode/manager.js";
 import type { OmoProfileInput, OmoProfileResult } from "../src/opencode/omo-profile.js";
-import type { VerifyPolicyOptions } from "../src/opencode/policy.js";
+import { ATTACHMENTS_POLICY_VERSION, type VerifyPolicyOptions } from "../src/opencode/policy.js";
 import type { PreviewCleanup } from "../src/preview/types.js";
 import { hashValue } from "../src/settings/hash.js";
 import type {
@@ -797,6 +797,7 @@ describe("InstanceManager lifecycle", () => {
       authHash: "auth-hash",
       gitAuthHash: "git-auth-hash",
       profile: "profile-hash",
+      policyVersion: ATTACHMENTS_POLICY_VERSION,
     });
 
     expect(settingsHashFor(snapshot, "profile-hash")).toBe(expected);
@@ -2165,6 +2166,7 @@ describe("InstanceManager context monitors", () => {
         authHash: "auth-hash",
         gitAuthHash: "git-auth-hash",
         profile: "profile-hash",
+        policyVersion: ATTACHMENTS_POLICY_VERSION,
       }),
     );
     expect(manager.pendingRestart(APP.id)).toEqual({ pending: false, reasons: [] });
@@ -2878,5 +2880,32 @@ describe("InstanceManager restart claims", () => {
     expect(replacement.isRestarting(APP.id)).toBe(false);
 
     await claim.completion;
+  });
+});
+
+describe("InstanceManager attachments policy and runner marker", () => {
+  it("pre-creates the attachments root, adds the trusted policy root, and marks the runner bind", async () => {
+    const runtime = new FakeAgentRuntime();
+    let trusted: string[] = [];
+    const { manager, dir } = fixture(
+      runtime,
+      fakeSettings(),
+      fakeProfiles().source,
+      undefined,
+      async (options) => {
+        trusted = options.trustedRoots;
+        return [];
+      },
+      { hostWorkspace: "/srv", hostAgents: "/agents", workspaceRoot: "/srv" },
+    );
+    await manager.ensure(APP);
+    expect(runtime.ensured[0]?.attachmentsReadOnly).toBe(true);
+    expect(manager.attachmentsPathMode()).toBe("host");
+    expect(manager.containerAgentsRoot()).toBe("/data/agents");
+    expect(manager.attachmentVisibleRoot({ projectId: "p", appKey: "web" })).toBe(
+      "/data/agents/p/web/attachments",
+    );
+    expect(trusted).toContain("/data/agents/p/web/attachments");
+    expect(existsSync(path.join(dir, "p", "web", "attachments"))).toBe(true);
   });
 });

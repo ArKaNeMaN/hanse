@@ -1,8 +1,19 @@
 import {
+  applyOmittedPart,
   applySnapshot,
+  attachmentIsMutable,
+  attachmentKindForMime,
+  attachmentModeLabel,
+  attachmentModeOptions,
+  attachmentModeValue,
+  attachmentSendPayload,
+  attachmentViewFromFilePart,
+  attachmentsUploading,
   autoCompactText,
   autoscrollFollow,
   autoscrollStep,
+  canRedeliverAsFile,
+  canSendDraft,
   classifyOmo,
   composerAction,
   contextChipLabel,
@@ -12,12 +23,29 @@ import {
   contextStateClass,
   contextSummary,
   deriveQueue,
+  draftAutoDeleteEligible,
+  draftIsEmpty,
+  draftTextForSave,
   elapsedSeed,
+  flushDraftTransport,
+  formatAttachmentSize,
+  isHiddenSyntheticTextPart,
+  isSlashCommandOnly,
+  normalizeAttachment,
+  normalizeAttachments,
+  normalizeAttachmentWarnings,
+  normalizePendingSends,
+  normalizeStreamWarning,
+  pendingSendActions,
+  pendingSendLabel,
   provisionalPartType,
   reasoningElapsedMs,
+  redeliveryAttachmentPayload,
   rekeyOptimistic,
   resolveActiveStatusLabel,
   runtimeChip as runtimeChipSpec,
+  safeAttachmentUrl,
+  sessionDraftBadge,
   shouldResubscribe,
   toolStatusChip as toolStatusChipSpec,
 } from "./chat-core.js";
@@ -75,6 +103,22 @@ const ABORT_SETTLE_INTERVAL_MS = 1000;
 const ABORT_SETTLE_MAX_MS = 10000;
 const STREAM_HIDDEN_RECONNECT_MS = 10000;
 const STREAM_CONNECTING_RECONNECT_MS = 5000;
+const SESSION_CREATE_DEBOUNCE_MS = 400;
+const SESSION_CREATE_MAX_RETRIES = 3;
+const SESSION_CREATE_RETRY_MS = 1500;
+const DRAFT_SAVE_DEBOUNCE_MS = 500;
+const DRAFT_KEEPALIVE_LIMIT_BYTES = 64 * 1024;
+const DELETE_IF_EMPTY_DEBOUNCE_MS = 1000;
+const TOUCH_IDLE_MS = 30000;
+const TOUCH_THROTTLE_MS = 10000;
+const PENDING_REFRESH_MS = 400;
+const PENDING_RECHECK_RETRY_MS = 2000;
+const PENDING_POLL_MS = 5000;
+const PENDING_POLL_MAX_ATTEMPTS = 15;
+const MAX_ATTACHMENTS = 10;
+const MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024;
+const MAX_CONCURRENT_UPLOADS = 2;
+const ATTACHMENT_QUOTA_WARN_PERCENT = 80;
 
 const KNOWN_PART_TYPES = new Set([
   "text",
@@ -235,7 +279,41 @@ function main() {
   let failures = 0;
   let hiddenSince = null;
   let creatingSession = false;
+  let ensureSessionPromise = null;
+  let ensureSessionGeneration = 0;
+  let sessionCreateTimer = null;
+  let sessionCreateRetries = 0;
+  let draftSaveTimer = null;
+  let draftSaveSession = null;
+  let draftSaveText = "";
+  let draftWriteChain = Promise.resolve();
+  let draftEditSeq = 0;
+  let draftLoadSeq = 0;
+  let draftLoadedSession = null;
+  let lastComposerEditAt = 0;
+  let lastTouchAt = 0;
+  let lastTouchSession = null;
+  let pendingSends = [];
+  let pendingSendsSession = null;
+  let pendingSendsBusy = false;
+  const pendingRechecking = new Set();
+  let pendingRefreshTimer = null;
+  let pendingPollTimer = null;
+  let pendingPollAttempts = 0;
+  let pendingRecheckTimer = null;
+  let pendingSendsEl = null;
+  let pendingSendsSignature = "";
+  const lastSavedDraft = new Map();
+  const deleteTimers = new Map();
+  const localFailedBySession = new Map();
+  const composerAttachments = [];
   const deletingSessions = new Set();
+  let attachmentQuotaPercent = null;
+  let attachButtonEl = null;
+  let attachInputEl = null;
+  let attachmentsEl = null;
+  let attachmentsSignature = "";
+  let activeUploads = 0;
   let queueStripSignature = "";
   let sessionSnapshotTooLarge = false;
   let historyCursor = null;
@@ -311,6 +389,12 @@ function main() {
   const inlineUnavailable = new Set();
   const deferredUnavailable = new Set();
   const omittedPartIDs = new Set();
+  let streamNoticeEl = null;
+  let streamNoticeKind = null;
+  let streamLimitPaused = false;
+  let streamLimitProbe = null;
+  let attachmentWarningEl = null;
+  let attachmentWarningSignature = "";
   let inlineCards = new Map();
   let inlineCardByPart = new Map();
   let messagesHydratedSession = null;
@@ -374,6 +458,32 @@ function main() {
     return svg;
   }
 
+  const LOCAL_ICON_PATHS = {
+    paperclip: [
+      "M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48",
+    ],
+    file: ["M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z", "M14 2v6h6"],
+    image: [
+      "M3 3h18v18H3z",
+      "M8.5 10a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3",
+      "m21 15-5-5L5 21",
+    ],
+    download: ["M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4", "m7 10 5 5 5-5", "M12 15V3"],
+  };
+
+  function localIconNode(name, className) {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("class", className === undefined ? "icon" : `icon ${className}`);
+    svg.setAttribute("aria-hidden", "true");
+    svg.setAttribute("focusable", "false");
+    for (const d of LOCAL_ICON_PATHS[name] || LOCAL_ICON_PATHS.file) {
+      const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      path.setAttribute("d", d);
+      svg.append(path);
+    }
+    return svg;
+  }
+
   function createThreadStore(id) {
     return {
       sessionID: id,
@@ -403,6 +513,7 @@ function main() {
         tempID: null,
         serverID: null,
         text: "",
+        attachmentIDs: [],
         knownUserIDs: new Set(),
         bufferedEvents: [],
         absenceSince: null,
@@ -447,6 +558,7 @@ function main() {
     state.inFlight = false;
     state.posting = false;
     state.tempID = null;
+    state.attachmentIDs = [];
     state.commandAccepted = false;
     clearAcceptanceGrace(state);
     if (state.serverID !== null) {
@@ -493,13 +605,24 @@ function main() {
   }
 
   function matchingUserMessage(state) {
-    if (state.text.length === 0) return null;
+    const wantedAttachments = Array.isArray(state.attachmentIDs) ? state.attachmentIDs : [];
+    if (state.text.length === 0 && wantedAttachments.length === 0) return null;
     let matched = null;
     for (const id of store.order) {
       const record = store.messages.get(id);
       if (record === undefined || record.role !== "user") continue;
       if (state.knownUserIDs.has(id)) continue;
       if (record.optimistic === "sending" || record.optimistic === "unknown") continue;
+      if (state.text.length === 0) {
+        const attachmentIDs = (Array.isArray(record.attachments) ? record.attachments : []).map(
+          (attachment) => attachment.id,
+        );
+        if (wantedAttachments.every((attachmentID) => attachmentIDs.includes(attachmentID))) {
+          matched = id;
+          break;
+        }
+        continue;
+      }
       for (const partID of record.partOrder) {
         const part = record.parts.get(partID);
         if (part === undefined || part.type !== "text" || partIgnored(part)) continue;
@@ -575,6 +698,8 @@ function main() {
     state.posting = false;
     state.tempID = null;
     state.serverID = null;
+    state.text = "";
+    state.attachmentIDs = [];
     clearAcceptanceGrace(state);
     recomputeQueue();
     syncComposer();
@@ -1047,6 +1172,40 @@ function main() {
     return withProject(`${apiBase()}/sessions/${encodeURIComponent(id)}/compact`);
   }
 
+  function draftUrl(id) {
+    return withProject(`${apiBase()}/sessions/${encodeURIComponent(id)}/draft`);
+  }
+
+  function attachmentsUrl(session) {
+    const params = new URLSearchParams();
+    if (projectId.length > 0) params.set("project", projectId);
+    if (typeof session === "string" && session.length > 0) params.set("session", session);
+    const query = params.toString();
+    return `${apiBase()}/attachments${query.length === 0 ? "" : `?${query}`}`;
+  }
+
+  function attachmentUrl(id) {
+    return withProject(`${apiBase()}/attachments/${encodeURIComponent(id)}`);
+  }
+
+  function touchUrl(id) {
+    return withProject(`${apiBase()}/sessions/${encodeURIComponent(id)}/touch`);
+  }
+
+  function deleteIfEmptyUrl(id) {
+    return withProject(`${apiBase()}/sessions/${encodeURIComponent(id)}/delete-if-empty`);
+  }
+
+  function pendingSendUrl(id, pendingID) {
+    return withProject(
+      `${apiBase()}/sessions/${encodeURIComponent(id)}/pending/${encodeURIComponent(pendingID)}`,
+    );
+  }
+
+  function pendingRetryUrl(id, pendingID) {
+    return `${pendingSendUrl(id, pendingID)}/retry`;
+  }
+
   function savedPermissionsUrl() {
     return withProject(`${apiBase()}/permissions/saved`);
   }
@@ -1161,6 +1320,128 @@ function main() {
     }
     updateWorkingStatus();
     if (sessionId !== null) refreshInlineQuestions();
+  }
+
+  function ensureStreamNoticeEl() {
+    if (streamNoticeEl !== null) return streamNoticeEl;
+    if (liveEl === null) return null;
+    const meta = liveEl.closest(".chat-thread__meta");
+    const notice = element("div", "chat-stream-notice");
+    notice.setAttribute("role", "status");
+    notice.setAttribute("aria-live", "polite");
+    notice.hidden = true;
+    if (meta !== null) meta.insertAdjacentElement("afterend", notice);
+    else liveEl.insertAdjacentElement("afterend", notice);
+    streamNoticeEl = notice;
+    return notice;
+  }
+
+  function hideStreamNotice(kind) {
+    if (streamNoticeEl === null) return;
+    if (kind !== undefined && streamNoticeKind !== kind) return;
+    streamNoticeEl.hidden = true;
+    streamNoticeEl.replaceChildren();
+    streamNoticeKind = null;
+  }
+
+  function showStreamNotice(message, options) {
+    const host = ensureStreamNoticeEl();
+    if (host === null) return;
+    const settings = options || {};
+    const kind = typeof settings.kind === "string" ? settings.kind : "warning";
+    streamNoticeKind = kind;
+    host.replaceChildren(element("span", "chat-stream-notice__text", message));
+    const actions = Array.isArray(settings.actions) ? settings.actions : [];
+    if (actions.length > 0) {
+      const controls = element("span", "chat-stream-notice__actions");
+      for (const action of actions) {
+        if (action === null || typeof action !== "object") continue;
+        const button = element(
+          "button",
+          action.primary === true ? "btn btn-secondary btn-sm" : "btn btn-ghost btn-sm",
+          typeof action.label === "string" ? action.label : "Continue",
+        );
+        button.type = "button";
+        if (typeof action.title === "string") button.title = action.title;
+        button.addEventListener("click", () => {
+          if (typeof action.onClick === "function") action.onClick();
+        });
+        controls.append(button);
+      }
+      host.append(controls);
+    }
+    host.hidden = false;
+  }
+
+  function pauseForStreamLimit() {
+    if (streamLimitPaused) return;
+    streamLimitPaused = true;
+    closeStream();
+    setConnection("Live updates paused", "paused");
+    showStreamNotice(
+      "Too many live streams are open for this app (8). Close another chat tab, or keep reading history here.",
+      {
+        kind: "limit",
+        actions: [
+          {
+            label: "Retry live",
+            primary: true,
+            title: "Reconnect the live event stream",
+            onClick: () => {
+              streamLimitPaused = false;
+              hideStreamNotice("limit");
+              reconnectStream();
+            },
+          },
+          {
+            label: "Refresh history",
+            title: "Reload messages from history",
+            onClick: () => {
+              hydrateMessages({ reason: "stream-limit", silent: true }).catch(() => {});
+            },
+          },
+        ],
+      },
+    );
+    hydrateMessages({ reason: "stream-limit", silent: true }).catch(() => {});
+    announce("Live updates paused: too many chat tabs are open. History still loads.");
+  }
+
+  async function probeStreamLimit() {
+    if (streamLimitProbe !== null) return false;
+    const controller = new AbortController();
+    streamLimitProbe = controller;
+    const timer = window.setTimeout(() => controller.abort(), 3000);
+    try {
+      const response = await fetch(eventsUrl(), {
+        cache: "no-store",
+        headers: { accept: "text/event-stream" },
+        signal: controller.signal,
+      });
+      if (response.status === 429) {
+        let code = "";
+        try {
+          const parsed = JSON.parse(await response.text());
+          if (parsed !== null && typeof parsed === "object" && typeof parsed.code === "string") {
+            code = parsed.code;
+          }
+        } catch (error) {
+          void error;
+        }
+        if (code === "stream_limit") {
+          pauseForStreamLimit();
+          return true;
+        }
+        return false;
+      }
+      if (response.body !== null) await response.body.cancel().catch(() => {});
+      return false;
+    } catch {
+      return false;
+    } finally {
+      window.clearTimeout(timer);
+      if (streamLimitProbe === controller) streamLimitProbe = null;
+    }
   }
 
   function requestKey(request) {
@@ -1567,7 +1848,10 @@ function main() {
   }
 
   function composerHasDraft() {
-    return promptEl instanceof HTMLTextAreaElement && promptEl.value.trim().length > 0;
+    return (
+      currentAttachmentCount() > 0 ||
+      (promptEl instanceof HTMLTextAreaElement && promptEl.value.trim().length > 0)
+    );
   }
 
   function isCoarsePointer() {
@@ -1618,6 +1902,7 @@ function main() {
     const action = composerAction({
       turnActive: statusType === "busy" || statusType === "retry",
       hasDraft: composerHasDraft(),
+      attachmentCount: currentAttachmentCount(),
       sessionId,
       acceptanceBusy: acceptanceInFlight() || acceptanceUnknown(),
       promptsWaiting: activePromptEntries().length > 0,
@@ -1625,14 +1910,20 @@ function main() {
     });
     composerMode = action.mode;
     const stop = action.mode === "stop";
+    const blocking = hasUploadingAttachments() || hasFailedAttachments();
     sendButton.type = stop ? "button" : "submit";
-    sendButton.disabled = action.disabled;
+    sendButton.disabled = action.disabled || (!stop && blocking);
     sendButton.classList.toggle("btn-danger", stop);
     sendButton.classList.toggle("btn-primary", !stop);
     sendButton.setAttribute("aria-label", stop ? "Stop the current turn" : "Send message");
-    sendButton.title = stop ? "Stop the current turn" : "Send message";
+    sendButton.title = stop
+      ? "Stop the current turn"
+      : blocking
+        ? "Resolve the attachments before sending"
+        : "Send message";
     setComposerButtonIcon(stop ? "stop" : "send");
     setComposerButtonLabel(stop ? "Stop" : "Send");
+    syncAttachmentControls();
   }
 
   function syncComposer() {
@@ -1759,12 +2050,1399 @@ function main() {
       needle,
       sessions: sessions.map((session) => {
         const id = String(session.id);
-        return [id, sessionLabel(session), promptCountForSession(id)];
+        const draft =
+          session.draft !== null && typeof session.draft === "object"
+            ? session.draft
+            : null;
+        return [
+          id,
+          sessionLabel(session),
+          promptCountForSession(id),
+          draft === null
+            ? null
+            : [draft.hasText === true, draft.attachmentCount, draft.emptyDraft === true],
+        ];
       }),
       runtime: runtimeState,
       deleting: [...deletingSessions].sort(),
       creating: creatingSession,
     });
+  }
+
+  function currentComposerText() {
+    return promptEl instanceof HTMLTextAreaElement ? promptEl.value : "";
+  }
+
+  function currentAttachmentCount() {
+    return composerAttachments.length;
+  }
+
+  function readyAttachments() {
+    return composerAttachments.filter(
+      (chip) => chip.status === "ready" && typeof chip.id === "string" && chip.id.length > 0,
+    );
+  }
+
+  function hasUploadingAttachments() {
+    return composerAttachments.some((chip) => chip.status === "uploading") ||
+      attachmentsUploading(composerAttachments);
+  }
+
+  function hasFailedAttachments() {
+    return composerAttachments.some((chip) => chip.status === "error");
+  }
+
+  function localAttachmentKey() {
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+      return `local_att_${crypto.randomUUID()}`;
+    }
+    return `local_att_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+  }
+
+  function attachmentViewFromChip(chip) {
+    return normalizeAttachment(chip);
+  }
+
+  function attachmentStateText(state) {
+    if (state === "missing") return "Missing";
+    if (state === "in_flight") return "Sending…";
+    if (state === "sent") return "Sent";
+    return "";
+  }
+
+  function attachmentSubText(chip) {
+    if (chip.status === "uploading") {
+      return `Uploading ${Math.round(chip.progress || 0)}% · ${formatAttachmentSize(chip.size)}`;
+    }
+    if (chip.status === "error") {
+      return chip.error || "Upload failed";
+    }
+    const parts = [formatAttachmentSize(chip.size)];
+    if (chip.mime) parts.push(chip.mime);
+    const state = attachmentStateText(chip.state);
+    if (state) parts.push(state);
+    parts.push(attachmentModeLabel(chip.kind, chip.mode));
+    return parts.join(" · ");
+  }
+
+  function attachmentThumbMime(mime) {
+    return attachmentKindForMime(mime) === "image";
+  }
+
+  function ensureAttachmentsEl() {
+    if (attachmentsEl !== null) return attachmentsEl;
+    if (composer === null) return null;
+    attachmentsEl = element("div", "chat-attachments");
+    attachmentsEl.id = "chat-attachments";
+    attachmentsEl.setAttribute("role", "group");
+    attachmentsEl.setAttribute("aria-label", "Attachments");
+    const row = composer.querySelector(".composer__row");
+    composer.insertBefore(attachmentsEl, row === null ? composer.firstChild : row);
+    return attachmentsEl;
+  }
+
+  function buildAttachmentChip(chip) {
+    const row = element("div", "chat-attachment");
+    row.dataset.attachmentKey = chip.key;
+    row.dataset.status = chip.status;
+    row.dataset.kind = chip.kind || "file";
+    const icon = element("span", "chat-attachment__icon");
+    icon.append(localIconNode(attachmentThumbMime(chip.mime) ? "image" : "file"));
+    const meta = element("div", "chat-attachment__meta");
+    const name = element("span", "chat-attachment__name", chip.name || "Attachment");
+    name.title = chip.name || "Attachment";
+    const sub = element("span", "chat-attachment__sub", attachmentSubText(chip));
+    meta.append(name, sub);
+    const actions = element("div", "chat-attachment__actions");
+    if (chip.status === "error") {
+      const retry = element("button", "btn btn-secondary btn-sm", "Retry");
+      retry.type = "button";
+      retry.setAttribute("aria-label", `Retry ${chip.name || "attachment"}`);
+      retry.addEventListener("click", () => retryAttachmentChip(chip));
+      actions.append(retry);
+    }
+    if (chip.status === "ready" && chip.id !== null) {
+      const modeOptions = attachmentIsMutable(chip)
+        ? attachmentModeOptions(chip.kind)
+        : [];
+      if (modeOptions.length > 0) {
+        const mode = element("select", "chat-attachment__mode-select");
+        mode.setAttribute("aria-label", `Delivery mode for ${chip.name || "attachment"}`);
+        mode.title = "Delivery mode";
+        for (const option of modeOptions) {
+          const node = element("option", "", option.label);
+          node.value = option.value;
+          mode.append(node);
+        }
+        mode.value = attachmentModeValue(chip.kind, chip.mode);
+        mode.addEventListener("change", () => {
+          void patchAttachmentMode(chip, attachmentModeValue(chip.kind, mode.value));
+        });
+        actions.append(mode);
+      } else {
+        actions.append(
+          element(
+            "span",
+            "chat-attachment__mode",
+            attachmentIsMutable(chip) ? "File only" : attachmentModeLabel(chip.kind, chip.mode),
+          ),
+        );
+      }
+    }
+    const remove = element("button", "btn btn-ghost btn-icon btn-sm chat-attachment__remove");
+    remove.type = "button";
+    remove.setAttribute("aria-label", `Remove ${chip.name || "attachment"}`);
+    const delivered =
+      chip.status === "ready" && (chip.state === "in_flight" || chip.state === "sent");
+    remove.title =
+      chip.status === "uploading"
+        ? "Wait for the upload to finish"
+        : delivered
+          ? "This attachment has already been delivered"
+          : "Remove";
+    remove.disabled = chip.status === "uploading" || delivered;
+    remove.append(iconNode("x"));
+    remove.addEventListener("click", () => {
+      void removeAttachmentChip(chip);
+    });
+    actions.append(remove);
+    row.append(icon, meta, actions);
+    if (chip.status === "uploading") {
+      const progress = element("div", "chat-attachment__progress");
+      progress.setAttribute("role", "progressbar");
+      progress.setAttribute("aria-label", `Uploading ${chip.name || "attachment"}`);
+      progress.setAttribute("aria-valuemin", "0");
+      progress.setAttribute("aria-valuemax", "100");
+      progress.setAttribute("aria-valuenow", String(Math.round(chip.progress || 0)));
+      const fill = element("span", "chat-attachment__progress-fill");
+      fill.style.setProperty("--attachment-progress", `${Math.round(chip.progress || 0)}%`);
+      progress.append(fill);
+      row.append(progress);
+    }
+    return row;
+  }
+
+  function updateAttachmentProgress(chip) {
+    const node = chip.node;
+    if (node === undefined || node === null) return;
+    const progress = node.querySelector(".chat-attachment__progress");
+    const fill = node.querySelector(".chat-attachment__progress-fill");
+    const sub = node.querySelector(".chat-attachment__sub");
+    const value = Math.round(chip.progress || 0);
+    if (progress !== null) progress.setAttribute("aria-valuenow", String(value));
+    if (fill !== null) fill.style.setProperty("--attachment-progress", `${value}%`);
+    if (sub !== null) sub.textContent = attachmentSubText(chip);
+  }
+
+  function renderComposerAttachments() {
+    const host = ensureAttachmentsEl();
+    if (host === null) return;
+    const signature = JSON.stringify({
+      chips: composerAttachments.map((chip) => [
+        chip.key,
+        chip.id,
+        chip.name,
+        chip.status,
+        chip.state,
+        chip.mode,
+        chip.error,
+        chip.inline,
+        chip.kind,
+        chip.mime,
+        chip.size,
+        chip.downloadURL,
+      ]),
+      quota: attachmentQuotaPercent,
+    });
+    if (signature === attachmentsSignature) return;
+    attachmentsSignature = signature;
+    host.replaceChildren();
+    for (const chip of composerAttachments) {
+      chip.node = buildAttachmentChip(chip);
+      host.append(chip.node);
+    }
+    if (
+      typeof attachmentQuotaPercent === "number" &&
+      attachmentQuotaPercent >= ATTACHMENT_QUOTA_WARN_PERCENT
+    ) {
+      host.append(
+        element(
+          "p",
+          "chat-attachments__quota",
+          `Attachment storage ${Math.round(attachmentQuotaPercent)}% full`,
+        ),
+      );
+    }
+    host.hidden = composerAttachments.length === 0 &&
+      !(typeof attachmentQuotaPercent === "number" &&
+        attachmentQuotaPercent >= ATTACHMENT_QUOTA_WARN_PERCENT);
+  }
+
+  function setComposerAttachmentsFromViews(value) {
+    const views = normalizeAttachments(value);
+    const preserved = composerAttachments.filter(
+      (chip) => chip.status === "uploading" || chip.status === "error",
+    );
+    composerAttachments.length = 0;
+    for (const view of views) {
+      composerAttachments.push({
+        ...view,
+        key: view.id,
+        status: "ready",
+        progress: 100,
+        file: null,
+        error: null,
+        errorCode: null,
+        node: null,
+        sessionID: sessionId,
+      });
+    }
+    for (const chip of preserved) {
+      if (!composerAttachments.some((candidate) => candidate.id !== null && candidate.id === chip.id)) {
+        composerAttachments.push(chip);
+      }
+    }
+    attachmentsSignature = "";
+    renderComposerAttachments();
+    syncComposer();
+  }
+
+  function clearComposerAttachments() {
+    composerAttachments.length = 0;
+    attachmentsSignature = "";
+    renderComposerAttachments();
+    syncComposer();
+  }
+
+  function attachmentErrorMessage(error) {
+    const base =
+      error !== null && typeof error === "object" && typeof error.message === "string"
+        ? error.message
+        : "Upload failed";
+    const code =
+      error !== null && typeof error === "object" && typeof error.code === "string"
+        ? error.code
+        : "";
+    return code.length > 0 && !base.includes(code) ? `${base} (${code})` : base;
+  }
+
+  function sendErrorMessage(error) {
+    return attachmentErrorMessage(error);
+  }
+
+  function contentDispositionFor(name) {
+    const encoded = encodeURIComponent(name).replace(
+      /['()*]/g,
+      (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`,
+    );
+    const fallback = name.replace(/[^\x20-\x7e]/g, "_").replace(/["\\]/g, "_");
+    return `attachment; filename="${fallback}"; filename*=UTF-8''${encoded}`;
+  }
+
+  function addFiles(fileList) {
+    if (attachmentsDisabledForCommand()) {
+      showToast("Attachments are disabled while using a command.", "error");
+      return;
+    }
+    const selected = Array.from(fileList || []).filter((file) => file instanceof File);
+    if (selected.length === 0) return;
+    const files = [];
+    for (const file of selected) {
+      if (file.size > MAX_ATTACHMENT_BYTES) {
+        showToast(`${file.name} is larger than 100 MB.`, "error");
+        continue;
+      }
+      files.push(file);
+    }
+    if (files.length === 0) return;
+    if (composerAttachments.length + files.length > MAX_ATTACHMENTS) {
+      showSendError(`Attach at most ${MAX_ATTACHMENTS} files per message.`);
+      return;
+    }
+    if (sessionId !== null) cancelDeleteIfEmpty(sessionId);
+    for (const file of files) {
+      composerAttachments.push({
+        key: localAttachmentKey(),
+        id: null,
+        name: file.name,
+        mime: file.type || "application/octet-stream",
+        size: file.size,
+        kind: attachmentKindForMime(file.type),
+        mode: "auto",
+        state: "draft",
+        downloadURL: "",
+        inline: false,
+        status: "uploading",
+        progress: 0,
+        file,
+        sessionID: null,
+        error: null,
+        errorCode: null,
+        started: false,
+        node: null,
+      });
+    }
+    attachmentsSignature = "";
+    renderComposerAttachments();
+    syncComposer();
+    void uploadPendingAttachments();
+  }
+
+  async function uploadPendingAttachments() {
+    const pending = composerAttachments.filter(
+      (chip) => chip.status === "uploading" && chip.started !== true,
+    );
+    for (const chip of pending) {
+      if (activeUploads >= MAX_CONCURRENT_UPLOADS) break;
+      chip.started = true;
+      activeUploads += 1;
+      void uploadAttachmentChip(chip);
+    }
+  }
+
+  function uploadRequest(chip, session) {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", attachmentsUrl(session));
+      xhr.setRequestHeader("Content-Disposition", contentDispositionFor(chip.file.name));
+      if (chip.file.type) xhr.setRequestHeader("Content-Type", chip.file.type);
+      chip.xhr = xhr;
+      xhr.upload.addEventListener("progress", (event) => {
+        if (!event.lengthComputable) return;
+        chip.progress = Math.min(99, Math.round((event.loaded / event.total) * 100));
+        updateAttachmentProgress(chip);
+      });
+      xhr.addEventListener("load", () => {
+        let parsed = null;
+        try {
+          parsed = JSON.parse(xhr.responseText);
+        } catch (error) {
+          void error;
+        }
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve(parsed);
+          return;
+        }
+        const failure = new Error(
+          parsed !== null && typeof parsed.error === "string"
+            ? parsed.error
+            : `Upload failed (${xhr.status}).`,
+        );
+        failure.status = xhr.status;
+        if (parsed !== null && typeof parsed.code === "string") failure.code = parsed.code;
+        reject(failure);
+      });
+      xhr.addEventListener("error", () => reject(new Error("Upload failed.")));
+      xhr.addEventListener("abort", () => reject(new Error("Upload cancelled.")));
+      xhr.send(chip.file);
+    });
+  }
+
+  async function uploadAttachmentChip(chip) {
+    try {
+      const title = currentComposerText().trim().length === 0 ? { title: "Attachment" } : undefined;
+      const id = await ensureSessionShared(title);
+      chip.sessionID = id;
+      if (!composerAttachments.includes(chip)) return;
+      const data = await uploadRequest(chip, id);
+      if (!composerAttachments.includes(chip)) return;
+      const view = normalizeAttachment(data === null ? null : data.attachment);
+      if (view === null) throw new Error("The upload response was invalid.");
+      Object.assign(chip, view, {
+        key: chip.key,
+        status: "ready",
+        progress: 100,
+        file: null,
+        error: null,
+        errorCode: null,
+        node: null,
+        sessionID: id,
+      });
+      if (data !== null && data.quota && typeof data.quota.percent === "number") {
+        attachmentQuotaPercent = data.quota.percent;
+      }
+      attachmentsSignature = "";
+      renderComposerAttachments();
+      syncComposer();
+      showSendError(null);
+      if (sessionId === id) {
+        updateLocalSessionDraft(
+          id,
+          currentComposerText(),
+          null,
+          composerAttachments.length,
+        );
+      }
+    } catch (error) {
+      if (!composerAttachments.includes(chip)) return;
+      chip.status = "error";
+      chip.progress = null;
+      chip.error = attachmentErrorMessage(error);
+      chip.errorCode =
+        error !== null && typeof error === "object" && typeof error.code === "string"
+          ? error.code
+          : null;
+      chip.node = null;
+      attachmentsSignature = "";
+      renderComposerAttachments();
+      syncComposer();
+    } finally {
+      activeUploads = Math.max(0, activeUploads - 1);
+      void uploadPendingAttachments();
+    }
+  }
+
+  function retryAttachmentChip(chip) {
+    if (!composerAttachments.includes(chip)) return;
+    chip.status = "uploading";
+    chip.progress = 0;
+    chip.error = null;
+    chip.errorCode = null;
+    chip.started = false;
+    chip.node = null;
+    attachmentsSignature = "";
+    showSendError(null);
+    renderComposerAttachments();
+    syncComposer();
+    void uploadPendingAttachments();
+  }
+
+  async function removeAttachmentChip(chip) {
+    if (chip.status === "uploading") {
+      showToast("Wait for the upload to finish before removing it.", "error");
+      return;
+    }
+    if (typeof chip.id === "string" && chip.id.length > 0) {
+      try {
+        await api(attachmentUrl(chip.id), { method: "DELETE" });
+      } catch (error) {
+        showToast(attachmentErrorMessage(error), "error");
+        void refreshDraftForSession(sessionId, {
+          applyText: false,
+          applyAttachments: true,
+        });
+        return;
+      }
+    }
+    const index = composerAttachments.indexOf(chip);
+    if (index < 0) return;
+    composerAttachments.splice(index, 1);
+    attachmentsSignature = "";
+    renderComposerAttachments();
+    syncComposer();
+    if (!hasUploadingAttachments() && !hasFailedAttachments()) showSendError(null);
+    if (sessionId !== null) {
+      updateLocalSessionDraft(sessionId, currentComposerText(), null, composerAttachments.length);
+    }
+    scheduleDraftForCurrentInput();
+  }
+
+  async function patchAttachmentMode(chip, mode) {
+    if (chip.status !== "ready" || typeof chip.id !== "string" || !attachmentIsMutable(chip)) {
+      return;
+    }
+    const resolved = attachmentModeValue(chip.kind, mode);
+    try {
+      const data = await api(attachmentUrl(chip.id), {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ mode: resolved }),
+      });
+      const view = normalizeAttachment(
+        data !== null && typeof data === "object" && data.attachment ? data.attachment : data,
+      );
+      if (view === null) throw new Error("The attachment response was invalid.");
+      Object.assign(chip, view, {
+        key: chip.key,
+        status: "ready",
+        progress: 100,
+        file: null,
+        error: null,
+        errorCode: null,
+        node: null,
+      });
+    } catch (error) {
+      showToast(attachmentErrorMessage(error), "error");
+    }
+    attachmentsSignature = "";
+    renderComposerAttachments();
+    syncComposer();
+  }
+
+  async function redeliverAttachmentAsFile(attachment, trigger) {
+    const target = sessionId;
+    if (target === null) {
+      showToast("Open a session before sending the attachment again.", "error");
+      return;
+    }
+    const payload = redeliveryAttachmentPayload(attachment);
+    if (payload.length === 0) return;
+    if (trigger !== undefined && trigger !== null) {
+      trigger.disabled = true;
+      trigger.setAttribute("aria-busy", "true");
+    }
+    try {
+      const data = await api(asyncMessagesUrl(target), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ attachments: payload }),
+      });
+      const warnings = [
+        {
+          code: "attachment_redelivered",
+          message: `Sent another copy of ${attachment.name || "the attachment"} as a file in a new message. The original message is unchanged.`,
+        },
+      ];
+      if (data !== null && typeof data === "object" && Array.isArray(data.warnings)) {
+        warnings.push(...data.warnings);
+      }
+      showAttachmentWarnings(warnings);
+      showToast("Sent again as a file.", "success");
+      hydrateMessages({ reason: "redelivery", silent: true }).catch(() => {});
+      void refreshDraftForSession(target, { applyText: false }).catch(() => {});
+    } catch (error) {
+      showToast(sendErrorMessage(error), "error");
+    } finally {
+      if (trigger !== undefined && trigger !== null && trigger.isConnected) {
+        trigger.disabled = false;
+        trigger.removeAttribute("aria-busy");
+      }
+    }
+  }
+
+  function attachmentsDisabledForCommand() {
+    return paletteOpen || parseComposerCommand(currentComposerText()).kind === "command";
+  }
+
+  function syncAttachmentControls() {
+    if (attachButtonEl === null) return;
+    const commandActive = attachmentsDisabledForCommand();
+    attachButtonEl.disabled = commandActive;
+    attachButtonEl.setAttribute("aria-disabled", commandActive ? "true" : "false");
+    attachButtonEl.title = commandActive
+      ? "Attachments are disabled while using a command"
+      : "Attach files";
+  }
+
+  function dataTransferHasFiles(event) {
+    const transfer = event.dataTransfer;
+    if (transfer === null || transfer === undefined) return false;
+    return Array.from(transfer.types || []).includes("Files");
+  }
+
+  function bindAttachmentDropZone(node) {
+    if (!(node instanceof HTMLElement)) return;
+    let depth = 0;
+    const clear = () => {
+      depth = 0;
+      node.classList.remove("is-drop-target");
+    };
+    node.addEventListener("dragenter", (event) => {
+      if (!dataTransferHasFiles(event)) return;
+      event.preventDefault();
+      depth += 1;
+      node.classList.add("is-drop-target");
+    });
+    node.addEventListener("dragover", (event) => {
+      if (!dataTransferHasFiles(event)) return;
+      event.preventDefault();
+      if (event.dataTransfer !== null) event.dataTransfer.dropEffect = "copy";
+    });
+    node.addEventListener("dragleave", (event) => {
+      if (!dataTransferHasFiles(event)) return;
+      depth = Math.max(0, depth - 1);
+      if (depth === 0) clear();
+    });
+    node.addEventListener("drop", (event) => {
+      if (!dataTransferHasFiles(event)) return;
+      event.preventDefault();
+      clear();
+      if (event.dataTransfer !== null) addFiles(event.dataTransfer.files);
+    });
+  }
+
+  function initAttachmentUi() {
+    if (composer === null || attachButtonEl !== null) return;
+    const row = composer.querySelector(".composer__row");
+    if (row === null) return;
+    attachButtonEl = element("button", "btn btn-ghost btn-icon chat-attach");
+    attachButtonEl.type = "button";
+    attachButtonEl.id = "chat-attach";
+    attachButtonEl.setAttribute("aria-label", "Attach files");
+    attachButtonEl.title = "Attach files";
+    attachButtonEl.append(localIconNode("paperclip"));
+    attachInputEl = element("input", "chat-attach__input");
+    attachInputEl.type = "file";
+    attachInputEl.id = "chat-attach-input";
+    attachInputEl.multiple = true;
+    attachInputEl.hidden = true;
+    attachInputEl.tabIndex = -1;
+    row.insertBefore(attachButtonEl, row.firstChild);
+    row.insertBefore(attachInputEl, attachButtonEl.nextSibling);
+    attachButtonEl.addEventListener("click", () => {
+      if (attachButtonEl.disabled) return;
+      attachInputEl.click();
+    });
+    attachInputEl.addEventListener("change", () => {
+      const files = attachInputEl.files === null ? [] : Array.from(attachInputEl.files);
+      attachInputEl.value = "";
+      if (files.length > 0) addFiles(files);
+    });
+    if (promptEl instanceof HTMLTextAreaElement) {
+      promptEl.addEventListener("paste", (event) => {
+        if (attachmentsDisabledForCommand() || event.clipboardData === null) return;
+        const files = [];
+        for (const item of Array.from(event.clipboardData.items || [])) {
+          if (item.kind !== "file") continue;
+          const file = item.getAsFile();
+          if (file !== null) files.push(file);
+        }
+        if (files.length === 0) return;
+        event.preventDefault();
+        addFiles(files);
+      });
+    }
+    bindAttachmentDropZone(composer);
+    bindAttachmentDropZone(scrollEl);
+    syncAttachmentControls();
+    renderComposerAttachments();
+  }
+
+  function sessionHasHistory() {
+    for (const id of store.order) {
+      const record = store.messages.get(id);
+      if (record === undefined) continue;
+      if (record.role !== "user" && record.role !== "assistant") continue;
+      if (
+        record.optimistic === "sending" ||
+        record.optimistic === "unknown" ||
+        record.optimistic === "failed"
+      ) {
+        continue;
+      }
+      return true;
+    }
+    return false;
+  }
+
+  function cancelSessionCreate() {
+    if (sessionCreateTimer !== null) window.clearTimeout(sessionCreateTimer);
+    sessionCreateTimer = null;
+  }
+
+  function resetEnsureSession() {
+    ensureSessionGeneration += 1;
+    ensureSessionPromise = null;
+    creatingSession = false;
+    cancelSessionCreate();
+    setNewSessionBusy(false);
+  }
+
+  function cancelDraftSaveTimer() {
+    if (draftSaveTimer !== null) window.clearTimeout(draftSaveTimer);
+    draftSaveTimer = null;
+    draftSaveSession = null;
+  }
+
+  function scheduleDraftSave(id, text) {
+    cancelDraftSaveTimer();
+    draftSaveSession = id;
+    draftSaveText = text;
+    draftSaveTimer = window.setTimeout(() => {
+      draftSaveTimer = null;
+      const target = draftSaveSession;
+      const value = draftSaveText;
+      draftSaveSession = null;
+      if (target === null) return;
+      void queueDraftPut(target, value);
+    }, DRAFT_SAVE_DEBOUNCE_MS);
+  }
+
+  function queueDraftPut(id, text, options) {
+    const settings = options || {};
+    const bodyText = draftTextForSave(text);
+    const run = async () => {
+      try {
+        const data = await api(draftUrl(id), {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ text: bodyText }),
+        });
+        lastSavedDraft.set(id, bodyText);
+        if (id === sessionId) {
+          updateLocalSessionDraft(
+            id,
+            bodyText,
+            data === null ? null : data.updatedAt,
+            currentAttachmentCount(),
+          );
+        }
+      } catch (error) {
+        if (isSessionGoneError(error)) {
+          if (settings.silentGone === true) {
+            sessions = sessions.filter((session) => String(session.id) !== id);
+            renderSessions();
+          } else {
+            handleSessionGone(id);
+          }
+        }
+      }
+    };
+    draftWriteChain = draftWriteChain.then(run, run);
+    return draftWriteChain;
+  }
+
+  async function settleDraftWrites() {
+    cancelDraftSaveTimer();
+    try {
+      await draftWriteChain;
+    } catch (error) {
+      void error;
+    }
+  }
+
+  async function clearDraftAfterCommand(id) {
+    if (id === null) return;
+    cancelDraftSaveTimer();
+    try {
+      await draftWriteChain;
+    } catch (error) {
+      void error;
+    }
+    const saved = lastSavedDraft.get(id);
+    if (typeof saved !== "string" || saved.length === 0) return;
+    await queueDraftPut(id, "");
+  }
+
+  async function flushDraftForSwitch(id, text) {
+    if (id === null) return;
+    cancelDraftSaveTimer();
+    if (isSlashCommandOnly(text)) return;
+    await queueDraftPut(id, text, { silentGone: true });
+  }
+
+  function updateLocalSessionDraft(id, text, updatedAt, attachmentCount) {
+    const session = sessions.find((candidate) => String(candidate.id) === id);
+    if (session === undefined) return;
+    const existing =
+      session.draft !== null && typeof session.draft === "object" ? session.draft : null;
+    const hasText = draftTextForSave(text).trim().length > 0;
+    const count =
+      typeof attachmentCount === "number"
+        ? Math.max(0, attachmentCount)
+        : id === sessionId
+          ? Math.max(0, currentAttachmentCount())
+          : existing !== null && typeof existing.attachmentCount === "number"
+            ? Math.max(0, existing.attachmentCount)
+            : 0;
+    const hasAttachments = count > 0;
+    const present = hasText || hasAttachments;
+    const knownEmpty =
+      existing !== null && typeof existing.emptyDraft === "boolean" ? existing.emptyDraft : null;
+    const emptyDraft =
+      present &&
+      (knownEmpty !== null
+        ? knownEmpty
+        : id === sessionId
+          ? sessionHasHistory() === false
+          : false);
+    session.draft = {
+      hasText,
+      attachmentCount: count,
+      emptyDraft,
+      updatedAt:
+        typeof updatedAt === "string" ? updatedAt : (existing === null ? null : existing.updatedAt),
+    };
+    renderSessions();
+  }
+
+  function isSessionGoneError(error) {
+    if (error === null || typeof error !== "object") return false;
+    if (error.status === 410) return true;
+    if (error.status !== 404) return false;
+    return error.code === "session_not_found" || error.code === "session_gone";
+  }
+
+  function handleSessionGone(id) {
+    cancelDeleteIfEmpty(id);
+    if (draftSaveSession === id) cancelDraftSaveTimer();
+    localFailedBySession.delete(id);
+    sessionRuntime.delete(id);
+    acceptanceBySession.delete(id);
+    sessions = sessions.filter((session) => String(session.id) !== id);
+    if (sessionId === id) {
+      startDraft({ focus: false, skipFlush: true });
+    } else {
+      renderSessions();
+    }
+    refreshSessions().catch(() => {});
+  }
+
+  function touchCurrentSession() {
+    const id = sessionId;
+    if (id === null) return;
+    const now = Date.now();
+    if (lastTouchSession === id && now - lastTouchAt < TOUCH_THROTTLE_MS) return;
+    lastTouchSession = id;
+    lastTouchAt = now;
+    void api(touchUrl(id), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    }).catch(() => {});
+  }
+
+  function scheduleSessionCreate() {
+    cancelSessionCreate();
+    sessionCreateTimer = window.setTimeout(runSessionCreate, SESSION_CREATE_DEBOUNCE_MS);
+  }
+
+  async function runSessionCreate() {
+    sessionCreateTimer = null;
+    if (sessionId !== null || ensureSessionPromise !== null) return;
+    const text = currentComposerText();
+    if (draftIsEmpty({ text, attachmentCount: currentAttachmentCount() })) return;
+    if (isSlashCommandOnly(text)) return;
+    const title =
+      text.trim().length === 0 && currentAttachmentCount() > 0
+        ? { title: "Attachment" }
+        : undefined;
+    try {
+      const id = await ensureSessionShared(title);
+      sessionCreateRetries = 0;
+      if (id !== null) afterSessionCreatedForDraft(id);
+    } catch (error) {
+      void error;
+      if (sessionId !== null) return;
+      sessionCreateRetries += 1;
+      if (sessionCreateRetries <= SESSION_CREATE_MAX_RETRIES) {
+        sessionCreateTimer = window.setTimeout(runSessionCreate, SESSION_CREATE_RETRY_MS);
+      } else {
+        showSessionError("Could not start a session; the draft is kept locally.");
+      }
+    }
+  }
+
+  function afterSessionCreatedForDraft(id) {
+    cancelSessionCreate();
+    const text = currentComposerText();
+    if (draftIsEmpty({ text, attachmentCount: currentAttachmentCount() })) {
+      scheduleDeleteIfEmpty(id);
+      return;
+    }
+    if (isSlashCommandOnly(text)) return;
+    cancelDeleteIfEmpty(id);
+    scheduleDraftSave(id, text);
+  }
+
+  function scheduleDraftForCurrentInput() {
+    const text = currentComposerText();
+    const empty = draftIsEmpty({ text, attachmentCount: currentAttachmentCount() });
+    const slashOnly = isSlashCommandOnly(text);
+    if (sessionId === null) {
+      cancelDraftSaveTimer();
+      if (!empty && !slashOnly) scheduleSessionCreate();
+      else cancelSessionCreate();
+      return;
+    }
+    cancelSessionCreate();
+    if (slashOnly) {
+      cancelDraftSaveTimer();
+      cancelDeleteIfEmpty(sessionId);
+      return;
+    }
+    if (empty) {
+      scheduleDraftSave(sessionId, "");
+      maybeScheduleDeleteForActive();
+      return;
+    }
+    cancelDeleteIfEmpty(sessionId);
+    scheduleDraftSave(sessionId, text);
+  }
+
+  function setComposerValue(text) {
+    if (!(promptEl instanceof HTMLTextAreaElement)) return;
+    const value = typeof text === "string" ? text : "";
+    if (promptEl.value === value) return;
+    promptEl.value = value;
+    resizePrompt();
+    syncPaletteFromDraft();
+    updateComposerAction();
+    syncComposer();
+  }
+
+  function applyDraftData(id, data, options) {
+    const settings = options || {};
+    const text = data !== null && typeof data.text === "string" ? data.text : "";
+    const attachments = normalizeAttachments(
+      data !== null && Array.isArray(data.attachments) ? data.attachments : [],
+    );
+    const pending = normalizePendingSends(data === null ? null : data.pendingSends);
+    const quota =
+      data !== null &&
+      data.quota !== null &&
+      typeof data.quota === "object" &&
+      typeof data.quota.percent === "number"
+        ? data.quota.percent
+        : null;
+    if (id !== sessionId) {
+      updateLocalSessionDraft(
+        id,
+        text,
+        data === null ? null : data.updatedAt,
+        attachments.length,
+      );
+      return null;
+    }
+    draftLoadedSession = id;
+    pendingSends = pending;
+    pendingSendsSession = id;
+    pendingRechecking.clear();
+    renderPendingSends();
+    schedulePendingPoll(id);
+    lastSavedDraft.set(id, text);
+    attachmentQuotaPercent = quota;
+    if (settings.applyAttachments === true) {
+      setComposerAttachmentsFromViews(attachments);
+    }
+    if (settings.applyText !== false && settings.editSeq === draftEditSeq) {
+      setComposerValue(text);
+    }
+    updateLocalSessionDraft(
+      id,
+      text,
+      data === null ? null : data.updatedAt,
+      Math.max(attachments.length, composerAttachments.length),
+    );
+    reconcileLocalFailed();
+    if (settings.scheduleDelete === true) maybeScheduleDeleteForActive();
+    return data;
+  }
+
+  async function loadDraftForSession(id, options) {
+    if (id === null) return null;
+    const settings = options || {};
+    const seq = ++draftLoadSeq;
+    const editSeq = draftEditSeq;
+    try {
+      const data = await api(draftUrl(id));
+      if (sessionId !== id || draftLoadSeq !== seq) return null;
+      return applyDraftData(id, data, {
+        applyText: settings.applyText !== false,
+        applyAttachments:
+          settings.applyAttachments === true || settings.applyText !== false,
+        editSeq,
+        scheduleDelete: settings.scheduleDelete === true,
+      });
+    } catch (error) {
+      if (isSessionGoneError(error)) handleSessionGone(id);
+      return null;
+    }
+  }
+
+  function refreshDraftForSession(id, options) {
+    return loadDraftForSession(id, options);
+  }
+
+  function ensurePendingSendsEl() {
+    if (pendingSendsEl !== null) return pendingSendsEl;
+    if (composer === null) return null;
+    pendingSendsEl = element("div", "chat-pending-sends");
+    pendingSendsEl.id = "chat-pending-sends";
+    pendingSendsEl.setAttribute("aria-label", "Pending messages");
+    composer.insertBefore(pendingSendsEl, composer.firstChild);
+    return pendingSendsEl;
+  }
+
+  function buildPendingSendRow(entry) {
+    const row = element("div", "chat-send-recovery");
+    row.dataset.pendingId = entry.id;
+    row.dataset.state = entry.state;
+    row.setAttribute("role", "status");
+    const rechecking = pendingRechecking.has(entry.id);
+    const label = element(
+      "span",
+      "",
+      rechecking ? `Checking delivery${entry.text.length > 0 ? `: ${entry.text.slice(0, 120)}` : "…"}` : pendingSendLabel(entry),
+    );
+    row.append(label);
+    if (rechecking) return row;
+    const actions = pendingSendActions(entry.state);
+    if (actions.readOnly || pendingSendsBusy) return row;
+    if (actions.canRestore) {
+      const restore = element("button", "btn btn-secondary btn-sm", "Restore");
+      restore.type = "button";
+      restore.addEventListener("click", () => {
+        void performPendingAction(entry, "restore", {});
+      });
+      row.append(restore);
+    }
+    if (actions.canRetry) {
+      const retry = element("button", "btn btn-secondary btn-sm", actions.retryLabel);
+      retry.type = "button";
+      retry.addEventListener("click", () => {
+        void performPendingAction(entry, "retry", { force: actions.force });
+      });
+      row.append(retry);
+    }
+    const dismiss = element("button", "btn btn-ghost btn-sm", "Dismiss");
+    dismiss.type = "button";
+    dismiss.addEventListener("click", () => {
+      void performPendingAction(entry, "dismiss", {});
+    });
+    row.append(dismiss);
+    return row;
+  }
+
+  function renderPendingSends() {
+    const container = ensurePendingSendsEl();
+    if (container === null) return;
+    const entries = pendingSendsSession === sessionId ? pendingSends : [];
+    const signature = JSON.stringify({
+      entries: entries.map((entry) => [
+        entry.id,
+        entry.state,
+        entry.text,
+        Array.isArray(entry.attachments) ? entry.attachments.length : 0,
+      ]),
+      busy: pendingSendsBusy,
+      rechecking: [...pendingRechecking].sort(),
+    });
+    if (signature === pendingSendsSignature) return;
+    pendingSendsSignature = signature;
+    container.replaceChildren();
+    container.hidden = entries.length === 0;
+    if (entries.length === 0) return;
+    for (const entry of entries) container.append(buildPendingSendRow(entry));
+  }
+
+  function schedulePendingRefresh(id) {
+    if (id === null || id !== sessionId) return;
+    if (pendingRefreshTimer !== null) window.clearTimeout(pendingRefreshTimer);
+    pendingRefreshTimer = window.setTimeout(() => {
+      pendingRefreshTimer = null;
+      refreshDraftForSession(id, { applyText: false }).catch(() => {});
+    }, PENDING_REFRESH_MS);
+  }
+
+  function cancelPendingPoll() {
+    if (pendingPollTimer !== null) window.clearTimeout(pendingPollTimer);
+    pendingPollTimer = null;
+    pendingPollAttempts = 0;
+  }
+
+  // The server's bounded confirmation schedule can resolve a row without an SSE event. Poll while a
+  // sending/unknown row is visible so the banner does not stay stale until reload; stop at the
+  // schedule's horizon.
+  function schedulePendingPoll(id) {
+    if (id === null || id !== sessionId) return;
+    const unresolved = pendingSends.some(
+      (entry) => entry.state === "sending" || entry.state === "unknown",
+    );
+    if (!unresolved) {
+      cancelPendingPoll();
+      return;
+    }
+    if (pendingPollTimer !== null || pendingPollAttempts >= PENDING_POLL_MAX_ATTEMPTS) return;
+    pendingPollTimer = window.setTimeout(() => {
+      pendingPollTimer = null;
+      pendingPollAttempts += 1;
+      if (sessionId !== id) return;
+      refreshDraftForSession(id, { applyText: false }).catch(() => {});
+    }, PENDING_POLL_MS);
+  }
+
+  function schedulePendingRecheck(session) {
+    if (pendingRecheckTimer !== null) window.clearTimeout(pendingRecheckTimer);
+    pendingRecheckTimer = window.setTimeout(() => {
+      pendingRecheckTimer = null;
+      pendingRechecking.clear();
+      refreshDraftForSession(session, { applyText: false, scheduleDelete: true }).catch(() => {});
+      refreshSessions().catch(() => {});
+    }, PENDING_RECHECK_RETRY_MS);
+  }
+
+  async function performPendingAction(entry, kind, options) {
+    if (pendingSendsBusy) return;
+    const session = pendingSendsSession;
+    if (session === null || session !== sessionId) return;
+    const settings = options || {};
+    if (
+      kind === "restore" &&
+      (currentComposerText().trim().length > 0 || composerAttachments.length > 0)
+    ) {
+      if (!window.confirm("Replace the current draft with this failed message?")) return;
+    }
+    pendingSendsBusy = true;
+    pendingRechecking.delete(entry.id);
+    renderPendingSends();
+    let force = settings.force === true;
+    try {
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        let data;
+        try {
+          const retrying = kind === "retry";
+          data = await api(
+            retrying ? pendingRetryUrl(session, entry.id) : pendingSendUrl(session, entry.id),
+            {
+              method: retrying ? "POST" : "DELETE",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify(force ? { force: true } : {}),
+            },
+          );
+        } catch (error) {
+          if (
+            error !== null &&
+            typeof error === "object" &&
+            error.status === 409 &&
+            error.code === "still_unknown"
+          ) {
+            if (!force) {
+              const ok = window.confirm(
+                "The server still cannot confirm whether this message was delivered. Continuing anyway may deliver it twice. Continue?",
+              );
+              if (ok) {
+                force = true;
+                continue;
+              }
+              showToast("Delivery still unknown. Try again later.", "error");
+              return;
+            }
+            showToast("Delivery still unknown. Try again later.", "error");
+            return;
+          }
+          if (
+            error !== null &&
+            typeof error === "object" &&
+            error.status === 409 &&
+            error.code === "pending_in_flight"
+          ) {
+            pendingRechecking.add(entry.id);
+            schedulePendingRecheck(session);
+            return;
+          }
+          if (isSessionGoneError(error)) {
+            handleSessionGone(session);
+            return;
+          }
+          if (error !== null && typeof error === "object" && error.status === 404) {
+            showToast("That pending message no longer exists.", "error");
+            void refreshDraftForSession(session, { applyText: false, scheduleDelete: true });
+            return;
+          }
+          showToast(
+            error instanceof Error ? error.message : "Pending message action failed.",
+            "error",
+          );
+          return;
+        }
+        if (data !== null && typeof data === "object" && data.rechecking === true) {
+          pendingRechecking.add(entry.id);
+          schedulePendingRecheck(session);
+          return;
+        }
+        const confirmed = data !== null && data.confirmed === true;
+        if (data !== null && typeof data === "object" && Array.isArray(data.warnings)) {
+          showAttachmentWarnings(data.warnings);
+        }
+        if (confirmed) {
+          showToast("The original message was delivered.", "success");
+        } else if (kind === "retry") {
+          showToast("Retrying with a new message id.", "success");
+        } else if (kind === "restore") {
+          if (session === sessionId) {
+            setComposerValue(entry.text);
+            if (Array.isArray(entry.attachments) && entry.attachments.length > 0) {
+              await refreshDraftForSession(session, {
+                applyText: false,
+                applyAttachments: true,
+              });
+            }
+            draftEditSeq += 1;
+            scheduleDraftSave(session, entry.text);
+          }
+          showToast("Failed message restored to the composer.", "success");
+        } else {
+          showToast("Pending message dismissed.", "success");
+        }
+        if (kind === "retry" || confirmed) {
+          await hydrateMessages({ reason: "pending", silent: true }).catch(() => {});
+        }
+        await refreshDraftForSession(session, { applyText: false, scheduleDelete: true });
+        refreshSessions().catch(() => {});
+        return;
+      }
+    } finally {
+      pendingSendsBusy = false;
+      renderPendingSends();
+    }
+  }
+
+  function scheduleDeleteIfEmpty(id, delay) {
+    if (id === null) return;
+    cancelDeleteIfEmpty(id);
+    const wait = typeof delay === "number" ? delay : DELETE_IF_EMPTY_DEBOUNCE_MS;
+    const timer = window.setTimeout(() => {
+      deleteTimers.delete(id);
+      void (async () => {
+        try {
+          await draftWriteChain;
+        } catch (error) {
+          void error;
+        }
+        await deleteIfEmpty(id);
+      })();
+    }, wait);
+    deleteTimers.set(id, timer);
+  }
+
+  function cancelDeleteIfEmpty(id) {
+    const timer = deleteTimers.get(id);
+    if (timer !== undefined) window.clearTimeout(timer);
+    deleteTimers.delete(id);
+  }
+
+  function maybeScheduleDeleteForActive() {
+    const id = sessionId;
+    if (id === null) return;
+    const eligible = draftAutoDeleteEligible({
+      text: currentComposerText(),
+      attachmentCount: currentAttachmentCount(),
+      hasPending: pendingSendsSession === id && pendingSends.length > 0,
+      acceptanceBusy: acceptanceInFlight() || acceptanceUnknown(),
+      draftLoaded: draftLoadedSession === id,
+      hasHistory: sessionHasHistory(),
+    });
+    if (!eligible) {
+      cancelDeleteIfEmpty(id);
+      return;
+    }
+    scheduleDeleteIfEmpty(id);
+  }
+
+  async function deleteIfEmpty(id) {
+    if (
+      id === sessionId &&
+      (currentAttachmentCount() > 0 || hasUploadingAttachments() || hasFailedAttachments())
+    ) {
+      return;
+    }
+    try {
+      const data = await api(deleteIfEmptyUrl(id), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      });
+      if (data !== null && typeof data === "object" && data.deleted === true) {
+        afterSessionDeleted(id);
+      } else if (id === sessionId) {
+        updateLocalSessionDraft(id, "", null, 0);
+      }
+    } catch (error) {
+      if (isSessionGoneError(error)) afterSessionDeleted(id);
+    }
+  }
+
+  function afterSessionDeleted(id) {
+    cancelDeleteIfEmpty(id);
+    cancelDraftSaveTimer();
+    localFailedBySession.delete(id);
+    sessionRuntime.delete(id);
+    acceptanceBySession.delete(id);
+    contextBySession.delete(id);
+    contextSeqBySession.delete(id);
+    sessions = sessions.filter((session) => String(session.id) !== id);
+    if (sessionId === id) {
+      startDraft({ focus: false, skipFlush: true });
+    } else {
+      renderSessions();
+    }
+    refreshSessions().catch(() => {});
+  }
+
+  function flushDraftOnHide(options) {
+    const settings = options || {};
+    const id = sessionId;
+    if (id === null) return;
+    const text = currentComposerText();
+    const bodyText = draftTextForSave(text);
+    if (lastSavedDraft.get(id) !== bodyText || draftSaveTimer !== null) {
+      cancelDraftSaveTimer();
+      const body = JSON.stringify({ text: bodyText });
+      let bytes = body.length;
+      try {
+        bytes = new TextEncoder().encode(body).length;
+      } catch (error) {
+        void error;
+      }
+      const transport = flushDraftTransport(bytes, DRAFT_KEEPALIVE_LIMIT_BYTES);
+      try {
+        fetch(draftUrl(id), {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body,
+          credentials: "same-origin",
+          cache: "no-store",
+          ...(transport === "keepalive" ? { keepalive: true } : {}),
+        }).catch(() => {});
+      } catch (error) {
+        void error;
+      }
+      lastSavedDraft.set(id, bodyText);
+      updateLocalSessionDraft(id, bodyText, null, currentAttachmentCount());
+    }
+    if (settings.deleteEmpty !== true) return;
+    const eligible = draftAutoDeleteEligible({
+      text,
+      attachmentCount: currentAttachmentCount(),
+      hasPending: pendingSendsSession === id && pendingSends.length > 0,
+      acceptanceBusy: acceptanceInFlight() || acceptanceUnknown(),
+      draftLoaded: draftLoadedSession === id,
+      hasHistory: sessionHasHistory(),
+    });
+    if (!eligible) return;
+    cancelDeleteIfEmpty(id);
+    try {
+      fetch(deleteIfEmptyUrl(id), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+        credentials: "same-origin",
+        cache: "no-store",
+        keepalive: true,
+      }).catch(() => {});
+    } catch (error) {
+      void error;
+    }
+  }
+
+  function reconcileLocalFailed() {
+    const failed = localFailedBySession.get(sessionId);
+    if (failed === undefined || sessionId === null) return;
+    const wanted = failed.text.trim();
+    if (wanted.length === 0) return;
+    for (const id of [...store.order]) {
+      const record = store.messages.get(id);
+      if (record === undefined || record.role !== "user" || record.id === failed.id) continue;
+      if (failed.known instanceof Set && failed.known.has(id)) continue;
+      if (
+        record.optimistic === "sending" ||
+        record.optimistic === "unknown" ||
+        record.optimistic === "failed"
+      ) {
+        continue;
+      }
+      for (const partID of record.partOrder) {
+        const part = record.parts.get(partID);
+        if (part === undefined || part.type !== "text" || partIgnored(part)) continue;
+        if (partTextValue(part).trim() !== wanted) continue;
+        removeStoredMessage(failed.id);
+        localFailedBySession.delete(sessionId);
+        forceFinalRender = true;
+        scheduleFlush();
+        return;
+      }
+    }
   }
 
   function renderSessions() {
@@ -1809,6 +3487,18 @@ function main() {
       meta.append(element("span", "mono", id.slice(0, 8)));
       const stamp = relativeTime(sessionTimestamp(session));
       if (stamp.length > 0) meta.append(element("span", "", stamp));
+      const draftBadge = sessionDraftBadge(session.draft);
+      if (draftBadge.dot) {
+        const flag = element("span", "session-item__flag");
+        flag.title = "Has a draft";
+        if (draftBadge.label.length > 0) {
+          flag.append(document.createTextNode(draftBadge.label));
+        } else {
+          flag.setAttribute("aria-label", "Has a draft");
+          flag.append(document.createTextNode("•"));
+        }
+        meta.append(flag);
+      }
       const waitingCount = id === sessionId ? 0 : promptCountForSession(id);
       if (waitingCount > 0) {
         const flag = element("span", "session-item__flag");
@@ -1874,6 +3564,9 @@ function main() {
     resetFeedDom();
     sessionSnapshotTooLarge = false;
     setSessionNotice(false);
+    clearAttachmentWarnings();
+    recomputeQueue();
+    renderSendRecovery();
     messagesEl.removeAttribute("aria-busy");
     const state = element("div", "error-state chat-error");
     state.setAttribute("role", "alert");
@@ -2810,10 +4503,19 @@ function main() {
     return data.tool === "question";
   }
 
+  function partSynthetic(part) {
+    if (part === undefined || part === null) return false;
+    const data = part.data && typeof part.data === "object" ? part.data : part;
+    return part.synthetic === true || data.synthetic === true;
+  }
+
   function isVisibleRecordPart(part) {
     if (part === undefined || part === null) return false;
     if (part.type === "text") {
-      return !partIgnored(part) && partTextValue(part).trim().length > 0;
+      if (partIgnored(part) || partSynthetic(part) || isHiddenSyntheticTextPart(part)) {
+        return false;
+      }
+      return partTextValue(part).trim().length > 0;
     }
     if (
       part.type === "tool" ||
@@ -2829,6 +4531,7 @@ function main() {
   }
 
   function recordHasVisiblePart(record) {
+    if (Array.isArray(record.attachments) && record.attachments.length > 0) return true;
     for (const partID of record.partOrder) {
       if (isVisibleRecordPart(record.parts.get(partID))) return true;
     }
@@ -3035,8 +4738,53 @@ function main() {
     });
   }
 
+  function attachmentCardSignature(attachment) {
+    return [
+      attachment.id,
+      attachment.name,
+      attachment.mime,
+      attachment.size,
+      attachment.kind,
+      attachment.mode,
+      attachment.state,
+      attachment.downloadURL,
+      attachment.inline,
+    ].join("\u0001");
+  }
+
+  function updateAttachmentPart(node, record, part, force) {
+    const attachment = attachmentViewFromFilePart(part);
+    if (attachment === null) return false;
+    const signature = attachmentCardSignature(attachment);
+    if (force !== true && node.dataset.attachmentSignature === signature) return true;
+    const fresh = buildAttachmentCard(attachment);
+    node.className = fresh.className;
+    node.dataset.attachmentId = attachment.id;
+    node.dataset.attachmentSignature = signature;
+    node.dataset.messageId = record.id;
+    node.dataset.partId = part.id;
+    node.dataset.partType = part.type;
+    node.dataset.kind = attachment.kind;
+    node.dataset.state = attachment.state;
+    node.dataset.inline = attachment.inline === true ? "true" : "false";
+    node.replaceChildren(...fresh.childNodes);
+    return true;
+  }
+
   function createPartNode(record, part) {
     const key = partKeyFor(record, part);
+    if (part.type === "file") {
+      const attachment = attachmentViewFromFilePart(part);
+      if (attachment !== null) {
+        const card = buildAttachmentCard(attachment);
+        card.dataset.messageId = record.id;
+        card.dataset.partId = part.id;
+        card.dataset.partType = part.type;
+        card.dataset.toolKey = key;
+        card.dataset.attachmentSignature = attachmentCardSignature(attachment);
+        return card;
+      }
+    }
     if (part.type === "tool") {
       if (isPreviewOpenPart(part)) {
         const card = element("article", "tool-call tool-call--preview");
@@ -3101,8 +4849,17 @@ function main() {
         break;
       }
     }
-    if (anchor === null) messageNode.append(node);
-    else messageNode.insertBefore(node, anchor);
+    const attachmentsHost = directMessageChild(messageNode, "message__attachments");
+    if (anchor !== null) messageNode.insertBefore(node, anchor);
+    else if (attachmentsHost !== null) messageNode.insertBefore(node, attachmentsHost);
+    else messageNode.append(node);
+  }
+
+  function directMessageChild(node, className) {
+    for (const child of node.children) {
+      if (child.classList.contains(className)) return child;
+    }
+    return null;
   }
 
   function syncPartOrder(record, messageNode) {
@@ -3714,6 +5471,9 @@ function main() {
     if (part.type === "text") return updateTextPart(node, part, key, force);
     if (isQuestionToolPart(part)) return updateInlineQuestionPart(node, record, part);
     if (isPreviewOpenPart(part)) return updatePreviewCard(node, part, key, force);
+    if (part.type === "file" && attachmentViewFromFilePart(part) !== null) {
+      return updateAttachmentPart(node, record, part, force);
+    }
     if (part.type === "tool") return updateToolPart(node, part, key, force);
     if (
       part.type === "reasoning" ||
@@ -3751,6 +5511,19 @@ function main() {
       }
       return true;
     }
+    if (node !== undefined) {
+      const wantsCard =
+        part.type === "file" && attachmentViewFromFilePart(part) !== null;
+      const isCard = node.classList.contains("attachment-card");
+      if (wantsCard !== isCard) {
+        resetHighlightController({ reason: "part-removed", partID: part.id });
+        forgetReasoningElapsed(key);
+        node.remove();
+        partNodes.delete(key);
+        partRenderState.delete(key);
+        node = undefined;
+      }
+    }
     if (node !== undefined && node.dataset.partType !== part.type) {
       resetHighlightController({ reason: "part-removed", partID: part.id });
       forgetReasoningElapsed(key);
@@ -3784,6 +5557,146 @@ function main() {
     }
     node.dataset.partType = part.type;
     return updatePartNode(node, record, part, force);
+  }
+
+  function recordStripAttachments(record) {
+    const attachments = Array.isArray(record.attachments) ? record.attachments : [];
+    if (attachments.length === 0) return [];
+    const filePartAttachmentIDs = new Set();
+    for (const partID of record.partOrder) {
+      const part = record.parts.get(partID);
+      if (part === undefined || part.type !== "file") continue;
+      const data = partDataOf(part);
+      const attachment =
+        data.attachment !== null && typeof data.attachment === "object"
+          ? data.attachment
+          : null;
+      if (attachment !== null && typeof attachment.id === "string") {
+        filePartAttachmentIDs.add(attachment.id);
+      }
+    }
+    const seen = new Set();
+    const out = [];
+    for (const attachment of attachments) {
+      if (attachment === null || typeof attachment !== "object") continue;
+      if (attachment.inline === true && filePartAttachmentIDs.has(attachment.id)) continue;
+      if (seen.has(attachment.id)) continue;
+      seen.add(attachment.id);
+      out.push(attachment);
+    }
+    return out;
+  }
+
+  function buildAttachmentCard(attachment, options) {
+    const settings = options === undefined ? {} : options;
+    const card = element("article", "attachment-card");
+    if (attachment.inline === true) card.classList.add("attachment-card--inline");
+    card.dataset.attachmentId = attachment.id;
+    card.dataset.kind = attachment.kind;
+    card.dataset.state = attachment.state;
+    card.dataset.inline = attachment.inline === true ? "true" : "false";
+    const preview = element("div", "attachment-card__preview");
+    const thumbnailURL =
+      attachment.kind === "image" &&
+      attachment.state !== "missing" &&
+      attachmentThumbMime(attachment.mime)
+        ? safeAttachmentUrl(attachment.downloadURL)
+        : null;
+    if (thumbnailURL !== null) {
+      const image = element("img", "attachment-card__thumb");
+      image.src = thumbnailURL;
+      image.alt = attachment.name || "Image attachment";
+      image.loading = "lazy";
+      image.decoding = "async";
+      preview.append(image);
+    } else {
+      preview.append(
+        localIconNode(attachment.kind === "image" ? "image" : "file"),
+      );
+    }
+    const body = element("div", "attachment-card__body");
+    const name = element("span", "attachment-card__name", attachment.name || "Attachment");
+    name.title = attachment.name || "Attachment";
+    const metaParts = [formatAttachmentSize(attachment.size)];
+    if (attachment.mime) metaParts.push(attachment.mime);
+    const state = attachmentStateText(attachment.state);
+    if (state) metaParts.push(state);
+    metaParts.push(
+      attachment.inline === true
+        ? "Inline"
+        : attachmentModeLabel(attachment.kind, attachment.mode),
+    );
+    const meta = element("span", "attachment-card__meta", metaParts.join(" · "));
+    body.append(name, meta);
+    const action = element("div", "attachment-card__action");
+    if (attachment.state === "missing") {
+      action.append(element("span", "attachment-card__unavailable", "Missing file"));
+    } else if (attachment.state === "in_flight") {
+      action.append(element("span", "attachment-card__pending", "Sending…"));
+    } else {
+      const downloadURL = safeAttachmentUrl(attachment.downloadURL);
+      if (downloadURL === null) {
+        action.append(element("span", "attachment-card__unavailable", "Unavailable"));
+      } else {
+        const link = element("a", "attachment-card__download");
+        link.href = downloadURL;
+        link.download = attachment.name || "attachment";
+        link.append(localIconNode("download", "icon--sm"), document.createTextNode("Download"));
+        action.append(link);
+      }
+    }
+    if (
+      settings.allowRedelivery !== false &&
+      canRedeliverAsFile(attachment) &&
+      typeof sessionId === "string"
+    ) {
+      const redeliver = element(
+        "button",
+        "btn btn-ghost btn-sm attachment-card__redeliver",
+        "Send again as file",
+      );
+      redeliver.type = "button";
+      redeliver.title = "Send a new file-only copy; this message is unchanged";
+      redeliver.setAttribute(
+        "aria-label",
+        `Send ${attachment.name || "attachment"} again as a file`,
+      );
+      redeliver.addEventListener("click", () => {
+        void redeliverAttachmentAsFile(attachment, redeliver);
+      });
+      action.append(redeliver);
+    }
+    card.append(preview, body, action);
+    return card;
+  }
+
+  function syncRecordAttachments(record, node) {
+    const attachments = recordStripAttachments(record);
+    const signature = attachments
+      .map((attachment) =>
+        [
+          attachment.id,
+          attachment.name,
+          attachment.size,
+          attachment.mime,
+          attachment.kind,
+          attachment.mode,
+          attachment.state,
+          attachment.inline,
+          attachment.downloadURL,
+        ].join("\u0001"),
+      )
+      .join("\u0002");
+    const existing = directMessageChild(node, "message__attachments");
+    if (node.dataset.attachmentsSignature === signature && existing !== null) return;
+    node.dataset.attachmentsSignature = signature;
+    if (attachments.length === 0) {
+      if (existing !== null) existing.remove();
+      return;
+    }
+    const host = existing === null ? element("div", "message__attachments") : existing;
+    host.replaceChildren(...attachments.map(buildAttachmentCard));
+    node.append(host);
   }
 
   function ensureMessageNode(record) {
@@ -3834,6 +5747,7 @@ function main() {
     }
     renderMessageMeta(record, node);
     syncMessageOptimistic(record, node);
+    syncRecordAttachments(record, node);
     return node;
   }
 
@@ -3863,7 +5777,7 @@ function main() {
     return `local_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
   }
 
-  function insertOptimisticMessage(id, text) {
+  function insertOptimisticMessage(id, text, attachments) {
     const partID = `${id}:part:text`;
     const part = {
       id: partID,
@@ -3882,6 +5796,9 @@ function main() {
       parts: new Map([[partID, part]]),
       version: 1,
     };
+    if (Array.isArray(attachments) && attachments.length > 0) {
+      record.attachments = normalizeAttachments(attachments);
+    }
     store.messages.set(id, record);
     store.order.push(id);
     partOwner.set(partID, id);
@@ -4485,6 +6402,8 @@ function main() {
     source.onopen = () => {
       if (eventSource !== source) return;
       failures = 0;
+      streamLimitPaused = false;
+      hideStreamNotice();
       setConnection("Live", "live");
     };
     source.onmessage = (event) => {
@@ -4509,6 +6428,32 @@ function main() {
         closeStream();
         setConnection("Paused", "paused");
         renderPlan();
+        void probeStreamLimit().then((limited) => {
+          if (limited) return;
+          showStreamNotice(
+            "Live updates paused. Retry to reconnect; history still loads and can be refreshed.",
+            {
+              kind: "paused",
+              actions: [
+                {
+                  label: "Retry live",
+                  primary: true,
+                  onClick: () => {
+                    streamLimitPaused = false;
+                    hideStreamNotice("paused");
+                    reconnectStream();
+                  },
+                },
+                {
+                  label: "Refresh history",
+                  onClick: () => {
+                    hydrateMessages({ reason: "stream-paused", silent: true }).catch(() => {});
+                  },
+                },
+              ],
+            },
+          );
+        });
       } else {
         setConnection("Reconnecting", "reconnecting");
       }
@@ -4516,6 +6461,8 @@ function main() {
   }
 
   function reconnectStream() {
+    streamLimitPaused = false;
+    hideStreamNotice();
     subscribe();
     hydrate().catch(() => {});
     loadMessages({ reason: "reconnect", silent: true }).catch(() => {});
@@ -4922,6 +6869,9 @@ function main() {
     }
     if (hasStreamReady) announce("Reconnected.");
     hasStreamReady = true;
+    streamLimitPaused = false;
+    hideStreamNotice("warning");
+    hideStreamNotice("paused");
     setConnection("Live", "live");
     refreshRuntime().catch(() => {});
     refreshCommands({ force: true, quiet: true }).catch(() => {});
@@ -4959,7 +6909,15 @@ function main() {
     if (!envelopeAccepted(payload)) return;
 
     if (type === "stream.warning") {
-      announce("Live updates were interrupted; refreshing.");
+      const warning = normalizeStreamWarning(payload);
+      if (warning === null) return;
+      if (warning.limit) {
+        pauseForStreamLimit();
+        return;
+      }
+      if (warning.sessionID !== undefined && warning.sessionID !== sessionId) return;
+      showStreamNotice(warning.message, { kind: "warning" });
+      announce(warning.message);
       scheduleReconcile(RECONCILE_MS);
       return;
     }
@@ -4984,8 +6942,17 @@ function main() {
       if (typeof payload.parentID === "string") record.parentID = payload.parentID;
       if (typeof payload.finish === "string") record.finish = payload.finish;
       if (payload.time && typeof payload.time === "object") record.time = payload.time;
+      if (Array.isArray(payload.attachments) && payload.attachments.length > 0) {
+        record.attachments = normalizeAttachments(payload.attachments);
+      }
       record.version += 1;
       recomputeQueue();
+      if (role === "user") {
+        const confirmedSession =
+          typeof payload.sessionID === "string" ? payload.sessionID : sessionId;
+        reconcileLocalFailed();
+        schedulePendingRefresh(confirmedSession);
+      }
       scheduleFlush();
       return;
     }
@@ -5107,30 +7074,12 @@ function main() {
       if (typeof payload.sessionID === "string" && payload.sessionID !== sessionId) return;
       if (bufferPre202(payload)) return;
       const record = ensurePartMessage(payload.messageID);
-      let part = record.parts.get(payload.partID);
-      if (part === undefined) {
-        const partType = typeof payload.partType === "string" ? payload.partType : "text";
-        part = {
-          id: payload.partID,
-          type: partType,
-          data: {
-            id: payload.partID,
-            type: partType,
-            text: "",
-            provisional: partType === "text",
-          },
-          provisional: partType === "text",
-          partial: true,
-          sealed: false,
-          version: 1,
-        };
-        record.parts.set(payload.partID, part);
-        record.partOrder.push(payload.partID);
+      const applied = applyOmittedPart(record, payload);
+      if (applied === null) return;
+      if (applied.created) {
         partOwner.set(payload.partID, record.id);
         orderDirty = true;
       }
-      part.partial = true;
-      part.omitted = true;
       omittedPartIDs.add(payload.partID);
       for (const entry of prompts.values()) {
         if (!isCorrelatedQuestion(entry)) continue;
@@ -5141,6 +7090,10 @@ function main() {
       record.needsReconcile = true;
       dirtyMessages.add(record.id);
       dirtyParts.add(payload.partID);
+      showStreamNotice(
+        "A large live update was skipped; refreshing that part from history.",
+        { kind: "warning" },
+      );
       scheduleReconcile(RECONCILE_MS);
       scheduleFlush();
       if (payload.sessionID === sessionId) refreshInlineQuestions();
@@ -5174,17 +7127,25 @@ function main() {
         rawMessage.length > 0 ? rawMessage : "The agent failed without an error message.";
 
       const acceptance = activeAcceptance();
-      const failedIDs = new Set();
-      if (typeof store.activePromptID === "string") failedIDs.add(store.activePromptID);
-      for (const id of store.queue) failedIDs.add(id);
-      if (typeof acceptance.serverID === "string") failedIDs.add(acceptance.serverID);
-      if (typeof acceptance.tempID === "string") failedIDs.add(acceptance.tempID);
-      for (const id of failedIDs) {
-        const record = store.messages.get(id);
-        if (record === undefined || record.role !== "user") continue;
-        record.optimistic = "failed";
-        record.version += 1;
-        dirtyMessages.add(id);
+      if (
+        (acceptance.state === "sending" || acceptance.state === "unknown") &&
+        acceptance.serverID === null &&
+        typeof acceptance.tempID === "string"
+      ) {
+        const localID = acceptance.tempID;
+        const record = store.messages.get(localID);
+        if (record !== undefined && record.role === "user") {
+          record.optimistic = "failed";
+          record.version += 1;
+          dirtyMessages.add(localID);
+          if (eventSession !== null) {
+            localFailedBySession.set(eventSession, {
+              id: localID,
+              text: acceptance.text,
+              known: new Set(acceptance.knownUserIDs),
+            });
+          }
+        }
       }
       if (acceptance.state === "sending" || acceptance.state === "unknown") {
         acceptance.state = "idle";
@@ -5196,6 +7157,9 @@ function main() {
       }
       recomputeQueue();
       syncComposer();
+      if (eventSession !== null) {
+        void refreshDraftForSession(eventSession, { applyText: false });
+      }
 
       const streamID = typeof payload.streamID === "string" ? payload.streamID : "";
       const seq = typeof payload.seq === "number" ? payload.seq : undefined;
@@ -7988,12 +9952,14 @@ function main() {
       clearAllOmoClassifyTimers();
       sessionSnapshotTooLarge = false;
       setSessionNotice(false);
+      hideStreamNotice("warning");
       const buffer = hydrationBuffer;
       const contentDiscarded =
         result.contentDiscarded === true ||
         (buffer !== null && buffer.contentDiscarded === true);
       replayBufferedStatuses(buffer, startSeq);
       resolveUnknownFromSnapshot(snapshotIDs);
+      reconcileLocalFailed();
       recomputeQueue();
       const turnChanged =
         result.turnChanged === true || store.turnGeneration !== turnGeneration;
@@ -8192,14 +10158,14 @@ function main() {
       sessionsFailed = false;
       sessionsLoaded = true;
       if (sessions.length === 0) {
-        if (sessionId !== null) startDraft({ focus: false });
+        if (sessionId !== null) startDraft({ focus: false, skipFlush: true });
         else showSessionsEmpty();
         return;
       }
       if (sessionId === null) {
         sessionId = String(sessions[0].id);
       } else if (!sessions.some((session) => session.id === sessionId)) {
-        await selectSession(String(sessions[0].id), { focus: false });
+        await selectSession(String(sessions[0].id), { focus: false, skipFlush: true });
         return;
       }
       renderSessions();
@@ -8257,15 +10223,66 @@ function main() {
     if (queueStripList !== null) queueStripList.replaceChildren();
   }
 
+  function cancelPendingRefresh() {
+    if (pendingRefreshTimer !== null) window.clearTimeout(pendingRefreshTimer);
+    pendingRefreshTimer = null;
+    if (pendingRecheckTimer !== null) window.clearTimeout(pendingRecheckTimer);
+    pendingRecheckTimer = null;
+  }
+
+  function resetDraftStateForSwitch(clearComposer) {
+    cancelDraftSaveTimer();
+    cancelPendingRefresh();
+    cancelPendingPoll();
+    draftEditSeq += 1;
+    draftLoadSeq += 1;
+    draftLoadedSession = null;
+    pendingSends = [];
+    pendingSendsSession = null;
+    pendingRechecking.clear();
+    pendingSendsSignature = "";
+    if (pendingSendsEl !== null) {
+      pendingSendsEl.replaceChildren();
+      pendingSendsEl.hidden = true;
+    }
+    composerAttachments.length = 0;
+    attachmentQuotaPercent = null;
+    attachmentsSignature = "";
+    if (attachmentsEl !== null) {
+      attachmentsEl.replaceChildren();
+      attachmentsEl.hidden = true;
+    }
+    if (
+      clearComposer !== false &&
+      promptEl instanceof HTMLTextAreaElement &&
+      promptEl.value.length > 0
+    ) {
+      promptEl.value = "";
+      resizePrompt();
+    }
+  }
+
   async function selectSession(id, options) {
     const settings = options || {};
     const previous = sessionId;
+    const previousText = currentComposerText();
     if (previous !== null && previous !== id) {
+      const previousHadHistory = sessionHasHistory();
+      if (settings.skipFlush !== true) await flushDraftForSwitch(previous, previousText);
+      if (
+        settings.skipFlush !== true &&
+        draftIsEmpty({ text: previousText, attachmentCount: currentAttachmentCount() }) &&
+        !previousHadHistory
+      ) {
+        scheduleDeleteIfEmpty(previous);
+      }
+      cancelDeleteIfEmpty(id);
       saveCurrentRuntime();
       if (abortPending === previous) abortPending = null;
       suppressAbortUntil.delete(previous);
       stopAbortSettlePoll();
     }
+    if (previous !== id) resetEnsureSession();
     hydrationSeq += 1;
     historyRequestSeq += 1;
     historyRequest = null;
@@ -8273,6 +10290,7 @@ function main() {
     hydrating = false;
     hydrationBuffer = null;
     sessionId = id;
+    if (previous !== id) resetDraftStateForSwitch();
     contextEpoch += 1;
     clearContextTimers();
     contextCompactingSession = null;
@@ -8295,6 +10313,7 @@ function main() {
     if (previous !== id) promptActivation.clear();
     sessionSnapshotTooLarge = false;
     setSessionNotice(false);
+    clearAttachmentWarnings();
     recomputeQueue();
     renderSendRecovery();
     const session = sessions.find((candidate) => candidate.id === id);
@@ -8313,6 +10332,9 @@ function main() {
     closeSessions(false);
     closeContext(false);
     await loadMessages({ initial: true, forceBottom: true });
+    await loadDraftForSession(id, { applyText: previous !== id });
+    if (sessionId !== id) return;
+    if (previous !== id) refreshSessions().catch(() => {});
     if (settings.focusDock === true) {
       refreshInlineQuestions();
       focusRequest();
@@ -8324,6 +10346,22 @@ function main() {
 
   function startDraft(options) {
     const settings = options || {};
+    const previous = sessionId;
+    const previousText = currentComposerText();
+    const previousAttachments = currentAttachmentCount();
+    if (previous !== null && settings.skipFlush !== true && !isSlashCommandOnly(previousText)) {
+      const previousHadHistory = sessionHasHistory();
+      void queueDraftPut(previous, previousText, { silentGone: true }).then(() => {
+        if (
+          draftIsEmpty({ text: previousText, attachmentCount: previousAttachments }) &&
+          !previousHadHistory
+        ) {
+          scheduleDeleteIfEmpty(previous);
+        }
+      });
+    }
+    resetEnsureSession();
+    if (previous !== null) cancelDeleteIfEmpty(previous);
     saveCurrentRuntime();
     abortPending = null;
     if (sessionId !== null) suppressAbortUntil.delete(sessionId);
@@ -8337,6 +10375,7 @@ function main() {
     hydrating = false;
     hydrationBuffer = null;
     sessionId = null;
+    resetDraftStateForSwitch(previous !== null);
     contextEpoch += 1;
     clearContextTimers();
     contextCompactingSession = null;
@@ -8347,6 +10386,7 @@ function main() {
     resetFeedDom();
     sessionSnapshotTooLarge = false;
     setSessionNotice(false);
+    clearAttachmentWarnings();
     recomputeQueue();
     renderSendRecovery();
     showSessionError(null);
@@ -8369,29 +10409,51 @@ function main() {
     syncComposer();
     closeSessions(false);
     closeContext(false);
+    const remaining = currentComposerText();
+    if (!draftIsEmpty({ text: remaining, attachmentCount: currentAttachmentCount() })) {
+      if (!isSlashCommandOnly(remaining)) scheduleSessionCreate();
+    }
     if (settings.focus === true && promptEl instanceof HTMLTextAreaElement) {
       promptEl.focus();
     }
   }
 
-  async function ensureSession() {
-    if (sessionId !== null) return sessionId;
-    if (creatingSession) throw new Error("A session is already starting.");
+  function ensureSessionShared(options) {
+    if (sessionId !== null) return Promise.resolve(sessionId);
+    if (ensureSessionPromise !== null) return ensureSessionPromise;
+    cancelSessionCreate();
+    const title =
+      options !== null &&
+      typeof options === "object" &&
+      typeof options.title === "string" &&
+      options.title.length > 0
+        ? options.title
+        : undefined;
+    const generation = ensureSessionGeneration;
     creatingSession = true;
     setNewSessionBusy(true);
-    try {
-      const created = await api(sessionsUrl(), {
+    const created = (async () => {
+      const response = await api(sessionsUrl(), {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: "{}",
+        body: JSON.stringify(title === undefined ? {} : { title }),
       });
-      if (!created || created.id === undefined) {
+      if (!response || response.id === undefined) {
         throw new Error("Session could not be created.");
       }
-      const id = String(created.id);
-      sessions = [created, ...sessions.filter((session) => String(session.id) !== id)];
+      if (generation !== ensureSessionGeneration) {
+        throw new Error("Session creation was cancelled.");
+      }
+      const id = String(response.id);
+      sessions = [response, ...sessions.filter((session) => String(session.id) !== id)];
       if (sessionSearch !== null) sessionSearch.value = "";
       sessionId = id;
+      draftEditSeq += 1;
+      draftLoadSeq += 1;
+      draftLoadedSession = id;
+      pendingSends = [];
+      pendingSendsSession = id;
+      renderPendingSends();
       contextEpoch += 1;
       clearContextTimers();
       contextCompactingSession = null;
@@ -8399,20 +10461,45 @@ function main() {
       hideContextConfirm(false);
       resetContextUi(false, "Waiting for a completed step.", "Loading context…");
       refreshContext(id).catch(() => {});
-      if (sessionTitleEl !== null) sessionTitleEl.textContent = sessionLabel(created);
+      if (sessionTitleEl !== null) sessionTitleEl.textContent = sessionLabel(response);
       if (sessionIdEl !== null) {
         sessionIdEl.textContent = id.slice(0, 8);
         sessionIdEl.title = id;
       }
       updateUrl();
       renderSessions();
+      syncComposer();
       closeSessions(false);
       showSessionError(null);
+      const currentText = currentComposerText();
+      if (
+        !draftIsEmpty({ text: currentText, attachmentCount: currentAttachmentCount() }) &&
+        !isSlashCommandOnly(currentText)
+      ) {
+        scheduleDraftSave(id, currentText);
+      }
       return id;
-    } finally {
-      creatingSession = false;
-      setNewSessionBusy(creatingSession);
-    }
+    })();
+    const tracked = created.then(
+      (id) => {
+        if (ensureSessionPromise === tracked) {
+          ensureSessionPromise = null;
+          creatingSession = false;
+          setNewSessionBusy(false);
+        }
+        return id;
+      },
+      (error) => {
+        if (ensureSessionPromise === tracked) {
+          ensureSessionPromise = null;
+          creatingSession = false;
+          setNewSessionBusy(false);
+        }
+        throw error;
+      },
+    );
+    ensureSessionPromise = tracked;
+    return tracked;
   }
 
   async function removeSession(id) {
@@ -8434,6 +10521,10 @@ function main() {
       acceptanceBySession.delete(id);
       contextBySession.delete(id);
       contextSeqBySession.delete(id);
+      localFailedBySession.delete(id);
+      cancelDeleteIfEmpty(id);
+      if (draftSaveSession === id) cancelDraftSaveTimer();
+      resetEnsureSession();
       unblockQueuePromotion(id);
       if (abortPending === id) abortPending = null;
       suppressAbortUntil.delete(id);
@@ -8442,9 +10533,9 @@ function main() {
       if (contextCompactingSession === id) contextCompactingSession = null;
       if (wasActive) {
         if (sessions.length > 0) {
-          await selectSession(String(sessions[0].id), { focus: false });
+          await selectSession(String(sessions[0].id), { focus: false, skipFlush: true });
         } else {
-          startDraft({ focus: false });
+          startDraft({ focus: false, skipFlush: true });
         }
       } else {
         renderSessions();
@@ -8507,6 +10598,56 @@ function main() {
         );
       }
     }
+  }
+
+  function ensureAttachmentWarningEl() {
+    if (attachmentWarningEl !== null) return attachmentWarningEl;
+    if (composer === null) return null;
+    attachmentWarningEl = element("div", "chat-attachment-warning");
+    attachmentWarningEl.id = "chat-attachment-warning";
+    attachmentWarningEl.setAttribute("role", "status");
+    attachmentWarningEl.setAttribute("aria-live", "polite");
+    attachmentWarningEl.setAttribute("aria-atomic", "false");
+    attachmentWarningEl.hidden = true;
+    composer.append(attachmentWarningEl);
+    return attachmentWarningEl;
+  }
+
+  function clearAttachmentWarnings() {
+    attachmentWarningSignature = "";
+    if (attachmentWarningEl === null) return;
+    attachmentWarningEl.hidden = true;
+    attachmentWarningEl.replaceChildren();
+  }
+
+  function showAttachmentWarnings(value) {
+    const warnings = normalizeAttachmentWarnings(value);
+    if (warnings.length === 0) {
+      clearAttachmentWarnings();
+      return;
+    }
+    const host = ensureAttachmentWarningEl();
+    if (host === null) return;
+    const signature = JSON.stringify(warnings);
+    host.hidden = false;
+    if (signature === attachmentWarningSignature) return;
+    attachmentWarningSignature = signature;
+    const list = element("ul", "chat-attachment-warning__list");
+    for (const warning of warnings) {
+      const item = element("li", "chat-attachment-warning__item");
+      item.dataset.code = warning.code;
+      if (warning.downgrade) item.dataset.downgrade = "true";
+      item.append(element("span", "chat-attachment-warning__text", warning.message));
+      list.append(item);
+    }
+    const dismiss = element("button", "btn btn-ghost btn-icon btn-sm chat-attachment-warning__dismiss");
+    dismiss.type = "button";
+    dismiss.setAttribute("aria-label", "Dismiss attachment warnings");
+    dismiss.title = "Dismiss";
+    dismiss.append(iconNode("x"));
+    dismiss.addEventListener("click", () => clearAttachmentWarnings());
+    host.replaceChildren(list, dismiss);
+    announce(warnings.map((warning) => warning.message).join(" "));
   }
 
   function commandsUrl() {
@@ -8735,6 +10876,7 @@ function main() {
     }
     if (commandsButton !== null) commandsButton.setAttribute("aria-expanded", "true");
     renderCommandPalette();
+    syncAttachmentControls();
     if (settings.focus === true && promptEl instanceof HTMLTextAreaElement) promptEl.focus();
     if (commandsAreStale()) refreshCommands({ quiet: true }).catch(() => {});
   }
@@ -8752,6 +10894,7 @@ function main() {
       promptEl.removeAttribute("aria-activedescendant");
     }
     if (commandsButton !== null) commandsButton.setAttribute("aria-expanded", "false");
+    syncAttachmentControls();
     if (settings.focus === true && promptEl instanceof HTMLTextAreaElement) promptEl.focus();
   }
 
@@ -8997,6 +11140,7 @@ function main() {
   function clearComposerValue() {
     if (!(promptEl instanceof HTMLTextAreaElement)) return;
     promptEl.value = "";
+    draftEditSeq += 1;
     resizePrompt();
     syncComposer();
   }
@@ -9006,6 +11150,10 @@ function main() {
     if (acceptanceInFlight() || acceptanceUnknown()) return "handled";
     const parsed = parseComposerCommand(promptEl.value);
     if (parsed.kind !== "command") return "fallthrough";
+    if (composerAttachments.length > 0) {
+      showSendError("Remove attachments before using a slash command.");
+      return "handled";
+    }
     if (commandsDispatching) return "handled";
     commandsDispatching = true;
     try {
@@ -9047,15 +11195,18 @@ function main() {
         return "handled";
       }
       const draft = promptEl.value;
+      const commandSession = sessionId;
       clearComposerValue();
       const outcome = await runHanseAction(resolved, parsed.args);
       if (outcome === "skipped") {
         if (promptEl.value.length === 0) {
           promptEl.value = draft;
           resizePrompt();
+          scheduleDraftForCurrentInput();
         }
         return "handled";
       }
+      void clearDraftAfterCommand(commandSession);
       if (outcome !== "palette") closeCommandPalette({ focus: true });
       return "handled";
     } finally {
@@ -9088,6 +11239,8 @@ function main() {
     }
 
     const lineText = commandLine(entry.name, args).trim();
+    draftEditSeq += 1;
+    draftLoadSeq += 1;
     const tempID = localID();
     const knownUserIDs = new Set();
     for (const id of store.order) {
@@ -9120,10 +11273,15 @@ function main() {
       let retriedConfirmation = false;
       try {
         if (id === null) {
-          id = await ensureSession();
+          id = await ensureSessionShared();
           moveAcceptance("draft", id);
           state.sessionID = id;
           store.sessionID = id;
+        }
+        await settleDraftWrites();
+        const savedCommandDraft = lastSavedDraft.get(id);
+        if (typeof savedCommandDraft === "string" && savedCommandDraft.length > 0) {
+          await queueDraftPut(id, "");
         }
         for (;;) {
           state.posting = true;
@@ -9162,7 +11320,7 @@ function main() {
                 state.knownUserIDs = new Set();
                 state.bufferedEvents = [];
                 clearAcceptanceGrace(state);
-                if (promptEl.value.length === 0) {
+                if (state.sessionID === sessionId && promptEl.value.length === 0) {
                   promptEl.value = draft;
                   resizePrompt();
                 }
@@ -9265,7 +11423,7 @@ function main() {
         state.knownUserIDs = new Set();
         state.bufferedEvents = [];
         clearAcceptanceGrace(state);
-        if (promptEl.value.length === 0) {
+        if (state.sessionID === sessionId && promptEl.value.length === 0) {
           promptEl.value = draft;
           resizePrompt();
         }
@@ -9285,6 +11443,16 @@ function main() {
   async function sendPrompt() {
     if (!(promptEl instanceof HTMLTextAreaElement)) return;
     if (acceptanceInFlight() || acceptanceUnknown()) return;
+    if (hasUploadingAttachments()) {
+      showSendError("Wait for the attachments to finish uploading.");
+      promptEl.focus();
+      return;
+    }
+    if (hasFailedAttachments()) {
+      showSendError("Retry or remove failed attachments before sending.");
+      promptEl.focus();
+      return;
+    }
     const wasFocused = document.activeElement === promptEl;
     const dispatched = await dispatchComposerDraft();
     if (dispatched === "handled") return;
@@ -9293,12 +11461,22 @@ function main() {
       return;
     }
     const text = promptEl.value.trim();
-    if (text.length === 0) {
+    const attachmentViews = readyAttachments()
+      .map(attachmentViewFromChip)
+      .filter((view) => view !== null);
+    if (
+      !canSendDraft({ text: promptEl.value, attachmentCount: attachmentViews.length })
+    ) {
       promptEl.focus();
       return;
     }
+    clearAttachmentWarnings();
+    const restoredAttachments = attachmentViews.map((view) => ({ ...view }));
     const draft = promptEl.value;
     const initialSession = sessionId;
+    draftEditSeq += 1;
+    draftLoadSeq += 1;
+    cancelDeleteIfEmpty(initialSession);
     const acceptanceKey = initialSession === null ? "draft" : initialSession;
     const state = acceptanceFor(acceptanceKey);
     if (state.inFlight || state.state === "unknown") return;
@@ -9315,15 +11493,17 @@ function main() {
     state.tempID = tempID;
     state.serverID = null;
     state.text = text;
+    state.attachmentIDs = attachmentViews.map((view) => view.id);
     state.knownUserIDs = knownUserIDs;
     state.bufferedEvents = [];
     clearAcceptanceGrace(state);
-    insertOptimisticMessage(tempID, text);
+    insertOptimisticMessage(tempID, text, attachmentViews);
     showSendError(null);
     showSessionError(null);
     setSessionNotice(false);
     promptEl.value = "";
     resizePrompt();
+    clearComposerAttachments();
     syncComposer();
     renderSendRecovery();
 
@@ -9332,18 +11512,27 @@ function main() {
       let posted = false;
       try {
         if (id === null) {
-          id = await ensureSession();
+          id = await ensureSessionShared(
+            text.length === 0 && attachmentViews.length > 0
+              ? { title: "Attachment" }
+              : undefined,
+          );
           moveAcceptance("draft", id);
           state.sessionID = id;
           store.sessionID = id;
         }
+        await settleDraftWrites();
         state.posting = true;
         updateWorkingStatus();
         posted = true;
+        const sendBody =
+          attachmentViews.length === 0
+            ? { text }
+            : { text, attachments: attachmentSendPayload(attachmentViews) };
         const accepted = await api(asyncMessagesUrl(id), {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ text }),
+          body: JSON.stringify(sendBody),
         });
         state.posting = false;
         const serverID =
@@ -9355,14 +11544,20 @@ function main() {
           failure.outcome = "unknown";
           throw failure;
         }
+        showAttachmentWarnings(
+          accepted !== null && typeof accepted === "object" ? accepted.warnings : undefined,
+        );
         rekeyAcceptanceRow(state, serverID, false);
         state.state = "accepted";
         state.inFlight = false;
         state.tempID = null;
         state.serverID = serverID;
         clearAcceptanceGrace(state);
+        lastSavedDraft.set(id, "");
+        updateLocalSessionDraft(id, "", null, 0);
         recomputeQueue();
         syncComposer();
+        void refreshDraftForSession(id, { applyText: false });
         refreshRuntime().catch(() => {});
         if (
           sessionId === id &&
@@ -9410,6 +11605,7 @@ function main() {
           }
           syncComposer();
           renderSendRecovery();
+          void refreshDraftForSession(id, { applyText: false });
           if (sessionId !== null) {
             hydrateMessages({ reason: "unknown", silent: true }).catch(() => {});
           }
@@ -9421,16 +11617,26 @@ function main() {
           state.tempID = null;
           state.serverID = null;
           state.text = "";
+          state.attachmentIDs = [];
           state.knownUserIDs = new Set();
           state.bufferedEvents = [];
           clearAcceptanceGrace(state);
-          if (promptEl instanceof HTMLTextAreaElement && promptEl.value.length === 0) {
+          if (
+            state.sessionID === sessionId &&
+            promptEl instanceof HTMLTextAreaElement &&
+            promptEl.value.length === 0
+          ) {
             promptEl.value = draft;
             resizePrompt();
+            if (restoredAttachments.length > 0 && composerAttachments.length === 0) {
+              setComposerAttachmentsFromViews(restoredAttachments);
+            }
+            scheduleDraftSave(id, draft);
           }
-          showSendError(error.message || String(error));
+          showSendError(sendErrorMessage(error));
           syncComposer();
           renderSendRecovery();
+          void refreshDraftForSession(id, { applyText: false });
           scheduleFlush();
         }
         refreshRuntime().catch(() => {});
@@ -9587,10 +11793,19 @@ function main() {
     });
   }
   if (promptEl instanceof HTMLTextAreaElement) {
+    promptEl.addEventListener("focus", () => {
+      touchCurrentSession();
+    });
     promptEl.addEventListener("input", () => {
+      const now = Date.now();
+      const idle = now - lastComposerEditAt > TOUCH_IDLE_MS;
+      lastComposerEditAt = now;
+      draftEditSeq += 1;
+      if (idle) touchCurrentSession();
       resizePrompt();
       syncPaletteFromDraft();
       updateComposerAction();
+      scheduleDraftForCurrentInput();
     });
     promptEl.addEventListener("keydown", (event) => {
       if (event.isComposing) return;
@@ -9711,10 +11926,12 @@ function main() {
     if (document.hidden) {
       hiddenSince = Date.now();
       stopRuntimePolling();
+      flushDraftOnHide({ deleteEmpty: false });
       return;
     }
     const hiddenMs = hiddenSince === null ? 0 : Date.now() - hiddenSince;
     hiddenSince = null;
+    refreshSessions().catch(() => {});
     if (flushPending) {
       flushPending = false;
       const prepend = prependPending;
@@ -9737,6 +11954,7 @@ function main() {
     void refreshPreviews();
   });
   window.addEventListener("pagehide", (event) => {
+    flushDraftOnHide({ deleteEmpty: true });
     if (event.persisted) closeStream();
   });
   window.addEventListener("pageshow", (event) => {
@@ -9922,6 +12140,10 @@ function main() {
     window.addEventListener("beforeunload", () => window.clearInterval(sshTimer));
   }
 
+  window.addEventListener("focus", () => {
+    refreshSessions().catch(() => {});
+  });
+  initAttachmentUi();
   loadQueueBlocks();
   syncChatViewport();
   if (window.visualViewport !== null && window.visualViewport !== undefined) {

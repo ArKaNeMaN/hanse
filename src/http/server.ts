@@ -9,7 +9,12 @@ import path from "node:path";
 import type { Duplex } from "node:stream";
 import { findApp } from "./apps.js";
 import { isHumanCookie } from "./auth.js";
-import { handleChat, streamSessionEvents } from "./chat.js";
+import {
+  handleAttachmentDownload,
+  handleAttachmentUpload,
+  handleChat,
+  streamSessionEvents,
+} from "./chat.js";
 import { handleCommands, isCommandsRoute } from "./commands.js";
 import { handleContext, isContextRoute } from "./context.js";
 import { handleDeletion, isDeletionRoute } from "./deletion.js";
@@ -34,6 +39,8 @@ import { proxyTerminalUpgrade } from "./terminal.js";
 const IDE_PORT = Number(process.env.HANSE_IDE_PORT ?? 8080);
 const IDE_HOST = process.env.HANSE_IDE_HOST ?? "127.0.0.1";
 const MAX_BODY_BYTES = 64 * 1024;
+// Draft text and message sends carry a 32 KiB operator text plus JSON escaping.
+const MAX_CHAT_BODY_BYTES = 256 * 1024;
 // A bundle can hold a 48,000-character body plus 192,000 characters of references;
 // percent-encoded multi-byte text expands several-fold, so skills routes get 4 MiB.
 const MAX_SKILLS_BODY_BYTES = 4 * 1024 * 1024;
@@ -63,6 +70,10 @@ function bodyLimitFor(url: string): number {
   }
   if (url.startsWith("/internal/mcp")) {
     return MAX_INTERNAL_MCP_BODY_BYTES;
+  }
+  const pathname = url.split("?")[0] ?? url;
+  if (/^\/api\/apps\/[^/]+\/sessions\/[^/]+\/(?:draft|messages)$/.test(pathname)) {
+    return MAX_CHAT_BODY_BYTES;
   }
   return MAX_BODY_BYTES;
 }
@@ -144,6 +155,10 @@ function proxyHttp(
 }
 
 export function createHttpServer(deps: HttpDeps): Server {
+  const manager = deps.manager;
+  if (manager !== undefined && typeof manager.startChatMaintenance === "function") {
+    manager.startChatMaintenance();
+  }
   const server = createServer((request: IncomingMessage, response: ServerResponse) => {
     const url = new URL(request.url ?? "/", "http://localhost");
 
@@ -207,6 +222,24 @@ export function createHttpServer(deps: HttpDeps): Server {
         return;
       }
       proxyPreviewHttp(deps, request, response, preview);
+      return;
+    }
+
+    const isAttachmentUpload =
+      request.method === "POST" && /^\/api\/apps\/[^/]+\/attachments$/.test(url.pathname);
+    const isAttachmentDownload =
+      (request.method === "GET" || request.method === "HEAD") &&
+      /^\/api\/apps\/[^/]+\/attachments\/[^/]+$/.test(url.pathname);
+    if (isAttachmentUpload || isAttachmentDownload) {
+      const handler = isAttachmentUpload ? handleAttachmentUpload : handleAttachmentDownload;
+      void handler(deps, request, response, url).catch(() => {
+        if (!response.headersSent) {
+          response.writeHead(500, { "content-type": "application/json; charset=utf-8" });
+          response.end(JSON.stringify({ error: "attachment request failed" }));
+        } else {
+          response.end();
+        }
+      });
       return;
     }
 

@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { computeSpecHash } from "../src/agent/spec.js";
 import { ConfigError } from "../src/config/load.js";
 import { appContainerName, appNetworkName } from "../src/runner/names.js";
 import {
@@ -110,6 +111,17 @@ describe("runner spec validation", () => {
     expect(spec.containerAppDir).toBe("/data/workspace/project/app");
     expect(spec.containerAgentsRoot).toBe("/data/agents/project/app");
     expect(spec.port).toBe(4100);
+  });
+
+  it("includes the read-only attachments bind marker in the spec hash", () => {
+    const f = fixture();
+    const base = validateRunnerSpec(raw(f), config(f));
+    const marked = validateRunnerSpec(raw(f, { attachmentsReadOnly: true }), config(f));
+    expect(marked.attachmentsReadOnly).toBe(true);
+    expect(marked.specHash).not.toBe(base.specHash);
+    expect(
+      computeSpecHash({ ...base, specHash: undefined as never, attachmentsReadOnly: true }),
+    ).toBe(marked.specHash);
   });
 
   it("requires host paths and an image allowlist in the runner env", () => {

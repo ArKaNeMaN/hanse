@@ -1,3 +1,5 @@
+import { historyReadBudget } from "../attachments/budget.js";
+import { defaultMessageProjector, type MessageProjector } from "../attachments/projection.js";
 import { authorizationFor } from "./endpoint-auth.js";
 
 export interface OpencodeSession {
@@ -35,9 +37,16 @@ export interface OpencodeModelLimit {
   output?: number;
 }
 
+export interface OpencodeProviderCapabilities {
+  input?: { text?: boolean; audio?: boolean; image?: boolean; video?: boolean; pdf?: boolean };
+  attachment?: boolean;
+  [key: string]: unknown;
+}
+
 export interface OpencodeProviderModel {
   id?: string;
   limit?: OpencodeModelLimit;
+  capabilities?: OpencodeProviderCapabilities;
   [key: string]: unknown;
 }
 
@@ -159,11 +168,21 @@ export interface OpencodeRequestOptions {
   maxBytes?: number;
 }
 
+export interface OpencodeMessageReadOptions extends OpencodeRequestOptions {
+  /** Post-parse hook used to add Hanse metadata (attachments) in place. */
+  onParsed?: (messages: OpencodeMessage[]) => void;
+  /** Projection applied after parse and before the caller sees the messages. */
+  project?: MessageProjector;
+}
+
 export const OPENCODE_READ_TIMEOUT_MS = 5_000;
 export const OPENCODE_REPLY_TIMEOUT_MS = 10_000;
 export const OPENCODE_MAX_BODY_BYTES = 1024 * 1024;
 export const MESSAGES_RESPONSE_MAX_BYTES = 8 * 1024 * 1024;
+/** Raw history cap; the fallback path may read one message at a time above this. */
+export const MESSAGES_HISTORY_MAX_BYTES = 48 * 1024 * 1024;
 export const MESSAGES_RESPONSE_TIMEOUT_MS = 30_000;
+export const BLOCKING_RESPONSE_MAX_BYTES = 8 * 1024 * 1024;
 export const PROVIDERS_RESPONSE_MAX_BYTES = 4 * 1024 * 1024;
 export const PROVIDERS_RESPONSE_TIMEOUT_MS = 10_000;
 export const SESSIONS_RESPONSE_MAX_BYTES = 2 * 1024 * 1024;
@@ -340,54 +359,163 @@ export function createSession(endpoint: string, title?: string): Promise<Opencod
   });
 }
 
-export async function deleteSession(endpoint: string, sessionId: string): Promise<void> {
+/** opencode's generated placeholder title (`New session - <ISO-8601>`). */
+export function isDefaultTitle(title: string | undefined): boolean {
+  if (title === undefined) return false;
+  return /^New session\s*-\s*\d{4}-\d{2}-\d{2}T[\d:.+-]+Z?$/i.test(title.trim());
+}
+
+/** Pre-dispatch title update for an attachment send on a default-titled session. */
+export async function patchSessionTitle(
+  endpoint: string,
+  sessionId: string,
+  title: string,
+): Promise<void> {
   const path = `/session/${encodeURIComponent(sessionId)}`;
-  const response = await fetch(`${endpoint}${path}`, {
-    method: "DELETE",
-    headers: requestHeaders(endpoint),
-  });
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`opencode DELETE ${path} -> ${response.status}: ${text.slice(0, 300)}`);
+  const requestOptions: OpencodeRequestOptions = {
+    maxBytes: OPENCODE_MAX_BODY_BYTES,
+    timeoutMs: OPENCODE_READ_TIMEOUT_MS,
+  };
+  const response = await requestResponse(
+    endpoint,
+    path,
+    { method: "PATCH", body: JSON.stringify({ title }) },
+    requestOptions.timeoutMs ?? OPENCODE_READ_TIMEOUT_MS,
+    requestOptions,
+  );
+  await readCapped(response, requestOptions.maxBytes ?? OPENCODE_MAX_BODY_BYTES);
+}
+
+/** Throws {@link OpencodeHttpError} so callers can distinguish an already-deleted upstream session. */
+export async function deleteSession(
+  endpoint: string,
+  sessionId: string,
+  options?: OpencodeRequestOptions,
+): Promise<void> {
+  const path = `/session/${encodeURIComponent(sessionId)}`;
+  const requestOptions: OpencodeRequestOptions = {
+    maxBytes: options?.maxBytes ?? OPENCODE_MAX_BODY_BYTES,
+    timeoutMs: options?.timeoutMs ?? OPENCODE_REPLY_TIMEOUT_MS,
+  };
+  const response = await requestResponse(
+    endpoint,
+    path,
+    { method: "DELETE" },
+    requestOptions.timeoutMs ?? OPENCODE_REPLY_TIMEOUT_MS,
+    requestOptions,
+  );
+  await readCapped(response, requestOptions.maxBytes ?? OPENCODE_MAX_BODY_BYTES);
+}
+
+export async function getSession(
+  endpoint: string,
+  sessionId: string,
+  options?: OpencodeRequestOptions,
+): Promise<OpencodeSession> {
+  const path = `/session/${encodeURIComponent(sessionId)}`;
+  const requestOptions: OpencodeRequestOptions = {
+    maxBytes: options?.maxBytes ?? OPENCODE_MAX_BODY_BYTES,
+    timeoutMs: options?.timeoutMs ?? OPENCODE_READ_TIMEOUT_MS,
+  };
+  const response = await requestResponse(
+    endpoint,
+    path,
+    { method: "GET" },
+    requestOptions.timeoutMs ?? OPENCODE_READ_TIMEOUT_MS,
+    requestOptions,
+  );
+  return readJson<OpencodeSession>(response, path, requestOptions);
+}
+
+/** One-message bounded read used by the pending-send confirmation schedule (design §D6.5). */
+export async function getMessage(
+  endpoint: string,
+  sessionId: string,
+  messageID: string,
+  options?: OpencodeRequestOptions,
+): Promise<OpencodeMessage> {
+  const path = `/session/${encodeURIComponent(sessionId)}/message/${encodeURIComponent(messageID)}`;
+  const requestOptions: OpencodeRequestOptions = {
+    maxBytes: options?.maxBytes ?? MESSAGES_RESPONSE_MAX_BYTES,
+    timeoutMs: options?.timeoutMs ?? OPENCODE_READ_TIMEOUT_MS,
+  };
+  const response = await requestResponse(
+    endpoint,
+    path,
+    { method: "GET" },
+    requestOptions.timeoutMs ?? OPENCODE_READ_TIMEOUT_MS,
+    requestOptions,
+  );
+  return readJson<OpencodeMessage>(response, path, requestOptions);
+}
+
+async function withHistoryBudget<T>(
+  path: string,
+  maxBytes: number,
+  read: () => Promise<T>,
+): Promise<T> {
+  const release = await historyReadBudget.acquire(maxBytes * 4);
+  if (release === undefined) {
+    throw new OpencodeHttpError(path, 0, "history read budget exhausted", "history_busy");
   }
+  try {
+    return await read();
+  } finally {
+    release();
+  }
+}
+
+function applyMessageProjection(
+  messages: OpencodeMessage[],
+  options: OpencodeMessageReadOptions | undefined,
+): void {
+  options?.onParsed?.(messages);
+  (options?.project ?? defaultMessageProjector)(messages);
 }
 
 export async function listMessages(
   endpoint: string,
   sessionId: string,
-  options?: OpencodeRequestOptions,
+  options?: OpencodeMessageReadOptions,
 ): Promise<OpencodeMessage[]> {
   const path = `/session/${encodeURIComponent(sessionId)}/message`;
-  const response = await requestResponse(
-    endpoint,
-    path,
-    { method: "GET" },
-    MESSAGES_RESPONSE_TIMEOUT_MS,
-    options,
-  );
-  const maxBytes = options?.maxBytes ?? MESSAGES_RESPONSE_MAX_BYTES;
-  return readMessageList(response, path, maxBytes);
+  const maxBytes = options?.maxBytes ?? MESSAGES_HISTORY_MAX_BYTES;
+  return withHistoryBudget(path, maxBytes, async () => {
+    const response = await requestResponse(
+      endpoint,
+      path,
+      { method: "GET" },
+      MESSAGES_RESPONSE_TIMEOUT_MS,
+      options,
+    );
+    const messages = await readMessageList(response, path, maxBytes);
+    applyMessageProjection(messages, options);
+    return messages;
+  });
 }
 
 export async function listMessagePage(
   endpoint: string,
   sessionId: string,
-  options: { limit: number; before?: string; maxBytes?: number; timeoutMs?: number },
+  options: OpencodeMessageReadOptions & { limit: number; before?: string },
 ): Promise<OpencodeMessagePage> {
   const params = new URLSearchParams({ limit: String(options.limit) });
   if (options.before !== undefined) params.set("before", options.before);
   const path = `/session/${encodeURIComponent(sessionId)}/message?${params.toString()}`;
-  const response = await requestResponse(
-    endpoint,
-    path,
-    { method: "GET" },
-    MESSAGES_RESPONSE_TIMEOUT_MS,
-    options,
-  );
-  const maxBytes = options.maxBytes ?? MESSAGES_RESPONSE_MAX_BYTES;
-  const messages = await readMessageList(response, path, maxBytes);
-  const cursor = response.headers.get("x-next-cursor");
-  return cursor === null || cursor.length === 0 ? { messages } : { messages, nextCursor: cursor };
+  const maxBytes = options.maxBytes ?? MESSAGES_HISTORY_MAX_BYTES;
+  return withHistoryBudget(path, maxBytes, async () => {
+    const response = await requestResponse(
+      endpoint,
+      path,
+      { method: "GET" },
+      MESSAGES_RESPONSE_TIMEOUT_MS,
+      options,
+    );
+    const messages = await readMessageList(response, path, maxBytes);
+    applyMessageProjection(messages, options);
+    const cursor = response.headers.get("x-next-cursor");
+    return cursor === null || cursor.length === 0 ? { messages } : { messages, nextCursor: cursor };
+  });
 }
 
 async function readMessageList(
@@ -407,20 +535,66 @@ async function readMessageList(
   return JSON.parse(text) as OpencodeMessage[];
 }
 
-export function sendPrompt(
+export async function sendPrompt(
   endpoint: string,
   sessionId: string,
   text: string,
   model?: string,
+  messageID?: string,
+  parts?: OpencodePart[],
 ): Promise<OpencodeMessage> {
+  const path = `/session/${sessionId}/message`;
   const parsedModel = parseOpencodeModel(model);
-  return call<OpencodeMessage>(endpoint, `/session/${sessionId}/message`, {
-    method: "POST",
-    body: JSON.stringify({
-      parts: [{ type: "text", text }],
-      ...(parsedModel === undefined ? {} : { model: parsedModel }),
-    }),
+  const body = JSON.stringify({
+    parts: parts ?? [{ type: "text", text }],
+    ...(messageID === undefined ? {} : { messageID }),
+    ...(parsedModel === undefined ? {} : { model: parsedModel }),
   });
+  let response: Response;
+  try {
+    response = await fetch(`${endpoint}${path}`, {
+      method: "POST",
+      headers: requestHeaders(endpoint),
+      body,
+    });
+  } catch (error) {
+    throw new OpencodeHttpError(path, 0, error instanceof Error ? error.message : "request failed");
+  }
+  if (!response.ok) {
+    const excerpt = await readCapped(response, ERROR_EXCERPT_BYTES);
+    throw new OpencodeHttpError(path, response.status, excerpt.text.slice(0, ERROR_EXCERPT_CHARS));
+  }
+  const responseBody = await readCapped(response, BLOCKING_RESPONSE_MAX_BYTES);
+  if (responseBody.tooLarge) {
+    throw new OpencodeHttpError(
+      path,
+      0,
+      responseBody.text.slice(0, 64 * 1024),
+      "response_too_large",
+    );
+  }
+  return JSON.parse(responseBody.text) as OpencodeMessage;
+}
+
+/** The assistant message from a blocking prompt response (message, array, or `{messages}`). */
+export function lastAssistant(value: unknown): OpencodeMessage | undefined {
+  const candidates: unknown[] = Array.isArray(value)
+    ? value
+    : typeof value === "object" &&
+        value !== null &&
+        Array.isArray((value as { messages?: unknown }).messages)
+      ? (value as { messages: unknown[] }).messages
+      : [value];
+  let assistant: OpencodeMessage | undefined;
+  for (const candidate of candidates) {
+    if (typeof candidate !== "object" || candidate === null) continue;
+    const info = (candidate as { info?: unknown }).info;
+    if (typeof info !== "object" || info === null) continue;
+    if ((info as { role?: unknown }).role !== "assistant") continue;
+    if (typeof (info as { id?: unknown }).id !== "string") continue;
+    assistant = candidate as OpencodeMessage;
+  }
+  return assistant;
 }
 
 export function sendPromptAsync(
@@ -430,13 +604,14 @@ export function sendPromptAsync(
   messageID: string,
   options?: OpencodeRequestOptions,
   model?: string,
+  parts?: OpencodePart[],
 ): Promise<void> {
   const parsedModel = parseOpencodeModel(model);
   return sendVoid(
     endpoint,
     `/session/${encodeURIComponent(sessionId)}/prompt_async`,
     {
-      parts: [{ type: "text", text }],
+      parts: parts ?? [{ type: "text", text }],
       messageID,
       ...(parsedModel === undefined ? {} : { model: parsedModel }),
     },

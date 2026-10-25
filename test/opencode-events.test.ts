@@ -241,7 +241,7 @@ describe("SseParser", () => {
   });
 
   it("exports the app-stream contract constants", () => {
-    expect(APP_STREAM_MAX_FRAME_BYTES).toBe(8 * 1024 * 1024);
+    expect(APP_STREAM_MAX_FRAME_BYTES).toBe(32 * 1024 * 1024);
     expect(MAX_TYPED_EVENT_BYTES).toBe(256 * 1024);
     expect(MAX_DELTA_BYTES).toBe(64 * 1024);
     expect(MAX_TEXT_SNAPSHOT_BYTES).toBe(64 * 1024);
@@ -1713,6 +1713,12 @@ describe("createEventStream", () => {
         messageID: "msg_big",
         partID: "part_big",
         reason: "too_large",
+      },
+      {
+        type: "stream.warning",
+        code: "frame_too_large",
+        message: "dropped an SSE frame larger than 512 bytes",
+        sessionID: "ses_big",
       },
     ]);
   });

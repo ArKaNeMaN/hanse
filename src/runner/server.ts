@@ -679,6 +679,17 @@ export class RunnerService {
     if (expectedAppId !== undefined && spec.appId !== expectedAppId) {
       throw new RunnerError(400, "appId in the path does not match the spec");
     }
+    if (spec.attachmentsReadOnly === true) {
+      const source = path.join(spec.hostAgentsRoot, "attachments");
+      const stat = lstatSync(source, { throwIfNoEntry: false });
+      if (stat === undefined || stat.isSymbolicLink() || !stat.isDirectory()) {
+        throw new RunnerError(
+          409,
+          "attachments bind source is missing or unsafe; repair the application state directory",
+          "attachments_root_missing",
+        );
+      }
+    }
     await this.#docker.ensureNetwork({
       name: spec.networkName,
       labels: {
@@ -726,6 +737,11 @@ export class RunnerService {
       binds: [
         `${spec.hostAppDir}:${spec.containerAppDir}:${spec.appDirReadOnly === true ? "ro" : "rw"}`,
         `${spec.hostAgentsRoot}:${spec.containerAgentsRoot}:rw`,
+        ...(spec.attachmentsReadOnly === true
+          ? [
+              `${path.join(spec.hostAgentsRoot, "attachments")}:${path.posix.join(spec.containerAgentsRoot, "attachments")}:ro`,
+            ]
+          : []),
       ],
       tmpfs: {
         "/tmp": "rw,exec,nosuid,size=1g",

@@ -497,4 +497,94 @@ CREATE INDEX handoffs_reply_state ON handoffs(reply_state);
 CREATE INDEX handoffs_to_app_state ON handoffs(to_app_id, state);
 `,
   },
+  {
+    version: 15,
+    name: "chat-drafts-and-pending-sends",
+    sql: `
+CREATE TABLE message_drafts (
+  app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+  session_id TEXT NOT NULL,
+  text TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (app_id, session_id)
+);
+
+CREATE TABLE session_state (
+  app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+  session_id TEXT NOT NULL,
+  has_messages INTEGER NOT NULL DEFAULT 0 CHECK (has_messages IN (0, 1)),
+  last_activity_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (app_id, session_id)
+);
+CREATE INDEX session_state_activity
+  ON session_state(app_id, has_messages, last_activity_at);
+
+CREATE TABLE pending_sends (
+  id TEXT PRIMARY KEY,
+  app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+  session_id TEXT NOT NULL,
+  message_id TEXT NOT NULL UNIQUE,
+  text TEXT NOT NULL DEFAULT '',
+  attachments_json TEXT NOT NULL DEFAULT '[]',
+  state TEXT NOT NULL CHECK (state IN ('sending', 'unknown', 'failed')),
+  error_code TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX pending_sends_session_state
+  ON pending_sends(app_id, session_id, state);
+`,
+  },
+  {
+    version: 16,
+    name: "chat-attachments-and-deliveries",
+    sql: `
+CREATE TABLE app_attachments (
+  id TEXT PRIMARY KEY,
+  app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+  session_id TEXT NOT NULL,
+  original_name TEXT NOT NULL CHECK (length(original_name) > 0),
+  stored_name TEXT,
+  rel_path TEXT,
+  temp_rel_path TEXT,
+  mime TEXT,
+  size INTEGER CHECK (size IS NULL OR size >= 0),
+  declared_size INTEGER CHECK (declared_size IS NULL OR declared_size >= 0),
+  kind TEXT CHECK (kind IS NULL OR kind IN ('image', 'video', 'pdf', 'file')),
+  mode TEXT NOT NULL DEFAULT 'auto' CHECK (mode IN ('auto', 'inline', 'file')),
+  state TEXT NOT NULL CHECK (state IN ('uploading', 'available', 'missing')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX app_attachments_rel_path ON app_attachments(rel_path);
+CREATE UNIQUE INDEX app_attachments_temp_rel_path
+  ON app_attachments(app_id, temp_rel_path)
+  WHERE temp_rel_path IS NOT NULL;
+CREATE INDEX app_attachments_app_session ON app_attachments(app_id, session_id);
+CREATE INDEX app_attachments_app_state ON app_attachments(app_id, state);
+
+CREATE TABLE attachment_deliveries (
+  id TEXT PRIMARY KEY,
+  attachment_id TEXT NOT NULL REFERENCES app_attachments(id) ON DELETE CASCADE,
+  app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+  session_id TEXT NOT NULL,
+  part_id TEXT,
+  message_id TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('sending', 'sent', 'unknown', 'failed')),
+  error_code TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX attachment_deliveries_part_id
+  ON attachment_deliveries(app_id, part_id);
+CREATE INDEX attachment_deliveries_app_message
+  ON attachment_deliveries(app_id, message_id);
+CREATE INDEX attachment_deliveries_app_attachment
+  ON attachment_deliveries(app_id, attachment_id);
+CREATE INDEX attachment_deliveries_session_state
+  ON attachment_deliveries(app_id, session_id, state);
+`,
+  },
 ];

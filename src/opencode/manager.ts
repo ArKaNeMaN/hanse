@@ -1,13 +1,34 @@
-import { existsSync, mkdirSync, realpathSync, rmSync } from "node:fs";
+import {
+  chmodSync,
+  chownSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  realpathSync,
+  rmSync,
+} from "node:fs";
 import path from "node:path";
 import type { AgentRuntimeClient } from "../agent/client.js";
 import { stoppedStatus } from "../agent/protocol.js";
 import {
   type AppRuntimeSpec,
   computeSpecHash,
+  DEFAULT_AGENT_AGENTS_ROOT,
   type SpecHashInput,
   validateAppRuntimeSpec,
 } from "../agent/spec.js";
+import {
+  type AttachmentPathMode,
+  attachmentVisibleRoot as resolveAttachmentVisibleRoot,
+} from "../attachments/paths.js";
+import { activeUploadIds } from "../attachments/quota.js";
+import { runAttachmentMaintenance } from "../attachments/reconcile.js";
+import {
+  type MonitorState,
+  PENDING_CONFIRMATION_STALE_MS,
+  PendingRecovery,
+} from "../chat/pending.js";
+import { ChatSweep } from "../chat/sweep.js";
 import { DeploymentInProgressError, type DeploymentLock } from "../coordinator/deployment-lock.js";
 import type { LifecycleActivity } from "../coordinator/lifecycle-activity.js";
 import { materializeGitCredentials } from "../git/materialize.js";
@@ -54,6 +75,7 @@ import {
 import type { OmoProfileInput, OmoProfileResult } from "./omo-profile.js";
 import { ensureOpencodePassword, opencodePasswordPath, readOpencodePassword } from "./password.js";
 import {
+  ATTACHMENTS_POLICY_VERSION,
   buildPermissionPolicy,
   type PermissionAction,
   resolvePermissionPaths,
@@ -241,7 +263,7 @@ interface MonitorEntry {
   generation: number;
 }
 
-const DEFAULT_MODEL = "deepseek/deepseek-flash";
+export const DEFAULT_MODEL = "deepseek/deepseek-flash";
 const DEFAULT_AGENT_API_BASE = "http://127.0.0.1:8787";
 const DEFAULT_AGENT_IMAGE = "agent-default";
 const DEFAULT_MEMORY_MB = 2048;
@@ -263,6 +285,7 @@ export function settingsHashFor(
     authHash: snapshot.authHash,
     gitAuthHash: snapshot.gitAuthHash,
     profile,
+    policyVersion: ATTACHMENTS_POLICY_VERSION,
     ...(skillsHash === undefined ? {} : { skills: skillsHash }),
   });
 }
@@ -415,6 +438,9 @@ export class InstanceManager {
   readonly #monitors = new Map<string, MonitorEntry>();
   readonly #locks = new Map<string, Promise<unknown>>();
   readonly #restartClaims = new Map<string, () => void>();
+  readonly #pending: PendingRecovery;
+  readonly #sweep: ChatSweep;
+  #maintenanceStarted = false;
   #monitorGeneration = 0;
   #statusReconcile: Promise<void> | undefined;
   #statusTimer: ReturnType<typeof setInterval> | undefined;
@@ -423,6 +449,90 @@ export class InstanceManager {
     this.#db = db;
     this.#runtimeRoot = runtimeRoot;
     this.#options = options;
+    this.#pending = new PendingRecovery({
+      db,
+      endpointFor: (appId) => this.endpointFor(appId),
+      monitorState: (appId) => this.monitorState(appId),
+      agentsHome: runtimeRoot,
+    });
+    this.#sweep = new ChatSweep({
+      db,
+      agentsHome: runtimeRoot,
+      endpointFor: (appId) => this.endpointFor(appId),
+    });
+  }
+
+  /** Whether the agent runs behind the runner (container-visible paths) or a host supervisor. */
+  attachmentsPathMode(): AttachmentPathMode {
+    return this.#options.hostWorkspace !== undefined && this.#options.hostAgents !== undefined
+      ? "host"
+      : "container";
+  }
+
+  /** Fixed container agents root used by the runner mapping. */
+  containerAgentsRoot(): string {
+    return DEFAULT_AGENT_AGENTS_ROOT;
+  }
+
+  /** The single model-visible attachments root (manifest + policy). */
+  attachmentVisibleRoot(app: { projectId: string; appKey: string }): string {
+    return resolveAttachmentVisibleRoot({
+      agentsHome: this.#runtimeRoot,
+      projectId: app.projectId,
+      appKey: app.appKey,
+      pathMode: this.attachmentsPathMode(),
+    });
+  }
+
+  /** Pending-send confirmation state machine shared by the HTTP routes and the event monitor. */
+  get pendingRecovery(): PendingRecovery {
+    return this.#pending;
+  }
+
+  /**
+   * Whether an app has a connected event monitor. `disabled` also covers a stopped app, so a send
+   * opens the fallback subscription before dispatch.
+   */
+  monitorState(appId: string): MonitorState {
+    if (!this.#monitorsEnabled()) return "disabled";
+    const entry = this.#monitors.get(appId);
+    if (entry === undefined) return "disabled";
+    return entry.monitor.state?.() ?? "connecting";
+  }
+
+  armPendingConfirmation(appId: string): void {
+    this.#pending.arm(appId);
+  }
+
+  /** Attach the shared fallback subscription before a dispatch when the monitor is not connected. */
+  preparePendingConfirmation(appId: string): Promise<void> {
+    return this.#pending.ensureFallback(appId);
+  }
+
+  /** Coordinator startup: settle abandoned sends, arm recovery, and start the daily sweep. */
+  startChatMaintenance(): void {
+    if (this.#maintenanceStarted) return;
+    this.#maintenanceStarted = true;
+    try {
+      runAttachmentMaintenance(this.#db, this.#runtimeRoot, {
+        startup: true,
+        activeIds: activeUploadIds,
+      });
+    } catch {
+      // A missing/unmigrated table must never block coordinator startup.
+    }
+    try {
+      this.#pending.transitionStaleSending(PENDING_CONFIRMATION_STALE_MS);
+      const rows = this.#db
+        .prepare("SELECT DISTINCT app_id AS appId FROM pending_sends")
+        .all() as Array<{ appId: string }>;
+      for (const row of rows) {
+        this.#pending.arm(row.appId);
+      }
+    } catch {
+      // A missing/unmigrated table must never block coordinator startup.
+    }
+    this.#sweep.start();
   }
 
   async ensure(app: ManagedApp): Promise<string> {
@@ -499,6 +609,7 @@ export class InstanceManager {
             }
             this.#startMonitor(app, existing);
           }
+          this.armPendingConfirmation(app.id);
           return endpoint;
         }
         // Running/starting without an endpoint is not reconnectable; under a lock it must throw
@@ -535,6 +646,7 @@ export class InstanceManager {
     const isolated = resolveInstanceEnv(this.#runtimeRoot, identity);
     mkdirSync(path.dirname(isolated.HOME), { recursive: true, mode: 0o700 });
     mkdirSync(isolated.HOME, { recursive: true, mode: 0o700 });
+    this.#ensureAttachmentsRoot(isolated.HOME);
     const passwordFile = opencodePasswordPath(isolated.XDG_STATE_HOME);
     const existing = this.#running.get(app.id);
     const current = await this.#options.runtime.status(app.id);
@@ -669,6 +781,7 @@ export class InstanceManager {
         xdgConfigHome: isolated.XDG_CONFIG_HOME,
         xdgCacheHome: isolated.XDG_CACHE_HOME,
         tmpdir: isolated.TMPDIR,
+        attachmentsRoot: this.attachmentVisibleRoot(app),
         baselinePlugins,
       }),
       webPermissionOptions(web),
@@ -718,6 +831,7 @@ export class InstanceManager {
       pathMode: hostPaths ? "host" : "container",
       appDir: specAppDir,
       ...(app.appDirReadOnly === true ? { appDirReadOnly: true } : {}),
+      ...(hostPaths ? { attachmentsReadOnly: true } : {}),
       stateDir: specStateDir,
       networkName: specNetworkName,
       ...(specPort === undefined ? {} : { port: specPort }),
@@ -756,6 +870,7 @@ export class InstanceManager {
     };
     this.#running.set(app.id, entry);
     this.#startMonitor(app, entry);
+    this.armPendingConfirmation(app.id);
     entry.policyWarnings = await this.#verifyPolicy(app, isolated, baselinePlugins, endpoint);
     const policyDiagnostics = entry.policyWarnings.filter((warning) =>
       warning.trim().startsWith("policy_unverified:"),
@@ -771,6 +886,36 @@ export class InstanceManager {
       entry.modelWarnings = await verifyModel(endpoint, model);
     }
     return endpoint;
+  }
+
+  /**
+   * Pre-create the attachments root next to the existing app-root/HOME directories. The runner's
+   * host-agents mount is read-only, so the coordinator owns creation; uid 1000 matches the agent
+   * container user where the coordinator has the privilege to set it.
+   */
+  #ensureAttachmentsRoot(home: string): void {
+    const root = path.join(path.dirname(home), "attachments");
+    const existing = lstatSync(root, { throwIfNoEntry: false });
+    if (existing !== undefined && (existing.isSymbolicLink() || !existing.isDirectory())) {
+      throw new Error("attachment root is not a safe directory");
+    }
+    mkdirSync(root, { recursive: true, mode: 0o700 });
+    const created = lstatSync(root, { throwIfNoEntry: false });
+    if (created === undefined || created.isSymbolicLink() || !created.isDirectory()) {
+      throw new Error("attachment root is not a safe directory");
+    }
+    try {
+      chmodSync(root, 0o700);
+    } catch {
+      // Existing permissions are still validated by the storage layer.
+    }
+    try {
+      if (typeof process.getuid === "function" && process.getuid() === 0) {
+        chownSync(root, 1000, 1000);
+      }
+    } catch {
+      // Non-root coordinators rely on the pre-existing agents-volume ownership.
+    }
   }
 
   /** Re-read the image fields that decide which image a destructive start may launch. */
@@ -1244,6 +1389,8 @@ export class InstanceManager {
     try {
       this.#assertDeploymentUnlocked("stop_all");
       this.#stopAllMonitors();
+      this.#pending.dispose();
+      this.#sweep.stop();
       await this.#options.runtime.reconcile([]);
       const appIds = new Set(this.#running.keys());
       const active = this.#db
@@ -1275,6 +1422,8 @@ export class InstanceManager {
    */
   detach(): void {
     this.#stopAllMonitors();
+    this.#pending.dispose();
+    this.#sweep.stop();
     this.stopStatusReconciler();
     for (const entry of this.#running.values()) {
       clearEndpointAuthorization(entry.endpoint);
@@ -1328,6 +1477,7 @@ export class InstanceManager {
       );
       return;
     }
+    this.armPendingConfirmation(app.id);
     if (!this.#monitorsEnabled()) return;
     if (status.endpoint === undefined || status.endpoint === null) return;
     const endpoint = status.endpoint;
@@ -1411,13 +1561,15 @@ export class InstanceManager {
         this.#monitors.get(app.id)?.generation === generation &&
         this.#running.get(app.id)?.endpoint === entry.endpoint,
       settings: { contextPolicy: (target) => contextPolicy.call(settings, target) },
-      ...(this.#options.onEvent === undefined
-        ? {}
-        : { onEvent: (event: HanseEvent) => this.#options.onEvent?.(app, event) }),
+      onEvent: (event: HanseEvent) => {
+        this.#pending.observe(app.id, event);
+        this.#options.onEvent?.(app, event);
+      },
     };
     const monitor = this.#options.monitorFactory?.(options) ?? new ContextMonitor(options);
     this.#monitors.set(app.id, { monitor, endpoint: entry.endpoint, generation });
     monitor.start();
+    this.armPendingConfirmation(app.id);
   }
 
   #stopMonitor(appId: string): void {
@@ -1617,6 +1769,7 @@ export class InstanceManager {
       xdgConfigHome: isolated.XDG_CONFIG_HOME,
       xdgCacheHome: isolated.XDG_CACHE_HOME,
       tmpdir: isolated.TMPDIR,
+      attachmentsRoot: this.attachmentVisibleRoot(app),
       baselinePlugins,
     });
     try {

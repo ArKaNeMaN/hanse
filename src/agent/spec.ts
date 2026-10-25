@@ -29,6 +29,11 @@ export interface AppRuntimeSpec {
    * coordinator-owned master application.
    */
   appDirReadOnly?: boolean;
+  /**
+   * Mount `<agentsRoot>/attachments` as a nested read-only bind inside the app container (runner
+   * mode only). Part of the spec hash so the container is recreated on the next explicit restart.
+   */
+  attachmentsReadOnly?: boolean;
   stateDir: string;
   networkName: string;
   port?: number;
@@ -281,6 +286,7 @@ export function computeSpecHash(spec: SpecHashInput): string {
     pathMode: spec.pathMode,
     appDir: spec.appDir,
     ...(spec.appDirReadOnly === true ? { appDirReadOnly: true } : {}),
+    ...(spec.attachmentsReadOnly === true ? { attachmentsReadOnly: true } : {}),
     stateDir: spec.stateDir,
     networkName: spec.networkName,
     env: hashableEnv(spec.env),
@@ -324,6 +330,10 @@ export function validateAppRuntimeSpec(
     throw invalid("appDirReadOnly must be a boolean");
   }
   const appDirReadOnly = value.appDirReadOnly === true;
+  if (value.attachmentsReadOnly !== undefined && typeof value.attachmentsReadOnly !== "boolean") {
+    throw invalid("attachmentsReadOnly must be a boolean");
+  }
+  const attachmentsReadOnly = value.attachmentsReadOnly === true;
   const envRoots = pathMode === "container" ? { agentsRoot, appDir } : undefined;
   const base: SpecHashInput = {
     appId,
@@ -331,6 +341,7 @@ export function validateAppRuntimeSpec(
     pathMode,
     appDir,
     ...(appDirReadOnly ? { appDirReadOnly: true } : {}),
+    ...(attachmentsReadOnly ? { attachmentsReadOnly: true } : {}),
     stateDir,
     networkName,
     ...(port === undefined ? {} : { port }),

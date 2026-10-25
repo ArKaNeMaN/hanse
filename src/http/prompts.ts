@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { ServerResponse } from "node:http";
+import { createEventAttachmentResolver } from "../attachments/projection.js";
+import { appStreams } from "../attachments/streams.js";
 import {
   deleteSavedPermission,
   listPermissions,
@@ -683,12 +685,29 @@ export async function streamAppEvents(
     writeJson(response, 404, { error: `unknown application: ${appKey}` });
     return;
   }
+  const releaseSlot = appStreams.acquireBrowser(found.app.id);
+  if (releaseSlot === undefined) {
+    writeJson(response, 429, {
+      error: "too many event streams for this application",
+      code: "stream_limit",
+    });
+    return;
+  }
+  let slotReleased = false;
+  const releaseOnce = (): void => {
+    if (slotReleased) return;
+    slotReleased = true;
+    releaseSlot();
+  };
+  response.once?.("close", releaseOnce);
+  response.once?.("finish", releaseOnce);
   let endpoint: string;
   try {
     endpoint = await deps.manager.ensure(toManagedApp(found));
   } catch (error) {
     if (error instanceof DeletionPendingError) {
       writeJson(response, 409, { error: error.message, code: error.code });
+      releaseOnce();
       return;
     }
     const mapped = mapLifecycleHttpError(error);
@@ -698,12 +717,15 @@ export async function streamAppEvents(
         ...(mapped.headers ?? {}),
       });
       response.end(JSON.stringify(mapped.body));
+      releaseOnce();
       return;
     }
     writeJson(response, 502, { error: startFailureMessage(error) });
+    releaseOnce();
     return;
   }
   if (response.destroyed || response.writableEnded) {
+    releaseOnce();
     return;
   }
 
@@ -742,11 +764,20 @@ export async function streamAppEvents(
     if (!upstream.ok || upstream.body === null) {
       cleanup();
       writeJson(response, 502, { error: `event stream failed with status ${upstream.status}` });
+      releaseOnce();
       return;
     }
+    const resolver = createEventAttachmentResolver({
+      db: deps.db,
+      appId: found.app.id,
+      appKey: found.app.appKey,
+      projectId: found.project.id,
+    });
     const stream = createEventStream(upstream.body, {
       signal: controller.signal,
       maxFrameBytes: APP_STREAM_MAX_FRAME_BYTES,
+      attachments: resolver,
+      isPriority: () => appStreams.isActive(found.app.id, streamID),
       onAttached: () => {
         response.writeHead(200, {
           "content-type": "text/event-stream",
@@ -778,5 +809,6 @@ export async function streamAppEvents(
     if (!response.destroyed && !response.writableEnded) {
       response.end();
     }
+    releaseOnce();
   }
 }

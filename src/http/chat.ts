@@ -1,5 +1,111 @@
 import { randomUUID } from "node:crypto";
-import type { ServerResponse } from "node:http";
+import { createReadStream } from "node:fs";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import path from "node:path";
+import { BLOCKING_RESPONSE_BUDGET_BYTES, blockingResponseBudget } from "../attachments/budget.js";
+import { type CapabilityOutcome, resolveModelCapabilities } from "../attachments/capabilities.js";
+import {
+  completeUpload,
+  discardUpload,
+  finalDirFor,
+  finalPathFor,
+  tempPathFor,
+  writeCommitMetadata,
+} from "../attachments/commit.js";
+import {
+  attachmentsForRefs,
+  parseRequestedAttachments,
+  planDeliveries,
+  type RequestedAttachmentInput,
+  resolveSendAttachments,
+  type SendAttachment,
+  sendPartsForPlan,
+} from "../attachments/delivery.js";
+import {
+  PROJECTED_RESPONSE_MAX_BYTES,
+  projectedResponseBytes,
+  readProjectedPage,
+} from "../attachments/history.js";
+import { dedupeWarnings, planInlineDelivery } from "../attachments/inline.js";
+import { isInlineSafeMime } from "../attachments/mime.js";
+import {
+  encodeContentDisposition,
+  filenameFromContentDisposition,
+  safeOriginalName,
+  storedNameFor,
+} from "../attachments/names.js";
+import {
+  type AttachmentPathMode,
+  attachmentRelPath,
+  attachmentsHostRoot,
+  attachmentTempRelPath,
+} from "../attachments/paths.js";
+import {
+  createEventAttachmentResolver,
+  createMessageProjector,
+} from "../attachments/projection.js";
+import {
+  activeUploadIds,
+  availableAttachmentBytes,
+  quotaView,
+  reservedAttachmentBytes,
+  uploadCoordinator,
+} from "../attachments/quota.js";
+import {
+  ensureSessionFolder,
+  moveIntoPlace,
+  openAttachmentFile,
+  removeFileQuiet,
+} from "../attachments/storage.js";
+import {
+  deleteAttachmentRowById,
+  deliveryStatesForAttachment,
+  failDeliveriesForMessage,
+  insertUploadingAttachment,
+  markAttachmentMissing,
+  markDeliveriesUnknownForMessage,
+  readAttachment,
+  readSessionAttachment,
+  setAttachmentMode,
+} from "../attachments/store.js";
+import { appStreams } from "../attachments/streams.js";
+import {
+  attachmentTitle as attachmentTitleForSend,
+  prefixDefaultLikeTitle,
+} from "../attachments/title.js";
+import {
+  type AttachmentRow,
+  type AttachmentView,
+  MAX_ATTACHMENTS_PER_MESSAGE,
+  MAX_FILE_BYTES,
+  MAX_IMAGE_BYTES,
+} from "../attachments/types.js";
+import { streamUploadBody, UploadStreamError } from "../attachments/upload.js";
+import { attachmentView, draftAttachmentViews, parseAttachmentRefs } from "../attachments/views.js";
+import { KeyedMutex, sessionLockKey, sessionLocks } from "../chat/locks.js";
+import {
+  bumpLastActivity,
+  deletePending,
+  deleteSessionChatRows,
+  draftSummaries,
+  ensureSessionState,
+  insertEmptySessionState,
+  insertPendingAndClearDraft,
+  insertPendingSend,
+  isSessionId,
+  localSessionBlockReason,
+  MAX_DRAFT_BYTES,
+  nowIso,
+  pendingSendView,
+  readDraft,
+  readPendingSend,
+  readPendingSends,
+  removeSessionFolder,
+  sessionFolder,
+  setPendingState,
+  upsertSessionState,
+  writeDraft,
+} from "../chat/state.js";
 import type { Handoff } from "../coordinator/handoff.js";
 import type { Principal } from "../identity/principals.js";
 import { isMasterApp } from "../master/constants.js";
@@ -7,18 +113,24 @@ import {
   abortSession,
   createSession,
   deleteSession,
+  getSession,
+  isDefaultTitle,
+  lastAssistant,
   listMessagePage,
   listMessages,
   listSessions,
   OpencodeHttpError,
+  type OpencodeMessage,
+  patchSessionTitle,
   sendPrompt,
   sendPromptAsync,
 } from "../opencode/client.js";
 import { authorizationFor } from "../opencode/endpoint-auth.js";
-import { DeletionPendingError } from "../opencode/manager.js";
+import { APP_STREAM_MAX_FRAME_BYTES, createRawEventStream } from "../opencode/events.js";
+import { DEFAULT_MODEL, DeletionPendingError } from "../opencode/manager.js";
 import type { PreviewView } from "../preview/types.js";
 import type { RegisteredApp } from "../registry/index.js";
-import { appDir, findApp, toManagedApp } from "./apps.js";
+import { appDir, type FoundApp, findApp, toManagedApp } from "./apps.js";
 import { humanFrom, principalFrom } from "./auth.js";
 import {
   buildSite,
@@ -337,7 +449,7 @@ function renderChatPage(
     <form class="composer" id="chat-composer" data-no-busy>
       <div class="composer__row">
         <label class="sr-only" for="chat-prompt">Message ${escapeHtml(app.appKey)} agent</label>
-        <textarea class="textarea" id="chat-prompt" name="prompt" rows="1" required enterkeyhint="enter" placeholder="Message ${escapeHtml(app.appKey)} agent" aria-describedby="chat-composer-hint" role="combobox" aria-autocomplete="list" aria-haspopup="listbox" aria-controls="chat-command-listbox" aria-expanded="false"></textarea>
+        <textarea class="textarea" id="chat-prompt" name="prompt" rows="1" enterkeyhint="enter" placeholder="Message ${escapeHtml(app.appKey)} agent" aria-describedby="chat-composer-hint" role="combobox" aria-autocomplete="list" aria-haspopup="listbox" aria-controls="chat-command-listbox" aria-expanded="false"></textarea>
         <button class="btn btn-ghost btn-icon" id="chat-commands-button" type="button" aria-label="Commands" aria-haspopup="listbox" aria-expanded="false" aria-controls="chat-command-listbox" title="Commands">${icon("slash")}</button>
         <button class="btn btn-primary" id="chat-send" type="submit">${icon("send")}<span class="btn__label">Send</span></button>
       </div>
@@ -492,6 +604,11 @@ export async function streamSessionEvents(
     response.end();
     return;
   }
+  if (principal.kind !== "human") {
+    response.writeHead(403, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify({ error: "only a human principal may read session events" }));
+    return;
+  }
   const match = /^\/api\/apps\/([^/]+)\/sessions\/([^/]+)\/events$/.exec(request.path);
   const found = findApp(deps, projectParam(request), safeDecode(match?.[1] ?? ""));
   if (found === undefined || deps.manager === undefined) {
@@ -499,6 +616,25 @@ export async function streamSessionEvents(
     response.end();
     return;
   }
+  const releaseSlot = appStreams.acquireBrowser(found.app.id);
+  if (releaseSlot === undefined) {
+    response.writeHead(429, { "content-type": "application/json; charset=utf-8" });
+    response.end(
+      JSON.stringify({
+        error: "too many event streams for this application",
+        code: "stream_limit",
+      }),
+    );
+    return;
+  }
+  let slotReleased = false;
+  const releaseOnce = (): void => {
+    if (slotReleased) return;
+    slotReleased = true;
+    releaseSlot();
+  };
+  response.once?.("close", releaseOnce);
+  response.once?.("finish", releaseOnce);
   const controller = new AbortController();
   response.on("close", () => controller.abort());
   let endpoint: string;
@@ -508,6 +644,7 @@ export async function streamSessionEvents(
     if (error instanceof DeletionPendingError) {
       response.writeHead(409, { "content-type": "application/json; charset=utf-8" });
       response.end(JSON.stringify({ error: error.message, code: error.code }));
+      releaseOnce();
       return;
     }
     const mapped = mapLifecycleHttpError(error);
@@ -517,10 +654,12 @@ export async function streamSessionEvents(
         ...(mapped.headers ?? {}),
       });
       response.end(JSON.stringify(mapped.body));
+      releaseOnce();
       return;
     }
     response.writeHead(502);
     response.end();
+    releaseOnce();
     return;
   }
   const authorization = authorizationFor(endpoint);
@@ -534,26 +673,1487 @@ export async function streamSessionEvents(
   if (upstream === undefined || !upstream.ok || upstream.body === null) {
     response.writeHead(502);
     response.end();
+    releaseOnce();
     return;
   }
   response.writeHead(200, {
     "content-type": "text/event-stream",
     "cache-control": "no-cache",
     connection: "keep-alive",
+    "x-accel-buffering": "no",
   });
-  const reader = upstream.body.getReader();
+  const streamID = request.headers["x-hanse-stream"]?.trim() ?? "";
+  const stream = createRawEventStream(upstream.body, {
+    signal: controller.signal,
+    maxFrameBytes: APP_STREAM_MAX_FRAME_BYTES,
+    attachments: createEventAttachmentResolver({
+      db: deps.db,
+      appId: found.app.id,
+      appKey: found.app.appKey,
+      projectId: found.project.id,
+    }),
+    isPriority: () => streamID.length > 0 && appStreams.isActive(found.app.id, streamID),
+  });
   try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) {
-        break;
-      }
-      response.write(Buffer.from(value));
+    for await (const event of stream.events) {
+      if (response.destroyed || response.writableEnded) break;
+      response.write(`data: ${JSON.stringify(event)}\n\n`);
     }
   } catch {
     controller.abort();
+  } finally {
+    stream.close();
+    releaseOnce();
   }
   response.end();
+}
+
+type UpstreamSessionCheck = "reachable" | "missing" | "gone" | "unavailable";
+
+function appNotFound(appKey: string): HttpResponse {
+  return json(404, { error: `unknown application: ${appKey}`, code: "app_not_found" });
+}
+
+function invalidSession(): HttpResponse {
+  return json(400, { error: "invalid session id", code: "invalid_session" });
+}
+
+function agentUnavailable(): HttpResponse {
+  return json(503, { error: "agent is not running", code: "agent_unavailable" });
+}
+
+async function checkUpstreamSession(
+  endpoint: string | undefined,
+  sessionId: string,
+): Promise<UpstreamSessionCheck> {
+  if (endpoint === undefined) return "unavailable";
+  try {
+    await getSession(endpoint, sessionId, { timeoutMs: 5_000 });
+    return "reachable";
+  } catch (error) {
+    if (error instanceof OpencodeHttpError && error.status === 410) return "gone";
+    if (error instanceof OpencodeHttpError && error.status === 404) return "missing";
+    return "unavailable";
+  }
+}
+
+function isSessionGone(error: unknown): boolean {
+  return error instanceof OpencodeHttpError && (error.status === 404 || error.status === 410);
+}
+
+function parseSessionTitle(body: string | undefined): { title?: string } | { invalid: true } {
+  let parsed: unknown = {};
+  const raw = body ?? "";
+  if (raw.trim().length > 0) {
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return { invalid: true };
+    }
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return { invalid: true };
+  }
+  const value = (parsed as Record<string, unknown>).title;
+  if (value === undefined || value === null) {
+    return {};
+  }
+  if (typeof value !== "string") {
+    return { invalid: true };
+  }
+  const singleLine = value.replace(/[\r\n\t]+/g, " ");
+  const cleaned = Array.from(singleLine)
+    .filter((character) => {
+      const code = character.codePointAt(0) ?? 0;
+      return code >= 32 && code !== 127 && code !== 0x2028 && code !== 0x2029;
+    })
+    .join("")
+    .trim();
+  if (cleaned.length < 1 || cleaned.length > 120) {
+    return { invalid: true };
+  }
+  return { title: cleaned };
+}
+
+function parseForce(body: string | undefined): { force: boolean; invalid: boolean } {
+  const raw = body ?? "";
+  if (raw.trim().length === 0) return { force: false, invalid: false };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { force: false, invalid: true };
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return { force: false, invalid: true };
+  }
+  return { force: (parsed as Record<string, unknown>).force === true, invalid: false };
+}
+
+function newPendingId(): string {
+  return `pend_${randomUUID().replaceAll("-", "")}`;
+}
+
+function newMessageId(): string {
+  return `msg_${randomUUID().replaceAll("-", "")}`;
+}
+
+/** Per-app upload/quota lock; lock order is ensure -> session -> quota. */
+const appUploadLocks = new KeyedMutex();
+
+function newAttachmentId(): string {
+  return `att_${randomUUID().replaceAll("-", "")}`;
+}
+
+/** Shared mutation Origin check: absent is allowed; `null`, malformed, or a host mismatch is not. */
+function crossSiteMutation(request: HttpRequest): boolean {
+  const origin = request.origin?.trim();
+  if (origin === undefined || origin.length === 0) return false;
+  if (origin === "null") return true;
+  if (request.host === undefined || request.host.length === 0) return true;
+  try {
+    return new URL(origin).host.toLowerCase() !== request.host.toLowerCase();
+  } catch {
+    return true;
+  }
+}
+
+function attachmentPathMode(deps: HttpDeps): AttachmentPathMode {
+  return deps.manager?.attachmentsPathMode?.() ?? "container";
+}
+
+function _attachmentVisibleRootFor(deps: HttpDeps, found: FoundApp): string {
+  const manager = deps.manager;
+  if (manager?.attachmentVisibleRoot !== undefined) {
+    return manager.attachmentVisibleRoot(found.app);
+  }
+  return appAttachmentRoot(deps, found) ?? "";
+}
+
+function appAttachmentRoot(deps: HttpDeps, found: FoundApp): string | undefined {
+  return deps.agentsHome === undefined
+    ? undefined
+    : path.dirname(attachmentsHostRoot(deps.agentsHome, found.project.id, found.app.appKey));
+}
+
+function quotaPercent(deps: HttpDeps, appId: string): number {
+  return quotaView(availableAttachmentBytes(deps.db, appId)).percent;
+}
+
+function attachmentViewFor(
+  deps: HttpDeps,
+  found: FoundApp,
+  row: AttachmentRow,
+  state?: AttachmentView["state"],
+): AttachmentView {
+  return attachmentView(row, {
+    appKey: found.app.appKey,
+    projectId: found.project.id,
+    deliveryStates: deliveryStatesForAttachment(deps.db, found.app.id, row.id),
+    ...(state === undefined ? {} : { state }),
+  });
+}
+
+function _writeJson(_headers: Record<string, string>, body: unknown): string {
+  return JSON.stringify(body);
+}
+
+function removeLocalSessionRows(deps: HttpDeps, found: FoundApp, sessionId: string): void {
+  deleteSessionChatRows(deps.db, found.app.id, sessionId);
+  removeSessionFolder(
+    sessionFolder(deps.agentsHome, found.project.id, found.app.appKey, sessionId),
+  );
+}
+
+async function handleDraft(
+  deps: HttpDeps,
+  found: FoundApp,
+  request: HttpRequest,
+  sessionId: string,
+): Promise<HttpResponse> {
+  if (request.method === "GET") {
+    const now = nowIso();
+    return sessionLocks.run(sessionLockKey(found.app.id, sessionId), () => {
+      const draft = readDraft(deps.db, found.app.id, sessionId);
+      bumpLastActivity(deps.db, found.app.id, sessionId, now);
+      const pendingSends = readPendingSends(deps.db, found.app.id, sessionId).map(pendingSendView);
+      return json(200, {
+        text: draft?.text ?? "",
+        attachments: draftAttachmentViews(deps.db, found.app.id, sessionId, {
+          appKey: found.app.appKey,
+          projectId: found.project.id,
+        }),
+        pendingSends,
+        quota: { percent: quotaPercent(deps, found.app.id) },
+        updatedAt: draft?.updatedAt ?? null,
+      });
+    });
+  }
+  if (request.method !== "PUT") {
+    return json(405, { error: "method not allowed" });
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(request.body ?? "");
+  } catch {
+    return json(400, { error: "invalid JSON body", code: "invalid_json" });
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return json(400, { error: "invalid JSON body", code: "invalid_json" });
+  }
+  const value = (parsed as Record<string, unknown>).text;
+  if (typeof value !== "string") {
+    return json(400, { error: "invalid JSON body", code: "invalid_json" });
+  }
+  const text = value;
+  if (Buffer.byteLength(text, "utf8") > MAX_DRAFT_BYTES) {
+    return json(400, { error: "draft too large", code: "draft_too_large" });
+  }
+  const endpoint = deps.manager?.endpointFor?.(found.app.id);
+  const now = nowIso();
+  return sessionLocks.run(sessionLockKey(found.app.id, sessionId), async () => {
+    const check = await checkUpstreamSession(endpoint, sessionId);
+    if (check === "missing") {
+      return json(404, { error: "session not found", code: "session_not_found" });
+    }
+    if (check === "gone") {
+      return json(410, { error: "session is gone", code: "session_gone" });
+    }
+    writeDraft(deps.db, found.app.id, sessionId, text, now);
+    if (check === "reachable") {
+      ensureSessionState(deps.db, found.app.id, sessionId, now);
+    } else {
+      bumpLastActivity(deps.db, found.app.id, sessionId, now);
+    }
+    return json(200, { text, updatedAt: now });
+  });
+}
+
+async function handleTouch(
+  deps: HttpDeps,
+  found: FoundApp,
+  sessionId: string,
+): Promise<HttpResponse> {
+  const endpoint = deps.manager?.endpointFor?.(found.app.id);
+  const now = nowIso();
+  return sessionLocks.run(sessionLockKey(found.app.id, sessionId), async () => {
+    if (endpoint !== undefined) {
+      const check = await checkUpstreamSession(endpoint, sessionId);
+      if (check === "missing") {
+        return json(404, { error: "session not found", code: "session_not_found" });
+      }
+      if (check === "gone") {
+        return json(410, { error: "session is gone", code: "session_gone" });
+      }
+      if (check === "reachable") {
+        ensureSessionState(deps.db, found.app.id, sessionId, now);
+        return json(200, { touched: true });
+      }
+    }
+    bumpLastActivity(deps.db, found.app.id, sessionId, now);
+    return json(200, { touched: true });
+  });
+}
+
+async function handleDeleteIfEmpty(
+  deps: HttpDeps,
+  found: FoundApp,
+  sessionId: string,
+): Promise<HttpResponse> {
+  if (found.app.deleting || found.project.deleting) {
+    return json(409, { error: "application is pending deletion", code: "deletion_pending" });
+  }
+  const manager = deps.manager;
+  if (manager === undefined) return agentUnavailable();
+  return sessionLocks.run(sessionLockKey(found.app.id, sessionId), async () => {
+    const blocked = localSessionBlockReason(deps.db, found.app.id, sessionId);
+    if (blocked !== undefined) {
+      return json(200, { deleted: false, reason: blocked });
+    }
+    const endpoint = manager.endpointFor?.(found.app.id);
+    if (endpoint === undefined) return agentUnavailable();
+    let upstreamGone = false;
+    try {
+      const page = await listMessagePage(endpoint, sessionId, {
+        limit: 1,
+        timeoutMs: 5_000,
+      });
+      if (page.messages.length > 0) {
+        return json(200, { deleted: false, reason: "has_messages" });
+      }
+    } catch (error) {
+      if (isSessionGone(error)) {
+        upstreamGone = true;
+      } else if (error instanceof OpencodeHttpError && error.code === "messages_too_large") {
+        return json(200, { deleted: false, reason: "has_messages" });
+      } else {
+        return json(503, {
+          error: "could not verify the session is empty",
+          code: "empty_check_failed",
+        });
+      }
+    }
+    if (!upstreamGone) {
+      try {
+        await deleteSession(endpoint, sessionId, { timeoutMs: 5_000 });
+      } catch (error) {
+        if (!isSessionGone(error)) {
+          return json(503, {
+            error: "could not delete the session",
+            code: "delete_failed",
+          });
+        }
+        upstreamGone = true;
+      }
+    }
+    removeLocalSessionRows(deps, found, sessionId);
+    return json(200, { deleted: true, upstream: !upstreamGone });
+  });
+}
+
+async function handlePendingRetry(
+  deps: HttpDeps,
+  found: FoundApp,
+  request: HttpRequest,
+  sessionId: string,
+  pendingId: string,
+): Promise<HttpResponse> {
+  const manager = deps.manager;
+  if (manager === undefined) return agentUnavailable();
+  const forceParsed = parseForce(request.body);
+  if (forceParsed.invalid) {
+    return json(400, { error: "invalid JSON body", code: "invalid_json" });
+  }
+  const force = forceParsed.force;
+  const recovery = manager.pendingRecovery;
+  if (recovery === undefined) return agentUnavailable();
+  const endpoint = manager.endpointFor?.(found.app.id);
+  if (endpoint === undefined) return agentUnavailable();
+  const key = sessionLockKey(found.app.id, sessionId);
+  const snapshot = await sessionLocks.run(key, () =>
+    readPendingSend(deps.db, found.app.id, sessionId, pendingId),
+  );
+  if (snapshot === undefined) {
+    return json(404, { error: "pending send not found", code: "pending_not_found" });
+  }
+  if (snapshot.state === "sending") {
+    return json(409, { error: "send is still in flight", code: "pending_in_flight" });
+  }
+  const outcome =
+    snapshot.state === "failed"
+      ? await recovery.recheckOnce(found.app.id, snapshot)
+      : await recovery.recheck(found.app.id, snapshot);
+  if (outcome === "pending") {
+    return json(202, { rechecking: true });
+  }
+  if (outcome === "found") {
+    return json(200, { retried: false, confirmed: true });
+  }
+  if (outcome === "unknown" && (!force || snapshot.state !== "unknown")) {
+    return json(409, {
+      error: "send outcome is still unknown",
+      code: "still_unknown",
+    });
+  }
+  if (outcome === "absent" && (await recovery.sessionMissing(found.app.id, sessionId))) {
+    removeLocalSessionRows(deps, found, sessionId);
+    return json(404, { error: "session not found", code: "session_not_found" });
+  }
+  const refs = parseAttachmentRefs(snapshot.attachmentsJson);
+  const requested: RequestedAttachmentInput[] = refs.map((ref) => ({
+    id: ref.id,
+    ...(ref.mode === undefined ? {} : { mode: ref.mode }),
+    explicitMode: ref.mode !== undefined,
+  }));
+  const capability = await capabilityForSend(deps, found, endpoint, sessionId, requested);
+  const appRoot = appAttachmentRoot(deps, found);
+  const prepared = await sessionLocks.run(key, () => {
+    const current = readPendingSend(deps.db, found.app.id, sessionId, snapshot.id);
+    if (current === undefined) return { missing: true as const };
+    if (current.state === "sending") return { inflight: true as const };
+    const rows =
+      refs.length === 0 || appRoot === undefined
+        ? []
+        : attachmentsForRefs(deps.db, found.app.id, sessionId, refs, appRoot);
+    if (refs.length > 0 && rows.length !== refs.length) {
+      return { missingAttachment: true as const };
+    }
+    const plan = planInlineDelivery({ rows, requested, capability });
+    if (!plan.ok) return { failedPlan: plan.error };
+    const planned = sendAttachments(rows, plan.plan.modes);
+    const now = nowIso();
+    const messageID = newMessageId();
+    insertPendingSend(deps.db, {
+      id: newPendingId(),
+      appId: found.app.id,
+      sessionId,
+      messageID,
+      text: current.text,
+      now,
+      ...(refs.length === 0 ? {} : { attachmentsJson: current.attachmentsJson }),
+      deliveries: planned.deliveries,
+      deletePendingId: current.id,
+      failMessageId: current.messageID,
+    });
+    const parts = attachParts({
+      deps,
+      found,
+      sessionId,
+      text: current.text,
+      attachments: planned.attachments,
+    });
+    return {
+      text: current.text,
+      messageID,
+      parts,
+      warnings: dedupeWarnings(plan.plan.warnings),
+    };
+  });
+  if ("missing" in prepared) {
+    return json(200, { retried: false, confirmed: true });
+  }
+  if ("inflight" in prepared) {
+    return json(409, { error: "send is still in flight", code: "pending_in_flight" });
+  }
+  if ("missingAttachment" in prepared) {
+    return json(409, { error: "attachment file is missing", code: "attachment_missing" });
+  }
+  if ("failedPlan" in prepared && prepared.failedPlan !== undefined) {
+    return json(prepared.failedPlan.status, {
+      error: prepared.failedPlan.message,
+      code: prepared.failedPlan.code,
+    });
+  }
+  const messageID = prepared.messageID;
+  const warningFields = prepared.warnings.length === 0 ? {} : { warnings: prepared.warnings };
+  await manager.preparePendingConfirmation?.(found.app.id).catch(() => undefined);
+  try {
+    await sendPromptAsync(
+      endpoint,
+      sessionId,
+      prepared.text,
+      messageID,
+      undefined,
+      effectiveModel(deps, found) ?? DEFAULT_MODEL,
+      prepared.parts,
+    );
+  } catch (error) {
+    const state =
+      error instanceof OpencodeHttpError && (error.status === 0 || error.status >= 500)
+        ? "unknown"
+        : "failed";
+    const failureNow = nowIso();
+    await sessionLocks.run(key, () => {
+      const created = readPendingSends(deps.db, found.app.id, sessionId).find(
+        (candidate) => candidate.messageID === messageID,
+      );
+      if (created !== undefined) {
+        setPendingState(deps.db, created.id, state, "retry_dispatch_failed", failureNow);
+      }
+      if (state === "unknown") {
+        markDeliveriesUnknownForMessage(
+          deps.db,
+          found.app.id,
+          sessionId,
+          messageID,
+          "retry_dispatch_failed",
+          failureNow,
+        );
+      } else {
+        failDeliveriesForMessage(
+          deps.db,
+          found.app.id,
+          sessionId,
+          messageID,
+          "retry_dispatch_failed",
+          failureNow,
+          ["sending"],
+        );
+      }
+    });
+    return json(502, {
+      error: error instanceof Error ? error.message : String(error),
+      code: "agent_unavailable",
+      outcome: state === "unknown" ? "unknown" : "not_sent",
+    });
+  }
+  manager.armPendingConfirmation?.(found.app.id);
+  return json(200, { retried: true, messageID, ...warningFields });
+}
+
+async function handlePendingDismiss(
+  deps: HttpDeps,
+  found: FoundApp,
+  request: HttpRequest,
+  sessionId: string,
+  pendingId: string,
+): Promise<HttpResponse> {
+  const manager = deps.manager;
+  if (manager === undefined) return agentUnavailable();
+  const forceParsed = parseForce(request.body);
+  if (forceParsed.invalid) {
+    return json(400, { error: "invalid JSON body", code: "invalid_json" });
+  }
+  const force = forceParsed.force;
+  const recovery = manager.pendingRecovery;
+  if (recovery === undefined) return agentUnavailable();
+  const key = sessionLockKey(found.app.id, sessionId);
+  const snapshot = await sessionLocks.run(key, () =>
+    readPendingSend(deps.db, found.app.id, sessionId, pendingId),
+  );
+  if (snapshot === undefined) {
+    return json(404, { error: "pending send not found", code: "pending_not_found" });
+  }
+  if (snapshot.state === "sending") {
+    return json(409, { error: "send is still in flight", code: "pending_in_flight" });
+  }
+  if (manager.endpointFor?.(found.app.id) === undefined) {
+    if (!force) return agentUnavailable();
+    await sessionLocks.run(key, () => {
+      const now = nowIso();
+      deps.db.transaction(() => {
+        failDeliveriesForMessage(
+          deps.db,
+          found.app.id,
+          sessionId,
+          snapshot.messageID,
+          "dismissed",
+          now,
+          ["sending", "unknown"],
+        );
+        deletePending(deps.db, snapshot.id);
+      })();
+    });
+    return json(200, { dismissed: true });
+  }
+  const outcome =
+    snapshot.state === "failed"
+      ? await recovery.recheckOnce(found.app.id, snapshot)
+      : await recovery.recheck(found.app.id, snapshot);
+  if (outcome === "pending") {
+    return json(202, { rechecking: true });
+  }
+  if (outcome === "found") {
+    return json(200, { dismissed: false, confirmed: true });
+  }
+  if (outcome === "unknown" && (!force || snapshot.state !== "unknown")) {
+    return json(409, {
+      error: "send outcome is still unknown",
+      code: "still_unknown",
+    });
+  }
+  if (outcome === "absent" && (await recovery.sessionMissing(found.app.id, sessionId))) {
+    removeLocalSessionRows(deps, found, sessionId);
+    return json(200, { dismissed: true });
+  }
+  await sessionLocks.run(key, () => {
+    const current = readPendingSend(deps.db, found.app.id, sessionId, snapshot.id);
+    if (current !== undefined && current.state !== "sending") {
+      const now = nowIso();
+      deps.db.transaction(() => {
+        failDeliveriesForMessage(
+          deps.db,
+          found.app.id,
+          sessionId,
+          current.messageID,
+          "dismissed",
+          now,
+          ["sending", "unknown"],
+        );
+        deletePending(deps.db, current.id);
+      })();
+    }
+  });
+  return json(200, { dismissed: true });
+}
+
+async function handleSessionCreate(
+  deps: HttpDeps,
+  found: FoundApp,
+  endpoint: string,
+  request: HttpRequest,
+): Promise<HttpResponse> {
+  const parsed = parseSessionTitle(request.body);
+  if ("invalid" in parsed) {
+    return json(400, { error: "invalid session title", code: "invalid_title" });
+  }
+  const created = await createSession(
+    endpoint,
+    parsed.title === undefined ? undefined : prefixDefaultLikeTitle(parsed.title),
+  );
+  try {
+    insertEmptySessionState(deps.db, found.app.id, created.id, nowIso());
+  } catch {
+    // The upstream session exists; a missing state row is treated as unknown (no Draft label) and
+    // the next successful PUT/touch upserts it with has_messages=1.
+  }
+  return json(200, created);
+}
+
+async function capabilityForSend(
+  deps: HttpDeps,
+  found: FoundApp,
+  endpoint: string,
+  sessionId: string,
+  requested: RequestedAttachmentInput[] | undefined,
+): Promise<CapabilityOutcome> {
+  if (requested === undefined || requested.length === 0) return { status: "unknown" };
+  const mayInline = requested.some((item) => {
+    if (item.mode === "file") return false;
+    const row = readSessionAttachment(deps.db, found.app.id, sessionId, item.id);
+    if (row === undefined) return false;
+    if (item.mode === "inline") return true;
+    return row.kind === "image" || row.kind === "video" || row.kind === "pdf";
+  });
+  if (!mayInline) return { status: "unknown" };
+  return resolveModelCapabilities(endpoint, effectiveModel(deps, found) ?? DEFAULT_MODEL);
+}
+
+function sendAttachments(
+  rows: AttachmentRow[],
+  modes: ReadonlyMap<string, "inline" | "file">,
+): { attachments: SendAttachment[]; deliveries: ReturnType<typeof planDeliveries> } {
+  const attachments: SendAttachment[] = rows.map((row) => ({
+    row,
+    mode: modes.get(row.id) ?? "file",
+    partId: null,
+  }));
+  const deliveries = planDeliveries(attachments);
+  for (const [index, delivery] of deliveries.entries()) {
+    const attachment = attachments[index];
+    if (attachment !== undefined) attachment.partId = delivery.partId;
+  }
+  return { attachments, deliveries };
+}
+
+function attachParts(input: {
+  deps: HttpDeps;
+  found: FoundApp;
+  sessionId: string;
+  text: string;
+  attachments: SendAttachment[];
+}): ReturnType<typeof sendPartsForPlan> | undefined {
+  if (input.attachments.length === 0 || input.deps.agentsHome === undefined) return undefined;
+  return sendPartsForPlan({
+    text: input.text,
+    agentsHome: input.deps.agentsHome,
+    projectId: input.found.project.id,
+    appKey: input.found.app.appKey,
+    pathMode: attachmentPathMode(input.deps),
+    sessionId: input.sessionId,
+    attachments: input.attachments,
+  });
+}
+
+async function dispatchTextSend(
+  deps: HttpDeps,
+  found: FoundApp,
+  endpoint: string,
+  sessionId: string,
+  text: string,
+  asyncSend: boolean,
+  requested?: RequestedAttachmentInput[],
+  streamID?: string,
+): Promise<HttpResponse> {
+  const appRoot = appAttachmentRoot(deps, found);
+  if (requested !== undefined && appRoot === undefined) {
+    return agentUnavailable();
+  }
+  if (requested !== undefined && requested.length > 0) {
+    let currentTitle: string | undefined;
+    try {
+      const session = await getSession(endpoint, sessionId, { timeoutMs: 5_000 });
+      currentTitle = typeof session.title === "string" ? session.title : undefined;
+    } catch (error) {
+      if (error instanceof OpencodeHttpError && (error.status === 404 || error.status === 410)) {
+        return json(404, { error: "session not found", code: "session_not_found" });
+      }
+      return json(409, {
+        error: "the session title must be set before sending attachments",
+        code: "title_required",
+      });
+    }
+    if (isDefaultTitle(currentTitle)) {
+      try {
+        await patchSessionTitle(endpoint, sessionId, attachmentTitleForSend(text));
+      } catch {
+        return json(409, {
+          error: "the session title must be set before sending attachments",
+          code: "title_required",
+        });
+      }
+    }
+  }
+
+  const capability = await capabilityForSend(deps, found, endpoint, sessionId, requested);
+  const messageID = newMessageId();
+  const pendingId = newPendingId();
+  const now = nowIso();
+  let attachments: SendAttachment[] = [];
+  let warnings: string[] = [];
+  const prepared = await sessionLocks.run(sessionLockKey(found.app.id, sessionId), () => {
+    if (requested !== undefined && requested.length > 0) {
+      const resolved = resolveSendAttachments(deps.db, appRoot as string, {
+        appId: found.app.id,
+        sessionId,
+        requested,
+        now,
+      });
+      if (!resolved.ok) return resolved;
+      const plan = planInlineDelivery({
+        rows: resolved.rows,
+        requested,
+        capability,
+      });
+      if (!plan.ok) return { ok: false as const, ...plan.error };
+      const prepared = sendAttachments(resolved.rows, plan.plan.modes);
+      attachments = prepared.attachments;
+      warnings = dedupeWarnings([...resolved.warnings, ...plan.plan.warnings]);
+      insertPendingAndClearDraft(deps.db, {
+        id: pendingId,
+        appId: found.app.id,
+        sessionId,
+        messageID,
+        text,
+        now,
+        ...(resolved.refs.length === 0 ? {} : { attachmentsJson: JSON.stringify(resolved.refs) }),
+        deliveries: prepared.deliveries,
+      });
+      return { ok: true as const };
+    }
+    insertPendingAndClearDraft(deps.db, {
+      id: pendingId,
+      appId: found.app.id,
+      sessionId,
+      messageID,
+      text,
+      now,
+    });
+    return { ok: true as const };
+  });
+  if (!prepared.ok) {
+    return json(prepared.status, { error: prepared.message, code: prepared.code });
+  }
+  const parts = attachParts({ deps, found, sessionId, text, attachments });
+  const warningFields = warnings.length === 0 ? {} : { warnings };
+  appStreams.registerActive(found.app.id, streamID);
+  await deps.manager?.preparePendingConfirmation?.(found.app.id).catch(() => undefined);
+  if (asyncSend) {
+    try {
+      await sendPromptAsync(
+        endpoint,
+        sessionId,
+        text,
+        messageID,
+        undefined,
+        effectiveModel(deps, found) ?? DEFAULT_MODEL,
+        parts,
+      );
+    } catch (error) {
+      const unknown = error instanceof OpencodeHttpError && error.status === 0;
+      const state = unknown ? "unknown" : "failed";
+      const failureNow = nowIso();
+      setPendingState(deps.db, pendingId, state, "dispatch_failed", failureNow);
+      if (state === "unknown") {
+        markDeliveriesUnknownForMessage(
+          deps.db,
+          found.app.id,
+          sessionId,
+          messageID,
+          "dispatch_failed",
+          failureNow,
+        );
+      } else {
+        failDeliveriesForMessage(
+          deps.db,
+          found.app.id,
+          sessionId,
+          messageID,
+          "dispatch_failed",
+          failureNow,
+          ["sending"],
+        );
+      }
+      if (error instanceof OpencodeHttpError) {
+        if (error.status === 404) {
+          return json(404, {
+            error: "session not found",
+            code: "session_not_found",
+            outcome: "not_sent",
+          });
+        }
+        if (error.status === 405) {
+          return json(502, {
+            error: "async prompt route unavailable",
+            code: "async_unavailable",
+            outcome: "not_sent",
+          });
+        }
+        if (error.status === 0) {
+          return json(502, {
+            error: error.message,
+            code: "agent_unavailable",
+            outcome: "unknown",
+            messageID,
+            sessionID: sessionId,
+          });
+        }
+        return json(502, {
+          error: error.message,
+          code: "agent_unavailable",
+          outcome: "not_sent",
+        });
+      }
+      return json(502, {
+        error: error instanceof Error ? error.message : String(error),
+        code: "agent_unavailable",
+        outcome: "unknown",
+        messageID,
+        sessionID: sessionId,
+      });
+    }
+    deps.manager?.armPendingConfirmation?.(found.app.id);
+    return json(202, { accepted: true, messageID, sessionID: sessionId, ...warningFields });
+  }
+  const releaseBlocking = await blockingResponseBudget.acquire(BLOCKING_RESPONSE_BUDGET_BYTES);
+  if (releaseBlocking === undefined) {
+    const failureNow = nowIso();
+    setPendingState(deps.db, pendingId, "failed", "blocking_busy", failureNow);
+    failDeliveriesForMessage(
+      deps.db,
+      found.app.id,
+      sessionId,
+      messageID,
+      "blocking_busy",
+      failureNow,
+      ["sending"],
+    );
+    return json(503, {
+      error: "another blocking send is in flight",
+      code: "blocking_busy",
+      outcome: "not_sent",
+      userMessageID: messageID,
+    });
+  }
+  try {
+    const raw = await sendPrompt(
+      endpoint,
+      sessionId,
+      text,
+      effectiveModel(deps, found) ?? DEFAULT_MODEL,
+      messageID,
+      parts,
+    );
+    await sessionLocks.run(sessionLockKey(found.app.id, sessionId), () => {
+      confirmBlockingSend(deps, found, sessionId, messageID);
+    });
+    const assistant = lastAssistant(raw);
+    const assistantID =
+      assistant !== undefined && typeof assistant.info.id === "string"
+        ? assistant.info.id
+        : messageID;
+    if (assistant === undefined) {
+      return json(200, {
+        messageID: assistantID,
+        userMessageID: messageID,
+        info: null,
+        truncated: true,
+        ...warningFields,
+      });
+    }
+    const projected: OpencodeMessage[] = [assistant];
+    createMessageProjector({
+      db: deps.db,
+      appId: found.app.id,
+      appKey: found.app.appKey,
+      projectId: found.project.id,
+    })(projected);
+    const message = projected[0] ?? assistant;
+    const payload = {
+      messageID: assistantID,
+      userMessageID: messageID,
+      info: message.info,
+      parts: message.parts,
+      ...warningFields,
+    };
+    if (projectedResponseBytes(payload) > PROJECTED_RESPONSE_MAX_BYTES) {
+      return json(200, {
+        messageID: assistantID,
+        userMessageID: messageID,
+        info: null,
+        truncated: true,
+        ...warningFields,
+      });
+    }
+    return json(200, payload);
+  } catch (error) {
+    if (error instanceof OpencodeHttpError && error.code === "response_too_large") {
+      await sessionLocks.run(sessionLockKey(found.app.id, sessionId), () => {
+        confirmBlockingSend(deps, found, sessionId, messageID);
+      });
+      return json(200, {
+        messageID: salvageMessageId(error.bodyExcerpt) ?? messageID,
+        userMessageID: messageID,
+        info: null,
+        truncated: true,
+        ...warningFields,
+      });
+    }
+    const state =
+      error instanceof OpencodeHttpError && (error.status === 0 || error.status >= 500)
+        ? "unknown"
+        : error instanceof OpencodeHttpError && error.status === 404
+          ? "failed"
+          : "unknown";
+    const failureNow = nowIso();
+    setPendingState(deps.db, pendingId, state, "dispatch_failed", failureNow);
+    if (state === "unknown") {
+      markDeliveriesUnknownForMessage(
+        deps.db,
+        found.app.id,
+        sessionId,
+        messageID,
+        "dispatch_failed",
+        failureNow,
+      );
+    } else {
+      failDeliveriesForMessage(
+        deps.db,
+        found.app.id,
+        sessionId,
+        messageID,
+        "dispatch_failed",
+        failureNow,
+        ["sending"],
+      );
+    }
+    throw error;
+  } finally {
+    releaseBlocking();
+  }
+}
+
+function salvageMessageId(excerpt: string): string | undefined {
+  const match = /"id"\s*:\s*"(msg_[A-Za-z0-9]+)"/.exec(excerpt);
+  return match?.[1];
+}
+
+function confirmBlockingSend(
+  deps: HttpDeps,
+  found: FoundApp,
+  sessionId: string,
+  messageID: string,
+): void {
+  const now = nowIso();
+  deps.db
+    .prepare(`DELETE FROM pending_sends WHERE app_id = ? AND session_id = ? AND message_id = ?`)
+    .run(found.app.id, sessionId, messageID);
+  deps.db
+    .prepare(
+      `UPDATE attachment_deliveries SET state = 'sent', error_code = NULL, updated_at = ?
+        WHERE app_id = ? AND session_id = ? AND message_id = ?`,
+    )
+    .run(now, found.app.id, sessionId, messageID);
+  upsertSessionState(deps.db, found.app.id, sessionId, 1, now);
+}
+
+function respondJson(
+  response: ServerResponse,
+  status: number,
+  value: unknown,
+  headers: Record<string, string> = {},
+): void {
+  if (response.headersSent) return;
+  response.writeHead(status, { "content-type": "application/json; charset=utf-8", ...headers });
+  response.end(JSON.stringify(value));
+}
+
+function headerValue(headers: IncomingMessage["headers"], name: string): string | undefined {
+  const value = headers[name];
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function uploadLifecycleError(
+  error: unknown,
+): { status: number; body: unknown; headers?: Record<string, string> } | undefined {
+  if (error instanceof DeletionPendingError) {
+    return { status: 409, body: { error: error.message, code: error.code } };
+  }
+  const mapped = lifecycleErrorResponse(error);
+  if (mapped !== undefined) {
+    return {
+      status: mapped.status,
+      body: JSON.parse(mapped.body) as unknown,
+      ...(mapped.headers === undefined ? {} : { headers: mapped.headers }),
+    };
+  }
+  return undefined;
+}
+
+/**
+ * Binary upload entry point. Authentication and the cross-site Origin check run before the body is
+ * consumed; the body is streamed to a temp file under the per-app upload lock (design §D2/§6.1).
+ */
+export async function handleAttachmentUpload(
+  deps: HttpDeps,
+  request: IncomingMessage,
+  response: ServerResponse,
+  url: URL,
+): Promise<void> {
+  const match = /^\/api\/apps\/([^/]+)\/attachments$/.exec(url.pathname);
+  if (match === null) {
+    respondJson(response, 404, { error: "not found" });
+    return;
+  }
+  const httpRequest: HttpRequest = {
+    method: request.method ?? "POST",
+    path: url.pathname,
+    query: Object.fromEntries(url.searchParams),
+    headers: {
+      authorization: headerValue(request.headers, "authorization"),
+      cookie: headerValue(request.headers, "cookie"),
+      accept: headerValue(request.headers, "accept"),
+      "content-type": headerValue(request.headers, "content-type"),
+    },
+    origin: headerValue(request.headers, "origin"),
+    host: headerValue(request.headers, "host"),
+  };
+  const principal = principalFrom(deps, httpRequest);
+  if (principal === undefined) {
+    request.resume();
+    respondJson(response, 401, { error: "sign in required" });
+    return;
+  }
+  if (principal.kind !== "human") {
+    request.resume();
+    respondJson(response, 403, { error: "only a human principal may upload attachments" });
+    return;
+  }
+  if (crossSiteMutation(httpRequest)) {
+    request.resume();
+    respondJson(response, 403, {
+      error: "cross-site request rejected",
+      code: "cross_site_request",
+    });
+    return;
+  }
+  const found = findApp(deps, projectParam(httpRequest), safeDecode(match[1] ?? ""));
+  if (found === undefined) {
+    request.resume();
+    respondJson(response, 404, {
+      error: `unknown application: ${match[1] ?? ""}`,
+      code: "app_not_found",
+    });
+    return;
+  }
+  if (found.app.deleting || found.project.deleting) {
+    request.resume();
+    respondJson(response, 409, {
+      error: "application is pending deletion",
+      code: "deletion_pending",
+    });
+    return;
+  }
+  const sessionId = url.searchParams.get("session") ?? "";
+  if (!isSessionId(sessionId)) {
+    request.resume();
+    respondJson(response, 400, { error: "invalid session id", code: "invalid_session" });
+    return;
+  }
+  const filename = safeOriginalName(
+    filenameFromContentDisposition(headerValue(request.headers, "content-disposition")) ?? "",
+  );
+  if (filename.length === 0) {
+    request.resume();
+    respondJson(response, 400, { error: "invalid filename", code: "invalid_filename" });
+    return;
+  }
+  const rawLength = headerValue(request.headers, "content-length");
+  const contentLength = rawLength === undefined ? undefined : Number(rawLength);
+  if (
+    contentLength !== undefined &&
+    (!Number.isFinite(contentLength) || contentLength < 0 || contentLength > MAX_FILE_BYTES)
+  ) {
+    request.resume();
+    respondJson(response, 413, { error: "file exceeds the upload cap", code: "file_too_large" });
+    return;
+  }
+  const manager = deps.manager;
+  if (manager === undefined) {
+    request.resume();
+    respondJson(response, 503, { error: "agent is not running", code: "agent_unavailable" });
+    return;
+  }
+  let endpoint: string;
+  try {
+    endpoint = await manager.ensure(toManagedApp(found));
+  } catch (error) {
+    request.resume();
+    const mapped = uploadLifecycleError(error);
+    if (mapped !== undefined) {
+      respondJson(response, mapped.status, mapped.body, mapped.headers);
+      return;
+    }
+    respondJson(response, 503, { error: "agent is not running", code: "agent_unavailable" });
+    return;
+  }
+  const check = await checkUpstreamSession(endpoint, sessionId);
+  if (check !== "reachable") {
+    request.resume();
+    if (check === "missing" || check === "gone") {
+      respondJson(response, 404, { error: "session not found", code: "session_not_found" });
+    } else {
+      respondJson(response, 503, { error: "agent is not running", code: "agent_unavailable" });
+    }
+    return;
+  }
+  const appRoot = appAttachmentRoot(deps, found);
+  if (appRoot === undefined) {
+    request.resume();
+    respondJson(response, 503, {
+      error: "attachment storage is unavailable",
+      code: "agent_unavailable",
+    });
+    return;
+  }
+
+  const declaredSize = Math.min(
+    contentLength !== undefined && contentLength > 0 ? contentLength : MAX_FILE_BYTES,
+    MAX_FILE_BYTES,
+  );
+  const id = newAttachmentId();
+  const tempRelPath = attachmentTempRelPath(sessionId, id);
+  const reservation = uploadCoordinator.reserve(found.app.id, declaredSize);
+  if (!reservation.ok) {
+    request.resume();
+    respondJson(
+      response,
+      429,
+      { error: "too many concurrent uploads", code: "upload_busy" },
+      { "retry-after": "2" },
+    );
+    return;
+  }
+
+  let reserved = false;
+  let tempPath: string | undefined;
+  let committed = false;
+  try {
+    const prepared = await appUploadLocks.run(found.app.id, () => {
+      if (reservedAttachmentBytes(deps.db, found.app.id) + declaredSize > 5 * 1024 * 1024 * 1024) {
+        return { ok: false as const, status: 507, code: "attachment_quota_exceeded" };
+      }
+      try {
+        const sessionDir = ensureSessionFolder(appRoot, sessionId);
+        tempPath = path.join(sessionDir, ".tmp", `${id}.part`);
+      } catch {
+        return { ok: false as const, status: 400, code: "invalid_session" };
+      }
+      insertUploadingAttachment(deps.db, {
+        id,
+        appId: found.app.id,
+        sessionId,
+        originalName: filename,
+        tempRelPath,
+        declaredSize,
+        now: nowIso(),
+      });
+      reserved = true;
+      return { ok: true as const };
+    });
+    if (!prepared.ok) {
+      request.resume();
+      respondJson(response, prepared.status, { error: prepared.code, code: prepared.code });
+      return;
+    }
+    if (tempPath === undefined) {
+      request.resume();
+      respondJson(response, 500, { error: "attachment storage is unavailable" });
+      return;
+    }
+    activeUploadIds.add(id);
+    const streamed = await streamUploadBody(request, tempPath, filename);
+    if (streamed.sniffed.kind === "image" && streamed.size > MAX_IMAGE_BYTES) {
+      throw new UploadStreamError("file_too_large", "image exceeds the upload cap");
+    }
+    const storedName = storedNameFor(id, filename);
+    const relPath = attachmentRelPath(sessionId, storedName);
+    const commit = await sessionLocks.run(sessionLockKey(found.app.id, sessionId), async () => {
+      const finalCheck = await checkUpstreamSession(endpoint, sessionId);
+      if (finalCheck !== "reachable") {
+        return {
+          ok: false as const,
+          status: finalCheck === "missing" || finalCheck === "gone" ? 404 : 503,
+          code:
+            finalCheck === "missing" || finalCheck === "gone"
+              ? "session_not_found"
+              : "agent_unavailable",
+        };
+      }
+      const quota = await appUploadLocks.run(found.app.id, () => {
+        const otherReserved = deps.db
+          .prepare(
+            `SELECT COALESCE(SUM(MIN(COALESCE(declared_size, ?), ?)), 0) AS used
+               FROM app_attachments
+              WHERE app_id = ? AND state = 'uploading' AND id <> ?`,
+          )
+          .get(MAX_FILE_BYTES, MAX_FILE_BYTES, found.app.id, id) as { used: number };
+        return availableAttachmentBytes(deps.db, found.app.id) + otherReserved.used + streamed.size;
+      });
+      if (quota > 5 * 1024 * 1024 * 1024) {
+        return { ok: false as const, status: 507, code: "attachment_quota_exceeded" };
+      }
+      const row = readAttachment(deps.db, found.app.id, id);
+      if (row === undefined) return { ok: false as const, status: 500, code: "upload_failed" };
+      writeCommitMetadata(deps.db, {
+        id,
+        storedName,
+        relPath,
+        mime: streamed.sniffed.mime,
+        size: streamed.size,
+        kind: streamed.sniffed.kind,
+        now: nowIso(),
+      });
+      const finalRow = {
+        ...row,
+        storedName,
+        relPath,
+        mime: streamed.sniffed.mime,
+        size: streamed.size,
+        kind: streamed.sniffed.kind,
+      };
+      const final = finalPathFor(appRoot, finalRow);
+      const temp = tempPathFor(appRoot, finalRow);
+      if (final === undefined || temp === undefined) {
+        return { ok: false as const, status: 500, code: "upload_failed" };
+      }
+      try {
+        moveIntoPlace(temp, final, finalDirFor(appRoot, finalRow));
+      } catch (error) {
+        const code =
+          typeof error === "object" &&
+          error !== null &&
+          "code" in error &&
+          (error as NodeJS.ErrnoException).code === "ENOSPC"
+            ? "attachment_storage_full"
+            : "upload_failed";
+        return { ok: false as const, status: code === "attachment_storage_full" ? 507 : 500, code };
+      }
+      completeUpload(deps.db, id, nowIso());
+      return { ok: true as const };
+    });
+    if (!commit.ok) {
+      const row = readAttachment(deps.db, found.app.id, id);
+      if (row !== undefined) {
+        discardUpload(
+          deps.db,
+          { ...row, storedName: null, relPath: null, tempRelPath: row.tempRelPath },
+          appRoot,
+        );
+      }
+      respondJson(response, commit.status, { error: commit.code, code: commit.code });
+      return;
+    }
+    committed = true;
+    const row = readAttachment(deps.db, found.app.id, id);
+    if (row === undefined) {
+      respondJson(response, 500, { error: "upload failed" });
+      return;
+    }
+    respondJson(response, 201, {
+      attachment: attachmentViewFor(deps, found, row, "draft"),
+      quota: { percent: quotaPercent(deps, found.app.id) },
+    });
+  } catch (error) {
+    if (reserved && !committed) {
+      const row = readAttachment(deps.db, found.app.id, id);
+      if (row !== undefined) {
+        discardUpload(
+          deps.db,
+          { ...row, storedName: null, relPath: null, tempRelPath: row.tempRelPath },
+          appRoot,
+        );
+      } else if (tempPath !== undefined) {
+        removeFileQuiet(tempPath);
+      }
+    }
+    if (error instanceof UploadStreamError) {
+      if (error.code === "upload_aborted") {
+        if (!response.headersSent) response.destroy();
+        return;
+      }
+      const status =
+        error.code === "file_too_large" ? 413 : error.code === "empty_file" ? 400 : 507;
+      respondJson(response, status, { error: error.message, code: error.code });
+      return;
+    }
+    respondJson(response, 500, { error: "upload failed" });
+  } finally {
+    uploadCoordinator.release(found.app.id, declaredSize);
+    activeUploadIds.delete(id);
+  }
+}
+
+/** Human-only attachment download; no Range support in v1 (design §6.7). */
+export async function handleAttachmentDownload(
+  deps: HttpDeps,
+  request: IncomingMessage,
+  response: ServerResponse,
+  url: URL,
+): Promise<void> {
+  const match = /^\/api\/apps\/([^/]+)\/attachments\/([^/]+)$/.exec(url.pathname);
+  if (match === null) {
+    respondJson(response, 404, { error: "not found" });
+    return;
+  }
+  const httpRequest: HttpRequest = {
+    method: request.method ?? "GET",
+    path: url.pathname,
+    query: Object.fromEntries(url.searchParams),
+    headers: {
+      authorization: headerValue(request.headers, "authorization"),
+      cookie: headerValue(request.headers, "cookie"),
+    },
+    host: headerValue(request.headers, "host"),
+  };
+  const principal = principalFrom(deps, httpRequest);
+  if (principal === undefined) {
+    respondJson(response, 401, { error: "sign in required" });
+    return;
+  }
+  if (principal.kind !== "human") {
+    respondJson(response, 403, { error: "only a human principal may download attachments" });
+    return;
+  }
+  const found = findApp(deps, projectParam(httpRequest), safeDecode(match[1] ?? ""));
+  if (found === undefined) {
+    respondJson(response, 404, { error: "attachment not found", code: "attachment_not_found" });
+    return;
+  }
+  const appRoot = appAttachmentRoot(deps, found);
+  const row = readAttachment(deps.db, found.app.id, safeDecode(match[2] ?? ""));
+  if (appRoot === undefined || row === undefined || row.state !== "available") {
+    respondJson(response, 404, { error: "attachment not found", code: "attachment_not_found" });
+    return;
+  }
+  const opened = openAttachmentFile(appRoot, row);
+  if (opened === undefined) {
+    markAttachmentMissing(deps.db, row.id, nowIso());
+    respondJson(response, 404, { error: "attachment not found", code: "attachment_not_found" });
+    return;
+  }
+  const mime = row.mime ?? "application/octet-stream";
+  const disposition = isInlineSafeMime(mime) ? "inline" : "attachment";
+  response.writeHead(200, {
+    "content-type": mime,
+    "content-length": String(opened.size),
+    "content-disposition": encodeContentDisposition(disposition, row.originalName),
+    "x-content-type-options": "nosniff",
+    "cache-control": "private, max-age=3600",
+  });
+  const stream = createReadStream("", { fd: opened.fd, autoClose: true });
+  stream.on("error", () => {
+    if (!response.headersSent) response.writeHead(500);
+    response.end();
+  });
+  stream.pipe(response);
+}
+
+function isInlineKind(kind: AttachmentRow["kind"]): boolean {
+  return kind === "image" || kind === "video" || kind === "pdf";
+}
+
+async function handleAttachmentMutation(
+  deps: HttpDeps,
+  found: FoundApp,
+  request: HttpRequest,
+  attachmentId: string,
+): Promise<HttpResponse> {
+  if (crossSiteMutation(request)) {
+    return json(403, { error: "cross-site request rejected", code: "cross_site_request" });
+  }
+  if (request.method !== "PATCH" && request.method !== "DELETE") {
+    return json(405, { error: "method not allowed" });
+  }
+  const row = readAttachment(deps.db, found.app.id, attachmentId);
+  if (row === undefined) {
+    return json(404, { error: "attachment not found", code: "attachment_not_found" });
+  }
+  const key = sessionLockKey(found.app.id, row.sessionId);
+  if (request.method === "PATCH") {
+    return sessionLocks.run(key, () => {
+      const current = readAttachment(deps.db, found.app.id, attachmentId);
+      if (current === undefined || current.state === "missing") {
+        return json(404, { error: "attachment not found", code: "attachment_not_found" });
+      }
+      if (current.state === "uploading") {
+        return json(409, {
+          error: "attachment is still uploading",
+          code: "attachment_uploading",
+        });
+      }
+      const states = deliveryStatesForAttachment(deps.db, found.app.id, current.id);
+      if (states.some((state) => state === "sending")) {
+        return json(409, { error: "delivery is in flight", code: "delivery_in_flight" });
+      }
+      if (states.some((state) => state === "unknown")) {
+        return json(409, { error: "delivery outcome is unknown", code: "attachment_unknown" });
+      }
+      if (states.some((state) => state === "sent")) {
+        return json(409, { error: "attachment was already sent", code: "attachment_sent" });
+      }
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(request.body ?? "");
+      } catch {
+        return json(400, { error: "invalid JSON body", code: "invalid_json" });
+      }
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+        return json(400, { error: "invalid JSON body", code: "invalid_json" });
+      }
+      const mode = (parsed as Record<string, unknown>).mode;
+      if (mode !== "auto" && mode !== "inline" && mode !== "file") {
+        return json(400, { error: "invalid attachment mode", code: "invalid_mode" });
+      }
+      if (mode === "inline" && !isInlineKind(current.kind)) {
+        return json(400, {
+          error: "this attachment kind cannot be sent inline",
+          code: "mode_not_supported",
+        });
+      }
+      setAttachmentMode(deps.db, found.app.id, current.id, mode, nowIso());
+      const updated = readAttachment(deps.db, found.app.id, current.id);
+      return json(
+        200,
+        updated === undefined ? null : attachmentViewFor(deps, found, updated, "draft"),
+      );
+    });
+  }
+  const appRoot = appAttachmentRoot(deps, found);
+  return sessionLocks.run(key, () => {
+    const current = readAttachment(deps.db, found.app.id, attachmentId);
+    if (current === undefined || current.state === "missing") {
+      return json(404, { error: "attachment not found", code: "attachment_not_found" });
+    }
+    if (current.state === "uploading") {
+      return json(409, { error: "attachment is still uploading", code: "attachment_uploading" });
+    }
+    const states = deliveryStatesForAttachment(deps.db, found.app.id, current.id);
+    if (states.some((state) => state === "sending")) {
+      return json(409, { error: "delivery is in flight", code: "delivery_in_flight" });
+    }
+    if (states.some((state) => state === "unknown")) {
+      return json(409, { error: "delivery outcome is unknown", code: "attachment_unknown" });
+    }
+    if (states.some((state) => state === "sent")) {
+      return json(409, { error: "attachment was already sent", code: "attachment_sent" });
+    }
+    if (appRoot !== undefined && current.relPath !== null) {
+      removeFileQuiet(finalPathFor(appRoot, current));
+    }
+    deleteAttachmentRowById(deps.db, current.id);
+    return json(200, { deleted: true });
+  });
 }
 
 export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<HttpResponse> {
@@ -596,11 +2196,28 @@ export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<
   const sessionMatch = /^\/api\/apps\/([^/]+)\/sessions\/([^/]+)$/.exec(request.path);
   const messagesMatch = /^\/api\/apps\/([^/]+)\/sessions\/([^/]+)\/messages$/.exec(request.path);
   const abortMatch = /^\/api\/apps\/([^/]+)\/sessions\/([^/]+)\/abort$/.exec(request.path);
+  const draftMatch = /^\/api\/apps\/([^/]+)\/sessions\/([^/]+)\/draft$/.exec(request.path);
+  const touchMatch = /^\/api\/apps\/([^/]+)\/sessions\/([^/]+)\/touch$/.exec(request.path);
+  const deleteIfEmptyMatch = /^\/api\/apps\/([^/]+)\/sessions\/([^/]+)\/delete-if-empty$/.exec(
+    request.path,
+  );
+  const pendingRetryMatch =
+    /^\/api\/apps\/([^/]+)\/sessions\/([^/]+)\/pending\/([^/]+)\/retry$/.exec(request.path);
+  const pendingMatch = /^\/api\/apps\/([^/]+)\/sessions\/([^/]+)\/pending\/([^/]+)$/.exec(
+    request.path,
+  );
+  const attachmentMatch = /^\/api\/apps\/([^/]+)\/attachments\/([^/]+)$/.exec(request.path);
   if (
     sessionsMatch === null &&
     sessionMatch === null &&
     messagesMatch === null &&
-    abortMatch === null
+    abortMatch === null &&
+    draftMatch === null &&
+    touchMatch === null &&
+    deleteIfEmptyMatch === null &&
+    pendingRetryMatch === null &&
+    pendingMatch === null &&
+    attachmentMatch === null
   ) {
     return json(404, { error: "not found" });
   }
@@ -608,8 +2225,8 @@ export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<
   if (principal === undefined) {
     return json(401, { error: "sign in required" });
   }
-  if (deps.manager === undefined) {
-    return json(503, { error: "agent runtime is not configured" });
+  if (request.method !== "GET" && crossSiteMutation(request)) {
+    return json(403, { error: "cross-site request rejected", code: "cross_site_request" });
   }
   if (abortMatch !== null && principal.kind !== "human") {
     return json(403, { error: "only a human principal may abort a session" });
@@ -620,13 +2237,106 @@ export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<
   if (sessionMatch !== null && request.method === "DELETE" && principal.kind !== "human") {
     return json(403, { error: "only a human principal may delete a session" });
   }
+  const humanOnly =
+    draftMatch !== null ||
+    touchMatch !== null ||
+    deleteIfEmptyMatch !== null ||
+    pendingRetryMatch !== null ||
+    pendingMatch !== null ||
+    attachmentMatch !== null;
+  if (humanOnly && principal.kind !== "human") {
+    return json(403, { error: "only a human principal may manage drafts" });
+  }
 
   const appKey = safeDecode(
-    (sessionsMatch ?? sessionMatch ?? messagesMatch ?? abortMatch)?.[1] ?? "",
+    (sessionsMatch ??
+      sessionMatch ??
+      messagesMatch ??
+      abortMatch ??
+      draftMatch ??
+      touchMatch ??
+      deleteIfEmptyMatch ??
+      pendingRetryMatch ??
+      pendingMatch ??
+      attachmentMatch)?.[1] ?? "",
   );
   const found = findApp(deps, projectId, appKey);
   if (found === undefined) {
-    return json(404, { error: `unknown application: ${appKey}`, code: "unknown_app" });
+    const newRoutes =
+      draftMatch !== null ||
+      touchMatch !== null ||
+      deleteIfEmptyMatch !== null ||
+      pendingRetryMatch !== null ||
+      pendingMatch !== null ||
+      attachmentMatch !== null;
+    return newRoutes
+      ? appNotFound(appKey)
+      : json(404, { error: `unknown application: ${appKey}`, code: "unknown_app" });
+  }
+  const sessionId = safeDecode(
+    (sessionMatch ??
+      messagesMatch ??
+      abortMatch ??
+      draftMatch ??
+      touchMatch ??
+      deleteIfEmptyMatch ??
+      pendingRetryMatch ??
+      pendingMatch)?.[2] ?? "",
+  );
+  const draftRoutes = draftMatch !== null || touchMatch !== null;
+  if (
+    (draftRoutes ||
+      deleteIfEmptyMatch !== null ||
+      pendingRetryMatch !== null ||
+      pendingMatch !== null) &&
+    !isSessionId(sessionId)
+  ) {
+    return invalidSession();
+  }
+  if (attachmentMatch !== null) {
+    return handleAttachmentMutation(deps, found, request, safeDecode(attachmentMatch[2] ?? ""));
+  }
+  if (draftMatch !== null) {
+    if (request.method !== "GET" && request.method !== "PUT") {
+      return json(405, { error: "method not allowed" });
+    }
+    return handleDraft(deps, found, request, sessionId);
+  }
+  if (touchMatch !== null) {
+    if (request.method !== "POST") {
+      return json(405, { error: "method not allowed" });
+    }
+    return handleTouch(deps, found, sessionId);
+  }
+  if (deleteIfEmptyMatch !== null) {
+    if (request.method !== "POST") {
+      return json(405, { error: "method not allowed" });
+    }
+    return handleDeleteIfEmpty(deps, found, sessionId);
+  }
+  if (pendingRetryMatch !== null) {
+    if (request.method !== "POST") {
+      return json(405, { error: "method not allowed" });
+    }
+    return handlePendingRetry(
+      deps,
+      found,
+      request,
+      sessionId,
+      safeDecode(pendingRetryMatch[3] ?? ""),
+    );
+  }
+  if (pendingMatch !== null) {
+    if (request.method !== "DELETE") {
+      return json(405, { error: "method not allowed" });
+    }
+    return handlePendingDismiss(deps, found, request, sessionId, safeDecode(pendingMatch[3] ?? ""));
+  }
+  if (sessionMatch !== null && request.method === "DELETE" && !isSessionId(sessionId)) {
+    return invalidSession();
+  }
+  if (deps.manager === undefined) {
+    return json(503, { error: "agent runtime is not configured" });
   }
   if (abortMatch !== null) {
     if (found.app.deleting || found.project.deleting) {
@@ -636,7 +2346,6 @@ export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<
     if (endpoint === undefined) {
       return json(503, { error: "agent is not running", code: "agent_not_running" });
     }
-    const sessionId = safeDecode(abortMatch[2] ?? "");
     try {
       return json(200, { aborted: await abortSession(endpoint, sessionId) });
     } catch (error) {
@@ -690,43 +2399,85 @@ export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<
   try {
     if (sessionsMatch !== null) {
       if (request.method === "GET") {
-        return json(200, { sessions: await listSessions(endpoint) });
+        const sessions = await listSessions(endpoint);
+        const summaries = draftSummaries(
+          deps.db,
+          found.app.id,
+          sessions.map((session) => session.id),
+        );
+        return json(200, {
+          sessions: sessions.map((session) => ({
+            ...session,
+            draft: summaries.get(session.id) ?? {
+              hasText: false,
+              attachmentCount: 0,
+              emptyDraft: false,
+              updatedAt: null,
+            },
+          })),
+        });
       }
       if (request.method === "POST") {
-        return json(200, await createSession(endpoint));
+        return handleSessionCreate(deps, found, endpoint, request);
       }
     }
     if (sessionMatch !== null && request.method === "DELETE") {
-      const sessionId = safeDecode(sessionMatch[2] ?? "");
-      await deleteSession(endpoint, sessionId);
-      try {
-        const now = new Date().toISOString();
-        deps.db
-          .prepare(
-            `UPDATE handoffs SET
-               source_session_deleted_at = COALESCE(source_session_deleted_at, ?),
-               updated_at = ?
-             WHERE (source_session_id = ? OR reply_delivered_session_id = ?)
-               AND source_session_deleted_at IS NULL`,
-          )
-          .run(now, now, sessionId, sessionId);
-      } catch {
-        // Handoff bookkeeping is best-effort; the upstream session is already deleted.
-      }
-      return json(200, { deleted: true });
+      return await sessionLocks.run(sessionLockKey(found.app.id, sessionId), async () => {
+        try {
+          await deleteSession(endpoint, sessionId);
+        } catch (error) {
+          if (!isSessionGone(error)) throw error;
+        }
+        removeLocalSessionRows(deps, found, sessionId);
+        try {
+          const now = new Date().toISOString();
+          deps.db
+            .prepare(
+              `UPDATE handoffs SET
+                 source_session_deleted_at = COALESCE(source_session_deleted_at, ?),
+                 updated_at = ?
+               WHERE (source_session_id = ? OR reply_delivered_session_id = ?)
+                 AND source_session_deleted_at IS NULL`,
+            )
+            .run(now, now, sessionId, sessionId);
+        } catch {
+          // Handoff bookkeeping is best-effort; the upstream session is already deleted.
+        }
+        return json(200, { deleted: true });
+      });
     }
     if (messagesMatch !== null && request.method === "GET") {
-      const sessionId = safeDecode(messagesMatch[2] ?? "");
+      const project = createMessageProjector({
+        db: deps.db,
+        appId: found.app.id,
+        appKey: found.app.appKey,
+        projectId: found.project.id,
+      });
       if (limit === undefined) {
-        return json(200, { messages: await listMessages(endpoint, sessionId) });
+        const messages = await listMessages(endpoint, sessionId, { project });
+        const payload = { messages };
+        if (projectedResponseBytes(payload) > PROJECTED_RESPONSE_MAX_BYTES) {
+          return json(502, {
+            error: "session too large to refresh",
+            code: "messages_too_large",
+          });
+        }
+        return json(200, payload);
       }
       try {
-        const page = await listMessagePage(
+        const page = await readProjectedPage(
           endpoint,
           sessionId,
-          before === undefined ? { limit } : { limit, before },
+          before === undefined ? { limit, project } : { limit, before, project },
         );
-        return json(200, { messages: page.messages, nextCursor: page.nextCursor ?? null });
+        const payload = { messages: page.messages, nextCursor: page.nextCursor ?? null };
+        if (projectedResponseBytes(payload) > PROJECTED_RESPONSE_MAX_BYTES) {
+          return json(502, {
+            error: "session too large to refresh",
+            code: "messages_too_large",
+          });
+        }
+        return json(200, payload);
       } catch (error) {
         if (error instanceof OpencodeHttpError && error.status === 400 && before !== undefined) {
           return json(400, { error: "invalid message cursor", code: "invalid_cursor" });
@@ -734,88 +2485,69 @@ export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<
         if (error instanceof OpencodeHttpError && error.status === 404) {
           return json(404, { error: "session not found", code: "session_not_found" });
         }
+        if (error instanceof OpencodeHttpError && error.code === "messages_too_large") {
+          return json(502, {
+            error: "session too large to refresh",
+            code: "messages_too_large",
+          });
+        }
+        if (error instanceof OpencodeHttpError && error.code === "history_busy") {
+          return json(503, {
+            error: "history is busy; retry shortly",
+            code: "history_busy",
+          });
+        }
         throw error;
       }
     }
     if (messagesMatch !== null && request.method === "POST") {
-      const sessionId = safeDecode(messagesMatch[2] ?? "");
-      if (asyncSend) {
-        let body: { text?: unknown };
-        try {
-          body = JSON.parse(request.body ?? "{}") as { text?: unknown };
-        } catch {
-          return json(400, { error: "invalid JSON body", code: "invalid_json" });
-        }
-        const text = typeof body.text === "string" ? body.text : "";
-        if (text.trim().length === 0) {
-          return json(400, { error: "empty message", code: "empty_message" });
-        }
-        if (Buffer.byteLength(text, "utf8") > 32 * 1024) {
-          return json(400, { error: "message too large", code: "message_too_large" });
-        }
-        const messageID = `msg_${randomUUID().replaceAll("-", "")}`;
-        try {
-          await sendPromptAsync(
-            endpoint,
-            sessionId,
-            text,
-            messageID,
-            undefined,
-            effectiveModel(deps, found),
-          );
-        } catch (error) {
-          if (error instanceof OpencodeHttpError) {
-            if (error.status === 404) {
-              return json(404, {
-                error: "session not found",
-                code: "session_not_found",
-                outcome: "not_sent",
-              });
-            }
-            if (error.status === 405) {
-              return json(502, {
-                error: "async prompt route unavailable",
-                code: "async_unavailable",
-                outcome: "not_sent",
-              });
-            }
-            if (error.status === 0) {
-              return json(502, {
-                error: error.message,
-                code: "agent_unavailable",
-                outcome: "unknown",
-                messageID,
-                sessionID: sessionId,
-              });
-            }
-            return json(502, {
-              error: error.message,
-              code: "agent_unavailable",
-              outcome: "not_sent",
-            });
-          }
-          return json(502, {
-            error: error instanceof Error ? error.message : String(error),
-            code: "agent_unavailable",
-            outcome: "unknown",
-            messageID,
-            sessionID: sessionId,
-          });
-        }
-        return json(202, { accepted: true, messageID, sessionID: sessionId });
+      let body: { text?: unknown; attachments?: unknown; streamID?: unknown };
+      try {
+        body = JSON.parse(request.body ?? "{}") as { text?: unknown; attachments?: unknown };
+      } catch {
+        return json(400, { error: "invalid JSON body", code: "invalid_json" });
       }
-      const body = JSON.parse(request.body ?? "{}") as { text?: string };
       const text = typeof body.text === "string" ? body.text : "";
-      if (text.length === 0) {
-        return json(400, { error: "empty message" });
+      const requested = parseRequestedAttachments(body.attachments);
+      if (body.attachments !== undefined && requested === undefined) {
+        return json(400, {
+          error: "invalid attachment item",
+          code: "invalid_attachment_item",
+        });
       }
-      return json(200, {
-        message: await sendPrompt(endpoint, sessionId, text, effectiveModel(deps, found)),
-      });
+      if (requested !== undefined && requested.length > MAX_ATTACHMENTS_PER_MESSAGE) {
+        return json(400, {
+          error: "too many attachments",
+          code: "too_many_attachments",
+        });
+      }
+      if (text.trim().length === 0 && (requested === undefined || requested.length === 0)) {
+        return json(400, { error: "empty message", code: "empty_message" });
+      }
+      if (Buffer.byteLength(text, "utf8") > 32 * 1024) {
+        return json(400, { error: "message too large", code: "message_too_large" });
+      }
+      const streamID =
+        typeof body.streamID === "string"
+          ? body.streamID
+          : request.headers["x-hanse-stream"]?.trim() || undefined;
+      return dispatchTextSend(
+        deps,
+        found,
+        endpoint,
+        sessionId,
+        text,
+        asyncSend,
+        requested,
+        streamID,
+      );
     }
   } catch (error) {
     if (error instanceof OpencodeHttpError && error.code === "messages_too_large") {
       return json(502, { error: "session too large to refresh", code: "messages_too_large" });
+    }
+    if (error instanceof OpencodeHttpError && error.code === "history_busy") {
+      return json(503, { error: "history is busy; retry shortly", code: "history_busy" });
     }
     return json(502, { error: error instanceof Error ? error.message : String(error) });
   }

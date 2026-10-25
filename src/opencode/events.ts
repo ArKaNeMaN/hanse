@@ -1,3 +1,6 @@
+import { appStreamBudget, type RawStreamBudget } from "../attachments/budget.js";
+import type { EventAttachmentResolver } from "../attachments/projection.js";
+import type { AttachmentView } from "../attachments/types.js";
 import {
   MAX_HEADER_LENGTH,
   MAX_LABEL_LENGTH,
@@ -18,8 +21,8 @@ import {
 } from "./prompts.js";
 
 export const MAX_SSE_FRAME_BYTES = 1024 * 1024;
-/** App-stream parser frame cap: large enough for a full upstream bash snapshot to reach the caps. */
-export const APP_STREAM_MAX_FRAME_BYTES = 8 * 1024 * 1024;
+/** App-stream parser frame cap: a 20 MiB inline PDF/video fits after base64 (design §D5). */
+export const APP_STREAM_MAX_FRAME_BYTES = 32 * 1024 * 1024;
 /** Post-normalization budget for one typed app event. */
 export const MAX_TYPED_EVENT_BYTES = 256 * 1024;
 export const MAX_DELTA_BYTES = 64 * 1024;
@@ -52,7 +55,7 @@ const MAX_ANSWER_GROUPS = 100;
 const MAX_ANSWER_VALUES = 100;
 const MAX_ANSWER_LENGTH = 2_000;
 
-export type SseWarningCode = "frame_too_large";
+export type SseWarningCode = "frame_too_large" | "stream_budget";
 export type StreamWarningCode = SseWarningCode | "invalid_json" | "delta_too_large";
 
 export interface SseFrame {
@@ -69,10 +72,14 @@ export interface SseWarning {
 export interface SseParseBatch {
   frames: SseFrame[];
   warnings: SseWarning[];
+  /** Raw bytes reserved for these frames; release after projection. */
+  reservedBytes?: number;
 }
 
 export interface SseParserOptions {
   maxFrameBytes?: number;
+  budget?: RawStreamBudget;
+  isPriority?: () => boolean;
 }
 
 export type PartType =
@@ -165,6 +172,7 @@ export type HanseEvent =
       usage?: HanseMessageUsage;
       model?: { providerID: string; modelID: string };
       summary?: boolean;
+      attachments?: AttachmentView[];
     }
   | {
       type: "message.part.updated";
@@ -218,12 +226,16 @@ export type EnvelopedHanseEvent = HanseEvent & { seq: number; streamID: string }
 
 export interface EventProjectorOptions {
   includeUsage?: boolean;
+  attachments?: EventAttachmentResolver;
 }
 
 export interface EventStreamOptions {
   signal?: AbortSignal;
   maxFrameBytes?: number;
   includeUsage?: boolean;
+  attachments?: EventAttachmentResolver;
+  budget?: RawStreamBudget;
+  isPriority?: () => boolean;
   /** Called after the upstream reader is attached, before any frame is read. */
   onAttached?: () => void;
 }
@@ -1172,88 +1184,157 @@ function insertBoundedSet(set: Set<string>, value: string): void {
  */
 export class SseParser {
   private readonly maxFrameBytes: number;
+  private readonly budget: RawStreamBudget | undefined;
+  private readonly isPriority: () => boolean;
   private readonly decoder = new TextDecoder("utf-8");
-  private buffer = "";
+  private parts: string[] = [];
   private pendingBytes = 0;
+  private pendingHasNewline = false;
   private discarding = false;
 
   constructor(options: SseParserOptions = {}) {
     this.maxFrameBytes = options.maxFrameBytes ?? MAX_SSE_FRAME_BYTES;
+    this.budget = options.budget;
+    this.isPriority = options.isPriority ?? (() => false);
   }
 
   push(chunk: Uint8Array | string): SseParseBatch {
     const chunkBytes =
       typeof chunk === "string" ? Buffer.byteLength(chunk, "utf8") : chunk.byteLength;
     const text = typeof chunk === "string" ? chunk : this.decoder.decode(chunk, { stream: true });
-    this.buffer += text;
+    if (text.length === 0) return { frames: [], warnings: [] };
+
+    if (this.discarding) {
+      return this.resumeAfterSkip(text);
+    }
+
+    if (!this.reserve(chunkBytes)) {
+      const prefix = headBytes(`${this.parts.join("")}${text}`, IDENTITY_SALVAGE_PREFIX_BYTES);
+      const tooLarge = this.pendingBytes + chunkBytes > this.maxFrameBytes;
+      this.dropPending();
+      this.discarding = true;
+      const warnings: SseWarning[] = [
+        {
+          code: tooLarge ? "frame_too_large" : "stream_budget",
+          message: tooLarge
+            ? `dropped an SSE frame larger than ${this.maxFrameBytes} bytes`
+            : "skipped an SSE frame larger than the stream budget",
+          prefix,
+        },
+      ];
+      const resumed = this.resumeAfterSkip(text);
+      return { frames: resumed.frames, warnings: [...warnings, ...resumed.warnings] };
+    }
+
+    this.parts.push(text);
     this.pendingBytes += chunkBytes;
-    return this.drain();
+    if (text.includes("\n")) this.pendingHasNewline = true;
+    const batch = this.drain();
+    if (this.pendingBytes > this.maxFrameBytes) {
+      const prefix = headBytes(this.parts.join(""), IDENTITY_SALVAGE_PREFIX_BYTES);
+      this.dropPending();
+      this.discarding = true;
+      batch.warnings.push({
+        code: "frame_too_large",
+        message: `dropped an SSE frame larger than ${this.maxFrameBytes} bytes`,
+        prefix,
+      });
+    }
+    return batch;
+  }
+
+  dispose(): void {
+    this.dropPending();
+    this.discarding = false;
   }
 
   flush(): SseParseBatch {
     const tail = this.decoder.decode();
     if (tail.length > 0) {
-      this.buffer += tail;
+      this.parts.push(tail);
       this.pendingBytes += Buffer.byteLength(tail, "utf8");
     }
-    const batch = this.drain();
-    if (this.buffer.length === 0) return batch;
-    const block = this.buffer;
-    this.buffer = "";
-    this.pendingBytes = 0;
+    if (this.parts.length === 0) return { frames: [], warnings: [] };
     if (this.discarding) {
       this.discarding = false;
-      return batch;
+      this.dropPending();
+      return { frames: [], warnings: [] };
     }
-    const frame = this.frameFromBlock(block, batch.warnings);
+    const text = this.takeBuffer();
+    const warnings: SseWarning[] = [];
+    const frame = this.frameFromBlock(text, warnings);
+    const batch: SseParseBatch = { frames: [], warnings };
     if (frame !== undefined) batch.frames.push(frame);
+    if (this.budget !== undefined) batch.reservedBytes = Buffer.byteLength(text, "utf8");
     return batch;
   }
 
+  private resumeAfterSkip(text: string): SseParseBatch {
+    const normalized = text.replaceAll("\r\n", "\n");
+    const index = normalized.indexOf("\n\n");
+    if (index < 0) return { frames: [], warnings: [] };
+    this.discarding = false;
+    const rest = normalized.slice(index + 2);
+    if (rest.length === 0) return { frames: [], warnings: [] };
+    const bytes = Buffer.byteLength(rest, "utf8");
+    if (!this.reserve(bytes)) return { frames: [], warnings: [] };
+    this.parts.push(rest);
+    this.pendingBytes += bytes;
+    return this.drain();
+  }
+
   private drain(): SseParseBatch {
+    if (!this.hasSeparator()) {
+      this.normalizeCrlfInPending();
+      return { frames: [], warnings: [] };
+    }
+    const text = this.takeBuffer();
     const frames: SseFrame[] = [];
     const warnings: SseWarning[] = [];
-    this.buffer = this.buffer.replaceAll("\r\n", "\n");
-
+    let reservedBytes = 0;
+    let cursor = 0;
     for (;;) {
-      if (this.discarding) {
-        const index = this.buffer.indexOf("\n\n");
-        if (index < 0) {
-          this.buffer = this.buffer.endsWith("\n") ? "\n" : "";
-          this.pendingBytes = Buffer.byteLength(this.buffer, "utf8");
-          break;
-        }
-        this.buffer = this.buffer.slice(index + 2);
-        this.pendingBytes = Buffer.byteLength(this.buffer, "utf8");
-        this.discarding = false;
-        continue;
-      }
-
-      const index = this.buffer.indexOf("\n\n");
-      if (index < 0) {
-        if (this.pendingBytes > this.maxFrameBytes) {
-          this.discarding = true;
-          warnings.push({
-            code: "frame_too_large",
-            message: `dropped an SSE frame larger than ${this.maxFrameBytes} bytes`,
-            prefix: headBytes(this.buffer, IDENTITY_SALVAGE_PREFIX_BYTES),
-          });
-          this.buffer = "";
-          this.pendingBytes = 0;
-        }
-        break;
-      }
-
-      const block = this.buffer.slice(0, index);
-      const consumed = Buffer.byteLength(block, "utf8") + 2;
-      this.buffer = this.buffer.slice(index + 2);
-      this.pendingBytes = Math.max(0, this.pendingBytes - consumed);
+      const index = text.indexOf("\n\n", cursor);
+      if (index < 0) break;
+      const block = text.slice(cursor, index);
+      reservedBytes += Buffer.byteLength(block, "utf8") + 2;
       const frame = this.frameFromBlock(block, warnings);
       if (frame !== undefined) frames.push(frame);
+      cursor = index + 2;
     }
+    const tail = text.slice(cursor);
+    if (tail.length > 0) {
+      this.parts = [tail];
+      this.pendingBytes = Buffer.byteLength(tail, "utf8");
+      this.pendingHasNewline = tail.includes("\n");
+    }
+    return {
+      frames,
+      warnings,
+      ...(reservedBytes === 0 || this.budget === undefined ? {} : { reservedBytes }),
+    };
+  }
 
-    this.pendingBytes = Buffer.byteLength(this.buffer, "utf8");
-    return { frames, warnings };
+  private hasSeparator(): boolean {
+    if (this.parts.length === 0 || !this.pendingHasNewline) return false;
+    return this.parts.join("").replaceAll("\r\n", "\n").includes("\n\n");
+  }
+
+  private normalizeCrlfInPending(): void {
+    if (this.parts.length === 0) return;
+    const last = this.parts[this.parts.length - 1] ?? "";
+    if (!last.includes("\r")) return;
+    const normalized = this.parts.join("").replaceAll("\r\n", "\n");
+    this.parts = [normalized];
+    this.pendingBytes = Buffer.byteLength(normalized, "utf8");
+  }
+
+  private takeBuffer(): string {
+    const text = this.parts.join("").replaceAll("\r\n", "\n");
+    this.parts = [];
+    this.pendingBytes = 0;
+    this.pendingHasNewline = false;
+    return text;
   }
 
   private frameFromBlock(block: string, warnings: SseWarning[]): SseFrame | undefined {
@@ -1273,6 +1354,22 @@ export class SseParser {
       data.push(value.startsWith(" ") ? value.slice(1) : value);
     }
     return data.length === 0 ? undefined : { data: data.join("\n") };
+  }
+
+  private reserve(bytes: number): boolean {
+    if (this.budget === undefined) return true;
+    return this.budget.tryReserve(bytes, this.isPriority());
+  }
+
+  private release(bytes: number): void {
+    this.budget?.release(bytes);
+  }
+
+  private dropPending(): void {
+    if (this.pendingBytes > 0) this.release(this.pendingBytes);
+    this.parts = [];
+    this.pendingBytes = 0;
+    this.pendingHasNewline = false;
   }
 }
 
@@ -1320,6 +1417,7 @@ function salvageIdentity(prefix: string): SalvagedIdentity {
  */
 export class EventProjector {
   private readonly includeUsage: boolean;
+  private readonly attachments: EventAttachmentResolver | undefined;
   private readonly eventIds = new Set<string>();
   private readonly askedKeys = new Set<string>();
   private readonly partTypes = new Map<string, PartType>();
@@ -1334,6 +1432,7 @@ export class EventProjector {
 
   constructor(options: EventProjectorOptions = {}) {
     this.includeUsage = options.includeUsage === true;
+    this.attachments = options.attachments;
   }
 
   project(raw: unknown): HanseEvent[] {
@@ -1566,6 +1665,16 @@ export class EventProjector {
         return this.activity(properties, "unknown");
       }
     }
+    const attachments = this.attachments?.attachmentsForMessage(messageID);
+    if (attachments !== undefined && attachments.length > 0) {
+      const withAttachments: Extract<HanseEvent, { type: "message.updated" }> = {
+        ...event,
+        attachments,
+      };
+      if (jsonBytes(withAttachments) <= MAX_MESSAGE_INFO_BYTES) {
+        return [withAttachments, { type: "session.activity", sessionID, cause: "message" }];
+      }
+    }
     return [event, { type: "session.activity", sessionID, cause: "message" }];
   }
 
@@ -1708,7 +1817,11 @@ export class EventProjector {
     }
     if (!this.shouldForwardSnapshot(part, rawPartType, partID)) return [];
 
-    const bounded = boundPart(part, rawPartType);
+    const sourcePart =
+      rawPartType === "file" && this.attachments !== undefined
+        ? this.attachments.projectFilePart(part)
+        : part;
+    const bounded = boundPart(sourcePart, rawPartType);
     const buildEvent = (): HanseEvent => {
       const truncated = truncationFor(bounded.bounds);
       return {
@@ -1874,8 +1987,16 @@ export function createEventStream(
   body: ReadableStream<Uint8Array>,
   options: EventStreamOptions = {},
 ): EventStream {
-  const parser = new SseParser({ maxFrameBytes: options.maxFrameBytes });
-  const projector = new EventProjector({ includeUsage: options.includeUsage });
+  const budget = options.budget ?? appStreamBudget;
+  const parser = new SseParser({
+    maxFrameBytes: options.maxFrameBytes,
+    budget,
+    isPriority: options.isPriority ?? (() => false),
+  });
+  const projector = new EventProjector({
+    includeUsage: options.includeUsage,
+    ...(options.attachments === undefined ? {} : { attachments: options.attachments }),
+  });
   const reader = body.getReader();
   const warned = new Set<string>();
   let closed = false;
@@ -1884,6 +2005,7 @@ export function createEventStream(
     if (closed) return;
     closed = true;
     options.signal?.removeEventListener("abort", onAbort);
+    parser.dispose();
     void reader.cancel().catch(() => undefined);
   };
   const onAbort = (): void => close();
@@ -1898,53 +2020,182 @@ export function createEventStream(
 
   const produce = (batch: SseParseBatch): HanseEvent[] => {
     const output: HanseEvent[] = [];
-    for (const warning of batch.warnings) {
-      const identity = warning.prefix === undefined ? {} : salvageIdentity(warning.prefix);
-      if (
-        identity.sessionID !== undefined &&
-        identity.messageID !== undefined &&
-        identity.partID !== undefined
-      ) {
-        output.push({
-          type: "message.part.omitted",
-          sessionID: identity.sessionID,
-          messageID: identity.messageID,
-          partID: identity.partID,
-          reason: "too_large",
-        });
-        continue;
-      }
-      const key = warningKey(warning.code, identity.sessionID);
-      if (warned.has(key)) continue;
-      warned.add(key);
-      output.push({
-        type: "stream.warning",
-        code: warning.code,
-        message: warning.message,
-        ...(identity.sessionID === undefined ? {} : { sessionID: identity.sessionID }),
-      });
-    }
-    for (const frame of batch.frames) {
-      let raw: unknown;
-      try {
-        raw = JSON.parse(frame.data);
-      } catch {
-        const key = warningKey("invalid_json", undefined);
+    try {
+      for (const warning of batch.warnings) {
+        const identity = warning.prefix === undefined ? {} : salvageIdentity(warning.prefix);
+        if (
+          identity.sessionID !== undefined &&
+          identity.messageID !== undefined &&
+          identity.partID !== undefined
+        ) {
+          output.push({
+            type: "message.part.omitted",
+            sessionID: identity.sessionID,
+            messageID: identity.messageID,
+            partID: identity.partID,
+            reason: "too_large",
+          });
+        }
+        const key = warningKey(warning.code, identity.sessionID);
         if (warned.has(key)) continue;
         warned.add(key);
         output.push({
           type: "stream.warning",
-          code: "invalid_json",
-          message: "dropped an SSE frame with invalid JSON",
+          code: warning.code,
+          message: warning.message,
+          ...(identity.sessionID === undefined ? {} : { sessionID: identity.sessionID }),
         });
-        continue;
       }
-      output.push(...projector.project(raw));
+      for (const frame of batch.frames) {
+        let raw: unknown;
+        try {
+          raw = JSON.parse(frame.data);
+        } catch {
+          const key = warningKey("invalid_json", undefined);
+          if (warned.has(key)) continue;
+          warned.add(key);
+          output.push({
+            type: "stream.warning",
+            code: "invalid_json",
+            message: "dropped an SSE frame with invalid JSON",
+          });
+          continue;
+        }
+        output.push(...projector.project(raw));
+      }
+      return output;
+    } finally {
+      if (batch.reservedBytes !== undefined) budget.release(batch.reservedBytes);
     }
-    return output;
   };
 
   async function* iterate(): AsyncGenerator<HanseEvent> {
+    try {
+      while (!closed) {
+        const { done, value } = await reader.read();
+        if (done || closed) break;
+        for (const event of produce(parser.push(value))) yield event;
+      }
+      if (!closed) {
+        for (const event of produce(parser.flush())) yield event;
+      }
+    } catch {
+      // Abort and upstream read failures both end the stream.
+    } finally {
+      close();
+    }
+  }
+
+  return { events: iterate(), close };
+}
+
+/** Project a raw opencode event envelope without changing its shape. */
+export function projectRawEnvelope(
+  raw: unknown,
+  attachments: EventAttachmentResolver | undefined,
+): unknown {
+  const event = asRecord(raw);
+  if (event === undefined || attachments === undefined) return raw;
+  if (asString(event.type) !== "message.part.updated") return raw;
+  const properties = asRecord(event.properties);
+  const part = asRecord(properties?.part);
+  if (properties === undefined || part === undefined) return raw;
+  if (asString(part.type) !== "file") return raw;
+  return {
+    ...event,
+    properties: { ...properties, part: attachments.projectFilePart(part) },
+  };
+}
+
+export interface RawEventStreamOptions extends EventStreamOptions {
+  attachments?: EventAttachmentResolver;
+}
+
+export interface RawEventStream {
+  events: AsyncGenerator<unknown>;
+  close(): void;
+}
+
+/**
+ * Legacy raw-envelope stream: preserves opencode's `{type, properties}` shape while projecting
+ * file parts and enforcing the same frame/budget caps as the typed app stream.
+ */
+export function createRawEventStream(
+  body: ReadableStream<Uint8Array>,
+  options: RawEventStreamOptions = {},
+): RawEventStream {
+  const budget = options.budget ?? appStreamBudget;
+  const parser = new SseParser({
+    maxFrameBytes: options.maxFrameBytes,
+    budget,
+    isPriority: options.isPriority ?? (() => false),
+  });
+  const reader = body.getReader();
+  let closed = false;
+  const close = (): void => {
+    if (closed) return;
+    closed = true;
+    options.signal?.removeEventListener("abort", onAbort);
+    parser.dispose();
+    void reader.cancel().catch(() => undefined);
+  };
+  const onAbort = (): void => close();
+  if (options.signal !== undefined) {
+    if (options.signal.aborted) close();
+    else options.signal.addEventListener("abort", onAbort, { once: true });
+  }
+  options.onAttached?.();
+
+  const produce = (batch: SseParseBatch): unknown[] => {
+    const output: unknown[] = [];
+    try {
+      for (const warning of batch.warnings) {
+        const identity = warning.prefix === undefined ? {} : salvageIdentity(warning.prefix);
+        if (
+          identity.sessionID !== undefined &&
+          identity.messageID !== undefined &&
+          identity.partID !== undefined
+        ) {
+          output.push({
+            type: "message.part.omitted",
+            properties: {
+              sessionID: identity.sessionID,
+              messageID: identity.messageID,
+              partID: identity.partID,
+              reason: "too_large",
+            },
+          });
+          continue;
+        }
+        output.push({
+          type: "stream.warning",
+          properties: {
+            code: warning.code,
+            message: warning.message,
+            ...(identity.sessionID === undefined ? {} : { sessionID: identity.sessionID }),
+          },
+        });
+      }
+      for (const frame of batch.frames) {
+        let raw: unknown;
+        try {
+          raw = JSON.parse(frame.data);
+        } catch {
+          output.push({
+            type: "stream.warning",
+            properties: { code: "invalid_json", message: "dropped an SSE frame with invalid JSON" },
+          });
+          continue;
+        }
+        output.push(projectRawEnvelope(raw, options.attachments));
+      }
+      return output;
+    } finally {
+      if (batch.reservedBytes !== undefined) budget.release(batch.reservedBytes);
+    }
+  };
+
+  async function* iterate(): AsyncGenerator<unknown> {
     try {
       while (!closed) {
         const { done, value } = await reader.read();
