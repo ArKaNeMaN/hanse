@@ -1,3 +1,7 @@
 name: hanse
 kind: app
 contract: AGENTS.md
+build:
+  dockerfile: .hanse/Dockerfile
+  args:
+    PLAYWRIGHT_VERSION: "1.64.0"

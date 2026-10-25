@@ -12,6 +12,7 @@ import type { HttpDeps, HttpRequest, HttpResponse } from "./handler.js";
 const BUILD_PATH = /^\/api\/apps\/([^/]+)\/build$/;
 const IMAGE_PATH = /^\/api\/apps\/([^/]+)\/image$/;
 const ROLLBACK_PATH = /^\/api\/apps\/([^/]+)\/image\/rollback$/;
+const CHECK_PATH = /^\/api\/apps\/([^/]+)\/image\/check$/;
 const LOGS_PATH = /^\/api\/apps\/([^/]+)\/image\/logs$/;
 const USAGE_PATH = "/api/images/usage";
 const GC_PATH = "/api/images/gc";
@@ -178,9 +179,10 @@ export async function handleImages(deps: HttpDeps, request: HttpRequest): Promis
 
   const buildMatch = BUILD_PATH.exec(request.path);
   const rollbackMatch = ROLLBACK_PATH.exec(request.path);
+  const checkMatch = CHECK_PATH.exec(request.path);
   const imageMatch = IMAGE_PATH.exec(request.path);
   const logsMatch = LOGS_PATH.exec(request.path);
-  const match = buildMatch ?? rollbackMatch ?? imageMatch ?? logsMatch;
+  const match = buildMatch ?? rollbackMatch ?? checkMatch ?? imageMatch ?? logsMatch;
   if (match === null) {
     return unknown();
   }
@@ -288,6 +290,39 @@ export async function handleImages(deps: HttpDeps, request: HttpRequest): Promis
       }
       if (error instanceof ImageRollbackIncompleteError) {
         return json(502, { error: "image_rollback_incomplete" });
+      }
+      if (error instanceof ImageServiceError) {
+        if (wantsHtml(request) || isFormContentType(request.headers["content-type"])) {
+          return redirect(
+            appHrefWithNotice(found.project.id, found.app.appKey, error.message, "error"),
+          );
+        }
+        return failure(error);
+      }
+      throw error;
+    }
+  }
+
+  if (checkMatch !== null) {
+    if (request.method !== "POST") {
+      return methodNotAllowed();
+    }
+    const invalid = invalidMutationContentType(request);
+    if (invalid !== undefined) {
+      return invalid;
+    }
+    try {
+      const result = await deps.images.check(found.app.id, found.app.appKey);
+      if (wantsHtml(request) || isFormContentType(request.headers["content-type"])) {
+        return redirect(
+          appHrefWithNotice(found.project.id, found.app.appKey, result.notice, result.tone),
+        );
+      }
+      return json(200, result);
+    } catch (error) {
+      const mapped = lifecycleErrorResponse(error);
+      if (mapped !== undefined) {
+        return mapped;
       }
       if (error instanceof ImageServiceError) {
         if (wantsHtml(request) || isFormContentType(request.headers["content-type"])) {

@@ -120,6 +120,13 @@ a host `opencode` auth file.
 - The app container uses `apps.image_ref` when a build is configured. The coordinator keeps the
   current and previous image versions; the app page can roll back, and an explicit GC protects
   current/rollback/running images and only removes `hanse-app-*`/Hanse-labelled images.
+- This repository's own application ships `.hanse/Dockerfile` with a headless Chromium, Debian 12
+  runtime libraries, fonts, and a Playwright MCP environment for functional/visual web UI checks.
+  It is application-local; `agent-default` and the other application images are unchanged.
+- The image panel exposes a human-only **Check for changes** action for apps on the default image. It
+  re-reads the live manifest/Dockerfile and persists the merged image metadata
+  (missing/stale/error) without a build, so a newly added `.hanse/Dockerfile` appears without a
+  coordinator restart. Builds and restarts remain explicit.
 
 ## App image usage and GC (B2.5b)
 

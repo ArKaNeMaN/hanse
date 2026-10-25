@@ -84,6 +84,7 @@ function imageHrefs(
   appHref: string;
   buildHref: string;
   rollbackHref: string;
+  checkHref: string;
   imageUrl: string;
   logsUrl: string;
   runtimeUrl: string;
@@ -94,6 +95,7 @@ function imageHrefs(
     appHref: `/projects/${project}/apps/${key}`,
     buildHref: `/api/apps/${key}/build?project=${project}`,
     rollbackHref: `/api/apps/${key}/image/rollback?project=${project}`,
+    checkHref: `/api/apps/${key}/image/check?project=${project}`,
     imageUrl: `/api/apps/${key}/image?project=${project}`,
     logsUrl: `/api/apps/${key}/image/logs?project=${project}`,
     runtimeUrl: `/api/apps/${key}/runtime?project=${project}`,
@@ -183,7 +185,12 @@ function imagePanel(
   </section>`;
 }
 
-function defaultImagePanel(project: { id: string }, app: RegisteredApp, ideHref: string): string {
+function defaultImagePanel(
+  project: { id: string },
+  app: RegisteredApp,
+  ideHref: string,
+  deletionPending: boolean,
+): string {
   const hrefs = imageHrefs(project.id, app.appKey);
   return `<section class="card" id="image-panel"
       data-project-id="${escapeHtml(project.id)}"
@@ -199,7 +206,12 @@ function defaultImagePanel(project: { id: string }, app: RegisteredApp, ideHref:
       <p class="small" id="image-hint">This application uses the shared default agent image.</p>
       <p class="small">Add .hanse/Dockerfile to build a custom image for this application.</p>
       <p class="mono" id="image-ref">Default agent image</p>
-      <div class="cluster"><a class="btn btn-ghost btn-sm" href="${escapeHtml(ideHref)}" target="_blank" rel="noreferrer">${icon("external")}Open application folder</a></div>
+      <div class="cluster">
+        <form method="post" action="${escapeHtml(hrefs.checkHref)}" id="image-check-form">
+          <button class="btn btn-secondary btn-sm" type="submit" id="image-check"${deletionPending ? " disabled" : ""}>${icon("refresh")}<span class="btn__label">Check for changes</span></button>
+        </form>
+        <a class="btn btn-ghost btn-sm" href="${escapeHtml(ideHref)}" target="_blank" rel="noreferrer">${icon("external")}Open application folder</a>
+      </div>
     </div>
   </section>`;
 }
@@ -385,7 +397,7 @@ export function renderApplication(
 
   const image = app.buildConfigured
     ? imagePanel(project, app, runtime, deletionPending)
-    : defaultImagePanel(project, app, ideHref);
+    : defaultImagePanel(project, app, ideHref, deletionPending);
   const sshPendingCopy =
     sshPending > 0
       ? `<span class="status" data-state="awaiting_approval">${icon("stamp")}${sshPending} pending ${sshPending === 1 ? "approval" : "approvals"}</span>`

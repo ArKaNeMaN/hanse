@@ -37,6 +37,26 @@ npm run build       # tsc + Tailwind CSS -> dist/ and assets/app.css
 All gates must pass before a change is considered done. The CSS is built by
 `npm run build:css` (Tailwind CSS) into `assets/app.css`.
 
+## Browser testing (this application image)
+
+`.hanse/Dockerfile` adds a headless Chromium, Debian 12 runtime libraries, and fonts for
+functional/visual web UI checks. The image is application-local; `agent-default` is unchanged.
+It is built on a human action (`hanse images build` or the app page Image panel), and the agent must
+be restarted after the build to pick it up.
+
+- `chromium` / `/usr/bin/chromium` is a wrapper that always passes
+  `--no-sandbox --disable-dev-shm-usage`; the app container has no user namespaces and only a
+  64 MiB `/dev/shm`. Do not remove those flags.
+- The built-in Playwright MCP uses `/usr/bin/chromium` headless via `PLAYWRIGHT_MCP_*`; use the
+  `playwright` skill for functional checks. `visual-qa`/`browser` can use the same binary with the
+  owned/headless engine; the attached engine has no user browser in the app container.
+- `PLAYWRIGHT_CHROMIUM=/usr/bin/chromium` lets `docs/design/*.mjs` reuse the baked browser.
+- If the app still shows the default image card after adding `.hanse/Dockerfile`, use **Check for
+  changes** on that card (or `hanse status`) to re-read the manifest and reveal the Build button. It
+  updates the coordinator DB without a restart or a build.
+- Write screenshots/traces to the workspace, not `/tmp`. Use a local test state and a test token;
+  never use deployment secrets or real project data.
+
 ## Conventions
 
 - TypeScript, ESM, `moduleResolution: NodeNext`. Relative imports use `.js` extensions.

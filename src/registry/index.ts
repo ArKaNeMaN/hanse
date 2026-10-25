@@ -62,7 +62,7 @@ export interface AppBuildInspection {
   specHash: string | null;
 }
 
-interface ExistingImageRow {
+export interface ExistingImageRow {
   image_ref: string | null;
   image_status: AppImageStatus;
   image_hash: string | null;
@@ -70,7 +70,7 @@ interface ExistingImageRow {
   image_built_at: string | null;
 }
 
-interface MergedImageMetadata {
+export interface MergedImageMetadata {
   imageStatus: AppImageStatus;
   imageRef: string | null;
   imageHash: string | null;
@@ -321,7 +321,7 @@ function failedInspection(error: unknown, args: Record<string, string> = {}): Ap
   };
 }
 
-function mergeImageMetadata(
+export function mergeImageMetadata(
   existing: ExistingImageRow | undefined,
   inspection: AppBuildInspection,
 ): MergedImageMetadata {

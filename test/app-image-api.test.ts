@@ -143,7 +143,7 @@ interface Fixture {
   service: ImageService;
 }
 
-async function fixture(): Promise<Fixture> {
+async function fixture(options: { build?: boolean } = {}): Promise<Fixture> {
   const base = mkdtempSync(path.join(tmpdir(), "hanse-app-image-"));
   dirs.push(base);
   const workspacePath = path.join(base, "workspace");
@@ -160,8 +160,10 @@ async function fixture(): Promise<Fixture> {
     `id: ${projectId}\nname: Alpha\nbase_branch: main\napps:\n  - path: apps/web\n`,
     "utf8",
   );
-  writeFileSync(path.join(appDir, ".hanse", "app.yaml"), APP_YAML, "utf8");
-  writeFileSync(path.join(appDir, "Dockerfile"), DOCKERFILE, "utf8");
+  if (options.build !== false) {
+    writeFileSync(path.join(appDir, ".hanse", "app.yaml"), APP_YAML, "utf8");
+    writeFileSync(path.join(appDir, "Dockerfile"), DOCKERFILE, "utf8");
+  }
 
   const db = openDatabase(path.join(base, "coordinator.db"));
   databases.push(db);
@@ -230,6 +232,15 @@ function imageRequest(f: Fixture, token = f.token): HttpRequest {
   return {
     method: "GET",
     path: "/api/apps/web/image",
+    headers: auth(token),
+    query: { project: f.projectId },
+  };
+}
+
+function checkRequest(f: Fixture, token = f.token): HttpRequest {
+  return {
+    method: "POST",
+    path: "/api/apps/web/image/check",
     headers: auth(token),
     query: { project: f.projectId },
   };
@@ -483,5 +494,127 @@ describe("app image stale detection", () => {
     expect(updated?.buildSpecHash).not.toBe(builtHash);
     expect(row(f).image_status).toBe("stale");
     expect(f.runner.inputs).toHaveLength(0);
+  });
+});
+
+describe("app image check", () => {
+  it("detects a newly added Dockerfile and enables build controls without a restart", async () => {
+    const f = await fixture({ build: false });
+    expect(row(f)).toMatchObject({ image_status: "missing", image_ref: null, image_hash: null });
+
+    writeFileSync(path.join(f.appDir, ".hanse", "app.yaml"), APP_YAML, "utf8");
+    writeFileSync(path.join(f.appDir, "Dockerfile"), DOCKERFILE, "utf8");
+
+    const response = await handleImages(f.deps, checkRequest(f));
+    expect(response.status).toBe(200);
+    const result = JSON.parse(response.body) as {
+      status: string;
+      buildConfigured: boolean;
+      notice: string;
+    };
+    expect(result.status).toBe("missing");
+    expect(result.buildConfigured).toBe(true);
+    expect(result.notice).toMatch(/build configuration detected/i);
+    expect(row(f)).toMatchObject({ image_status: "missing", image_ref: null });
+    expect(row(f).image_hash).not.toBeNull();
+    expect(f.runner.inputs).toHaveLength(0);
+
+    const page = handleRequest(f.deps, {
+      method: "GET",
+      path: `/projects/${f.projectId}/apps/web`,
+      headers: auth(f.token),
+    });
+    expect(page.status).toBe(200);
+    expect(page.body).toContain('id="image-build"');
+    expect(page.body).not.toContain('id="image-check"');
+  });
+
+  it("reports the default image when no Dockerfile is configured", async () => {
+    const f = await fixture({ build: false });
+
+    const response = await handleImages(f.deps, checkRequest(f));
+    expect(response.status).toBe(200);
+    const result = JSON.parse(response.body) as {
+      status: string;
+      buildConfigured: boolean;
+      notice: string;
+    };
+    expect(result.status).toBe("missing");
+    expect(result.buildConfigured).toBe(false);
+    expect(result.notice).toMatch(/No application image build configured/i);
+    expect(row(f)).toMatchObject({ image_status: "missing", image_ref: null, image_hash: null });
+  });
+
+  it("marks a ready image stale after a Dockerfile change without a build", async () => {
+    const f = await fixture();
+    markReady(f);
+    const builtHash = row(f).image_hash;
+    writeFileSync(path.join(f.appDir, "Dockerfile"), `${DOCKERFILE}RUN true\n`, "utf8");
+
+    const response = await handleImages(f.deps, checkRequest(f));
+    expect(response.status).toBe(200);
+    const result = JSON.parse(response.body) as {
+      status: string;
+      buildConfigured: boolean;
+      notice: string;
+    };
+    expect(result.status).toBe("stale");
+    expect(result.buildConfigured).toBe(true);
+    expect(result.notice).toMatch(/out of date/i);
+    expect(row(f)).toMatchObject({
+      image_status: "stale",
+      image_ref: "hanse-app-p:old",
+      image_hash: builtHash,
+    });
+    expect(f.runner.inputs).toHaveLength(0);
+  });
+
+  it("is human-only and refuses while a build is in progress", async () => {
+    const f = await fixture({ build: false });
+
+    const agent = await handleImages(f.deps, checkRequest(f, f.agentToken));
+    expect(agent.status).toBe(403);
+
+    f.db.prepare("UPDATE apps SET image_status = 'building' WHERE id = ?").run(f.appId);
+    const building = await handleImages(f.deps, checkRequest(f));
+    expect(building.status).toBe(409);
+    expect(building.body).toContain("build_in_progress");
+  });
+
+  it("redirects the app-page form to the app with a notice", async () => {
+    const f = await fixture({ build: false });
+    writeFileSync(path.join(f.appDir, ".hanse", "app.yaml"), APP_YAML, "utf8");
+    writeFileSync(path.join(f.appDir, "Dockerfile"), DOCKERFILE, "utf8");
+
+    const response = await handleImages(f.deps, {
+      ...checkRequest(f),
+      headers: auth(f.token, {
+        accept: "text/html",
+        "content-type": "application/x-www-form-urlencoded",
+      }),
+      body: "",
+    });
+    expect(response.status).toBe(303);
+    expect(response.headers?.location).toContain(`/projects/${f.projectId}/apps/web`);
+    expect(response.headers?.location).toContain("notice=");
+  });
+
+  it("serves the check route through the HTTP server dispatch", async () => {
+    const f = await fixture({ build: false });
+    const server = createHttpServer(f.deps);
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (address === null || typeof address === "string") {
+      throw new Error("server has no port");
+    }
+
+    const response = await fetch(
+      `http://127.0.0.1:${address.port}/api/apps/web/image/check?project=${encodeURIComponent(f.projectId)}`,
+      { method: "POST", headers: auth(f.token) },
+    );
+    expect(response.status).toBe(200);
+    const result = (await response.json()) as { buildConfigured: boolean };
+    expect(result.buildConfigured).toBe(false);
   });
 });

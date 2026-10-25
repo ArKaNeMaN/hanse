@@ -2,7 +2,7 @@ import { ConfigError } from "../config/load.js";
 import type { DeploymentLock } from "../coordinator/deployment-lock.js";
 import type { LifecycleActivity } from "../coordinator/lifecycle-activity.js";
 import type { AppBuildInspection, AppImageStatus } from "../registry/index.js";
-import { resolveAppBuild } from "../registry/index.js";
+import { mergeImageMetadata, resolveAppBuild } from "../registry/index.js";
 import type { ImageGcReport, ImageUsageReport } from "../runner/image-gc.js";
 import { mapToHostPath } from "../runner/names.js";
 import { resolveAppPath } from "../runtime/app-path.js";
@@ -61,6 +61,18 @@ export interface AppImageRollbackResult {
   imageRef: string | null;
   previousImageRef: string | null;
   builtAt: string | null;
+}
+
+/** Result of re-reading one app's manifest/Dockerfile without building. */
+export interface AppImageCheckResult {
+  appId: string;
+  appKey: string;
+  status: AppImageStatus;
+  imageRef: string | null;
+  imageHash: string | null;
+  buildConfigured: boolean;
+  notice: string;
+  tone: "success" | "error";
 }
 
 export interface AppImageLogsView {
@@ -246,6 +258,71 @@ export class ImageService {
       updatedAt: record.updatedAt,
       runnerAvailable: true,
     });
+  }
+
+  /**
+   * Re-read the live manifest/Dockerfile and persist the merged image metadata.
+   *
+   * This is the explicit human check used when an app has no build declared in the DB yet. It never
+   * builds, starts, or restarts anything; a detected build still needs an explicit build and restart.
+   */
+  async check(appId: string, appKey?: string): Promise<AppImageCheckResult> {
+    const app = this.#getApp(appId);
+    if (appKey !== undefined && app.app_key !== appKey) {
+      throw new ImageServiceError(404, "application not found", "not_found");
+    }
+    if (this.#deleting.has(appId) || app.deleting === 1 || app.project_deleting === 1) {
+      throw new ImageServiceError(
+        409,
+        "the application is being deleted; image checks are disabled",
+        "deletion_pending",
+      );
+    }
+    if (this.#active.has(appId) || app.image_status === "building") {
+      throw new ImageServiceError(
+        409,
+        "an image build is already running for this app",
+        "build_in_progress",
+      );
+    }
+
+    const inspection = this.#inspect(app);
+    const merged = mergeImageMetadata(app, inspection);
+    this.#db
+      .prepare(
+        `UPDATE apps SET
+           image_status = @image_status,
+           image_ref = @image_ref,
+           image_hash = @image_hash,
+           image_base_digest = @image_base_digest,
+           image_built_at = @image_built_at,
+           image_error = @image_error
+         WHERE id = @id`,
+      )
+      .run({
+        id: app.id,
+        image_status: merged.imageStatus,
+        image_ref: merged.imageRef,
+        image_hash: merged.imageHash,
+        image_base_digest: merged.imageBaseDigest,
+        image_built_at: merged.imageBuiltAt,
+        image_error: merged.imageError,
+      });
+
+    const updated = this.#getApp(appId);
+    const buildConfigured =
+      updated.image_status !== "missing" ||
+      updated.image_ref !== null ||
+      updated.image_hash !== null;
+    return {
+      appId: updated.id,
+      appKey: updated.app_key,
+      status: updated.image_status,
+      imageRef: updated.image_ref,
+      imageHash: updated.image_hash,
+      buildConfigured,
+      ...checkNotice(inspection, updated),
+    };
   }
 
   /** Switch the app back to its previous recorded image version. DB-only; the manager owns guards. */
@@ -786,6 +863,37 @@ export class ImageService {
       runnerAvailable: extra.runnerAvailable,
     };
   }
+}
+
+function checkNotice(
+  inspection: AppBuildInspection,
+  app: AppRow,
+): { notice: string; tone: "success" | "error" } {
+  if (inspection.status === "error") {
+    return {
+      notice: `Application image configuration is invalid: ${inspection.error ?? "unknown error"}`,
+      tone: "error",
+    };
+  }
+  if (inspection.dockerfile === null) {
+    return {
+      notice: "No application image build configured; using the default agent image.",
+      tone: "success",
+    };
+  }
+  if (app.image_status === "error") {
+    return {
+      notice: `Application image configuration is invalid: ${app.image_error ?? "unknown error"}`,
+      tone: "error",
+    };
+  }
+  if (app.image_status === "stale") {
+    return { notice: "The image is out of date; rebuild it.", tone: "success" };
+  }
+  if (app.image_status === "ready") {
+    return { notice: "The image is up to date.", tone: "success" };
+  }
+  return { notice: "Image build configuration detected; build the image.", tone: "success" };
 }
 
 function digestFromReference(reference: string): string {

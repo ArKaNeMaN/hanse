@@ -172,6 +172,10 @@ describe("application page", () => {
     expect(body).toContain("Add .hanse/Dockerfile to build a custom image for this application.");
     expect(body).toContain("Open application folder");
     expect(body).toContain('id="image-ref">Default agent image</p>');
+    expect(body).toContain('id="image-check"');
+    expect(body).toContain('id="image-check-form"');
+    expect(body).toContain('action="/api/apps/storefront/image/check?project=p1"');
+    expect(body).toContain("Check for changes");
     expect(body).not.toContain('id="image-build"');
     expect(body).not.toContain('id="image-refresh"');
     expect(body).not.toContain('id="image-logs"');
@@ -273,6 +277,15 @@ describe("application page", () => {
 
     expect(body).toMatch(/id="image-build"[^>]*disabled/);
     expect(body).toContain('id="image-rollback" data-dialog-open="image-rollback-dialog" disabled');
+  });
+
+  it("disables the default image check while deletion is pending", () => {
+    const f = fixture();
+    setDeleting(f, { app: true });
+    const body = page(f);
+
+    expect(body).toContain('id="image-check"');
+    expect(body).toMatch(/id="image-check"[^>]*disabled/);
   });
 
   it("routes the retry to the project deletion when the project is deleting", () => {
