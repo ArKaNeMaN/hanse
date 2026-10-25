@@ -22,20 +22,35 @@ export const TOOLS = [
   {
     name: "request_sibling_change",
     description:
-      "Ask a sibling application to do work. Returns a handoff id immediately. The coordinator binds the request to this session, applies the project handoff policy, starts a fresh session on the target, and later delivers the target's reply back into this session. Do not wait or poll.",
+      'Ask a sibling application to do work. Returns a handoff id immediately. The coordinator binds the request to this session, applies the project handoff policy, starts a fresh session on the target, and later delivers the target\'s reply back into this session. Do not wait or poll. Call list_apps first and pass application keys (the "appKey" field, for example "hanse-deploy") in "from" and "to" - never full application ids such as "<projectId>:<appKey>". "to" must be another application in the same project.',
     inputSchema: {
       type: "object",
       properties: {
-        from: { type: "string" },
-        to: { type: "string" },
-        summary: { type: "string" },
-        spec: { type: "string" },
+        from: {
+          type: "string",
+          description:
+            'Application key of the sender (the "appKey" from list_apps, for example "hanse"). When this server is bound to an application, the coordinator uses the bound application. Never pass a full application id such as "<projectId>:<appKey>".',
+        },
+        to: {
+          type: "string",
+          description:
+            'Application key of the target application in the same project (the "appKey" from list_apps, for example "hanse-deploy"). Never pass a full application id such as "<projectId>:<appKey>".',
+        },
+        summary: { type: "string", description: "Short human-readable title for the request." },
+        spec: {
+          type: "string",
+          description:
+            "Complete instructions for the target: goal, context, constraints, and the expected result.",
+        },
         requires_approval: {
           type: "boolean",
           description:
             "Raise this request to operator approval. Project policy can require or deny approval regardless of this value.",
         },
-        idempotency_key: { type: "string" },
+        idempotency_key: {
+          type: "string",
+          description: "Stable key so a retried request does not create a second handoff.",
+        },
       },
       required: ["from", "to", "summary", "spec"],
     },

@@ -54,6 +54,38 @@ describe("mcp protocol", () => {
     expect(tools.map((tool) => tool.name)).toContain("request_sibling_change");
   });
 
+  it("documents app keys, not full application ids, for request_sibling_change", () => {
+    const service = fixture();
+    const response = handleRpc(service, { jsonrpc: "2.0", id: 5, method: "tools/list" });
+    const tools = (
+      response as {
+        result: {
+          tools: {
+            name: string;
+            description: string;
+            inputSchema: { properties: Record<string, { description?: string }> };
+          }[];
+        };
+      }
+    ).result.tools;
+    const tool = tools.find((candidate) => candidate.name === "request_sibling_change");
+    expect(tool?.description).toContain("appKey");
+    expect(tool?.inputSchema.properties.from?.description).toContain("appKey");
+    expect(tool?.inputSchema.properties.to?.description).toContain("appKey");
+  });
+
+  it("explains app keys when a full application id is passed as the target", () => {
+    const service = fixture();
+    expect(() =>
+      service.requestSiblingChange({
+        fromAppKey: "a",
+        toAppKey: "p:b",
+        summary: "s",
+        spec: "x",
+      }),
+    ).toThrow(/appKey/);
+  });
+
   it("calls request_sibling_change and handoff_status", () => {
     const service = fixture();
     const request = handleRpc(service, {
