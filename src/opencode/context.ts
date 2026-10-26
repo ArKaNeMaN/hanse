@@ -553,6 +553,10 @@ export class ContextTracker {
     return this.#sessions.has(sessionID);
   }
 
+  usageOf(sessionID: string): number | null {
+    return this.#sessions.get(sessionID)?.usage?.used ?? null;
+  }
+
   setSessionParents(sessions: OpencodeSession[]): void {
     this.#parents.clear();
     this.#children.clear();
@@ -1156,6 +1160,11 @@ export interface ContextMonitorOptions {
   /** Sanitized diagnostics only; never pass upstream bodies or provider payloads. */
   log?: (message: string) => void;
   onEvent?: (event: HanseEvent) => void;
+  /**
+   * Called after a step's usage is applied, with the refreshed snapshot. Consumers push it to
+   * browsers over the existing app event stream; no extra provider or HTTP request is involved.
+   */
+  onContextUpdate?: (snapshot: ContextSnapshot) => void;
 }
 
 export interface ContextMonitorLike {
@@ -1293,6 +1302,7 @@ export class ContextMonitor implements ContextMonitorLike {
   readonly #compactTimeoutMs: number;
   readonly #log: (message: string) => void;
   readonly #onEvent: ((event: HanseEvent) => void) | undefined;
+  readonly #onContextUpdate: ((snapshot: ContextSnapshot) => void) | undefined;
   readonly #listMessagePage: typeof listMessagePage;
   readonly #listSessions: typeof listSessionsBounded;
   readonly #summarize: typeof summarizeSession;
@@ -1325,6 +1335,7 @@ export class ContextMonitor implements ContextMonitorLike {
     this.#backoffMs = this.#backoffBaseMs;
     this.#log = options.log ?? (() => undefined);
     this.#onEvent = options.onEvent;
+    this.#onContextUpdate = options.onContextUpdate;
     this.#listMessagePage = options.client?.listMessagePage ?? listMessagePage;
     this.#listSessions = options.client?.listSessions ?? listSessionsBounded;
     this.#summarize = options.client?.summarize ?? summarizeSession;
@@ -1481,7 +1492,26 @@ export class ContextMonitor implements ContextMonitorLike {
       // An observer failure must never stop the context monitor or its stream.
     }
     const now = this.#now();
+    const stepSession =
+      event.type === "message.part.updated" && event.partType === "step-finish"
+        ? eventSessionId(event)
+        : undefined;
+    const messageSession =
+      event.type === "message.updated" && event.role === "assistant"
+        ? eventSessionId(event)
+        : undefined;
+    const beforeUsed =
+      messageSession === undefined ? undefined : this.#tracker.usageOf(messageSession);
     this.#tracker.applyEvent(event as unknown as ContextEvent, now);
+    if (stepSession !== undefined) {
+      this.#notifyContext(stepSession, now);
+    } else if (
+      messageSession !== undefined &&
+      beforeUsed !== undefined &&
+      this.#tracker.usageOf(messageSession) !== beforeUsed
+    ) {
+      this.#notifyContext(messageSession, now);
+    }
     if (event.type === "message.part.updated" && spawnToolFromPart(asRecord(event.part))) {
       this.#parentRefreshAt = null;
     }
@@ -1499,6 +1529,28 @@ export class ContextMonitor implements ContextMonitorLike {
       void this.#maybeAutoParent(sessionId).catch(() => {
         this.#log("context monitor: parent auto-compaction evaluation failed");
       });
+    }
+  }
+
+  #notifyContext(sessionId: string, now: number): void {
+    if (this.#onContextUpdate === undefined || this.#stopped) return;
+    const snapshot = this.#tracker.snapshot(sessionId, this.#policy(), now);
+    if (snapshot.model === null || snapshot.limit !== null) {
+      this.#emitContext(sessionId);
+      return;
+    }
+    void this.#ensureLimit(sessionId, snapshot.model).then(
+      () => this.#emitContext(sessionId),
+      () => this.#emitContext(sessionId),
+    );
+  }
+
+  #emitContext(sessionId: string): void {
+    if (this.#onContextUpdate === undefined || this.#stopped) return;
+    try {
+      this.#onContextUpdate(this.#tracker.snapshot(sessionId, this.#policy(), this.#now()));
+    } catch {
+      // A subscriber failure must never stop the monitor or its stream.
     }
   }
 

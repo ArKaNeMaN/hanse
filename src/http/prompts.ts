@@ -734,6 +734,7 @@ export async function streamAppEvents(
   const streamID = randomUUID();
   let seq = 0;
   let heartbeat: NodeJS.Timeout | undefined;
+  let unsubscribeContext: (() => void) | undefined;
   let queue: Promise<void> = Promise.resolve();
   const emit = (event: HanseEvent): string => {
     seq += 1;
@@ -746,6 +747,8 @@ export async function streamAppEvents(
   };
   const cleanup = (): void => {
     controller.abort();
+    unsubscribeContext?.();
+    unsubscribeContext = undefined;
     if (heartbeat !== undefined) {
       clearInterval(heartbeat);
       heartbeat = undefined;
@@ -793,6 +796,18 @@ export async function streamAppEvents(
         }, heartbeatInterval());
       },
     });
+    if (typeof deps.manager.subscribeContext === "function") {
+      unsubscribeContext = deps.manager.subscribeContext(found.app.id, (snapshot) => {
+        if (response.destroyed || response.writableEnded) return;
+        void write(
+          emit({
+            type: "context.updated",
+            sessionID: snapshot.sessionID,
+            context: snapshot,
+          }),
+        );
+      });
+    }
     for await (const event of stream.events) {
       if (response.destroyed || response.writableEnded) {
         break;

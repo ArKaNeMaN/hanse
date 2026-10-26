@@ -2473,6 +2473,59 @@ async function scenarioContextStates(browser, target) {
   }
 }
 
+async function scenarioContextLive(browser, target) {
+  const sessionID = THREADS.main;
+  const initial = { ...defaultContextSnapshot(sessionID), status: "busy" };
+  const live = {
+    ...initial,
+    used: 150000,
+    percent: 75,
+    topLevel: true,
+    activeChildren: false,
+    pendingTask: false,
+  };
+  const { context, page, errors } = await newPage(browser, target);
+  try {
+    const routeState = await installRoutes(page, {
+      sessionId: sessionID,
+      messages: contextMessages(sessionID),
+      context: () => initial,
+    });
+    await gotoChat(page, target, sessionID);
+    await waitForChipLabel(page, "Context 62%");
+    const getsBefore = routeState.contextGets.length;
+
+    await page.evaluate((snapshot) => {
+      window.__qaEventSource.emit({
+        type: "context.updated",
+        sessionID: snapshot.sessionID,
+        seq: 1,
+        streamID: "qa-stream",
+        context: snapshot,
+      });
+    }, live);
+
+    await waitForChipLabel(page, "Context 75%");
+    const ui = await contextUi(page);
+    assertEqual(ui.chip.label, "Context 75%", "live chip label");
+    assertEqual(
+      ui.chip.exact,
+      "150,000 / 200,000 tokens · deepseek/deepseek-flash",
+      "live chip detail",
+    );
+    assertEqual(ui.rail.summary, "75% of 200k", "live rail summary");
+    check(
+      routeState.contextGets.length === getsBefore,
+      "a pushed context frame does not trigger a context GET",
+    );
+    await shot(page, "context-live-1440-dark");
+    checkNoErrors(errors);
+    return ui;
+  } finally {
+    await context.close();
+  }
+}
+
 async function scenarioContextCompact(browser, target) {
   const sessionID = THREADS.main;
   const ready = defaultContextSnapshot(sessionID);
@@ -7529,6 +7582,7 @@ try {
     await run("commands-popup", () => scenarioCommandsPopup(browser, target));
     await run("commands-widths", () => scenarioCommandsWidths(browser, target));
     await run("context-states", () => scenarioContextStates(browser, target));
+    await run("context-live", () => scenarioContextLive(browser, target));
     await run("context-compact", () => scenarioContextCompact(browser, target));
     await run("context-switch-race", () => scenarioContextSwitchRace(browser, target));
     await run("context-retry", () => scenarioContextRetry(browser, target));

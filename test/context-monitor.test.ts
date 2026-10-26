@@ -5,6 +5,7 @@ import {
   ContextMonitor,
   type ContextMonitorClientHooks,
   type ContextPolicy,
+  type ContextSnapshot,
   NotTopLevelError,
   parseModelString,
   SessionBusyError,
@@ -304,6 +305,7 @@ function monitorFor(
     client?: ContextMonitorClientHooks;
     compactTimeoutMs?: number;
     isCurrent?: () => boolean;
+    onContextUpdate?: (snapshot: ContextSnapshot) => void;
   } = {},
 ): ContextMonitor {
   upstreams.push(upstream);
@@ -318,6 +320,7 @@ function monitorFor(
     backoffMaxMs: 20,
     compactTimeoutMs: options.compactTimeoutMs ?? 500,
     ...(options.client === undefined ? {} : { client: options.client }),
+    ...(options.onContextUpdate === undefined ? {} : { onContextUpdate: options.onContextUpdate }),
   });
   monitors.push(monitor);
   return monitor;
@@ -371,6 +374,42 @@ describe("ContextMonitor snapshots", () => {
     const snapshot = await monitor.snapshot("s");
     expect(snapshot.used).toBe(520);
     expect(snapshot.percent).toBe(52);
+  });
+
+  it("emits a live snapshot after each step-finish", async () => {
+    const upstream = await fakeUpstream();
+    const updates: ContextSnapshot[] = [];
+    await startMonitor(upstream, {
+      onContextUpdate: (snapshot) => updates.push(snapshot),
+    });
+
+    upstream.emit(messageUpdated("s", "m1", { input: 100 }));
+    upstream.emit(stepFinish("s", "m1", { input: 500, cache: { read: 20 } }));
+    await waitFor(() => updates.some((snapshot) => snapshot.used === 520));
+
+    expect(updates.at(-1)).toMatchObject({
+      sessionID: "s",
+      state: "ready",
+      used: 520,
+      limit: PROVIDER_LIMIT,
+      percent: 52,
+      model: MODEL,
+    });
+  });
+
+  it("emits a snapshot when a pending step-finish gains its model", async () => {
+    const upstream = await fakeUpstream();
+    const updates: ContextSnapshot[] = [];
+    await startMonitor(upstream, {
+      onContextUpdate: (snapshot) => updates.push(snapshot),
+    });
+
+    upstream.emit(stepFinish("s", "m1", { input: 500, cache: { read: 20 } }));
+    await waitFor(() => updates.length > 0);
+    upstream.emit(messageUpdated("s", "m1", { input: 0 }));
+    await waitFor(() => updates.some((snapshot) => snapshot.used === 520));
+
+    expect(updates.at(-1)).toMatchObject({ used: 520, limit: PROVIDER_LIMIT, percent: 52 });
   });
 
   it("hydrates usage and top-level parents from message and session history", async () => {

@@ -677,6 +677,7 @@ describe("chat page", () => {
     expect(response.body).toContain('from "./markdown.js"');
     expect(response.body).toContain("extractToolView");
     expect(response.body).toContain("mountToolView");
+    expect(response.body).toContain('type === "context.updated"');
     expect(response.body).not.toContain("innerHTML");
   });
 

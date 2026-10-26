@@ -455,6 +455,7 @@ export class InstanceManager {
   readonly #options: InstanceManagerOptions;
   readonly #running = new Map<string, Entry>();
   readonly #monitors = new Map<string, MonitorEntry>();
+  readonly #contextListeners = new Map<string, Set<(snapshot: ContextSnapshot) => void>>();
   readonly #locks = new Map<string, Promise<unknown>>();
   readonly #restartClaims = new Map<string, () => void>();
   readonly #pending: PendingRecovery;
@@ -1644,6 +1645,37 @@ export class InstanceManager {
     return this.#running.get(appId)?.endpoint;
   }
 
+  /**
+   * Subscribe to context snapshots emitted after each agent step. The route pushes them over the
+   * browser's existing event stream, so live usage needs no extra request.
+   */
+  subscribeContext(appId: string, listener: (snapshot: ContextSnapshot) => void): () => void {
+    let listeners = this.#contextListeners.get(appId);
+    if (listeners === undefined) {
+      listeners = new Set();
+      this.#contextListeners.set(appId, listeners);
+    }
+    listeners.add(listener);
+    return () => {
+      const current = this.#contextListeners.get(appId);
+      if (current === undefined) return;
+      current.delete(listener);
+      if (current.size === 0) this.#contextListeners.delete(appId);
+    };
+  }
+
+  #emitContext(appId: string, snapshot: ContextSnapshot): void {
+    const listeners = this.#contextListeners.get(appId);
+    if (listeners === undefined) return;
+    for (const listener of [...listeners]) {
+      try {
+        listener(snapshot);
+      } catch {
+        // One closed browser stream must not affect the others or the monitor.
+      }
+    }
+  }
+
   async contextSnapshot(appId: string, sessionId: string): Promise<ContextSnapshot> {
     const monitor = this.#running.has(appId) ? this.#monitors.get(appId)?.monitor : undefined;
     if (monitor === undefined) throw new AgentNotRunningError();
@@ -1688,6 +1720,7 @@ export class InstanceManager {
         this.#pending.observe(app.id, event);
         this.#options.onEvent?.(app, event);
       },
+      onContextUpdate: (snapshot) => this.#emitContext(app.id, snapshot),
     };
     const monitor = this.#options.monitorFactory?.(options) ?? new ContextMonitor(options);
     this.#monitors.set(app.id, { monitor, endpoint: entry.endpoint, generation });

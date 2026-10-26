@@ -461,12 +461,16 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   hysteresis, an ineffective latch, and a failure cooldown. opencode's built-in overflow compaction
   remains enabled. The chat thread meta has a context chip and the context rail has a meter,
   auto-compaction state, and `Compact now`; the coordinator keeps one extra opencode SSE connection
-  per running app. Sessions are hydrated lazily, and a coordinator restart resumes monitors for
-  still-running instances.
+  per running app. After each `step-finish` the monitor fans the refreshed snapshot out to open
+  browser streams as a `context.updated` frame, so the chip and meter move during a busy turn
+  without an extra request per step; the HTTP snapshot remains the initial/fallback source.
+  Sessions are hydrated lazily, and a coordinator restart resumes monitors for still-running
+  instances.
 - The app-level SSE (`GET /api/apps/:app/events`) carries typed frames
   (`stream.ready`, `message.updated`, `message.part.updated`, `message.part.delta`,
-  `message.part.omitted`, `session.status`, `session.error`, `session.activity`, `todo.updated`,
-  question/permission events, `stream.warning`) enveloped with `seq` and `streamID`. `stream.ready` starts at `seq: 0`;
+  `message.part.omitted`, `session.status`, `session.error`, `session.compacted`,
+  `context.updated`, `session.activity`, `todo.updated`, question/permission events,
+  `stream.warning`) enveloped with `seq` and `streamID`. `stream.ready` starts at `seq: 0`;
   the client drops `seq <= lastSeq` per stream, hydrates on a new `streamID`, and schedules one
   reconcile on a gap or `frame_too_large`/`invalid_json`/`delta_too_large` warning. Caps: 8 MiB app
   SSE frame, 256 KiB typed event, 64 KiB delta/text snapshot/tool output/patch, 64 KiB per-file

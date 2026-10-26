@@ -9,6 +9,7 @@ import { GitService } from "../src/git/service.js";
 import type { HttpDeps } from "../src/http/handler.js";
 import { createHttpServer } from "../src/http/server.js";
 import { createPrincipal } from "../src/identity/principals.js";
+import type { ContextSnapshot } from "../src/opencode/context.js";
 import { setEndpointAuthorization } from "../src/opencode/endpoint-auth.js";
 import { MAX_TYPED_EVENT_BYTES } from "../src/opencode/events.js";
 import type { InstanceManager } from "../src/opencode/manager.js";
@@ -159,6 +160,25 @@ function useUpstream(deps: HttpDeps, endpoint: string): void {
   } as unknown as InstanceManager;
 }
 
+function contextSnapshot(sessionID: string): ContextSnapshot {
+  return {
+    sessionID,
+    state: "ready",
+    used: 120000,
+    limit: 200000,
+    percent: 60,
+    model: { providerID: "deepseek", modelID: "deepseek-flash" },
+    status: "busy",
+    topLevel: true,
+    activeChildren: false,
+    pendingTask: false,
+    updatedAt: new Date(0).toISOString(),
+    lastCompactedAt: null,
+    lastError: null,
+    autoCompact: { enabled: false, percent: 80, source: "default", percentSource: "default" },
+  };
+}
+
 interface Probe {
   waitFor(text: string, timeoutMs?: number): Promise<string>;
   text(): string;
@@ -302,6 +322,44 @@ describe("app event stream", () => {
     } finally {
       await stream.close();
     }
+  });
+
+  it("pushes context snapshots over the existing event stream", async () => {
+    const f = await fixture();
+    const upstream = await fakeEventUpstream();
+    let listener: ((snapshot: ContextSnapshot) => void) | undefined;
+    let unsubscribed = false;
+    f.deps.manager = {
+      ensure: async () => upstream.endpoint,
+      policyWarnings: () => [],
+      subscribeContext: (_appId: string, accept: (snapshot: ContextSnapshot) => void) => {
+        listener = accept;
+        return () => {
+          unsubscribed = true;
+        };
+      },
+    } as unknown as InstanceManager;
+
+    const response = await fetch(`${f.base}/api/apps/storefront/events`, {
+      headers: auth(f.token),
+    });
+    const stream = probe(response);
+    try {
+      await stream.waitFor('"type":"stream.ready"');
+      listener?.(contextSnapshot("ses_live"));
+      const text = await stream.waitFor('"type":"context.updated"');
+      const frame = frames(text).find((event) => event.type === "context.updated");
+      expect(frame?.sessionID).toBe("ses_live");
+      expect(frame?.context).toMatchObject({
+        sessionID: "ses_live",
+        used: 120000,
+        limit: 200000,
+        percent: 60,
+      });
+    } finally {
+      await stream.close();
+    }
+    await waitUntil(() => unsubscribed);
   });
 
   it("uses a different streamID for each connection", async () => {

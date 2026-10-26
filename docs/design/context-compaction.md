@@ -1,7 +1,8 @@
 # Design - Session context usage, manual compaction, and auto-compaction
 
 Status: **approved** - design review rounds 1-2 (`oracle`) CHANGES REQUESTED, revision 3, round 3
-PASS (2026-10-21). Implementation permitted.
+PASS (2026-10-21). Revision 4 (2026-10-26, owner-directed): live per-step context updates ride the
+existing app event stream instead of waiting for the next status change. Implementation permitted.
 Scope: coordinator-side per-session context accounting, model context-limit lookup, manual
 compaction, threshold-based auto-compaction, the chat context chip/rail, and the hierarchical
 setting that controls auto-compaction.
@@ -313,21 +314,34 @@ The monitor reads the effective policy through a new narrow
 `SettingsService.contextPolicy(target)` (three keys only, no host-auth/provider/git resolution),
 cached in the monitor for 5 seconds. This avoids a full settings snapshot on every step.
 
-### D8 - SSE adds one typed frame, no context push channel
+### D8 - SSE carries live context frames, no extra request per step
 
 Extend the projector with an optional usage mode:
 `EventProjector({ includeUsage: true })` adds bounded `usage`, `model`, and `summary` to the existing
 `message.updated` event. `createEventStream` accepts the projector/options and the monitor uses
 `APP_STREAM_MAX_FRAME_BYTES` (8 MiB), so it sees the same bounded frames as the app stream. The
-browser route keeps `includeUsage: false`, so its wire payload does not grow.
+browser route keeps `includeUsage: false`, so its per-message payload does not grow.
 
 Add `{ type: "session.compacted"; sessionID }` to `HanseEvent` and the projector for all consumers.
 The client uses it to refresh the context snapshot and show a toast only when the event belongs to the
 selected session; a `session.error` for the selected session also triggers a context refresh so a
 failed compaction surfaces its fixed `lastError` even when the session never leaves idle.
 
-Context values themselves are fetched over HTTP; there is no new push channel and no per-token
-event. The client refreshes the context:
+**Live step updates (revision 4).** After the tracker applies a `step-finish`, the monitor emits the
+refreshed `ContextSnapshot` through `onContextUpdate`; it also emits when a usage-changing assistant
+`message.updated` completes a step-finish that arrived before its model metadata, so the first step
+is not lost. `InstanceManager` fans that snapshot out to every `subscribeContext` listener; each open
+browser app stream writes one `{ type: "context.updated"; sessionID; context }` frame on its existing
+SSE connection. The frame is the same authoritative tracker snapshot used by the HTTP route
+(used/limit/percent/model/state/compaction fields), contains no message text, and adds no provider
+or HTTP request per step. If the model limit is not known yet, the monitor resolves it once before
+the first frame; until then the client shows tokens without a percentage.
+
+The frame is emitted only when the session is observed by the monitor. With monitors disabled, or
+when a browser attaches between steps, the HTTP snapshot remains the source. The client caches each
+frame per session and renders it only when it belongs to the selected session; an in-flight HTTP
+response is discarded when a newer pushed frame has already advanced that session's sequence. The
+HTTP refresh list stays as the initial and fallback path:
 
 - after session selection/hydration and after creating a session;
 - after `stream.ready`, including one retry when the first GET returned `503 agent_not_running`;

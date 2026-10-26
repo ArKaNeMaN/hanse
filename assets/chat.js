@@ -4556,6 +4556,30 @@ function main() {
     window.location.assign(`/login?next=${encodeURIComponent(next)}`);
   }
 
+  function applyContextSnapshotStatus(snapshot, target) {
+    const snapshotStatus = typeof snapshot.status === "string" ? snapshot.status : undefined;
+    const graceActive = (suppressAbortUntil.get(target) ?? 0) > Date.now();
+    if (
+      snapshotStatus === "idle" &&
+      (abortPending === target || (graceActive && currentStatusType() !== "idle"))
+    ) {
+      if (abortPending === target) abortPending = null;
+      store.agentStatus = { type: "idle" };
+      stopAbortSettlePoll();
+      settleSessionIdle();
+      clearSessionPrompts(target);
+      scheduleFlush();
+      hydrate().catch(() => {});
+      return;
+    }
+    if (store.agentStatus !== null && store.agentStatus !== undefined) return;
+    if (snapshotStatus === "busy" || snapshotStatus === "retry" || snapshotStatus === "idle") {
+      store.agentStatus = { type: snapshotStatus };
+      recomputeQueue();
+      updateComposerAction();
+    }
+  }
+
   async function refreshContext(id, options) {
     const settings = options || {};
     const target = typeof id === "string" && id.length > 0 ? id : sessionId;
@@ -4575,30 +4599,7 @@ function main() {
       }
       contextBySession.set(target, snapshot);
       renderContext(snapshot);
-      const snapshotStatus = typeof snapshot.status === "string" ? snapshot.status : undefined;
-      const graceActive = (suppressAbortUntil.get(target) ?? 0) > Date.now();
-      if (
-        snapshotStatus === "idle" &&
-        (abortPending === target || (graceActive && currentStatusType() !== "idle"))
-      ) {
-        if (abortPending === target) abortPending = null;
-        store.agentStatus = { type: "idle" };
-        stopAbortSettlePoll();
-        settleSessionIdle();
-        clearSessionPrompts(target);
-        scheduleFlush();
-        hydrate().catch(() => {});
-      } else if (store.agentStatus === null || store.agentStatus === undefined) {
-        if (
-          snapshotStatus === "busy" ||
-          snapshotStatus === "retry" ||
-          snapshotStatus === "idle"
-        ) {
-          store.agentStatus = { type: snapshotStatus };
-          recomputeQueue();
-          updateComposerAction();
-        }
-      }
+      applyContextSnapshotStatus(snapshot, target);
     } catch (error) {
       if (target !== sessionId || epoch !== contextEpoch) return;
       if (contextSeqBySession.get(target) !== sequence) return;
@@ -8512,6 +8513,23 @@ function main() {
       showStreamNotice(warning.message, { kind: "warning" });
       announce(warning.message);
       scheduleReconcile(RECONCILE_MS);
+      return;
+    }
+
+    if (type === "context.updated") {
+      const snapshot = payload.context;
+      if (snapshot === null || typeof snapshot !== "object") return;
+      if (typeof snapshot.sessionID !== "string" || snapshot.sessionID.length === 0) return;
+      if (typeof payload.sessionID === "string" && payload.sessionID !== snapshot.sessionID) return;
+      contextSeqBySession.set(
+        snapshot.sessionID,
+        (contextSeqBySession.get(snapshot.sessionID) || 0) + 1,
+      );
+      contextBySession.set(snapshot.sessionID, snapshot);
+      if (snapshot.sessionID === sessionId) {
+        renderContext(snapshot);
+        applyContextSnapshotStatus(snapshot, snapshot.sessionID);
+      }
       return;
     }
 

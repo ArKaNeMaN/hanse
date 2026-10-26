@@ -1644,6 +1644,33 @@ describe("InstanceManager lifecycle", () => {
     expect(monitors.monitors).toHaveLength(0);
   });
 
+  it("fans out monitor context updates to current subscribers", async () => {
+    const runtime = new FakeAgentRuntime(() => "http://127.0.0.1:4230");
+    const settings = fakeSettings({ context: {} });
+    const profiles = fakeProfiles();
+    const monitors = fakeMonitorFactory();
+    const { manager } = fixture(
+      runtime,
+      settings,
+      profiles.source,
+      undefined,
+      undefined,
+      undefined,
+      { monitorFactory: monitors.factory },
+    );
+    await manager.ensure(APP);
+
+    const seen: ContextSnapshot[] = [];
+    const unsubscribe = manager.subscribeContext(APP.id, (snapshot) => seen.push(snapshot));
+    const monitor = monitors.monitors.at(-1);
+    monitor?.options.onContextUpdate?.(snapshotStub("ses_live"));
+    expect(seen.map((snapshot) => snapshot.sessionID)).toEqual(["ses_live"]);
+
+    unsubscribe();
+    monitor?.options.onContextUpdate?.(snapshotStub("ses_after"));
+    expect(seen.map((snapshot) => snapshot.sessionID)).toEqual(["ses_live"]);
+  });
+
   it("relaunches when the runtime status is not running", async () => {
     const runtime = new FakeAgentRuntime();
     const { manager } = fixture(runtime, fakeSettings(), fakeProfiles().source);

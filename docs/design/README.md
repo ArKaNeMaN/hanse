@@ -42,8 +42,9 @@
   Status: implemented; automated gates green; browser QA blocked by host Chromium libs; device QA
   pending; stream recovery follow-up in journal 0030.
 - [Context usage and compaction](./context-compaction.md) - server-side per-session context
-  accounting, provider context limits, manual compaction, and threshold-based auto-compaction.
-  Status: approved (oracle PASS).
+  accounting, provider context limits, manual compaction, threshold-based auto-compaction, and
+  per-step live snapshots on the app event stream.
+  Status: approved (oracle PASS); revision 4 implemented (journal 0034).
 - [Chat attachments and message drafts](./attachments-and-drafts.md) - per-session attachment
   storage, inline image/video/PDF delivery gated by model capabilities, file-only paths for the
   agent, history/SSE base64 projection, server-side message drafts, eager empty-session creation,

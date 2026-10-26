@@ -2,6 +2,7 @@ import { appStreamBudget, type RawStreamBudget } from "../attachments/budget.js"
 import type { EventAttachmentResolver } from "../attachments/projection.js";
 import type { AttachmentView } from "../attachments/types.js";
 import type { HandoffEventResolver, HandoffMessageMeta } from "../coordinator/handoff-messages.js";
+import type { ContextSnapshot } from "./context.js";
 import {
   MAX_HEADER_LENGTH,
   MAX_LABEL_LENGTH,
@@ -215,6 +216,7 @@ export type HanseEvent =
       message: string;
     }
   | { type: "session.compacted"; sessionID: string }
+  | { type: "context.updated"; sessionID: string; context: ContextSnapshot }
   | { type: "session.activity"; sessionID: string; cause?: HanseActivityCause }
   | {
       type: "stream.warning";
