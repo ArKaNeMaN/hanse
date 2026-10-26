@@ -48,4 +48,30 @@ describe("app schema", () => {
     const result = safeParseApp(loadFixture("app.invalid.yaml"));
     expect(result.success).toBe(false);
   });
+
+  it("keeps build.base optional with no implicit default", () => {
+    const withoutBuild = parseApp({ name: "web" });
+    expect(withoutBuild.build).toBeUndefined();
+
+    const withBuild = parseApp({ name: "web", build: { dockerfile: ".hanse/Dockerfile" } });
+    expect(withBuild.build?.dockerfile).toBe(".hanse/Dockerfile");
+    expect(withBuild.build?.base).toBeUndefined();
+  });
+
+  it("accepts only default or base for build.base", () => {
+    expect(parseApp({ name: "web", build: { base: "default" } }).build?.base).toBe("default");
+    expect(parseApp({ name: "web", build: { base: "base" } }).build?.base).toBe("base");
+    for (const base of ["explicit", "unknown", "", true]) {
+      expect(safeParseApp({ name: "web", build: { base } }).success).toBe(false);
+    }
+  });
+
+  it("keeps dockerfile and args semantics with an explicit base", () => {
+    const app = parseApp({
+      name: "web",
+      build: { base: "base", args: { NODE_VERSION: "22" } },
+    });
+    expect(app.build?.dockerfile).toBe("Dockerfile");
+    expect(app.build?.args).toEqual({ NODE_VERSION: "22" });
+  });
 });

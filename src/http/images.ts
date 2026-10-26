@@ -344,7 +344,14 @@ export async function handleImages(deps: HttpDeps, request: HttpRequest): Promis
     if (logsMatch !== null) {
       return json(200, await deps.images.logs(found.app.id));
     }
-    return json(200, await deps.images.status(found.app.id));
+    // A persisted stopped row can have moved outside the coordinator (started or stopped by the
+    // runtime); refresh it once before deriving the shared view. The probe itself never mutates a
+    // running app and is a no-op for non-stopped rows.
+    if (deps.manager !== undefined) {
+      await deps.manager.probeStatus(found.app.id);
+    }
+    const refresh = request.query?.refresh === "1" || request.query?.refresh === "true";
+    return json(200, await deps.images.status(found.app.id, refresh ? { refresh: true } : {}));
   } catch (error) {
     if (error instanceof ImageServiceError) {
       return failure(error);

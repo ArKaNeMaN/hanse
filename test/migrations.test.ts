@@ -54,14 +54,14 @@ function insertProjectAndApp(db: ReturnType<typeof openDatabase>): void {
 describe("migration v6 app-images", () => {
   it("applies fresh migrations and defaults existing app inserts to missing", () => {
     const db = openDatabase(":memory:");
-    expect(runMigrations(db)).toBe(17);
+    expect(runMigrations(db)).toBe(18);
     expect(runMigrations(db)).toBe(0);
 
     const versions = db.prepare("SELECT version FROM schema_migrations ORDER BY version").all() as {
       version: number;
     }[];
     expect(versions.map((row) => row.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
     ]);
     const secretTables = (
       db
@@ -94,6 +94,18 @@ describe("migration v6 app-images", () => {
     for (const column of IMAGE_COLUMNS) {
       expect(columns).toContain(column);
     }
+    for (const column of [
+      "build_configured",
+      "image_base_ref",
+      "image_base_kind",
+      "image_hash_version",
+      "image_build_id",
+      "image_build_ref",
+      "image_build_started_at",
+      "image_build_rejected_ref",
+    ]) {
+      expect(columns).toContain(column);
+    }
     expect(columns).toContain("deleting");
     expect(projectColumns(db)).toContain("deleting");
     expect(
@@ -111,6 +123,9 @@ describe("migration v6 app-images", () => {
       "base_digest",
       "built_at",
       "created_at",
+      "base_ref",
+      "base_kind",
+      "hash_version",
     ]);
     const instanceColumns = (
       db.prepare("PRAGMA table_info(instances)").all() as Array<{ name: string }>
@@ -118,6 +133,7 @@ describe("migration v6 app-images", () => {
     expect(instanceColumns).toContain("image_ref");
     expect(instanceColumns).toContain("applied_settings_hash");
     expect(instanceColumns).toContain("applied_profile");
+    expect(instanceColumns).toContain("applied_image_id");
 
     const skillColumns = (
       db.prepare("PRAGMA table_info(skills)").all() as Array<{ name: string }>
@@ -202,7 +218,7 @@ describe("migration v6 app-images", () => {
     insertProjectAndApp(db);
     expect(appColumns(db)).not.toContain("image_status");
 
-    expect(runMigrations(db)).toBe(12);
+    expect(runMigrations(db)).toBe(13);
 
     const row = db.prepare("SELECT image_status, image_error FROM apps WHERE id = 'a1'").get() as {
       image_status: string;
@@ -230,7 +246,7 @@ describe("migration v6 app-images", () => {
       "INSERT INTO instances (id, app_id, state, runtime_state, updated_at) VALUES ('a1','a1','running','running',?)",
     ).run(now);
 
-    expect(runMigrations(db)).toBe(8);
+    expect(runMigrations(db)).toBe(9);
 
     const row = db
       .prepare(
@@ -262,7 +278,7 @@ describe("migration v6 app-images", () => {
     expect(appColumns(db)).not.toContain("deleting");
     expect(projectColumns(db)).not.toContain("deleting");
 
-    expect(runMigrations(db)).toBe(7);
+    expect(runMigrations(db)).toBe(8);
 
     const app = db.prepare("SELECT deleting FROM apps WHERE id = 'a1'").get() as {
       deleting: number;
@@ -293,7 +309,7 @@ describe("migration v6 app-images", () => {
     insertProjectAndApp(db);
     expect(() => db.prepare("SELECT 1 FROM skills").get()).toThrow();
 
-    expect(runMigrations(db)).toBe(6);
+    expect(runMigrations(db)).toBe(7);
     expect(runMigrations(db)).toBe(0);
 
     const columns = (db.prepare("PRAGMA table_info(skills)").all() as Array<{ name: string }>).map(
@@ -338,7 +354,7 @@ describe("migration v6 app-images", () => {
     );
     db.prepare(
       "INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?, ?, ?, ?)",
-    ).run(18, "future", "future-checksum", now);
+    ).run(19, "future", "future-checksum", now);
 
     expect(() => runMigrations(db)).toThrowError(SchemaTooNewError);
     try {
@@ -346,11 +362,11 @@ describe("migration v6 app-images", () => {
     } catch (error) {
       expect(error).toMatchObject({
         code: "schema_too_new",
-        applied: 18,
-        known: 17,
+        applied: 19,
+        known: 18,
       });
+      expect((error as Error).message).toContain("19");
       expect((error as Error).message).toContain("18");
-      expect((error as Error).message).toContain("17");
     }
     expect(() => db.prepare("SELECT 1 FROM skills").get()).toThrow();
     db.close();
@@ -369,7 +385,7 @@ describe("migration v6 app-images", () => {
       db.exec(migration.sql);
       record.run(migration.version, migration.name, migrationChecksum(migration.sql), now);
     }
-    record.run(18, "future", "future-checksum", now);
+    record.run(19, "future", "future-checksum", now);
 
     expect(() => runMigrations(db)).toThrowError(SchemaTooNewError);
     expect(() => db.prepare("SELECT 1 FROM skills").get()).toThrow();
@@ -394,7 +410,7 @@ describe("migration v6 app-images", () => {
     try {
       runMigrations(db);
     } catch (error) {
-      expect(error).toMatchObject({ code: "unknown_migration", version: 0, knownMax: 17 });
+      expect(error).toMatchObject({ code: "unknown_migration", version: 0, knownMax: 18 });
     }
     db.close();
   });
@@ -441,7 +457,7 @@ describe("migration v6 app-images", () => {
       const reopened = openDatabase(file);
       const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
       try {
-        expect(runMigrations(reopened)).toBe(5);
+        expect(runMigrations(reopened)).toBe(6);
         expect(runMigrations(reopened)).toBe(0);
         expect(warn).not.toHaveBeenCalled();
       } finally {
@@ -450,7 +466,7 @@ describe("migration v6 app-images", () => {
       const max = reopened
         .prepare("SELECT MAX(version) AS version FROM schema_migrations")
         .get() as { version: number };
-      expect(max.version).toBe(17);
+      expect(max.version).toBe(18);
       const skill = reopened
         .prepare("SELECT license, compatibility, metadata_json FROM skills WHERE name = 'review'")
         .get() as { license: string | null; compatibility: string | null; metadata_json: string };
@@ -513,7 +529,7 @@ describe("migration v6 app-images", () => {
     const file = path.join(dir, "coordinator.db");
     try {
       const first = openDatabase(file);
-      expect(runMigrations(first)).toBe(17);
+      expect(runMigrations(first)).toBe(18);
       first.close();
 
       const reopened = openDatabase(file);
@@ -527,7 +543,7 @@ describe("migration v6 app-images", () => {
       const max = reopened
         .prepare("SELECT MAX(version) AS version FROM schema_migrations")
         .get() as { version: number };
-      expect(max.version).toBe(17);
+      expect(max.version).toBe(18);
       reopened.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -557,7 +573,7 @@ function namedIndexes(db: ReturnType<typeof openDatabase>): string[] {
 describe("migration v15 chat drafts and pending sends", () => {
   it("applies from an empty database with tables, indexes, defaults, and constraints", () => {
     const db = openDatabase(":memory:");
-    expect(runMigrations(db)).toBe(17);
+    expect(runMigrations(db)).toBe(18);
     expect(runMigrations(db)).toBe(0);
 
     const tables = (
@@ -667,13 +683,13 @@ describe("migration v15 chat drafts and pending sends", () => {
 
     expect(() => db.prepare("SELECT 1 FROM message_drafts").get()).toThrow();
 
-    expect(runMigrations(db)).toBe(3);
+    expect(runMigrations(db)).toBe(4);
     expect(runMigrations(db)).toBe(0);
 
     const max = db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as {
       version: number;
     };
-    expect(max.version).toBe(17);
+    expect(max.version).toBe(18);
     expect(namedIndexes(db)).toEqual(["pending_sends_session_state", "session_state_activity"]);
     expect(db.prepare("SELECT id FROM handoffs WHERE id = 'h1'").get()).toEqual({ id: "h1" });
     expect(db.prepare("SELECT id FROM apps WHERE id = 'a1'").get()).toEqual({ id: "a1" });
@@ -707,7 +723,7 @@ function indexColumns(db: ReturnType<typeof openDatabase>, name: string): string
 describe("migration v16 chat attachments and deliveries", () => {
   it("applies from an empty database with tables, columns, and indexes", () => {
     const db = openDatabase(":memory:");
-    expect(runMigrations(db)).toBe(17);
+    expect(runMigrations(db)).toBe(18);
     expect(runMigrations(db)).toBe(0);
 
     const tables = (
@@ -814,13 +830,13 @@ describe("migration v16 chat attachments and deliveries", () => {
     ).run(now);
     expect(() => db.prepare("SELECT 1 FROM app_attachments").get()).toThrow();
 
-    expect(runMigrations(db)).toBe(2);
+    expect(runMigrations(db)).toBe(3);
     expect(runMigrations(db)).toBe(0);
 
     const max = db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as {
       version: number;
     };
-    expect(max.version).toBe(17);
+    expect(max.version).toBe(18);
     expect(db.prepare("SELECT id FROM apps WHERE id = 'a1'").get()).toEqual({ id: "a1" });
     expect(db.prepare("SELECT text FROM message_drafts WHERE app_id = 'a1'").get()).toEqual({
       text: "draft",
@@ -986,6 +1002,162 @@ describe("migration v16 chat attachments and deliveries", () => {
     expect(db.prepare("SELECT COUNT(*) AS count FROM attachment_deliveries").get()).toEqual({
       count: 0,
     });
+    db.close();
+  });
+});
+
+describe("migration v18 agent image validity", () => {
+  it("adds durable build identity columns with defaults and constraints", () => {
+    const db = openDatabase(":memory:");
+    expect(runMigrations(db)).toBe(18);
+    insertProjectAndApp(db);
+
+    const app = db
+      .prepare(
+        `SELECT build_configured, image_base_ref, image_base_kind, image_hash_version,
+                image_build_id, image_build_ref, image_build_started_at, image_build_rejected_ref
+         FROM apps WHERE id = 'a1'`,
+      )
+      .get();
+    expect(app).toEqual({
+      build_configured: 0,
+      image_base_ref: null,
+      image_base_kind: null,
+      image_hash_version: 1,
+      image_build_id: null,
+      image_build_ref: null,
+      image_build_started_at: null,
+      image_build_rejected_ref: null,
+    });
+
+    db.prepare(
+      "INSERT INTO app_image_versions (app_id, image_ref, created_at) VALUES ('a1', 'ref', ?)",
+    ).run(now);
+    expect(
+      db
+        .prepare(
+          "SELECT base_ref, base_kind, hash_version FROM app_image_versions WHERE app_id = 'a1'",
+        )
+        .get(),
+    ).toEqual({ base_ref: null, base_kind: null, hash_version: 1 });
+
+    db.prepare(
+      "INSERT INTO instances (id, app_id, state, updated_at) VALUES ('i1', 'a1', 'stopped', ?)",
+    ).run(now);
+    expect(db.prepare("SELECT applied_image_id FROM instances WHERE id = 'i1'").get()).toEqual({
+      applied_image_id: null,
+    });
+
+    for (const value of [0, 1]) {
+      db.prepare("UPDATE apps SET build_configured = ? WHERE id = 'a1'").run(value);
+    }
+    for (const value of [2, -1]) {
+      expect(() =>
+        db.prepare("UPDATE apps SET build_configured = ? WHERE id = 'a1'").run(value),
+      ).toThrow();
+    }
+
+    for (const kind of [null, "default", "base", "explicit", "unknown"]) {
+      db.prepare("UPDATE apps SET image_base_kind = ? WHERE id = 'a1'").run(kind);
+      db.prepare("UPDATE app_image_versions SET base_kind = ? WHERE app_id = 'a1'").run(kind);
+    }
+    expect(() =>
+      db.prepare("UPDATE apps SET image_base_kind = 'bogus' WHERE id = 'a1'").run(),
+    ).toThrow();
+    expect(() =>
+      db.prepare("UPDATE app_image_versions SET base_kind = 'bogus' WHERE app_id = 'a1'").run(),
+    ).toThrow();
+
+    db.prepare("UPDATE apps SET image_hash_version = 2 WHERE id = 'a1'").run();
+    db.prepare("UPDATE app_image_versions SET hash_version = 2 WHERE app_id = 'a1'").run();
+    expect(() =>
+      db.prepare("UPDATE apps SET image_hash_version = 0 WHERE id = 'a1'").run(),
+    ).toThrow();
+    expect(() =>
+      db.prepare("UPDATE app_image_versions SET hash_version = 0 WHERE app_id = 'a1'").run(),
+    ).toThrow();
+
+    db.close();
+  });
+
+  it("upgrades a populated v17 database without losing existing rows", () => {
+    const db = openDatabase(":memory:");
+    db.exec(
+      "CREATE TABLE schema_migrations (" +
+        "version INTEGER PRIMARY KEY, name TEXT NOT NULL, checksum TEXT NOT NULL, applied_at TEXT NOT NULL)",
+    );
+    const record = db.prepare(
+      "INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?, ?, ?, ?)",
+    );
+    for (const migration of MIGRATIONS.filter((candidate) => candidate.version <= 17)) {
+      db.exec(migration.sql);
+      record.run(migration.version, migration.name, migrationChecksum(migration.sql), now);
+    }
+    insertProjectAndApp(db);
+    db.prepare(
+      `UPDATE apps SET image_ref = 'old-ref', image_status = 'ready', image_hash = 'old-hash',
+         image_base_digest = 'sha256:old', image_built_at = ? WHERE id = 'a1'`,
+    ).run(now);
+    db.prepare(
+      `INSERT INTO app_image_versions
+         (app_id, image_ref, image_id, spec_hash, base_digest, built_at, created_at)
+       VALUES ('a1', 'old-ref', 'sha256:old', 'old-hash', 'sha256:old', ?, ?)`,
+    ).run(now, now);
+    db.prepare(
+      "INSERT INTO instances (id, app_id, state, image_ref, updated_at) VALUES ('i1', 'a1', 'running', 'old-ref', ?)",
+    ).run(now);
+    expect(appColumns(db)).not.toContain("build_configured");
+    expect(tableColumns(db, "app_image_versions")).not.toContain("hash_version");
+
+    expect(runMigrations(db)).toBe(1);
+    expect(runMigrations(db)).toBe(0);
+
+    expect(db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get()).toEqual({
+      version: 18,
+    });
+    expect(
+      db
+        .prepare(
+          `SELECT image_ref, image_status, image_hash, image_base_digest, image_built_at,
+                  build_configured, image_base_ref, image_base_kind, image_hash_version,
+                  image_build_id, image_build_ref, image_build_started_at, image_build_rejected_ref
+           FROM apps WHERE id = 'a1'`,
+        )
+        .get(),
+    ).toEqual({
+      image_ref: "old-ref",
+      image_status: "ready",
+      image_hash: "old-hash",
+      image_base_digest: "sha256:old",
+      image_built_at: now,
+      build_configured: 0,
+      image_base_ref: null,
+      image_base_kind: null,
+      image_hash_version: 1,
+      image_build_id: null,
+      image_build_ref: null,
+      image_build_started_at: null,
+      image_build_rejected_ref: null,
+    });
+    expect(
+      db
+        .prepare(
+          `SELECT image_ref, image_id, spec_hash, base_digest, base_ref, base_kind, hash_version
+           FROM app_image_versions WHERE app_id = 'a1'`,
+        )
+        .get(),
+    ).toEqual({
+      image_ref: "old-ref",
+      image_id: "sha256:old",
+      spec_hash: "old-hash",
+      base_digest: "sha256:old",
+      base_ref: null,
+      base_kind: null,
+      hash_version: 1,
+    });
+    expect(
+      db.prepare("SELECT image_ref, applied_image_id FROM instances WHERE id = 'i1'").get(),
+    ).toEqual({ image_ref: "old-ref", applied_image_id: null });
     db.close();
   });
 });

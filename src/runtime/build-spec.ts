@@ -3,26 +3,60 @@ import { readFileSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import { ConfigError } from "../config/load.js";
 import { isInside } from "./app-path.js";
+import type { BaseImageKind } from "./base-image.js";
 
 /** Fallback image used when an app has no image build declaration. */
 export const DEFAULT_AGENT_IMAGE_REFERENCE = "agent-default";
 
+/** Current build-spec hash version. */
+export const BUILD_SPEC_HASH_VERSION = 2;
+
 export interface BuildSpecInput {
   /** Raw Dockerfile bytes; line endings and whitespace are part of the spec. */
   dockerfile: string | Uint8Array;
-  /** Default/base image reference (or `reference@digest`) the build starts from. */
+  /** Build arguments; order never affects the hash. */
+  buildArgs?: Record<string, string>;
+  /** Resolved base kind. The base reference/tag/digest is deliberately excluded. */
+  baseKind: BaseImageKind;
+}
+
+export interface LegacyBuildSpecInput {
+  /** Raw Dockerfile bytes. */
+  dockerfile: string | Uint8Array;
+  /** Historical default/base image reference (or `reference@digest`). */
   defaultImage: string;
   /** Build arguments; order never affects the hash. */
   buildArgs?: Record<string, string>;
 }
 
 /**
- * Stable SHA-256 of the app image build spec.
+ * Stable SHA-256 (version 2) of the app image build spec.
  *
- * Only the Dockerfile bytes, the default image reference/digest, and the sorted build arguments
- * participate. Application source files are mounted at runtime and never change this hash.
+ * Only the Dockerfile bytes, the sorted build arguments, and the resolved base kind participate.
+ * Base reference/tag/digest changes never alter this hash; base drift is compared separately by
+ * manifest digest. Application source files are mounted at runtime and never change this hash.
  */
 export function computeBuildSpecHash(input: BuildSpecInput): string {
+  const hash = createHash("sha256");
+  hash.update(`hanse-app-build-spec-v${BUILD_SPEC_HASH_VERSION}\n`);
+  appendField(hash, "dockerfile", toBytes(input.dockerfile));
+  appendField(hash, "base-kind", Buffer.from(input.baseKind, "utf8"));
+  const args = Object.entries(input.buildArgs ?? {}).sort(([left], [right]) =>
+    left < right ? -1 : left > right ? 1 : 0,
+  );
+  for (const [key, value] of args) {
+    appendField(hash, `build-arg:${key}`, Buffer.from(value, "utf8"));
+  }
+  return hash.digest("hex");
+}
+
+/**
+ * Recompute a legacy version-1 hash for rows whose historical full reference is reconstructable.
+ *
+ * Never compare this value with a version-2 hash. Callers must resolve the legacy reference first
+ * (see `legacyV1BaseReference`); a digest-only legacy value has no exact reconstruction.
+ */
+export function computeLegacyBuildSpecHashV1(input: LegacyBuildSpecInput): string {
   const hash = createHash("sha256");
   hash.update("hanse-app-build-spec-v1\n");
   appendField(hash, "dockerfile", toBytes(input.dockerfile));

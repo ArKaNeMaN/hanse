@@ -24,6 +24,12 @@ import {
   handoffBodyFromText,
   handoffFromInfo,
   handoffNoteFromText,
+  imageActionLabel,
+  imageBuildAttach,
+  imageCardFromView,
+  imageGateFromView,
+  imagePollDelay,
+  imageWarningFromView,
   normalizeHandoffMeta,
   normalizeToolName,
   parseMarkdownTable,
@@ -2634,5 +2640,294 @@ describe("hanse tool rendering helpers", () => {
     );
     expect(toolSummaryText("hanse_web_search", { query: "nftables" }, null)).toBe("nftables");
     expect(toolSummaryText("bash", { command: "ls" }, null)).toBeNull();
+  });
+});
+
+describe("agent image presentation", () => {
+  interface ImageViewInit {
+    buildConfigured?: boolean;
+    state?: string;
+    running?: boolean;
+    usableImageRef?: string | null;
+    targetImageId?: string | null;
+    imageBuildId?: string | null;
+    error?: string | null;
+  }
+
+  function imageView(init: ImageViewInit = {}) {
+    return {
+      buildConfigured: true,
+      state: "not_ready",
+      running: false,
+      usableImageRef: null,
+      targetImageId: null,
+      imageBuildId: null,
+      error: null,
+      ...init,
+    };
+  }
+
+  const STATES = [
+    "current",
+    "restart_required",
+    "rebuild_required",
+    "building",
+    "build_error",
+    "not_ready",
+    "unknown",
+  ];
+  const BLOCKED_STATES = new Set(["not_ready", "building", "build_error"]);
+  const BUILD_ACTION_STATES = new Set(["not_ready", "build_error"]);
+
+  describe("imageGateFromView", () => {
+    const cases = STATES.flatMap((state) => [
+      {
+        state,
+        running: false,
+        blocked: BLOCKED_STATES.has(state),
+        action: BUILD_ACTION_STATES.has(state) ? "build_start" : "none",
+      },
+      { state, running: true, blocked: false, action: "none" },
+    ]);
+
+    it.each(cases)(
+      "derives blocked=$blocked for $state when running=$running",
+      ({ state, running, blocked, action }) => {
+        expect(imageGateFromView(imageView({ state, running }))).toEqual({
+          blocked,
+          state,
+          action,
+        });
+      },
+    );
+
+    it.each(STATES)("does not block %s when a usable image exists", (state) => {
+      expect(imageGateFromView(imageView({ state, usableImageRef: "ref" })).blocked).toBe(false);
+    });
+
+    it("never blocks a default-image app", () => {
+      for (const state of STATES) {
+        expect(imageGateFromView(imageView({ state, buildConfigured: false })).blocked).toBe(false);
+      }
+    });
+
+    it("treats a missing running flag as stopped", () => {
+      const view = { ...imageView({ state: "not_ready" }), running: undefined };
+      expect(imageGateFromView(view)).toEqual({
+        blocked: true,
+        state: "not_ready",
+        action: "build_start",
+      });
+    });
+
+    it("degrades a malformed view to unknown and unblocked", () => {
+      expect(imageGateFromView(null)).toEqual({ blocked: false, state: "unknown", action: "none" });
+      expect(imageGateFromView({})).toEqual({ blocked: false, state: "unknown", action: "none" });
+    });
+  });
+
+  describe("imageCardFromView", () => {
+    it("describes a stopped not-ready app", () => {
+      expect(imageCardFromView(imageView({ state: "not_ready" }))).toEqual({
+        title: "Image not built",
+        body: "Build the image to start the agent.",
+        action: "build_start",
+        actionLabel: "Build and start",
+      });
+    });
+
+    it("describes a stopped build in progress without an action", () => {
+      const card = imageCardFromView(imageView({ state: "building" }));
+      expect(card).toMatchObject({ title: "Building image", action: "none", actionLabel: "" });
+      expect(card?.body).toContain("built");
+    });
+
+    it("uses the bounded build error and a retry action", () => {
+      expect(imageCardFromView(imageView({ state: "build_error", error: "disk full" }))).toEqual({
+        title: "Image build failed",
+        body: "disk full",
+        action: "build_start",
+        actionLabel: "Retry build and start",
+      });
+    });
+
+    it("falls back for a missing or blank build error", () => {
+      const fallback = "The image build failed. Retry to build again.";
+      expect(imageCardFromView(imageView({ state: "build_error", error: null }))?.body).toBe(
+        fallback,
+      );
+      expect(imageCardFromView(imageView({ state: "build_error", error: "   " }))?.body).toBe(
+        fallback,
+      );
+    });
+
+    it("bounds a long build error", () => {
+      const card = imageCardFromView(imageView({ state: "build_error", error: "x".repeat(900) }));
+      expect(card?.body).toHaveLength(400);
+    });
+
+    it.each(["current", "restart_required", "rebuild_required", "unknown"])(
+      "returns null for an unblocked %s app",
+      (state) => {
+        expect(imageCardFromView(imageView({ state, running: false }))).toBeNull();
+      },
+    );
+
+    it("returns null while the app is running even without a usable image", () => {
+      for (const state of BLOCKED_STATES) {
+        expect(imageCardFromView(imageView({ state, running: true }))).toBeNull();
+      }
+    });
+
+    it("returns null when a usable image remains", () => {
+      for (const state of BLOCKED_STATES) {
+        expect(imageCardFromView(imageView({ state, usableImageRef: "ref" }))).toBeNull();
+      }
+    });
+  });
+
+  describe("imageWarningFromView", () => {
+    const warnings = [
+      {
+        state: "restart_required",
+        expected: {
+          tone: "warning",
+          title: "Image updated",
+          body: "Restart the agent to use the new image.",
+          action: "restart",
+        },
+      },
+      {
+        state: "rebuild_required",
+        expected: {
+          tone: "warning",
+          title: "Image out of date",
+          body: "Rebuild and restart the agent to use the new image.",
+          action: "rebuild_restart",
+        },
+      },
+      {
+        state: "not_ready",
+        expected: {
+          tone: "error",
+          title: "Image missing",
+          body: "Rebuild the image and restart the agent.",
+          action: "rebuild_restart",
+        },
+      },
+      {
+        state: "build_error",
+        expected: {
+          tone: "error",
+          title: "Image build failed",
+          body: "The last build failed. Retry to rebuild and restart the agent.",
+          action: "rebuild_restart",
+        },
+      },
+      {
+        state: "building",
+        expected: {
+          tone: "info",
+          title: "Building image",
+          body: "The running agent keeps its current image.",
+          action: "none",
+        },
+      },
+    ];
+
+    it.each(warnings)("selects the running $state banner", ({ state, expected }) => {
+      expect(imageWarningFromView(imageView({ state, running: true }))).toEqual(expected);
+    });
+
+    it.each(STATES)("shows nothing for a stopped build-configured %s app", (state) => {
+      expect(imageWarningFromView(imageView({ state, running: false }))).toBeNull();
+    });
+
+    it.each(["current", "unknown"])("shows nothing for a running %s app", (state) => {
+      expect(imageWarningFromView(imageView({ state, running: true }))).toBeNull();
+    });
+
+    it("shows the default-image unavailable banner without a build action", () => {
+      expect(
+        imageWarningFromView(
+          imageView({ buildConfigured: false, state: "unknown", targetImageId: null }),
+        ),
+      ).toEqual({
+        tone: "error",
+        title: "Default image unavailable",
+        body: "Pull the default agent image and restart the coordinator.",
+        action: "none",
+      });
+    });
+
+    it("keeps the restart warning for a running default app", () => {
+      expect(
+        imageWarningFromView(
+          imageView({ buildConfigured: false, state: "restart_required", running: true }),
+        ),
+      ).toMatchObject({ title: "Image updated", action: "restart" });
+    });
+
+    it("does not report the default image unavailable when a target is known", () => {
+      expect(
+        imageWarningFromView(
+          imageView({ buildConfigured: false, state: "unknown", targetImageId: "sha256:abc" }),
+        ),
+      ).toBeNull();
+    });
+
+    it("returns null for a malformed view", () => {
+      expect(imageWarningFromView(null)).toBeNull();
+      expect(imageWarningFromView({})).toBeNull();
+    });
+  });
+
+  describe("imageBuildAttach", () => {
+    it.each([
+      { imageBuildId: "build-1", state: "building", expected: true },
+      { imageBuildId: "build-1", state: "build_error", expected: false },
+      { imageBuildId: null, state: "building", expected: false },
+      { imageBuildId: undefined, state: "building", expected: false },
+      { imageBuildId: "", state: "building", expected: true },
+    ])(
+      "returns $expected for imageBuildId=$imageBuildId state=$state",
+      ({ imageBuildId, state, expected }) => {
+        expect(imageBuildAttach(imageView({ imageBuildId, state }))).toBe(expected);
+      },
+    );
+
+    it("returns false for a malformed view", () => {
+      expect(imageBuildAttach(null)).toBe(false);
+      expect(imageBuildAttach({})).toBe(false);
+    });
+  });
+
+  describe("imagePollDelay", () => {
+    it.each([
+      { elapsed: 0, expected: 2000 },
+      { elapsed: 1999, expected: 2000 },
+      { elapsed: 1_799_999, expected: 2000 },
+      { elapsed: 1_800_000, expected: 0 },
+      { elapsed: 1_800_001, expected: 0 },
+      { elapsed: -1, expected: 0 },
+      { elapsed: Number.NaN, expected: 0 },
+      { elapsed: Number.POSITIVE_INFINITY, expected: 0 },
+      { elapsed: "1000", expected: 0 },
+      { elapsed: undefined, expected: 0 },
+    ])("returns $expected for elapsed=$elapsed", ({ elapsed, expected }) => {
+      expect(imagePollDelay(elapsed)).toBe(expected);
+    });
+  });
+
+  describe("imageActionLabel", () => {
+    it.each([
+      { action: "build_start", expected: "Build and start" },
+      { action: "rebuild_restart", expected: "Rebuild & restart" },
+      { action: "restart", expected: "Restart" },
+      { action: "none", expected: "" },
+      { action: "unknown", expected: "" },
+    ])("labels $action as $expected", ({ action, expected }) => {
+      expect(imageActionLabel(action)).toBe(expected);
+    });
   });
 });

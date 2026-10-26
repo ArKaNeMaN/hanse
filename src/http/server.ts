@@ -13,6 +13,8 @@ import {
   handleAttachmentDownload,
   handleAttachmentUpload,
   handleChat,
+  handleStart,
+  isStartRoute,
   streamSessionEvents,
 } from "./chat.js";
 import { handleCommands, isCommandsRoute } from "./commands.js";
@@ -310,6 +312,7 @@ export function createHttpServer(deps: HttpDeps): Server {
         const isCommands = isCommandsRoute(httpRequest.method, url.pathname);
         const isRuntime = /^\/api\/apps\/[^/]+\/runtime$/.test(url.pathname);
         const isPreviews = isPreviewsRoute(httpRequest.method, url.pathname);
+        const isStart = isStartRoute(httpRequest.method, url.pathname);
         const isChat =
           !isRuntime && (url.pathname === "/chat" || url.pathname.startsWith("/api/apps/"));
         const result = isImages
@@ -332,9 +335,11 @@ export function createHttpServer(deps: HttpDeps): Server {
                           ? await handleCommands(deps, httpRequest)
                           : isPreviews
                             ? await handlePreviews(deps, httpRequest)
-                            : isChat
-                              ? await handleChat(deps, httpRequest)
-                              : handleRequest(deps, httpRequest);
+                            : isStart
+                              ? await handleStart(deps, httpRequest)
+                              : isChat
+                                ? await handleChat(deps, httpRequest)
+                                : handleRequest(deps, httpRequest);
         response.writeHead(result.status, {
           "content-type": result.contentType,
           ...(result.headers ?? {}),

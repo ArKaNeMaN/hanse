@@ -210,11 +210,13 @@ describe("agent supervisor HTTP contract", () => {
       endpoint: string;
       state: string;
       specHash: string;
+      imageId: string | null;
       version: { hanseVersion: string; opencodeVersion: string | null; specHash: string };
     };
     expect(status.appId).toBe("p:a");
     expect(status.state).toBe("running");
     expect(status.specHash).toBe(spec.specHash);
+    expect(status.imageId).toBeNull();
     expect(status.version.hanseVersion).toBe("fake-hanse");
     expect(status.version.opencodeVersion).toBe("fake-opencode");
     expect(status.version.specHash).toBe(spec.specHash);

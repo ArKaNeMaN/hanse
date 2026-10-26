@@ -98,4 +98,56 @@ describe("CoordinatorService", () => {
     ).toThrow();
     db.close();
   });
+
+  it("returns durable build fields without a filesystem check or status heuristic", () => {
+    const { db, service } = fixture();
+    db.prepare(
+      `UPDATE apps SET build_configured = 1, image_status = 'error', image_error = 'build failed',
+         image_base_ref = 'agent-base:tag', image_base_kind = 'base', image_hash_version = 2,
+         image_build_id = 'build-1', image_build_ref = 'hanse-app:build-1',
+         image_build_started_at = '2026-10-26T00:00:00.000Z',
+         image_build_rejected_ref = 'hanse-app:rejected'
+       WHERE id = 'p:a'`,
+    ).run();
+    db.prepare(
+      "UPDATE apps SET image_status = 'ready', image_ref = 'default-ref' WHERE id = 'p:b'",
+    ).run();
+
+    const apps = service.listApps();
+    expect(apps.find((app) => app.appKey === "a")).toMatchObject({
+      buildConfigured: true,
+      imageStatus: "error",
+      imageError: "build failed",
+      imageBaseRef: "agent-base:tag",
+      imageBaseKind: "base",
+      imageHashVersion: 2,
+      imageBuildId: "build-1",
+      imageBuildRef: "hanse-app:build-1",
+      imageBuildStartedAt: "2026-10-26T00:00:00.000Z",
+      imageBuildRejectedRef: "hanse-app:rejected",
+    });
+    expect(apps.find((app) => app.appKey === "b")).toMatchObject({
+      buildConfigured: false,
+      imageStatus: "ready",
+      imageRef: "default-ref",
+    });
+    db.close();
+  });
+
+  it("does not infer build_configured from a stored image hash or reference", () => {
+    const { db, service } = fixture();
+    db.prepare(
+      `UPDATE apps SET image_hash = 'abc123', image_ref = 'default-ref',
+         image_status = 'ready', build_configured = 0
+       WHERE id = 'p:a'`,
+    ).run();
+
+    const app = service.listApps().find((entry) => entry.appKey === "a");
+    expect(app).toMatchObject({
+      buildConfigured: false,
+      imageHash: "abc123",
+      imageRef: "default-ref",
+    });
+    db.close();
+  });
 });

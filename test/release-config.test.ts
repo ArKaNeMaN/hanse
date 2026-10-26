@@ -125,8 +125,10 @@ describe(".env.example image configuration", () => {
   });
 
   it("states that image variables are repositories, not full references", () => {
-    expect(env).toContain("repositories only");
-    expect(env).toContain("not\n# full references or digests");
+    expect(env).toContain("repositories only, not full references or digests");
+    expect(env).toContain("Except for HANSE_AGENT_BASE_IMAGE");
+    expect(env).toMatch(/^# HANSE_AGENT_BASE_IMAGE=/m);
+    expect(env).toContain("build.base: base` requires this reference");
   });
 });
 

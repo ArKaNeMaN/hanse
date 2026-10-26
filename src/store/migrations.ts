@@ -599,4 +599,29 @@ CREATE INDEX handoffs_reply_delivered_session ON handoffs(reply_delivered_sessio
   WHERE reply_delivered_session_id IS NOT NULL;
 `,
   },
+  {
+    version: 18,
+    name: "agent-image-validity",
+    sql: `
+ALTER TABLE apps ADD COLUMN build_configured INTEGER NOT NULL DEFAULT 0
+  CHECK (build_configured IN (0, 1));
+ALTER TABLE apps ADD COLUMN image_base_ref TEXT;
+ALTER TABLE apps ADD COLUMN image_base_kind TEXT
+  CHECK (image_base_kind IS NULL OR image_base_kind IN ('default', 'base', 'explicit', 'unknown'));
+ALTER TABLE apps ADD COLUMN image_hash_version INTEGER NOT NULL DEFAULT 1
+  CHECK (image_hash_version >= 1);
+ALTER TABLE apps ADD COLUMN image_build_id TEXT;
+ALTER TABLE apps ADD COLUMN image_build_ref TEXT;
+ALTER TABLE apps ADD COLUMN image_build_started_at TEXT;
+ALTER TABLE apps ADD COLUMN image_build_rejected_ref TEXT;
+
+ALTER TABLE app_image_versions ADD COLUMN base_ref TEXT;
+ALTER TABLE app_image_versions ADD COLUMN base_kind TEXT
+  CHECK (base_kind IS NULL OR base_kind IN ('default', 'base', 'explicit', 'unknown'));
+ALTER TABLE app_image_versions ADD COLUMN hash_version INTEGER NOT NULL DEFAULT 1
+  CHECK (hash_version >= 1);
+
+ALTER TABLE instances ADD COLUMN applied_image_id TEXT;
+`,
+  },
 ];

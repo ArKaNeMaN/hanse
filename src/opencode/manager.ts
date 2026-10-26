@@ -32,13 +32,19 @@ import { ChatSweep } from "../chat/sweep.js";
 import { DeploymentInProgressError, type DeploymentLock } from "../coordinator/deployment-lock.js";
 import type { LifecycleActivity } from "../coordinator/lifecycle-activity.js";
 import { materializeGitCredentials } from "../git/materialize.js";
-import type { AppImageRollbackResult } from "../images/service.js";
+import {
+  type AppImageRollbackResult,
+  DefaultImageUnavailableError,
+  ImageNotReadyError,
+  type ImageStateView,
+} from "../images/service.js";
 import type { Logger } from "../logging/logger.js";
 import { ensureAgentToken, mcpTokenPath, revokeAgentToken } from "../mcp/agent-tokens.js";
 import type { PreviewCleanup } from "../preview/types.js";
 import { type AppImageStatus, resolveAppBuild } from "../registry/index.js";
 import { appNetworkName, mapToHostPath } from "../runner/names.js";
 import { RUNNER_APP_PORT } from "../runner/validate.js";
+import { defaultImageReference } from "../runtime/build-spec.js";
 import { hashValue } from "../settings/hash.js";
 import { launchEffectiveSettings } from "../settings/service.js";
 import type {
@@ -185,6 +191,8 @@ export interface ManagedApp {
   gitCredentials?: boolean;
   /** Mount the application directory read-only inside the agent container. */
   appDirReadOnly?: boolean;
+  /** Durable image ID of the selected version, when the row has one. */
+  imageId?: string | null;
 }
 
 /** Injectable subset of `SettingsService` used for launch snapshots and live context policy. */
@@ -215,8 +223,22 @@ interface ImageStateSnapshot {
   imageRef: string | null;
   imageHash: string | null;
   imageBaseDigest: string | null;
+  imageBaseRef: string | null;
+  imageBaseKind: string | null;
+  imageHashVersion: number;
   imageBuiltAt: string | null;
   imageError: string | null;
+  imageBuildId: string | null;
+  imageBuildRef: string | null;
+  imageBuildStartedAt: string | null;
+  imageBuildRejectedRef: string | null;
+}
+
+/** The image dependency the manager needs for start/restart preflight and rollback recovery. */
+export interface InstanceImageSource {
+  imageState(appId: string): Promise<ImageStateView>;
+  adoptBuild(appId: string): Promise<boolean>;
+  invalidateCache?(): void;
 }
 
 export interface InstanceManagerOptions {
@@ -255,6 +277,11 @@ export interface InstanceManagerOptions {
   lifecycleActivity?: LifecycleActivity;
   /** Optional preview registry cleared whenever an app is stopped, recreated, or forgotten. */
   previews?: PreviewCleanup;
+  /**
+   * Image state/adoption dependency for start/restart preflight. Unit fixtures may omit it, in
+   * which case the manager falls back to the static build inspection without a preflight.
+   */
+  images?: InstanceImageSource;
 }
 
 interface MonitorEntry {
@@ -265,7 +292,6 @@ interface MonitorEntry {
 
 export const DEFAULT_MODEL = "deepseek/deepseek-flash";
 const DEFAULT_AGENT_API_BASE = "http://127.0.0.1:8787";
-const DEFAULT_AGENT_IMAGE = "agent-default";
 const DEFAULT_MEMORY_MB = 2048;
 const DEFAULT_CPUS = 2;
 const DEFAULT_PIDS = 512;
@@ -311,20 +337,13 @@ export function resolveBaselinePlugins(): string[] {
 
 function resolveAgentImage(app: ManagedApp): string {
   const inspection = resolveAppBuild(app.appDir);
-  if (inspection.status === "error") {
-    throw new Error(
-      `application image configuration is invalid for ${app.id}: ${inspection.error ?? "unknown error"}`,
-    );
-  }
-  if (inspection.dockerfile === null) {
-    return process.env.HANSE_AGENT_IMAGE?.trim() || DEFAULT_AGENT_IMAGE;
-  }
+  const buildConfigured =
+    inspection.buildConfigured ?? (inspection.status === "error" || inspection.dockerfile !== null);
   const imageRef = app.imageRef?.trim();
-  if (
-    (app.imageStatus === "ready" || app.imageStatus === "stale") &&
-    imageRef !== undefined &&
-    imageRef.length > 0
-  ) {
+  if (!buildConfigured) {
+    return defaultImageReference();
+  }
+  if (imageRef !== undefined && imageRef.length > 0) {
     return imageRef;
   }
   throw new Error(
@@ -575,6 +594,7 @@ export class InstanceManager {
         }
         // Reconnect after a coordinator restart or a caller retry. Settings/spec changes stay
         // "restart required" until an explicit stop and restart.
+        this.#recordAppliedImageId(app.id, current.imageId);
         const endpoint = current.endpoint ?? existing?.endpoint;
         if (endpoint !== undefined && endpoint !== null) {
           setEndpointAuthorization(endpoint, OPENCODE_BASIC_USERNAME, existingPassword);
@@ -641,6 +661,9 @@ export class InstanceManager {
     // Launch authority comes from the current row, not the caller's display snapshot.
     app = this.#authoritativeApp(app);
     this.#assertNoStateCollision(app);
+    await this.#preflightImage(app);
+    // Adoption can select a new image ref; resolve the launch image from the adopted row.
+    app = this.#authoritativeApp(app);
     const identity = { projectId: app.projectId, app: app.appKey };
     const tokenFile = mcpTokenPath(this.#runtimeRoot, identity);
     const isolated = resolveInstanceEnv(this.#runtimeRoot, identity);
@@ -922,12 +945,22 @@ export class InstanceManager {
   #authoritativeApp(app: ManagedApp): ManagedApp {
     const row = this.#db
       .prepare(
-        `SELECT project_id AS projectId, app_key AS appKey,
-                image_ref AS imageRef, image_status AS imageStatus
-         FROM apps WHERE id = ?`,
+        `SELECT a.project_id AS projectId, a.app_key AS appKey,
+                a.image_ref AS imageRef, a.image_status AS imageStatus,
+                v.image_id AS imageId
+         FROM apps a
+         LEFT JOIN app_image_versions v
+           ON v.app_id = a.id AND v.image_ref = a.image_ref
+         WHERE a.id = ?`,
       )
       .get(app.id) as
-      | { projectId: string; appKey: string; imageRef: string | null; imageStatus: AppImageStatus }
+      | {
+          projectId: string;
+          appKey: string;
+          imageRef: string | null;
+          imageStatus: AppImageStatus;
+          imageId: string | null;
+        }
       | undefined;
     if (row === undefined) {
       return app;
@@ -938,6 +971,7 @@ export class InstanceManager {
       appKey: row.appKey,
       imageRef: row.imageRef,
       imageStatus: row.imageStatus,
+      imageId: row.imageId,
     };
   }
 
@@ -961,6 +995,50 @@ export class InstanceManager {
 
   isRunning(appId: string): boolean {
     return this.#running.has(appId);
+  }
+
+  #recordAppliedImageId(appId: string, imageId: string | null | undefined): void {
+    if (imageId === null || imageId === undefined || imageId.length === 0) {
+      return;
+    }
+    this.#db
+      .prepare("UPDATE instances SET applied_image_id = ? WHERE app_id = ?")
+      .run(imageId, appId);
+  }
+
+  /**
+   * Adopt a durable build, then reject a start/restart whose target image is unusable.
+   *
+   * Runs before any destructive runtime call so an image failure leaves a live container untouched.
+   */
+  async #preflightImage(app: ManagedApp): Promise<void> {
+    const images = this.#options.images;
+    if (images === undefined) {
+      return;
+    }
+    await images.adoptBuild(app.id);
+    const view = await images.imageState(app.id);
+    if (view.buildConfigured) {
+      if (view.usableImageRef === null) {
+        throw new ImageNotReadyError(view);
+      }
+    } else if (view.targetImageId === null) {
+      throw new DefaultImageUnavailableError(view);
+    }
+  }
+
+  /**
+   * Image preflight for the synchronous restart route, before any claim or 202.
+   *
+   * Returns whether the app is running. A stopped app is never preflighted or started here.
+   */
+  async preflightRestart(app: ManagedApp): Promise<boolean> {
+    const status = await this.#options.runtime.status(app.id);
+    if (status === undefined || (status.state !== "running" && status.state !== "starting")) {
+      return false;
+    }
+    await this.#preflightImage(app);
+    return true;
   }
 
   pendingRestart(appId: string): { pending: boolean; reasons: string[] } {
@@ -1224,6 +1302,23 @@ export class InstanceManager {
     return this.#restartClaims.has(appId);
   }
 
+  /**
+   * One bounded runtime probe for a persisted stopped row, used by the image route.
+   *
+   * Persists the observed state and applied image ID and never starts, stops, or restarts anything.
+   */
+  async probeStatus(appId: string): Promise<boolean> {
+    const row = this.#db
+      .prepare("SELECT COALESCE(runtime_state, state) AS state FROM instances WHERE app_id = ?")
+      .get(appId) as { state: string } | undefined;
+    if (row === undefined || row.state !== "stopped") {
+      return false;
+    }
+    const status = await this.#options.runtime.status(appId);
+    this.#recordStatusById(appId, status ?? stoppedStatus(appId));
+    return true;
+  }
+
   #acquireRestartClaim(appId: string): (() => void) | undefined {
     if (this.#restartClaims.has(appId)) {
       return undefined;
@@ -1280,6 +1375,7 @@ export class InstanceManager {
       this.#recordStatusById(app.id, status ?? stoppedStatus(app.id));
       return false;
     }
+    await this.#preflightImage(app);
     await this.#stopLocked(app.id);
     await this.#ensureLocked(app);
     return true;
@@ -1299,7 +1395,6 @@ export class InstanceManager {
     const end = this.#beginLifecycle("image_rollback");
     try {
       return await this.#withAppLock(app.id, async () => {
-        const authoritative = this.#authoritativeApp(app);
         const status = await this.#options.runtime.status(app.id).catch(() => undefined);
         const running = status?.state === "running" || status?.state === "starting";
         this.#assertDeploymentUnlocked("image_rollback");
@@ -1313,14 +1408,29 @@ export class InstanceManager {
         try {
           const snapshot = this.#snapshotImageState(app.id);
           const result = await rollback();
+          const selected = this.#authoritativeApp(app);
           try {
-            const restarted = await this.#restartLocked(authoritative);
+            const restarted = await this.#restartLocked(selected);
             return { result, restarted };
           } catch (error) {
             try {
               this.#restoreImageState(app.id, snapshot);
             } catch (restoreError) {
               throw new ImageRollbackRestoreError(app.id, restoreError);
+            }
+            if (
+              error instanceof ImageNotReadyError ||
+              error instanceof DefaultImageUnavailableError
+            ) {
+              const images = this.#options.images;
+              if (images === undefined) {
+                throw error;
+              }
+              images.invalidateCache?.();
+              const view = await images.imageState(app.id);
+              throw error instanceof ImageNotReadyError
+                ? new ImageNotReadyError(view)
+                : new DefaultImageUnavailableError(view);
             }
             throw new ImageRollbackIncompleteError(app.id, error);
           }
@@ -1337,8 +1447,12 @@ export class InstanceManager {
     const row = this.#db
       .prepare(
         `SELECT image_status AS imageStatus, image_ref AS imageRef, image_hash AS imageHash,
-                image_base_digest AS imageBaseDigest, image_built_at AS imageBuiltAt,
-                image_error AS imageError
+                image_base_digest AS imageBaseDigest, image_base_ref AS imageBaseRef,
+                image_base_kind AS imageBaseKind, image_hash_version AS imageHashVersion,
+                image_built_at AS imageBuiltAt, image_error AS imageError,
+                image_build_id AS imageBuildId, image_build_ref AS imageBuildRef,
+                image_build_started_at AS imageBuildStartedAt,
+                image_build_rejected_ref AS imageBuildRejectedRef
          FROM apps WHERE id = ?`,
       )
       .get(appId) as ImageStateSnapshot | undefined;
@@ -1356,8 +1470,15 @@ export class InstanceManager {
            image_ref = @imageRef,
            image_hash = @imageHash,
            image_base_digest = @imageBaseDigest,
+           image_base_ref = @imageBaseRef,
+           image_base_kind = @imageBaseKind,
+           image_hash_version = @imageHashVersion,
            image_built_at = @imageBuiltAt,
-           image_error = @imageError
+           image_error = @imageError,
+           image_build_id = @imageBuildId,
+           image_build_ref = @imageBuildRef,
+           image_build_started_at = @imageBuildStartedAt,
+           image_build_rejected_ref = @imageBuildRejectedRef
          WHERE id = @id`,
       )
       .run({ id: appId, ...snapshot });
@@ -1463,6 +1584,7 @@ export class InstanceManager {
     if (status === undefined || (status.state !== "running" && status.state !== "starting")) {
       return;
     }
+    this.#recordAppliedImageId(app.id, status.imageId);
     const identity = { projectId: app.projectId, app: app.appKey };
     const isolated = resolveInstanceEnv(this.#runtimeRoot, identity);
     const password = readOpencodePassword(opencodePasswordPath(isolated.XDG_STATE_HOME));
@@ -1672,8 +1794,8 @@ export class InstanceManager {
     this.#db
       .prepare(
         `INSERT INTO instances
-           (id, app_id, endpoint, state, runtime_state, spec_hash, container_id, container_name, image_ref, started_at, updated_at, applied_settings_hash, applied_profile)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           (id, app_id, endpoint, state, runtime_state, spec_hash, container_id, container_name, image_ref, started_at, updated_at, applied_settings_hash, applied_profile, applied_image_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(app_id) DO UPDATE SET
            endpoint = excluded.endpoint,
            state = excluded.state,
@@ -1688,7 +1810,8 @@ export class InstanceManager {
            END,
            updated_at = excluded.updated_at,
            applied_settings_hash = excluded.applied_settings_hash,
-           applied_profile = excluded.applied_profile`,
+           applied_profile = excluded.applied_profile,
+           applied_image_id = COALESCE(excluded.applied_image_id, instances.applied_image_id)`,
       )
       .run(
         app.id,
@@ -1704,6 +1827,7 @@ export class InstanceManager {
         now,
         settingsHash ?? null,
         appliedProfile === undefined ? null : appliedProfile ? 1 : 0,
+        status.imageId ?? null,
       );
   }
 
@@ -1720,6 +1844,7 @@ export class InstanceManager {
            spec_hash = ?,
            container_id = ?,
            container_name = ?,
+           applied_image_id = COALESCE(?, applied_image_id),
            updated_at = ?
          WHERE app_id = ?`,
       )
@@ -1730,6 +1855,7 @@ export class InstanceManager {
         status.specHash,
         status.containerId ?? null,
         status.containerName ?? null,
+        status.imageId ?? null,
         new Date().toISOString(),
         appId,
       );

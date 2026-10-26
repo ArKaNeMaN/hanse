@@ -101,25 +101,73 @@ a host `opencode` auth file.
 
 ## Per-app images (B2)
 
-- `.hanse/app.yaml` may declare `build.dockerfile` (default `Dockerfile`) and `build.args`. The file
-  is a complete Dockerfile; `ARG HANSE_BASE` / `FROM ${HANSE_BASE}` starts from the default agent
-  image. The Dockerfile and build args are hashed into a stable build spec (app source changes do not
-  change it).
-- The registry reads `.hanse/app.yaml` directly, records image status/ref/hash/base/built-at/error,
-  and marks a previously built app `stale` when the Dockerfile/base digest changes. Invalid manifests
-  or Dockerfile paths mark the app `error` without failing the whole project.
+- `.hanse/app.yaml` may declare `build.dockerfile` (default `Dockerfile`), `build.args`, and an
+  optional `build.base` (`default | base`, no schema default). Without `build.base`, the coordinator
+  resolves the Dockerfile's final-stage root `FROM` through stage aliases and build args: a root that
+  consumes `${HANSE_BASE}` is `default`, a literal root is `explicit`, and an unresolved or ambiguous
+  root is `unknown`. A configured `build.base` whose resolved root ignores `${HANSE_BASE}` is
+  rejected as `base_mismatch` (`400`); `HANSE_BASE` is coordinator-owned and may not be set as a
+  manifest build arg. `base` resolves to `HANSE_AGENT_BASE_IMAGE`, and a missing value is a
+  configuration error rather than a silent default.
+- Two identity domains are never mixed. Applied-versus-target compares Docker image IDs (container
+  `Image` versus inspect `Id`); base drift compares manifest digests from `RepoDigests`. There is no
+  coordinator-revision comparison: a Hanse update with unchanged relevant digests marks no agent
+  outdated. An unresolvable identity is `unknown` and never produces a false `current`,
+  `restart_required`, `rebuild_required`, or `not_ready`.
+- The build-spec hash is version 2: Dockerfile bytes, sorted build args, and the resolved base kind.
+  The base reference/tag/digest is excluded and compared separately, so a harmless tag move does not
+  mark an app stale. A stored version-1 hash is never compared with version 2; a legacy v1 row is
+  recomputed only when its historical full reference is reconstructable, and otherwise hash drift
+  stays `unknown` until the next successful build.
+- The registry reads `.hanse/app.yaml` directly, records image status/ref, base kind/ref/digest,
+  hash version, built-at, and error, and persists durable `build_configured` from the manifest
+  inspection (registration, provisioning, image check, and build all write the same value). Invalid
+  manifests or Dockerfile paths mark the app image `error` without failing the whole project.
 - A human action (`POST /api/apps/:app/build`, the app page Image panel, or `hanse images build`)
   asks the runner to build. The runner tars a contained app context (no symlinks, `.git`, state,
-  agents, or caches) and builds from the app image; no build runs at deploy time and nothing
+  agents, or caches) and builds from the resolved base; no build runs at deploy time and nothing
   auto-builds on file edits.
 - Every built image is validated in a no-network, read-only, cap-drop one-shot container. It must
   provide the Hanse entrypoint, `opencode`, the `hanse agent-host`/MCP CLI, and `git`; image-declared
   volumes are rejected. A failed validation/build keeps the previous image and container and marks
-  the app `error`; starting an agent with `missing`, `building`, or `error` is refused, while `stale`
-  keeps using the last ready image.
+  the app `error`.
+- Build identity is durable. A build start persists `image_build_id`, `image_build_ref`, and
+  `image_build_started_at`. A ready runner build is adopted only by durable build ID with a ref
+  assertion, or by the legacy `image_ref` rule; a target mismatch clears the build fields, records
+  `image_build_rejected_ref`, and keeps the old image. A lost build becomes `build_error` after the
+  reachable grace / runner timeout, and a new build, valid adoption, or rollback clears the rejected
+  marker. At startup the identity cache is warmed and the adoption pass runs before the status
+  reconciler and before the HTTP server; `ImageService` is constructed before `InstanceManager`.
+- The state model shared by `GET /api/apps/:app/image`, the typed errors, the chat, and the
+  application page is `current`, `restart_required`, `rebuild_required`, `building`, `build_error`,
+  `not_ready`, and `unknown`. Running on a stale image is allowed; a build-configured app is blocked
+  from a cold start only when it has no usable image, and a prior usable image stays startable during
+  a rebuild or after a build failure. Default-image apps are restart-only and are never
+  `not_ready`/`building`/`build_error`/`rebuild_required` from image state.
+- `GET /api/apps/:app/image` returns the derived `state`, `buildConfigured`, `running`,
+  `usableImageRef`, `targetImageId`, `appliedImageId`, `hashVersion`, `currentBaseDigest`,
+  `baseKind`/`baseRef`, `imageBuildId` (durable) plus the diagnostic `buildId` and
+  `latestBuildImageId`, and honors `?refresh=1`. The new human-only `POST /api/apps/:app/start`
+  starts a stopped app without restarting a running one; `POST /api/apps/:app/restart` runs the image
+  preflight synchronously before its claim and before a `202`. A missing usable image returns typed
+  `409 image_not_ready`; a default image that is absent locally returns typed
+  `503 default_image_unavailable`, mapped at every `ensure` site so no raw launch error reaches the
+  UI.
+- The chat fetches the image view before booting sessions/events: a blocked custom app shows
+  **Build and start** (or **Retry build and start**) and waits on the same page, while a running
+  outdated app keeps the chat and shows a **Restart** / **Rebuild & restart** warning. A successful
+  build-and-start or rebuild-and-restart reconnects the stream; image state refreshes on a
+  stopped->running transition, every 60 s while running, and on visibility. The application page
+  renders the same derived `state` on both image panels, not the raw `imageStatus`.
+- Migration 18 adds the durable fields (`apps.build_configured`, `image_base_ref`,
+  `image_base_kind`, `image_hash_version`, `image_build_*`, `image_build_rejected_ref`;
+  `app_image_versions.base_ref`, `base_kind`, `hash_version`; `instances.applied_image_id`). It is
+  forward-only; existing rows keep their data and legacy base/hash identity stays `unknown` until
+  the next successful build.
 - The app container uses `apps.image_ref` when a build is configured. The coordinator keeps the
   current and previous image versions; the app page can roll back, and an explicit GC protects
-  current/rollback/running images and only removes `hanse-app-*`/Hanse-labelled images.
+  current/rollback/running images, the in-flight build target while `image_build_id` is set, and the
+  runner's own non-terminal build tags. It only removes `hanse-app-*`/Hanse-labelled images.
 - This repository's own application ships `.hanse/Dockerfile` with a headless Chromium, Debian 12
   runtime libraries, fonts, and a Playwright MCP environment for functional/visual web UI checks.
   It is application-local; `agent-default` and the other application images are unchanged.
@@ -138,11 +186,13 @@ The runner exposes two runtime-token endpoints; the coordinator wraps them as hu
   used, `warning` from 75%, and `critical` from 85%. Docker/statfs failures are reported as bounded
   errors with partial data. The threshold is advisory: **crossing it never deletes anything**.
 - `POST /v1/images/gc` is explicit and serialized (a concurrent call returns `409`). The coordinator
-  sends the durable keep set (`apps.image_ref`, `app_image_versions.image_ref`, and
-  `instances.image_ref` for `running`/`starting`); the runner additionally protects every image
-  referenced by a Docker container. GC removes only `hanse-app-*` tags or images labelled
-  `hanse.app.id`, skips images that also carry unrelated tags, and prunes build cache only through
-  the Docker build-cache prune API. A Docker error stops the run (fail closed).
+  sends the durable keep set (`apps.image_ref`, `app_image_versions.image_ref`, `instances.image_ref`
+  for `running`/`starting`, and `apps.image_build_ref` while `image_build_id` is set); the runner
+  additionally protects every image referenced by a Docker container and its own non-terminal build
+  tags, closing the window before the coordinator persists `image_build_ref`. A rejected/mismatched
+  target is not protected. GC removes only `hanse-app-*` tags or images labelled `hanse.app.id`,
+  skips images that also carry unrelated tags, and prunes build cache only through the Docker
+  build-cache prune API. A Docker error stops the run (fail closed).
 
 ## Project and application deletion
 
@@ -989,6 +1039,7 @@ Host `./agents` is mounted at `/data/agents` read-write in `hanse` and read-only
 | `HANSE_HOST_RUNNER_TMP` | runner | absolute writable host path for ephemeral Test-connection credential dirs, mounted at the same path; must not overlap workspace/agents (default `/var/lib/hanse/tmp`) |
 | `HANSE_AGENT_API_BASE` | serve | coordinator URL passed to agents as the MCP API base (Compose: `http://hanse:8787`) |
 | `HANSE_AGENT_IMAGE` | serve, runner | default per-app image; runner requires it to be in its allowlist |
+| `HANSE_AGENT_BASE_IMAGE` | serve, runner | full reference (repository plus optional tag or `@sha256`) of the shared base image; `build.base=base` requires it, and the runner allowlists it for builds and inspection |
 | `HANSE_TAG` / `HANSE_AGENT_TAG` | Compose | coordinator and per-app agent image tags; `HANSE_TAG` is the fallback for all, `HANSE_AGENT_TAG` for IDE/runner |
 | `HANSE_IDE_TAG` / `HANSE_RUNNER_TAG` | Compose | independent IDE and runner image tags; fall back to `HANSE_AGENT_TAG`, then `HANSE_TAG` |
 | `HANSE_DEPLOY_LOCK_FILE` | serve | absolute path of the external deployment lock (default `<state>/hanse/deploy.lock`) |

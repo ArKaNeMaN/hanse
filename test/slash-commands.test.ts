@@ -11,6 +11,7 @@ import { handleCommands, isCommandsRoute } from "../src/http/commands.js";
 import type { HttpDeps, HttpRequest, HttpResponse } from "../src/http/handler.js";
 import { createHttpServer } from "../src/http/server.js";
 import { createPrincipal } from "../src/identity/principals.js";
+import { DefaultImageUnavailableError, ImageNotReadyError } from "../src/images/service.js";
 import type { Logger } from "../src/logging/logger.js";
 import { OpencodeHttpError, runSessionCommand } from "../src/opencode/client.js";
 import { MASTER_DISABLED_REASON } from "../src/opencode/commands.js";
@@ -20,6 +21,7 @@ import {
   type ManagedApp,
 } from "../src/opencode/manager.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
+import { imageStateView } from "./fixtures/image-state.js";
 
 const dirs: string[] = [];
 const databases: SqliteDatabase[] = [];
@@ -1209,5 +1211,65 @@ describe("server dispatch", () => {
     });
     expect(oversized.status).toBe(413);
     expect(((await oversized.json()) as { code: string }).code).toBe("payload_too_large");
+  });
+});
+
+describe("commands typed image failures", () => {
+  it("maps image_not_ready on list and dispatch instead of degrading or returning 502", async () => {
+    const f = fixture();
+    const { manager } = managerStub({
+      ensure: async () => {
+        throw new ImageNotReadyError(
+          imageStateView({ appId: "p1:storefront", state: "not_ready" }),
+        );
+      },
+    });
+    f.deps.manager = manager;
+
+    const list = await handleCommands(f.deps, listRequest({ headers: auth(f.token) }));
+    expect(list.status).toBe(409);
+    expect(JSON.parse(list.body)).toMatchObject({
+      error: "image_not_ready",
+      code: "image_not_ready",
+      appId: "p1:storefront",
+      state: "not_ready",
+      imageStatus: "missing",
+      buildConfigured: true,
+    });
+
+    const dispatch = await handleCommands(f.deps, sendRequest(f.token, { name: "init" }));
+    expect(dispatch.status).toBe(409);
+    expect(JSON.parse(dispatch.body)).toMatchObject({
+      error: "image_not_ready",
+      code: "image_not_ready",
+      appId: "p1:storefront",
+    });
+  });
+
+  it("maps default_image_unavailable on list and dispatch", async () => {
+    const f = fixture();
+    const { manager } = managerStub({
+      ensure: async () => {
+        throw new DefaultImageUnavailableError(
+          imageStateView({ appId: "p1:storefront", buildConfigured: false, state: "unknown" }),
+        );
+      },
+    });
+    f.deps.manager = manager;
+
+    const list = await handleCommands(f.deps, listRequest({ headers: auth(f.token) }));
+    expect(list.status).toBe(503);
+    expect(JSON.parse(list.body)).toMatchObject({
+      error: "default_image_unavailable",
+      code: "default_image_unavailable",
+      state: "unknown",
+    });
+
+    const dispatch = await handleCommands(f.deps, sendRequest(f.token, { name: "init" }));
+    expect(dispatch.status).toBe(503);
+    expect(JSON.parse(dispatch.body)).toMatchObject({
+      error: "default_image_unavailable",
+      code: "default_image_unavailable",
+    });
   });
 });

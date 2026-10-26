@@ -155,6 +155,10 @@ async function handleList(deps: HttpDeps, found: FoundApp): Promise<HttpResponse
           appId: found.app.id,
         });
       }
+      const mapped = lifecycleErrorResponse(error);
+      if (mapped !== undefined) {
+        return mapped;
+      }
       status = "unavailable";
       warnings = [{ code: "commands_unavailable" }];
     }

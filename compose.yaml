@@ -22,6 +22,7 @@ services:
       HANSE_AGENT_API_BASE: http://hanse:8787
       HANSE_DEPLOY_LOCK_FILE: ${HANSE_DEPLOY_LOCK_FILE:-/data/state/hanse/deploy.lock}
       HANSE_AGENT_IMAGE: ${HANSE_AGENT_IMAGE:-ghcr.io/arkaneman/hanse-agent-default}:${HANSE_AGENT_TAG:-${HANSE_TAG:-latest}}
+      HANSE_AGENT_BASE_IMAGE: ${HANSE_AGENT_BASE_IMAGE:-ghcr.io/arkaneman/hanse-agent-base:${HANSE_AGENT_TAG:-${HANSE_TAG:-latest}}}
       HANSE_IDE_URL: /ide/
       HANSE_IDE: "0"
       HANSE_IDE_HOST: ide
@@ -100,6 +101,7 @@ services:
       HANSE_HOST_WORKSPACE: ${HANSE_HOST_WORKSPACE:?set HANSE_HOST_WORKSPACE to the absolute host workspace path}
       HANSE_HOST_AGENTS: ${HANSE_HOST_AGENTS:?set HANSE_HOST_AGENTS to the absolute host agents path}
       HANSE_AGENT_IMAGE: ${HANSE_AGENT_IMAGE:-ghcr.io/arkaneman/hanse-agent-default}:${HANSE_AGENT_TAG:-${HANSE_TAG:-latest}}
+      HANSE_AGENT_BASE_IMAGE: ${HANSE_AGENT_BASE_IMAGE:-ghcr.io/arkaneman/hanse-agent-base:${HANSE_AGENT_TAG:-${HANSE_TAG:-latest}}}
       HANSE_COORDINATOR_CONTAINER: hanse
       HANSE_DOCKER_SOCKET: /var/run/docker.sock
       HANSE_HOST_RUNNER_TMP: ${HANSE_HOST_RUNNER_TMP:-/var/lib/hanse/tmp}

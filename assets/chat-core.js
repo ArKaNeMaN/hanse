@@ -3318,3 +3318,246 @@ export function collectSubtreeIds(tree, id) {
   }
   return collected;
 }
+
+/* ------------------------------------------------------------------------------------------------
+ * Agent image presentation
+ *
+ * Pure helpers over the HTTP `GET /api/apps/:app/image` view. The server derives one shared state
+ * (D5); these helpers only choose what the chat shows, so the card, the banner, and the typed
+ * errors cannot disagree about precedence.
+ * ---------------------------------------------------------------------------------------------- */
+
+/**
+ * @typedef {"current" | "restart_required" | "rebuild_required" | "building" | "build_error" |
+ *   "not_ready" | "unknown"} ImageStateName
+ */
+
+/**
+ * The subset of the image state view the chat needs. Every field is optional so a malformed or
+ * partial fetch degrades to `unknown` instead of throwing.
+ *
+ * @typedef {Object} ImageStateView
+ * @property {boolean} [buildConfigured]
+ * @property {ImageStateName | string} [state]
+ * @property {boolean} [running]
+ * @property {string | null} [usableImageRef]
+ * @property {string | null} [targetImageId]
+ * @property {string | null} [imageBuildId]
+ * @property {string | null} [error]
+ */
+
+/**
+ * @typedef {"none" | "build_start"} ImageGateAction
+ * @typedef {"none" | "restart" | "rebuild_restart"} ImageWarningAction
+ * @typedef {"info" | "warning" | "error"} ImageWarningTone
+ */
+
+/**
+ * @typedef {Object} ImageGate
+ * @property {boolean} blocked
+ * @property {ImageStateName | string} state
+ * @property {ImageGateAction} action
+ */
+
+/**
+ * @typedef {Object} ImageCard
+ * @property {string} title
+ * @property {string} body
+ * @property {ImageGateAction} action
+ * @property {string} actionLabel
+ */
+
+/**
+ * @typedef {Object} ImageWarning
+ * @property {ImageWarningTone} tone
+ * @property {string} title
+ * @property {string} body
+ * @property {ImageWarningAction} action
+ */
+
+const IMAGE_POLL_INTERVAL_MS = 2000;
+const IMAGE_POLL_LIMIT_MS = 30 * 60 * 1000;
+const IMAGE_ERROR_MAX_CHARS = 400;
+
+/** @param {unknown} value @returns {string} */
+function imageStateOf(value) {
+  return isRecord(value) && typeof value.state === "string" ? value.state : "unknown";
+}
+
+/** @param {unknown} value @returns {string | null} */
+function boundedImageError(value) {
+  if (typeof value !== "string") return null;
+  const error = value.trim();
+  if (error.length === 0) return null;
+  return error.length > IMAGE_ERROR_MAX_CHARS ? error.slice(0, IMAGE_ERROR_MAX_CHARS) : error;
+}
+
+/**
+ * The cold-start gate (D5): a build-configured app with no usable image and not running. Running
+ * apps keep the chat and use `imageWarningFromView` instead.
+ *
+ * @param {ImageStateView | null | undefined} view
+ * @returns {ImageGate}
+ */
+export function imageGateFromView(view) {
+  const state = imageStateOf(view);
+  const blocked =
+    isRecord(view) &&
+    view.buildConfigured === true &&
+    view.usableImageRef === null &&
+    view.running !== true &&
+    (state === "not_ready" || state === "building" || state === "build_error");
+  return {
+    blocked,
+    state,
+    action: blocked && state !== "building" ? "build_start" : "none",
+  };
+}
+
+/**
+ * The blocked card shown in the thread area. `null` unless the cold-start gate is blocked.
+ *
+ * @param {ImageStateView | null | undefined} view
+ * @returns {ImageCard | null}
+ */
+export function imageCardFromView(view) {
+  const gate = imageGateFromView(view);
+  if (!gate.blocked) return null;
+  switch (gate.state) {
+    case "not_ready":
+      return {
+        title: "Image not built",
+        body: "Build the image to start the agent.",
+        action: "build_start",
+        actionLabel: imageActionLabel("build_start"),
+      };
+    case "building":
+      return {
+        title: "Building image",
+        body: "The image is being built. This page updates when the build finishes.",
+        action: "none",
+        actionLabel: "",
+      };
+    case "build_error":
+      return {
+        title: "Image build failed",
+        body: boundedImageError(view?.error) ?? "The image build failed. Retry to build again.",
+        action: "build_start",
+        actionLabel: "Retry build and start",
+      };
+    default:
+      return null;
+  }
+}
+
+/**
+ * The app-level banner for a running app. Precedence is building > build_error > not_ready >
+ * rebuild_required > restart_required; a stopped app never gets the stale-image warnings. A
+ * default-image app with no resolvable target shows the separate no-build unavailable banner for
+ * the 503 path.
+ *
+ * @param {ImageStateView | null | undefined} view
+ * @returns {ImageWarning | null}
+ */
+export function imageWarningFromView(view) {
+  if (!isRecord(view)) return null;
+  const state = imageStateOf(view);
+  if (view.running === true) {
+    switch (state) {
+      case "restart_required":
+        return {
+          tone: "warning",
+          title: "Image updated",
+          body: "Restart the agent to use the new image.",
+          action: "restart",
+        };
+      case "rebuild_required":
+        return {
+          tone: "warning",
+          title: "Image out of date",
+          body: "Rebuild and restart the agent to use the new image.",
+          action: "rebuild_restart",
+        };
+      case "not_ready":
+        return {
+          tone: "error",
+          title: "Image missing",
+          body: "Rebuild the image and restart the agent.",
+          action: "rebuild_restart",
+        };
+      case "build_error":
+        return {
+          tone: "error",
+          title: "Image build failed",
+          body: "The last build failed. Retry to rebuild and restart the agent.",
+          action: "rebuild_restart",
+        };
+      case "building":
+        return {
+          tone: "info",
+          title: "Building image",
+          body: "The running agent keeps its current image.",
+          action: "none",
+        };
+      default:
+        break;
+    }
+  }
+  if (view.buildConfigured !== true && view.targetImageId === null && state === "unknown") {
+    return {
+      tone: "error",
+      title: "Default image unavailable",
+      body: "Pull the default agent image and restart the coordinator.",
+      action: "none",
+    };
+  }
+  return null;
+}
+
+/**
+ * The 409 attach predicate: an active durable build observed by `GET /image`. `null` means no
+ * build to attach to (the retry belongs to another build) and `undefined` is treated the same.
+ *
+ * @param {ImageStateView | null | undefined} view
+ * @returns {boolean}
+ */
+export function imageBuildAttach(view) {
+  return (
+    isRecord(view) &&
+    view.imageBuildId !== null &&
+    view.imageBuildId !== undefined &&
+    view.state === "building"
+  );
+}
+
+/**
+ * Poll cadence for an in-flight image build: every 2 s until the runner's 30 min bound, then stop.
+ * Invalid or negative elapsed values also stop.
+ *
+ * @param {unknown} elapsedMs
+ * @returns {number}
+ */
+export function imagePollDelay(elapsedMs) {
+  if (typeof elapsedMs !== "number" || !Number.isFinite(elapsedMs)) return 0;
+  if (elapsedMs < 0 || elapsedMs >= IMAGE_POLL_LIMIT_MS) return 0;
+  return IMAGE_POLL_INTERVAL_MS;
+}
+
+/**
+ * Bounded action labels shared by the card and the banner.
+ *
+ * @param {ImageGateAction | ImageWarningAction | string} action
+ * @returns {string}
+ */
+export function imageActionLabel(action) {
+  switch (action) {
+    case "build_start":
+      return "Build and start";
+    case "rebuild_restart":
+      return "Rebuild & restart";
+    case "restart":
+      return "Restart";
+    default:
+      return "";
+  }
+}

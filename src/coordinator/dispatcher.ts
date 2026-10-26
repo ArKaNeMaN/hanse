@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { DefaultImageUnavailableError, ImageNotReadyError } from "../images/service.js";
 import {
   createSession,
   listMessages,
@@ -123,6 +124,13 @@ function capText(text: string, maxBytes: number): string {
 
 function logMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function ensureFailureMessage(error: unknown): string {
+  if (error instanceof ImageNotReadyError || error instanceof DefaultImageUnavailableError) {
+    return `${error.code}: ${error.message}`;
+  }
+  return logMessage(error);
 }
 
 /**
@@ -369,7 +377,7 @@ export class HandoffDispatcher {
       try {
         await this.#dispatch(claimed);
       } catch (error) {
-        this.#failDispatch(claimed.id, logMessage(error));
+        this.#failDispatch(claimed.id, ensureFailureMessage(error));
       }
     }
   }
@@ -531,7 +539,7 @@ export class HandoffDispatcher {
     } catch (error) {
       updateHandoff(this.#db, handoff.id, {
         replyState: "waiting_operator",
-        replyError: `source application failed to start: ${logMessage(error)}`,
+        replyError: `source application failed to start: ${ensureFailureMessage(error)}`,
       });
       return;
     }

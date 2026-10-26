@@ -13,6 +13,7 @@ import type {
   ImageGcSkipped,
   ImageUsageReport,
 } from "../runner/image-gc.js";
+import type { BaseImageKind } from "../runtime/base-image.js";
 
 export type RunnerImageStatus = "missing" | "building" | "ready" | "error";
 
@@ -26,12 +27,18 @@ export interface ImageBuildInput {
   baseImage: string;
   buildArgs?: Record<string, string>;
   specHash?: string;
+  /** Resolved base kind from the manifest/Dockerfile resolver. */
+  baseKind?: BaseImageKind;
+  /** Build-spec hash version. New builds always send 2. */
+  hashVersion?: number;
 }
 
 export interface ImageBuildResult {
   buildId: string;
   appId: string;
   status: "building";
+  /** Deterministic app/build tag the runner will produce. */
+  targetRef?: string | null;
 }
 
 export interface RunnerImageRecord {
@@ -43,6 +50,20 @@ export interface RunnerImageRecord {
   logs: string;
   error: string | null;
   updatedAt: string | null;
+  targetRef?: string | null;
+  specHash?: string | null;
+  specHashVersion?: number | null;
+  hashVersion?: number | null;
+  baseKind?: BaseImageKind | null;
+  baseRef?: string | null;
+  baseDigest?: string | null;
+}
+
+export interface RunnerImageInspect {
+  found: boolean;
+  imageId: string | null;
+  repoDigests: string[];
+  resolvedDigest: string | null;
 }
 
 export interface RunnerImageClientOptions {
@@ -60,6 +81,9 @@ const ERROR_EXCERPT_CHARS = 300;
 const MAX_REPORT_ENTRIES = 100;
 const STATUSES: ReadonlySet<string> = new Set(["missing", "building", "ready", "error"]);
 const LEVELS: ReadonlySet<string> = new Set(["ok", "warning", "critical"]);
+const BASE_KINDS: ReadonlySet<string> = new Set(["default", "base", "explicit", "unknown"]);
+const DIGEST = /^sha256:[a-f0-9]{64}$/;
+const MAX_INSPECT_DIGESTS = 16;
 
 /** Typed failure from the runner image API. `transport` marks a network/timeout failure. */
 export class ImageClientError extends Error {
@@ -114,6 +138,46 @@ function parseRecord(value: unknown): RunnerImageRecord {
     logs: typeof value.logs === "string" ? value.logs : "",
     error: stringOrNull(value.error),
     updatedAt: stringOrNull(value.updatedAt),
+    targetRef: stringOrNull(value.targetRef),
+    specHash: stringOrNull(value.specHash),
+    specHashVersion: integerOrNull(value.specHashVersion),
+    hashVersion: integerOrNull(value.hashVersion),
+    baseKind: baseKindOrNull(value.baseKind),
+    baseRef: stringOrNull(value.baseRef),
+    baseDigest: digestOrNull(value.baseDigest),
+  };
+}
+
+function integerOrNull(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value >= 1 ? value : null;
+}
+
+function baseKindOrNull(value: unknown): BaseImageKind | null {
+  return typeof value === "string" && BASE_KINDS.has(value) ? (value as BaseImageKind) : null;
+}
+
+function digestOrNull(value: unknown): string | null {
+  return typeof value === "string" && DIGEST.test(value) ? value : null;
+}
+
+function parseInspect(value: unknown): RunnerImageInspect {
+  if (!isRecord(value) || typeof value.found !== "boolean") {
+    throw new ImageClientError("image runner returned an invalid inspect response");
+  }
+  if (!value.found) {
+    return { found: false, imageId: null, repoDigests: [], resolvedDigest: null };
+  }
+  const imageId = stringOrNull(value.imageId);
+  const repoDigests = Array.isArray(value.repoDigests)
+    ? value.repoDigests
+        .filter((entry): entry is string => typeof entry === "string")
+        .slice(0, MAX_INSPECT_DIGESTS)
+    : [];
+  return {
+    found: true,
+    imageId,
+    repoDigests,
+    resolvedDigest: digestOrNull(value.resolvedDigest),
   };
 }
 
@@ -262,7 +326,25 @@ export class RunnerImageClient {
     ) {
       throw new ImageClientError("image runner returned an invalid build response");
     }
-    return { buildId: parsed.buildId, appId: parsed.appId, status: "building" };
+    return {
+      buildId: parsed.buildId,
+      appId: parsed.appId,
+      status: "building",
+      targetRef: stringOrNull(parsed.targetRef),
+    };
+  }
+
+  async inspect(reference: string, appId?: string): Promise<RunnerImageInspect> {
+    const params = new URLSearchParams({ ref: reference });
+    if (appId !== undefined && appId.length > 0) {
+      params.set("appId", appId);
+    }
+    const parsed = await this.#request(
+      `/v1/images/inspect?${params.toString()}`,
+      { method: "GET" },
+      this.#timeoutMs,
+    );
+    return parseInspect(parsed);
   }
 
   async get(appId: string): Promise<RunnerImageRecord> {

@@ -3762,7 +3762,7 @@
   }
 
   .chat-shell--workspace .chat-thread {
-    grid-template-rows: auto auto auto minmax(0, 1fr) auto auto auto auto;
+    grid-template-rows: auto auto auto auto auto minmax(0, 1fr) auto auto auto auto;
   }
 
   .chat-shell--workspace .chat-sessions,
@@ -4562,7 +4562,7 @@
   /* Interactive prompts, plan, saved permissions, and policy warnings */
 
   .chat-shell--workspace .chat-thread {
-    grid-template-rows: auto auto auto minmax(0, 1fr) auto auto auto auto;
+    grid-template-rows: auto auto auto auto auto minmax(0, 1fr) auto auto auto auto;
   }
 
   /* Hidden rows use display:none and are removed from auto-placement. Pin every visible row so the
@@ -4579,26 +4579,34 @@
     grid-row: 3;
   }
 
-  .chat-shell--workspace .chat-thread > .chat-thread__viewport {
+  .chat-shell--workspace .chat-thread > .chat-image-gate {
     grid-row: 4;
+  }
+
+  .chat-shell--workspace .chat-thread > .chat-image-warning {
+    grid-row: 5;
+  }
+
+  .chat-shell--workspace .chat-thread > .chat-thread__viewport {
+    grid-row: 6;
     min-block-size: 0;
     min-inline-size: 0;
   }
 
   .chat-shell--workspace .chat-thread > .chat-queue-strip {
-    grid-row: 5;
-  }
-
-  .chat-shell--workspace .chat-thread > .chat-session-notice {
-    grid-row: 6;
-  }
-
-  .chat-shell--workspace .chat-thread > .prompt-dock {
     grid-row: 7;
   }
 
-  .chat-shell--workspace .chat-thread > .composer {
+  .chat-shell--workspace .chat-thread > .chat-session-notice {
     grid-row: 8;
+  }
+
+  .chat-shell--workspace .chat-thread > .prompt-dock {
+    grid-row: 9;
+  }
+
+  .chat-shell--workspace .chat-thread > .composer {
+    grid-row: 11;
   }
 
   .chat-input-needed {
@@ -4762,6 +4770,110 @@
 
   .policy-warning__dismiss {
     margin-inline-start: auto;
+  }
+
+  /* Agent image gate and warning. F2 fills the SSR containers; the base layout keeps them usable
+     at phone and desktop widths in both themes through the shared tokens. */
+
+  .chat-image-gate,
+  .chat-image-warning {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    min-inline-size: 0;
+    margin-inline: var(--space-6);
+    padding: var(--space-3) var(--space-4);
+    border: 1px solid var(--line);
+    border-inline-start: 3px solid var(--info);
+    border-radius: var(--radius-md);
+    background: var(--surface-1);
+    color: var(--text-2);
+  }
+
+  .chat-image-gate {
+    margin-block-start: var(--space-3);
+  }
+
+  .chat-image-warning {
+    margin-block: var(--space-2) 0;
+  }
+
+  .chat-image-gate[hidden],
+  .chat-image-warning[hidden] {
+    display: none;
+  }
+
+  .chat-image-gate[data-tone="info"],
+  .chat-image-warning[data-tone="info"] {
+    border-inline-start-color: var(--info);
+  }
+
+  .chat-image-gate[data-tone="warning"],
+  .chat-image-warning[data-tone="warning"] {
+    border-inline-start-color: var(--warning);
+  }
+
+  .chat-image-gate[data-tone="error"],
+  .chat-image-warning[data-tone="error"] {
+    border-inline-start-color: var(--danger);
+  }
+
+  .chat-image-gate__title,
+  .chat-image-warning__title {
+    margin: 0;
+    color: var(--text-1);
+    font-size: var(--text-body);
+    font-weight: 600;
+    line-height: 1.3;
+  }
+
+  .chat-image-gate__body,
+  .chat-image-warning__body {
+    margin: 0;
+    color: var(--text-2);
+    font-size: var(--text-sm);
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+  }
+
+  .chat-image-gate__actions,
+  .chat-image-warning__actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+    margin-block-start: var(--space-1);
+  }
+
+  .chat-image-warning {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-1) var(--space-3);
+    padding-block: var(--space-2);
+  }
+
+  .chat-image-warning .chat-image-warning__body {
+    flex: 1 1 16rem;
+  }
+
+  .chat-image-warning__actions {
+    margin-block-start: 0;
+    margin-inline-start: auto;
+  }
+
+  @media (max-width: 767px) {
+    .chat-image-gate,
+    .chat-image-warning {
+      margin-inline: var(--space-3);
+      padding-inline: var(--space-3);
+    }
+
+    .chat-image-gate__actions .btn,
+    .chat-image-warning__actions .btn {
+      --btn-h: 2.75rem;
+      min-block-size: 2.75rem;
+    }
   }
 
   .prompt-dock {
@@ -9289,11 +9401,11 @@
 
 /* Slash-command palette: in-flow above the composer, never covering the draft. */
 .chat-shell--workspace .chat-thread > .command-palette {
-  grid-row: 8;
+  grid-row: 10;
 }
 
 .chat-shell--workspace .chat-thread > .composer {
-  grid-row: 9;
+  grid-row: 11;
 }
 
 .command-palette {

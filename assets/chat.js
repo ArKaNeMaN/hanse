@@ -38,6 +38,12 @@ import {
   handoffBodyFromText,
   handoffFromInfo,
   handoffNoteFromText,
+  imageActionLabel,
+  imageBuildAttach,
+  imageCardFromView,
+  imageGateFromView,
+  imagePollDelay,
+  imageWarningFromView,
   isHanseTool,
   isHiddenSyntheticTextPart,
   isSlashCommandOnly,
@@ -104,6 +110,7 @@ const AUTOSCROLL_THRESHOLD_PX = 32;
 const HISTORY_SCROLL_THRESHOLD_PX = 120;
 const HISTORY_MAX_CONTINUE_PAGES = 3;
 const RUNTIME_POLL_MS = 10000;
+const IMAGE_REFRESH_MS = 60000;
 const RUNTIME_UNAVAILABLE_TITLE = "Runtime status unavailable";
 const CONTEXT_POLL_MS = 2000;
 const CONTEXT_POLL_MAX_MS = 10 * 60 * 1000;
@@ -187,6 +194,9 @@ function main() {
   const sessionError = document.getElementById("session-error");
   const messagesEl = document.getElementById("chat-messages");
   const scrollEl = document.getElementById("chat-scroll");
+  const viewportEl = document.querySelector(".chat-thread__viewport");
+  const imageGateEl = document.getElementById("image-gate");
+  const imageWarningEl = document.getElementById("image-warning");
   const historyEl = document.getElementById("chat-history");
   const historyLabelEl = document.getElementById("chat-history-label");
   const generatingEl = document.getElementById("chat-generating");
@@ -378,6 +388,15 @@ function main() {
   let sessionsLoaded = false;
   let runtimeState = null;
   let runtimeTimer = null;
+  let chatBooted = false;
+  let imageBlocked = false;
+  let imageGatePending = false;
+  let imageActionBusy = false;
+  let imagePollTimer = null;
+  let imagePollStartedAt = 0;
+  let imageBuildMode = null;
+  let imageRefreshTimer = null;
+  const imageIntentKey = `hanse.chat.imageIntent:${projectId}:${appKey}`;
   const contextBySession = new Map();
   const contextSeqBySession = new Map();
   let contextEpoch = 0;
@@ -1275,6 +1294,10 @@ function main() {
         if (typeof parsed.messageID === "string") failure.messageID = parsed.messageID;
         if (typeof parsed.sessionID === "string") failure.sessionID = parsed.sessionID;
       }
+      if (failure.code === "image_not_ready" || failure.code === "default_image_unavailable") {
+        imageGatePending = true;
+        void enterImageGate();
+      }
       throw failure;
     }
     return response.json();
@@ -1919,6 +1942,17 @@ function main() {
 
   function updateComposerAction() {
     if (!(sendButton instanceof HTMLButtonElement)) return;
+    if (imageBlocked) {
+      sendButton.type = "submit";
+      sendButton.disabled = true;
+      sendButton.classList.remove("btn-danger");
+      sendButton.classList.add("btn-primary");
+      sendButton.setAttribute("aria-label", "Send message");
+      sendButton.title = "Build the agent image to start the chat";
+      setComposerButtonIcon("send");
+      setComposerButtonLabel("Send");
+      return;
+    }
     const statusType = currentStatusType();
     const action = composerAction({
       turnActive: statusType === "busy" || statusType === "retry",
@@ -2030,6 +2064,7 @@ function main() {
   }
 
   function showSessionsError(error, retry) {
+    if (imageBlocked || imageGatePending || isTypedImageError(error)) return;
     if (sessionsList === null) return;
     sessionsFailed = true;
     sessionsSignature = "";
@@ -3746,6 +3781,7 @@ function main() {
   }
 
   function showThreadError(error, retry) {
+    if (imageBlocked || imageGatePending || isTypedImageError(error)) return;
     if (messagesEl === null) return;
     resetFeedDom();
     sessionSnapshotTooLarge = false;
@@ -3790,6 +3826,7 @@ function main() {
 
   function applyRuntimeState(state) {
     const normalized = state === "failed" ? "error" : state;
+    const previous = runtimeState;
     runtimeState = normalized;
     for (const target of [runtimeEl, contextRuntimeEl]) {
       if (target === null) continue;
@@ -3797,6 +3834,11 @@ function main() {
       target.removeAttribute("title");
     }
     renderSessions();
+    if (normalized === "running" && previous !== "running") {
+      void refreshImageView({ refresh: true }).then(() => {
+        if (!chatBooted && !imageBlocked) void bootChatCore();
+      });
+    }
   }
 
   function markRuntimeUnavailable() {
@@ -3848,6 +3890,433 @@ function main() {
   function syncRuntimePolling() {
     if (document.hidden) stopRuntimePolling();
     else startRuntimePolling();
+  }
+
+  function imageUrl(options) {
+    const settings = options || {};
+    const params = new URLSearchParams();
+    if (projectId.length > 0) params.set("project", projectId);
+    if (settings.refresh === true) params.set("refresh", "1");
+    const query = params.toString();
+    return `${apiBase()}/image${query.length === 0 ? "" : `?${query}`}`;
+  }
+
+  async function fetchImageView(options) {
+    try {
+      const response = await fetch(imageUrl(options), {
+        credentials: "same-origin",
+        cache: "no-store",
+        headers: { accept: "application/json" },
+      });
+      if (response.status === 401) {
+        const next = `${window.location.pathname}${window.location.search}`;
+        window.location.assign(`/login?next=${encodeURIComponent(next)}`);
+        return null;
+      }
+      if (!response.ok) return null;
+      const data = await response.json();
+      return data !== null && typeof data === "object" ? data : null;
+    } catch {
+      return null;
+    }
+  }
+
+  async function refreshImageView(options) {
+    const view = await fetchImageView(options);
+    if (view !== null) applyImageView(view);
+    return view;
+  }
+
+  async function enterImageGate() {
+    const view = await fetchImageView({ refresh: true });
+    imageGatePending = false;
+    if (view !== null) applyImageView(view);
+  }
+
+  function isTypedImageError(error) {
+    return (
+      error !== null &&
+      typeof error === "object" &&
+      (error.code === "image_not_ready" || error.code === "default_image_unavailable")
+    );
+  }
+
+  function imageFailureMessage(error) {
+    if (error instanceof Error && error.message.trim().length > 0) {
+      return error.message;
+    }
+    return "The image action failed. Try again.";
+  }
+
+  function applyImageView(view) {
+    imageGatePending = false;
+    const gate = imageGateFromView(view);
+    setImageBlocked(gate.blocked);
+    renderImageCard(view, gate);
+    renderImageWarning(view);
+  }
+
+  function setImageBlocked(blocked) {
+    imageBlocked = blocked;
+    if (composer !== null) composer.hidden = blocked;
+    if (promptEl instanceof HTMLTextAreaElement) promptEl.disabled = blocked;
+    if (sendButton instanceof HTMLButtonElement) sendButton.disabled = blocked;
+    if (viewportEl !== null) viewportEl.hidden = blocked;
+    if (blocked) {
+      if (imageWarningEl !== null) {
+        imageWarningEl.hidden = true;
+        imageWarningEl.replaceChildren();
+        imageWarningEl.removeAttribute("data-tone");
+      }
+    } else {
+      syncComposer();
+    }
+  }
+
+  function renderImageCard(view, gate) {
+    if (imageGateEl === null) return;
+    const card = imageCardFromView(view);
+    if (card === null || !gate.blocked) {
+      imageGateEl.hidden = true;
+      imageGateEl.replaceChildren();
+      imageGateEl.removeAttribute("data-tone");
+      return;
+    }
+    imageGateEl.dataset.tone =
+      gate.state === "build_error" ? "error" : gate.state === "building" ? "info" : "warning";
+    imageGateEl.replaceChildren(
+      element("h2", "chat-image-gate__title", card.title),
+      element("p", "chat-image-gate__body", card.body),
+    );
+    if (card.action !== "none") {
+      const actions = element("div", "chat-image-gate__actions");
+      const button = element("button", "btn btn-primary btn-sm", card.actionLabel);
+      button.type = "button";
+      button.addEventListener("click", () => runImageAction(card.action));
+      actions.append(button);
+      imageGateEl.append(actions);
+    }
+    imageGateEl.hidden = false;
+  }
+
+  function renderImageWarning(view) {
+    if (imageWarningEl === null) return;
+    const warning = imageWarningFromView(view);
+    if (warning === null || imageBlocked) {
+      imageWarningEl.hidden = true;
+      imageWarningEl.replaceChildren();
+      imageWarningEl.removeAttribute("data-tone");
+      return;
+    }
+    imageWarningEl.dataset.tone = warning.tone;
+    imageWarningEl.replaceChildren(
+      element("h2", "chat-image-warning__title", warning.title),
+      element("p", "chat-image-warning__body", warning.body),
+    );
+    if (warning.action !== "none") {
+      const label = imageActionLabel(warning.action);
+      if (label.length > 0) {
+        const actions = element("div", "chat-image-warning__actions");
+        const button = element("button", "btn btn-secondary btn-sm", label);
+        button.type = "button";
+        button.addEventListener("click", () => runImageAction(warning.action));
+        actions.append(button);
+        imageWarningEl.append(actions);
+      }
+    }
+    imageWarningEl.hidden = false;
+  }
+
+  function runImageAction(action) {
+    if (imageActionBusy) return;
+    if (action === "build_start" || action === "rebuild_restart") {
+      void startImageBuildFlow(action);
+      return;
+    }
+    if (action === "restart") {
+      void restartAgentFlow();
+    }
+  }
+
+  function setImageActionBusy(busy) {
+    imageActionBusy = busy;
+    for (const host of [imageGateEl, imageWarningEl]) {
+      if (host === null) continue;
+      for (const button of host.querySelectorAll("button")) {
+        if (button instanceof HTMLButtonElement) button.disabled = busy;
+      }
+    }
+  }
+
+  function readImageIntent() {
+    try {
+      const raw = window.sessionStorage.getItem(imageIntentKey);
+      if (raw === null || raw.length === 0) return null;
+      const parsed = JSON.parse(raw);
+      if (parsed === null || typeof parsed !== "object") return null;
+      const action = parsed.action;
+      if (action !== "build_start" && action !== "rebuild_restart") return null;
+      return {
+        action,
+        startedAt:
+          typeof parsed.startedAt === "number" && Number.isFinite(parsed.startedAt)
+            ? parsed.startedAt
+            : null,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  function writeImageIntent(action, startedAt) {
+    try {
+      window.sessionStorage.setItem(
+        imageIntentKey,
+        JSON.stringify({ action, startedAt: startedAt ?? Date.now() }),
+      );
+    } catch {
+      return;
+    }
+  }
+
+  function clearImageIntent() {
+    try {
+      window.sessionStorage.removeItem(imageIntentKey);
+    } catch {
+      return;
+    }
+  }
+
+  async function resumeImageIntent(view) {
+    const intent = readImageIntent();
+    if (intent === null || view === null) return false;
+    if (imageBuildAttach(view)) {
+      startImagePolling(intent.action, intent.startedAt);
+      return true;
+    }
+    if (view.state === "building") {
+      clearImageIntent();
+      return false;
+    }
+    if (typeof view.usableImageRef === "string" && view.usableImageRef.length > 0) {
+      await continueImageAction(intent.action);
+      return true;
+    }
+    clearImageIntent();
+    return false;
+  }
+
+  async function startImageBuildFlow(action) {
+    if (imageActionBusy) return;
+    setImageActionBusy(true);
+    writeImageIntent(action);
+    try {
+      await api(withProject(`${apiBase()}/build`), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      });
+      startImagePolling(action);
+    } catch (error) {
+      if (
+        error !== null &&
+        typeof error === "object" &&
+        error.status === 409 &&
+        error.code === "build_in_progress"
+      ) {
+        const view = await fetchImageView({ refresh: true });
+        if (view !== null) applyImageView(view);
+        if (imageBuildAttach(view)) {
+          startImagePolling(action);
+          return;
+        }
+        clearImageIntent();
+        showToast("Another image build is running. Retry when it finishes.", "error");
+      } else {
+        clearImageIntent();
+        showToast(imageFailureMessage(error), "error");
+        void refreshImageView({ refresh: true });
+      }
+    } finally {
+      setImageActionBusy(false);
+    }
+  }
+
+  function stopImagePolling() {
+    if (imagePollTimer !== null) {
+      window.clearTimeout(imagePollTimer);
+      imagePollTimer = null;
+    }
+  }
+
+  function startImagePolling(action, startedAt) {
+    stopImagePolling();
+    imageBuildMode = action;
+    imagePollStartedAt =
+      typeof startedAt === "number" && Number.isFinite(startedAt) && startedAt > 0
+        ? Math.min(startedAt, Date.now())
+        : Date.now();
+    void pollImageBuild();
+  }
+
+  function scheduleImagePoll() {
+    if (imagePollTimer !== null) return;
+    const delay = imagePollDelay(Date.now() - imagePollStartedAt);
+    if (delay === 0) {
+      clearImageIntent();
+      imageBuildMode = null;
+      showToast(
+        "The image build is taking too long. Check the image on the application page.",
+        "error",
+      );
+      return;
+    }
+    imagePollTimer = window.setTimeout(() => {
+      imagePollTimer = null;
+      void pollImageBuild();
+    }, delay);
+  }
+
+  async function pollImageBuild() {
+    if (imageBuildMode === null) return;
+    const view = await fetchImageView({ refresh: true });
+    if (view !== null) applyImageView(view);
+    if (view === null) {
+      scheduleImagePoll();
+      return;
+    }
+    if (view.state === "building") {
+      scheduleImagePoll();
+      return;
+    }
+    stopImagePolling();
+    const mode = imageBuildMode;
+    imageBuildMode = null;
+    if (view.state === "build_error") {
+      clearImageIntent();
+      return;
+    }
+    if (typeof view.usableImageRef === "string" && view.usableImageRef.length > 0) {
+      await continueImageAction(mode);
+      return;
+    }
+    clearImageIntent();
+  }
+
+  async function continueImageAction(mode) {
+    if (mode === "rebuild_restart") {
+      await restartAgentFlow();
+      return;
+    }
+    await startAgentFlow();
+  }
+
+  async function startAgentFlow() {
+    try {
+      await api(withProject(`${apiBase()}/start`), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      });
+    } catch (error) {
+      if (isTypedImageError(error)) {
+        await refreshImageView({ refresh: true });
+        showToast("The image is not ready yet. Retry from the card.", "error");
+        return;
+      }
+      clearImageIntent();
+      showToast(imageFailureMessage(error), "error");
+      await refreshImageView({ refresh: true });
+      return;
+    }
+    await afterImageReady();
+  }
+
+  async function restartAgentFlow() {
+    if (imageActionBusy) return;
+    setImageActionBusy(true);
+    try {
+      await api(withProject(`${apiBase()}/restart`), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      });
+    } catch (error) {
+      clearImageIntent();
+      if (isTypedImageError(error)) {
+        await refreshImageView({ refresh: true });
+        showToast("The new image is not ready. The agent keeps its current container.", "error");
+        return;
+      }
+      showToast(imageFailureMessage(error), "error");
+      await refreshImageView({ refresh: true });
+      return;
+    } finally {
+      setImageActionBusy(false);
+    }
+    await afterImageReady();
+  }
+
+  async function selectLastSession() {
+    if (sessions.length === 0) return;
+    const last = sessions[sessions.length - 1];
+    if (last === undefined || last.id === undefined) return;
+    const id = String(last.id);
+    if (sessionId === id) return;
+    await selectSession(id, { focus: false }).catch(() => {});
+  }
+
+  async function afterImageReady() {
+    clearImageIntent();
+    failures = 0;
+    await refreshImageView({ refresh: true });
+    if (chatBooted) {
+      reconnectStream();
+    } else {
+      await bootChatCore();
+    }
+    await selectLastSession();
+    await refreshImageView({ refresh: true });
+    syncComposer();
+    announce("Agent is ready.");
+  }
+
+  async function bootChatCore() {
+    if (chatBooted) return;
+    chatBooted = true;
+    const sessionBoot = bootSessions();
+    subscribe();
+    hydrate().catch(() => {});
+    refreshRuntime().catch(() => {});
+    await sessionBoot.catch(() => {});
+  }
+
+  async function bootChat() {
+    const view = await fetchImageView();
+    applyImageView(view);
+    if (imageGateFromView(view).blocked) {
+      refreshRuntime().catch(() => {});
+      await resumeImageIntent(view);
+      return;
+    }
+    void bootChatCore();
+    void resumeImageIntent(view);
+  }
+
+  function startImageRefresh() {
+    if (imageRefreshTimer !== null) return;
+    imageRefreshTimer = window.setInterval(() => {
+      if (document.hidden) return;
+      if (runtimeState !== "running" && runtimeState !== "starting") return;
+      void refreshImageView({ refresh: true });
+    }, IMAGE_REFRESH_MS);
+  }
+
+  function refreshImageOnVisible() {
+    if (document.visibilityState !== "visible") return;
+    if (runtimeState === "running" || runtimeState === "starting") {
+      void refreshImageView({ refresh: true });
+    }
   }
 
   function contextHasUsage(snapshot) {
@@ -13342,10 +13811,9 @@ function main() {
   }
 
   hydratePreviews();
-  bootSessions();
-  subscribe();
-  hydrate().catch(() => {});
-  refreshRuntime().catch(() => {});
+  document.addEventListener("visibilitychange", refreshImageOnVisible);
+  startImageRefresh();
+  void bootChat();
   void refreshPreviews();
   startPreviewPolling();
   syncRuntimePolling();

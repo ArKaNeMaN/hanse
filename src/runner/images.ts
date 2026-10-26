@@ -4,14 +4,14 @@ import { isValidAppId } from "../agent/spec.js";
 import { resolveWithinRoot } from "../runtime/app-path.js";
 import { boundedErrorMessage } from "../runtime/build-spec.js";
 import { BuildContextError, createBuildContext, DEFAULT_DOCKERFILE } from "./build-context.js";
-import type { DockerBuildRuntime } from "./docker.js";
+import type { DockerBuildRuntime, DockerImageInspect } from "./docker.js";
 import {
   type ImageValidationResult,
   type ImageValidationRuntime,
   ImageValidationService,
 } from "./image-validation.js";
 import { appContainerName } from "./names.js";
-import type { RunnerConfig } from "./validate.js";
+import { normalizeImageReference, type RunnerConfig } from "./validate.js";
 
 export const MAX_BUILD_LOG_BYTES = 256 * 1024;
 export const BUILD_MEMORY_BYTES = 2 * 1024 * 1024 * 1024;
@@ -28,13 +28,24 @@ const REQUEST_KEYS: ReadonlySet<string> = new Set([
   "appDir",
   "dockerfile",
   "baseImage",
+  "baseKind",
   "buildArgs",
   "specHash",
+  "hashVersion",
 ]);
 const BUILD_ARG_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const SPEC_HASH = /^[a-f0-9]{64}$/;
+const DIGEST = /^sha256:[a-f0-9]{64}$/;
 
 export type RunnerImageStatus = "missing" | "building" | "ready" | "error";
+export type RunnerBaseKind = "default" | "base" | "explicit" | "unknown";
+
+export const RUNNER_BASE_KINDS: ReadonlySet<string> = new Set([
+  "default",
+  "base",
+  "explicit",
+  "unknown",
+]);
 
 export interface RunnerImageRecord {
   appId: string;
@@ -45,12 +56,54 @@ export interface RunnerImageRecord {
   logs: string;
   error: string | null;
   updatedAt: string | null;
+  targetRef: string | null;
+  specHash: string | null;
+  specHashVersion: number | null;
+  hashVersion: number | null;
+  baseKind: RunnerBaseKind | null;
+  baseRef: string | null;
+  baseDigest: string | null;
 }
 
 export interface ImageBuildResult {
   readonly buildId: string;
   readonly appId: string;
   readonly status: "building";
+  readonly targetRef: string;
+}
+
+/** Resolve a manifest digest: explicit `@sha256` first, then exactly one matching RepoDigests entry. */
+export function resolveImageDigest(
+  reference: string,
+  repoDigests: readonly string[] | null | undefined,
+): string | null {
+  const explicit = digestFromReference(reference);
+  if (explicit !== null) return explicit;
+  const repository = repositoryOf(reference);
+  const matches = new Set<string>();
+  for (const entry of repoDigests ?? []) {
+    if (typeof entry !== "string") continue;
+    const at = entry.indexOf("@");
+    if (at <= 0) continue;
+    if (entry.slice(0, at) !== repository) continue;
+    const digest = entry.slice(at + 1);
+    if (DIGEST.test(digest)) matches.add(digest);
+  }
+  return matches.size === 1 ? (matches.values().next().value ?? null) : null;
+}
+
+function digestFromReference(reference: string): string | null {
+  const at = reference.indexOf("@");
+  if (at < 0) return null;
+  const digest = reference.slice(at + 1);
+  return DIGEST.test(digest) ? digest : null;
+}
+
+function repositoryOf(reference: string): string {
+  const withoutDigest = reference.split("@")[0] ?? reference;
+  const colon = withoutDigest.lastIndexOf(":");
+  const slash = withoutDigest.lastIndexOf("/");
+  return colon > slash ? withoutDigest.slice(0, colon) : withoutDigest;
 }
 
 export class ImageBuildError extends Error {
@@ -70,8 +123,10 @@ interface ValidatedBuildRequest {
   readonly appDir: string;
   readonly dockerfile: string;
   readonly baseImage: string;
+  readonly baseKind: RunnerBaseKind | null;
   readonly buildArgs: Record<string, string>;
   readonly specHash: string | undefined;
+  readonly hashVersion: number | null;
 }
 
 interface BuildJob {
@@ -85,12 +140,16 @@ export interface ImageBuildServiceOptions {
   readonly config: RunnerConfig;
   readonly build?: DockerBuildRuntime;
   readonly validation?: ImageValidationRuntime;
+  readonly inspectImage?: (reference: string) => Promise<DockerImageInspect | undefined>;
 }
 
 export class ImageBuildService {
   readonly #config: RunnerConfig;
   readonly #build: DockerBuildRuntime | undefined;
   readonly #validation: ImageValidationRuntime | undefined;
+  readonly #inspectImage:
+    | ((reference: string) => Promise<DockerImageInspect | undefined>)
+    | undefined;
   readonly #byApp = new Map<string, RunnerImageRecord>();
   readonly #byBuild = new Map<string, RunnerImageRecord>();
   readonly #starting = new Map<string, string>();
@@ -101,6 +160,7 @@ export class ImageBuildService {
     this.#config = options.config;
     this.#build = options.build;
     this.#validation = options.validation;
+    this.#inspectImage = options.inspectImage;
   }
 
   async start(raw: unknown): Promise<ImageBuildResult> {
@@ -129,7 +189,11 @@ export class ImageBuildService {
       });
       this.#assertStartAllowed(request.appId, buildId);
       const tag = `${appContainerName(request.appId)}:${buildId}`;
+      const baseKind = request.baseKind ?? inferBaseKind(request.baseImage, this.#config);
+      const baseDigest =
+        baseKind === "unknown" ? null : await this.#resolveBaseDigest(request.baseImage);
       const previous = this.#byApp.get(request.appId);
+      const hashVersion = request.hashVersion ?? (request.specHash === undefined ? null : 2);
       const record: RunnerImageRecord = {
         appId: request.appId,
         status: "building",
@@ -139,18 +203,25 @@ export class ImageBuildService {
         logs: "",
         error: null,
         updatedAt: new Date().toISOString(),
+        targetRef: tag,
+        specHash: request.specHash ?? null,
+        specHashVersion: hashVersion,
+        hashVersion,
+        baseKind,
+        baseRef: baseKind === "unknown" ? null : request.baseImage,
+        baseDigest,
       };
       this.#byApp.set(request.appId, record);
       this.#byBuild.set(buildId, record);
 
       const job: BuildJob = {
         tag,
-        labels: buildLabels(request, buildId, this.#config),
+        labels: buildLabels(request, baseKind, baseDigest, buildId, this.#config),
         request,
         tar: context.tar,
       };
       void this.#execute(record, job).catch(() => undefined);
-      return { buildId, appId: request.appId, status: "building" };
+      return { buildId, appId: request.appId, status: "building", targetRef: tag };
     } catch (error) {
       if (this.#active === buildId) {
         this.#active = undefined;
@@ -175,6 +246,13 @@ export class ImageBuildService {
         logs: "",
         error: null,
         updatedAt: new Date().toISOString(),
+        targetRef: null,
+        specHash: null,
+        specHashVersion: null,
+        hashVersion: null,
+        baseKind: null,
+        baseRef: null,
+        baseDigest: null,
       };
     }
     return record === undefined ? missingRecord(appId) : { ...record };
@@ -182,7 +260,20 @@ export class ImageBuildService {
 
   getBuild(buildId: string): RunnerImageRecord | undefined {
     const record = this.#byBuild.get(buildId);
-    return record === undefined ? undefined : { ...record };
+    if (record !== undefined) return { ...record };
+    const appId = [...this.#starting].find(([, id]) => id === buildId)?.[0];
+    return appId === undefined ? undefined : this.get(appId);
+  }
+
+  /** Tags of builds that are still running; the image GC unions these into its protected set. */
+  protectedBuildTags(): string[] {
+    const tags = new Set<string>();
+    for (const record of [...this.#byApp.values(), ...this.#byBuild.values()]) {
+      if (record.status === "building" && record.targetRef !== null) {
+        tags.add(record.targetRef);
+      }
+    }
+    return [...tags];
   }
 
   beginDelete(appId: string): void {
@@ -312,6 +403,19 @@ export class ImageBuildService {
     if (this.#validation === undefined) return undefined;
     return new ImageValidationService({ runtime: this.#validation }).validate(imageRef, appId);
   }
+
+  async #resolveBaseDigest(reference: string): Promise<string | null> {
+    const explicit = digestFromReference(reference);
+    if (explicit !== null) return explicit;
+    if (this.#inspectImage === undefined) return null;
+    let inspected: DockerImageInspect | undefined;
+    try {
+      inspected = await this.#inspectImage(reference);
+    } catch {
+      return null;
+    }
+    return resolveImageDigest(reference, inspected?.RepoDigests);
+  }
 }
 
 function appIdFromRaw(raw: unknown): string | undefined {
@@ -330,20 +434,38 @@ function missingRecord(appId: string): RunnerImageRecord {
     logs: "",
     error: null,
     updatedAt: null,
+    targetRef: null,
+    specHash: null,
+    specHashVersion: null,
+    hashVersion: null,
+    baseKind: null,
+    baseRef: null,
+    baseDigest: null,
   };
 }
 
 function buildLabels(
   request: ValidatedBuildRequest,
+  baseKind: RunnerBaseKind,
+  baseDigest: string | null,
   buildId: string,
   config: RunnerConfig,
 ): Record<string, string> {
+  const baseRef = baseKind === "unknown" ? null : request.baseImage;
   return {
     "hanse.app.id": request.appId,
     "hanse.image.version": request.specHash ?? buildId,
-    "hanse.base.digest": digestOrReference(request.baseImage),
+    "hanse.base.kind": baseKind,
+    ...(baseRef === null ? {} : { "hanse.base.ref": baseRef }),
+    ...(baseDigest === null ? {} : { "hanse.base.digest": baseDigest }),
     "hanse.default.digest": digestOrReference(config.defaultImage ?? request.baseImage),
   };
+}
+
+function inferBaseKind(baseImage: string, config: RunnerConfig): RunnerBaseKind {
+  if (config.defaultImage !== undefined && baseImage === config.defaultImage) return "default";
+  if (config.baseImage !== undefined && baseImage === config.baseImage) return "base";
+  return "explicit";
 }
 
 function digestOrReference(reference: string): string {
@@ -390,18 +512,21 @@ async function validateBuildRequest(
     throw new ImageBuildError(400, "dockerfile must be a safe relative path inside the app");
   }
 
-  const baseImage = value.baseImage;
-  if (
-    typeof baseImage !== "string" ||
-    baseImage.length === 0 ||
-    /\s/.test(baseImage) ||
-    baseImage.includes("\0")
-  ) {
+  const rawBaseImage = value.baseImage;
+  const baseImage =
+    typeof rawBaseImage === "string" ? normalizeImageReference(rawBaseImage) : undefined;
+  if (baseImage === undefined) {
     throw new ImageBuildError(400, "baseImage must be a non-empty image reference");
   }
-  if (!config.allowedImages.has(baseImage) && baseImage !== config.defaultImage) {
+  if (
+    !config.allowedImages.has(baseImage) &&
+    baseImage !== config.defaultImage &&
+    baseImage !== config.baseImage
+  ) {
     throw new ImageBuildError(400, `baseImage is not allowed by the runner: ${baseImage}`);
   }
+
+  const baseKind = parseBaseKind(value.baseKind);
 
   const buildArgs = parseBuildArgs(value.buildArgs);
 
@@ -410,7 +535,25 @@ async function validateBuildRequest(
     throw new ImageBuildError(400, "specHash must be a 64-character lowercase hex digest");
   }
 
-  return { appId, appDir, dockerfile, baseImage, buildArgs, specHash };
+  const hashVersion = parseHashVersion(value.hashVersion);
+
+  return { appId, appDir, dockerfile, baseImage, baseKind, buildArgs, specHash, hashVersion };
+}
+
+function parseBaseKind(value: unknown): RunnerBaseKind | null {
+  if (value === undefined) return null;
+  if (typeof value !== "string" || !RUNNER_BASE_KINDS.has(value)) {
+    throw new ImageBuildError(400, "baseKind must be one of default, base, explicit, or unknown");
+  }
+  return value as RunnerBaseKind;
+}
+
+function parseHashVersion(value: unknown): number | null {
+  if (value === undefined) return null;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1 || value > 2) {
+    throw new ImageBuildError(400, "hashVersion must be 1 or 2");
+  }
+  return value;
 }
 
 function isSafeDockerfile(value: string): boolean {

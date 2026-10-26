@@ -33,6 +33,7 @@ const DEFAULT_PROJECT_ID = "11111111-1111-4111-8111-111111111111";
 const DEFAULT_APP = "web";
 const PROJECT_ID = process.env.CHAT_QA_PROJECT ?? DEFAULT_PROJECT_ID;
 const APP = path.basename(process.env.CHAT_QA_APP ?? DEFAULT_APP);
+const CUSTOM_APP = "image-custom";
 const LIVE = process.argv.includes("--live");
 const CHAT_QA_ONLY = (process.env.CHAT_QA_ONLY ?? "")
   .split(",")
@@ -258,13 +259,27 @@ async function startServer() {
   const workspace = path.join(tempRoot, "workspace");
   const stateHome = path.join(tempRoot, "state");
   const appRoot = path.join(workspace, APP);
+  const customAppRoot = path.join(workspace, CUSTOM_APP);
   mkdirSync(path.join(workspace, ".hanse"), { recursive: true });
   mkdirSync(path.join(appRoot, ".hanse"), { recursive: true });
+  mkdirSync(path.join(customAppRoot, ".hanse"), { recursive: true });
   mkdirSync(stateHome, { recursive: true });
 
   writeFileSync(
     path.join(appRoot, ".hanse", "app.yaml"),
     [`name: ${APP}`, "kind: web", ""].join("\n"),
+    "utf8",
+  );
+  writeFileSync(
+    path.join(customAppRoot, ".hanse", "app.yaml"),
+    [`name: ${CUSTOM_APP}`, "kind: web", "build:", "  dockerfile: .hanse/Dockerfile", ""].join(
+      "\n",
+    ),
+    "utf8",
+  );
+  writeFileSync(
+    path.join(customAppRoot, ".hanse", "Dockerfile"),
+    ["FROM hanse-agent-base:qa", ""].join("\n"),
     "utf8",
   );
   writeFileSync(
@@ -275,6 +290,8 @@ async function startServer() {
       "base_branch: main",
       "apps:",
       `  - path: ${APP}`,
+      "    kind: web",
+      `  - path: ${CUSTOM_APP}`,
       "    kind: web",
       "",
     ].join("\n"),
@@ -580,6 +597,12 @@ async function installRoutes(page, config) {
     abortCalls: [],
     sessionGets: [],
     deleteCalls: [],
+    imageGets: [],
+    buildPosts: [],
+    startPosts: [],
+    restartPosts: [],
+    runtimeGets: [],
+    imageActions: [],
   };
 
   const messages = typeof config.messages === "function" ? config.messages : () => config.messages;
@@ -600,6 +623,82 @@ async function installRoutes(page, config) {
     const url = new URL(request.url());
     const pathname = url.pathname;
     const method = request.method();
+
+    if (config.image !== undefined) {
+      const imageAppKey = appKeyFromPath(pathname);
+      if (imageAppKey !== null) {
+        const endpoint = pathname.slice(pathname.lastIndexOf("/") + 1);
+        const at = Date.now();
+        if (endpoint === "image" && method === "GET") {
+          const call = {
+            appKey: imageAppKey,
+            at,
+            refresh: url.searchParams.get("refresh") === "1",
+            index: state.imageGets.length + 1,
+          };
+          state.imageGets.push(call);
+          const view =
+            typeof config.image.view === "function"
+              ? await config.image.view({ state, call, appKey: imageAppKey })
+              : (config.image.view ?? imageStateView({ appKey: imageAppKey }));
+          return fixtureResponse(route, view);
+        }
+        if (endpoint === "build" && method === "POST") {
+          const call = {
+            appKey: imageAppKey,
+            at,
+            body: request.postData(),
+            index: state.buildPosts.length + 1,
+          };
+          state.buildPosts.push(call);
+          state.imageActions.push({ kind: "build", at, appKey: imageAppKey });
+          const result =
+            typeof config.image.build === "function"
+              ? await config.image.build({ state, call, appKey: imageAppKey })
+              : config.image.build;
+          return fixtureResponse(route, result ?? { accepted: true, buildId: "build_qa" }, 202);
+        }
+        if (endpoint === "start" && method === "POST") {
+          const call = {
+            appKey: imageAppKey,
+            at,
+            body: request.postData(),
+            index: state.startPosts.length + 1,
+          };
+          state.startPosts.push(call);
+          state.imageActions.push({ kind: "start", at, appKey: imageAppKey });
+          const result =
+            typeof config.image.start === "function"
+              ? await config.image.start({ state, call, appKey: imageAppKey })
+              : config.image.start;
+          return fixtureResponse(route, result ?? { started: true });
+        }
+        if (endpoint === "restart" && method === "POST") {
+          const call = {
+            appKey: imageAppKey,
+            at,
+            body: request.postData(),
+            index: state.restartPosts.length + 1,
+          };
+          state.restartPosts.push(call);
+          state.imageActions.push({ kind: "restart", at, appKey: imageAppKey });
+          const result =
+            typeof config.image.restart === "function"
+              ? await config.image.restart({ state, call, appKey: imageAppKey })
+              : config.image.restart;
+          return fixtureResponse(route, result ?? { restarted: true });
+        }
+        if (endpoint === "runtime" && method === "GET") {
+          const call = { appKey: imageAppKey, at };
+          state.runtimeGets.push(call);
+          const result =
+            typeof config.image.runtime === "function"
+              ? await config.image.runtime({ state, call, appKey: imageAppKey })
+              : (config.image.runtime ?? { state: "stopped" });
+          return fixtureResponse(route, result);
+        }
+      }
+    }
 
     if (pathname.includes("/questions/") && pathname.endsWith("/reply")) {
       state.replyCount += 1;
@@ -960,6 +1059,185 @@ async function waitForPalette(page) {
 async function fillComposer(page, value) {
   const prompt = page.locator("#chat-prompt");
   await prompt.fill(value);
+}
+
+// ---------------------------------------------------------------------------
+// Image fixtures and UI probes
+// ---------------------------------------------------------------------------
+
+const QA_DIGEST_A = `sha256:${"a".repeat(64)}`;
+const QA_DIGEST_B = `sha256:${"b".repeat(64)}`;
+const QA_DIGEST_C = `sha256:${"c".repeat(64)}`;
+
+/**
+ * One deterministic `GET /api/apps/:app/image` view. Every field the chat gate and both
+ * application panels read is present, so a scenario only names the values it is asserting.
+ */
+function imageStateView(overrides = {}) {
+  return {
+    appId: "app_image_qa",
+    appKey: APP,
+    status: "missing",
+    imageRef: null,
+    imageId: null,
+    buildId: null,
+    hash: null,
+    currentHash: null,
+    baseDigest: null,
+    builtAt: null,
+    error: null,
+    updatedAt: null,
+    previousImageRef: null,
+    previousImageBuiltAt: null,
+    runnerAvailable: true,
+    buildConfigured: true,
+    state: "not_ready",
+    running: false,
+    usableImageRef: null,
+    targetImageId: null,
+    appliedImageId: null,
+    hashVersion: 2,
+    currentBaseDigest: null,
+    baseKind: null,
+    baseRef: null,
+    baseDrift: null,
+    hashDrift: null,
+    blocked: true,
+    selectedImage: "missing",
+    imageBuildId: null,
+    latestBuildImageId: null,
+    ...overrides,
+  };
+}
+
+function appKeyFromPath(pathname) {
+  const match = /^\/api\/apps\/([^/]+)\/(image|build|start|restart|runtime)$/.exec(pathname);
+  return match === null ? null : decodeURIComponent(match[1]);
+}
+
+/** Apply a fixture response (`{httpStatus, body, delayMs}`) or a plain JSON body. */
+async function fixtureResponse(route, result, fallbackStatus = 200) {
+  if (result !== null && typeof result === "object" && typeof result.httpStatus === "number") {
+    if (typeof result.delayMs === "number" && result.delayMs > 0) await wait(result.delayMs);
+    return json(route, result.body ?? {}, result.httpStatus);
+  }
+  return json(route, result ?? {}, fallbackStatus);
+}
+
+async function imageUi(page) {
+  return page.evaluate(() => {
+    const text = (node) => (node ? (node.textContent ?? "").replace(/\s+/g, " ").trim() : "");
+    const gate = document.getElementById("image-gate");
+    const warning = document.getElementById("image-warning");
+    const composer = document.getElementById("chat-composer");
+    const viewport = document.querySelector(".chat-thread__viewport");
+    const prompt = document.getElementById("chat-prompt");
+    const send = document.getElementById("chat-send");
+    return {
+      gate: {
+        hidden: gate?.hidden ?? null,
+        role: gate?.getAttribute("role") ?? null,
+        tone: gate?.dataset.tone ?? null,
+        title: text(gate?.querySelector(".chat-image-gate__title")),
+        body: text(gate?.querySelector(".chat-image-gate__body")),
+        buttons: Array.from(gate?.querySelectorAll("button") ?? [], (node) => text(node)),
+      },
+      warning: {
+        hidden: warning?.hidden ?? null,
+        role: warning?.getAttribute("role") ?? null,
+        tone: warning?.dataset.tone ?? null,
+        title: text(warning?.querySelector(".chat-image-warning__title")),
+        body: text(warning?.querySelector(".chat-image-warning__body")),
+        buttons: Array.from(warning?.querySelectorAll("button") ?? [], (node) => text(node)),
+      },
+      composer: {
+        hidden: composer?.hidden ?? null,
+        promptDisabled: prompt?.disabled ?? null,
+        sendDisabled: send?.disabled ?? null,
+      },
+      viewportHidden: viewport?.hidden ?? null,
+      bodyText: text(document.body),
+      eventSourceCount: window.__qaEventSourceCount ?? 0,
+      toastText: text(document.getElementById("toast-region")),
+    };
+  });
+}
+
+async function waitForChatStream(page) {
+  await page.waitForFunction(() => (window.__qaEventSourceCount ?? 0) > 0, undefined, {
+    timeout: 5_000,
+  });
+}
+
+async function imagePanelUi(page) {
+  return page.evaluate(() => {
+    const text = (node) => (node ? (node.textContent ?? "").replace(/\s+/g, " ").trim() : "");
+    const panel = document.getElementById("image-panel");
+    const status = document.getElementById("image-status");
+    const rollbackRow = document.getElementById("image-rollback-ref")?.closest(".summary-row");
+    const rollbackBuiltRow = document
+      .getElementById("image-rollback-built")
+      ?.closest(".summary-row");
+    return {
+      present: panel !== null,
+      appKey: panel?.dataset.appKey ?? null,
+      panelStatus: panel?.dataset.status ?? null,
+      state: panel?.dataset.state ?? null,
+      statusText: text(status),
+      statusState: status?.dataset.state ?? null,
+      statusStatus: status?.dataset.status ?? null,
+      ref: text(document.getElementById("image-ref")),
+      hint: text(document.getElementById("image-hint")),
+      live: text(document.getElementById("image-live")),
+      baseKind: text(document.getElementById("image-base-kind")),
+      baseRef: text(document.getElementById("image-base-ref")),
+      baseDigest: text(document.getElementById("image-base-digest")),
+      rollbackRef: text(document.getElementById("image-rollback-ref")),
+      rollbackRowHidden: rollbackRow?.hidden ?? null,
+      rollbackBuiltRowHidden: rollbackBuiltRow?.hidden ?? null,
+      rollbackFormHidden: document.getElementById("image-rollback-form")?.hidden ?? null,
+      hasBuild: document.getElementById("image-build") !== null,
+      hasBuildForm: document.querySelector("#image-panel form[action*='/build']") !== null,
+      hasCheck: document.getElementById("image-check") !== null,
+      hasDetails: document.getElementById("image-details") !== null,
+      hasLogs: document.getElementById("image-logs") !== null,
+      errorText: text(document.getElementById("image-error")),
+      bodyText: text(document.body),
+    };
+  });
+}
+
+/** Phone/desktop and light/dark captures used by the image scenarios. */
+async function captureImageVariants(page, prefix, options = {}) {
+  for (const theme of ["dark", "light"]) {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.evaluate((next) => {
+      document.documentElement.dataset.theme = next;
+    }, theme);
+    await wait(80);
+    await shot(page, `${prefix}-1440-${theme}`);
+  }
+  // A fresh mobile load initializes the off-canvas layout; resizing the desktop page leaves
+  // stale side rails peeking into the 390 capture.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.reload({ waitUntil: "networkidle" });
+  if (typeof options.afterPhoneReload === "function") await options.afterPhoneReload(page);
+  await wait(150);
+  const overflow390 = await page.evaluate(
+    () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+  );
+  check(overflow390 === 0, `${prefix}: no horizontal overflow at 390 (${overflow390})`);
+  for (const theme of ["dark", "light"]) {
+    await page.evaluate((next) => {
+      document.documentElement.dataset.theme = next;
+    }, theme);
+    await wait(80);
+    await shot(page, `${prefix}-390-${theme}`);
+  }
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.reload({ waitUntil: "networkidle" });
+  if (typeof options.afterDesktopReload === "function") await options.afterDesktopReload(page);
+  await wait(150);
 }
 
 // ---------------------------------------------------------------------------
@@ -6164,6 +6442,971 @@ async function scenarioStop(browser, target) {
 // Live smoke (real managed app)
 // ---------------------------------------------------------------------------
 
+async function scenarioImageNotReady(browser, target) {
+  const { context, page, errors } = await newPage(browser, target);
+  try {
+    let phase = "not_ready";
+    const ready = () =>
+      imageStateView({
+        state: "current",
+        status: "ready",
+        imageRef: "hanse-agent-custom:qa",
+        usableImageRef: "hanse-agent-custom:qa",
+        running: true,
+        blocked: false,
+        selectedImage: "present",
+        imageId: QA_DIGEST_B,
+        targetImageId: QA_DIGEST_B,
+        appliedImageId: QA_DIGEST_B,
+      });
+    const routeState = await installRoutes(page, {
+      sessionId: THREADS.main,
+      messages: [],
+      image: {
+        view: () =>
+          phase === "ready"
+            ? ready()
+            : imageStateView({
+                state: "not_ready",
+                status: "missing",
+                buildConfigured: true,
+                usableImageRef: null,
+                running: false,
+                blocked: true,
+                selectedImage: "missing",
+              }),
+        build: () => {
+          phase = "ready";
+          return { httpStatus: 202, body: { accepted: true, buildId: "build_qa" } };
+        },
+        runtime: () => ({ state: phase === "ready" ? "running" : "stopped" }),
+      },
+    });
+    await gotoChat(page, target);
+    await page.waitForSelector("#image-gate:not([hidden])");
+
+    const blocked = await imageUi(page);
+    assertEqual(blocked.gate.hidden, false, "not-ready shows the card");
+    assertEqual(blocked.gate.role, "region", "the card is an app-level region");
+    assertEqual(blocked.gate.title, "Image not built", "not-ready card title");
+    assertEqual(blocked.gate.body, "Build the image to start the agent.", "not-ready card body");
+    assertEqual(blocked.gate.buttons, ["Build and start"], "not-ready card action");
+    assertEqual(blocked.warning.hidden, true, "not-ready hides the warning");
+    assertEqual(blocked.composer.hidden, true, "not-ready hides the composer");
+    assertEqual(blocked.composer.promptDisabled, true, "not-ready disables the prompt");
+    assertEqual(blocked.viewportHidden, true, "not-ready hides the thread viewport");
+    assertEqual(routeState.sessionGets.length, 0, "not-ready never boots sessions");
+    assertEqual(blocked.eventSourceCount, 0, "not-ready never opens SSE");
+    await wait(250);
+    assertEqual(routeState.sessionGets.length, 0, "not-ready keeps sessions unrequested");
+    assertEqual(blocked.eventSourceCount, 0, "not-ready keeps SSE closed");
+    await captureImageVariants(page, "image-not-ready");
+
+    await page.locator("#image-gate button").click();
+    const deadline = Date.now() + 5_000;
+    while (routeState.startPosts.length === 0 && Date.now() < deadline) await wait(50);
+    await page.waitForFunction(
+      () => document.getElementById("chat-composer")?.hidden === false,
+      undefined,
+      {
+        timeout: 5_000,
+      },
+    );
+    await waitForChatStream(page);
+    const after = await imageUi(page);
+    assertEqual(routeState.buildPosts.length, 1, "build-and-start POSTs build once");
+    assertEqual(routeState.startPosts.length, 1, "build-and-start POSTs start once");
+    const buildIndex = routeState.imageActions.findIndex((entry) => entry.kind === "build");
+    const startIndex = routeState.imageActions.findIndex((entry) => entry.kind === "start");
+    check(
+      buildIndex >= 0 && startIndex > buildIndex,
+      `build precedes start (${JSON.stringify(routeState.imageActions.map((entry) => entry.kind))})`,
+    );
+    check(
+      routeState.imageGets.some((call) => call.refresh === true),
+      "the build poll uses ?refresh=1",
+    );
+    assertEqual(after.gate.hidden, true, "ready removes the card");
+    assertEqual(after.composer.hidden, false, "ready reveals the composer");
+    assertEqual(after.composer.promptDisabled, false, "ready enables the prompt");
+    assertEqual(after.eventSourceCount, 1, "ready subscribes to SSE once");
+    check(routeState.sessionGets.length >= 1, "ready boots sessions");
+    checkNoErrors(errors);
+    return {
+      buildPosts: routeState.buildPosts.length,
+      startPosts: routeState.startPosts.length,
+      imageActions: routeState.imageActions.map((entry) => entry.kind),
+    };
+  } finally {
+    await context.close();
+  }
+}
+
+async function scenarioImageBuilding(browser, target) {
+  const { context, page, errors } = await newPage(browser, target);
+  try {
+    let phase = "building";
+    const ready = () =>
+      imageStateView({
+        state: "current",
+        status: "ready",
+        imageRef: "hanse-agent-custom:qa",
+        usableImageRef: "hanse-agent-custom:qa",
+        running: true,
+        blocked: false,
+        selectedImage: "present",
+        imageId: QA_DIGEST_B,
+        targetImageId: QA_DIGEST_B,
+        appliedImageId: QA_DIGEST_B,
+      });
+    const routeState = await installRoutes(page, {
+      sessionId: THREADS.main,
+      messages: [],
+      image: {
+        view: () => {
+          if (phase === "ready") return ready();
+          return imageStateView({
+            state: "building",
+            status: "building",
+            buildConfigured: true,
+            usableImageRef: null,
+            running: false,
+            blocked: true,
+            selectedImage: "missing",
+            buildId: "build_qa",
+            imageBuildId: "build_qa",
+          });
+        },
+        build: () => ({ httpStatus: 202, body: { accepted: true, buildId: "build_qa" } }),
+        runtime: () => ({ state: phase === "ready" ? "running" : "stopped" }),
+      },
+    });
+    await gotoChat(page, target);
+    await page.waitForSelector("#image-gate:not([hidden])");
+
+    const building = await imageUi(page);
+    assertEqual(building.gate.title, "Building image", "building card title");
+    assertEqual(
+      building.gate.body,
+      "The image is being built. This page updates when the build finishes.",
+      "building card body",
+    );
+    assertEqual(building.gate.buttons, [], "building card has no duplicate action");
+    assertEqual(building.composer.hidden, true, "building hides the composer");
+    assertEqual(building.viewportHidden, true, "building hides the thread viewport");
+    assertEqual(routeState.sessionGets.length, 0, "building never boots sessions");
+    assertEqual(building.eventSourceCount, 0, "building never opens SSE");
+    assertEqual(routeState.buildPosts.length, 0, "a durable build is not re-posted");
+    await captureImageVariants(page, "image-building");
+
+    const refreshPollsBefore = routeState.imageGets.filter((call) => call.refresh === true).length;
+    await page.evaluate(
+      ({ key }) => {
+        window.sessionStorage.setItem(
+          key,
+          JSON.stringify({ action: "build_start", startedAt: Date.now() }),
+        );
+      },
+      { key: `hanse.chat.imageIntent:${PROJECT_ID}:${APP}` },
+    );
+    await page.reload({ waitUntil: "networkidle" });
+    await page.waitForSelector("#image-gate:not([hidden])");
+
+    const pollDeadline = Date.now() + 6_000;
+    while (
+      routeState.imageGets.filter((call) => call.refresh === true).length <
+        refreshPollsBefore + 2 &&
+      Date.now() < pollDeadline
+    ) {
+      await wait(50);
+    }
+    check(
+      routeState.imageGets.filter((call) => call.refresh === true).length >= refreshPollsBefore + 2,
+      `reload attaches to the durable build and keeps polling (${
+        routeState.imageGets.filter((call) => call.refresh === true).length - refreshPollsBefore
+      } refresh polls)`,
+    );
+    const resumed = await imageUi(page);
+    assertEqual(resumed.gate.title, "Building image", "attached polling keeps the building card");
+    assertEqual(routeState.buildPosts.length, 0, "resume attaches without a second build POST");
+    assertEqual(routeState.startPosts.length, 0, "resume does not start before the image is ready");
+
+    phase = "ready";
+    await page.waitForFunction(
+      () => document.getElementById("chat-composer")?.hidden === false,
+      undefined,
+      {
+        timeout: 8_000,
+      },
+    );
+    const startDeadline = Date.now() + 4_000;
+    while (routeState.startPosts.length === 0 && Date.now() < startDeadline) await wait(50);
+    await waitForChatStream(page);
+    const after = await imageUi(page);
+    assertEqual(routeState.startPosts.length, 1, "the resumed build starts once it is ready");
+    assertEqual(after.gate.hidden, true, "the building card clears when ready");
+    assertEqual(after.eventSourceCount, 1, "the resumed flow subscribes once");
+    check(routeState.sessionGets.length >= 1, "the resumed flow boots sessions");
+    checkNoErrors(errors);
+    return {
+      refreshPolls: routeState.imageGets.filter((call) => call.refresh === true).length,
+      startPosts: routeState.startPosts.length,
+    };
+  } finally {
+    await context.close();
+  }
+}
+
+async function scenarioImageBuildError(browser, target) {
+  const { context, page, errors } = await newPage(browser, target);
+  try {
+    let phase = "error";
+    const routeState = await installRoutes(page, {
+      sessionId: THREADS.main,
+      messages: [],
+      image: {
+        view: () =>
+          phase === "ready"
+            ? imageStateView({
+                state: "current",
+                status: "ready",
+                imageRef: "hanse-agent-custom:qa",
+                usableImageRef: "hanse-agent-custom:qa",
+                running: true,
+                blocked: false,
+                selectedImage: "present",
+                imageId: QA_DIGEST_B,
+                targetImageId: QA_DIGEST_B,
+                appliedImageId: QA_DIGEST_B,
+              })
+            : imageStateView({
+                state: "build_error",
+                status: "error",
+                error: "Dockerfile build failed: exit status 1",
+                buildConfigured: true,
+                usableImageRef: null,
+                running: false,
+                blocked: true,
+                selectedImage: "missing",
+              }),
+        build: () => {
+          phase = "ready";
+          return { httpStatus: 202, body: { accepted: true, buildId: "build_qa" } };
+        },
+        runtime: () => ({ state: phase === "ready" ? "running" : "stopped" }),
+      },
+    });
+    await gotoChat(page, target);
+    await page.waitForSelector("#image-gate:not([hidden])");
+
+    const failed = await imageUi(page);
+    assertEqual(failed.gate.title, "Image build failed", "build-error card title");
+    assertEqual(
+      failed.gate.body,
+      "Dockerfile build failed: exit status 1",
+      "build-error card shows the bounded error",
+    );
+    assertEqual(failed.gate.buttons, ["Retry build and start"], "build-error card action");
+    assertEqual(failed.composer.hidden, true, "build-error hides the composer");
+    assertEqual(failed.viewportHidden, true, "build-error hides the thread viewport");
+    assertEqual(routeState.sessionGets.length, 0, "build-error never boots sessions");
+    check(
+      !failed.bodyText.includes("502") && !failed.bodyText.includes("Bad Gateway"),
+      "build-error renders bounded copy, not a raw 502",
+    );
+    await captureImageVariants(page, "image-build-error");
+
+    await page.locator("#image-gate button").click();
+    await page.waitForFunction(
+      () => document.getElementById("chat-composer")?.hidden === false,
+      undefined,
+      {
+        timeout: 6_000,
+      },
+    );
+    await waitForChatStream(page);
+    assertEqual(routeState.buildPosts.length, 1, "retry POSTs build once");
+    assertEqual(routeState.startPosts.length, 1, "retry starts after the image is ready");
+    checkNoErrors(errors);
+    return {
+      buildPosts: routeState.buildPosts.length,
+      startPosts: routeState.startPosts.length,
+    };
+  } finally {
+    await context.close();
+  }
+}
+
+async function scenarioImageWarning(browser, target) {
+  const { context, page, errors } = await newPage(browser, target);
+  try {
+    let phase = "rebuild";
+    const view = () => {
+      if (phase === "rebuild") {
+        return imageStateView({
+          state: "rebuild_required",
+          status: "stale",
+          imageRef: "hanse-agent-custom:qa",
+          usableImageRef: "hanse-agent-custom:qa",
+          running: true,
+          blocked: false,
+          selectedImage: "present",
+          imageId: QA_DIGEST_B,
+          targetImageId: QA_DIGEST_B,
+          appliedImageId: QA_DIGEST_A,
+          baseKind: "base",
+          baseRef: "hanse-agent-base:qa",
+          baseDigest: QA_DIGEST_A,
+          currentBaseDigest: QA_DIGEST_B,
+          baseDrift: true,
+          hashDrift: false,
+        });
+      }
+      if (phase === "restart") {
+        return imageStateView({
+          state: "restart_required",
+          status: "ready",
+          imageRef: "hanse-agent-custom:qa",
+          usableImageRef: "hanse-agent-custom:qa",
+          running: true,
+          blocked: false,
+          selectedImage: "present",
+          imageId: QA_DIGEST_B,
+          targetImageId: QA_DIGEST_B,
+          appliedImageId: QA_DIGEST_C,
+          baseKind: "base",
+          baseRef: "hanse-agent-base:qa",
+          baseDigest: QA_DIGEST_A,
+          currentBaseDigest: QA_DIGEST_A,
+          baseDrift: false,
+          hashDrift: false,
+        });
+      }
+      return imageStateView({
+        state: "current",
+        status: "ready",
+        imageRef: "hanse-agent-custom:qa",
+        usableImageRef: "hanse-agent-custom:qa",
+        running: true,
+        blocked: false,
+        selectedImage: "present",
+        imageId: QA_DIGEST_B,
+        targetImageId: QA_DIGEST_B,
+        appliedImageId: QA_DIGEST_B,
+        baseKind: "base",
+        baseRef: "hanse-agent-base:qa",
+        baseDigest: QA_DIGEST_A,
+        currentBaseDigest: QA_DIGEST_A,
+        baseDrift: false,
+        hashDrift: false,
+      });
+    };
+    const routeState = await installRoutes(page, {
+      sessionId: THREADS.main,
+      messages: [],
+      image: {
+        view,
+        build: () => {
+          phase = "restart";
+          return { httpStatus: 202, body: { accepted: true, buildId: "build_qa" } };
+        },
+        restart: () => {
+          phase = "current";
+          return { httpStatus: 200, body: { restarted: true } };
+        },
+        runtime: () => ({ state: "running", imageRef: "hanse-agent-custom:qa" }),
+      },
+    });
+    await gotoChat(page, target);
+    await page.waitForSelector("#image-warning:not([hidden])");
+
+    const rebuild = await imageUi(page);
+    assertEqual(rebuild.warning.hidden, false, "rebuild-required shows the warning");
+    assertEqual(rebuild.warning.role, "status", "the warning is an app-level status");
+    assertEqual(rebuild.warning.title, "Image out of date", "rebuild warning title");
+    assertEqual(
+      rebuild.warning.body,
+      "Rebuild and restart the agent to use the new image.",
+      "rebuild warning body",
+    );
+    assertEqual(rebuild.warning.buttons, ["Rebuild & restart"], "rebuild warning action");
+    assertEqual(rebuild.gate.hidden, true, "a running app never shows the blocked card");
+    assertEqual(rebuild.composer.hidden, false, "the warning keeps the composer usable");
+    assertEqual(rebuild.composer.promptDisabled, false, "the warning keeps the prompt enabled");
+    check(routeState.sessionGets.length >= 1, "a warned running app boots sessions");
+    assertEqual(rebuild.eventSourceCount, 1, "a warned running app subscribes to SSE");
+    await captureImageVariants(page, "image-warning-rebuild");
+
+    await page.locator("#image-warning button").click();
+    const restartDeadline = Date.now() + 6_000;
+    while (routeState.restartPosts.length === 0 && Date.now() < restartDeadline) await wait(50);
+    await page.waitForFunction(
+      () => document.getElementById("image-warning")?.hidden === true,
+      undefined,
+      {
+        timeout: 6_000,
+      },
+    );
+    const warningGone = await imageUi(page);
+    assertEqual(routeState.buildPosts.length, 1, "rebuild & restart POSTs build once");
+    assertEqual(routeState.restartPosts.length, 1, "rebuild & restart POSTs restart once");
+    assertEqual(routeState.startPosts.length, 0, "rebuild & restart never POSTs start");
+    const rebuildBuild = routeState.imageActions.findIndex((entry) => entry.kind === "build");
+    const rebuildRestart = routeState.imageActions.findIndex((entry) => entry.kind === "restart");
+    check(
+      rebuildBuild >= 0 && rebuildRestart > rebuildBuild,
+      `rebuild precedes restart (${JSON.stringify(routeState.imageActions.map((entry) => entry.kind))})`,
+    );
+    assertEqual(warningGone.warning.hidden, true, "the rebuild warning clears when current");
+    assertEqual(warningGone.composer.hidden, false, "the composer stays usable after rebuild");
+
+    phase = "restart";
+    await page.reload({ waitUntil: "networkidle" });
+    await page.waitForSelector("#image-warning:not([hidden])");
+    const restart = await imageUi(page);
+    assertEqual(restart.warning.title, "Image updated", "restart-required warning title");
+    assertEqual(
+      restart.warning.body,
+      "Restart the agent to use the new image.",
+      "restart-required warning body",
+    );
+    assertEqual(restart.warning.buttons, ["Restart"], "restart-required warning action");
+    assertEqual(restart.composer.hidden, false, "restart-required keeps the composer usable");
+    await captureImageVariants(page, "image-warning-restart");
+
+    await page.locator("#image-warning button").click();
+    const secondDeadline = Date.now() + 5_000;
+    while (routeState.restartPosts.length < 2 && Date.now() < secondDeadline) await wait(50);
+    await page.waitForFunction(
+      () => document.getElementById("image-warning")?.hidden === true,
+      undefined,
+      {
+        timeout: 5_000,
+      },
+    );
+    assertEqual(routeState.restartPosts.length, 2, "restart-required POSTs restart once");
+    assertEqual(routeState.buildPosts.length, 1, "restart-required never POSTs build");
+    assertEqual(routeState.startPosts.length, 0, "restart-required never POSTs start");
+    checkNoErrors(errors);
+    return {
+      buildPosts: routeState.buildPosts.length,
+      restartPosts: routeState.restartPosts.length,
+      startPosts: routeState.startPosts.length,
+    };
+  } finally {
+    await context.close();
+  }
+}
+
+async function scenarioImageActions(browser, target) {
+  const notReady = () =>
+    imageStateView({
+      state: "not_ready",
+      status: "missing",
+      buildConfigured: true,
+      usableImageRef: null,
+      running: false,
+      blocked: true,
+      selectedImage: "missing",
+    });
+  const ready = () =>
+    imageStateView({
+      state: "current",
+      status: "ready",
+      imageRef: "hanse-agent-custom:qa",
+      usableImageRef: "hanse-agent-custom:qa",
+      running: true,
+      blocked: false,
+      selectedImage: "present",
+      imageId: QA_DIGEST_B,
+      targetImageId: QA_DIGEST_B,
+      appliedImageId: QA_DIGEST_B,
+    });
+
+  // 1. 409 build_in_progress plus a durable build: attach and finish without a retry toast.
+  {
+    const { context, page, errors } = await newPage(browser, target);
+    try {
+      let phase = "not_ready";
+      const routeState = await installRoutes(page, {
+        sessionId: THREADS.main,
+        messages: [],
+        image: {
+          view: ({ state }) => {
+            if (phase === "not_ready") return notReady();
+            if (phase === "building") {
+              if (state.imageGets.length >= 3) {
+                phase = "ready";
+                return ready();
+              }
+              return imageStateView({
+                state: "building",
+                status: "building",
+                buildConfigured: true,
+                usableImageRef: null,
+                running: false,
+                blocked: true,
+                selectedImage: "missing",
+                imageBuildId: "build_qa",
+                buildId: "build_qa",
+              });
+            }
+            return ready();
+          },
+          build: () => {
+            phase = "building";
+            return {
+              httpStatus: 409,
+              body: { error: "image build already in progress", code: "build_in_progress" },
+            };
+          },
+          runtime: () => ({ state: phase === "ready" ? "running" : "stopped" }),
+        },
+      });
+      await gotoChat(page, target);
+      await page.waitForSelector("#image-gate:not([hidden])");
+      await page.locator("#image-gate button").click();
+      await page.waitForFunction(
+        () => document.getElementById("chat-composer")?.hidden === false,
+        undefined,
+        { timeout: 6_000 },
+      );
+      const ui = await imageUi(page);
+      assertEqual(routeState.buildPosts.length, 1, "the attach path POSTs build once");
+      assertEqual(
+        routeState.startPosts.length,
+        1,
+        "the attach path starts after the durable build",
+      );
+      check(
+        routeState.imageGets.filter((call) => call.refresh === true).length >= 1,
+        "the 409 checks GET /image?refresh=1 before attaching",
+      );
+      check(
+        !ui.toastText.includes("Another image build is running"),
+        "a durable build attaches without the retry toast",
+      );
+      assertEqual(ui.gate.hidden, true, "the attached build clears the card");
+      checkExpectedHttpError(errors, 409);
+    } finally {
+      await context.close();
+    }
+  }
+
+  // 2. 409 while the view is building but has no durable build id: bounded retry, no polling.
+  {
+    const { context, page, errors } = await newPage(browser, target);
+    try {
+      let phase = "not_ready";
+      const routeState = await installRoutes(page, {
+        sessionId: THREADS.main,
+        messages: [],
+        image: {
+          view: () => {
+            if (phase === "not_ready") return notReady();
+            return imageStateView({
+              state: "building",
+              status: "building",
+              buildConfigured: true,
+              usableImageRef: null,
+              running: false,
+              blocked: true,
+              selectedImage: "missing",
+              imageBuildId: null,
+            });
+          },
+          build: () => {
+            phase = "other";
+            return {
+              httpStatus: 409,
+              body: { error: "image build already in progress", code: "build_in_progress" },
+            };
+          },
+          runtime: () => ({ state: "stopped" }),
+        },
+      });
+      await gotoChat(page, target);
+      await page.waitForSelector("#image-gate:not([hidden])");
+      await page.locator("#image-gate button").click();
+      await page.waitForFunction(
+        () =>
+          (document.getElementById("toast-region")?.textContent ?? "").includes(
+            "Another image build is running",
+          ),
+        undefined,
+        { timeout: 3_000 },
+      );
+      const ui = await imageUi(page);
+      assertEqual(
+        ui.toastText,
+        "Another image build is running. Retry when it finishes.",
+        "the other-build toast is bounded",
+      );
+      assertEqual(ui.gate.title, "Building image", "the other build still shows a progress card");
+      await captureImageVariants(page, "image-actions-other-build");
+      const getsAfterToast = routeState.imageGets.length;
+      await wait(2_400);
+      assertEqual(routeState.imageGets.length, getsAfterToast, "another app's build is not polled");
+      assertEqual(routeState.startPosts.length, 0, "another app's build never starts this app");
+      assertEqual(routeState.buildPosts.length, 1, "the retry does not POST build again");
+      checkExpectedHttpError(errors, 409);
+    } finally {
+      await context.close();
+    }
+  }
+
+  // 3. 409 while the view is not building but carries an id: still no attach.
+  {
+    const { context, page, errors } = await newPage(browser, target);
+    try {
+      let phase = "not_ready";
+      const routeState = await installRoutes(page, {
+        sessionId: THREADS.main,
+        messages: [],
+        image: {
+          view: () => {
+            if (phase === "not_ready") return notReady();
+            return imageStateView({
+              state: "not_ready",
+              status: "missing",
+              buildConfigured: true,
+              usableImageRef: null,
+              running: false,
+              blocked: true,
+              selectedImage: "missing",
+              imageBuildId: "build_other",
+            });
+          },
+          build: () => {
+            phase = "stale_id";
+            return {
+              httpStatus: 409,
+              body: { error: "image build already in progress", code: "build_in_progress" },
+            };
+          },
+          runtime: () => ({ state: "stopped" }),
+        },
+      });
+      await gotoChat(page, target);
+      await page.waitForSelector("#image-gate:not([hidden])");
+      await page.locator("#image-gate button").click();
+      await page.waitForFunction(
+        () =>
+          (document.getElementById("toast-region")?.textContent ?? "").includes(
+            "Another image build is running",
+          ),
+        undefined,
+        { timeout: 3_000 },
+      );
+      const getsAfterToast = routeState.imageGets.length;
+      await wait(2_400);
+      assertEqual(
+        routeState.imageGets.length,
+        getsAfterToast,
+        "an id outside building is not polled",
+      );
+      assertEqual(routeState.startPosts.length, 0, "an id outside building never starts this app");
+      assertEqual(routeState.buildPosts.length, 1, "the stale-id retry does not POST build again");
+      const ui = await imageUi(page);
+      assertEqual(ui.gate.title, "Image not built", "the stale id keeps the not-ready card");
+      checkExpectedHttpError(errors, 409);
+    } finally {
+      await context.close();
+    }
+  }
+
+  // 4. A typed 409 from start re-enters the card and refreshes the image, with no raw status copy.
+  {
+    const { context, page, errors } = await newPage(browser, target);
+    try {
+      let phase = "not_ready";
+      const routeState = await installRoutes(page, {
+        sessionId: THREADS.main,
+        messages: [],
+        image: {
+          view: () => (phase === "not_ready" ? notReady() : ready()),
+          build: () => {
+            phase = "ready";
+            return { httpStatus: 202, body: { accepted: true, buildId: "build_qa" } };
+          },
+          start: () => {
+            phase = "not_ready";
+            return {
+              httpStatus: 409,
+              body: { error: "application image is not ready", code: "image_not_ready" },
+            };
+          },
+          runtime: () => ({ state: phase === "ready" ? "running" : "stopped" }),
+        },
+      });
+      await gotoChat(page, target);
+      await page.waitForSelector("#image-gate:not([hidden])");
+      const before = routeState.imageGets.length;
+      await page.locator("#image-gate button").click();
+      await page.waitForFunction(
+        () =>
+          (document.getElementById("toast-region")?.textContent ?? "").includes(
+            "The image is not ready yet",
+          ),
+        undefined,
+        { timeout: 5_000 },
+      );
+      const ui = await imageUi(page);
+      assertEqual(routeState.startPosts.length, 1, "the typed 409 comes from the start action");
+      check(
+        routeState.imageGets.length > before + 1,
+        `a typed 409 refreshes the image view (${before} -> ${routeState.imageGets.length})`,
+      );
+      assertEqual(
+        ui.toastText,
+        "The image is not ready yet. Retry from the card.",
+        "the typed 409 toast is bounded",
+      );
+      assertEqual(ui.gate.hidden, false, "a typed 409 re-enters the blocked card");
+      assertEqual(ui.gate.title, "Image not built", "the typed 409 shows the current image state");
+      check(!ui.bodyText.includes("409"), "the typed 409 never leaks the raw status");
+      checkExpectedHttpError(errors, 409);
+    } finally {
+      await context.close();
+    }
+  }
+
+  // 5. A typed 503 from restart refreshes and keeps the running warning.
+  {
+    const { context, page, errors } = await newPage(browser, target);
+    try {
+      const restartView = () =>
+        imageStateView({
+          state: "restart_required",
+          status: "ready",
+          imageRef: "hanse-agent-custom:qa",
+          usableImageRef: "hanse-agent-custom:qa",
+          running: true,
+          blocked: false,
+          selectedImage: "present",
+          imageId: QA_DIGEST_B,
+          targetImageId: QA_DIGEST_B,
+          appliedImageId: QA_DIGEST_C,
+        });
+      const routeState = await installRoutes(page, {
+        sessionId: THREADS.main,
+        messages: [],
+        image: {
+          view: () => restartView(),
+          restart: () => ({
+            httpStatus: 503,
+            body: { error: "default agent image unavailable", code: "default_image_unavailable" },
+          }),
+          runtime: () => ({ state: "running", imageRef: "hanse-agent-custom:qa" }),
+        },
+      });
+      await gotoChat(page, target);
+      await page.waitForSelector("#image-warning:not([hidden])");
+      const before = routeState.imageGets.length;
+      await page.locator("#image-warning button").click();
+      await page.waitForFunction(
+        () =>
+          (document.getElementById("toast-region")?.textContent ?? "").includes(
+            "The new image is not ready",
+          ),
+        undefined,
+        { timeout: 4_000 },
+      );
+      const ui = await imageUi(page);
+      assertEqual(routeState.restartPosts.length, 1, "the typed 503 comes from restart");
+      check(
+        routeState.imageGets.length > before,
+        `a typed 503 refreshes the image view (${before} -> ${routeState.imageGets.length})`,
+      );
+      assertEqual(
+        ui.toastText,
+        "The new image is not ready. The agent keeps its current container.",
+        "the typed 503 toast is bounded",
+      );
+      assertEqual(ui.warning.hidden, false, "a typed 503 keeps the running warning");
+      assertEqual(ui.composer.hidden, false, "a typed 503 keeps the composer usable");
+      check(!ui.bodyText.includes("503"), "the typed 503 never leaks the raw status");
+      checkExpectedHttpError(errors, 503);
+    } finally {
+      await context.close();
+    }
+  }
+}
+
+async function scenarioImagePanels(browser, target) {
+  const { context, page, errors } = await newPage(browser, target);
+  try {
+    let defaultPhase = "restart";
+    const customRef = "hanse-agent-custom:qa";
+    const customView = () =>
+      imageStateView({
+        appKey: CUSTOM_APP,
+        state: "restart_required",
+        status: "ready",
+        imageRef: customRef,
+        imageId: QA_DIGEST_B,
+        targetImageId: QA_DIGEST_B,
+        appliedImageId: QA_DIGEST_A,
+        usableImageRef: customRef,
+        running: true,
+        blocked: false,
+        selectedImage: "present",
+        builtAt: "2026-10-21T12:00:00.000Z",
+        baseKind: "base",
+        baseRef: "hanse-agent-base:qa",
+        baseDigest: QA_DIGEST_A,
+        currentBaseDigest: QA_DIGEST_A,
+        baseDrift: false,
+        hashDrift: false,
+        previousImageRef: "hanse-agent-custom:previous",
+        previousImageBuiltAt: "2026-10-20T12:00:00.000Z",
+      });
+    const defaultView = () =>
+      defaultPhase === "building"
+        ? imageStateView({
+            appKey: APP,
+            buildConfigured: false,
+            state: "building",
+            status: "building",
+            running: false,
+            usableImageRef: null,
+            blocked: false,
+          })
+        : imageStateView({
+            appKey: APP,
+            buildConfigured: false,
+            state: "restart_required",
+            status: "missing",
+            running: true,
+            usableImageRef: null,
+            blocked: false,
+            targetImageId: QA_DIGEST_B,
+            appliedImageId: QA_DIGEST_A,
+            selectedImage: "missing",
+          });
+    const routeState = await installRoutes(page, {
+      sessionId: THREADS.main,
+      messages: [],
+      image: {
+        view: ({ appKey }) => (appKey === CUSTOM_APP ? customView() : defaultView()),
+        runtime: ({ appKey }) => ({
+          state: "running",
+          imageRef: appKey === CUSTOM_APP ? customRef : null,
+        }),
+      },
+    });
+
+    await page.goto(
+      `${target.baseUrl}/projects/${encodeURIComponent(PROJECT_ID)}/apps/${encodeURIComponent(CUSTOM_APP)}`,
+      { waitUntil: "domcontentloaded" },
+    );
+    await page.waitForFunction(
+      (expected) => document.getElementById("image-panel")?.dataset.state === expected,
+      "restart_required",
+      { timeout: 5_000 },
+    );
+    const custom = await imagePanelUi(page);
+    assertEqual(custom.present, true, "the custom application panel renders");
+    assertEqual(custom.appKey, CUSTOM_APP, "the custom panel belongs to the custom app");
+    assertEqual(custom.panelStatus, "missing", "the custom panel starts from persisted status");
+    assertEqual(custom.state, "restart_required", "the custom panel renders the derived state");
+    assertEqual(custom.statusText, "Restart required", "the custom panel status label");
+    assertEqual(custom.ref, customRef, "the custom panel shows the created ref");
+    assertEqual(custom.baseKind, "Base", "the custom panel shows the base kind");
+    assertEqual(custom.baseRef, "hanse-agent-base:qa", "the custom panel shows the base ref");
+    assertEqual(custom.baseDigest, QA_DIGEST_A, "the custom panel shows the base digest");
+    assertEqual(
+      custom.rollbackRef,
+      "hanse-agent-custom:previous",
+      "the custom panel shows the rollback ref",
+    );
+    assertEqual(custom.rollbackRowHidden, false, "the rollback row is visible");
+    assertEqual(custom.rollbackBuiltRowHidden, false, "the rollback built row is visible");
+    assertEqual(custom.rollbackFormHidden, false, "the rollback action is visible");
+    assertEqual(custom.hasBuild, true, "the custom panel has a build action");
+    assertEqual(custom.hasCheck, false, "the custom panel has no default check action");
+    assertEqual(custom.hasDetails, true, "the custom panel has details");
+    check(
+      routeState.imageGets.some((call) => call.appKey === CUSTOM_APP),
+      "the custom panel fetched GET /image on load",
+    );
+    await page.locator("#image-details > summary").click();
+    await captureImageVariants(page, "image-panels-custom", {
+      afterPhoneReload: async (phone) => {
+        await phone.locator("#image-details > summary").click();
+        await phone.locator("#image-panel").scrollIntoViewIfNeeded();
+      },
+    });
+
+    await page.goto(
+      `${target.baseUrl}/projects/${encodeURIComponent(PROJECT_ID)}/apps/${encodeURIComponent(APP)}`,
+      { waitUntil: "domcontentloaded" },
+    );
+    await page.waitForFunction(
+      (expected) => document.getElementById("image-panel")?.dataset.state === expected,
+      "restart_required",
+      { timeout: 5_000 },
+    );
+    const fallback = await imagePanelUi(page);
+    assertEqual(fallback.present, true, "the default application panel renders");
+    assertEqual(fallback.appKey, APP, "the default panel belongs to the default app");
+    assertEqual(fallback.panelStatus, "default", "the default panel is the no-build panel");
+    assertEqual(fallback.state, "restart_required", "the default panel renders the derived state");
+    assertEqual(
+      fallback.statusText,
+      "Restart required",
+      "the default panel shows restart-required",
+    );
+    assertEqual(fallback.hasBuild, false, "the default panel has no build action");
+    assertEqual(fallback.hasBuildForm, false, "the default panel has no build form");
+    assertEqual(fallback.hasCheck, true, "the default panel keeps the check action");
+    assertEqual(fallback.hasDetails, false, "the default panel has no custom build details");
+    assertEqual(fallback.hasLogs, false, "the default panel has no build logs");
+    check(
+      routeState.imageGets.some((call) => call.appKey === APP),
+      "the default panel fetched GET /image on load",
+    );
+    await captureImageVariants(page, "image-panels-default", {
+      afterPhoneReload: async (phone) => {
+        await phone.locator("#image-panel").scrollIntoViewIfNeeded();
+      },
+    });
+
+    defaultPhase = "building";
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.waitForFunction(
+      (expected) => document.getElementById("image-panel")?.dataset.state === expected,
+      "building",
+      { timeout: 5_000 },
+    );
+    const defaultBuilding = await imagePanelUi(page);
+    assertEqual(
+      defaultBuilding.statusText,
+      "Unknown",
+      "the default panel never renders a build state",
+    );
+    assertEqual(defaultBuilding.hasBuild, false, "the default panel never grows a build action");
+    check(
+      !defaultBuilding.bodyText.includes("Building image") &&
+        !defaultBuilding.bodyText.includes("Build image"),
+      "the default panel never shows build-state copy",
+    );
+    checkNoErrors(errors);
+    return {
+      custom: {
+        state: custom.state,
+        status: custom.statusText,
+        baseKind: custom.baseKind,
+        rollback: custom.rollbackRef,
+      },
+      default: { state: fallback.state, status: fallback.statusText, build: fallback.hasBuild },
+      defaultBuilding: { status: defaultBuilding.statusText, build: defaultBuilding.hasBuild },
+    };
+  } finally {
+    await context.close();
+  }
+}
+
 async function scenarioLive(browser, target) {
   const session = process.env.CHAT_QA_LIVE_SESSION;
   if (!session) {
@@ -6302,6 +7545,12 @@ try {
     await run("stop", () => scenarioStop(browser, target));
     await run("reconnect", () => scenarioReconnect(browser, target));
     await run("session-tree", () => scenarioSessionTree(browser, target));
+    await run("image-not-ready", () => scenarioImageNotReady(browser, target));
+    await run("image-building", () => scenarioImageBuilding(browser, target));
+    await run("image-build-error", () => scenarioImageBuildError(browser, target));
+    await run("image-warning", () => scenarioImageWarning(browser, target));
+    await run("image-actions", () => scenarioImageActions(browser, target));
+    await run("image-panels", () => scenarioImagePanels(browser, target));
   }
 } catch (error) {
   report.status = "FAIL";

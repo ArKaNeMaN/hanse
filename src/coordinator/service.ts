@@ -51,7 +51,10 @@ export class CoordinatorService {
       .prepare(
         `SELECT a.id, a.project_id, a.app_key, a.path, a.kind, a.contract, a.deleting,
                 a.image_status, a.image_ref, a.image_hash, a.image_base_digest,
-                a.image_built_at, a.image_error,
+                a.image_built_at, a.image_error, a.build_configured,
+                a.image_base_ref, a.image_base_kind, a.image_hash_version,
+                a.image_build_id, a.image_build_ref, a.image_build_started_at,
+                a.image_build_rejected_ref,
                 (SELECT v.image_ref FROM app_image_versions v
                   WHERE v.app_id = a.id AND a.image_ref IS NOT NULL
                     AND v.image_ref <> a.image_ref
@@ -76,6 +79,14 @@ export class CoordinatorService {
       image_base_digest: string | null;
       image_built_at: string | null;
       image_error: string | null;
+      build_configured: number;
+      image_base_ref: string | null;
+      image_base_kind: RegisteredApp["imageBaseKind"];
+      image_hash_version: number;
+      image_build_id: string | null;
+      image_build_ref: string | null;
+      image_build_started_at: string | null;
+      image_build_rejected_ref: string | null;
       image_rollback_ref: string | null;
       image_rollback_built_at: string | null;
     }[];
@@ -93,13 +104,17 @@ export class CoordinatorService {
       imageBaseDigest: row.image_base_digest,
       imageBuiltAt: row.image_built_at,
       imageError: row.image_error,
+      imageBaseRef: row.image_base_ref,
+      imageBaseKind: row.image_base_kind,
+      imageHashVersion: row.image_hash_version,
+      imageBuildId: row.image_build_id,
+      imageBuildRef: row.image_build_ref,
+      imageBuildStartedAt: row.image_build_started_at,
+      imageBuildRejectedRef: row.image_build_rejected_ref,
       imageRollbackRef: row.image_rollback_ref,
       imageRollbackBuiltAt: row.image_rollback_built_at,
       buildDockerfile: null,
-      // image_hash is the manifest build-spec hash, so unlike `image_status` it is non-null for a
-      // build-configured app that has never produced an image. Error rows are also build-configured.
-      buildConfigured:
-        row.image_status !== "missing" || row.image_ref !== null || row.image_hash !== null,
+      buildConfigured: row.build_configured === 1,
       buildArgs: {},
       buildSpecHash: null,
     }));

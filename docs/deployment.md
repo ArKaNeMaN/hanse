@@ -58,16 +58,17 @@ sed -i.bak "s|^# HANSE_HOST_WORKSPACE=.*|HANSE_HOST_WORKSPACE=$ROOT/workspace|; 
 sudo chown -R 1000:1000 workspace state agents
 docker compose pull
 
-# The per-app agent image is not a Compose service. Source .env so the explicit pull uses the same
-# repository and tag resolution as Compose (HANSE_AGENT_TAG, then HANSE_TAG).
+# The per-app agent and shared base images are not Compose services. Source .env so the explicit
+# pulls use the same repository and tag resolution as Compose (HANSE_AGENT_TAG, then HANSE_TAG).
 set -a; . ./.env; set +a
 docker pull "${HANSE_AGENT_IMAGE:-ghcr.io/arkaneman/hanse-agent-default}:${HANSE_AGENT_TAG:-${HANSE_TAG:-latest}}"
+docker pull "${HANSE_AGENT_BASE_IMAGE:-ghcr.io/arkaneman/hanse-agent-base:${HANSE_AGENT_TAG:-${HANSE_TAG:-latest}}}"
 docker compose up -d
 ```
 
-`docker compose pull` pulls the coordinator, IDE, and runner images. The per-app agent image is not a
-Compose service, so pull it explicitly as above; the runner creates app containers from that local
-image.
+`docker compose pull` pulls the coordinator, IDE, and runner images. The per-app agent and shared
+base images are not Compose services, so pull them explicitly as above; the runner creates app
+containers from the local agent image and builds custom images from the local base image.
 
 Open <http://127.0.0.1:8787> and sign in with the token from `.env`.
 
@@ -112,7 +113,11 @@ build:
     NODE_VERSION: "22"
 ```
 
-The Dockerfile must start from the default agent image so it keeps the Hanse runtime contract:
+The Dockerfile must keep the Hanse runtime contract. With no `build.base`, its final-stage root
+`FROM` decides the base: a root that consumes `${HANSE_BASE}` is `default`, a literal root is
+`explicit`, and an unresolved or ambiguous root is `unknown`. Set `build.base: default` or
+`build.base: base` to choose explicitly; `base` requires `HANSE_AGENT_BASE_IMAGE`, and a
+contradictory declaration is rejected with `400 base_mismatch`.
 
 ```dockerfile
 ARG HANSE_BASE
@@ -123,20 +128,31 @@ USER 1000
 ```
 
 Builds are explicit: open the application page and use **Build image**, or run
-`hanse images build --app <key>`. The runner tars a contained app context, builds with
-`HANSE_BASE=<HANSE_AGENT_IMAGE>`, and validates the result in a no-network/read-only one-shot
-container. The app image must contain the Hanse entrypoint, `opencode`, the Hanse MCP CLI, and
-`git`; image-declared volumes are rejected. A failed build or validation keeps the previous image
-and container. The app is marked `stale` when its Dockerfile or default base changes; it keeps
-running the last ready image until rebuilt. Starting an app whose image is `missing`, `building`, or
-`error` is refused.
+`hanse images build --app <key>`. The runner tars a contained app context, builds with `HANSE_BASE`
+set to the resolved base reference (the configured default reference for `default`,
+`HANSE_AGENT_BASE_IMAGE` for `base`, or the literal reference for `explicit`; an `unknown` base uses
+the default reference only as a placeholder and records no base), and validates the result in a
+no-network/read-only one-shot container. The app image must contain the Hanse entrypoint, `opencode`,
+the Hanse MCP CLI, and `git`; image-declared volumes are rejected. A failed build or validation keeps
+the previous image and container.
 
-The application page shows image status, build logs, and a rollback action. Only the current and
-previous image versions are retained; explicit GC protects current/rollback/running images and only
-removes Hanse app images. `GET /api/images/usage` reports filesystem/Docker usage and warns at 75%
-used / critical at 85%; crossing the threshold never deletes anything automatically. The runner
-mounts the host workspace read-only for build contexts and validation, and never receives
-`/data/state`.
+The build-spec hash is version 2: Dockerfile bytes, sorted build args, and the resolved base kind.
+The base reference/tag/digest is excluded, so a harmless tag move does not mark an app stale; stored
+version-1 hashes are never compared with version 2. Image identity is split into two domains that are
+never compared: applied-versus-target uses Docker image IDs, and base drift uses manifest digests.
+A running app on an older image is `restart_required`; a changed Dockerfile/args or base digest is
+`rebuild_required`; a running stale app keeps working and warns in chat. An absent or unpulled image
+is `unknown`, never current. Starting a build-configured app is blocked only when it has no usable
+image; a prior usable image stays startable during a rebuild or after a failed build. A plain build
+never restarts an app; only the explicit Rebuild & restart does.
+
+The application page shows the derived image state, base kind/reference, build logs, and a rollback
+action. Only the current and previous image versions are retained; explicit GC protects
+current/rollback/running images, the in-flight build target while a build is recorded, and the
+runner's own non-terminal build tags, and only removes Hanse app images. `GET /api/images/usage`
+reports filesystem/Docker usage and warns at 75% used / critical at 85%; crossing the threshold never
+deletes anything automatically. The runner mounts the host workspace read-only for build contexts and
+validation, and never receives `/data/state`.
 
 ## Model credentials
 
@@ -173,6 +189,7 @@ Compose reads `.env` in the directory containing `compose.yaml`.
 | `HANSE_IMAGE` | `ghcr.io/arkaneman/hanse` | Coordinator image repository. Change it for a mirror or a fork. |
 | `HANSE_TAG` | `latest` | Coordinator image tag. Pin a release, `sha-<full>`, or `sha-<short>` tag for reproducible deployments; also the fallback for the agent, IDE, and runner tags. |
 | `HANSE_AGENT_IMAGE` | `ghcr.io/arkaneman/hanse-agent-default` | Per-app agent image repository. |
+| `HANSE_AGENT_BASE_IMAGE` | `ghcr.io/arkaneman/hanse-agent-base:<HANSE_AGENT_TAG>` | Full reference (repository plus optional tag or `@sha256`) of the shared base image. `build.base: base` requires it; the runner allowlists it for builds and inspection. |
 | `HANSE_AGENT_TAG` | `HANSE_TAG` | Per-app agent image tag; also the fallback for the IDE and runner tags. |
 | `HANSE_IDE_IMAGE` | `ghcr.io/arkaneman/hanse-agent-ide` | IDE image repository. |
 | `HANSE_IDE_TAG` | `HANSE_AGENT_TAG`, then `HANSE_TAG` | IDE image tag. Overrides only the IDE. |
@@ -195,7 +212,11 @@ Compose reads `.env` in the directory containing `compose.yaml`.
 
 `HANSE_IMAGE`, `HANSE_AGENT_IMAGE`, `HANSE_IDE_IMAGE`, and `HANSE_RUNNER_IMAGE` are repository values,
 not full references or digests: Compose always appends `:${tag}`. A full reference or digest in one of
-those variables produces a double-tagged, invalid reference.
+those variables produces a double-tagged, invalid reference. `HANSE_AGENT_BASE_IMAGE` is the
+exception: it is a complete reference and Compose does not append a tag, so a `@sha256` pin or a
+custom tag is used as written. Its Compose default is the published `hanse-agent-base` repository at
+`HANSE_AGENT_TAG`, then `HANSE_TAG`. Deployment must pull the resolved default and base images before
+recreating services; an image that was not pulled is `unknown`, never current.
 
 The coordinator also receives `HANSE_STATE_HOME=/data/state`, `HANSE_AGENTS_HOME=/data/agents`,
 `HANSE_RUNNER_URL=http://runner:8790`, `HANSE_AGENT_API_BASE=http://hanse:8787`, `HANSE_IDE_URL=/ide/`,
@@ -279,20 +300,35 @@ Security model, in short:
 set -a; . ./.env; set +a
 docker compose pull
 docker pull "${HANSE_AGENT_IMAGE:-ghcr.io/arkaneman/hanse-agent-default}:${HANSE_AGENT_TAG:-${HANSE_TAG:-latest}}"
+docker pull "${HANSE_AGENT_BASE_IMAGE:-ghcr.io/arkaneman/hanse-agent-base:${HANSE_AGENT_TAG:-${HANSE_TAG:-latest}}}"
 docker compose up -d --remove-orphans
 docker compose ps
 curl -fsS http://127.0.0.1:8787/healthz
 curl -fsS http://127.0.0.1:8787/readyz
 ```
 
+Pull the default and base images before recreating services. The identity cache is warmed after the
+pull; a reference that is absent locally is `unknown` (never treated as current) and retried on the
+next refresh. A default launch whose target cannot be inspected fails closed instead of starting the
+old image. A custom app that declares `build.base: base` fails its next build if
+`HANSE_AGENT_BASE_IMAGE` is unset.
+
 `latest` tracks `main`. For a reproducible deployment, pin each image tag to a release or a
 `sha-<short>`/`sha-<full>` tag produced by the publish workflow. `HANSE_TAG` pins the coordinator and
 is the fallback for the other images; `HANSE_AGENT_TAG` pins the per-app agent and is the fallback for
 the IDE and runner; `HANSE_IDE_TAG` and `HANSE_RUNNER_TAG` override only their own service.
+`HANSE_AGENT_BASE_IMAGE` takes a full reference, so pin it with a tag or `@sha256` digest directly.
 
 The store uses forward-only migrations. Rolling the image back after a migration may fail because
 the older binary may not understand the newer schema, and a newer-than-code schema now exits before
 listening. Back up `state` before an upgrade; restoring that backup is the reliable rollback path.
+
+**Migration 18 (agent image validity) is forward-only.** After it runs, an older coordinator refuses
+the schema (the schema guard treats it as newer) and cannot be used as a rollback. Restore the
+pre-upgrade database backup (with the matching state) or ship a forward fix; there is no down
+migration. Existing rows keep their data: startup registration backfills `build_configured`, while
+legacy base kind/ref and v1 hashes stay `unknown` and no app is marked stale from a fabricated
+identity. No agent is rebuilt, restarted, or recreated by the upgrade.
 
 On the first start after this upgrade, each application's managed skills are materialized before
 `opencode serve`. If an instance already has entries outside the effective set in its Hanse-owned
@@ -349,14 +385,17 @@ coordinator routes, which are counted and rejected by the lock.
 | --- | --- | --- | --- |
 | Coordinator | `HANSE_IMAGE` | `HANSE_TAG` | `latest` |
 | Per-app agent | `HANSE_AGENT_IMAGE` | `HANSE_AGENT_TAG` | `HANSE_TAG` |
+| Shared base | `HANSE_AGENT_BASE_IMAGE` (full reference) | - | `hanse-agent-base:<HANSE_AGENT_TAG>` |
 | IDE | `HANSE_IDE_IMAGE` | `HANSE_IDE_TAG` | `HANSE_AGENT_TAG`, then `HANSE_TAG` |
 | Runner | `HANSE_RUNNER_IMAGE` | `HANSE_RUNNER_TAG` | `HANSE_AGENT_TAG`, then `HANSE_TAG` |
 
 The publish workflow also produces `hanse-agent-base`; it is the base layer for `agent-default` and
-is not a Compose service. Tags are mutable. For a deploy, use the `sha-<full>` tag, verify that the
-OCI `org.opencontainers.image.revision` label and the runtime `HANSE_REVISION` value
-(`GET /readyz`) match the commit, and pin the digest recorded in the `image-digests` workflow
-artifact. The artifact lists all five image references with their manifest digests.
+is not a Compose service. A custom image records its actual base kind and reference, and drift is
+compared by that base's manifest digest, never by a tag string or the coordinator revision. Tags are
+mutable. For a deploy, use the `sha-<full>` tag, verify that the OCI
+`org.opencontainers.image.revision` label and the runtime `HANSE_REVISION` value (`GET /readyz`)
+match the commit, and pin the digest recorded in the `image-digests` workflow artifact. The artifact
+lists all five image references with their manifest digests.
 
 Automation can restart an app asynchronously with `POST /api/apps/:app/restart?async=1` (returns
 `202` after the claim) and poll `GET /api/apps/:app/runtime` for `restarting`. The claim is in

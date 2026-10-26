@@ -272,3 +272,63 @@ describe("runner spec validation", () => {
     }
   });
 });
+
+describe("runner base image configuration", () => {
+  function envFor(f: Fixture): NodeJS.ProcessEnv {
+    return {
+      HANSE_RUNTIME_TOKEN: "t",
+      HANSE_HOST_WORKSPACE: f.hostWorkspace,
+      HANSE_HOST_AGENTS: f.hostAgents,
+      HANSE_AGENT_IMAGE: "agent-default:test",
+    };
+  }
+
+  it("normalizes HANSE_AGENT_BASE_IMAGE and unions it into the allowlist", () => {
+    const f = fixture();
+    const loaded = loadRunnerConfig({
+      ...envFor(f),
+      HANSE_AGENT_BASE_IMAGE: " agent-base:test ",
+    });
+
+    expect(loaded.baseImage).toBe("agent-base:test");
+    expect([...loaded.allowedImages]).toEqual(["agent-default:test", "agent-base:test"]);
+  });
+
+  it("leaves the base image unset when the variable is absent", () => {
+    const f = fixture();
+    const loaded = loadRunnerConfig(envFor(f));
+
+    expect(loaded.baseImage).toBeUndefined();
+    expect([...loaded.allowedImages]).toEqual(["agent-default:test"]);
+  });
+
+  it("rejects an empty, whitespace, control, or malformed base reference", () => {
+    const f = fixture();
+    for (const value of ["", "   ", "bad ref", "bad\0ref", "bad\u0007ref"]) {
+      expectConfigError(() => loadRunnerConfig({ ...envFor(f), HANSE_AGENT_BASE_IMAGE: value }));
+    }
+  });
+
+  it("allows the configured base reference to be launched", () => {
+    const f = fixture();
+    const base = config(f);
+    const spec = validateRunnerSpec(raw(f, { image: "agent-base:test" }), {
+      ...base,
+      allowedImages: new Set([...base.allowedImages, "agent-base:test"]),
+      baseImage: "agent-base:test",
+    });
+
+    expect(spec.image).toBe("agent-base:test");
+  });
+
+  it("accepts a digest-pinned default image for launch", () => {
+    const f = fixture();
+    const pinned = `agent-default@sha256:${"a".repeat(64)}`;
+    const spec = validateRunnerSpec(raw(f, { image: pinned }), {
+      ...config(f),
+      defaultImage: pinned,
+    });
+
+    expect(spec.image).toBe(pinned);
+  });
+});

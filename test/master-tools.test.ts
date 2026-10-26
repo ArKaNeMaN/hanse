@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { addApplication, createProject } from "../src/coordinator/provision.js";
+import { DefaultImageUnavailableError, ImageNotReadyError } from "../src/images/service.js";
 import { ensureMasterAgent } from "../src/master/bootstrap.js";
 import { MASTER_APP_ID, MASTER_APP_KEY, MASTER_PROJECT_ID } from "../src/master/constants.js";
 import { callMasterTool, type MasterToolContext, MasterToolError } from "../src/master/tools.js";
@@ -12,6 +13,7 @@ import type { InstanceManager } from "../src/opencode/manager.js";
 import { SettingsService } from "../src/settings/index.js";
 import { SkillService } from "../src/skills/index.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
+import { imageStateView } from "./fixtures/image-state.js";
 
 const dirs: string[] = [];
 const databases: SqliteDatabase[] = [];
@@ -1864,5 +1866,62 @@ describe("master skill management", () => {
     expect(counted.ok).toBe(true);
     expect(counted.appsInScope).toEqual({ total: 0, running: 0 });
     expect(counted.warnings).toContain("post_create_enrichment");
+  });
+});
+
+describe("master image failures", () => {
+  it("returns bounded image_not_ready tool errors for start and restart", async () => {
+    const value = fixture();
+    const created = project(value);
+    value.context.manager = {
+      ensure: async () => {
+        throw new ImageNotReadyError(imageStateView({ appId: created.appId, state: "not_ready" }));
+      },
+      restartIfRunning: async () => {
+        throw new ImageNotReadyError(imageStateView({ appId: created.appId, state: "not_ready" }));
+      },
+    } as unknown as InstanceManager;
+
+    await expectFailure(
+      () =>
+        callMasterTool(value.context, MASTER, "start_app", {
+          project_id: created.id,
+          app_key: "reviewer",
+        }),
+      "image_not_ready",
+    );
+    await expectFailure(
+      () =>
+        callMasterTool(value.context, MASTER, "restart_app", {
+          project_id: created.id,
+          app_key: "reviewer",
+        }),
+      "image_not_ready",
+    );
+  });
+
+  it("returns a bounded default_image_unavailable tool error", async () => {
+    const value = fixture();
+    const created = project(value);
+    value.context.manager = {
+      ensure: async () => {
+        throw new DefaultImageUnavailableError(
+          imageStateView({
+            appId: created.appId,
+            buildConfigured: false,
+            state: "unknown",
+          }),
+        );
+      },
+    } as unknown as InstanceManager;
+
+    await expectFailure(
+      () =>
+        callMasterTool(value.context, MASTER, "start_app", {
+          project_id: created.id,
+          app_key: "reviewer",
+        }),
+      "default_image_unavailable",
+    );
   });
 });

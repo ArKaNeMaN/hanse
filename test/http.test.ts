@@ -8,6 +8,7 @@ import { getHandoff, type HandoffState } from "../src/coordinator/handoff.js";
 import { LifecycleActivity } from "../src/coordinator/lifecycle-activity.js";
 import { CoordinatorService } from "../src/coordinator/service.js";
 import { GitService } from "../src/git/service.js";
+import { isStartRoute } from "../src/http/chat.js";
 import {
   type HttpDeps,
   type HttpRequest,
@@ -796,7 +797,7 @@ describe("http API and assets", () => {
         status: "ok",
         version: expect.any(String),
         revision: "unknown",
-        schemaVersion: 17,
+        schemaVersion: 18,
         deploying: false,
         inFlightLifecycle: 0,
       });
@@ -1105,6 +1106,45 @@ describe("http API and assets", () => {
         headers: auth(token),
       });
       expect(unknown.status).toBe(404);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("dispatches the start route explicitly before the chat fallback", async () => {
+    const f = fixture();
+    const token = humanToken(f.db);
+    expect(isStartRoute("POST", "/api/apps/a/start")).toBe(true);
+    expect(isStartRoute("GET", "/api/apps/a/start")).toBe(false);
+
+    const calls: string[] = [];
+    const depsWithManager = {
+      ...deps(f),
+      manager: {
+        ensure: async (app: { id: string }) => {
+          calls.push(app.id);
+          return "http://127.0.0.1:1";
+        },
+      } as unknown as HttpDeps["manager"],
+    };
+    const server = createHttpServer(depsWithManager);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    const port = typeof address === "object" && address !== null ? address.port : 0;
+    try {
+      const start = await fetch(`http://127.0.0.1:${port}/api/apps/a/start?project=p`, {
+        method: "POST",
+        headers: auth(token),
+      });
+      expect(start.status).toBe(200);
+      expect(await start.json()).toEqual({ appId: "p:a", state: "running" });
+      expect(calls).toEqual(["p:a"]);
+
+      const restart = await fetch(`http://127.0.0.1:${port}/api/apps/a/restart?project=p`, {
+        method: "POST",
+        headers: auth(token),
+      });
+      expect(restart.status).toBe(503);
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }

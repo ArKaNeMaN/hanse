@@ -20,6 +20,7 @@ import { DEEPSEEK_FIELDS, webDriverDefinitions } from "../web/registry.js";
 import type { WebToolConfig } from "../web/types.js";
 import { findApp, toManagedApp } from "./apps.js";
 import { humanFrom, principalFrom } from "./auth.js";
+import { crossSiteMutation } from "./chat.js";
 import {
   buildSite,
   type PageChrome,
@@ -667,6 +668,9 @@ export async function handleSettings(deps: HttpDeps, request: HttpRequest): Prom
 
   const restartMatch = /^\/api\/apps\/([^/]+)\/restart$/.exec(request.path);
   if (restartMatch !== null && request.method === "POST") {
+    if (crossSiteMutation(request)) {
+      return json(403, { error: "cross-site request rejected", code: "cross_site_request" });
+    }
     const appKey = safeDecode(restartMatch[1] ?? "");
     const projectId = request.query?.project?.trim() || undefined;
     const found = findApp(deps, projectId, appKey);
@@ -720,8 +724,31 @@ export async function handleSettings(deps: HttpDeps, request: HttpRequest): Prom
       }
       throw error;
     }
+    const managed = toManagedApp(found);
+    let running: boolean;
+    try {
+      running = await manager.preflightRestart(managed);
+    } catch (error) {
+      const mapped = lifecycleErrorResponse(error);
+      if (mapped !== undefined) {
+        if (browser) {
+          return redirectNotice(
+            returnTo,
+            error instanceof Error ? error.message : "The application image is not ready.",
+            "error",
+          );
+        }
+        return mapped;
+      }
+      throw error;
+    }
+    if (!running) {
+      return browser
+        ? redirectNotice(returnTo, "Agent is not running; settings apply on next start.", "success")
+        : json(200, { restarted: false, reason: "not_running" });
+    }
     const asynchronous = request.query?.async === "1" || request.query?.async === "true";
-    const claim = manager.beginRestart(toManagedApp(found));
+    const claim = manager.beginRestart(managed);
     if (!claim.accepted || claim.completion === undefined) {
       return json(409, { error: "restart_in_progress" });
     }

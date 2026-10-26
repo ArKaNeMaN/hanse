@@ -9,6 +9,7 @@ import {
   type ProvisioningDeletionGuard,
   ProvisioningError,
 } from "../coordinator/provision.js";
+import { DefaultImageUnavailableError, ImageNotReadyError } from "../images/service.js";
 import type { InstanceManager, ManagedApp } from "../opencode/manager.js";
 import { DeletionPendingError, RestartInProgressError } from "../opencode/manager.js";
 import { resolveAppPath } from "../runtime/app-path.js";
@@ -592,6 +593,12 @@ function lifecycleError(error: unknown): MasterToolError {
   }
   if (error instanceof SkillConflictError) {
     return new MasterToolError("skill_exists", error.message);
+  }
+  if (error instanceof ImageNotReadyError) {
+    return new MasterToolError("image_not_ready", error.message);
+  }
+  if (error instanceof DefaultImageUnavailableError) {
+    return new MasterToolError("default_image_unavailable", error.message);
   }
   if (error instanceof WorkspaceFileError) {
     return new MasterToolError(error.code, error.message);

@@ -11,6 +11,7 @@ import { handleContext, isContextRoute } from "../src/http/context.js";
 import type { HttpDeps, HttpRequest } from "../src/http/handler.js";
 import { createHttpServer } from "../src/http/server.js";
 import { createPrincipal } from "../src/identity/principals.js";
+import { DefaultImageUnavailableError, ImageNotReadyError } from "../src/images/service.js";
 import { OpencodeHttpError } from "../src/opencode/client.js";
 import {
   AgentNotRunningError,
@@ -28,6 +29,7 @@ import {
   type ManagedApp,
 } from "../src/opencode/manager.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
+import { imageStateView } from "./fixtures/image-state.js";
 
 const dirs: string[] = [];
 const databases: SqliteDatabase[] = [];
@@ -664,3 +666,59 @@ describe("server dispatch", () => {
 function agentToken(f: Fixture): string {
   return createPrincipal(f.db, { kind: "agent", name: "bot" }).token;
 }
+
+describe("context typed image failures", () => {
+  it("maps image_not_ready to 409 for compaction", async () => {
+    const f = fixture();
+    f.deps.manager = {
+      ensure: async () => {
+        throw new ImageNotReadyError(
+          imageStateView({ appId: "p1:storefront", state: "not_ready" }),
+        );
+      },
+    } as unknown as InstanceManager;
+
+    const response = await handleContext(f.deps, {
+      method: "POST",
+      path: COMPACT,
+      headers: auth(f.token),
+      query: { project: "p1" },
+    });
+
+    expect(response.status).toBe(409);
+    expect(JSON.parse(response.body)).toMatchObject({
+      error: "image_not_ready",
+      code: "image_not_ready",
+      appId: "p1:storefront",
+      state: "not_ready",
+      imageStatus: "missing",
+      buildConfigured: true,
+    });
+  });
+
+  it("maps default_image_unavailable to 503 for compaction", async () => {
+    const f = fixture();
+    f.deps.manager = {
+      ensure: async () => {
+        throw new DefaultImageUnavailableError(
+          imageStateView({ appId: "p1:storefront", buildConfigured: false, state: "unknown" }),
+        );
+      },
+    } as unknown as InstanceManager;
+
+    const response = await handleContext(f.deps, {
+      method: "POST",
+      path: COMPACT,
+      headers: auth(f.token),
+      query: { project: "p1" },
+    });
+
+    expect(response.status).toBe(503);
+    expect(JSON.parse(response.body)).toMatchObject({
+      error: "default_image_unavailable",
+      code: "default_image_unavailable",
+      appId: "p1:storefront",
+      state: "unknown",
+    });
+  });
+});

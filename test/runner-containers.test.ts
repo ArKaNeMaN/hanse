@@ -153,6 +153,7 @@ class FakeDocker implements DockerRuntime {
     const inspect: DockerContainerInspect = {
       Id: id,
       Name: `/${options.name}`,
+      Image: this.images.get(options.image)?.Id ?? options.image,
       Config: {
         Image: options.image,
         Labels: options.labels,
@@ -441,5 +442,75 @@ describe("RunnerService per-app containers", () => {
       headers: { authorization: "Bearer runtime-token" },
     });
     expect(authorized.status).toBe(200);
+  });
+});
+
+describe("runner launch identity", () => {
+  it("reports the container image id and null after stop", async () => {
+    const { f, docker, service } = await harness();
+    docker.images.set("agent-default:test", { Id: "sha256:default" });
+
+    const status = await service.ensure(rawSpec(f, "a"), "project:a");
+    expect(status.imageId).toBe("sha256:default");
+
+    const deleted = await service.delete("project:a");
+    expect(deleted.imageId).toBeNull();
+  });
+
+  it("recreates a stopped container whose image id is not the inspected target", async () => {
+    const { f, docker, service } = await harness();
+    await service.ensure(rawSpec(f, "a"));
+    const first = [...docker.containers.values()][0];
+    if (first === undefined) throw new Error("missing container");
+    docker.images.set("agent-default:test", { Id: "sha256:new-target" });
+    await docker.stopContainer(first.Id);
+
+    const status = await service.ensure(rawSpec(f, "a"));
+
+    expect(docker.creates).toHaveLength(2);
+    expect(docker.containers.size).toBe(1);
+    expect(status.imageId).toBe("sha256:new-target");
+  });
+
+  it("reuses a running container even when the target image moved", async () => {
+    const { f, docker, service } = await harness();
+    await service.ensure(rawSpec(f, "a"));
+    docker.images.set("agent-default:test", { Id: "sha256:new-target" });
+
+    const status = await service.ensure(rawSpec(f, "a"));
+
+    expect(docker.creates).toHaveLength(1);
+    expect(status.state).toBe("running");
+  });
+
+  it("fails closed when a stopped container's target image cannot be inspected", async () => {
+    const { f, docker, service } = await harness();
+    await service.ensure(rawSpec(f, "a"));
+    const first = [...docker.containers.values()][0];
+    if (first === undefined) throw new Error("missing container");
+    await docker.stopContainer(first.Id);
+    docker.images.clear();
+
+    await expect(service.ensure(rawSpec(f, "a"))).rejects.toMatchObject({
+      status: 503,
+      code: "image_unavailable",
+    });
+    expect(docker.creates).toHaveLength(1);
+    expect(docker.containers.get(first.Id)?.State?.Running).toBe(false);
+  });
+
+  it("launches a digest-pinned default image outside the plain allowlist", async () => {
+    const f = fixture();
+    const docker = new FakeDocker();
+    const pinned = `agent-default@sha256:${"a".repeat(64)}`;
+    const service = new RunnerService({
+      config: { ...config(f), defaultImage: pinned },
+      docker,
+    });
+
+    const status = await service.ensure(rawSpec(f, "a", { image: pinned }), "project:a");
+
+    expect(status.state).toBe("running");
+    expect(docker.creates[0]?.image).toBe(pinned);
   });
 });

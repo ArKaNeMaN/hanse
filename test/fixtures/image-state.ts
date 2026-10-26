@@ -1,0 +1,38 @@
+import type { ImageStateView } from "../../src/images/service.js";
+
+export function imageStateView(overrides: Partial<ImageStateView> = {}): ImageStateView {
+  return {
+    appId: "p1:web",
+    appKey: "web",
+    status: "missing",
+    imageRef: null,
+    imageId: null,
+    buildId: null,
+    hash: null,
+    currentHash: null,
+    baseDigest: null,
+    builtAt: null,
+    error: null,
+    updatedAt: null,
+    previousImageRef: null,
+    previousImageBuiltAt: null,
+    runnerAvailable: true,
+    buildConfigured: true,
+    state: "not_ready",
+    running: false,
+    usableImageRef: null,
+    targetImageId: null,
+    appliedImageId: null,
+    hashVersion: 2,
+    currentBaseDigest: null,
+    baseKind: null,
+    baseRef: null,
+    baseDrift: null,
+    hashDrift: null,
+    blocked: true,
+    selectedImage: null,
+    imageBuildId: null,
+    latestBuildImageId: null,
+    ...overrides,
+  };
+}

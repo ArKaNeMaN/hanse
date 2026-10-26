@@ -19,12 +19,21 @@ export interface RuntimeAppStatus {
   version: RuntimeVersion | null;
   containerId?: string | null;
   containerName?: string | null;
+  /** Docker image ID the container was launched with; `null` when unknown. */
+  imageId?: string | null;
   error?: string;
 }
 
 /** Effective status for a host that has never been started. */
 export function stoppedStatus(appId: string): RuntimeAppStatus {
-  return { appId, endpoint: null, state: "stopped", specHash: null, version: null };
+  return {
+    appId,
+    endpoint: null,
+    state: "stopped",
+    specHash: null,
+    version: null,
+    imageId: null,
+  };
 }
 
 /** Request body for `POST /v1/apps/:appId/ensure`. */

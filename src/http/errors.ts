@@ -1,4 +1,5 @@
 import { DeploymentInProgressError } from "../coordinator/deployment-lock.js";
+import { DefaultImageUnavailableError, ImageNotReadyError } from "../images/service.js";
 import { AgentTokenReconcileError, RestartInProgressError } from "../opencode/manager.js";
 import type { HttpResponse } from "./handler.js";
 
@@ -32,6 +33,32 @@ export function mapLifecycleHttpError(error: unknown): MappedHttpError | undefin
   }
   if (error instanceof AgentTokenReconcileError) {
     return { status: 500, body: { error: "agent_token_reconcile_failed" } };
+  }
+  if (error instanceof ImageNotReadyError) {
+    return {
+      status: 409,
+      body: {
+        error: "image_not_ready",
+        code: "image_not_ready",
+        message: error.message,
+        appId: error.appId,
+        state: error.state,
+        imageStatus: error.imageStatus,
+        buildConfigured: error.buildConfigured,
+      },
+    };
+  }
+  if (error instanceof DefaultImageUnavailableError) {
+    return {
+      status: 503,
+      body: {
+        error: "default_image_unavailable",
+        code: "default_image_unavailable",
+        message: error.message,
+        appId: error.appId,
+        state: error.state,
+      },
+    };
   }
   return undefined;
 }

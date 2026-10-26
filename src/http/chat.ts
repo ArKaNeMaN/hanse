@@ -417,6 +417,8 @@ function renderChatPage(
       <button class="btn btn-ghost btn-sm chat-retry" id="chat-stream-retry" type="button" hidden>${icon("refresh")}Retry</button>
     </div>
     <div class="policy-warning" id="chat-policy-warning" role="status" hidden></div>
+    <section class="chat-image-gate" id="image-gate" role="region" aria-live="polite" hidden></section>
+    <div class="chat-image-warning" id="image-warning" role="status" hidden></div>
     <div class="chat-thread__viewport">
       <div class="chat-thread__scroll" id="chat-scroll">
         <div class="chat-history" id="chat-history" data-state="idle" hidden><span class="spinner" aria-hidden="true"></span><span id="chat-history-label">Loading earlier messages...</span></div>
@@ -809,7 +811,7 @@ function newAttachmentId(): string {
 }
 
 /** Shared mutation Origin check: absent is allowed; `null`, malformed, or a host mismatch is not. */
-function crossSiteMutation(request: HttpRequest): boolean {
+export function crossSiteMutation(request: HttpRequest): boolean {
   const origin = request.origin?.trim();
   if (origin === undefined || origin.length === 0) return false;
   if (origin === "null") return true;
@@ -819,6 +821,64 @@ function crossSiteMutation(request: HttpRequest): boolean {
   } catch {
     return true;
   }
+}
+
+const START_PATH = /^\/api\/apps\/([^/]+)\/start$/;
+
+/** Explicit start-route matcher so the server can dispatch it before the `/api/apps/` catch-all. */
+export function isStartRoute(method: string, pathname: string): boolean {
+  return method === "POST" && START_PATH.test(pathname);
+}
+
+/** Human-only, project-scoped cold start. A running app is reconnected, never restarted. */
+export async function handleStart(deps: HttpDeps, request: HttpRequest): Promise<HttpResponse> {
+  const match = START_PATH.exec(request.path);
+  if (match === null) {
+    return json(404, { error: "not found" });
+  }
+  const principal = principalFrom(deps, request);
+  if (principal === undefined) {
+    return json(401, { error: "sign in required" });
+  }
+  if (principal.kind !== "human") {
+    return json(403, { error: "only a human principal may start an agent" });
+  }
+  if (request.method !== "POST") {
+    return json(405, { error: "method not allowed" });
+  }
+  if (crossSiteMutation(request)) {
+    return json(403, { error: "cross-site request rejected", code: "cross_site_request" });
+  }
+  const found = findApp(deps, projectParam(request), safeDecode(match[1] ?? ""));
+  if (found === undefined) {
+    return json(404, {
+      error: `unknown application: ${safeDecode(match[1] ?? "")}`,
+      code: "unknown_app",
+    });
+  }
+  if (found.app.deleting || found.project.deleting) {
+    return json(409, {
+      error: "application is pending deletion",
+      code: "deletion_pending",
+    });
+  }
+  const manager = deps.manager;
+  if (manager === undefined) {
+    return json(503, { error: "agent runtime is not configured", code: "agent_unavailable" });
+  }
+  try {
+    await manager.ensure(toManagedApp(found));
+  } catch (error) {
+    if (error instanceof DeletionPendingError) {
+      return json(409, { error: error.message, code: error.code });
+    }
+    const mapped = lifecycleErrorResponse(error);
+    if (mapped !== undefined) {
+      return mapped;
+    }
+    return json(502, { error: "agent failed to start", code: "agent_unavailable" });
+  }
+  return json(200, { appId: found.app.id, state: "running" });
 }
 
 function attachmentPathMode(deps: HttpDeps): AttachmentPathMode {
@@ -2206,6 +2266,10 @@ export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<
     }
     const previews = deps.previews?.views(found.app.id) ?? [];
     return html(200, renderChatPage(site, found, principal, chrome, previews));
+  }
+
+  if (START_PATH.test(request.path)) {
+    return handleStart(deps, request);
   }
 
   const sessionsMatch = /^\/api\/apps\/([^/]+)\/sessions$/.exec(request.path);

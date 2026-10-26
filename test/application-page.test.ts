@@ -110,7 +110,7 @@ function setImage(
 ): void {
   f.db
     .prepare(
-      "UPDATE apps SET image_status = ?, image_ref = ?, image_hash = ?, image_built_at = ?, image_error = ? WHERE id = 'p1:storefront'",
+      "UPDATE apps SET build_configured = 1, image_status = ?, image_ref = ?, image_hash = ?, image_built_at = ?, image_error = ? WHERE id = 'p1:storefront'",
     )
     .run(values.status, values.ref, values.hash, values.builtAt ?? null, values.error ?? null);
 }
@@ -172,6 +172,8 @@ describe("application page", () => {
     expect(body).toContain("Add .hanse/Dockerfile to build a custom image for this application.");
     expect(body).toContain("Open application folder");
     expect(body).toContain('id="image-ref">Default agent image</p>');
+    expect(body).toContain('data-image-url="/api/apps/storefront/image?project=p1"');
+    expect(body).not.toContain('id="image-base-kind"');
     expect(body).toContain('id="image-check"');
     expect(body).toContain('id="image-check-form"');
     expect(body).toContain('action="/api/apps/storefront/image/check?project=p1"');
@@ -343,6 +345,27 @@ describe("application page", () => {
     expect(body).not.toContain('id="image-logs-refresh"');
     expect(body).toContain('id="image-rollback-dialog"');
     expect(body).toContain('id="image-rollback-dialog-ref"');
+  });
+
+  it("adds data-image-url and base placeholder rows to the custom panel", () => {
+    const f = fixture();
+    setImage(f, {
+      status: "ready",
+      ref: "sha256:new",
+      hash: "hash",
+      builtAt: "2026-10-20T10:00:00.000Z",
+    });
+    f.db
+      .prepare(
+        "UPDATE apps SET image_base_kind = 'base', image_base_ref = 'ghcr.io/example/agent-base:latest', image_base_digest = 'sha256:abc123' WHERE id = 'p1:storefront'",
+      )
+      .run();
+    const body = page(f);
+
+    expect(body).toContain('data-image-url="/api/apps/storefront/image?project=p1"');
+    expect(body).toContain('id="image-base-kind">Base</span>');
+    expect(body).toContain('id="image-base-ref">ghcr.io/example/agent-base:latest</span>');
+    expect(body).toContain('id="image-base-digest">sha256:abc123</span>');
   });
 
   it("renders a building image with a disabled busy build action", () => {

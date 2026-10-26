@@ -6,8 +6,12 @@
     return;
   }
 
+  const isDefaultPanel = panel.dataset.status === "default";
   const statusLive = document.getElementById("image-live");
   const builtEl = document.getElementById("image-built");
+  const baseKindEl = document.getElementById("image-base-kind");
+  const baseRefEl = document.getElementById("image-base-ref");
+  const baseDigestEl = document.getElementById("image-base-digest");
   const rollbackRefEl = document.getElementById("image-rollback-ref");
   const rollbackBuiltEl = document.getElementById("image-rollback-built");
   const rollbackForm = document.getElementById("image-rollback-form");
@@ -25,13 +29,52 @@
   const logsUrl = panel.dataset.logsUrl || "";
   const runtimeUrl = panel.dataset.runtimeUrl || "";
   const POLL_MS = 3000;
-  const STATUS = {
-    missing: {
-      label: "Not built",
-      state: "queued",
-      glyph: "clock",
-      action: "Build image",
-      hint: "No app image has been built. Build it before starting the agent.",
+
+  const DERIVED_STATES = new Set([
+    "current",
+    "restart_required",
+    "rebuild_required",
+    "building",
+    "build_error",
+    "not_ready",
+    "unknown",
+  ]);
+  const BUILD_STATES = new Set(["building", "build_error", "not_ready", "rebuild_required"]);
+  const RAW_STATE = {
+    missing: "not_ready",
+    building: "building",
+    ready: "current",
+    stale: "rebuild_required",
+    error: "build_error",
+  };
+  const BASE_KIND_LABEL = {
+    default: "Default",
+    base: "Base",
+    explicit: "Explicit",
+    unknown: "Unknown",
+  };
+
+  const CUSTOM_STATES = {
+    current: {
+      label: "Built",
+      state: "delivered",
+      glyph: "check",
+      action: "Rebuild image",
+      hint: "The image matches the current Dockerfile and base.",
+    },
+    restart_required: {
+      label: "Restart required",
+      state: "awaiting_approval",
+      glyph: "refresh",
+      action: "Rebuild image",
+      hint: "The running agent uses the previous image. Restart it to use the new image.",
+    },
+    rebuild_required: {
+      label: "Out of date",
+      state: "expired",
+      glyph: "hourglass",
+      action: "Rebuild image",
+      hint: "The base image or Dockerfile changed. Rebuild and restart the running agent to use the new image.",
     },
     building: {
       label: "Building",
@@ -40,26 +83,47 @@
       action: "Building…",
       hint: "The runner is building this image. The previous image remains in use.",
     },
-    ready: {
-      label: "Built",
-      state: "delivered",
-      glyph: "check",
-      action: "Rebuild image",
-      hint: "The image matches the current Dockerfile and default base.",
-    },
-    stale: {
-      label: "Out of date",
-      state: "expired",
-      glyph: "hourglass",
-      action: "Rebuild image",
-      hint: "The Dockerfile or default base changed. The running agent keeps the old image until you rebuild and restart.",
-    },
-    error: {
+    build_error: {
       label: "Build failed",
       state: "failed",
       glyph: "alert-triangle",
       action: "Retry build",
       hint: "The last build failed. The previous image is kept.",
+    },
+    not_ready: {
+      label: "Not built",
+      state: "queued",
+      glyph: "clock",
+      action: "Build image",
+      hint: "No app image has been built. Build it before starting the agent.",
+    },
+    unknown: {
+      label: "Unknown",
+      state: "queued",
+      glyph: "clock",
+      action: "Rebuild image",
+      hint: "The image identity could not be confirmed. Refresh to try again.",
+    },
+  };
+
+  const DEFAULT_STATES = {
+    current: {
+      label: "Current",
+      state: "delivered",
+      glyph: "check",
+      hint: "The agent runs the current default image.",
+    },
+    restart_required: {
+      label: "Restart required",
+      state: "awaiting_approval",
+      glyph: "refresh",
+      hint: "Restart the agent to use the current default image.",
+    },
+    unknown: {
+      label: "Unknown",
+      state: "queued",
+      glyph: "clock",
+      hint: "The default image identity could not be confirmed. Refresh to try again.",
     },
   };
 
@@ -71,10 +135,6 @@
     if (statusLive !== null && statusLive.textContent !== text) {
       statusLive.textContent = text;
     }
-  }
-
-  function normalizeStatus(value) {
-    return Object.prototype.hasOwnProperty.call(STATUS, value) ? value : "error";
   }
 
   function formatTime(iso) {
@@ -177,7 +237,7 @@
   }
 
   async function refreshRuntime() {
-    if (runtimeUrl.length === 0 || panel.dataset.status === "default") {
+    if (runtimeUrl.length === 0 || isDefaultPanel) {
       return;
     }
     try {
@@ -201,31 +261,97 @@
     }
   }
 
-  function renderStatus(data) {
-    const status = normalizeStatus(data.status);
-    const meta = STATUS[status];
-    panel.dataset.status = status;
+  function deriveState(data) {
+    if (
+      data !== null &&
+      typeof data === "object" &&
+      typeof data.state === "string" &&
+      DERIVED_STATES.has(data.state)
+    ) {
+      return data.state;
+    }
+    const raw =
+      data !== null && typeof data === "object" && typeof data.status === "string"
+        ? data.status
+        : "";
+    return RAW_STATE[raw] ?? "unknown";
+  }
+
+  function presentation(state) {
+    const safe = isDefaultPanel && BUILD_STATES.has(state) ? "unknown" : state;
+    const table = isDefaultPanel ? DEFAULT_STATES : CUSTOM_STATES;
+    return table[safe] ?? table.unknown;
+  }
+
+  function renderBase(data) {
+    if (baseKindEl === null && baseRefEl === null && baseDigestEl === null) {
+      return;
+    }
+    const kind =
+      data !== null && typeof data.baseKind === "string"
+        ? (BASE_KIND_LABEL[data.baseKind] ?? "Unknown")
+        : "Unknown";
+    if (baseKindEl !== null) {
+      baseKindEl.textContent = kind;
+    }
+    if (baseRefEl !== null) {
+      const baseRef =
+        data !== null && typeof data.baseRef === "string" && data.baseRef.length > 0
+          ? data.baseRef
+          : null;
+      baseRefEl.textContent = baseRef ?? "—";
+    }
+    if (baseDigestEl !== null) {
+      const stored =
+        data !== null && typeof data.baseDigest === "string" && data.baseDigest.length > 0
+          ? data.baseDigest
+          : null;
+      const current =
+        data !== null &&
+        typeof data.currentBaseDigest === "string" &&
+        data.currentBaseDigest.length > 0
+          ? data.currentBaseDigest
+          : null;
+      if (stored !== null && current !== null && stored !== current) {
+        baseDigestEl.textContent = `${stored} → ${current}`;
+      } else {
+        baseDigestEl.textContent = stored ?? current ?? "—";
+      }
+    }
+  }
+
+  function renderState(data) {
+    const state = deriveState(data);
+    const meta = presentation(state);
+    panel.dataset.state = state;
     statusEl.className = "status";
-    statusEl.dataset.status = status;
+    statusEl.dataset.status = state;
     statusEl.dataset.state = meta.state;
     setStatusGlyph(statusEl, meta.glyph);
     setStatusLabel(statusEl, meta.label);
 
     const imageRef =
-      typeof data.imageRef === "string" && data.imageRef.length > 0 ? data.imageRef : null;
-    refEl.textContent = imageRef ?? "Not built";
+      data !== null && typeof data.imageRef === "string" && data.imageRef.length > 0
+        ? data.imageRef
+        : null;
+    refEl.textContent = imageRef ?? (isDefaultPanel ? "Default agent image" : "Not built");
     if (imageRef === null) {
       delete panel.dataset.imageRef;
     } else {
       panel.dataset.imageRef = imageRef;
     }
 
+    renderBase(data);
+
     if (builtEl !== null) {
-      renderTime(builtEl, typeof data.builtAt === "string" ? data.builtAt : "", "Never");
+      const builtAt = data !== null && typeof data.builtAt === "string" ? data.builtAt : "";
+      renderTime(builtEl, builtAt, "Never");
     }
 
     const previousImageRef =
-      typeof data.previousImageRef === "string" && data.previousImageRef.length > 0
+      data !== null &&
+      typeof data.previousImageRef === "string" &&
+      data.previousImageRef.length > 0
         ? data.previousImageRef
         : null;
     if (rollbackRefEl !== null) {
@@ -236,7 +362,9 @@
     if (rollbackBuiltEl !== null) {
       renderTime(
         rollbackBuiltEl,
-        typeof data.previousImageBuiltAt === "string" ? data.previousImageBuiltAt : "",
+        data !== null && typeof data.previousImageBuiltAt === "string"
+          ? data.previousImageBuiltAt
+          : "",
         "",
       );
       rollbackBuiltEl.hidden = previousImageRef === null;
@@ -251,31 +379,32 @@
     }
 
     if (errorEl !== null) {
-      const message = typeof data.error === "string" ? data.error : "";
+      const message =
+        data !== null && typeof data.error === "string" && !isDefaultPanel ? data.error : "";
       errorEl.textContent = message;
       errorEl.hidden = message.length === 0;
     }
     if (hintEl !== null) {
       hintEl.textContent = meta.hint;
     }
-    if (buildButton !== null) {
+    if (buildButton !== null && meta.action !== undefined) {
       const label = buildButton.querySelector(".btn__label");
       if (label !== null) {
         label.textContent = meta.action;
       }
       buildButton.dataset.actionLabel = meta.action;
-      buildButton.disabled = status === "building";
-      if (status === "building") {
+      buildButton.disabled = state === "building";
+      if (state === "building") {
         buildButton.setAttribute("aria-busy", "true");
       } else {
         buildButton.removeAttribute("aria-busy");
       }
     }
     if (rollbackButton !== null) {
-      rollbackButton.disabled = status === "building";
+      rollbackButton.disabled = state === "building";
     }
 
-    if (status === "building") {
+    if (state === "building") {
       if (logsDetails !== null && !logsDetails.open) {
         logsDetails.open = true;
       }
@@ -283,7 +412,14 @@
     } else {
       stopPoll();
     }
-    setLive(`${meta.label}. ${typeof data.error === "string" && data.error.length > 0 ? data.error : meta.hint}`);
+    const error =
+      !isDefaultPanel &&
+      data !== null &&
+      typeof data.error === "string" &&
+      data.error.length > 0
+        ? data.error
+        : "";
+    setLive(`${meta.label}. ${error.length > 0 ? error : meta.hint}`);
     void refreshRuntime();
   }
 
@@ -308,7 +444,7 @@
     }
     statusBusy = true;
     try {
-      renderStatus(await request(imageUrl));
+      renderState(await request(imageUrl));
     } catch (error) {
       const message =
         error instanceof Error && error.message.length > 0
@@ -356,8 +492,7 @@
     timer = window.setTimeout(async () => {
       timer = null;
       await refreshStatus();
-      const status = normalizeStatus(panel.dataset.status || "");
-      if (status === "building") {
+      if (panel.dataset.state === "building") {
         if (logsDetails !== null && logsDetails.open) {
           await refreshLogs();
         }
@@ -382,12 +517,14 @@
     });
   }
 
-  const initial = panel.dataset.status || "";
-  if (initial === "default") {
+  if (imageUrl.length > 0) {
+    void refreshStatus();
+  } else if (isDefaultPanel) {
+    setLive("Default image.");
     void refreshRuntime();
   } else {
-    renderStatus({
-      status: initial,
+    renderState({
+      status: panel.dataset.status || "missing",
       imageRef: refEl.textContent === "Not built" ? null : refEl.textContent,
       builtAt: builtEl !== null ? builtEl.dataset.builtAt || "" : "",
       previousImageRef:

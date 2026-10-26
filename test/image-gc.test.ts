@@ -525,3 +525,39 @@ describe("runner image usage/gc HTTP", () => {
     expect(invalid.status).toBe(400);
   });
 });
+
+describe("image gc in-flight build protection", () => {
+  it("unions the runner build-tag provider without changing candidate selection", async () => {
+    const docker = new FakeDocker();
+    const inflight = "hanse-app-project:web:inflight";
+    docker.images = [
+      image("sha256:inflight", inflight, 100, 1),
+      image("sha256:stale", "hanse-app-project:web:stale", 100, 2),
+      image("sha256:base", "ghcr.io/arkaneman/hanse-agent-base:latest", 100, 3, null),
+      image("sha256:default", "ghcr.io/arkaneman/hanse-agent-default:latest", 100, 4, null),
+    ];
+    docker.containers = [
+      {
+        Id: "container-1",
+        Names: ["/hanse-app-project-web"],
+        Image: "ghcr.io/arkaneman/hanse-agent-base:latest",
+        ImageID: "sha256:base",
+        State: "running",
+        Status: "Up",
+      },
+    ];
+    const service = new ImageGcService({
+      docker,
+      diskPath: "/workspace",
+      protectedRefs: () => [inflight],
+    });
+
+    const report = await service.gc({});
+
+    expect(docker.removed).toEqual(["hanse-app-project:web:stale"]);
+    expect(report.removedRefs).toEqual(["hanse-app-project:web:stale"]);
+    expect(report.skipped).toContainEqual({ ref: inflight, reason: "protected" });
+    expect(report.removedImageIds).not.toContain("sha256:base");
+    expect(report.removedImageIds).not.toContain("sha256:default");
+  });
+});

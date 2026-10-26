@@ -5,8 +5,15 @@ import { APP_CONFIG_FILENAME, ConfigError, HANSE_DIR, loadProject } from "../con
 import { isMasterProject, MASTER_DIR_NAME } from "../master/constants.js";
 import { isInside, resolveAppPath } from "../runtime/app-path.js";
 import {
+  type BaseImageConfigErrorCode,
+  type BaseImageKind,
+  legacyV1BaseReference,
+  resolveBaseImage,
+} from "../runtime/base-image.js";
+import {
   boundedErrorMessage,
   computeBuildSpecHash,
+  computeLegacyBuildSpecHashV1,
   defaultImageReference,
   resolveBuildDockerfile,
 } from "../runtime/build-spec.js";
@@ -14,6 +21,9 @@ import { type Project, safeParseApp } from "../schema/index.js";
 import type { SqliteDatabase } from "../store/index.js";
 
 export type AppImageStatus = "missing" | "building" | "ready" | "stale" | "error";
+
+/** Base-image identity recorded for a built image. */
+export type AppImageBaseKind = BaseImageKind;
 
 /** An application registered with the coordinator. */
 export interface RegisteredApp {
@@ -31,6 +41,13 @@ export interface RegisteredApp {
   imageBaseDigest: string | null;
   imageBuiltAt: string | null;
   imageError: string | null;
+  imageBaseRef: string | null;
+  imageBaseKind: AppImageBaseKind | null;
+  imageHashVersion: number;
+  imageBuildId: string | null;
+  imageBuildRef: string | null;
+  imageBuildStartedAt: string | null;
+  imageBuildRejectedRef: string | null;
   imageRollbackRef?: string | null;
   imageRollbackBuiltAt?: string | null;
   /** Canonical absolute Dockerfile path, or `null` when the app is not a build app. */
@@ -54,12 +71,24 @@ export interface RegisteredProject {
 export interface AppBuildInspection {
   status: AppImageStatus;
   error: string | null;
+  /** True when the app declares a per-app build, including an invalid one. */
+  buildConfigured?: boolean;
   /** Canonical absolute Dockerfile path, or `null` when the app is not build-configured. */
   dockerfile: string | null;
   /** Manifest Dockerfile value relative to the application directory. */
   relativeDockerfile: string | null;
+  /** Raw Dockerfile bytes, or `null` when no build spec could be resolved. */
+  dockerfileContent?: Buffer | null;
   args: Record<string, string>;
   specHash: string | null;
+  /** Resolved build base kind. */
+  baseKind?: AppImageBaseKind | null;
+  /** Resolved build base reference. */
+  baseRef?: string | null;
+  /** Bounded base-configuration error code, when the inspection failed there. */
+  baseErrorCode?: BaseImageConfigErrorCode | null;
+  /** Version of {@link specHash}; always 2 for a current inspection. */
+  hashVersion?: number;
 }
 
 export interface ExistingImageRow {
@@ -68,6 +97,14 @@ export interface ExistingImageRow {
   image_hash: string | null;
   image_base_digest: string | null;
   image_built_at: string | null;
+  image_error?: string | null;
+  image_base_ref?: string | null;
+  image_base_kind?: AppImageBaseKind | null;
+  image_hash_version?: number;
+  image_build_id?: string | null;
+  image_build_ref?: string | null;
+  image_build_started_at?: string | null;
+  image_build_rejected_ref?: string | null;
 }
 
 export interface MergedImageMetadata {
@@ -77,6 +114,10 @@ export interface MergedImageMetadata {
   imageBaseDigest: string | null;
   imageBuiltAt: string | null;
   imageError: string | null;
+  imageBaseRef: string | null;
+  imageBaseKind: AppImageBaseKind | null;
+  imageHashVersion: number;
+  imageBuildRejectedRef: string | null;
 }
 
 /** Stable application id: unique per (project, app). */
@@ -150,23 +191,31 @@ export function registerProject(
   });
 
   const selectExisting = db.prepare(
-    `SELECT image_ref, image_status, image_hash, image_base_digest, image_built_at, deleting
+    `SELECT image_ref, image_status, image_hash, image_base_digest, image_built_at, image_error,
+            image_base_ref, image_base_kind, image_hash_version,
+            image_build_id, image_build_ref, image_build_started_at, image_build_rejected_ref,
+            deleting
      FROM apps WHERE id = ?`,
   );
   const upsertApp = db.prepare(
     `INSERT INTO apps (
        id, project_id, app_key, path, kind, contract, created_at,
-       image_ref, image_status, image_hash, image_base_digest, image_built_at, image_error
+       image_ref, image_status, image_hash, image_base_digest, image_built_at, image_error,
+       build_configured, image_base_ref, image_base_kind, image_hash_version
      )
      VALUES (
        @id, @project_id, @app_key, @path, @kind, @contract, @created_at,
-       @image_ref, @image_status, @image_hash, @image_base_digest, @image_built_at, @image_error
+       @image_ref, @image_status, @image_hash, @image_base_digest, @image_built_at, @image_error,
+       @build_configured, @image_base_ref, @image_base_kind, @image_hash_version
      )
      ON CONFLICT(id) DO UPDATE SET
        path = excluded.path, kind = excluded.kind, contract = excluded.contract,
        image_ref = excluded.image_ref, image_status = excluded.image_status,
        image_hash = excluded.image_hash, image_base_digest = excluded.image_base_digest,
-       image_built_at = excluded.image_built_at, image_error = excluded.image_error`,
+       image_built_at = excluded.image_built_at, image_error = excluded.image_error,
+       build_configured = excluded.build_configured,
+       image_base_ref = excluded.image_base_ref, image_base_kind = excluded.image_base_kind,
+       image_hash_version = excluded.image_hash_version`,
   );
 
   const apps: RegisteredApp[] = [];
@@ -178,6 +227,9 @@ export function registerProject(
       | (ExistingImageRow & { deleting: number })
       | undefined;
     const image = mergeImageMetadata(existing, inspection);
+    const buildConfigured =
+      inspection.buildConfigured ??
+      (inspection.status === "error" || inspection.dockerfile !== null);
     upsertApp.run({
       id,
       project_id: project.id,
@@ -192,6 +244,10 @@ export function registerProject(
       image_base_digest: image.imageBaseDigest,
       image_built_at: image.imageBuiltAt,
       image_error: image.imageError,
+      build_configured: buildConfigured ? 1 : 0,
+      image_base_ref: image.imageBaseRef,
+      image_base_kind: image.imageBaseKind,
+      image_hash_version: image.imageHashVersion,
     });
     apps.push({
       id,
@@ -202,8 +258,11 @@ export function registerProject(
       contract: "AGENTS.md",
       deleting: existing?.deleting === 1,
       ...image,
+      imageBuildId: existing?.image_build_id ?? null,
+      imageBuildRef: existing?.image_build_ref ?? null,
+      imageBuildStartedAt: existing?.image_build_started_at ?? null,
       buildDockerfile: inspection.dockerfile,
-      buildConfigured: inspection.status === "error" || inspection.dockerfile !== null,
+      buildConfigured,
       buildArgs: inspection.args,
       buildSpecHash: inspection.specHash,
     });
@@ -221,6 +280,7 @@ export function registerProject(
 export function resolveAppBuild(
   appDir: string,
   defaultImage: string = defaultImageReference(),
+  baseImage: string | undefined = configuredBaseImage(),
 ): AppBuildInspection {
   let raw: string | undefined;
   try {
@@ -252,24 +312,47 @@ export function resolveAppBuild(
   }
 
   const args = { ...(build.args ?? {}) };
+  let resolved: ReturnType<typeof resolveBuildDockerfile>;
   try {
-    const resolved = resolveBuildDockerfile({ appDir, dockerfile: build.dockerfile });
+    resolved = resolveBuildDockerfile({ appDir, dockerfile: build.dockerfile });
+  } catch (error) {
+    return failedInspection(error, args);
+  }
+  try {
+    const base = resolveBaseImage({
+      dockerfile: resolved.content,
+      args,
+      declaredBase: build.base ?? null,
+      defaultImage,
+      baseImage: baseImage ?? null,
+    });
     const specHash = computeBuildSpecHash({
       dockerfile: resolved.content,
-      defaultImage,
       buildArgs: args,
+      baseKind: base.kind,
     });
     return {
       status: "missing",
       error: null,
+      buildConfigured: true,
       dockerfile: resolved.path,
       relativeDockerfile: build.dockerfile,
+      dockerfileContent: resolved.content,
       args,
       specHash,
+      baseKind: base.kind,
+      baseRef: base.ref,
+      baseErrorCode: null,
+      hashVersion: 2,
     };
   } catch (error) {
-    return failedInspection(error, args);
+    return failedInspection(error, args, resolved.content);
   }
+}
+
+function configuredBaseImage(): string | undefined {
+  const value = process.env.HANSE_AGENT_BASE_IMAGE?.trim();
+  return value === undefined || value.length === 0 ? undefined : value;
 }
 
 function readAppConfig(appDir: string): string | undefined {
@@ -303,22 +386,45 @@ function emptyInspection(): AppBuildInspection {
   return {
     status: "missing",
     error: null,
+    buildConfigured: false,
     dockerfile: null,
     relativeDockerfile: null,
+    dockerfileContent: null,
     args: {},
     specHash: null,
+    baseKind: null,
+    baseRef: null,
+    baseErrorCode: null,
+    hashVersion: 1,
   };
 }
 
-function failedInspection(error: unknown, args: Record<string, string> = {}): AppBuildInspection {
+function failedInspection(
+  error: unknown,
+  args: Record<string, string> = {},
+  dockerfileContent: Buffer | null = null,
+): AppBuildInspection {
   return {
     status: "error",
     error: boundedErrorMessage(error),
+    buildConfigured: true,
     dockerfile: null,
     relativeDockerfile: null,
+    dockerfileContent,
     args,
     specHash: null,
+    baseKind: null,
+    baseRef: null,
+    baseErrorCode: baseErrorCode(error),
+    hashVersion: 1,
   };
+}
+
+function baseErrorCode(error: unknown): BaseImageConfigErrorCode | null {
+  const code = (error as { code?: unknown } | null)?.code;
+  return code === "base_mismatch" || code === "base_unavailable" || code === "base_arg_reserved"
+    ? code
+    : null;
 }
 
 export function mergeImageMetadata(
@@ -333,6 +439,10 @@ export function mergeImageMetadata(
       imageBaseDigest: existing?.image_base_digest ?? null,
       imageBuiltAt: existing?.image_built_at ?? null,
       imageError: inspection.error,
+      imageBaseRef: existing?.image_base_ref ?? null,
+      imageBaseKind: existing?.image_base_kind ?? null,
+      imageHashVersion: existing?.image_hash_version ?? 1,
+      imageBuildRejectedRef: existing?.image_build_rejected_ref ?? null,
     };
   }
   if (existing === undefined) {
@@ -343,6 +453,10 @@ export function mergeImageMetadata(
       imageBaseDigest: null,
       imageBuiltAt: null,
       imageError: null,
+      imageBaseRef: null,
+      imageBaseKind: null,
+      imageHashVersion: 2,
+      imageBuildRejectedRef: null,
     };
   }
   if (inspection.dockerfile === null) {
@@ -353,12 +467,29 @@ export function mergeImageMetadata(
       imageBaseDigest: null,
       imageBuiltAt: null,
       imageError: null,
+      imageBaseRef: null,
+      imageBaseKind: null,
+      imageHashVersion: 1,
+      imageBuildRejectedRef: existing.image_build_rejected_ref ?? null,
     };
   }
-  const hashChanged =
-    existing.image_hash !== null &&
-    inspection.specHash !== null &&
-    existing.image_hash !== inspection.specHash;
+  const preservedError = existing.image_error ?? null;
+  const rejectedRef = existing.image_build_rejected_ref ?? null;
+  if (preservedError !== null || rejectedRef !== null) {
+    return {
+      imageStatus: "error",
+      imageRef: existing.image_ref,
+      imageHash: existing.image_hash,
+      imageBaseDigest: existing.image_base_digest,
+      imageBuiltAt: existing.image_built_at,
+      imageError: preservedError,
+      imageBaseRef: existing.image_base_ref ?? null,
+      imageBaseKind: existing.image_base_kind ?? null,
+      imageHashVersion: existing.image_hash_version ?? 1,
+      imageBuildRejectedRef: rejectedRef,
+    };
+  }
+  const hashChanged = legacyAwareHashChanged(existing, inspection);
   let imageStatus: AppImageStatus;
   if (existing.image_status === "error" || hashChanged) {
     imageStatus = "stale";
@@ -367,12 +498,38 @@ export function mergeImageMetadata(
   } else {
     imageStatus = existing.image_status;
   }
+  const fillUnbuiltHash = existing.image_ref === null && existing.image_hash === null;
   return {
     imageStatus,
     imageRef: existing.image_ref,
-    imageHash: existing.image_hash ?? inspection.specHash,
+    imageHash: fillUnbuiltHash ? inspection.specHash : existing.image_hash,
     imageBaseDigest: existing.image_base_digest,
     imageBuiltAt: existing.image_built_at,
     imageError: null,
+    imageBaseRef: existing.image_base_ref ?? null,
+    imageBaseKind: existing.image_base_kind ?? null,
+    imageHashVersion: fillUnbuiltHash ? 2 : (existing.image_hash_version ?? 1),
+    imageBuildRejectedRef: rejectedRef,
   };
+}
+
+function legacyAwareHashChanged(
+  existing: ExistingImageRow,
+  inspection: AppBuildInspection,
+): boolean {
+  if (existing.image_ref === null) return false;
+  if (existing.image_hash === null || inspection.specHash === null) return false;
+  const storedVersion = existing.image_hash_version ?? 1;
+  if (storedVersion === 2) {
+    return existing.image_hash !== inspection.specHash;
+  }
+  if (storedVersion !== 1) return false;
+  const legacyReference = legacyV1BaseReference(existing.image_base_digest);
+  if (legacyReference === null || !inspection.dockerfileContent) return false;
+  const recomputed = computeLegacyBuildSpecHashV1({
+    dockerfile: inspection.dockerfileContent,
+    defaultImage: legacyReference,
+    buildArgs: inspection.args,
+  });
+  return recomputed !== existing.image_hash;
 }

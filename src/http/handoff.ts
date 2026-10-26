@@ -7,6 +7,7 @@ import {
 } from "../coordinator/policy.js";
 import { CoordinatorService } from "../coordinator/service.js";
 import { principalFrom } from "./auth.js";
+import { lifecycleErrorResponse } from "./errors.js";
 import type { HttpDeps, HttpRequest, HttpResponse } from "./handler.js";
 import { safeLocalPath } from "./ui.js";
 
@@ -220,6 +221,17 @@ async function handleReplyAction(
       ? redirectWithNotice(returnTo, "Reply delivery cancelled.", "success")
       : json(200, { ok: true });
   } catch (error) {
+    const mapped = lifecycleErrorResponse(error);
+    if (mapped !== undefined) {
+      if (wantsHtml(request)) {
+        return redirectWithNotice(
+          returnTo,
+          error instanceof Error ? error.message : "The application image is not ready.",
+          "error",
+        );
+      }
+      return mapped;
+    }
     const message = error instanceof Error ? error.message : String(error);
     const status = /not found/i.test(message)
       ? 404

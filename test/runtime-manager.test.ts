@@ -75,6 +75,7 @@ describe("InstanceManager B1 runner spec", () => {
           version: null,
           containerId: "docker-id",
           containerName: "hanse-app-p-a",
+          imageId: "sha256:runner",
         };
       },
       async delete() {
@@ -121,25 +122,33 @@ describe("InstanceManager B1 runner spec", () => {
 
     const row = db
       .prepare(
-        "SELECT state, runtime_state AS runtimeState, container_id AS containerId, container_name AS containerName FROM instances WHERE app_id = 'p:a'",
+        "SELECT state, runtime_state AS runtimeState, container_id AS containerId, container_name AS containerName, applied_image_id AS appliedImageId FROM instances WHERE app_id = 'p:a'",
       )
       .get() as {
       state: string;
       runtimeState: string;
       containerId: string;
       containerName: string;
+      appliedImageId: string;
     };
     expect(row).toEqual({
       state: "running",
       runtimeState: "running",
       containerId: "docker-id",
       containerName: "hanse-app-p-a",
+      appliedImageId: "sha256:runner",
     });
 
     await expect(manager.stopApp("p:a")).resolves.toBe(true);
     const stopped = db
-      .prepare("SELECT state, runtime_state AS runtimeState FROM instances WHERE app_id = 'p:a'")
-      .get() as { state: string; runtimeState: string };
-    expect(stopped).toEqual({ state: "stopped", runtimeState: "stopped" });
+      .prepare(
+        "SELECT state, runtime_state AS runtimeState, applied_image_id AS appliedImageId FROM instances WHERE app_id = 'p:a'",
+      )
+      .get() as { state: string; runtimeState: string; appliedImageId: string };
+    expect(stopped).toEqual({
+      state: "stopped",
+      runtimeState: "stopped",
+      appliedImageId: "sha256:runner",
+    });
   });
 });

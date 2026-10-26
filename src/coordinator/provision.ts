@@ -23,6 +23,7 @@ import {
 import { createRuntimeDir } from "../git/temp-dir.js";
 import { isMasterProject, masterAppDir } from "../master/constants.js";
 import { writeRegularFileNoFollow } from "../master/workspace-files.js";
+import { resolveAppBuild } from "../registry/index.js";
 import { isInside, resolveAppPath } from "../runtime/app-path.js";
 import type { GitAuthResolution } from "../settings/git-auth.js";
 import type { SqliteDatabase } from "../store/index.js";
@@ -638,12 +639,20 @@ export function addApplication(
   manifest.apps = apps;
   writeManifest(projectRoot, manifest);
 
+  const inspection = resolveAppBuild(resolved);
   try {
     deps.db
       .prepare(
-        "INSERT INTO apps (id, project_id, app_key, path, kind, contract, created_at) VALUES (?, ?, ?, ?, 'app', 'AGENTS.md', ?)",
+        "INSERT INTO apps (id, project_id, app_key, path, kind, contract, build_configured, created_at) VALUES (?, ?, ?, ?, 'app', 'AGENTS.md', ?, ?)",
       )
-      .run(appId, project.id, appKey, appPath, new Date().toISOString());
+      .run(
+        appId,
+        project.id,
+        appKey,
+        appPath,
+        inspection.buildConfigured ? 1 : 0,
+        new Date().toISOString(),
+      );
   } catch (error) {
     throw new ProvisioningError("io_error", 500, "cannot write the application row", {
       cause: error,

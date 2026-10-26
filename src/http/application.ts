@@ -77,6 +77,13 @@ const IMAGE_STATES: Record<RegisteredApp["imageStatus"], ImageState> = {
   },
 };
 
+const BASE_KIND_LABELS: Record<NonNullable<RegisteredApp["imageBaseKind"]>, string> = {
+  default: "Default",
+  base: "Base",
+  explicit: "Explicit",
+  unknown: "Unknown",
+};
+
 function imageHrefs(
   projectId: string,
   appKey: string,
@@ -122,6 +129,9 @@ function imagePanel(
   const error = app.imageError
     ? `<p class="field-error" id="image-error" role="alert">${escapeHtml(app.imageError)}</p>`
     : '<p class="field-error" id="image-error" role="alert" hidden></p>';
+  const baseKind = app.imageBaseKind === null ? "Unknown" : BASE_KIND_LABELS[app.imageBaseKind];
+  const baseRef = app.imageBaseRef ?? "—";
+  const baseDigest = app.imageBaseDigest ?? "—";
   const rollbackForm = `<form method="post" action="${escapeHtml(hrefs.rollbackHref)}" id="image-rollback-form"${rollbackRef === null ? " hidden" : ""}>
           <input type="hidden" name="return_to" value="${escapeHtml(hrefs.appHref)}" />
           <button class="btn btn-secondary btn-sm" type="button" id="image-rollback" data-dialog-open="image-rollback-dialog"${building || deletionPending ? " disabled" : ""}>${icon("refresh")}<span class="btn__label">${escapeHtml(rollbackAction)}</span></button>
@@ -157,6 +167,9 @@ function imagePanel(
         <summary>Image details${icon("chevron-down", "disclosure__chevron")}</summary>
         <div class="stack--tight">
           <div class="summary-row"><span class="overline">Built</span><span id="image-built" data-built-at="${escapeHtml(app.imageBuiltAt ?? "")}">${app.imageBuiltAt ? timeTag(app.imageBuiltAt) : "Never"}</span></div>
+          <div class="summary-row"><span class="overline">Base</span><span id="image-base-kind">${escapeHtml(baseKind)}</span></div>
+          <div class="summary-row"><span class="overline">Base ref</span><span class="mono" id="image-base-ref">${escapeHtml(baseRef)}</span></div>
+          <div class="summary-row"><span class="overline">Base digest</span><span class="mono" id="image-base-digest">${escapeHtml(baseDigest)}</span></div>
           <div class="summary-row"${rollbackRef === null ? " hidden" : ""}><span class="overline">Previous</span><span class="mono" id="image-rollback-ref">${escapeHtml(rollbackRef ?? "None")}</span></div>
           <div class="summary-row"${rollbackRef === null ? " hidden" : ""}><span class="overline">Previous built</span><span id="image-rollback-built" data-built-at="${escapeHtml(rollbackBuilt ?? "")}"${rollbackRef === null ? " hidden" : ""}>${rollbackBuilt === null ? "" : timeTag(rollbackBuilt)}</span></div>
           ${rollbackForm}
@@ -196,6 +209,7 @@ function defaultImagePanel(
       data-project-id="${escapeHtml(project.id)}"
       data-app-key="${escapeHtml(app.appKey)}"
       data-status="default"
+      data-image-url="${escapeHtml(hrefs.imageUrl)}"
       data-runtime-url="${escapeHtml(hrefs.runtimeUrl)}">
     <div class="card__head">
       <h2 class="card__title" id="image-title">Image</h2>

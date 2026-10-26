@@ -182,3 +182,43 @@ describe("DockerClient.buildImage", () => {
     await expect(client.buildImage(buildOptions())).rejects.toBeInstanceOf(DockerError);
   });
 });
+
+describe("DockerClient image identity parsing", () => {
+  const digest = `sha256:${"a".repeat(64)}`;
+
+  it("parses RepoDigests from an image inspect", async () => {
+    const transport: DockerTransport = {
+      async request(): Promise<DockerResponse> {
+        return json(200, {
+          Id: "sha256:image",
+          RepoTags: ["agent-default:test"],
+          RepoDigests: [`agent-default@${digest}`],
+        });
+      },
+    };
+
+    const inspected = await new DockerClient(transport).inspectImage("agent-default:test");
+
+    expect(inspected?.Id).toBe("sha256:image");
+    expect(inspected?.RepoDigests).toEqual([`agent-default@${digest}`]);
+  });
+
+  it("parses the container's top-level image id", async () => {
+    const transport: DockerTransport = {
+      async request(): Promise<DockerResponse> {
+        return json(200, {
+          Id: "container-1",
+          Name: "/hanse-app-project-app",
+          Image: "sha256:image",
+          Config: { Image: "agent-default:test" },
+          State: { Running: false, Status: "exited" },
+        });
+      },
+    };
+
+    const inspected = await new DockerClient(transport).inspectContainer("hanse-app-project-app");
+
+    expect(inspected?.Image).toBe("sha256:image");
+    expect(inspected?.Config?.Image).toBe("agent-default:test");
+  });
+});

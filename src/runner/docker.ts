@@ -300,6 +300,8 @@ export interface DockerContainerSummary {
 export interface DockerContainerInspect {
   Id: string;
   Name: string;
+  /** Docker image ID the container was created from. */
+  Image?: string;
   Config?: {
     Image?: string;
     Labels?: Record<string, string>;
@@ -339,6 +341,7 @@ export interface DockerContainerInspect {
 export interface DockerImageInspect {
   Id?: string;
   RepoTags?: string[];
+  RepoDigests?: string[];
   Config?: {
     User?: string;
     Env?: string[];

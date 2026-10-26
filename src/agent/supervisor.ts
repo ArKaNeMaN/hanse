@@ -416,6 +416,7 @@ export class AgentSupervisor {
       state: entry.state,
       specHash: entry.spec.specHash,
       version: entry.version,
+      imageId: null,
       ...(entry.error === undefined ? {} : { error: entry.error }),
     };
   }

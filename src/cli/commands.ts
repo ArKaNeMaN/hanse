@@ -254,6 +254,7 @@ export async function imagesCommand(options: ImagesOptions, ctx: CommandContext)
       workspaceRoot,
       hostWorkspace,
       defaultImage: defaultImageReference(),
+      baseImage: process.env.HANSE_AGENT_BASE_IMAGE?.trim() || undefined,
       runner: new RunnerImageClient({ baseUrl: runnerUrl, token }),
       deploymentLock: new DeploymentLock(deploymentLockPath(ctx.stateHome)),
     });
@@ -652,6 +653,19 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
   const skills = new SkillService({ db });
   const previews =
     runnerUrl !== undefined && runnerUrl.length > 0 ? new PreviewService() : undefined;
+  const images =
+    runnerUrl === undefined || runnerUrl.length === 0 || hostWorkspace === undefined
+      ? undefined
+      : new ImageService({
+          db,
+          workspaceRoot: workspace,
+          hostWorkspace,
+          defaultImage: defaultImageReference(),
+          baseImage: process.env.HANSE_AGENT_BASE_IMAGE?.trim() || undefined,
+          runner: new RunnerImageClient({ baseUrl: runnerUrl, token: runtimeToken }),
+          deploymentLock,
+          lifecycleActivity,
+        });
   let handoffDispatcher: HandoffDispatcher | undefined;
   const manager = new InstanceManager(db, path.resolve(agentsHome()), {
     runtime,
@@ -659,6 +673,7 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
     omoProfiles,
     skills,
     ...(previews === undefined ? {} : { previews }),
+    ...(images === undefined ? {} : { images }),
     workspaceRoot: workspace,
     ...(hostWorkspace === undefined ? {} : { hostWorkspace }),
     ...(hostAgents === undefined ? {} : { hostAgents }),
@@ -688,18 +703,8 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
       ? {}
       : { remote: { baseUrl: runnerUrl, token: runtimeToken } }),
   });
-  const images =
-    runnerUrl === undefined || runnerUrl.length === 0 || hostWorkspace === undefined
-      ? undefined
-      : new ImageService({
-          db,
-          workspaceRoot: workspace,
-          hostWorkspace,
-          defaultImage: defaultImageReference(),
-          runner: new RunnerImageClient({ baseUrl: runnerUrl, token: runtimeToken }),
-          deploymentLock,
-          lifecycleActivity,
-        });
+  await images?.warmCache();
+  await images?.adoptBuilds();
   const deletion =
     images === undefined
       ? undefined

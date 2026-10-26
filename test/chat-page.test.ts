@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { gzipSync } from "node:zlib";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { allocateView, extractToolView } from "../assets/chat-diff.js";
 import {
   isHighlightEligible,
@@ -30,6 +30,7 @@ import { handleChat, streamSessionEvents } from "../src/http/chat.js";
 import { type HttpDeps, type HttpRequest, handleRequest } from "../src/http/handler.js";
 import { createHttpServer } from "../src/http/server.js";
 import { createPrincipal } from "../src/identity/principals.js";
+import { DefaultImageUnavailableError, ImageNotReadyError } from "../src/images/service.js";
 import {
   AgentTokenReconcileError,
   DeletionPendingError,
@@ -38,6 +39,7 @@ import {
 import { PreviewService } from "../src/preview/service.js";
 import { SettingsService } from "../src/settings/index.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
+import { imageStateView } from "./fixtures/image-state.js";
 
 const dirs: string[] = [];
 const databases: SqliteDatabase[] = [];
@@ -453,6 +455,33 @@ describe("chat page", () => {
     expect(plan).toBeLessThan(saved);
     expect(saved).toBeLessThan(handoffs);
     expect(handoffs).toBeLessThan(shortcuts);
+  });
+
+  it("renders hidden image gate and warning containers before the thread", async () => {
+    const f = fixture();
+    const response = await handleChat(
+      f.deps,
+      request({
+        query: { app: "storefront", project: "p1" },
+        headers: auth(f.token),
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(response.body).toContain(
+      '<section class="chat-image-gate" id="image-gate" role="region" aria-live="polite" hidden></section>',
+    );
+    expect(response.body).toContain(
+      '<div class="chat-image-warning" id="image-warning" role="status" hidden></div>',
+    );
+    expect(response.body).toContain('id="chat-composer"');
+    const gate = response.body.indexOf('id="image-gate"');
+    const warning = response.body.indexOf('id="image-warning"');
+    const scroll = response.body.indexOf('id="chat-scroll"');
+    const composer = response.body.indexOf('id="chat-composer"');
+    expect(gate).toBeGreaterThan(-1);
+    expect(warning).toBeGreaterThan(gate);
+    expect(scroll).toBeGreaterThan(warning);
+    expect(composer).toBeGreaterThan(warning);
   });
 
   it("renders the command palette, confirm dialog, and command data attributes", async () => {
@@ -2170,5 +2199,143 @@ describe("chat previews rail", () => {
     expect(other.status).toBe(200);
     expect(other.body).toContain('<div class="chat-context__group" id="chat-previews" hidden>');
     expect(other.body).not.toContain('data-preview-key="p1-only"');
+  });
+});
+
+describe("start route", () => {
+  it("is human-only and requires an authenticated principal", async () => {
+    const f = fixture();
+    const anonymous = await handleChat(f.deps, {
+      method: "POST",
+      path: "/api/apps/storefront/start",
+      query: { project: "p1" },
+      headers: {},
+    });
+    expect(anonymous.status).toBe(401);
+
+    const agent = createPrincipal(f.db, { kind: "agent", name: "bot" });
+    const forbidden = await handleChat(f.deps, {
+      method: "POST",
+      path: "/api/apps/storefront/start",
+      query: { project: "p1" },
+      headers: auth(agent.token),
+    });
+    expect(forbidden.status).toBe(403);
+  });
+
+  it("scopes the lookup to the project query and starts through manager.ensure", async () => {
+    const f = fixture();
+    const ensure = vi.fn(async () => "http://127.0.0.1:1");
+    f.deps.manager = { ensure } as unknown as InstanceManager;
+
+    const response = await handleChat(f.deps, {
+      method: "POST",
+      path: "/api/apps/storefront/start",
+      query: { project: "p2" },
+      headers: auth(f.token),
+    });
+
+    expect(response.status).toBe(200);
+    expect(JSON.parse(response.body)).toEqual({ appId: "p2:storefront", state: "running" });
+    expect(ensure).toHaveBeenCalledTimes(1);
+    expect(ensure.mock.calls[0]?.[0]).toMatchObject({ projectId: "p2", appKey: "storefront" });
+  });
+
+  it("rejects a cross-site start before ensure", async () => {
+    const f = fixture();
+    const ensure = vi.fn(async () => "http://127.0.0.1:1");
+    f.deps.manager = { ensure } as unknown as InstanceManager;
+
+    const response = await handleChat(f.deps, {
+      method: "POST",
+      path: "/api/apps/storefront/start",
+      query: { project: "p1" },
+      headers: auth(f.token),
+      origin: "https://evil.example",
+      host: "localhost",
+    });
+
+    expect(response.status).toBe(403);
+    expect(JSON.parse(response.body)).toEqual({
+      error: "cross-site request rejected",
+      code: "cross_site_request",
+    });
+    expect(ensure).not.toHaveBeenCalled();
+  });
+
+  it("returns the typed 409 when no usable image exists", async () => {
+    const f = fixture();
+    f.deps.manager = {
+      ensure: async () => {
+        throw new ImageNotReadyError(
+          imageStateView({ appId: "p1:storefront", state: "not_ready" }),
+        );
+      },
+    } as unknown as InstanceManager;
+
+    const response = await handleChat(f.deps, {
+      method: "POST",
+      path: "/api/apps/storefront/start",
+      query: { project: "p1" },
+      headers: auth(f.token),
+    });
+
+    expect(response.status).toBe(409);
+    expect(JSON.parse(response.body)).toMatchObject({
+      error: "image_not_ready",
+      code: "image_not_ready",
+      appId: "p1:storefront",
+      state: "not_ready",
+      imageStatus: "missing",
+      buildConfigured: true,
+    });
+  });
+
+  it("returns the typed 503 when the default image is unavailable", async () => {
+    const f = fixture();
+    f.deps.manager = {
+      ensure: async () => {
+        throw new DefaultImageUnavailableError(
+          imageStateView({ appId: "p1:storefront", buildConfigured: false, state: "unknown" }),
+        );
+      },
+    } as unknown as InstanceManager;
+
+    const response = await handleChat(f.deps, {
+      method: "POST",
+      path: "/api/apps/storefront/start",
+      query: { project: "p1" },
+      headers: auth(f.token),
+    });
+
+    expect(response.status).toBe(503);
+    expect(JSON.parse(response.body)).toMatchObject({
+      error: "default_image_unavailable",
+      code: "default_image_unavailable",
+      appId: "p1:storefront",
+      state: "unknown",
+    });
+  });
+
+  it("reconnects a running app without restarting it", async () => {
+    const f = fixture();
+    const beginRestart = vi.fn(() => ({ accepted: true, completion: Promise.resolve(true) }));
+    const restartIfRunning = vi.fn(async () => true);
+    f.deps.manager = {
+      ensure: async () => "http://127.0.0.1:1",
+      beginRestart,
+      restartIfRunning,
+    } as unknown as InstanceManager;
+
+    const response = await handleChat(f.deps, {
+      method: "POST",
+      path: "/api/apps/storefront/start",
+      query: { project: "p1" },
+      headers: auth(f.token),
+    });
+
+    expect(response.status).toBe(200);
+    expect(beginRestart).not.toHaveBeenCalled();
+    expect(restartIfRunning).not.toHaveBeenCalled();
   });
 });

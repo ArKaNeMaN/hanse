@@ -8,10 +8,12 @@ import { getHandoff } from "../src/coordinator/handoff.js";
 import { setHandoffPolicy } from "../src/coordinator/policy.js";
 import { CoordinatorService } from "../src/coordinator/service.js";
 import { createPrincipal } from "../src/identity/principals.js";
+import { ImageNotReadyError } from "../src/images/service.js";
 import type { OpencodeSession } from "../src/opencode/client.js";
 import type { HanseEvent } from "../src/opencode/events.js";
 import type { ManagedApp } from "../src/opencode/manager.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
+import { imageStateView } from "./fixtures/image-state.js";
 
 const dirs: string[] = [];
 const active: Array<{ dispatcher: HandoffDispatcher; db: SqliteDatabase }> = [];
@@ -340,5 +342,35 @@ describe("handoff dispatcher", () => {
     const result = await f.dispatcher.relaunchReply(id, "operator note");
     expect(result.sessionId).toBeTruthy();
     expect(getHandoff(f.db, id)?.replyState).toBe("delivered");
+  });
+});
+
+describe("handoff dispatcher image failures", () => {
+  it("stores a bounded handoff failure when dispatch cannot start the target", async () => {
+    const f = fixture();
+    f.manager.ensure.mockImplementation(async () => {
+      throw new ImageNotReadyError(imageStateView({ appId: "p:b", state: "not_ready" }));
+    });
+    const id = await createBound(f);
+
+    const handoff = getHandoff(f.db, id);
+    expect(handoff?.state).toBe("failed");
+    expect(handoff?.error).toContain("image_not_ready");
+    expect(f.prompts).toHaveLength(0);
+  });
+
+  it("parks a reply with a bounded operator-visible error when the source cannot start", async () => {
+    const f = fixture();
+    const id = await createBound(f);
+    f.service.deliverHandoff(id, "done", "completed", "b");
+    f.manager.ensure.mockImplementation(async () => {
+      throw new ImageNotReadyError(imageStateView({ appId: "p:a", state: "not_ready" }));
+    });
+
+    await f.dispatcher.tickNow();
+
+    const handoff = getHandoff(f.db, id);
+    expect(handoff?.replyState).toBe("waiting_operator");
+    expect(handoff?.replyError).toContain("image_not_ready");
   });
 });

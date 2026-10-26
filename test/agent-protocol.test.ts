@@ -290,6 +290,7 @@ describe("runtime protocol", () => {
       state: "stopped",
       specHash: null,
       version: null,
+      imageId: null,
     });
   });
 

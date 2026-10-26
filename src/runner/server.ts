@@ -57,14 +57,16 @@ import {
   type DockerExecRuntime,
   type DockerExecSize,
   type DockerExecStream,
+  type DockerImageInspect,
   type DockerRuntime,
 } from "./docker.js";
 import { ImageGcError, ImageGcService } from "./image-gc.js";
 import type { ImageValidationRuntime } from "./image-validation.js";
-import { ImageBuildError, ImageBuildService } from "./images.js";
+import { ImageBuildError, ImageBuildService, resolveImageDigest } from "./images.js";
 import { appContainerName, appNetworkName } from "./names.js";
 import {
   hostPathForSpecEnv,
+  normalizeImageReference,
   RUNNER_APP_PORT,
   RUNNER_CONTAINER_WORKSPACE_ROOT,
   type RunnerConfig,
@@ -75,6 +77,9 @@ import { acceptWebSocket, websocketHandshakeError } from "./ws.js";
 
 const MAX_BODY_BYTES = 64 * 1024;
 const MAX_RECONCILE_APPS = 1000;
+const MAX_INSPECT_DIGESTS = 16;
+const MAX_INSPECT_DIGEST_LENGTH = 255;
+const MAX_INSPECT_BODY_BYTES = 8 * 1024;
 const DEFAULT_LOG_TAIL = 500;
 const RUNNER_ENTRYPOINT = "/usr/local/bin/hanse-agent-entrypoint";
 const EXEC_SHELL = "if [ -x /bin/bash ]; then exec /bin/bash -l; fi; exec /bin/sh -l";
@@ -317,8 +322,29 @@ function statusFromInspect(
     version: null,
     containerId: inspect.Id,
     containerName,
+    imageId: inspect.Image ?? null,
     ...(inspect.State?.Error === undefined ? {} : { error: inspect.State.Error }),
   };
+}
+
+function hasControlCharacters(value: string): boolean {
+  for (const character of value) {
+    const code = character.codePointAt(0) ?? 0;
+    if (code <= 0x1f || (code >= 0x7f && code <= 0x9f)) return true;
+  }
+  return false;
+}
+
+function boundedRepoDigests(value: readonly string[] | undefined): string[] {
+  const digests: string[] = [];
+  for (const entry of value ?? []) {
+    if (digests.length >= MAX_INSPECT_DIGESTS) break;
+    if (typeof entry !== "string") continue;
+    if (entry.length === 0 || entry.length > MAX_INSPECT_DIGEST_LENGTH) continue;
+    if (hasControlCharacters(entry)) continue;
+    digests.push(entry);
+  }
+  return digests;
 }
 
 function containerEnvironment(spec: RunnerSpec): Record<string, string> {
@@ -628,14 +654,20 @@ export class RunnerService {
     this.#config = options.config;
     this.#docker = options.docker;
     this.#exec = options.exec;
+    const inspectImage = options.docker.inspectImage?.bind(options.docker);
     this.#images = new ImageBuildService({
       config: options.config,
       ...(options.build === undefined ? {} : { build: options.build }),
       ...(options.validation === undefined ? {} : { validation: options.validation }),
+      ...(inspectImage === undefined ? {} : { inspectImage }),
     });
     this.#imageGc =
       options.imageGc ??
-      new ImageGcService({ docker: options.docker, diskPath: options.config.hostWorkspace });
+      new ImageGcService({
+        docker: options.docker,
+        diskPath: options.config.hostWorkspace,
+        protectedRefs: () => this.#images.protectedBuildTags(),
+      });
   }
 
   async health(): Promise<RuntimeHealth> {
@@ -658,6 +690,86 @@ export class RunnerService {
     const inspected = await inspectImage(image).catch(() => undefined);
     const labels = inspected?.Config?.Labels;
     return labels?.["hanse.app.id"] === appId && typeof labels["hanse.image.version"] === "string";
+  }
+
+  async #targetImageId(reference: string): Promise<string | null> {
+    const inspectImage = this.#docker.inspectImage?.bind(this.#docker);
+    if (inspectImage === undefined) return null;
+    try {
+      const inspected = await inspectImage(reference);
+      return typeof inspected?.Id === "string" && inspected.Id.length > 0 ? inspected.Id : null;
+    } catch {
+      return null;
+    }
+  }
+
+  async #inspectImageRequest(url: URL): Promise<{
+    found: boolean;
+    imageId: string | null;
+    repoDigests: string[];
+    resolvedDigest: string | null;
+  }> {
+    const rawRef = url.searchParams.get("ref");
+    const reference = rawRef === null ? undefined : normalizeImageReference(rawRef);
+    if (reference === undefined) {
+      throw new RunnerError(400, "ref must be a valid image reference", "invalid_reference");
+    }
+    const rawAppId = url.searchParams.get("appId");
+    let appId: string | undefined;
+    if (rawAppId !== null) {
+      if (!isValidAppId(rawAppId)) {
+        throw new RunnerError(400, "appId must be a safe app id", "invalid_app_id");
+      }
+      appId = rawAppId;
+    }
+    const preallowed =
+      this.#config.allowedImages.has(reference) ||
+      reference === this.#config.defaultImage ||
+      reference === this.#config.baseImage;
+    if (!preallowed && !(appId !== undefined && reference.startsWith("hanse-app-"))) {
+      throw new RunnerError(
+        403,
+        "image reference is not allowed by the runner",
+        "image_disallowed",
+      );
+    }
+    const inspectImage = this.#docker.inspectImage?.bind(this.#docker);
+    if (inspectImage === undefined) {
+      throw new RunnerError(501, "image inspection is not supported", "inspect_unavailable");
+    }
+    let inspected: DockerImageInspect | undefined;
+    try {
+      inspected = await inspectImage(reference);
+    } catch {
+      throw new RunnerError(502, "image inspection failed", "docker_error");
+    }
+    if (
+      !preallowed &&
+      inspected !== undefined &&
+      inspected.Config?.Labels?.["hanse.app.id"] !== appId
+    ) {
+      throw new RunnerError(
+        403,
+        "image reference is not allowed for this application",
+        "image_disallowed",
+      );
+    }
+    if (inspected === undefined) {
+      return { found: false, imageId: null, repoDigests: [], resolvedDigest: null };
+    }
+    const imageId =
+      typeof inspected.Id === "string" && inspected.Id.length > 0 ? inspected.Id : null;
+    let repoDigests = boundedRepoDigests(inspected.RepoDigests);
+    let resolvedDigest = resolveImageDigest(reference, repoDigests);
+    while (
+      repoDigests.length > 0 &&
+      Buffer.byteLength(JSON.stringify({ found: true, imageId, repoDigests, resolvedDigest })) >
+        MAX_INSPECT_BODY_BYTES
+    ) {
+      repoDigests = repoDigests.slice(0, -1);
+      resolvedDigest = resolveImageDigest(reference, repoDigests);
+    }
+    return { found: true, imageId, repoDigests, resolvedDigest };
   }
 
   async #extraAllowedImages(raw: unknown): Promise<ReadonlySet<string> | undefined> {
@@ -700,18 +812,32 @@ export class RunnerService {
 
     const existing = await this.#docker.inspectContainer(spec.containerName);
     if (existing !== undefined && existing.Config?.Labels?.["hanse.spec.hash"] === spec.specHash) {
-      if (existing.State?.Running !== true) {
-        await this.#docker.startContainer(existing.Id);
+      const running = existing.State?.Running === true;
+      if (!running) {
+        const targetImageId = await this.#targetImageId(spec.image);
+        if (targetImageId === null) {
+          throw new RunnerError(
+            503,
+            `target image is unavailable: ${spec.image}`,
+            "image_unavailable",
+          );
+        }
+        if (existing.Image === targetImageId) {
+          await this.#docker.startContainer(existing.Id);
+          await this.#connectCoordinator(spec.networkName);
+          const inspected = await this.#docker.inspectContainer(spec.containerName);
+          if (inspected === undefined) {
+            throw new RunnerError(502, "container disappeared after start");
+          }
+          return statusFromInspect(spec.appId, spec.containerName, inspected);
+        }
+        await this.#docker.stopContainer(existing.Id);
+        await this.#docker.removeContainer(existing.Id, true);
+      } else {
+        await this.#connectCoordinator(spec.networkName);
+        return statusFromInspect(spec.appId, spec.containerName, existing);
       }
-      await this.#connectCoordinator(spec.networkName);
-      const inspected = await this.#docker.inspectContainer(spec.containerName);
-      if (inspected === undefined) {
-        throw new RunnerError(502, "container disappeared after start");
-      }
-      return statusFromInspect(spec.appId, spec.containerName, inspected);
-    }
-
-    if (existing !== undefined) {
+    } else if (existing !== undefined) {
       await this.#docker.stopContainer(existing.Id);
       await this.#docker.removeContainer(existing.Id, true);
     }
@@ -1162,6 +1288,15 @@ export class RunnerService {
         return;
       }
       writeJson(response, 200, record);
+      return;
+    }
+
+    if (url.pathname === "/v1/images/inspect") {
+      if (method !== "GET") {
+        writeJson(response, 405, { error: "method not allowed" }, { Allow: "GET" });
+        return;
+      }
+      writeJson(response, 200, await this.#inspectImageRequest(url));
       return;
     }
 

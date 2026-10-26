@@ -9,6 +9,39 @@ export const RUNNER_APP_PORT = 4100;
 export const RUNNER_CONTAINER_WORKSPACE_ROOT = "/data/workspace";
 export const RUNNER_CONTAINER_AGENTS_ROOT = "/data/agents";
 
+const MAX_IMAGE_REFERENCE_LENGTH = 255;
+const IMAGE_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9_.:/@+-]*$/;
+
+function hasControlCharacters(value: string): boolean {
+  for (const character of value) {
+    const code = character.codePointAt(0) ?? 0;
+    if (code <= 0x1f || (code >= 0x7f && code <= 0x9f)) return true;
+  }
+  return false;
+}
+
+/**
+ * Trim and validate an image reference. Returns `undefined` for an empty, oversized, whitespace,
+ * control-character, or otherwise malformed reference.
+ */
+export function normalizeImageReference(value: string): string | undefined {
+  const trimmed = value.trim();
+  if (trimmed.length === 0 || trimmed.length > MAX_IMAGE_REFERENCE_LENGTH) return undefined;
+  if (/\s/.test(trimmed) || hasControlCharacters(trimmed)) return undefined;
+  return IMAGE_REFERENCE.test(trimmed) ? trimmed : undefined;
+}
+
+function optionalImageReference(env: NodeJS.ProcessEnv, key: string): string | undefined {
+  if (!(key in env)) return undefined;
+  const raw = env[key];
+  if (raw === undefined) return undefined;
+  const normalized = normalizeImageReference(raw);
+  if (normalized === undefined) {
+    throw new ConfigError("VALIDATION_FAILED", `${key} must be a valid image reference`);
+  }
+  return normalized;
+}
+
 const ENV_PATH_KEYS = new Set([
   "HOME",
   "XDG_DATA_HOME",
@@ -32,6 +65,8 @@ export interface RunnerConfig {
   readonly allowedImages: ReadonlySet<string>;
   /** Configured default agent image, when `HANSE_AGENT_IMAGE` is set. */
   readonly defaultImage?: string;
+  /** Configured shared base image, when `HANSE_AGENT_BASE_IMAGE` is set. */
+  readonly baseImage?: string;
   readonly coordinatorContainer: string;
   readonly dockerSocket: string;
   readonly dockerApiVersion: string;
@@ -120,14 +155,20 @@ export function loadRunnerConfig(env: NodeJS.ProcessEnv = process.env): RunnerCo
     }
   }
   const configuredDefaultImage = env.HANSE_AGENT_IMAGE?.trim();
+  const baseImage = optionalImageReference(env, "HANSE_AGENT_BASE_IMAGE");
+  const allowedImages = new Set(parseAllowedImages(env));
+  if (baseImage !== undefined) {
+    allowedImages.add(baseImage);
+  }
   return {
     token,
     hostWorkspace,
     hostAgents,
-    allowedImages: parseAllowedImages(env),
+    allowedImages,
     ...(configuredDefaultImage === undefined || configuredDefaultImage.length === 0
       ? {}
       : { defaultImage: defaultImageReference(env) }),
+    ...(baseImage === undefined ? {} : { baseImage }),
     coordinatorContainer,
     dockerSocket: absolute(env, "HANSE_DOCKER_SOCKET", "/var/run/docker.sock"),
     dockerApiVersion,
@@ -161,7 +202,11 @@ export function validateRunnerSpec(
   if (spec.pathMode !== "host") {
     throw invalid("runner requires pathMode: host");
   }
-  if (!config.allowedImages.has(spec.image) && extraAllowedImages?.has(spec.image) !== true) {
+  if (
+    !config.allowedImages.has(spec.image) &&
+    spec.image !== config.defaultImage &&
+    extraAllowedImages?.has(spec.image) !== true
+  ) {
     throw invalid(`image is not allowed by the runner: ${spec.image}`);
   }
   if (spec.port !== RUNNER_APP_PORT) {

@@ -3,18 +3,24 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import type { Server } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CoordinatorService } from "../src/coordinator/service.js";
 import { GitService } from "../src/git/service.js";
 import { type HttpDeps, type HttpRequest, handleRequest } from "../src/http/handler.js";
 import { handleImages } from "../src/http/images.js";
 import { createHttpServer } from "../src/http/server.js";
 import { createPrincipal } from "../src/identity/principals.js";
-import type { ImageBuildInput, RunnerImageRecord } from "../src/images/client.js";
-import { type ImageRunnerClient, ImageService } from "../src/images/service.js";
+import type {
+  ImageBuildInput,
+  RunnerImageInspect,
+  RunnerImageRecord,
+} from "../src/images/client.js";
+import { ImageNotReadyError, type ImageRunnerClient, ImageService } from "../src/images/service.js";
+import type { InstanceManager } from "../src/opencode/manager.js";
 import { discoverProject, registerProject } from "../src/registry/index.js";
 import { computeBuildSpecHash, defaultImageReference } from "../src/runtime/build-spec.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
+import { imageStateView } from "./fixtures/image-state.js";
 
 const dirs: string[] = [];
 const databases: SqliteDatabase[] = [];
@@ -69,18 +75,20 @@ class FakeImageRunner implements ImageRunnerClient {
   readonly inputs: ImageBuildInput[] = [];
   readonly records = new Map<string, RunnerImageRecord>();
   readonly builds = new Map<string, RunnerImageRecord>();
+  readonly inspections = new Map<string, RunnerImageInspect>();
   nextBuild = 1;
   buildFailure: Error | undefined;
 
   async build(
     input: ImageBuildInput,
-  ): Promise<{ buildId: string; appId: string; status: "building" }> {
+  ): Promise<{ buildId: string; appId: string; status: "building"; targetRef: string }> {
     if (this.buildFailure !== undefined) {
       throw this.buildFailure;
     }
     this.inputs.push(input);
     const buildId = `build-${this.nextBuild}`;
     this.nextBuild += 1;
+    const targetRef = `hanse-app-p:${buildId}`;
     const record: RunnerImageRecord = {
       appId: input.appId,
       status: "building",
@@ -90,10 +98,27 @@ class FakeImageRunner implements ImageRunnerClient {
       logs: "",
       error: null,
       updatedAt: "2026-01-01T00:00:00.000Z",
+      targetRef,
+      specHash: input.specHash ?? null,
+      hashVersion: input.hashVersion ?? null,
+      baseKind: input.baseKind ?? null,
+      baseRef: input.baseImage,
+      baseDigest: null,
     };
     this.records.set(input.appId, record);
     this.builds.set(buildId, record);
-    return { buildId, appId: input.appId, status: "building" };
+    return { buildId, appId: input.appId, status: "building", targetRef };
+  }
+
+  async inspect(reference: string): Promise<RunnerImageInspect> {
+    return (
+      this.inspections.get(reference) ?? {
+        found: true,
+        imageId: null,
+        repoDigests: [],
+        resolvedDigest: null,
+      }
+    );
   }
 
   async get(appId: string): Promise<RunnerImageRecord> {
@@ -313,14 +338,22 @@ describe("app image API", () => {
 
     const response = await handleImages(f.deps, buildRequest(f));
     expect(response.status).toBe(202);
-    const result = JSON.parse(response.body) as { buildId: string; status: string };
-    expect(result).toMatchObject({ buildId: "build-1", status: "building" });
+    const result = JSON.parse(response.body) as {
+      buildId: string;
+      status: string;
+      targetRef: string;
+    };
+    expect(result).toMatchObject({
+      buildId: "build-1",
+      status: "building",
+      targetRef: "hanse-app-p:build-1",
+    });
 
     expect(f.runner.inputs).toHaveLength(1);
     const input = f.runner.inputs[0] as ImageBuildInput;
     const expectedHash = computeBuildSpecHash({
       dockerfile: DOCKERFILE,
-      defaultImage: "agent-default:test",
+      baseKind: "default",
       buildArgs: { NODE_VERSION: "22" },
     });
     expect(input).toEqual({
@@ -330,6 +363,8 @@ describe("app image API", () => {
       baseImage: "agent-default:test",
       buildArgs: { NODE_VERSION: "22" },
       specHash: expectedHash,
+      baseKind: "default",
+      hashVersion: 2,
     });
     expect(row(f).image_status).toBe("building");
     expect(row(f).image_error).toBeNull();
@@ -479,7 +514,7 @@ describe("app image stale detection", () => {
     expect(f.runner.inputs).toHaveLength(0);
   });
 
-  it("marks a ready image stale when the default base image changes", async () => {
+  it("does not mark a ready image stale when only the default reference moves", async () => {
     const f = await fixture();
     markReady(f);
     const builtHash = row(f).image_hash;
@@ -490,9 +525,10 @@ describe("app image stale detection", () => {
       (app) => app.appKey === "web",
     );
 
-    expect(updated?.imageStatus).toBe("stale");
-    expect(updated?.buildSpecHash).not.toBe(builtHash);
-    expect(row(f).image_status).toBe("stale");
+    // Version 2 excludes the base reference; base drift is compared separately by manifest digest.
+    expect(updated?.imageStatus).toBe("ready");
+    expect(updated?.buildSpecHash).toBe(builtHash);
+    expect(row(f).image_status).toBe("ready");
     expect(f.runner.inputs).toHaveLength(0);
   });
 });
@@ -616,5 +652,104 @@ describe("app image check", () => {
     expect(response.status).toBe(200);
     const result = (await response.json()) as { buildConfigured: boolean };
     expect(result.buildConfigured).toBe(false);
+  });
+});
+
+describe("app image HTTP view", () => {
+  it("exposes every shared-state field with durable and diagnostic build identities separated", async () => {
+    const f = await fixture();
+    await handleImages(f.deps, buildRequest(f));
+    f.runner.set(f.appId, {
+      status: "building",
+      buildId: "build-9",
+      imageId: "sha256:latest-runner",
+      imageRef: null,
+      targetRef: "hanse-app-p:build-9",
+    });
+
+    const response = await handleImages(f.deps, imageRequest(f));
+    expect(response.status).toBe(200);
+    const view = JSON.parse(response.body) as Record<string, unknown>;
+    expect(view).toMatchObject({
+      appId: f.appId,
+      buildConfigured: true,
+      state: "building",
+      running: false,
+      imageBuildId: "build-1",
+      buildId: "build-9",
+      latestBuildImageId: "sha256:latest-runner",
+      hashVersion: 2,
+    });
+    for (const key of [
+      "usableImageRef",
+      "targetImageId",
+      "appliedImageId",
+      "currentBaseDigest",
+      "baseKind",
+      "baseRef",
+      "baseDigest",
+      "baseDrift",
+      "hashDrift",
+      "blocked",
+      "selectedImage",
+      "previousImageRef",
+      "previousImageBuiltAt",
+    ]) {
+      expect(view).toHaveProperty(key);
+    }
+  });
+
+  it("probes a persisted row once before deriving the view and forwards refresh", async () => {
+    const f = await fixture();
+    const order: string[] = [];
+    const originalStatus = f.service.status.bind(f.service);
+    const statusSpy = vi.spyOn(f.service, "status").mockImplementation(async (appId, options) => {
+      order.push("status");
+      return originalStatus(appId, options);
+    });
+    const probe = vi.fn(async () => {
+      order.push("probe");
+      return true;
+    });
+    f.deps.manager = { probeStatus: probe } as unknown as InstanceManager;
+
+    const response = await handleImages(f.deps, {
+      ...imageRequest(f),
+      query: { project: f.projectId, refresh: "1" },
+    });
+
+    expect(response.status).toBe(200);
+    expect(probe).toHaveBeenCalledTimes(1);
+    expect(probe).toHaveBeenCalledWith(f.appId);
+    expect(order).toEqual(["probe", "status"]);
+    expect(statusSpy).toHaveBeenCalledWith(f.appId, { refresh: true });
+  });
+
+  it("maps a typed rollback image failure before the rollback-incomplete response", async () => {
+    const f = await fixture();
+    const view = imageStateView({ appId: f.appId, state: "not_ready" });
+    f.deps.manager = {
+      rollbackImage: async () => {
+        throw new ImageNotReadyError(view);
+      },
+    } as unknown as InstanceManager;
+
+    const response = await handleImages(f.deps, {
+      method: "POST",
+      path: "/api/apps/web/image/rollback",
+      headers: auth(f.token),
+      query: { project: f.projectId },
+    });
+
+    expect(response.status).toBe(409);
+    expect(JSON.parse(response.body)).toEqual({
+      error: "image_not_ready",
+      code: "image_not_ready",
+      message: "application image is not ready (not_ready)",
+      appId: f.appId,
+      state: "not_ready",
+      imageStatus: "missing",
+      buildConfigured: true,
+    });
   });
 });

@@ -36,12 +36,39 @@ build:               # optional per-app image environment
   dockerfile: Dockerfile   # path relative to the app directory (default: Dockerfile)
   args:                     # optional build arguments, hashed into the build spec
     NODE_VERSION: "22"
+  base: base                # optional: default | base; no schema default
 ```
 
 The Dockerfile is a complete Dockerfile. It is resolved under the app directory with `realpath`
 containment (no `..`, absolute paths, or escaping symlinks); an invalid manifest or Dockerfile marks
-the app image `error` without failing project registration. The build spec hash covers the Dockerfile
-bytes, the default/base image reference, and sorted build args, so app source edits do not change it.
+the app image `error` without failing project registration.
+
+The build-spec hash is version 2 and covers the Dockerfile bytes, the sorted build args, and the
+resolved base kind. The base reference/tag/digest is excluded, so a harmless tag move does not mark an
+app stale; base drift is compared separately by manifest digest. A stored version-1 hash is never
+compared with a version-2 hash. A legacy v1 row is recomputed only when its historical full reference
+is reconstructable; otherwise hash drift stays `unknown` until the next successful build.
+
+Base selection is `build.base` when set, otherwise the Dockerfile's final-stage root `FROM`:
+
+- `base: default` uses the configured default agent reference (including
+  `HANSE_AGENT_IMAGE_DIGEST`, when set).
+- `base: base` uses `HANSE_AGENT_BASE_IMAGE`; a missing value is a configuration error, never a
+  silent default.
+- With no `build.base`, the final stage is resolved to its root external `FROM` through stage aliases
+  and build args. A root that consumes `${HANSE_BASE}` is `default`, a literal root is `explicit`
+  (the stored reference is that literal), and an unresolved or cyclic root is `unknown`. Only the
+  final-stage root is classified; `--platform` does not change the identity.
+- `HANSE_BASE` is coordinator-owned and is passed to the build. A manifest build arg named
+  `HANSE_BASE` is a configuration error.
+- A set `build.base` whose resolved root ignores `${HANSE_BASE}` is rejected with a bounded `400`
+  `base_mismatch`; the check applies to the resolved root, not the final-stage text.
+
+Base kinds are recorded as `default | base | explicit | unknown`. A built image records its base ref,
+kind, and digest; an `unknown` base has no base-driven verdict. Identity is split into two domains
+that are never compared: applied-versus-target uses Docker image IDs, and base drift uses manifest
+digests from `RepoDigests`. Tags and `Config.Image` are never identities, and an unresolvable value is
+`unknown` rather than a false `current`.
 
 ## Naming and portability
 

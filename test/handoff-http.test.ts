@@ -9,8 +9,10 @@ import { CoordinatorService } from "../src/coordinator/service.js";
 import type { HttpDeps } from "../src/http/handler.js";
 import { handleHandoffHttp } from "../src/http/handoff.js";
 import { createPrincipal } from "../src/identity/principals.js";
+import { ImageNotReadyError } from "../src/images/service.js";
 import type { OpencodeSession } from "../src/opencode/client.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
+import { imageStateView } from "./fixtures/image-state.js";
 
 const dirs: string[] = [];
 const active: Array<{ dispatcher: HandoffDispatcher; db: SqliteDatabase }> = [];
@@ -178,5 +180,31 @@ describe("handoff HTTP actions", () => {
       ),
     );
     expect(response?.status).toBe(403);
+  });
+});
+
+describe("handoff reply typed image failures", () => {
+  it("maps a relaunch image failure to a bounded operator error", async () => {
+    const f = fixture();
+    const handoffId = deliverable(f.db, f.service);
+    f.dispatcher.relaunchReply = async () => {
+      throw new ImageNotReadyError(imageStateView({ appId: "p:a", state: "not_ready" }));
+    };
+
+    const response = await handleHandoffHttp(
+      f.deps,
+      request("POST", `/api/handoffs/${handoffId}/reply/relaunch`, f.token, "note=retry"),
+    );
+
+    expect(response?.status).toBe(409);
+    expect(JSON.parse(response?.body ?? "")).toEqual({
+      error: "image_not_ready",
+      code: "image_not_ready",
+      message: "application image is not ready (not_ready)",
+      appId: "p:a",
+      state: "not_ready",
+      imageStatus: "missing",
+      buildConfigured: true,
+    });
   });
 });

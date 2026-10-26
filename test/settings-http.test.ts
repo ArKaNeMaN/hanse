@@ -12,9 +12,11 @@ import type { HttpDeps, HttpRequest } from "../src/http/handler.js";
 import { createHttpServer } from "../src/http/server.js";
 import { handleSettings, isSettingsRoute } from "../src/http/settings.js";
 import { createPrincipal } from "../src/identity/principals.js";
+import { DefaultImageUnavailableError, ImageNotReadyError } from "../src/images/service.js";
 import type { InstanceManager } from "../src/opencode/manager.js";
 import { SettingsService } from "../src/settings/index.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
+import { imageStateView } from "./fixtures/image-state.js";
 
 const dirs: string[] = [];
 const databases: SqliteDatabase[] = [];
@@ -152,14 +154,28 @@ function rowMarkup(body: string, id: string): string {
 }
 
 function fakeManager(
-  options: { pending?: (appId: string) => boolean; restart?: (appId: string) => boolean } = {},
-): InstanceManager & { restarted: string[]; stopped: string[] } {
+  options: {
+    pending?: (appId: string) => boolean;
+    restart?: (appId: string) => boolean;
+    preflight?: (appId: string) => boolean;
+    preflightError?: Error;
+  } = {},
+): InstanceManager & { restarted: string[]; stopped: string[]; preflighted: string[] } {
   const restarted: string[] = [];
   const stopped: string[] = [];
+  const preflighted: string[] = [];
   let active: string | undefined;
   const manager = {
     restarted,
     stopped,
+    preflighted,
+    preflightRestart: async (app: { id: string }) => {
+      preflighted.push(app.id);
+      if (options.preflightError !== undefined) {
+        throw options.preflightError;
+      }
+      return options.preflight?.(app.id) ?? true;
+    },
     pendingRestart: (appId: string) => {
       const pending = options.pending?.(appId) ?? false;
       return pending
@@ -187,7 +203,11 @@ function fakeManager(
       return false;
     },
   };
-  return manager as unknown as InstanceManager & { restarted: string[]; stopped: string[] };
+  return manager as unknown as InstanceManager & {
+    restarted: string[];
+    stopped: string[];
+    preflighted: string[];
+  };
 }
 
 describe("settings route auth", () => {
@@ -1697,6 +1717,150 @@ describe("restart route", () => {
     expect(browser.headers?.location).toContain("notice=Agent+restarted.");
     expect(manager.restarted).toEqual(["p1:web"]);
     expect(manager.stopped).toEqual([]);
+  });
+
+  it("rejects a cross-site restart before preflight or a claim", async () => {
+    const f = fixture();
+    const manager = fakeManager();
+    f.deps.manager = manager;
+
+    const response = await handleSettings(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/apps/web/restart",
+        query: { project: "p1" },
+        headers: auth(f.token),
+        origin: "https://evil.example",
+        host: "localhost",
+      }),
+    );
+
+    expect(response.status).toBe(403);
+    expect(JSON.parse(response.body)).toEqual({
+      error: "cross-site request rejected",
+      code: "cross_site_request",
+    });
+    expect(manager.preflighted).toEqual([]);
+    expect(manager.restarted).toEqual([]);
+  });
+
+  it("returns not_running for a stopped app without taking a claim", async () => {
+    const f = fixture();
+    const manager = fakeManager({ preflight: () => false });
+    let claimed = false;
+    manager.beginRestart = () => {
+      claimed = true;
+      return { accepted: true, completion: Promise.resolve(true) };
+    };
+    f.deps.manager = manager;
+
+    const response = await handleSettings(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/apps/web/restart",
+        query: { project: "p1", async: "1" },
+        headers: auth(f.token),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(JSON.parse(response.body)).toEqual({ restarted: false, reason: "not_running" });
+    expect(manager.preflighted).toEqual(["p1:web"]);
+    expect(claimed).toBe(false);
+    expect(manager.restarted).toEqual([]);
+  });
+
+  it("maps a typed image failure before any claim or 202", async () => {
+    const f = fixture();
+    const manager = fakeManager({
+      preflightError: new ImageNotReadyError(
+        imageStateView({ appId: "p1:web", state: "not_ready" }),
+      ),
+    });
+    let claimed = false;
+    manager.beginRestart = () => {
+      claimed = true;
+      return { accepted: true, completion: Promise.resolve(true) };
+    };
+    f.deps.manager = manager;
+
+    for (const query of [{ project: "p1" }, { project: "p1", async: "1" }]) {
+      const response = await handleSettings(
+        f.deps,
+        request({
+          method: "POST",
+          path: "/api/apps/web/restart",
+          query,
+          headers: auth(f.token),
+        }),
+      );
+      expect(response.status).toBe(409);
+      expect(JSON.parse(response.body)).toEqual({
+        error: "image_not_ready",
+        code: "image_not_ready",
+        message: "application image is not ready (not_ready)",
+        appId: "p1:web",
+        state: "not_ready",
+        imageStatus: "missing",
+        buildConfigured: true,
+      });
+    }
+
+    const browser = await handleSettings(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/apps/web/restart",
+        query: { project: "p1" },
+        headers: htmlAuth(f.token),
+        body: form({ return_to: "/projects/p1" }),
+      }),
+    );
+    expect(browser.status).toBe(303);
+    expect(browser.headers?.location).toContain("/projects/p1");
+    expect(browser.headers?.location).toContain("application+image+is+not+ready");
+    expect(claimed).toBe(false);
+  });
+
+  it("maps an unavailable default image to 503 before a claim", async () => {
+    const f = fixture();
+    const manager = fakeManager({
+      preflightError: new DefaultImageUnavailableError(
+        imageStateView({
+          appId: "p1:web",
+          buildConfigured: false,
+          state: "unknown",
+        }),
+      ),
+    });
+    let claimed = false;
+    manager.beginRestart = () => {
+      claimed = true;
+      return { accepted: true, completion: Promise.resolve(true) };
+    };
+    f.deps.manager = manager;
+
+    const response = await handleSettings(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/apps/web/restart",
+        query: { project: "p1", async: "1" },
+        headers: auth(f.token),
+      }),
+    );
+
+    expect(response.status).toBe(503);
+    expect(JSON.parse(response.body)).toEqual({
+      error: "default_image_unavailable",
+      code: "default_image_unavailable",
+      message: "the default agent image is unavailable",
+      appId: "p1:web",
+      state: "unknown",
+    });
+    expect(claimed).toBe(false);
   });
 });
 

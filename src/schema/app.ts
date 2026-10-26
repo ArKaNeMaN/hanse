@@ -32,6 +32,11 @@ export const appBuildSchema = z.object({
     .default("Dockerfile"),
   /** Build arguments passed to the Docker build; sorted into the build spec hash. */
   args: z.record(buildArgKeySchema, buildArgValueSchema).optional(),
+  /**
+   * Optional explicit base-image selection. An absent value keeps the Dockerfile final-`FROM`
+   * resolution; it has no schema default.
+   */
+  base: z.enum(["default", "base"]).optional(),
 });
 
 /** Schema for `.hanse/app.yaml` - a single application descriptor. */

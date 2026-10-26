@@ -11,9 +11,15 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { stoppedStatus } from "../src/agent/protocol.js";
 import { computeSpecHash } from "../src/agent/spec.js";
 import { DeploymentInProgressError, DeploymentLock } from "../src/coordinator/deployment-lock.js";
 import { LifecycleActivity } from "../src/coordinator/lifecycle-activity.js";
+import {
+  DefaultImageUnavailableError,
+  ImageNotReadyError,
+  type ImageStateView,
+} from "../src/images/service.js";
 import type { Logger } from "../src/logging/logger.js";
 import { mintAgentToken, verifyAgentToken } from "../src/mcp/agent-tokens.js";
 import type {
@@ -28,6 +34,7 @@ import {
   DeletionPendingError,
   ImageRollbackIncompleteError,
   ImageRollbackRestoreError,
+  type InstanceImageSource,
   InstanceManager,
   type ManagedApp,
   type OmoProfileSource,
@@ -378,6 +385,72 @@ function markRuntimeStopped(runtime: FakeAgentRuntime, appId: string): void {
   const status = runtime.statuses.get(appId);
   if (status === undefined) throw new Error("missing runtime status");
   runtime.statuses.set(appId, { ...status, state: "stopped", endpoint: null });
+}
+
+function imageStateView(overrides: Partial<ImageStateView> = {}): ImageStateView {
+  return {
+    appId: "p:web",
+    appKey: "web",
+    status: "ready",
+    imageRef: "hanse-app-p:web:build-1",
+    imageId: "sha256:one",
+    buildId: null,
+    hash: null,
+    currentHash: null,
+    baseDigest: null,
+    builtAt: null,
+    error: null,
+    updatedAt: null,
+    previousImageRef: null,
+    previousImageBuiltAt: null,
+    runnerAvailable: true,
+    buildConfigured: true,
+    state: "current",
+    running: true,
+    usableImageRef: "hanse-app-p:web:build-1",
+    targetImageId: "sha256:one",
+    appliedImageId: "sha256:one",
+    hashVersion: 2,
+    currentBaseDigest: null,
+    baseKind: null,
+    baseRef: null,
+    baseDrift: null,
+    hashDrift: null,
+    blocked: false,
+    selectedImage: "present",
+    imageBuildId: null,
+    latestBuildImageId: null,
+    ...overrides,
+  };
+}
+
+class FakeImages implements InstanceImageSource {
+  readonly adoptCalls: string[] = [];
+  readonly stateCalls: string[] = [];
+  readonly order: string[] = [];
+  view: ImageStateView;
+  onAdopt?: (appId: string) => void;
+  onImageState?: (appId: string) => ImageStateView | Promise<ImageStateView>;
+
+  constructor(view: ImageStateView = imageStateView()) {
+    this.view = view;
+  }
+
+  async adoptBuild(appId: string): Promise<boolean> {
+    this.order.push("adopt");
+    this.adoptCalls.push(appId);
+    this.onAdopt?.(appId);
+    return true;
+  }
+
+  async imageState(appId: string): Promise<ImageStateView> {
+    this.order.push("state");
+    this.stateCalls.push(appId);
+    if (this.onImageState !== undefined) {
+      return this.onImageState(appId);
+    }
+    return this.view;
+  }
 }
 
 interface FakeMonitor extends ContextMonitorLike {
@@ -2198,6 +2271,7 @@ function imageFixture(
   imageRef: string | null,
   buildDeclaration = true,
   lifecycle: { deploymentLock?: DeploymentLock; lifecycleActivity?: LifecycleActivity } = {},
+  images?: InstanceImageSource,
 ): ImageFixture {
   const dir = mkdtempSync(path.join(tmpdir(), "hanse-manager-image-"));
   dirs.push(dir);
@@ -2232,6 +2306,7 @@ function imageFixture(
     verify: async () => [],
     workspaceRoot: dir,
     ...lifecycle,
+    ...(images === undefined ? {} : { images }),
   });
   return {
     manager,
@@ -2309,6 +2384,342 @@ describe("InstanceManager app image selection", () => {
   });
 });
 
+describe("InstanceManager applied image identity", () => {
+  class ImageIdRuntime extends FakeAgentRuntime {
+    readonly imageId: string | null;
+    statusCalls = 0;
+
+    constructor(imageId: string | null = "sha256:one") {
+      super();
+      this.imageId = imageId;
+    }
+
+    override async ensure(
+      spec: Parameters<FakeAgentRuntime["ensure"]>[0],
+    ): ReturnType<FakeAgentRuntime["ensure"]> {
+      const status = await super.ensure(spec);
+      const withImage = { ...status, imageId: this.imageId };
+      this.statuses.set(spec.appId, withImage);
+      return withImage;
+    }
+
+    override async status(appId: string): ReturnType<FakeAgentRuntime["status"]> {
+      this.statusCalls += 1;
+      return super.status(appId);
+    }
+  }
+
+  function instanceRow(db: SqliteDatabase): {
+    state: string;
+    runtimeState: string;
+    appliedImageId: string | null;
+    appliedSettingsHash: string | null;
+    appliedProfile: number | null;
+  } {
+    return db
+      .prepare(
+        `SELECT state, runtime_state AS runtimeState, applied_image_id AS appliedImageId,
+                applied_settings_hash AS appliedSettingsHash, applied_profile AS appliedProfile
+         FROM instances WHERE app_id = 'p:web'`,
+      )
+      .get() as {
+      state: string;
+      runtimeState: string;
+      appliedImageId: string | null;
+      appliedSettingsHash: string | null;
+      appliedProfile: number | null;
+    };
+  }
+
+  it("records the applied image ID on a destructive ensure", async () => {
+    const runtime = new ImageIdRuntime();
+    const { manager, db } = fixture(runtime, fakeSettings(), fakeProfiles().source);
+
+    await manager.ensure(APP);
+
+    expect(instanceRow(db).appliedImageId).toBe("sha256:one");
+  });
+
+  it("records the applied image ID on reconnect without clearing launch settings", async () => {
+    const runtime = new ImageIdRuntime();
+    const { manager, db } = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    await manager.ensure(APP);
+    const recorded = instanceRow(db);
+    db.prepare("UPDATE instances SET applied_image_id = NULL WHERE app_id = 'p:web'").run();
+
+    await expect(manager.ensure(APP)).resolves.toBeDefined();
+
+    const row = instanceRow(db);
+    expect(row.appliedImageId).toBe("sha256:one");
+    expect(row.appliedSettingsHash).toBe(recorded.appliedSettingsHash);
+    expect(row.appliedProfile).toBe(recorded.appliedProfile);
+    expect(runtime.deleted).toHaveLength(0);
+    expect(runtime.ensured).toHaveLength(1);
+  });
+
+  it("records the applied image ID in resumeRunning without clearing launch settings", async () => {
+    const runtime = new ImageIdRuntime();
+    const initial = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    await initial.manager.ensure(APP);
+    const recorded = instanceRow(initial.db);
+    initial.manager.detach();
+    initial.db.prepare("UPDATE instances SET applied_image_id = NULL WHERE app_id = 'p:web'").run();
+
+    const manager = new InstanceManager(initial.db, initial.dir, {
+      runtime,
+      verify: async () => [],
+      workspaceRoot: "/srv",
+    });
+    await manager.resumeRunning([{ id: APP.id, projectId: "p", appKey: "web" }]);
+
+    const row = instanceRow(initial.db);
+    expect(row.appliedImageId).toBe("sha256:one");
+    expect(row.appliedSettingsHash).toBe(recorded.appliedSettingsHash);
+    expect(row.appliedProfile).toBe(recorded.appliedProfile);
+  });
+
+  it("records the applied image ID from the reconciler", async () => {
+    const runtime = new ImageIdRuntime();
+    const { manager, db } = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    await manager.ensure(APP);
+    const status = runtime.statuses.get(APP.id);
+    if (status === undefined) throw new Error("missing runtime status");
+    runtime.statuses.set(APP.id, { ...status, imageId: "sha256:two" });
+
+    await manager.reconcileStatuses();
+
+    expect(instanceRow(db).appliedImageId).toBe("sha256:two");
+  });
+
+  it("does not probe or overwrite a persisted stopped row in the reconciler", async () => {
+    const runtime = new ImageIdRuntime();
+    const { manager, db } = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    await manager.ensure(APP);
+    db.prepare(
+      "UPDATE instances SET state = 'stopped', runtime_state = 'stopped' WHERE app_id = 'p:web'",
+    ).run();
+    runtime.statusCalls = 0;
+
+    await manager.reconcileStatuses();
+
+    expect(runtime.statusCalls).toBe(0);
+    expect(instanceRow(db)).toMatchObject({ state: "stopped", appliedImageId: "sha256:one" });
+  });
+
+  it("preserves the previous applied image ID when a stop status has no image", async () => {
+    const runtime = new ImageIdRuntime();
+    const { manager, db } = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    await manager.ensure(APP);
+    const status = runtime.statuses.get(APP.id);
+    if (status === undefined) throw new Error("missing runtime status");
+    runtime.statuses.set(APP.id, { ...status, imageId: null });
+
+    await expect(manager.stopApp(APP.id)).resolves.toBe(true);
+
+    expect(instanceRow(db)).toMatchObject({ state: "stopped", appliedImageId: "sha256:one" });
+  });
+
+  it("probes a stopped row once and persists the observed identity", async () => {
+    const runtime = new ImageIdRuntime("sha256:probe");
+    const { manager, db } = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    await manager.ensure(APP);
+    await manager.stopApp(APP.id);
+    db.prepare("UPDATE instances SET applied_image_id = NULL WHERE app_id = 'p:web'").run();
+    const status = runtime.statuses.get(APP.id);
+    runtime.statuses.set(APP.id, {
+      ...(status ?? stoppedStatus(APP.id)),
+      state: "running",
+      endpoint: "http://127.0.0.1:4400",
+      imageId: "sha256:probe",
+    });
+
+    await expect(manager.probeStatus(APP.id)).resolves.toBe(true);
+
+    expect(instanceRow(db)).toMatchObject({
+      state: "running",
+      runtimeState: "running",
+      appliedImageId: "sha256:probe",
+    });
+    expect(runtime.ensured).toHaveLength(1);
+    expect(runtime.deleted).toHaveLength(1);
+  });
+
+  it("does not probe a row whose persisted state is not stopped", async () => {
+    const runtime = new ImageIdRuntime();
+    const { manager } = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    await manager.ensure(APP);
+    runtime.statusCalls = 0;
+
+    await expect(manager.probeStatus(APP.id)).resolves.toBe(false);
+
+    expect(runtime.statusCalls).toBe(0);
+  });
+});
+
+describe("InstanceManager image preflight", () => {
+  const builtRef = "hanse-app-p:web:build-1";
+
+  it.each(["building", "build_error"] as const)(
+    "starts a build-configured app with a usable ref while the state is %s",
+    async (state) => {
+      const images = new FakeImages(
+        imageStateView({ state, usableImageRef: builtRef, targetImageId: "sha256:one" }),
+      );
+      const f = imageFixture("building", builtRef, true, {}, images);
+
+      await f.manager.ensure(f.app);
+
+      expect(f.runtime.ensured[0]?.image).toBe(builtRef);
+    },
+  );
+
+  it("starts a build-configured app with a usable ref after a configuration error", async () => {
+    const images = new FakeImages(
+      imageStateView({ state: "build_error", usableImageRef: builtRef }),
+    );
+    const f = imageFixture("ready", builtRef, true, {}, images);
+    writeFileSync(path.join(f.appDir, ".hanse", "app.yaml"), "name: [broken", "utf8");
+
+    await f.manager.ensure(f.app);
+
+    expect(f.runtime.ensured[0]?.image).toBe(builtRef);
+  });
+
+  it("uses the digest-bearing default reference for a default app", async () => {
+    const previousDigest = process.env.HANSE_AGENT_IMAGE_DIGEST;
+    process.env.HANSE_AGENT_IMAGE_DIGEST = "sha256:deadbeef";
+    try {
+      const images = new FakeImages(
+        imageStateView({
+          buildConfigured: false,
+          status: "missing",
+          imageRef: null,
+          usableImageRef: null,
+          targetImageId: "sha256:default",
+        }),
+      );
+      const f = imageFixture("missing", null, false, {}, images);
+
+      await f.manager.ensure(f.app);
+
+      expect(f.runtime.ensured[0]?.image).toBe("agent-default@sha256:deadbeef");
+    } finally {
+      if (previousDigest === undefined) delete process.env.HANSE_AGENT_IMAGE_DIGEST;
+      else process.env.HANSE_AGENT_IMAGE_DIGEST = previousDigest;
+    }
+  });
+
+  it("rejects a build-configured app without a usable image and leaves the container untouched", async () => {
+    const images = new FakeImages(
+      imageStateView({ state: "not_ready", usableImageRef: null, targetImageId: null }),
+    );
+    const f = imageFixture("ready", builtRef, true, {}, images);
+
+    await expect(f.manager.ensure(f.app)).rejects.toBeInstanceOf(ImageNotReadyError);
+
+    expect(f.runtime.ensured).toHaveLength(0);
+    expect(f.runtime.deleted).toHaveLength(0);
+  });
+
+  it("rejects a default app when the target image is unknown", async () => {
+    const images = new FakeImages(
+      imageStateView({
+        buildConfigured: false,
+        status: "missing",
+        imageRef: null,
+        usableImageRef: null,
+        targetImageId: null,
+        state: "unknown",
+      }),
+    );
+    const f = imageFixture("missing", null, false, {}, images);
+
+    await expect(f.manager.ensure(f.app)).rejects.toBeInstanceOf(DefaultImageUnavailableError);
+
+    expect(f.runtime.ensured).toHaveLength(0);
+  });
+
+  it("adopts the durable build before resolving the image state", async () => {
+    const images = new FakeImages(imageStateView({ usableImageRef: builtRef }));
+    const f = imageFixture("building", builtRef, true, {}, images);
+
+    await f.manager.ensure(f.app);
+
+    expect(images.order).toEqual(["adopt", "state"]);
+    expect(images.adoptCalls).toEqual([f.app.id]);
+  });
+
+  it("launches the image ref selected by build adoption", async () => {
+    const adoptedRef = "hanse-app-p:web:adopted";
+    const images = new FakeImages(imageStateView({ usableImageRef: adoptedRef }));
+    const f = imageFixture("building", "hanse-app-p:web:pending", true, {}, images);
+    images.onAdopt = () => {
+      f.db.prepare("UPDATE apps SET image_ref = ? WHERE id = ?").run(adoptedRef, f.app.id);
+    };
+
+    await f.manager.ensure(f.app);
+
+    expect(f.runtime.ensured[0]?.image).toBe(adoptedRef);
+  });
+
+  it("preflightRestart rejects a not-ready image before touching a running container", async () => {
+    const images = new FakeImages(imageStateView({ usableImageRef: builtRef }));
+    const f = imageFixture("ready", builtRef, true, {}, images);
+    await f.manager.ensure(f.app);
+    images.view = imageStateView({
+      state: "not_ready",
+      usableImageRef: null,
+      targetImageId: null,
+    });
+
+    await expect(f.manager.preflightRestart(f.app)).rejects.toBeInstanceOf(ImageNotReadyError);
+
+    expect(images.adoptCalls).toEqual([f.app.id, f.app.id]);
+    expect(f.runtime.deleted).toHaveLength(0);
+    expect(f.runtime.ensured).toHaveLength(1);
+  });
+
+  it("preflightRestart does not probe or preflight a stopped app", async () => {
+    const images = new FakeImages(imageStateView({ usableImageRef: builtRef }));
+    const f = imageFixture("ready", builtRef, true, {}, images);
+
+    await expect(f.manager.preflightRestart(f.app)).resolves.toBe(false);
+
+    expect(images.adoptCalls).toHaveLength(0);
+    expect(images.stateCalls).toHaveLength(0);
+  });
+
+  it("restartIfRunning rejects a not-ready image and keeps the running container", async () => {
+    const images = new FakeImages(imageStateView({ usableImageRef: builtRef }));
+    const f = imageFixture("ready", builtRef, true, {}, images);
+    await f.manager.ensure(f.app);
+    images.view = imageStateView({
+      state: "build_error",
+      usableImageRef: null,
+      targetImageId: null,
+    });
+
+    await expect(f.manager.restartIfRunning(f.app)).rejects.toBeInstanceOf(ImageNotReadyError);
+
+    expect(f.runtime.deleted).toHaveLength(0);
+    expect(f.runtime.ensured).toHaveLength(1);
+    expect(f.manager.isRestarting(f.app.id)).toBe(false);
+  });
+
+  it("restartIfRunning proceeds with a usable ref while the app is building", async () => {
+    const images = new FakeImages(imageStateView({ usableImageRef: builtRef }));
+    const f = imageFixture("ready", builtRef, true, {}, images);
+    await f.manager.ensure(f.app);
+    images.view = imageStateView({ state: "building", usableImageRef: builtRef });
+
+    await expect(f.manager.restartIfRunning(f.app)).resolves.toBe(true);
+
+    expect(f.runtime.deleted).toEqual([f.app.id]);
+    expect(f.runtime.ensured).toHaveLength(2);
+    expect(f.runtime.ensured[1]?.image).toBe(builtRef);
+  });
+});
+
 describe("InstanceManager image rollback", () => {
   interface ImageRow {
     image_status: string;
@@ -2326,6 +2737,28 @@ describe("InstanceManager image rollback", () => {
          FROM apps WHERE id = ?`,
       )
       .get(appId) as ImageRow;
+  }
+
+  interface FullImageRow extends ImageRow {
+    image_base_ref: string | null;
+    image_base_kind: string | null;
+    image_hash_version: number;
+    image_build_id: string | null;
+    image_build_ref: string | null;
+    image_build_started_at: string | null;
+    image_build_rejected_ref: string | null;
+  }
+
+  function fullImageRow(db: SqliteDatabase, appId: string): FullImageRow {
+    return db
+      .prepare(
+        `SELECT image_status, image_ref, image_hash, image_base_digest, image_built_at,
+                image_error, image_base_ref, image_base_kind, image_hash_version,
+                image_build_id, image_build_ref, image_build_started_at,
+                image_build_rejected_ref
+         FROM apps WHERE id = ?`,
+      )
+      .get(appId) as FullImageRow;
   }
 
   function setImage(db: SqliteDatabase, appId: string, values: Partial<ImageRow>): void {
@@ -2464,6 +2897,69 @@ describe("InstanceManager image rollback", () => {
 
     expect(imageRow(f.db, f.app.id)).toEqual(before);
     expect(f.manager.isRestarting(f.app.id)).toBe(false);
+  });
+
+  it("restores base/build fields and rethrows a typed error from the recomputed state", async () => {
+    const images = new FakeImages(imageStateView({ usableImageRef: "hanse-app-p:web:two" }));
+    const f = imageFixture("ready", "hanse-app-p:web:two", true, {}, images);
+    setImage(f.db, f.app.id, {
+      image_hash: "hash-two",
+      image_base_digest: "base-two",
+      image_built_at: "2026-01-02T00:00:00.000Z",
+      image_error: "stale-warning",
+    });
+    f.db
+      .prepare(
+        `UPDATE apps SET image_base_ref = 'agent-base@sha256:two', image_base_kind = 'base',
+           image_hash_version = 2, image_build_id = 'build-9',
+           image_build_ref = 'hanse-app-p:web:two',
+           image_build_started_at = '2026-01-02T00:00:00.000Z',
+           image_build_rejected_ref = 'hanse-app-p:web:rejected'
+         WHERE id = ?`,
+      )
+      .run(f.app.id);
+    await f.manager.ensure(f.app);
+    const before = fullImageRow(f.db, f.app.id);
+    images.onImageState = () => {
+      const current = fullImageRow(f.db, f.app.id);
+      return current.image_ref === "hanse-app-p:web:one"
+        ? imageStateView({ state: "not_ready", usableImageRef: null, targetImageId: null })
+        : imageStateView({
+            state: "current",
+            usableImageRef: current.image_ref,
+            targetImageId: "sha256:two",
+          });
+    };
+
+    let thrown: unknown;
+    try {
+      await f.manager.rollbackImage(f.app, async () => {
+        f.db
+          .prepare(
+            `UPDATE apps SET image_status = 'ready', image_ref = 'hanse-app-p:web:one',
+               image_base_ref = 'agent-default', image_base_kind = 'default',
+               image_hash_version = 1, image_build_id = NULL, image_build_ref = NULL,
+               image_build_started_at = NULL, image_build_rejected_ref = NULL
+             WHERE id = ?`,
+          )
+          .run(f.app.id);
+        return {
+          appId: f.app.id,
+          appKey: "web",
+          status: "ready" as const,
+          imageRef: "hanse-app-p:web:one",
+          previousImageRef: "hanse-app-p:web:two",
+          builtAt: "2026-01-01T00:00:00.000Z",
+        };
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(ImageNotReadyError);
+    expect((thrown as ImageNotReadyError).state).toBe("current");
+    expect(fullImageRow(f.db, f.app.id)).toEqual(before);
+    expect(f.runtime.deleted).toHaveLength(0);
   });
 
   it("returns 500 when restoring the snapshot also fails", async () => {

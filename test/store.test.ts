@@ -34,7 +34,7 @@ describe("store", () => {
       version: number;
     }[];
     expect(versions.map((row) => row.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
     ]);
     const secretTables = (
       db
@@ -64,6 +64,7 @@ describe("store", () => {
     expect(instanceColumns).toContain("image_ref");
     expect(instanceColumns).toContain("applied_settings_hash");
     expect(instanceColumns).toContain("applied_profile");
+    expect(instanceColumns).toContain("applied_image_id");
 
     const versionColumns = (
       db.prepare("PRAGMA table_info(app_image_versions)").all() as {
@@ -79,6 +80,9 @@ describe("store", () => {
       "base_digest",
       "built_at",
       "created_at",
+      "base_ref",
+      "base_kind",
+      "hash_version",
     ]);
 
     const appColumns = (
@@ -93,6 +97,14 @@ describe("store", () => {
     expect(appColumns).toContain("image_built_at");
     expect(appColumns).toContain("image_error");
     expect(appColumns).toContain("deleting");
+    expect(appColumns).toContain("build_configured");
+    expect(appColumns).toContain("image_base_ref");
+    expect(appColumns).toContain("image_base_kind");
+    expect(appColumns).toContain("image_hash_version");
+    expect(appColumns).toContain("image_build_id");
+    expect(appColumns).toContain("image_build_ref");
+    expect(appColumns).toContain("image_build_started_at");
+    expect(appColumns).toContain("image_build_rejected_ref");
 
     const projectColumns = (
       db.prepare("PRAGMA table_info(projects)").all() as {

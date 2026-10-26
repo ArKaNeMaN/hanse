@@ -93,6 +93,7 @@ export interface ImageGcServiceOptions {
   statfs?: (path: string) => Promise<DiskStat>;
   timeoutMs?: number;
   now?: () => number;
+  protectedRefs?: () => readonly string[];
 }
 
 export function usageLevel(usedPercent: number): DiskUsageLevel {
@@ -107,6 +108,7 @@ export class ImageGcService {
   readonly #statfs: (path: string) => Promise<DiskStat>;
   readonly #timeoutMs: number;
   readonly #now: () => number;
+  readonly #protectedRefs: (() => readonly string[]) | undefined;
   #running = false;
 
   constructor(options: ImageGcServiceOptions) {
@@ -115,6 +117,7 @@ export class ImageGcService {
     this.#statfs = options.statfs ?? ((path) => statfs(path));
     this.#timeoutMs = options.timeoutMs ?? DEFAULT_GC_TIMEOUT_MS;
     this.#now = options.now ?? (() => Date.now());
+    this.#protectedRefs = options.protectedRefs;
   }
 
   async usage(): Promise<ImageUsageReport> {
@@ -181,6 +184,9 @@ export class ImageGcService {
     }
 
     const protectedSet = new Set(protectedRefs);
+    for (const ref of this.#protectedRefs?.() ?? []) {
+      protectedSet.add(ref);
+    }
     const protectedIds = new Set<string>();
     let containers: DockerContainerSummary[];
     try {
