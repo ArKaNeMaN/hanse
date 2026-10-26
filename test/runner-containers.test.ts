@@ -105,6 +105,8 @@ class FakeDocker implements DockerRuntime {
   readonly connects: { network: string; container: string; aliases: string[] }[] = [];
   readonly disconnects: { network: string; container: string }[] = [];
   networkRemoveError: Error | undefined;
+  createErrorAfterContainer: Error | undefined;
+  startError: Error | undefined;
   #next = 1;
 
   async version(): Promise<string> {
@@ -177,10 +179,12 @@ class FakeDocker implements DockerRuntime {
       NetworkSettings: { Networks: { [options.networkName]: {} } },
     };
     this.containers.set(id, inspect);
+    if (this.createErrorAfterContainer !== undefined) throw this.createErrorAfterContainer;
     return id;
   }
 
   async startContainer(id: string): Promise<void> {
+    if (this.startError !== undefined) throw this.startError;
     const container = this.#byId(id);
     container.State = { Status: "running", Running: true, ExitCode: 0 };
   }
@@ -320,6 +324,28 @@ describe("RunnerService per-app containers", () => {
     );
     expect(docker.creates).toHaveLength(2);
     expect(docker.creates[1]?.memoryBytes).toBe(2048);
+  });
+
+  it("adopts and starts a container left behind by a timed-out create", async () => {
+    const { f, docker, service } = await harness();
+    docker.createErrorAfterContainer = new DockerError(0, "docker request timed out");
+
+    const status = await service.ensure(rawSpec(f, "a"), "project:a");
+
+    expect(status.state).toBe("running");
+    expect(docker.creates).toHaveLength(1);
+    expect(docker.containers.size).toBe(1);
+    expect([...docker.containers.values()][0]?.State?.Running).toBe(true);
+  });
+
+  it("removes the new container when start fails", async () => {
+    const { f, docker, service } = await harness();
+    docker.startError = new DockerError(0, "docker request timed out");
+
+    await expect(service.ensure(rawSpec(f, "a"), "project:a")).rejects.toMatchObject({
+      message: "docker request timed out",
+    });
+    expect(docker.containers.size).toBe(0);
   });
 
   it("deletes the container/network but keeps the host agents directory", async () => {

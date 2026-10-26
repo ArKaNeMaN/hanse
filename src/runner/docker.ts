@@ -817,7 +817,10 @@ export class DockerClient {
     this.#check(response, `disconnect ${container} from ${network}`);
   }
 
-  async createContainer(options: DockerContainerCreateOptions): Promise<string> {
+  async createContainer(
+    options: DockerContainerCreateOptions,
+    timeoutMs?: number,
+  ): Promise<string> {
     const networkMode = options.networkMode ?? options.networkName;
     const response = await this.#transport.request(
       "POST",
@@ -861,6 +864,7 @@ export class DockerClient {
               },
             }),
       },
+      timeoutMs === undefined ? undefined : { timeoutMs },
     );
     this.#check(response, `create container ${options.name}`);
     const body = decodeJson<{ Id?: string }>(response, `create container ${options.name}`);
@@ -1006,7 +1010,7 @@ export interface DockerRuntime {
   inspectNetwork?(name: string): Promise<DockerNetworkInspect | undefined>;
   connectNetwork(network: string, container: string, aliases: string[]): Promise<void>;
   disconnectNetwork(network: string, container: string): Promise<void>;
-  createContainer(options: DockerContainerCreateOptions): Promise<string>;
+  createContainer(options: DockerContainerCreateOptions, timeoutMs?: number): Promise<string>;
   startContainer(id: string): Promise<void>;
   stopContainer(id: string, timeoutSeconds?: number): Promise<void>;
   removeContainer(id: string, force?: boolean): Promise<void>;

@@ -580,8 +580,9 @@ export class InstanceManager {
       const passwordFile = opencodePasswordPath(isolated.XDG_STATE_HOME);
       const existing = this.#running.get(app.id);
       const current = await this.#options.runtime.status(app.id);
-      const running =
-        current !== undefined && (current.state === "running" || current.state === "starting");
+      // The runner reports a merely created container as "starting"; reconnecting to that endpoint
+      // would leave it unstarted forever, so only a genuinely running container is reusable.
+      const running = current !== undefined && current.state === "running";
       const existingPassword = readOpencodePassword(passwordFile);
       if (running && existingPassword !== undefined) {
         // A running container's token is reconciled in place; a failure must never fall through to

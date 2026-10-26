@@ -703,6 +703,20 @@ describe("InstanceManager lifecycle", () => {
     expect(runtime.ensured).toHaveLength(1);
   });
 
+  it("re-ensures a container the runtime reports as merely starting", async () => {
+    const runtime = new FakeAgentRuntime();
+    const { manager } = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    const first = await manager.ensure(APP);
+    const starting = runtime.statuses.get(APP.id);
+    if (starting === undefined) throw new Error("missing runtime status");
+    runtime.statuses.set(APP.id, { ...starting, state: "starting" });
+
+    await expect(manager.ensure(APP)).resolves.toBe(first);
+
+    expect(runtime.deleted).toContain(APP.id);
+    expect(runtime.ensured).toHaveLength(2);
+  });
+
   it("reuses the token file when a new manager starts against the same state", async () => {
     const runtime = new FakeAgentRuntime();
     const { manager, db, dir } = fixture(runtime, fakeSettings(), fakeProfiles().source);

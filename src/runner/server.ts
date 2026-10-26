@@ -82,6 +82,7 @@ const MAX_INSPECT_DIGEST_LENGTH = 255;
 const MAX_INSPECT_BODY_BYTES = 8 * 1024;
 const DEFAULT_LOG_TAIL = 500;
 const RUNNER_ENTRYPOINT = "/usr/local/bin/hanse-agent-entrypoint";
+const CONTAINER_CREATE_TIMEOUT_MS = 20_000;
 const EXEC_SHELL = "if [ -x /bin/bash ]; then exec /bin/bash -l; fi; exec /bin/sh -l";
 const MAX_EXEC_DIMENSION = 1000;
 const GIT_CONTAINER_APP_CREDENTIAL_DIR = "/run/hanse/git/app";
@@ -842,43 +843,7 @@ export class RunnerService {
       await this.#docker.removeContainer(existing.Id, true);
     }
 
-    const id = await this.#docker.createContainer({
-      name: spec.containerName,
-      image: spec.image,
-      hostname: spec.containerName,
-      user: "1000:1000",
-      entrypoint: [RUNNER_ENTRYPOINT],
-      cmd: [],
-      workingDir: spec.containerAppDir,
-      env: containerEnvironment(spec),
-      labels: {
-        ...spec.labels,
-        "hanse.managed": "true",
-        "hanse.app.id": spec.appId,
-        "hanse.image": spec.image,
-        "hanse.spec.hash": spec.specHash,
-        "hanse.network.name": spec.networkName,
-        "hanse.agents.root": spec.hostAgentsRoot,
-      },
-      binds: [
-        `${spec.hostAppDir}:${spec.containerAppDir}:${spec.appDirReadOnly === true ? "ro" : "rw"}`,
-        `${spec.hostAgentsRoot}:${spec.containerAgentsRoot}:rw`,
-        ...(spec.attachmentsReadOnly === true
-          ? [
-              `${path.join(spec.hostAgentsRoot, "attachments")}:${path.posix.join(spec.containerAgentsRoot, "attachments")}:ro`,
-            ]
-          : []),
-      ],
-      tmpfs: {
-        "/tmp": "rw,exec,nosuid,size=1g",
-        "/run": "rw,nosuid,size=16m",
-      },
-      memoryBytes: spec.resources.memoryBytes,
-      nanoCpus: spec.resources.nanoCpus,
-      pidsLimit: spec.resources.pidsLimit,
-      networkName: spec.networkName,
-      networkAliases: [spec.containerName],
-    });
+    const id = await this.#createOrAdoptContainer(spec);
     try {
       await this.#docker.startContainer(id);
       await this.#connectCoordinator(spec.networkName);
@@ -891,6 +856,83 @@ export class RunnerService {
       throw new RunnerError(502, "container disappeared after create");
     }
     return statusFromInspect(spec.appId, spec.containerName, inspected);
+  }
+
+  /**
+   * Create the app container, recovering the one a timed-out create may already have made.
+   *
+   * Docker can finish creating a container after the client request times out. If the result is
+   * ours (same app and spec hash) it is adopted, so a slow create cannot leave the app in
+   * `created` forever with no start attempted. A container belonging to another spec is left alone.
+   */
+  async #createOrAdoptContainer(spec: RunnerSpec): Promise<string> {
+    try {
+      return await this.#docker.createContainer(
+        {
+          name: spec.containerName,
+          image: spec.image,
+          hostname: spec.containerName,
+          user: "1000:1000",
+          entrypoint: [RUNNER_ENTRYPOINT],
+          cmd: [],
+          workingDir: spec.containerAppDir,
+          env: containerEnvironment(spec),
+          labels: {
+            ...spec.labels,
+            "hanse.managed": "true",
+            "hanse.app.id": spec.appId,
+            "hanse.image": spec.image,
+            "hanse.spec.hash": spec.specHash,
+            "hanse.network.name": spec.networkName,
+            "hanse.agents.root": spec.hostAgentsRoot,
+          },
+          binds: [
+            `${spec.hostAppDir}:${spec.containerAppDir}:${spec.appDirReadOnly === true ? "ro" : "rw"}`,
+            `${spec.hostAgentsRoot}:${spec.containerAgentsRoot}:rw`,
+            ...(spec.attachmentsReadOnly === true
+              ? [
+                  `${path.join(spec.hostAgentsRoot, "attachments")}:${path.posix.join(spec.containerAgentsRoot, "attachments")}:ro`,
+                ]
+              : []),
+          ],
+          tmpfs: {
+            "/tmp": "rw,exec,nosuid,size=1g",
+            "/run": "rw,nosuid,size=16m",
+          },
+          memoryBytes: spec.resources.memoryBytes,
+          nanoCpus: spec.resources.nanoCpus,
+          pidsLimit: spec.resources.pidsLimit,
+          networkName: spec.networkName,
+          networkAliases: [spec.containerName],
+        },
+        CONTAINER_CREATE_TIMEOUT_MS,
+      );
+    } catch (error) {
+      const adopted = await this.#adoptCreatedContainer(spec);
+      if (adopted === undefined) {
+        throw error;
+      }
+      return adopted;
+    }
+  }
+
+  async #adoptCreatedContainer(spec: RunnerSpec): Promise<string | undefined> {
+    let existing: DockerContainerInspect | undefined;
+    try {
+      existing = await this.#docker.inspectContainer(spec.containerName);
+    } catch {
+      return undefined;
+    }
+    const labels = existing?.Config?.Labels;
+    if (
+      existing === undefined ||
+      labels?.["hanse.managed"] !== "true" ||
+      labels["hanse.app.id"] !== spec.appId ||
+      labels["hanse.spec.hash"] !== spec.specHash
+    ) {
+      return undefined;
+    }
+    return existing.Id;
   }
 
   async delete(appId: string): Promise<RuntimeAppStatus> {
