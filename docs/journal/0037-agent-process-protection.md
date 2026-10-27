@@ -1,6 +1,6 @@
 # 0037 - Agent process protection
 
-Status: **implemented and verified**; commit and deployment pending owner authorization.
+Status: **deployed** (2026-10-27; commit `25e5c81`).
 Design: [Agent process protection](../design/agent-process-protection.md) (approved, `oracle` round 10 PASS).
 Plan: [0030 - Agent process protection](../plans/0030-agent-process-protection.md) (`momus` OKAY).
 Owner decisions: [open questions](../open-questions.md), 2026-10-27.
@@ -148,8 +148,25 @@ test state/token and does not include deployment data.
   credentials). The deterministic-id and SIGTERM fallbacks are implemented and tested at the
   coordinator/fake-runtime level.
 
-## Commit / deployment
+## Deployment
 
-No commit, push, or deployment was performed. One coherent stage commit is pending explicit owner
-authorization; the working tree may contain unrelated changes that must not be staged with this
-stage.
+- Commit `25e5c811361fd5e0104887018c2acfddbb129ee0` was pushed to `main` and deployed to
+  `<deployment-host>`.
+- Coordinator image digest: `sha256:a2ec04063abf611d2c3a130346b9d9f0c5d49d1553f45880f3208ae35936b1f2`.
+  The publish run produced all five manifests and matching OCI revision labels.
+- `/readyz` reported `revision=25e5c81...`, `schemaVersion=20`, `deploying=false`,
+  `inFlightLifecycle=0`; all static services were healthy.
+- Migration applied v19 and v20 at startup (schema 18 -> 20) with no schema/checksum/process-rule/
+  resume/5xx warnings.
+- Previously running apps were restored and returned sessions 200. The disposable smoke verified
+  explicit start, the process-rule file plus matching applied-sidecar hash, chat 200, stopped reads
+  as `503 agent_stopped` with no lazy start, and the DB-only notices route 200 while stopped; the
+  test app was returned to stopped.
+- The first deployment attempt aborted during the pre-deploy backup before any image switch and
+  rolled back; the incomplete backup was marked unusable. The retry succeeded. No post-deploy
+  rollback was needed.
+- The private deployment record lives only in the untracked deployment area.
+
+## Commit
+
+The stage is one coherent commit `25e5c81` on `main`; the deployment commit is separate.

@@ -1,7 +1,7 @@
 # Design - Agent process protection and interrupted-turn recovery
 
 - Stage: `0030-agent-process-protection` (plan 0030; journal 0037)
-- Status: implemented and verified (revision 10; design gate cleared; journal 0037); commit/deployment pending
+- Status: deployed (revision 10; design gate cleared; journal 0037; commit `25e5c81`)
 - Related: [ADR-0005](../decisions/0005-permission-policy-guardrail.md),
   [interactive prompts](./interactive-prompts.md), [chat UX overhaul](./chat-ux-overhaul.md),
   [chat session tree](./chat-session-tree.md), [agent runtime](./agent-runtime.md)

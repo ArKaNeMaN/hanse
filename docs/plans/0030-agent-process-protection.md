@@ -1,6 +1,6 @@
 # Plan 0030 - Agent process protection
 
-Status: **implemented and verified** - plan review (`momus`) OKAY; journal 0037; commit/deployment pending owner authorization.
+Status: **deployed** - plan review (`momus`) OKAY; journal 0037; commit `25e5c81`.
 Design: [Agent process protection](../design/agent-process-protection.md) (approved, `oracle`
 round 10 PASS).
 Owner decisions: [open questions](../open-questions.md), 2026-10-27.
