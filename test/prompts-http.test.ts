@@ -901,6 +901,32 @@ describe("prompts HTTP", () => {
     });
   });
 
+  it("reads todos from an attached endpoint without ensure", async () => {
+    const f = fixture();
+    const upstream = await fakeOpencode();
+    upstream.reply("GET", "/session/ses_1/todo", []);
+    let ensured = 0;
+    f.deps.manager = {
+      ensure: async () => {
+        ensured += 1;
+        return upstream.endpoint;
+      },
+      endpointFor: () => upstream.endpoint,
+    } as unknown as InstanceManager;
+
+    const response = await handlePrompts(
+      f.deps,
+      request({
+        path: "/api/apps/storefront/sessions/ses_1/todo",
+        query: { project: "p1" },
+        headers: auth(f.token),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(ensured).toBe(0);
+  });
+
   it("maps a runtime start failure to 502", async () => {
     const f = fixture();
     f.deps.manager = {

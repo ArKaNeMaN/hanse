@@ -1524,6 +1524,115 @@ describe("paged message list route", () => {
   });
 });
 
+describe("read routes attach to the running agent", () => {
+  function counters(): { ensure: number; endpoint: number } {
+    return { ensure: 0, endpoint: 0 };
+  }
+
+  function readManager(
+    attached: string | undefined,
+    ensured: string,
+    calls: { ensure: number; endpoint: number },
+  ): InstanceManager {
+    return {
+      ensure: async () => {
+        calls.ensure += 1;
+        return ensured;
+      },
+      endpointFor: () => {
+        calls.endpoint += 1;
+        return attached;
+      },
+    } as unknown as InstanceManager;
+  }
+
+  function sessionsRequest(f: Fixture): HttpRequest {
+    return request({
+      path: "/api/apps/storefront/sessions",
+      query: { project: "p1" },
+      headers: auth(f.token),
+    });
+  }
+
+  function messagesRequest(f: Fixture): HttpRequest {
+    return request({
+      path: "/api/apps/storefront/sessions/ses_1/messages",
+      query: { project: "p1", limit: "30" },
+      headers: auth(f.token),
+    });
+  }
+
+  function emptyUpstream() {
+    return fakeOpencodeHandler((incoming, outgoing) => {
+      if (incoming.method === "GET") {
+        outgoing.writeHead(200, { "content-type": "application/json" });
+        outgoing.end("[]");
+        return;
+      }
+      outgoing.writeHead(404);
+      outgoing.end("missing");
+    });
+  }
+
+  it("reads the session list without ensure when an endpoint is attached", async () => {
+    const f = fixture();
+    const upstream = await emptyUpstream();
+    const calls = counters();
+    f.deps.manager = readManager(upstream.endpoint, upstream.endpoint, calls);
+
+    const response = await handleChat(f.deps, sessionsRequest(f));
+
+    expect(response.status).toBe(200);
+    expect(JSON.parse(response.body).sessions).toEqual([]);
+    expect(calls).toEqual({ ensure: 0, endpoint: 1 });
+    expect(upstream.calls.map((call) => `${call.method} ${call.url}`)).toEqual(["GET /session"]);
+  });
+
+  it("reads a message page without ensure when an endpoint is attached", async () => {
+    const f = fixture();
+    const upstream = await emptyUpstream();
+    const calls = counters();
+    f.deps.manager = readManager(upstream.endpoint, upstream.endpoint, calls);
+
+    const response = await handleChat(f.deps, messagesRequest(f));
+
+    expect(response.status).toBe(200);
+    expect(JSON.parse(response.body)).toEqual({ messages: [], nextCursor: null });
+    expect(calls).toEqual({ ensure: 0, endpoint: 1 });
+    expect(upstream.calls.map((call) => `${call.method} ${call.url}`)).toEqual([
+      "GET /session/ses_1/message?limit=30",
+    ]);
+  });
+
+  it("starts the agent through ensure when no endpoint is attached", async () => {
+    const f = fixture();
+    const upstream = await emptyUpstream();
+    const calls = counters();
+    f.deps.manager = readManager(undefined, upstream.endpoint, calls);
+
+    const response = await handleChat(f.deps, sessionsRequest(f));
+
+    expect(response.status).toBe(200);
+    expect(calls).toEqual({ ensure: 1, endpoint: 1 });
+  });
+
+  it("falls back to ensure when the attached endpoint stops answering", async () => {
+    const f = fixture();
+    const upstream = await emptyUpstream();
+    const calls = counters();
+    f.deps.manager = readManager("http://127.0.0.1:1", upstream.endpoint, calls);
+
+    const response = await handleChat(f.deps, messagesRequest(f));
+
+    expect(response.status).toBe(200);
+    expect(JSON.parse(response.body)).toEqual({ messages: [], nextCursor: null });
+    expect(calls).toEqual({ ensure: 1, endpoint: 1 });
+    expect(upstream.calls.map((call) => `${call.method} ${call.url}`)).toEqual([
+      "GET /session/ses_1/message?limit=30",
+    ]);
+  });
+});
+
 describe("async chat send", () => {
   it("returns 202 after upstream 204 with the generated message id", async () => {
     const f = fixture();

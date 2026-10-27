@@ -573,12 +573,23 @@ export async function handlePrompts(deps: HttpDeps, request: HttpRequest): Promi
   if (found === undefined) {
     return errorResponse(404, `unknown application: ${match.appKey}`);
   }
+  if (found.app.deleting || found.project.deleting) {
+    return errorResponse(409, "application is pending deletion", "deletion_pending");
+  }
 
   let endpoint: string;
-  try {
-    endpoint = await deps.manager.ensure(toManagedApp(found));
-  } catch (error) {
-    return startFailure(error);
+  const attached =
+    match.kind === "prompts" || match.kind === "saved-permissions" || match.kind === "todo"
+      ? deps.manager.endpointFor?.(found.app.id)
+      : undefined;
+  if (attached !== undefined) {
+    endpoint = attached;
+  } else {
+    try {
+      endpoint = await deps.manager.ensure(toManagedApp(found));
+    } catch (error) {
+      return startFailure(error);
+    }
   }
 
   switch (match.kind) {

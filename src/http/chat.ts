@@ -2232,6 +2232,127 @@ async function handleAttachmentMutation(
   });
 }
 
+function isTransportFailure(error: unknown): boolean {
+  if (error instanceof OpencodeHttpError) return error.status === 0;
+  return error instanceof TypeError && /fetch failed/i.test(error.message);
+}
+
+/**
+ * Attach read-only chat calls to the already running agent instead of inspecting the runtime on
+ * every request. Only a missing endpoint or a transport failure falls back to `ensure`.
+ */
+async function withReadEndpoint<T>(
+  deps: HttpDeps,
+  found: FoundApp,
+  run: (endpoint: string) => Promise<T>,
+): Promise<T> {
+  const manager = deps.manager;
+  if (manager === undefined) {
+    throw new Error("agent runtime is not configured");
+  }
+  const attached = manager.endpointFor?.(found.app.id);
+  if (attached !== undefined) {
+    try {
+      return await run(attached);
+    } catch (error) {
+      if (!isTransportFailure(error)) throw error;
+    }
+  }
+  const endpoint = await manager.ensure(toManagedApp(found));
+  return run(endpoint);
+}
+
+async function readSessionsResponse(deps: HttpDeps, found: FoundApp): Promise<HttpResponse> {
+  return withReadEndpoint(deps, found, async (endpoint) => {
+    const sessions = await listSessions(endpoint);
+    const summaries = draftSummaries(
+      deps.db,
+      found.app.id,
+      sessions.map((session) => session.id),
+    );
+    return json(200, {
+      sessions: sessions.map((session) => ({
+        ...session,
+        draft: summaries.get(session.id) ?? {
+          hasText: false,
+          attachmentCount: 0,
+          emptyDraft: false,
+          updatedAt: null,
+        },
+      })),
+    });
+  });
+}
+
+async function readMessagesResponse(
+  deps: HttpDeps,
+  found: FoundApp,
+  sessionId: string,
+  limit: number | undefined,
+  before: string | undefined,
+): Promise<HttpResponse> {
+  return withReadEndpoint(deps, found, async (endpoint) => {
+    const project = createMessageProjector({
+      db: deps.db,
+      appId: found.app.id,
+      appKey: found.app.appKey,
+      projectId: found.project.id,
+    });
+    const projectHistory = (messages: Parameters<typeof project>[0]): void => {
+      project(messages);
+      projectHandoffMessages(deps.db, sessionId, messages);
+    };
+    if (limit === undefined) {
+      const messages = await listMessages(endpoint, sessionId, { project: projectHistory });
+      const payload = { messages };
+      if (projectedResponseBytes(payload) > PROJECTED_RESPONSE_MAX_BYTES) {
+        return json(502, {
+          error: "session too large to refresh",
+          code: "messages_too_large",
+        });
+      }
+      return json(200, payload);
+    }
+    try {
+      const page = await readProjectedPage(
+        endpoint,
+        sessionId,
+        before === undefined
+          ? { limit, project: projectHistory }
+          : { limit, before, project: projectHistory },
+      );
+      const payload = { messages: page.messages, nextCursor: page.nextCursor ?? null };
+      if (projectedResponseBytes(payload) > PROJECTED_RESPONSE_MAX_BYTES) {
+        return json(502, {
+          error: "session too large to refresh",
+          code: "messages_too_large",
+        });
+      }
+      return json(200, payload);
+    } catch (error) {
+      if (error instanceof OpencodeHttpError && error.status === 400 && before !== undefined) {
+        return json(400, { error: "invalid message cursor", code: "invalid_cursor" });
+      }
+      if (error instanceof OpencodeHttpError && error.status === 404) {
+        return json(404, { error: "session not found", code: "session_not_found" });
+      }
+      if (error instanceof OpencodeHttpError && error.code === "messages_too_large") {
+        return json(502, {
+          error: "session too large to refresh",
+          code: "messages_too_large",
+        });
+      }
+      if (error instanceof OpencodeHttpError && error.code === "history_busy") {
+        return json(503, {
+          error: "history is busy; retry shortly",
+          code: "history_busy",
+        });
+      }
+      throw error;
+    }
+  });
+}
+
 export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<HttpResponse> {
   const projectId = projectParam(request);
 
@@ -2459,6 +2580,18 @@ export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<
       }
     }
   }
+  if (sessionsMatch !== null && request.method === "GET") {
+    if (found.app.deleting || found.project.deleting) {
+      return json(409, { error: "application is pending deletion", code: "deletion_pending" });
+    }
+    return readSessionsResponse(deps, found);
+  }
+  if (messagesMatch !== null && request.method === "GET") {
+    if (found.app.deleting || found.project.deleting) {
+      return json(409, { error: "application is pending deletion", code: "deletion_pending" });
+    }
+    return readMessagesResponse(deps, found, sessionId, limit, before);
+  }
   let endpoint: string;
   try {
     endpoint = await deps.manager.ensure(toManagedApp(found));
@@ -2477,29 +2610,8 @@ export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<
   }
 
   try {
-    if (sessionsMatch !== null) {
-      if (request.method === "GET") {
-        const sessions = await listSessions(endpoint);
-        const summaries = draftSummaries(
-          deps.db,
-          found.app.id,
-          sessions.map((session) => session.id),
-        );
-        return json(200, {
-          sessions: sessions.map((session) => ({
-            ...session,
-            draft: summaries.get(session.id) ?? {
-              hasText: false,
-              attachmentCount: 0,
-              emptyDraft: false,
-              updatedAt: null,
-            },
-          })),
-        });
-      }
-      if (request.method === "POST") {
-        return handleSessionCreate(deps, found, endpoint, request);
-      }
+    if (sessionsMatch !== null && request.method === "POST") {
+      return handleSessionCreate(deps, found, endpoint, request);
     }
     if (sessionMatch !== null && request.method === "DELETE") {
       return await sessionLocks.run(sessionLockKey(found.app.id, sessionId), async () => {
@@ -2535,66 +2647,6 @@ export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<
         }
         return json(200, { deleted: true });
       });
-    }
-    if (messagesMatch !== null && request.method === "GET") {
-      const project = createMessageProjector({
-        db: deps.db,
-        appId: found.app.id,
-        appKey: found.app.appKey,
-        projectId: found.project.id,
-      });
-      const projectHistory = (messages: Parameters<typeof project>[0]): void => {
-        project(messages);
-        projectHandoffMessages(deps.db, sessionId, messages);
-      };
-      if (limit === undefined) {
-        const messages = await listMessages(endpoint, sessionId, { project: projectHistory });
-        const payload = { messages };
-        if (projectedResponseBytes(payload) > PROJECTED_RESPONSE_MAX_BYTES) {
-          return json(502, {
-            error: "session too large to refresh",
-            code: "messages_too_large",
-          });
-        }
-        return json(200, payload);
-      }
-      try {
-        const page = await readProjectedPage(
-          endpoint,
-          sessionId,
-          before === undefined
-            ? { limit, project: projectHistory }
-            : { limit, before, project: projectHistory },
-        );
-        const payload = { messages: page.messages, nextCursor: page.nextCursor ?? null };
-        if (projectedResponseBytes(payload) > PROJECTED_RESPONSE_MAX_BYTES) {
-          return json(502, {
-            error: "session too large to refresh",
-            code: "messages_too_large",
-          });
-        }
-        return json(200, payload);
-      } catch (error) {
-        if (error instanceof OpencodeHttpError && error.status === 400 && before !== undefined) {
-          return json(400, { error: "invalid message cursor", code: "invalid_cursor" });
-        }
-        if (error instanceof OpencodeHttpError && error.status === 404) {
-          return json(404, { error: "session not found", code: "session_not_found" });
-        }
-        if (error instanceof OpencodeHttpError && error.code === "messages_too_large") {
-          return json(502, {
-            error: "session too large to refresh",
-            code: "messages_too_large",
-          });
-        }
-        if (error instanceof OpencodeHttpError && error.code === "history_busy") {
-          return json(503, {
-            error: "history is busy; retry shortly",
-            code: "history_busy",
-          });
-        }
-        throw error;
-      }
     }
     if (messagesMatch !== null && request.method === "POST") {
       let body: { text?: unknown; attachments?: unknown; streamID?: unknown };
@@ -2639,6 +2691,13 @@ export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<
       );
     }
   } catch (error) {
+    if (error instanceof DeletionPendingError) {
+      return json(409, { error: error.message, code: error.code });
+    }
+    const mapped = lifecycleErrorResponse(error);
+    if (mapped !== undefined) {
+      return mapped;
+    }
     if (error instanceof OpencodeHttpError && error.code === "messages_too_large") {
       return json(502, { error: "session too large to refresh", code: "messages_too_large" });
     }
