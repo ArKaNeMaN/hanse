@@ -25,11 +25,17 @@ no extra published port.
   needs the Docker socket; a rootful daemon is required for the default B1 Compose stack.
 - A Linux `amd64` host. The default publish workflow builds `linux/amd64`; arm64 is on-demand until
   it returns to the default matrix.
-- About 2 GB of RAM for an idle coordinator/IDE/runner, plus room for the per-app containers.
+- 2 CPU cores minimum; 4+ recommended for several apps or image builds.
+- About 2 GB of RAM for an idle coordinator/IDE/runner, plus up to 2 GB per app container (the
+  default cap). 4 GB is the minimum for the stack and one app; 8-16 GB is recommended for several.
+  Raise `HANSE_APP_MEMORY_MB`/`HANSE_APP_CPUS` only with matching host capacity (set them in the
+  coordinator environment, for example with a Compose override).
 - Absolute host paths for the workspace and agents volumes, because the runner passes them to the
   Docker daemon as bind sources.
-- About 8 GB of disk for the coordinator, IDE, and agent images plus the volumes. The images bundle
-  code-server, the toolchains, `opencode`, the OMO baseline, and CodeGraph.
+- About 7-8 GB for the five images, plus roughly 1-2 GB per app in the `agents` volume, the
+  workspace/state volumes, and room for custom images, rollbacks, and build cache. Allow 20 GB free
+  minimum and 40+ GB on SSD recommended. The images bundle code-server, the toolchains, `opencode`,
+  the OMO baseline, and CodeGraph.
 - A model credential for `opencode`: enter a provider key in the settings UI, or reuse a host
   `opencode` login (see [Model credentials](#model-credentials)).
 

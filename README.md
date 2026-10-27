@@ -61,6 +61,52 @@ and requirements) to each other through the coordinator - like independent teams
   intended for a trusted LAN. Published images are `linux/amd64`; arm64 is built on demand until it
   returns to the default publish matrix.
 
+## System requirements
+
+Hanse runs as a Docker Compose stack. The coordinator, IDE, and runner are always up; each
+application adds one agent container when it is used.
+
+| Requirement | Minimum | Recommended |
+| --- | --- | --- |
+| Host OS / architecture | Linux `x86_64` (`linux/amd64`) | Linux `x86_64` |
+| Container runtime | Docker Engine 24+ with Compose v2, rootful daemon | Current Docker Engine + Compose plugin |
+| CPU | 2 cores | 4+ cores |
+| RAM | 4 GB | 8-16 GB |
+| Free disk | 20 GB | 40+ GB on SSD |
+| Client | A current browser with WebSocket support | Same |
+
+- **Network:** outbound HTTPS to GHCR, the model provider, and git remotes; outbound SSH for
+  operator-defined SSH hosts. Inbound TCP 8787 only if the UI is exposed; use a TLS reverse proxy
+  beyond a trusted LAN.
+- **Model access:** a provider API key or a host `opencode` login.
+
+**Sizing.** The minimum in the table assumes the default 2 GB app cap and covers the idle
+coordinator/IDE/runner plus one small app. Each app container is capped at 2 GB of RAM and 2 CPUs by
+default (`HANSE_APP_MEMORY_MB`, `HANSE_APP_CPUS`); raise the host budget by the same amount if you
+raise the cap. Apps often idle below the cap, but plan for it when several are active. For 1-3 apps
+at the default cap, use 4 cores / 8 GB / 40 GB free. For 5+ apps or frequent builds, use 8 cores /
+16 GB / 80 GB free. The five images take roughly 7-8 GB, and
+the `agents` volume grows by roughly 1-2 GB per app as toolchains and caches are installed; custom
+images and the Docker build cache add more. Keep well below the thresholds: Hanse warns at 75% used
+and reports critical at 85%, so target at least 30% free.
+
+The published images are `linux/amd64`. On arm64 hosts, build them locally. Docker Desktop on macOS
+or Windows/WSL2 works, including for evaluation; Linux `amd64` is the production target. No GPU is
+required for the default setup: model inference runs at the configured provider.
+
+Rootless Docker is not supported by the default stack: the runner needs the Docker socket from a
+rootful daemon. Bind mounts run as uid/gid 1000, so `workspace`, `state`, and `agents` must be
+writable by that uid (`sudo chown -R 1000:1000 workspace state agents`).
+
+Only the coordinator publishes a port (`127.0.0.1:8787` by default). The IDE, previews, and app
+terminals are proxied through it. Set `HANSE_BIND=0.0.0.0` only on a trusted LAN; terminate TLS in a
+reverse proxy for anything beyond that.
+
+Development without Docker needs Node.js >= 20 (CI and the images use Node 22) and npm.
+
+The full deployment guide, including LAN/TLS exposure, backups, and upgrades, is in
+[`docs/deployment.md`](docs/deployment.md).
+
 ## Run it
 
 The published images are `ghcr.io/arkaneman/hanse` (coordinator),
