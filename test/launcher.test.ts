@@ -103,6 +103,17 @@ describe("launcher", () => {
     expect(overlay.permission?.external_directory?.[`${env.HOME}/.claude/skills/*`]).toBe("allow");
     expect(overlay.permission?.external_directory?.[`${env.HOME}/.agents/skills/*`]).toBe("allow");
     expect(overlay.permission?.external_directory?.["/tmp/opencode/*"]).toBeUndefined();
+    expect(overlay.permission?.external_directory?.["*"]).toBe("allow");
+    expect(overlay.permission?.external_directory?.["/rt/p/web/data/opencode/auth.json"]).toBe(
+      "deny",
+    );
+    expect(overlay.permission?.external_directory?.["/rt/p/web/home/.config/hanse/git/*"]).toBe(
+      "deny",
+    );
+    expect(overlay.permission?.external_directory?.["/rt/p/web/mcp-token"]).toBe("deny");
+    expect(overlay.permission?.external_directory?.["/rt/p/web/state/opencode-password"]).toBe(
+      "deny",
+    );
   });
 
   it("launches and stops an instance, tracking state", async () => {
@@ -265,7 +276,7 @@ describe("launcher", () => {
       HANSE_MCP_API_BASE: "http://127.0.0.1:8787",
       HANSE_AGENT_TOKEN_FILE: "/rt/p/web/mcp-token",
     });
-    expect(overlay.permission?.external_directory?.["*"]).toBe("deny");
+    expect(overlay.permission?.external_directory?.["*"]).toBe("allow");
     expect(overlay.permission?.question).toBe("allow");
     expect(overlay.permission?.doom_loop).toBe("ask");
   });

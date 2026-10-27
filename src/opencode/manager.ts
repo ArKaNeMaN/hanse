@@ -83,6 +83,7 @@ import { ensureOpencodePassword, opencodePasswordPath, readOpencodePassword } fr
 import {
   ATTACHMENTS_POLICY_VERSION,
   buildPermissionPolicy,
+  credentialDenyPatterns,
   type PermissionAction,
   resolvePermissionPaths,
   type VerifyPolicyOptions,
@@ -809,7 +810,15 @@ export class InstanceManager {
         attachmentsRoot: this.attachmentVisibleRoot(app),
         baselinePlugins,
       }),
-      webPermissionOptions(web),
+      {
+        ...webPermissionOptions(web),
+        denyPatterns: credentialDenyPatterns({
+          appRoot: path.dirname(isolated.HOME),
+          home: isolated.HOME,
+          xdgDataHome: isolated.XDG_DATA_HOME,
+          passwordFile,
+        }),
+      },
     );
     const overlay = buildConfigOverlay({
       coordinatorCommand: [process.execPath, process.argv[1] ?? "", "mcp"],
@@ -896,7 +905,7 @@ export class InstanceManager {
     this.#running.set(app.id, entry);
     this.#startMonitor(app, entry);
     this.armPendingConfirmation(app.id);
-    entry.policyWarnings = await this.#verifyPolicy(app, isolated, baselinePlugins, endpoint);
+    entry.policyWarnings = await this.#verifyPolicy(app, isolated, endpoint);
     const policyDiagnostics = entry.policyWarnings.filter((warning) =>
       warning.trim().startsWith("policy_unverified:"),
     );
@@ -1916,27 +1925,19 @@ export class InstanceManager {
     return result;
   }
 
-  async #verifyPolicy(
-    app: ManagedApp,
-    isolated: IsolatedEnv,
-    baselinePlugins: string[],
-    endpoint: string,
-  ): Promise<string[]> {
+  async #verifyPolicy(app: ManagedApp, isolated: IsolatedEnv, endpoint: string): Promise<string[]> {
     const verify = this.#options.verify ?? verifyInstancePolicy;
-    const trustedRoots = resolvePermissionPaths({
+    const denyPatterns = credentialDenyPatterns({
+      appRoot: path.dirname(isolated.HOME),
       home: isolated.HOME,
       xdgDataHome: isolated.XDG_DATA_HOME,
-      xdgConfigHome: isolated.XDG_CONFIG_HOME,
-      xdgCacheHome: isolated.XDG_CACHE_HOME,
-      tmpdir: isolated.TMPDIR,
-      attachmentsRoot: this.attachmentVisibleRoot(app),
-      baselinePlugins,
+      passwordFile: opencodePasswordPath(isolated.XDG_STATE_HOME),
     });
     try {
       return await verify({
         endpoint,
         appDir: app.appDir,
-        trustedRoots,
+        denyPatterns,
         timeoutMs: this.#options.verificationTimeoutMs,
         retries: this.#options.verificationRetries,
         retryDelayMs: this.#options.verificationRetryDelayMs,

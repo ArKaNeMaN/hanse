@@ -9,6 +9,7 @@ import {
 import {
   type AgentPermissionRule,
   buildPermissionPolicy,
+  credentialDenyPatterns,
   evaluatePermission,
   matchesPermissionPattern,
   permissionPattern,
@@ -142,9 +143,16 @@ const ROOTS = [
   "/home/operator/.agents/skills",
 ];
 
+const DENY = credentialDenyPatterns({
+  appRoot: "/data/agents/p/web",
+  home: "/data/agents/p/web/home",
+  xdgDataHome: "/data/agents/p/web/data",
+  passwordFile: "/data/agents/p/web/state/opencode-password",
+});
+
 describe("permission policy", () => {
-  it("has the exact keys and order, with external allow roots after the deny", () => {
-    const policy = buildPermissionPolicy(ROOTS);
+  it("has the exact keys and order, with allow-all, allow roots, and credential denies last", () => {
+    const policy = buildPermissionPolicy(ROOTS, { denyPatterns: DENY });
     expect(Object.keys(policy)).toEqual([
       "external_directory",
       "question",
@@ -159,10 +167,14 @@ describe("permission policy", () => {
     expect(Object.keys(policy.external_directory)).toEqual([
       "*",
       ...ROOTS.map((root) => `${root}/*`),
+      ...DENY,
     ]);
-    expect(policy.external_directory["*"]).toBe("deny");
+    expect(policy.external_directory["*"]).toBe("allow");
     for (const root of ROOTS) {
       expect(policy.external_directory[`${root}/*`]).toBe("allow");
+    }
+    for (const pattern of DENY) {
+      expect(policy.external_directory[pattern]).toBe("deny");
     }
     expect(policy.question).toBe("allow");
     expect(policy.todowrite).toBe("allow");

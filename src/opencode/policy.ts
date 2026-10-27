@@ -24,6 +24,15 @@ export interface PermissionPolicy {
   doom_loop: PermissionAction;
 }
 
+/** Options for {@link buildPermissionPolicy}. */
+export interface PermissionPolicyOptions extends WebPermissionOptions {
+  /**
+   * Credential paths appended after trusted roots as `deny`: opencode evaluates rules in insertion
+   * order and the last match wins, so these overrides survive a broad external allow.
+   */
+  denyPatterns?: string[];
+}
+
 /** Web-tool permission decisions derived from the effective settings. */
 export interface WebPermissionOptions {
   /** Action for opencode's built-in fetch tool. Defaults to `allow`. */
@@ -53,7 +62,7 @@ export interface PermissionRootOptions {
  * Policy generation version. Bumping it changes every launch/settings hash so the existing
  * "Restart required" marker appears after a policy change.
  */
-export const ATTACHMENTS_POLICY_VERSION = 1;
+export const ATTACHMENTS_POLICY_VERSION = 2;
 
 /** A single rule as exposed by `GET /agent` in the final (merged) ruleset. */
 export interface AgentPermissionRule {
@@ -75,7 +84,8 @@ export type PolicyFetch = (url: string, init?: RequestInit) => Promise<Response>
 export interface VerifyPolicyOptions {
   endpoint: string;
   appDir: string;
-  trustedRoots: string[];
+  /** Credential patterns that the final ruleset must still resolve to `deny`. */
+  denyPatterns: string[];
   /** Per-request timeout. Defaults to 1000 ms. */
   timeoutMs?: number;
   /** Number of retries after the first attempt. Defaults to 2. */
@@ -132,11 +142,35 @@ export function permissionPattern(root: string): string {
   return path.posix.join(toPosix(root), "*");
 }
 
+/** Options identifying the credentials mounted into one managed application container. */
+export interface CredentialDenyOptions {
+  appRoot: string;
+  home: string;
+  xdgDataHome: string;
+  passwordFile: string;
+}
+
+/**
+ * Credential paths that must never be readable by agent tools.
+ *
+ * Order matters: these are appended last to `external_directory`, after allow-all and the trusted
+ * roots, so the final matching rule denies them.
+ */
+export function credentialDenyPatterns(options: CredentialDenyOptions): string[] {
+  return [
+    path.posix.join(toPosix(options.xdgDataHome), "opencode", "auth.json"),
+    permissionPattern(path.join(options.home, ".config", "hanse", "git")),
+    path.posix.join(toPosix(options.appRoot), "mcp-token"),
+    toPosix(options.passwordFile),
+  ];
+}
+
 /**
  * Resolve the trusted external roots from the instance environment.
  *
- * Order is load-bearing: opencode evaluates permission rules in insertion order and the last match
- * wins, so these allow patterns must be appended after the leading `"*": "deny"` entry.
+ * `external_directory` is allow-all, so these roots are kept for compatibility and readability
+ * rather than to open access. Order is still load-bearing: opencode evaluates permission rules in
+ * insertion order and the last match wins, so the credential deny patterns are appended after them.
  */
 export function resolvePermissionPaths(options: PermissionRootOptions = {}): string[] {
   const home = options.home ?? os.homedir();
@@ -178,18 +212,23 @@ function pluginSkillRoots(specs: string[]): string[] {
 /**
  * Build the explicit permission overlay.
  *
- * `external_directory` starts with a deny-all entry, then trusted roots. The `read` map deliberately
- * has no `"*": "allow"`: opencode's defaults already allow reads, and a user-level wildcard would
- * override narrower project/plugin denies. The `edit` config/plugin denies are duplicated in bare and
- * star-slash-prefixed forms because opencode matches worktree-relative paths.
+ * `external_directory` is allow-all, then appends the trusted roots (kept for compatibility and
+ * readability), then appends the credential deny patterns last so they win the final match. The
+ * `read` map deliberately has no `"*": "allow"`: opencode's defaults already allow reads, and a
+ * user-level wildcard would override narrower project/plugin denies. The `edit` config/plugin denies
+ * are duplicated in bare and star-slash-prefixed forms because opencode matches worktree-relative
+ * paths.
  */
 export function buildPermissionPolicy(
   roots: string[],
-  options: WebPermissionOptions = {},
+  options: PermissionPolicyOptions = {},
 ): PermissionPolicy {
-  const external: PermissionRules = { "*": "deny" };
+  const external: PermissionRules = { "*": "allow" };
   for (const root of roots) {
     external[permissionPattern(root)] = "allow";
+  }
+  for (const pattern of options.denyPatterns ?? []) {
+    external[pattern] = "deny";
   }
   const policy: PermissionPolicy = {
     external_directory: external,
@@ -321,45 +360,35 @@ export function evaluatePermission(
   return result;
 }
 
-function probePath(root: string): string {
-  return path.posix.join(toPosix(root), "probe");
+function probePath(pattern: string): string {
+  if (pattern.endsWith("/*")) return path.posix.join(toPosix(pattern.slice(0, -2)), "probe");
+  return pattern;
 }
 
 /**
  * Evaluate one agent's final ruleset against the guardrail policy.
  *
- * Hidden system agents (compaction/title/summary) have intentional deny profiles, so they are not
- * evaluated. Subagents are checked for external-directory denial only: their question/todowrite
- * denials and narrower external roots are intentional. Primary (and `all`) agents are checked
- * against the full capability allowlist.
+ * `external_directory` is allow-all, so the guardrail is that every credential deny pattern still
+ * resolves to `deny` after the merge. Hidden system agents (compaction/title/summary) have
+ * intentional deny profiles, so they are not evaluated. Every non-hidden agent, including subagents,
+ * is checked for credential denial. Only primary (and `all`) agents are checked against the full
+ * capability allowlist (question/todowrite).
  */
 export function evaluateAgentPolicy(
   agent: AgentPolicy,
-  options: { externalPath: string; siblingPath: string; trustedRoots: string[] },
+  options: { denyPatterns: string[] },
 ): string[] {
   if (agent.hidden) return [];
   const warnings: string[] = [];
-  const external = evaluatePermission(agent.rules, "external_directory", options.externalPath);
-  if (external !== "deny") {
-    warnings.push(
-      `agent "${agent.name}": external_directory does not deny ${options.externalPath}`,
-    );
-  }
-  const sibling = evaluatePermission(agent.rules, "external_directory", options.siblingPath);
-  if (sibling !== "deny") {
-    warnings.push(
-      `agent "${agent.name}": external_directory does not deny sibling path ${options.siblingPath}`,
-    );
-  }
-  if (agent.mode === "subagent") return warnings;
-  for (const root of options.trustedRoots) {
-    const trusted = evaluatePermission(agent.rules, "external_directory", probePath(root));
-    if (trusted !== "allow") {
+  for (const pattern of options.denyPatterns) {
+    const verdict = evaluatePermission(agent.rules, "external_directory", probePath(pattern));
+    if (verdict !== "deny") {
       warnings.push(
-        `agent "${agent.name}": external_directory does not allow trusted root ${root}`,
+        `agent "${agent.name}": external_directory does not deny credential ${pattern}`,
       );
     }
   }
+  if (agent.mode === "subagent") return warnings;
   if (evaluatePermission(agent.rules, "question", "*") !== "allow") {
     warnings.push(`agent "${agent.name}": question is not allowed`);
   }
@@ -425,10 +454,6 @@ function isTimeoutError(error: unknown): boolean {
   return error.name === "AbortError" || error.message.toLowerCase().includes("abort");
 }
 
-function siblingPathFor(appDir: string): string {
-  return path.join(path.dirname(path.resolve(appDir)), "sibling-app", "notes.txt");
-}
-
 /**
  * Best-effort post-start verification of the effective policy.
  *
@@ -449,14 +474,10 @@ export async function verifyInstancePolicy(options: VerifyPolicyOptions): Promis
         fetchJson(fetchImpl, `${options.endpoint}/path`, timeoutMs, authorization),
       ]);
       const warnings = pathWarnings(pathValue, options.appDir);
-      const externalPath = "/etc/hostname";
-      const siblingPath = siblingPathFor(options.appDir);
       for (const agent of parseAgents(agentsValue)) {
         warnings.push(
           ...evaluateAgentPolicy(agent, {
-            externalPath,
-            siblingPath,
-            trustedRoots: options.trustedRoots,
+            denyPatterns: options.denyPatterns,
           }),
         );
       }

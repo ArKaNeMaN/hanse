@@ -44,7 +44,11 @@ import {
   verifyAgentModels,
 } from "../src/opencode/manager.js";
 import type { OmoProfileInput, OmoProfileResult } from "../src/opencode/omo-profile.js";
-import { ATTACHMENTS_POLICY_VERSION, type VerifyPolicyOptions } from "../src/opencode/policy.js";
+import {
+  ATTACHMENTS_POLICY_VERSION,
+  credentialDenyPatterns,
+  type VerifyPolicyOptions,
+} from "../src/opencode/policy.js";
 import type { PreviewCleanup } from "../src/preview/types.js";
 import { hashValue } from "../src/settings/hash.js";
 import type {
@@ -3424,16 +3428,16 @@ describe("InstanceManager restart claims", () => {
 });
 
 describe("InstanceManager attachments policy and runner marker", () => {
-  it("pre-creates the attachments root, adds the trusted policy root, and marks the runner bind", async () => {
+  it("pre-creates the attachments root, passes credential denies, and marks the runner bind", async () => {
     const runtime = new FakeAgentRuntime();
-    let trusted: string[] = [];
+    let denyPatterns: string[] = [];
     const { manager, dir } = fixture(
       runtime,
       fakeSettings(),
       fakeProfiles().source,
       undefined,
       async (options) => {
-        trusted = options.trustedRoots;
+        denyPatterns = options.denyPatterns;
         return [];
       },
       { hostWorkspace: "/srv", hostAgents: "/agents", workspaceRoot: "/srv" },
@@ -3445,7 +3449,15 @@ describe("InstanceManager attachments policy and runner marker", () => {
     expect(manager.attachmentVisibleRoot({ projectId: "p", appKey: "web" })).toBe(
       "/data/agents/p/web/attachments",
     );
-    expect(trusted).toContain("/data/agents/p/web/attachments");
+    const appRoot = path.join(dir, "p", "web");
+    expect(denyPatterns).toEqual(
+      credentialDenyPatterns({
+        appRoot,
+        home: path.join(appRoot, "home"),
+        xdgDataHome: path.join(appRoot, "data"),
+        passwordFile: path.join(appRoot, "state", "opencode-password"),
+      }),
+    );
     expect(existsSync(path.join(dir, "p", "web", "attachments"))).toBe(true);
   });
 });

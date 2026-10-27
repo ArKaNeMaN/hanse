@@ -640,10 +640,13 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   chat client. The typed app SSE keeps its heartbeat, backpressure, and `session.activity`
   compatibility frames for older clients.
 - Every managed instance receives an explicit permission overlay (`OPENCODE_CONFIG_CONTENT`):
-  `external_directory` is deny-all outside the app plus trusted runtime roots (tool-output, git repos
-  cache, temp, per-instance config/cache skills, `~/.claude/skills`, `~/.agents/skills`, bundled
-  plugin skills); `question`, `todowrite`, `todoread`, `webfetch`, `websearch`, and `.env`
-  read/write are allowed; `.opencode` config/plugin edits are denied; `doom_loop` asks. The
+  `external_directory` is allow-all, with explicit denies for the credentials mounted into the app
+  container (provider `auth.json`, the managed git credential directory, the per-app MCP token, and
+  the opencode server password); trusted runtime roots (tool-output, git repos cache, temp,
+  per-instance config/cache skills, `~/.claude/skills`, `~/.agents/skills`, bundled plugin skills)
+  are still listed as allows for compatibility; `question`, `todowrite`, `todoread`, `webfetch`,
+  `websearch`, and `.env` read/write are allowed; `.opencode` config/plugin edits are denied;
+  `doom_loop` asks. The
   coordinator strips its own credentials (`HANSE_OPERATOR_TOKEN`, `OPENCODE_PERMISSION`, etc.) from
   the instance environment and sets `GIT_CEILING_DIRECTORIES` to the app's real parent so a nested
   app cannot inherit a wider parent worktree. Effective rulesets are verified after start with a

@@ -65,6 +65,12 @@ be restarted after the build to pick it up.
   keep docs and code in sync.
 - Runtime state lives outside managed repositories (under `XDG_STATE_HOME` / the `state` volume).
 - Do not commit secrets.
+- The app container is allow-all for tool file access except credentials. The credential deny list
+  is `credentialDenyPatterns()` in `src/opencode/policy.ts` (provider `auth.json`, the managed git
+  credential directory under `<HOME>/.config/hanse/git`, the per-app `mcp-token`, and the opencode
+  server password). Any new sensitive file or directory mounted into an app container must be added
+  there and covered by `test/permission-policy.test.ts`. This is a tool-level guardrail; the
+  container mount list remains the hard boundary.
 - Documentation is agent-first; human-facing docs are added only when explicitly needed.
 
 ## Sensitive data and deployment runbooks

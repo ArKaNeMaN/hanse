@@ -8,7 +8,9 @@ import { InstanceManager, type InstanceManagerOptions } from "../src/opencode/ma
 import {
   type AgentPermissionRule,
   buildPermissionPolicy,
+  credentialDenyPatterns,
   evaluateAgentPolicy,
+  evaluatePermission,
   type PolicyFetch,
   verifyInstancePolicy,
 } from "../src/opencode/policy.js";
@@ -41,18 +43,25 @@ afterEach(async () => {
 
 const ROOTS = ["/data/opencode/tool-output", "/data/opencode/repos", "/tmp/opencode"];
 const APP_DIR = "/srv/apps/web";
-const EXTERNAL = "/etc/hostname";
-const SIBLING = "/srv/apps/api/notes.txt";
-const VERIFY_SIBLING = path.join(path.dirname(APP_DIR), "sibling-app", "notes.txt");
+const APP_ROOT = "/data/agents/p/web";
+const HOME = path.join(APP_ROOT, "home");
+const XDG_DATA = path.join(APP_ROOT, "data");
+const PASSWORD = path.join(APP_ROOT, "state", "opencode-password");
+const DENY = credentialDenyPatterns({
+  appRoot: APP_ROOT,
+  home: HOME,
+  xdgDataHome: XDG_DATA,
+  passwordFile: PASSWORD,
+});
 
 function rules(...extra: AgentPermissionRule[]): AgentPermissionRule[] {
   return [
-    { permission: "external_directory", pattern: "*", action: "deny" },
-    ...ROOTS.map(
-      (root): AgentPermissionRule => ({
+    { permission: "external_directory", pattern: "*", action: "allow" },
+    ...DENY.map(
+      (pattern): AgentPermissionRule => ({
         permission: "external_directory",
-        pattern: `${root}/*`,
-        action: "allow",
+        pattern,
+        action: "deny",
       }),
     ),
     { permission: "question", pattern: "*", action: "allow" },
@@ -74,7 +83,7 @@ function evaluate(agent: {
       mode: agent.mode ?? "primary",
       rules: agent.permission,
     },
-    { externalPath: EXTERNAL, siblingPath: SIBLING, trustedRoots: ROOTS },
+    { denyPatterns: DENY },
   );
 }
 
@@ -100,7 +109,7 @@ function verifyWith(agents: unknown, pathInfo?: unknown): Promise<string[]> {
   return verifyInstancePolicy({
     endpoint: "http://127.0.0.1:4100",
     appDir: APP_DIR,
-    trustedRoots: ROOTS,
+    denyPatterns: DENY,
     fetch: fakeFetch(agents, pathInfo),
   });
 }
@@ -110,32 +119,44 @@ describe("final ruleset evaluation", () => {
     expect(evaluate({ name: "build", permission: rules() })).toEqual([]);
   });
 
-  it("warns when the OMO global external-directory allow survives", () => {
+  it("warns once per credential when a broad external allow is appended last", () => {
     const warnings = evaluate({
       name: "Sisyphus",
       permission: rules({ permission: "external_directory", pattern: "*", action: "allow" }),
     });
-    expect(warnings.length).toBeGreaterThan(0);
-    expect(warnings[0]).toContain('agent "Sisyphus"');
-    expect(warnings[0]).toContain("external_directory");
+    expect(warnings).toEqual(
+      DENY.map(
+        (pattern) => `agent "Sisyphus": external_directory does not deny credential ${pattern}`,
+      ),
+    );
   });
 
-  it("warns when a project config allow survives the merge", () => {
+  it("warns only for the credential overridden by a targeted allow", () => {
     const warnings = evaluate({
       name: "build",
-      permission: rules({ permission: "external_directory", pattern: "/etc/*", action: "allow" }),
-    });
-    expect(warnings).toEqual([`agent "build": external_directory does not deny ${EXTERNAL}`]);
-  });
-
-  it("warns for a custom agent whose allow is appended last", () => {
-    const warnings = evaluate({
-      name: "custom-auditor",
-      permission: rules({ permission: "external_directory", pattern: "/srv/*", action: "allow" }),
+      permission: rules({
+        permission: "external_directory",
+        pattern: `${XDG_DATA}/*`,
+        action: "allow",
+      }),
     });
     expect(warnings).toEqual([
-      `agent "custom-auditor": external_directory does not deny sibling path ${SIBLING}`,
+      `agent "build": external_directory does not deny credential ${DENY[0]}`,
     ]);
+  });
+
+  it("builds allow-all external permission with credential denies last", () => {
+    const policy = buildPermissionPolicy(ROOTS, { denyPatterns: DENY });
+    const externalRules: AgentPermissionRule[] = Object.entries(policy.external_directory).map(
+      ([pattern, action]) => ({ permission: "external_directory", pattern, action }),
+    );
+    expect(evaluatePermission(externalRules, "external_directory", "/etc/os-release")).toBe(
+      "allow",
+    );
+    for (const pattern of DENY) {
+      const probe = pattern.endsWith("/*") ? `${pattern.slice(0, -2)}/probe` : pattern;
+      expect(evaluatePermission(externalRules, "external_directory", probe)).toBe("deny");
+    }
   });
 
   it("skips hidden system agents with intentional deny profiles", () => {
@@ -161,7 +182,7 @@ describe("final ruleset evaluation", () => {
       name: "multimodal-looker",
       mode: "subagent",
       permission: [
-        { permission: "external_directory", pattern: "*", action: "deny" },
+        ...rules(),
         { permission: "question", pattern: "*", action: "deny" },
         { permission: "todowrite", pattern: "*", action: "deny" },
       ],
@@ -169,16 +190,17 @@ describe("final ruleset evaluation", () => {
     expect(warnings).toEqual([]);
   });
 
-  it("still warns when a subagent allows an external path", () => {
+  it("still checks credential denies for a subagent", () => {
     const warnings = evaluate({
       name: "explore",
       mode: "subagent",
-      permission: [{ permission: "external_directory", pattern: "*", action: "allow" }],
+      permission: rules({ permission: "external_directory", pattern: "*", action: "allow" }),
     });
-    expect(warnings).toEqual([
-      `agent "explore": external_directory does not deny ${EXTERNAL}`,
-      `agent "explore": external_directory does not deny sibling path ${SIBLING}`,
-    ]);
+    expect(warnings).toEqual(
+      DENY.map(
+        (pattern) => `agent "explore": external_directory does not deny credential ${pattern}`,
+      ),
+    );
   });
 
   it("evaluates every non-hidden agent in the response", () => {
@@ -194,10 +216,9 @@ describe("final ruleset evaluation", () => {
         permission: [{ permission: "*", pattern: "*", action: "allow" }],
       },
     ]);
-    return expect(warnings).resolves.toEqual([
-      'agent "bad": external_directory does not deny /etc/hostname',
-      `agent "bad": external_directory does not deny sibling path ${VERIFY_SIBLING}`,
-    ]);
+    return expect(warnings).resolves.toEqual(
+      DENY.map((pattern) => `agent "bad": external_directory does not deny credential ${pattern}`),
+    );
   });
 
   it("warns without throwing when the instance path is wider than the app", async () => {
@@ -224,7 +245,7 @@ describe("policy verification", () => {
     const warnings = await verifyInstancePolicy({
       endpoint: "http://127.0.0.1:4100",
       appDir: APP_DIR,
-      trustedRoots: ROOTS,
+      denyPatterns: DENY,
       timeoutMs: 10,
       retries: 0,
       fetch: (_url, init) =>
@@ -246,7 +267,7 @@ describe("policy verification", () => {
     const warnings = await verifyInstancePolicy({
       endpoint: "http://127.0.0.1:4100",
       appDir: APP_DIR,
-      trustedRoots: ROOTS,
+      denyPatterns: DENY,
       retryDelayMs: 1,
       fetch: async (url) => {
         if (url.endsWith("/path")) {
@@ -268,6 +289,7 @@ async function managerFixture(
 ): Promise<{
   manager: InstanceManager;
   db: SqliteDatabase;
+  runtimeRoot: string;
 }> {
   const dir = mkdtempSync(path.join(tmpdir(), "hanse-policy-"));
   dirs.push(dir);
@@ -293,7 +315,7 @@ async function managerFixture(
     workspaceRoot: "/srv",
     ...overrides,
   });
-  return { manager, db };
+  return { manager, db, runtimeRoot: dir };
 }
 
 const APP = {
@@ -305,7 +327,7 @@ const APP = {
 
 describe("manager policy warnings", () => {
   it("stores mismatch warnings and exposes them per app", async () => {
-    const { manager } = await managerFixture((incoming, outgoing) => {
+    const { manager, runtimeRoot } = await managerFixture((incoming, outgoing) => {
       const body = incoming.url?.endsWith("/agent")
         ? [
             {
@@ -324,13 +346,19 @@ describe("manager policy warnings", () => {
 
     const endpoint = await manager.ensure(APP);
     expect(endpoint).toContain("127.0.0.1");
+    const appRoot = path.join(runtimeRoot, "p", "web");
+    const deny = credentialDenyPatterns({
+      appRoot,
+      home: path.join(appRoot, "home"),
+      xdgDataHome: path.join(appRoot, "data"),
+      passwordFile: path.join(appRoot, "state", "opencode-password"),
+    });
     const warnings = manager.policyWarnings(APP.id);
-    expect(warnings).toHaveLength(2);
-    expect(warnings[0]).toBe(
-      'agent "custom-auditor": external_directory does not deny /etc/hostname',
-    );
-    expect(warnings[1]).toBe(
-      `agent "custom-auditor": external_directory does not deny sibling path ${VERIFY_SIBLING}`,
+    expect(warnings).toEqual(
+      deny.map(
+        (pattern) =>
+          `agent "custom-auditor": external_directory does not deny credential ${pattern}`,
+      ),
     );
     expect(manager.policyWarnings("unknown")).toEqual([]);
     await manager.stopAll();
@@ -481,5 +509,18 @@ describe("web permission policy", () => {
     expect(policy.webfetch).toBe("allow");
     expect(policy.websearch).toBe("allow");
     expect(Object.keys(policy)).not.toContain("hanse_web_search");
+  });
+
+  it("orders external_directory as allow-all, roots, then credential denies", () => {
+    const policy = buildPermissionPolicy(ROOTS, { denyPatterns: DENY });
+    expect(Object.keys(policy.external_directory)).toEqual([
+      "*",
+      ...ROOTS.map((root) => `${root}/*`),
+      ...DENY,
+    ]);
+    expect(policy.external_directory["*"]).toBe("allow");
+    for (const pattern of DENY) {
+      expect(policy.external_directory[pattern]).toBe("deny");
+    }
   });
 });

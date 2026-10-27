@@ -11,8 +11,10 @@ import {
   type McpLocalServer,
   resolveInstanceEnv,
 } from "./instance.js";
+import { opencodePasswordPath } from "./password.js";
 import {
   buildPermissionPolicy,
+  credentialDenyPatterns,
   type PermissionAction,
   resolvePermissionPaths,
   scrubInstanceEnv,
@@ -77,6 +79,12 @@ function webPermissionOptions(web: EffectiveSettings["web"] | undefined): WebPer
 /** Compose the isolated environment for one instance, including the config overlay. */
 export function buildInstanceEnv(input: LaunchInput): NodeJS.ProcessEnv {
   const isolated = resolveInstanceEnv(input.runtimeRoot, input.identity);
+  const denyPatterns = credentialDenyPatterns({
+    appRoot: path.dirname(isolated.HOME),
+    home: isolated.HOME,
+    xdgDataHome: isolated.XDG_DATA_HOME,
+    passwordFile: opencodePasswordPath(isolated.XDG_STATE_HOME),
+  });
   const permission = buildPermissionPolicy(
     resolvePermissionPaths({
       home: isolated.HOME,
@@ -86,7 +94,7 @@ export function buildInstanceEnv(input: LaunchInput): NodeJS.ProcessEnv {
       tmpdir: isolated.TMPDIR,
       baselinePlugins: input.baselinePlugins,
     }),
-    webPermissionOptions(input.web),
+    { ...webPermissionOptions(input.web), denyPatterns },
   );
   const overlay = buildConfigOverlay({
     coordinatorCommand: input.coordinatorCommand,

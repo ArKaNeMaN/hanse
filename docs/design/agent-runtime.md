@@ -379,7 +379,7 @@ Token lifecycle:
   under `/data/agents/<app>/mise`; there is **no shared mutable toolchain cache**, because a
   compromised app could poison a binary another app executes. `build-essential` in the default image
   lets Rust link.
-- The permission overlay's trusted roots are recomputed from the per-app paths.
+- The permission overlay's credential deny patterns are recomputed from the per-app paths.
 - Moving the existing state from `/data/state/hanse/projects/...` is an explicit migration decision
   (open question): copy sessions, or reset them for pre-alpha.
 

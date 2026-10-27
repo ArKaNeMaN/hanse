@@ -135,10 +135,12 @@ The owner wants:
   app directory at `/data/workspace/<project>/<app>`. The coordinator mounts the agents root
   read-write at `/data/agents` and runs as uid 1000 in the Compose deployment; the app container
   also runs as uid 1000. The supported Compose invariant is `HANSE_AGENTS_HOME=/data/agents`.
-- `src/opencode/policy.ts` starts `external_directory` with deny-all and allows trusted runtime
-  roots (tool output, git cache, temp, skill roots). The app's attachments root is not trusted
-  today. The policy overlay is built at launch and verified after start; a running agent keeps the
-  old policy until restart.
+- `src/opencode/policy.ts` starts `external_directory` with allow-all and appends the credential
+  deny patterns last (provider `auth.json`, the managed git credential directory, the per-app MCP
+  token, and the opencode server password); trusted runtime roots (tool output, git cache, temp,
+  skill roots) are still listed as allows for compatibility. The app's attachments root is allowed
+  under allow-all. The policy overlay is built at launch and verified after start; a running agent
+  keeps the old policy until restart.
 - The chat client creates the upstream session only on send (`ensureSession`); "New session" is a
   client-only draft (`startDraft`, `sessionId = null`). Draft text exists only in the textarea.
 - `DELETE /api/apps/:app/sessions/:sid` proxies opencode's session delete and then updates handoff
