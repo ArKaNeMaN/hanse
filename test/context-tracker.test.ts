@@ -172,9 +172,28 @@ describe("ContextTracker usage", () => {
     expect(tracker.snapshot("s", policy(), 11).used).toBe(60);
   });
 
+  it("ignores usage from an unfinished assistant message", () => {
+    const tracker = new ContextTracker();
+    tracker.applyEvent(messageUpdated("s", "m", { usage: { input: 100 } }), 10);
+
+    expect(tracker.snapshot("s", policy(), 11).used).toBeNull();
+  });
+
+  it("keeps the last step usage when a new assistant message starts", () => {
+    const tracker = new ContextTracker();
+    tracker.setModelLimit("s", MODEL, 1000, 0);
+    tracker.applyEvent(messageUpdated("s", "m1", { finish: "tool-calls" }), 10);
+    tracker.applyEvent(stepFinish("s", "m1", { input: 500, cache: { read: 20 } }), 11);
+    tracker.applyEvent(messageUpdated("s", "m2", { usage: { input: 0 } }), 12);
+
+    const snapshot = tracker.snapshot("s", policy(), 13);
+    expect(snapshot.used).toBe(520);
+    expect(snapshot.percent).toBe(52);
+  });
+
   it("excludes summary messages and their step-finish parts", () => {
     const tracker = new ContextTracker();
-    tracker.applyEvent(messageUpdated("s", "m", { usage: { input: 10 } }), 10);
+    tracker.applyEvent(messageUpdated("s", "m", { finish: "stop", usage: { input: 10 } }), 10);
     tracker.applyEvent(
       messageUpdated("s", "summary", { summary: true, usage: { input: 500 } }),
       11,
@@ -229,8 +248,8 @@ describe("ContextTracker usage", () => {
 
   it("isolates usage between sessions", () => {
     const tracker = new ContextTracker();
-    tracker.applyEvent(messageUpdated("a", "ma", { usage: { input: 10 } }), 10);
-    tracker.applyEvent(messageUpdated("b", "mb", { usage: { input: 20 } }), 11);
+    tracker.applyEvent(messageUpdated("a", "ma", { finish: "stop", usage: { input: 10 } }), 10);
+    tracker.applyEvent(messageUpdated("b", "mb", { finish: "stop", usage: { input: 20 } }), 11);
 
     expect(tracker.snapshot("a", policy(), 12).used).toBe(10);
     expect(tracker.snapshot("b", policy(), 12).used).toBe(20);
@@ -268,7 +287,7 @@ describe("ContextTracker compaction state", () => {
   it("session.compacted resets usage but keeps the last model and limit", () => {
     const tracker = new ContextTracker();
     tracker.setModelLimit("s", MODEL, 1000, 10);
-    tracker.applyEvent(messageUpdated("s", "m", { usage: { input: 400 } }), 20);
+    tracker.applyEvent(messageUpdated("s", "m", { finish: "stop", usage: { input: 400 } }), 20);
     tracker.applyEvent({ type: "session.compacted", sessionID: "s" }, 2000);
 
     const snapshot = tracker.snapshot("s", policy(), 2001);
@@ -279,7 +298,7 @@ describe("ContextTracker compaction state", () => {
     expect(snapshot.model).toEqual(MODEL);
     expect(snapshot.lastCompactedAt).toBe(new Date(2000).toISOString());
 
-    tracker.applyEvent(messageUpdated("s", "m2", { usage: { input: 250 } }), 2002);
+    tracker.applyEvent(messageUpdated("s", "m2", { finish: "stop", usage: { input: 250 } }), 2002);
     expect(tracker.snapshot("s", policy(), 2003).used).toBe(250);
   });
 
@@ -326,6 +345,31 @@ describe("ContextTracker hydration", () => {
     expect(snapshot.used).toBe(300);
     expect(snapshot.model).toEqual(MODEL);
     expect(snapshot.lastCompactedAt).toBe(new Date(200).toISOString());
+  });
+
+  it("ignores an unfinished assistant message in hydrated history", () => {
+    const tracker = new ContextTracker();
+    tracker.hydrate(
+      "s",
+      [
+        assistantMessage("m1", { input: 400 }, 100),
+        {
+          info: {
+            id: "m2",
+            role: "assistant",
+            providerID: MODEL.providerID,
+            modelID: MODEL.modelID,
+            tokens: { input: 0 },
+            time: { created: 200 },
+          },
+          parts: [],
+        },
+      ],
+      [{ id: "s" }],
+      300,
+    );
+
+    expect(tracker.snapshot("s", policy(), 301).used).toBe(400);
   });
 
   it("makes usage unknown when the compaction boundary is newer", () => {

@@ -190,6 +190,7 @@ function messageUpdated(
   sessionID: string,
   messageID: string,
   tokens: Record<string, unknown> = {},
+  finished = true,
 ): unknown {
   const cache = (tokens.cache ?? {}) as Record<string, unknown>;
   return {
@@ -207,7 +208,7 @@ function messageUpdated(
           reasoning: tokens.reasoning ?? 0,
           cache: { read: cache.read ?? 0, write: cache.write ?? 0 },
         },
-        time: { created: 1, completed: 2 },
+        time: finished ? { created: 1, completed: 2 } : { created: 1 },
       },
     },
   };
@@ -374,6 +375,25 @@ describe("ContextMonitor snapshots", () => {
     const snapshot = await monitor.snapshot("s");
     expect(snapshot.used).toBe(520);
     expect(snapshot.percent).toBe(52);
+  });
+
+  it("does not push a zero snapshot when the next step starts", async () => {
+    const upstream = await fakeUpstream();
+    const updates: ContextSnapshot[] = [];
+    await startMonitor(upstream, {
+      onContextUpdate: (snapshot) => updates.push(snapshot),
+    });
+
+    upstream.emit(messageUpdated("s", "m1", { input: 100 }));
+    upstream.emit(stepFinish("s", "m1", { input: 500, cache: { read: 20 } }));
+    await waitFor(() => updates.some((snapshot) => snapshot.used === 520));
+
+    upstream.emit(messageUpdated("s", "m2", { input: 0 }, false));
+    upstream.emit(stepFinish("s", "m2", { input: 600 }));
+    await waitFor(() => updates.some((snapshot) => snapshot.used === 600));
+
+    expect(updates.some((snapshot) => snapshot.used === 0)).toBe(false);
+    expect(updates.at(-1)).toMatchObject({ used: 600, percent: 60 });
   });
 
   it("emits a live snapshot after each step-finish", async () => {

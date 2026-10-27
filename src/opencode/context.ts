@@ -195,6 +195,16 @@ function isSummary(value: unknown): boolean {
   return value === true || (typeof value === "string" && value.length > 0);
 }
 
+/**
+ * A step is only complete once opencode stamps its finish or completion time. Until then the
+ * assistant message still carries an all-zero token snapshot, which must not replace the last
+ * known step usage.
+ */
+function isFinishedMessage(value: Record<string, unknown>): boolean {
+  if (asString(value.finish) !== undefined) return true;
+  return asFinite(asRecord(value.time)?.completed) !== undefined;
+}
+
 function parseTokens(value: unknown): ContextTokens | null {
   const raw = asRecord(value);
   if (raw === undefined) return null;
@@ -855,7 +865,7 @@ export class ContextTracker {
           ) {
             model = { model: messageModel, time: infoTime, index };
           }
-          const tokens = parseTokens(info.tokens);
+          const tokens = isFinishedMessage(info) ? parseTokens(info.tokens) : null;
           if (tokens !== null) {
             if (
               orderNewer(
@@ -1023,6 +1033,7 @@ export class ContextTracker {
     if (model !== null) meta.model = model;
     const finish = asString(data.finish) ?? asString(event.finish);
     if (finish !== undefined) meta.finish = finish;
+    const finished = isFinishedMessage(data) || isFinishedMessage(event);
 
     if (role === "user" || meta.summary) record.pendingSteps.delete(messageID);
     if (role === "assistant" && !meta.summary && model !== null) {
@@ -1035,7 +1046,7 @@ export class ContextTracker {
     }
 
     const tokens = parseTokens(data.usage) ?? parseTokens(data.tokens) ?? parseTokens(event.usage);
-    if (role === "assistant" && !meta.summary && tokens !== null && model !== null) {
+    if (role === "assistant" && !meta.summary && finished && tokens !== null && model !== null) {
       const stepAuthoritative =
         meta.stepTokens !== null ||
         (record.usage?.messageID === messageID && record.usage.source === "step-finish");
