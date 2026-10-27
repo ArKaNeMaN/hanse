@@ -347,6 +347,9 @@ function main() {
   let historyLoaded = false;
   let historyRequestSeq = 0;
   let historyRequest = null;
+  let historyAbort = null;
+  let selectionSeq = 0;
+  let selectionAbort = null;
   let prependPending = false;
   let historyScrollFrame = null;
   let scrollPinned = false;
@@ -379,6 +382,7 @@ function main() {
   let hydrationSeq = 0;
   let hydrating = false;
   let hydrationBuffer = null;
+  let hydrationAbort = null;
   let reconcileTimer = null;
   let idleReconcileTimer = null;
   let followUpHydration = false;
@@ -386,6 +390,7 @@ function main() {
   const expandedSessions = new Set();
   let sessionsFailed = false;
   let sessionsLoaded = false;
+  let sessionsFetchSeq = 0;
   let runtimeState = null;
   let runtimeTimer = null;
   let chatBooted = false;
@@ -1301,6 +1306,25 @@ function main() {
       throw failure;
     }
     return response.json();
+  }
+
+  function isAbortError(error) {
+    return error !== null && typeof error === "object" && error.name === "AbortError";
+  }
+
+  function abortHydrationFetch() {
+    if (hydrationAbort !== null) hydrationAbort.abort();
+    hydrationAbort = null;
+  }
+
+  function abortHistoryFetch() {
+    if (historyAbort !== null) historyAbort.abort();
+    historyAbort = null;
+  }
+
+  function abortSelectionFetch() {
+    if (selectionAbort !== null) selectionAbort.abort();
+    selectionAbort = null;
   }
 
   function plural(count, singular, pluralForm) {
@@ -2877,6 +2901,7 @@ function main() {
     if (id === null) return;
     cancelDraftSaveTimer();
     if (isSlashCommandOnly(text)) return;
+    if (lastSavedDraft.get(id) === draftTextForSave(text)) return;
     await queueDraftPut(id, text, { silentGone: true });
   }
 
@@ -3084,7 +3109,10 @@ function main() {
     const seq = ++draftLoadSeq;
     const editSeq = draftEditSeq;
     try {
-      const data = await api(draftUrl(id));
+      const data = await api(
+        draftUrl(id),
+        settings.signal === undefined ? undefined : { signal: settings.signal },
+      );
       if (sessionId !== id || draftLoadSeq !== seq) return null;
       return applyDraftData(id, data, {
         applyText: settings.applyText !== false,
@@ -3094,6 +3122,7 @@ function main() {
         scheduleDelete: settings.scheduleDelete === true,
       });
     } catch (error) {
+      if (isAbortError(error)) return null;
       if (isSessionGoneError(error)) handleSessionGone(id);
       return null;
     }
@@ -3705,7 +3734,7 @@ function main() {
       }
       button.append(top, meta);
       button.addEventListener("click", () => {
-        selectSession(id, { focus: true });
+        selectSession(id, { focus: true }).catch(() => {});
       });
 
       const remove = element("button", "session-delete");
@@ -11118,7 +11147,9 @@ function main() {
       );
       row.addEventListener("click", () => {
         closeQueue(false);
-        selectSession(entry.request.sessionID, { focus: false, focusDock: true });
+        selectSession(entry.request.sessionID, { focus: false, focusDock: true }).catch(
+          () => {},
+        );
       });
       list.append(row);
     }
@@ -11296,7 +11327,7 @@ function main() {
     }
   }
 
-  async function loadTodo(id) {
+  async function loadTodo(id, signal) {
     if (id === null) {
       todoState = "idle";
       renderPlan();
@@ -11307,7 +11338,7 @@ function main() {
     todoState = todoCache.has(id) ? "ready" : "loading";
     renderPlan();
     try {
-      const data = await api(todoUrl(id));
+      const data = await api(todoUrl(id), signal === undefined ? undefined : { signal });
       if (fetchSeq !== todoFetchSeq || sessionId !== id) return;
       if ((todoEventSeq.get(id) || 0) !== eventSeq) return;
       todoCache.set(id, {
@@ -11317,6 +11348,7 @@ function main() {
       todoState = "ready";
       renderPlan();
     } catch (error) {
+      if (isAbortError(error)) return;
       if (fetchSeq !== todoFetchSeq || sessionId !== id) return;
       if ((todoEventSeq.get(id) || 0) !== eventSeq) return;
       void error;
@@ -11504,6 +11536,9 @@ function main() {
     const target = typeof settings.session === "string" ? settings.session : sessionId;
     if (target === null || target !== sessionId) return;
     const sequence = ++hydrationSeq;
+    abortHydrationFetch();
+    const controller = new AbortController();
+    hydrationAbort = controller;
     const startSeq = currentLastSeq();
     const turnGeneration = store.turnGeneration;
     const initial = settings.initial === true;
@@ -11516,7 +11551,9 @@ function main() {
     };
     if (initial) showMessagesLoading();
     try {
-      const data = await api(messagesUrl(target, { limit: MESSAGES_PAGE_SIZE }));
+      const data = await api(messagesUrl(target, { limit: MESSAGES_PAGE_SIZE }), {
+        signal: controller.signal,
+      });
       if (sequence !== hydrationSeq || sessionId !== target) return;
       const snapshotMessages = Array.isArray(data.messages) ? data.messages : [];
       const snapshotIDs = new Set();
@@ -11637,6 +11674,7 @@ function main() {
         return;
       }
     } catch (error) {
+      if (isAbortError(error)) return;
       if (sequence !== hydrationSeq || sessionId !== target) return;
       if (error !== null && typeof error === "object" && error.code === "messages_too_large") {
         if (store.order.length === 0) {
@@ -11656,6 +11694,7 @@ function main() {
         showThreadError(error, () => hydrateMessages({ initial: true }));
       }
     } finally {
+      if (hydrationAbort === controller) hydrationAbort = null;
       if (sequence === hydrationSeq) {
         hydrating = false;
         hydrationBuffer = null;
@@ -11708,6 +11747,9 @@ function main() {
   async function loadOlderMessages() {
     if (sessionId === null || historyCursor === null || historyRequest !== null) return;
     const target = sessionId;
+    abortHistoryFetch();
+    const controller = new AbortController();
+    historyAbort = controller;
     const token = {
       session: target,
       seq: ++historyRequestSeq,
@@ -11723,6 +11765,7 @@ function main() {
       while (true) {
         const data = await api(
           messagesUrl(target, { limit: MESSAGES_PAGE_SIZE, before: token.cursor }),
+          { signal: controller.signal },
         );
         if (
           sessionId !== target ||
@@ -11774,12 +11817,14 @@ function main() {
       flushFrame({ full: true, prepend: true });
     } catch (error) {
       errorShown = true;
+      if (isAbortError(error)) return;
       if (loaded) {
         forceFinalRender = true;
         flushFrame({ full: true, prepend: true });
       }
       handleHistoryError(error);
     } finally {
+      if (historyAbort === controller) historyAbort = null;
       if (historyRequest === token) {
         historyRequest = null;
         if (!errorShown) hideHistoryRow();
@@ -11792,9 +11837,20 @@ function main() {
   }
 
   async function refreshSessions() {
+    const seq = ++sessionsFetchSeq;
+    const selectedAtStart = sessionId;
     try {
       const data = await api(sessionsUrl());
-      sessions = Array.isArray(data.sessions) ? data.sessions : [];
+      if (seq !== sessionsFetchSeq) return;
+      const fetched = Array.isArray(data.sessions) ? data.sessions : [];
+      if (
+        sessionId !== selectedAtStart &&
+        sessionId !== null &&
+        !fetched.some((session) => session.id === sessionId)
+      ) {
+        return;
+      }
+      sessions = fetched;
       sessionsFailed = false;
       sessionsLoaded = true;
       const tree = buildSessionTree(sessions);
@@ -11819,6 +11875,7 @@ function main() {
         sessionTitleEl.textContent = sessionLabel(current);
       }
     } catch (error) {
+      if (seq !== sessionsFetchSeq) return;
       showSessionsError(error, () => refreshSessions());
     }
   }
@@ -11911,15 +11968,30 @@ function main() {
     const settings = options || {};
     const previous = sessionId;
     const previousText = currentComposerText();
+    const previousAttachments = currentAttachmentCount();
+    const selection = ++selectionSeq;
+    abortSelectionFetch();
+    abortHydrationFetch();
+    abortHistoryFetch();
+    const controller = new AbortController();
+    selectionAbort = controller;
     if (previous !== null && previous !== id) {
       const previousHadHistory = sessionHasHistory();
-      if (settings.skipFlush !== true) await flushDraftForSwitch(previous, previousText);
-      if (
-        settings.skipFlush !== true &&
-        draftIsEmpty({ text: previousText, attachmentCount: currentAttachmentCount() }) &&
-        !previousHadHistory
-      ) {
-        scheduleDeleteIfEmpty(previous);
+      if (settings.skipFlush !== true) {
+        // Persist the old draft in the background: the visible switch must never wait on the
+        // coordinator or upstream for it.
+        const flushed = flushDraftForSwitch(previous, previousText);
+        if (!previousHadHistory) {
+          void flushed
+            .then(() => {
+              if (
+                draftIsEmpty({ text: previousText, attachmentCount: previousAttachments })
+              ) {
+                scheduleDeleteIfEmpty(previous);
+              }
+            })
+            .catch(() => {});
+        }
       }
       cancelDeleteIfEmpty(id);
       saveCurrentRuntime();
@@ -11954,6 +12026,9 @@ function main() {
     }
     store.sessionID = id;
     resetFeedDom();
+    // The rail, title, URL, and loading placeholder are already the new session; only the feed
+    // content is still in flight.
+    showMessagesLoading();
     resetHighlightController({ reason: "session-switch" });
     resetElapsed();
     if (previous !== id) promptActivation.clear();
@@ -11973,13 +12048,18 @@ function main() {
     updateUrl();
     renderSessions({ reveal: true });
     renderPromptDock();
-    loadTodo(id).catch(() => {});
+    loadTodo(id, controller.signal).catch(() => {});
     syncComposer();
     closeSessions(false);
     closeContext(false);
-    await loadMessages({ initial: true, forceBottom: true });
-    await loadDraftForSession(id, { applyText: previous !== id });
-    if (sessionId !== id) return;
+    await Promise.all([
+      loadMessages({ initial: true, forceBottom: true }),
+      loadDraftForSession(id, {
+        applyText: previous !== id,
+        signal: controller.signal,
+      }),
+    ]);
+    if (sessionId !== id || selectionSeq !== selection) return;
     if (previous !== id) refreshSessions().catch(() => {});
     if (settings.focusDock === true) {
       refreshInlineQuestions();
@@ -11995,6 +12075,10 @@ function main() {
     const previous = sessionId;
     const previousText = currentComposerText();
     const previousAttachments = currentAttachmentCount();
+    selectionSeq += 1;
+    abortSelectionFetch();
+    abortHydrationFetch();
+    abortHistoryFetch();
     if (previous !== null && settings.skipFlush !== true && !isSlashCommandOnly(previousText)) {
       const previousHadHistory = sessionHasHistory();
       void queueDraftPut(previous, previousText, { silentGone: true }).then(() => {

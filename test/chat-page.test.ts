@@ -741,6 +741,19 @@ describe("chat page", () => {
     expect(savedScope).not.toContain("connection:");
   });
 
+  it("switches the session before the draft flush and paints the loading placeholder", () => {
+    const source = readFileSync(path.join(process.cwd(), "assets", "chat.js"), "utf8");
+    const start = source.indexOf("function selectSession(");
+    const end = source.indexOf("\n  function startDraft(", start);
+    const scope = source.slice(start, end);
+    expect(start).toBeGreaterThan(-1);
+    expect(scope).not.toContain("await flushDraftForSwitch");
+    expect(scope).toContain("showMessagesLoading();");
+    expect(scope.indexOf("sessionId = id;")).toBeLessThan(scope.indexOf("await Promise.all"));
+    expect(scope).toContain("abortHydrationFetch();");
+    expect(scope).toContain("selectionSeq !== selection");
+  });
+
   it("serves the chat-core module from the asset allowlist", () => {
     const f = fixture();
     const response = handleRequest(f.deps, {
