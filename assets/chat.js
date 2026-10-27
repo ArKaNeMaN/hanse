@@ -308,6 +308,7 @@ function main() {
 
   let sessions = [];
   let sessionId = null;
+  let newSessionMode = false;
   let eventSource = null;
   let failures = 0;
   let hiddenSince = null;
@@ -427,6 +428,7 @@ function main() {
   let contextPollGraceUntil = 0;
   let contextRetryTimer = null;
   let contextCompactingSession = null;
+  let contextChipAvailable = false;
   let contextPosting = false;
   let contextClientError = null;
   let elapsedAccumulated = 0;
@@ -2842,6 +2844,10 @@ function main() {
     });
   }
 
+  function currentThreadHasMessages() {
+    return sessionId !== null && store.sessionID === sessionId && store.order.length > 0;
+  }
+
   function cancelSessionCreate() {
     if (sessionCreateTimer !== null) window.clearTimeout(sessionCreateTimer);
     sessionCreateTimer = null;
@@ -3868,7 +3874,10 @@ function main() {
     body.append(button);
     state.append(mark, body);
     messagesEl.replaceChildren(state);
-    if (countEl !== null) countEl.textContent = plural(0, "message");
+    if (countEl !== null) {
+      countEl.textContent = plural(0, "message");
+      countEl.hidden = true;
+    }
     if (newMessages !== null) newMessages.hidden = true;
   }
 
@@ -4781,12 +4790,13 @@ function main() {
     if (snapshot === null || typeof snapshot !== "object") return;
     if (sessionId === null) return;
     if (typeof snapshot.sessionID === "string" && snapshot.sessionID !== sessionId) return;
+    contextChipAvailable = true;
     const state = contextStateClass(snapshot);
     const percent = contextMeterPercent(snapshot);
     const hasUsage = contextHasUsage(snapshot);
     const detail = contextDetail(snapshot);
     if (contextChip !== null) {
-      contextChip.hidden = false;
+      contextChip.hidden = !currentThreadHasMessages();
       contextChip.dataset.state = state;
       if (detail === "—") contextChip.removeAttribute("title");
       else contextChip.title = detail;
@@ -4816,6 +4826,7 @@ function main() {
   }
 
   function resetContextUi(hideSection, detailText, reasonText) {
+    contextChipAvailable = false;
     if (contextChip !== null) {
       contextChip.hidden = true;
       contextChip.dataset.state = "unknown";
@@ -8302,7 +8313,9 @@ function main() {
     if (countEl !== null) {
       const label = currentMessageCountLabel(count);
       if (countEl.textContent !== label) countEl.textContent = label;
+      countEl.hidden = count === 0;
     }
+    if (contextChip !== null) contextChip.hidden = count === 0 || !contextChipAvailable;
     if (follow) {
       requestBottomScroll({
         force: true,
@@ -12248,7 +12261,7 @@ function main() {
         return;
       }
       if (sessionId === null) {
-        sessionId = firstRootId(tree) ?? String(sessions[0].id);
+        if (!newSessionMode) sessionId = firstRootId(tree) ?? String(sessions[0].id);
       } else if (!sessions.some((session) => session.id === sessionId)) {
         await selectSession(firstRootId(tree) ?? String(sessions[0].id), {
           focus: false,
@@ -12365,6 +12378,7 @@ function main() {
 
   async function selectSession(id, options) {
     const settings = options || {};
+    newSessionMode = false;
     const previous = sessionId;
     const previousText = currentComposerText();
     const previousAttachments = currentAttachmentCount();
@@ -12505,6 +12519,7 @@ function main() {
     hydrating = false;
     hydrationBuffer = null;
     sessionId = null;
+    newSessionMode = true;
     resetDraftStateForSwitch(previous !== null);
     contextEpoch += 1;
     clearContextTimers();
@@ -12536,7 +12551,10 @@ function main() {
       messagesEl.removeAttribute("aria-busy");
       messagesEl.replaceChildren(emptyThread());
     }
-    if (countEl !== null) countEl.textContent = plural(0, "message");
+    if (countEl !== null) {
+      countEl.textContent = plural(0, "message");
+      countEl.hidden = true;
+    }
     resetElapsed();
     promptActivation.clear();
     renderPromptDock();

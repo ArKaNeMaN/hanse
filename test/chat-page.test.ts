@@ -789,6 +789,31 @@ describe("chat page", () => {
     expect(scope).toContain("selectionSeq !== selection");
   });
 
+  it("keeps the new-session view after an empty draft session is deleted", () => {
+    const source = readFileSync(path.join(process.cwd(), "assets", "chat.js"), "utf8");
+    expect(source).toContain("let newSessionMode = false;");
+    const refreshStart = source.indexOf("async function refreshSessions(");
+    const refreshEnd = source.indexOf("\n  function updateUrl(", refreshStart);
+    expect(refreshStart).toBeGreaterThan(-1);
+    expect(source.slice(refreshStart, refreshEnd)).toContain(
+      "if (!newSessionMode) sessionId = firstRootId(tree)",
+    );
+    const draftStart = source.indexOf("function startDraft(");
+    const draftEnd = source.indexOf("\n  function ensureSessionShared(", draftStart);
+    expect(source.slice(draftStart, draftEnd)).toContain("newSessionMode = true;");
+    const selectStart = source.indexOf("async function selectSession(");
+    const selectEnd = source.indexOf("\n  function startDraft(", selectStart);
+    expect(source.slice(selectStart, selectEnd)).toContain("newSessionMode = false;");
+  });
+
+  it("hides the message counter and context chip for an empty thread", () => {
+    const source = readFileSync(path.join(process.cwd(), "assets", "chat.js"), "utf8");
+    expect(source).toContain("countEl.hidden = count === 0;");
+    expect(source).toContain("contextChip.hidden = count === 0 || !contextChipAvailable;");
+    expect(source).toContain("contextChip.hidden = !currentThreadHasMessages();");
+    expect(source).toContain("contextChipAvailable = false;");
+  });
+
   it("serves the chat-core module from the asset allowlist", () => {
     const f = fixture();
     const response = handleRequest(f.deps, {

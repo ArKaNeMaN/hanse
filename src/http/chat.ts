@@ -430,7 +430,7 @@ function renderChatPage(
       <span class="chat-session-title" id="chat-session-title">Session</span>
       <span class="mono" id="chat-session-id">-</span>
       <span class="chat-live" id="chat-live" data-state="starting">Starting agent...</span>
-      <span class="caption" id="chat-message-count">0 messages</span>
+      <span class="caption" id="chat-message-count" hidden>0 messages</span>
       <span class="chat-waiting" id="chat-waiting" role="status" aria-live="polite" hidden>${icon("stamp")}Waiting for you</span>
       <button class="btn btn-ghost btn-sm chat-plan-chip" id="chat-plan-chip" type="button" aria-controls="chat-plan-section" title="Open the plan panel" hidden>${icon("activity")}<span id="chat-plan-chip-label">Plan 0/0</span></button>
       <button class="btn btn-ghost btn-sm chat-context-chip" id="chat-context-chip" type="button" aria-controls="chat-context-usage" hidden>${icon("gauge")}<span id="chat-context-chip-label">Context —</span><span class="sr-only" id="chat-context-chip-exact"></span><span class="chat-context-chip__meter" role="meter" aria-label="Context usage" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-valuetext="Unknown" hidden><span class="chat-context-chip__fill" aria-hidden="true"></span></span></button>
