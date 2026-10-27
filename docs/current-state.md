@@ -1,6 +1,6 @@
 # Hanse - Current State (read this first)
 
-> Last updated: 2026-10-25. This is the canonical description of what is **implemented right now**.
+> Last updated: 2026-10-27. This is the canonical description of what is **implemented right now**.
 > If this document and the code disagree, the code wins - update this document.
 > History and rationale: `docs/design/overview.md`, `docs/plans/0001-core.md`,
 > `docs/journal/0001-core.md`. Deployment: `docs/deployment.md`.
@@ -435,6 +435,11 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   the session folder) for its descendants, best effort under opencode's 100-session window.
   Session lifecycle is not realtime in this stage: child sessions appear on the existing refresh
   triggers (boot, focus, visibility, selection, send, idle/reconnect).
+- Session switching is optimistic and cancelable: the rail, title, URL, and message skeleton switch
+  immediately, the previous draft is flushed in the background, the in-flight message/history read is
+  aborted, and a selection generation makes the last click win. `GET /sessions`, `GET /messages`, and
+  `GET .../todo` attach to an already running agent through `endpointFor`; they call `ensure` (runtime
+  inspection/start) only when no endpoint is attached or the attached upstream stops answering.
 - The chat composer has one slash-command palette (`/` at the start or the `Commands` button). It
   merges opencode's v1 `GET /command` catalog with six Hanse actions; custom
   `.opencode/command(s)`, JSON commands, MCP prompts, and skills appear automatically.
