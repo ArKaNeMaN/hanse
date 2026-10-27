@@ -22,6 +22,7 @@ import {
 } from "../src/images/service.js";
 import type { Logger } from "../src/logging/logger.js";
 import { mintAgentToken, verifyAgentToken } from "../src/mcp/agent-tokens.js";
+import { ModelProviderService } from "../src/model-providers/index.js";
 import type {
   ContextMonitorLike,
   ContextMonitorOptions,
@@ -3459,5 +3460,85 @@ describe("InstanceManager attachments policy and runner marker", () => {
       }),
     );
     expect(existsSync(path.join(dir, "p", "web", "attachments"))).toBe(true);
+  });
+});
+
+describe("custom model provider projection", () => {
+  const providerInput = {
+    id: "llm-lan",
+    name: "LLM LAN",
+    baseUrl: "http://gateway:4000/v1",
+    models: [{ id: "deepseek", limit: { context: 1000, output: 100 } }],
+  };
+
+  function providerFixture(): {
+    db: SqliteDatabase;
+    modelProviders: ModelProviderService;
+    runtime: FakeAgentRuntime;
+    manager: InstanceManager;
+  } {
+    const { db, dir } = fixture();
+    const modelProviders = new ModelProviderService({ db });
+    const runtime = new FakeAgentRuntime();
+    const manager = new InstanceManager(db, dir, {
+      runtime,
+      settings: fakeSettings(),
+      omoProfiles: fakeProfiles().source,
+      modelProviders,
+      workspaceRoot: "/srv",
+      verify: async () => [],
+    });
+    return { db, modelProviders, runtime, manager };
+  }
+
+  it("projects a provider into the runner spec", async () => {
+    const { db, modelProviders, runtime, manager } = providerFixture();
+    modelProviders.create(providerInput, "operator");
+    await manager.ensure(APP);
+    const overlay = overlayOf(runtime.ensured[0] ?? { env: {} });
+    expect(overlay.provider).toEqual({
+      "llm-lan": {
+        npm: "@ai-sdk/openai-compatible",
+        name: "LLM LAN",
+        options: { baseURL: "http://gateway:4000/v1" },
+        models: { deepseek: { limit: { context: 1000, output: 100 } } },
+      },
+    });
+    const recorded = db
+      .prepare("SELECT applied_settings_hash AS hash FROM instances WHERE app_id = ?")
+      .get(APP.id) as { hash: string };
+    expect(recorded.hash).toBe(
+      settingsHashFor(
+        fakeSettings().snapshot({ projectId: "p", appKey: "web" }),
+        "profile-hash",
+        undefined,
+        modelProviders.snapshot().hash,
+      ),
+    );
+  });
+
+  it("keeps the old overlay and hash for an empty registry", async () => {
+    const { db, runtime, manager } = providerFixture();
+    await manager.ensure(APP);
+    const overlay = overlayOf(runtime.ensured[0] ?? { env: {} });
+    expect(overlay).not.toHaveProperty("provider");
+    const recorded = db
+      .prepare("SELECT applied_settings_hash AS hash FROM instances WHERE app_id = ?")
+      .get(APP.id) as { hash: string };
+    expect(recorded.hash).toBe(
+      settingsHashFor(fakeSettings().snapshot({ projectId: "p", appKey: "web" }), "profile-hash"),
+    );
+  });
+
+  it("marks a running app restart-required when a provider changes", async () => {
+    const { modelProviders, manager } = providerFixture();
+    modelProviders.create(providerInput, "operator");
+    await manager.ensure(APP);
+    expect(manager.pendingRestart(APP.id)).toEqual({ pending: false, reasons: [] });
+    modelProviders.update("llm-lan", { ...providerInput, name: "Renamed" }, "operator");
+    expect(manager.pendingRestart(APP.id)).toEqual({
+      pending: true,
+      reasons: ["settings_changed"],
+    });
   });
 });

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { ProviderOverlay } from "../src/model-providers/types.js";
 import {
   buildConfigOverlay,
   CODEGRAPH_MCP_NAME,
@@ -130,6 +131,52 @@ describe("buildConfigOverlay", () => {
     expect(overlay.mcp?.[COORDINATOR_MCP_NAME]?.environment).toEqual({
       HANSE_MCP_API_BASE: "http://127.0.0.1:8787",
     });
+  });
+
+  it("includes custom provider definitions", () => {
+    const providers: Record<string, ProviderOverlay> = {
+      "llm-lan": {
+        npm: "@ai-sdk/openai-compatible",
+        name: "LLM LAN",
+        options: { baseURL: "http://gateway:4000/v1" },
+        models: {
+          deepseek: { name: "DeepSeek", limit: { context: 1000, output: 100 } },
+        },
+      },
+    };
+    const overlay = buildConfigOverlay({
+      coordinatorCommand: ["hanse", "mcp"],
+      providers,
+    });
+    expect(overlay.provider).toEqual(providers);
+  });
+
+  it("omits the provider key when the registry is empty", () => {
+    const overlay = buildConfigOverlay({
+      coordinatorCommand: ["hanse", "mcp"],
+      providers: {},
+    });
+    expect(overlay).not.toHaveProperty("provider");
+  });
+
+  it("rejects a serialized overlay over the environment budget", () => {
+    const models = Object.fromEntries(
+      Array.from({ length: 300 }, (_, index) => [
+        `model-${index}-${"x".repeat(240)}`,
+        { name: "n".repeat(100), limit: { context: 1, output: 1 } },
+      ]),
+    );
+    const providers: Record<string, ProviderOverlay> = {
+      "llm-lan": {
+        npm: "@ai-sdk/openai-compatible",
+        name: "LLM LAN",
+        options: { baseURL: "http://gateway:4000/v1" },
+        models,
+      },
+    };
+    expect(() =>
+      serializeConfigOverlay({ coordinatorCommand: ["hanse", "mcp"], providers }),
+    ).toThrow(/provider_overlay_too_large/);
   });
 });
 

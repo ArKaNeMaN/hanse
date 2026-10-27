@@ -184,6 +184,24 @@ Two options, and they can be combined (provider keys set in the UI take preceden
 After changing a model or provider setting, the settings page marks what needs a restart. Settings
 never restart agents silently; use the restart action on the app, chat, or settings page.
 
+### Custom model providers
+
+If the provider is not in `opencode`'s bundled catalog, register it once for all applications:
+
+1. Open **Settings -> Custom model providers -> Add custom provider**.
+2. Enter a provider id (for example `llm-lan`), a display name, and the base URL of the
+   OpenAI-compatible API root (usually ending in `/v1`). The base URL is resolved **inside the app
+   container**: use the host's LAN address, not `127.0.0.1` or `localhost`.
+3. Add one model per line: `model-id | context | output | optional name`, where `context` and
+   `output` are the model's token limits.
+4. Save, add the API key under **Settings -> Providers** for the same id, set `llm.model` to
+   `<provider-id>/<model-id>`, and restart the application.
+
+The provider definition is global and non-secret; API keys remain encrypted and scoped. A provider
+referenced by any `llm.model` row cannot be deleted until those models change. The registry is
+capped at 32 providers and the launch overlay at 64 KiB; a definition change applies on the next
+restart. Model listing is manual in this stage.
+
 ## Configuration
 
 Compose reads `.env` in the directory containing `compose.yaml`.

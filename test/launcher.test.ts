@@ -12,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import type { ProviderOverlay } from "../src/model-providers/types.js";
 import { resolveInstanceEnv } from "../src/opencode/instance.js";
 import {
   buildInstanceEnv,
@@ -428,5 +429,43 @@ describe("launcher", () => {
     expect(overlay.permission?.webfetch).toBe("deny");
     expect(overlay.permission?.hanse_web_search).toBe("allow");
     expect(overlay.permission?.hanse_web_fetch).toBeUndefined();
+  });
+});
+
+describe("launcher custom providers", () => {
+  it("projects custom providers into the overlay", () => {
+    const providers: Record<string, ProviderOverlay> = {
+      "llm-lan": {
+        npm: "@ai-sdk/openai-compatible",
+        name: "LLM LAN",
+        options: { baseURL: "http://gateway:4000/v1" },
+        models: { deepseek: { limit: { context: 1000, output: 100 } } },
+      },
+    };
+    const env = buildInstanceEnv(launchInput({ providers }));
+    const overlay = JSON.parse(env.OPENCODE_CONFIG_CONTENT ?? "{}") as {
+      provider?: Record<string, unknown>;
+    };
+    expect(overlay.provider).toEqual(providers);
+  });
+
+  it("rejects a provider overlay over the environment budget", () => {
+    const models = Object.fromEntries(
+      Array.from({ length: 300 }, (_, index) => [
+        `model-${index}-${"x".repeat(240)}`,
+        { name: "n".repeat(100), limit: { context: 1, output: 1 } },
+      ]),
+    );
+    const providers: Record<string, ProviderOverlay> = {
+      "llm-lan": {
+        npm: "@ai-sdk/openai-compatible",
+        name: "LLM LAN",
+        options: { baseURL: "http://gateway:4000/v1" },
+        models,
+      },
+    };
+    expect(() => buildInstanceEnv(launchInput({ providers }))).toThrow(
+      /provider_overlay_too_large/,
+    );
   });
 });

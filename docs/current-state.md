@@ -370,7 +370,8 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   order; migrations v10 (applied settings/profile state), v11 (deletion markers), v12 (skills),
   v13 (skill bundles), v14 (session-bound handoffs, reply routing, and handoff policy), and v15
   (chat drafts, session state, and pending sends) and v16 (file-only attachments and deliveries)
-  follow. The current schema versions are `[1..17]` (v17 adds handoff message-id lookup indexes).
+  follow. The current schema versions are `[1..19]` (v17 adds handoff message-id lookup indexes;
+  v18 adds agent image validity; v19 adds the global custom model provider registry).
 - Live on `deployment-host` (`sha-e2d89a2`): a temporary SSH target pinned and authenticated, an approval was
   approved, `echo QA_OK` and a 65 s `sleep` succeeded, upload/download round-tripped, a real
   `opencode` turn called `hanse_ssh_exec` and received the result after 65 s, and audit rows survived
@@ -714,6 +715,19 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   coordinator reconciles the host `auth.json` with effective provider keys into the per-instance
   `auth.json` (mode 0600), scrubs inherited `OPENCODE_AUTH_CONTENT`/profile env, and removes stale
   entries.
+- Custom model providers live in the global `model_providers` table (migration v19). An operator
+  adds an OpenAI-compatible provider under Settings -> Custom model providers with an id, display
+  name, base URL, and 1-64 models (`context`/`output` limits). The coordinator projects every
+  validated provider into `OPENCODE_CONFIG_CONTENT.provider` with the bundled
+  `@ai-sdk/openai-compatible` adapter; the API key stays in `provider_keys`/`auth.json`.
+  `llm.model` remains a free-form `provider/model` string with a datalist of custom models. The
+  registry is capped at 32 providers, the provider projection at 48 KiB, and the final overlay at
+  64 KiB. Adding or editing a provider marks running apps restart-required; a new provider id appears
+  in the Providers key block with `Missing`. Deleting a provider referenced by any `llm.model` row
+  returns `409 provider_in_use`. Warnings cover common bundled ids, existing key rows/host auth,
+  loopback base URLs, and non-loopback plain-`http` URLs. Project/app provider definitions, model
+  auto-discovery, arbitrary npm adapters, custom headers, and provider enable/disable are not
+  implemented.
 - Git credentials live in `setting_secrets` (migration v8), AES-256-GCM encrypted with the same
   `secret.key`. One SSH credential (`privateKey` plus optional `knownHosts`) and one HTTPS credential
   (`hosts`, `username`, `token`) may be set per scope; a narrower scope replaces the whole credential
@@ -744,7 +758,8 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   restart action. Chat prompts carry the effective `llm.model`, so existing sessions switch model on
   the next message; OMO subagents use the profile and change only after a restart.
 - CLI: `hanse web-mcp` runs the managed web tools MCP server (internal; spawned by opencode).
-- API: `GET/POST /api/settings`, `POST /api/settings/provider`, and
+- API: `GET/POST /api/settings`, `POST /api/settings/provider`,
+  `GET/POST /api/settings/model-providers`, and
   `POST /api/apps/:app/restart?project=<id>`; all human-only. Settings responses include effective
   values, sources, raw scoped rows, provider statuses (never key material), warnings, and pending
   restarts.
@@ -995,8 +1010,8 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
 Host `./state` is mounted at `/data/state` in `hanse` only:
 
 - `hanse/coordinator.db` (+ `-wal`, `-shm`) - projects, apps, instances, tasks, handoffs, handoff
-  policies, approvals, principals, events, settings, skills, provider keys, and encrypted git
-  credentials (`setting_secrets`).
+  policies, approvals, principals, events, settings, skills, provider keys, custom model providers
+  (`model_providers`), and encrypted git credentials (`setting_secrets`).
 - `hanse/secret.key` - AES-256-GCM key for the credential store and provider keys (mode `0600`).
 
 Host `./agents` is mounted at `/data/agents` read-write in `hanse` and read-only in `hanse-runner`:
@@ -1074,13 +1089,15 @@ coordinator; operators do not set them.
 
 ## Verification
 
-`npm run lint && npm run typecheck && npm test && npm run build` (all green; 2276 tests in 128
+`npm run lint && npm run typecheck && npm test && npm run build` (all green; 2518 tests in 130
 files). The UX polish pass deployed as `sha-88faab7`; the settings live-save follow-up deployed as
 `sha-d2fcc3b`; the runtime-state reconciliation fix deployed as coordinator `sha-98033f5` on
 2026-10-21. The project/application deletion stage is verified by the four gates; it has not been
-deployed or live-smoked from this checkout. The context usage/compaction stage is verified by the
-four gates and the deterministic chat QA bridge (14 scenarios, zero console/page errors, context
-screenshots under `docs/design/artifacts/chat/`). The context stage is deployed as coordinator
+deployed or live-smoked from this checkout. The global custom model provider stage is verified by
+the four gates plus `npm run check:sensitive`; its live LiteLLM smoke remains pending. The context
+usage/compaction stage is verified by the four gates and the deterministic chat QA bridge (14
+scenarios, zero console/page errors, context screenshots under `docs/design/artifacts/chat/`). The
+context stage is deployed as coordinator
 `sha-50acf4f` (journal 0017). The managed agent skills stage is verified by the four gates and
 `node docs/design/skills-qa.mjs` (PASS, 49 assertions, zero console/page errors; report and
 screenshots under `docs/design/artifacts/skills/`). An empirical `opencode debug skill` run against
@@ -1240,6 +1257,14 @@ Settings stage verification:
   instance config; a restart interrupts an active turn. Chat prompts carry the effective model, so
   the main session adopts a model change on its next message without a restart; OMO subagents keep
   the profile from instance start.
+- Custom model providers are global-only, manually listed, and restricted to the bundled
+  `@ai-sdk/openai-compatible` adapter. There is no model auto-discovery, per-project provider
+  definition, custom header, OAuth provider support, or provider enable/disable. The collision
+  warning uses a curated bundled-id set, so an uncommon built-in id can be overridden without a
+  warning. Provider definitions are non-secret and every app can read the base URL and model list in
+  `OPENCODE_CONFIG_CONTENT`; keys remain encrypted. Deleting and recreating an id reuses its retained
+  key against the new base URL. The registry is capped at 32 providers and the final overlay at
+  64 KiB; a downgrade to a coordinator without v19 requires a restart.
 - Skills only establish precedence among Hanse-managed rows. Repository `.opencode/skill(s)`,
   plugin, `~/.claude/skills`, `~/.agents/skills`, and cache roots are scanned and warned, but Hanse
   cannot override them, and duplicate winner selection across those roots is not a stable opencode

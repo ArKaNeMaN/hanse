@@ -1,4 +1,5 @@
 import path from "node:path";
+import type { ProviderOverlay } from "../model-providers/types.js";
 import type { PermissionPolicy } from "./policy.js";
 
 /** Identity of a managed application instance. */
@@ -42,10 +43,24 @@ const COORDINATOR_MCP_TIMEOUT_MS = 600_000;
 /** Subset of the opencode config produced as a per-instance overlay. */
 export interface OpencodeOverlay {
   model?: string;
+  provider?: Record<string, ProviderOverlay>;
   mcp?: Record<string, McpLocalServer>;
   instructions?: string[];
   plugin?: string[];
   permission?: PermissionPolicy;
+}
+
+/** Hard cap for the serialized OPENCODE_CONFIG_CONTENT environment value. */
+export const MAX_OVERLAY_BYTES = 64 * 1024;
+
+/** Reject an overlay that would exceed the single environment-string budget. */
+export function assertOverlayBytes(overlay: OpencodeOverlay, limit = MAX_OVERLAY_BYTES): void {
+  const bytes = Buffer.byteLength(JSON.stringify(overlay), "utf8");
+  if (bytes > limit) {
+    throw new Error(
+      `provider_overlay_too_large: ${bytes} bytes exceeds the ${limit}-byte OPENCODE_CONFIG_CONTENT limit`,
+    );
+  }
 }
 
 export interface BuildOverlayOptions {
@@ -63,6 +78,8 @@ export interface BuildOverlayOptions {
   permission?: PermissionPolicy;
   /** Effective model applied to the main agent and opencode-native agents. */
   model?: string;
+  /** Custom provider definitions projected into `OPENCODE_CONFIG_CONTENT.provider`. */
+  providers?: Record<string, ProviderOverlay>;
   /** Extra MCP servers merged before the codegraph and coordinator entries. */
   mcpServers?: Record<string, McpLocalServer>;
 }
@@ -114,6 +131,9 @@ export function buildConfigOverlay(options: BuildOverlayOptions): OpencodeOverla
   if (options.model !== undefined && options.model.length > 0) {
     overlay.model = options.model;
   }
+  if (options.providers !== undefined && Object.keys(options.providers).length > 0) {
+    overlay.provider = options.providers;
+  }
   const mcp: Record<string, McpLocalServer> = {};
   if (options.mcpServers !== undefined) {
     Object.assign(mcp, options.mcpServers);
@@ -148,5 +168,7 @@ export function buildConfigOverlay(options: BuildOverlayOptions): OpencodeOverla
 
 /** Serialize the overlay for the `OPENCODE_CONFIG_CONTENT` environment variable. */
 export function serializeConfigOverlay(options: BuildOverlayOptions): string {
-  return JSON.stringify(buildConfigOverlay(options));
+  const overlay = buildConfigOverlay(options);
+  assertOverlayBytes(overlay);
+  return JSON.stringify(overlay);
 }

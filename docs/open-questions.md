@@ -1,5 +1,17 @@
 # Open questions
 
+> Stage: `0029-custom-model-providers`. Owner decisions were collected on 2026-10-27, before the
+> plan was written. There are no open items for this stage.
+
+## Stage `0029-custom-model-providers` - resolved owner decisions
+
+1. **Scope** - global provider definitions only. `llm.model` keeps its existing global/project/app
+   resolution.
+2. **Model list** - manual entry in this stage; auto-discovery from `/v1/models` is a follow-up.
+3. **Adapter** - only the bundled `@ai-sdk/openai-compatible`; no arbitrary npm packages.
+4. **Delete guard** - a provider referenced by any `llm.model` row cannot be deleted.
+5. **UI surface** - a settings block on the Global settings page, not a separate page.
+
 > Stage: `0027-chat-session-tree`. Owner decisions were collected on 2026-10-25, after design review
 > round 1 and before the plan was written. There are no open items for this stage.
 

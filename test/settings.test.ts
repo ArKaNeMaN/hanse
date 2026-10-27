@@ -1009,3 +1009,30 @@ describe("project git auth resolution", () => {
     expect(auth.gitAuth.https).toBeUndefined();
   });
 });
+
+describe("custom provider ids", () => {
+  it("adds registry ids to the provider status map without adding auth", () => {
+    const { db, key } = fixture();
+    const service = new SettingsService({
+      db,
+      secretKey: key,
+      providerIds: () => ["llm-lan"],
+    });
+    const resolved = service.resolve({});
+    expect(resolved.providerKeys["llm-lan"]).toEqual({ state: "missing" });
+    const snapshot = service.snapshot({});
+    expect(snapshot.resolved.providerKeys["llm-lan"]).toEqual({ state: "missing" });
+    expect(snapshot.mergedAuth).toEqual({});
+    expect(snapshot.providerKeys.size).toBe(0);
+  });
+
+  it("lists provider ids from every key scope plus host auth", () => {
+    const { service } = fixture({
+      hostAuth: { "host-auth": { type: "api", key: "host-secret" } },
+    });
+    service.setProviderKey("global", {}, "global-key", "secret", "owner");
+    service.setProviderKey("project", { projectId: "p" }, "project-key", "secret", "owner");
+    service.setProviderKey("app", { projectId: "p", appKey: "a" }, "app-key", "secret", "owner");
+    expect(service.allProviderIds()).toEqual(["app-key", "global-key", "host-auth", "project-key"]);
+  });
+});

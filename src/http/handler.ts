@@ -18,6 +18,7 @@ import type { Principal } from "../identity/principals.js";
 import type { ImageService } from "../images/service.js";
 import type { Logger } from "../logging/logger.js";
 import { verifyAgentToken } from "../mcp/agent-tokens.js";
+import type { ModelProviderService } from "../model-providers/index.js";
 import type { InstanceManager } from "../opencode/manager.js";
 import type { PreviewService } from "../preview/service.js";
 import type { SettingsService } from "../settings/index.js";
@@ -56,6 +57,7 @@ export interface HttpDeps {
   git: GitService;
   manager?: InstanceManager;
   settings?: SettingsService;
+  modelProviders?: ModelProviderService;
   ssh?: SshService;
   skills?: SkillService;
   /** Present only when the coordinator is wired to the runner; preview tools 503/unavailable otherwise. */

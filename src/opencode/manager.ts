@@ -40,6 +40,7 @@ import {
 } from "../images/service.js";
 import type { Logger } from "../logging/logger.js";
 import { ensureAgentToken, mcpTokenPath, revokeAgentToken } from "../mcp/agent-tokens.js";
+import type { ModelProviderSnapshot } from "../model-providers/types.js";
 import type { PreviewCleanup } from "../preview/types.js";
 import { type AppImageStatus, resolveAppBuild } from "../registry/index.js";
 import { appNetworkName, mapToHostPath } from "../runner/names.js";
@@ -72,6 +73,7 @@ import {
 } from "./endpoint-auth.js";
 import type { HanseEvent } from "./events.js";
 import {
+  assertOverlayBytes,
   buildConfigOverlay,
   type IsolatedEnv,
   type McpLocalServer,
@@ -208,6 +210,11 @@ export interface OmoProfileSource {
   preview(input: OmoProfileInput): OmoProfileResult;
 }
 
+/** Injectable subset of the global custom-provider registry used at launch. */
+export interface ModelProviderSource {
+  snapshot(): ModelProviderSnapshot;
+}
+
 interface Entry {
   endpoint: string;
   projectId: string;
@@ -252,6 +259,8 @@ export interface InstanceManagerOptions {
   verificationRetryDelayMs?: number;
   settings?: SettingsSource;
   omoProfiles?: OmoProfileSource;
+  /** Global custom model-provider registry projected into each instance config. */
+  modelProviders?: ModelProviderSource;
   /** Injectable skill registry for per-instance materialization. */
   skills?: SkillSource;
   /** Optional structured logger; skill warnings are bounded and content-free. */
@@ -305,6 +314,7 @@ export function settingsHashFor(
   snapshot: LaunchSettingsSnapshot,
   profile: string,
   skillsHash?: string,
+  providersHash?: string,
 ): string {
   return hashValue({
     effective: launchEffectiveSettings(snapshot.resolved.effective),
@@ -312,6 +322,7 @@ export function settingsHashFor(
     authHash: snapshot.authHash,
     gitAuthHash: snapshot.gitAuthHash,
     profile,
+    ...(providersHash === undefined ? {} : { providers: providersHash }),
     policyVersion: ATTACHMENTS_POLICY_VERSION,
     ...(skillsHash === undefined ? {} : { skills: skillsHash }),
   });
@@ -733,6 +744,7 @@ export class InstanceManager {
 
     const settings = this.#options.settings;
     const omoProfiles = this.#options.omoProfiles;
+    const modelProviderSnapshot = this.#options.modelProviders?.snapshot();
     if (settings !== undefined && omoProfiles !== undefined) {
       const snapshot = settings.snapshot({ projectId: app.projectId, appKey: app.appKey });
       web = snapshot.resolved.effective.web;
@@ -767,7 +779,12 @@ export class InstanceManager {
       omoProfile = profile.applied ? profile.name : undefined;
       appliedProfile = profile.applied;
       profileWarning = profile.warning;
-      settingsHash = settingsHashFor(snapshot, profile.contentHash, skillsHash);
+      settingsHash = settingsHashFor(
+        snapshot,
+        profile.contentHash,
+        skillsHash,
+        modelProviderSnapshot?.hash,
+      );
       const webConfig = buildWebMcpConfig(web);
       if (webConfig !== undefined) {
         mcpServers = {
@@ -828,8 +845,10 @@ export class InstanceManager {
       plugins: baselinePlugins,
       permission,
       model,
+      providers: modelProviderSnapshot?.overlay,
       mcpServers,
     });
+    assertOverlayBytes(overlay);
     const env: Record<string, string> = {
       HOME: isolated.HOME,
       XDG_DATA_HOME: isolated.XDG_DATA_HOME,
@@ -1142,7 +1161,14 @@ export class InstanceManager {
         projectId: target.projectId,
         appKey: target.appKey,
       });
-      if (settingsHashFor(snapshot, preview.contentHash, skillsHash) !== target.settingsHash) {
+      if (
+        settingsHashFor(
+          snapshot,
+          preview.contentHash,
+          skillsHash,
+          this.#options.modelProviders?.snapshot().hash,
+        ) !== target.settingsHash
+      ) {
         reasons.push("settings_changed");
       }
     } catch {

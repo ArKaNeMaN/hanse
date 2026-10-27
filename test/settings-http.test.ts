@@ -13,6 +13,7 @@ import { createHttpServer } from "../src/http/server.js";
 import { handleSettings, isSettingsRoute } from "../src/http/settings.js";
 import { createPrincipal } from "../src/identity/principals.js";
 import { DefaultImageUnavailableError, ImageNotReadyError } from "../src/images/service.js";
+import { ModelProviderService } from "../src/model-providers/index.js";
 import type { InstanceManager } from "../src/opencode/manager.js";
 import { SettingsService } from "../src/settings/index.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
@@ -47,6 +48,7 @@ interface Fixture {
   db: SqliteDatabase;
   deps: HttpDeps;
   settings: SettingsService;
+  modelProviders: ModelProviderService;
   token: string;
   agentToken: string;
   dir: string;
@@ -91,11 +93,13 @@ function fixture(
     hostAuthFile = path.join(dir, "host-auth.json");
     writeFileSync(hostAuthFile, JSON.stringify(options.hostAuth));
   }
+  const modelProviders = new ModelProviderService({ db });
   const settings = new SettingsService({
     db,
     secretKey: randomBytes(32),
     hostAuthFile,
     runSshKeygen: options.runSshKeygen,
+    providerIds: () => modelProviders.list().map((provider) => provider.id),
   });
   const token = createPrincipal(db, { kind: "human", name: "alice" }).token;
   const agent = createPrincipal(db, { kind: "agent", name: "bot" });
@@ -104,6 +108,7 @@ function fixture(
     workspaceRoot: "/tmp",
     git: new GitService({ workspaceRoot: "/tmp" }),
     settings,
+    modelProviders,
     getProjects: () => {
       const row = db.prepare("SELECT name, root_path FROM projects WHERE id = 'p1'").get() as
         | { name: string; root_path: string }
@@ -119,7 +124,7 @@ function fixture(
       ];
     },
   };
-  return { db, deps, settings, token, agentToken: agent.token, dir };
+  return { db, deps, settings, modelProviders, token, agentToken: agent.token, dir };
 }
 
 function auth(token: string, extra: Record<string, string> = {}): Record<string, string> {
@@ -2265,5 +2270,282 @@ describe("git settings API", () => {
     expect(response.status).toBe(200);
     const payload = (await response.json()) as { code?: string };
     expect(payload.code).toBeUndefined();
+  });
+});
+
+describe("custom model providers settings", () => {
+  function providerPost(
+    f: Fixture,
+    values: Record<string, string>,
+    headers: Record<string, string> = {},
+  ): ReturnType<typeof handleSettings> {
+    return handleSettings(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/settings/model-providers",
+        headers: auth(f.token, {
+          "content-type": "application/x-www-form-urlencoded",
+          "x-hanse-fragment": "settings",
+          ...headers,
+        }),
+        body: form(values),
+      }),
+    );
+  }
+
+  function createProvider(
+    f: Fixture,
+    overrides: Record<string, string> = {},
+  ): ReturnType<typeof handleSettings> {
+    return providerPost(f, {
+      action: "create",
+      id: "llm-lan",
+      name: "LLM LAN",
+      baseUrl: "http://gateway:4000/v1",
+      models: "deepseek | 1000000 | 64000 | DeepSeek",
+      return_to: "/settings#custom-providers",
+      ...overrides,
+    });
+  }
+
+  it("registers the route and renders the global block", async () => {
+    const f = fixture();
+    expect(isSettingsRoute("GET", "/api/settings/model-providers")).toBe(true);
+    expect(isSettingsRoute("POST", "/api/settings/model-providers")).toBe(true);
+    const response = await handleSettings(
+      f.deps,
+      request({ path: "/settings", headers: htmlAuth(f.token) }),
+    );
+    expect(response.status).toBe(200);
+    expect(response.body).toContain('id="custom-providers"');
+    expect(response.body).toContain("No custom providers yet.");
+    expect(response.body).toContain('action="/api/settings/model-providers"');
+  });
+
+  it("renders a hint instead of the form on project and app settings", async () => {
+    const f = fixture();
+    for (const path of ["/projects/p1/settings", "/projects/p1/apps/web/settings"]) {
+      const response = await handleSettings(f.deps, request({ path, headers: htmlAuth(f.token) }));
+      expect(response.status).toBe(200);
+      expect(response.body).toContain("Custom model providers are global");
+      expect(response.body).not.toContain('id="custom-provider-new-id"');
+    }
+  });
+
+  it("creates a provider from the form and refreshes the agent section", async () => {
+    const f = fixture();
+    const response = await createProvider(f);
+    expect(response.status).toBe(200);
+    const data = JSON.parse(response.body) as {
+      changed: string[];
+      sections: Record<string, string>;
+    };
+    expect(data.changed).toEqual(["agent", "restart", "warnings"]);
+    expect(data.sections.agent).toContain("llm-lan");
+    expect(data.sections.agent).toContain("DeepSeek");
+    expect(data.sections.agent).toContain("provider-llm-lan");
+    expect(f.modelProviders.list()).toHaveLength(1);
+    expect(f.modelProviders.get("llm-lan")?.models[0]).toEqual({
+      id: "deepseek",
+      name: "DeepSeek",
+      limit: { context: 1000000, output: 64000 },
+    });
+  });
+
+  it("updates and deletes a provider from the form", async () => {
+    const f = fixture();
+    f.modelProviders.create(
+      {
+        id: "llm-lan",
+        name: "LLM LAN",
+        baseUrl: "http://gateway:4000/v1",
+        models: [{ id: "deepseek", limit: { context: 1000, output: 100 } }],
+      },
+      "operator",
+    );
+    const updated = await providerPost(f, {
+      action: "update",
+      id: "llm-lan",
+      name: "Renamed",
+      baseUrl: "https://gateway:4000/v1",
+      models: "deepseek | 2000 | 200 | DeepSeek",
+      return_to: "/settings#custom-providers",
+    });
+    expect(updated.status).toBe(200);
+    expect(f.modelProviders.get("llm-lan")?.name).toBe("Renamed");
+    expect(f.modelProviders.get("llm-lan")?.baseUrl).toBe("https://gateway:4000/v1");
+
+    const deleted = await providerPost(f, {
+      action: "update",
+      id: "llm-lan",
+      name: "Renamed",
+      baseUrl: "https://gateway:4000/v1",
+      models: "deepseek | 2000 | 200",
+      delete: "1",
+      return_to: "/settings#custom-providers",
+    });
+    expect(deleted.status).toBe(200);
+    expect(f.modelProviders.list()).toEqual([]);
+  });
+
+  it("rejects invalid input, duplicate ids, and in-use deletes", async () => {
+    const f = fixture();
+    const invalid = await createProvider(f, { baseUrl: "ftp://gateway:4000/v1" });
+    expect(invalid.status).toBe(400);
+    expect(JSON.parse(invalid.body)).toMatchObject({ code: "VALIDATION" });
+    expect(f.modelProviders.list()).toEqual([]);
+
+    expect((await createProvider(f)).status).toBe(200);
+    const duplicate = await createProvider(f);
+    expect(duplicate.status).toBe(409);
+    expect(JSON.parse(duplicate.body)).toMatchObject({ code: "provider_exists" });
+
+    f.settings.set("global", {}, "llm.model", "llm-lan/deepseek", "owner");
+    const inUse = await providerPost(f, {
+      action: "delete",
+      id: "llm-lan",
+      return_to: "/settings#custom-providers",
+    });
+    expect(inUse.status).toBe(409);
+    expect(JSON.parse(inUse.body)).toMatchObject({
+      code: "provider_in_use",
+      references: [{ scope: "global", projectId: "", appKey: "" }],
+    });
+    expect(f.modelProviders.list()).toHaveLength(1);
+  });
+
+  it("rejects agent principals and cross-site mutations", async () => {
+    const f = fixture();
+    const agent = await handleSettings(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/settings/model-providers",
+        headers: auth(f.agentToken, {
+          "content-type": "application/x-www-form-urlencoded",
+        }),
+        body: form({
+          action: "create",
+          id: "llm-lan",
+          baseUrl: "http://gateway:4000/v1",
+          models: "deepseek | 1 | 1",
+        }),
+      }),
+    );
+    expect(agent.status).toBe(403);
+
+    const crossSite = await handleSettings(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/settings/model-providers",
+        headers: auth(f.token, {
+          "content-type": "application/x-www-form-urlencoded",
+        }),
+        body: form({
+          action: "create",
+          id: "llm-lan",
+          baseUrl: "http://gateway:4000/v1",
+          models: "deepseek | 1 | 1",
+        }),
+        origin: "http://evil.example",
+        host: "hanse.local",
+      }),
+    );
+    expect(crossSite.status).toBe(403);
+    expect(JSON.parse(crossSite.body)).toMatchObject({ code: "cross_site_request" });
+    expect(f.modelProviders.list()).toEqual([]);
+  });
+
+  it("returns warnings and model suggestions without exposing keys", async () => {
+    const f = fixture();
+    f.settings.setProviderKey("global", {}, "llm-lan", "sentinel-key-value", "owner");
+    f.modelProviders.create(
+      {
+        id: "llm-lan",
+        name: "LLM LAN",
+        baseUrl: "http://127.0.0.1:4000/v1",
+        models: [{ id: "deepseek", limit: { context: 1000, output: 100 } }],
+      },
+      "operator",
+    );
+
+    const page = await handleSettings(
+      f.deps,
+      request({ path: "/settings", headers: htmlAuth(f.token) }),
+    );
+    expect(page.status).toBe(200);
+    expect(page.body).toContain('list="model-options"');
+    expect(page.body).toContain('value="llm-lan/deepseek"');
+    expect(page.body).toContain("loopback base URL");
+    expect(page.body).toContain("provider-key row or host auth");
+    expect(page.body).not.toContain("sentinel-key-value");
+
+    const response = await handleSettings(
+      f.deps,
+      request({
+        method: "GET",
+        path: "/api/settings/model-providers",
+        headers: auth(f.token),
+      }),
+    );
+    expect(response.status).toBe(200);
+    const data = JSON.parse(response.body) as {
+      providers: unknown[];
+      warnings: Record<string, string[]>;
+    };
+    expect(data.providers).toHaveLength(1);
+    expect(data.warnings["llm-lan"]).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("loopback"),
+        expect.stringContaining("provider-key row or host auth"),
+      ]),
+    );
+    expect(response.body).not.toContain("sentinel-key-value");
+  });
+
+  it("returns 503 when the provider service is not configured", async () => {
+    const f = fixture();
+    delete f.deps.modelProviders;
+    const response = await handleSettings(
+      f.deps,
+      request({
+        method: "GET",
+        path: "/api/settings/model-providers",
+        headers: auth(f.token),
+      }),
+    );
+    expect(response.status).toBe(503);
+    expect(JSON.parse(response.body)).toMatchObject({
+      code: "model_providers_not_configured",
+    });
+  });
+
+  it("redirects a no-JavaScript browser form to the custom block", async () => {
+    const f = fixture();
+    const response = await handleSettings(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/settings/model-providers",
+        headers: auth(f.token, {
+          accept: "text/html",
+          "content-type": "application/x-www-form-urlencoded",
+        }),
+        body: form({
+          action: "create",
+          id: "llm-lan",
+          name: "LLM LAN",
+          baseUrl: "http://gateway:4000/v1",
+          models: "deepseek | 1000 | 100",
+          return_to: "/settings#custom-providers",
+        }),
+      }),
+    );
+    expect(response.status).toBe(303);
+    expect(response.headers?.location).toContain("/settings");
+    expect(response.headers?.location).toContain("#custom-providers");
+    expect(f.modelProviders.list()).toHaveLength(1);
   });
 });

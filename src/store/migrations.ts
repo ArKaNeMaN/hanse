@@ -624,4 +624,22 @@ ALTER TABLE app_image_versions ADD COLUMN hash_version INTEGER NOT NULL DEFAULT 
 ALTER TABLE instances ADD COLUMN applied_image_id TEXT;
 `,
   },
+  {
+    version: 19,
+    name: "custom-model-providers",
+    sql: `
+CREATE TABLE model_providers (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  npm TEXT NOT NULL CHECK (npm = '@ai-sdk/openai-compatible'),
+  base_url TEXT NOT NULL,
+  models_json TEXT NOT NULL CHECK (json_valid(models_json)),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  CHECK (length(id) BETWEEN 1 AND 128),
+  CHECK (length(name) BETWEEN 1 AND 128),
+  CHECK (length(base_url) BETWEEN 1 AND 2048)
+);
+`,
+  },
 ];

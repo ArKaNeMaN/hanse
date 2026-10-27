@@ -66,6 +66,10 @@
 - [Full master skill management](./master-skill-management.md) - master list/read/update/enable-disable/override skill tools, global and replacement confirmations, read-only reserved/deleting targets, atomic audit, content-free mutations, and manual deletion/revert/rename. Status: approved (oracle, three rounds); plan reviewed (momus PASS); implemented and verified (journal 0023).
 - [Deployment safety and release identity](./deployment-safety.md) - external deployment lock, schema guard, readiness/version, async restart, MCP-token reconciliation, CI-gated publishes, full-SHA/revision identity, and independent image tags. Status: approved (oracle PASS); plan reviewed (momus PASS); implemented and verified (journal 0019).
 - [Agent image validity](./agent-image-validity.md) - per-application image identity by Docker image ID, base tracking by manifest digest (`agent-base` vs `agent-default`), optional `build.base` with final-`FROM` fallback, migration 18, durable build adoption, restart/rollback preflight, chat warnings and the not-ready build-and-start card, shared image state, runner inspect/identity, `HANSE_AGENT_BASE_IMAGE`, docs and QA. Status: implemented; full lint/typecheck/test/build/sensitive gates pass (tests with `HANSE_CREDENTIALS_DIR` unset); browser QA PASS (6 scenarios, 32 screenshots, 0 console/page errors); live smoke pending; design owner-accepted after 12 rounds without an Oracle PASS (owner override).
+- [Global custom model providers](./custom-model-providers.md) - a global OpenAI-compatible provider
+  registry projected into `OPENCODE_CONFIG_CONTENT.provider`, with encrypted provider keys, a
+  settings UI/API, restart hashing, and an in-use delete guard. Status: approved (oracle round 2
+  PASS; momus round 2 PASS); implemented and verified (journal 0035).
 - [Architecture overview](./overview.md) - the coordinator architecture and stage plan.
 - [Agent runtime isolation and per-app toolchains](./agent-runtime.md) - staged B0/B1/B2 runtime split, layered agent images, per-app containers, app image builds, and deployment constraints. Status: proposed, revised after design review.
 

@@ -37,6 +37,8 @@ export interface SettingsServiceOptions {
   hostAuthFile?: string;
   now?: () => Date;
   runSshKeygen?: RunSshKeygen;
+  /** Custom provider ids that should appear in the key status map even without a key row. */
+  providerIds?: () => readonly string[];
 }
 
 /** A settings input validation failure that HTTP callers should map to 400. */
@@ -221,15 +223,26 @@ export class SettingsService {
   readonly #now: (() => Date) | undefined;
   readonly #providerKeys: ProviderKeyStore;
   readonly #gitAuth: GitAuthStore;
+  readonly #providerIdSource: (() => readonly string[]) | undefined;
 
   constructor(options: SettingsServiceOptions) {
     this.#db = options.db;
     this.#hostAuthFile = options.hostAuthFile;
     this.#now = options.now;
     this.#providerKeys = new ProviderKeyStore(options.db, options.secretKey);
+    this.#providerIdSource = options.providerIds;
     this.#gitAuth = new GitAuthStore(options.db, options.secretKey, {
       runSshKeygen: options.runSshKeygen,
     });
+  }
+
+  /** Provider ids with a key row in any scope plus the host-auth keys. */
+  allProviderIds(): string[] {
+    const rows = this.#db
+      .prepare("SELECT DISTINCT provider FROM provider_keys ORDER BY provider")
+      .all() as { provider: string }[];
+    const host = this.#readHostAuth();
+    return [...new Set([...rows.map((row) => row.provider), ...Object.keys(host.auth)])].sort();
   }
 
   /** Effective settings plus raw scoped rows, provider statuses, and warnings. */
@@ -616,6 +629,9 @@ export class SettingsService {
       if (tool !== null && tool.driver === "deepseek") {
         providers.add(tool.options.provider);
       }
+    }
+    for (const id of this.#providerIdSource?.() ?? []) {
+      providers.add(id);
     }
     return providers;
   }

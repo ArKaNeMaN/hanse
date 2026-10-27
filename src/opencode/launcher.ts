@@ -2,10 +2,12 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, realpathSync } from "node:fs";
 import path from "node:path";
+import type { ProviderOverlay } from "../model-providers/types.js";
 import type { EffectiveSettings } from "../settings/types.js";
 import type { SqliteDatabase } from "../store/index.js";
 import { writeAuthFile } from "./auth.js";
 import {
+  assertOverlayBytes,
   buildConfigOverlay,
   type InstanceIdentity,
   type McpLocalServer,
@@ -35,6 +37,7 @@ export interface LaunchInput {
   command?: string[];
   baseEnv?: NodeJS.ProcessEnv;
   model?: string;
+  providers?: Record<string, ProviderOverlay>;
   auth?: Record<string, unknown>;
   omoProfile?: string;
   mcpServers?: Record<string, McpLocalServer>;
@@ -104,8 +107,10 @@ export function buildInstanceEnv(input: LaunchInput): NodeJS.ProcessEnv {
     plugins: input.baselinePlugins,
     permission,
     model: input.model,
+    providers: input.providers,
     mcpServers: input.mcpServers,
   });
+  assertOverlayBytes(overlay);
   const env = scrubInstanceEnv({
     ...process.env,
     ...input.baseEnv,

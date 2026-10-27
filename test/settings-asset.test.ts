@@ -36,4 +36,9 @@ describe("settings asset", () => {
     expect(asset).toContain("restoreDrafts");
     expect(asset).toContain("preventScroll");
   });
+
+  it("confirms provider deletion before a fragment save", () => {
+    expect(asset).toContain('hasAttribute("data-confirm")');
+    expect(asset).toContain("window.confirm");
+  });
 });

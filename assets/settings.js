@@ -698,6 +698,12 @@ document.addEventListener("submit", (event) => {
     openClearDialog(form, submitter);
     return;
   }
+  if (submitter instanceof HTMLElement && submitter.hasAttribute("data-confirm")) {
+    if (!window.confirm(submitter.getAttribute("data-confirm") ?? "Continue?")) {
+      event.preventDefault();
+      return;
+    }
+  }
   event.preventDefault();
   if (form.dataset.submitting === "true") {
     return;

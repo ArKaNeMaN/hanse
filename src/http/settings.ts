@@ -1,4 +1,15 @@
 import { GitCredentialValidationError } from "../git/credentials.js";
+import {
+  collisionWarnings,
+  type ModelProvider,
+  ModelProviderConflictError,
+  ModelProviderInUseError,
+  type ModelProviderModel,
+  ModelProviderNotFoundError,
+  ModelProviderValidationError,
+  parseModelLines,
+  providerBaseUrlWarnings,
+} from "../model-providers/index.js";
 import type { RegisteredApp } from "../registry/index.js";
 import {
   type EffectiveValue,
@@ -478,6 +489,56 @@ function gitAuthMutationError(error: unknown): HttpResponse {
   throw error;
 }
 
+function modelProviderWarnings(
+  providers: readonly ModelProvider[],
+  existingProviderIds: ReadonlySet<string>,
+): Record<string, string[]> {
+  const warnings: Record<string, string[]> = {};
+  for (const provider of providers) {
+    const list = [
+      ...collisionWarnings(provider.id, existingProviderIds),
+      ...providerBaseUrlWarnings(provider.baseUrl),
+    ];
+    if (list.length > 0) {
+      warnings[provider.id] = list;
+    }
+  }
+  return warnings;
+}
+
+function modelProviderMutationError(
+  browser: boolean,
+  returnTo: string,
+  error: unknown,
+): HttpResponse {
+  if (error instanceof ModelProviderValidationError || error instanceof BodyValidationError) {
+    return browser
+      ? redirectNotice(returnTo, error.message, "error")
+      : json(400, { error: error.message, code: "VALIDATION" });
+  }
+  if (error instanceof ModelProviderConflictError) {
+    return browser
+      ? redirectNotice(returnTo, error.message, "error")
+      : json(409, { error: error.message, code: error.code });
+  }
+  if (error instanceof ModelProviderInUseError) {
+    return browser
+      ? redirectNotice(returnTo, error.message, "error")
+      : json(409, { error: error.message, code: error.code, references: error.references });
+  }
+  if (error instanceof ModelProviderNotFoundError) {
+    return browser
+      ? redirectNotice(returnTo, error.message, "error")
+      : json(404, { error: error.message, code: error.code });
+  }
+  if (error instanceof SettingsValidationError) {
+    return browser
+      ? redirectNotice(returnTo, error.message, "error")
+      : json(400, { error: error.message, code: "VALIDATION" });
+  }
+  throw error;
+}
+
 /* ------------------------------------------------------------------------- */
 /* Dispatch                                                                  */
 /* ------------------------------------------------------------------------- */
@@ -487,6 +548,9 @@ export function isSettingsRoute(method: string, pathname: string): boolean {
     return method === "GET";
   }
   if (pathname === "/api/settings" || pathname === "/api/settings/provider") {
+    return true;
+  }
+  if (pathname === "/api/settings/model-providers") {
     return true;
   }
   if (pathname === "/api/settings/git") {
@@ -624,6 +688,71 @@ export async function handleSettings(deps: HttpDeps, request: HttpRequest): Prom
     } catch (error) {
       return gitAuthMutationError(error);
     }
+  }
+
+  if (request.path === "/api/settings/model-providers") {
+    const modelProviders = deps.modelProviders;
+    if (modelProviders === undefined) {
+      return json(503, {
+        error: "model providers are not configured",
+        code: "model_providers_not_configured",
+      });
+    }
+    if (request.method === "GET") {
+      const providers = modelProviders.list();
+      return json(200, {
+        providers,
+        warnings: modelProviderWarnings(providers, new Set(settings.allProviderIds())),
+      });
+    }
+    if (request.method === "POST") {
+      if (crossSiteMutation(request)) {
+        return json(403, { error: "cross-site request rejected", code: "cross_site_request" });
+      }
+      let payload: Record<string, unknown> = {};
+      let returnTo = "/settings#custom-providers";
+      try {
+        payload = parseObjectBody(request);
+        returnTo = safeLocalPath(stringValue(payload.return_to), "/settings#custom-providers");
+        const action = stringValue(payload.action) ?? "";
+        const id = stringValue(payload.id)?.trim() ?? "";
+        if (payload.delete === "1" || action === "delete") {
+          modelProviders.delete(id, actor);
+        } else if (action === "create" || action === "update") {
+          const name = stringValue(payload.name);
+          const baseUrl = stringValue(payload.baseUrl ?? payload.base_url) ?? "";
+          const models =
+            typeof payload.models === "string" ? parseModelLines(payload.models) : payload.models;
+          if (action === "create") {
+            modelProviders.create({ id, name, baseUrl, models }, actor);
+          } else {
+            modelProviders.update(id, { id, name, baseUrl, models }, actor);
+          }
+        } else {
+          throw new SettingsValidationError("action must be create, update, or delete");
+        }
+      } catch (error) {
+        return modelProviderMutationError(browser, returnTo, error);
+      }
+      if (fragment) {
+        return fragmentResponse(deps, settings, "global", {}, ["agent", "restart", "warnings"]);
+      }
+      if (browser) {
+        const deleted = payload.delete === "1" || payload.action === "delete";
+        return redirectNotice(
+          returnTo,
+          deleted ? "Provider deleted." : "Provider saved.",
+          "success",
+        );
+      }
+      const providers = modelProviders.list();
+      return json(200, {
+        ok: true,
+        providers,
+        warnings: modelProviderWarnings(providers, new Set(settings.allProviderIds())),
+      });
+    }
+    return json(405, { error: "method not allowed" });
   }
 
   if (request.path === "/api/settings/provider" && request.method === "POST") {
@@ -1192,16 +1321,32 @@ function modelControls(options: {
   target: SettingsTarget;
   resolved: ResolvedSettings;
   effective: EffectiveValue<string>;
+  providers: readonly ModelProvider[];
   returnTo: string;
 }): string {
   const own = ownValue(options.resolved, options.scope, "llm.model");
   const prefill = stringPrefill(options.scope, own, options.effective);
+  const pairs = [
+    ...new Set(
+      options.providers.flatMap((provider) =>
+        provider.models.map((model) => `${provider.id}/${model.id}`),
+      ),
+    ),
+  ].sort();
+  const datalist =
+    pairs.length === 0
+      ? ""
+      : `<datalist id="model-options">${pairs
+          .map((value) => `<option value="${escapeHtml(value)}"></option>`)
+          .join("")}</datalist>`;
+  const listAttribute = pairs.length === 0 ? "" : ' list="model-options"';
   return `<form class="setting-row__form" method="post" action="/api/settings" data-settings-form data-no-busy data-success-notice="Settings saved.">
     ${hiddenTarget(options.scope, options.target, withHash(options.returnTo, "#setting-llm-model"))}
     <input type="hidden" name="key" value="llm.model" />
     <div class="field">
       <label class="label" for="model-value">Model</label>
-      <input class="input" id="model-value" name="value" type="text" placeholder="${escapeHtml(prefill.placeholder)}" value="${escapeHtml(prefill.value)}" required autocomplete="off" />
+      <input class="input" id="model-value" name="value" type="text"${listAttribute} placeholder="${escapeHtml(prefill.placeholder)}" value="${escapeHtml(prefill.value)}" required autocomplete="off" />
+      ${datalist}
     </div>
     ${standardActions({
       scope: options.scope,
@@ -1388,6 +1533,117 @@ function providerClearAction(
     };
   }
   return { button: `<button ${attributes}>Clear</button>`, reason: "" };
+}
+
+function formatModelsText(models: readonly ModelProviderModel[]): string {
+  return models
+    .map((model) =>
+      [
+        model.id,
+        String(model.limit.context),
+        String(model.limit.output),
+        ...(model.name === undefined ? [] : [model.name]),
+      ].join(" | "),
+    )
+    .join("\n");
+}
+
+function customProvidersBlock(options: {
+  scope: SettingsScope;
+  resolved: ResolvedSettings;
+  providers: readonly ModelProvider[];
+  providerKeyIds: ReadonlySet<string>;
+}): string {
+  if (options.scope !== "global") {
+    return `<p class="hint">Custom model providers are global. <a href="/settings#custom-providers">Manage in Global settings</a>.</p>`;
+  }
+  const rows =
+    options.providers.length === 0
+      ? '<p class="hint">No custom providers yet.</p>'
+      : options.providers
+          .map((provider, index) => {
+            const keyStatus =
+              options.resolved.providerKeys[provider.id] ?? ({ state: "missing" } as const);
+            const warnings = [
+              ...collisionWarnings(provider.id, options.providerKeyIds),
+              ...providerBaseUrlWarnings(provider.baseUrl),
+            ];
+            const nameId = `custom-provider-name-${index}`;
+            const urlId = `custom-provider-url-${index}`;
+            const modelsId = `custom-provider-models-${index}`;
+            const body = `<p class="hint">Key: <a href="#${providerRowId(provider.id)}">${providerStatusLabel(keyStatus)}</a> · ${plural(provider.models.length, "model")}</p>
+              <form class="setting-row__form" method="post" action="/api/settings/model-providers" data-settings-form data-no-busy data-success-notice="Provider saved.">
+                <input type="hidden" name="action" value="update" />
+                <input type="hidden" name="id" value="${escapeHtml(provider.id)}" />
+                <input type="hidden" name="return_to" value="/settings#custom-providers" />
+                ${fieldErrorSlot(`custom-provider-error-${index}`)}
+                <div class="field">
+                  <label class="label" for="${nameId}">Name</label>
+                  <input class="input" id="${nameId}" name="name" type="text" value="${escapeHtml(provider.name)}" autocomplete="off" />
+                </div>
+                <div class="field">
+                  <label class="label" for="${urlId}">Base URL</label>
+                  <input class="input" id="${urlId}" name="baseUrl" type="text" value="${escapeHtml(provider.baseUrl)}" required autocomplete="off" />
+                </div>
+                <div class="field">
+                  <label class="label" for="${modelsId}">Models</label>
+                  <textarea class="input" id="${modelsId}" name="models" rows="4" required>${escapeHtml(formatModelsText(provider.models))}</textarea>
+                  <p class="hint">One per line: id | context | output | optional name.</p>
+                </div>
+                <div class="setting-row__actions">
+                  <button class="btn btn-primary btn-sm" type="submit">Save</button>
+                  <button class="btn btn-danger btn-sm" type="submit" name="delete" value="1" data-confirm="Delete provider ${escapeHtml(provider.id)}?">Delete</button>
+                </div>
+              </form>`;
+            return settingRow({
+              id: `custom-provider-${encodeURIComponent(provider.id)}`,
+              title: `${provider.name} (${provider.id})`,
+              summaryNote: "Edit",
+              effectiveText: provider.baseUrl,
+              source: "Global",
+              state: providerPill(keyStatus),
+              warnings,
+              body,
+            });
+          })
+          .join("");
+  const add = `<details class="disclosure provider-add">
+    <summary>Add custom provider${icon("chevron-down", "disclosure__chevron")}</summary>
+    <form class="setting-row__form provider-add__form" method="post" action="/api/settings/model-providers" data-settings-form data-no-busy data-success-notice="Provider saved.">
+      <input type="hidden" name="action" value="create" />
+      <input type="hidden" name="return_to" value="/settings#custom-providers" />
+      ${fieldErrorSlot("custom-provider-add-error")}
+      <div class="field">
+        <label class="label" for="custom-provider-new-id">Provider id</label>
+        <input class="input" id="custom-provider-new-id" name="id" type="text" placeholder="llm-lan" required autocomplete="off" />
+      </div>
+      <div class="field">
+        <label class="label" for="custom-provider-new-name">Name</label>
+        <input class="input" id="custom-provider-new-name" name="name" type="text" placeholder="LLM LAN" autocomplete="off" />
+      </div>
+      <div class="field">
+        <label class="label" for="custom-provider-new-url">Base URL</label>
+        <input class="input" id="custom-provider-new-url" name="baseUrl" type="text" placeholder="http://gateway.example:4000/v1" required autocomplete="off" />
+        <p class="hint">Resolved inside the app container: use the host LAN address, not 127.0.0.1 or localhost.</p>
+      </div>
+      <div class="field">
+        <label class="label" for="custom-provider-new-models">Models</label>
+        <textarea class="input" id="custom-provider-new-models" name="models" rows="4" placeholder="deepseek | 1000000 | 64000" required></textarea>
+        <p class="hint">One per line: id | context | output | optional name.</p>
+      </div>
+      <div class="setting-row__actions">
+        <button class="btn btn-primary btn-sm" type="submit">Save</button>
+      </div>
+    </form>
+  </details>`;
+  return `<div class="providers" id="custom-providers" aria-labelledby="custom-providers-title">
+    <div class="providers__head">
+      <h3 class="card__title" id="custom-providers-title">Custom model providers</h3>
+      <span class="badge">${plural(options.providers.length, "provider")}</span>
+    </div>
+    <p class="hint providers__hint">Global OpenAI-compatible endpoints. The API key stays in the Providers block.</p>
+    ${rows}${add}
+  </div>`;
 }
 
 function providerRowId(provider: string): string {
@@ -1935,6 +2191,8 @@ function settingsSections(options: {
 }): SettingsSections {
   const effectiveModel = options.resolved.effective.llm.model;
   const modelWarning = modelProviderWarning(options.resolved);
+  const customProviders = options.deps.modelProviders?.list() ?? [];
+  const providerKeyIds = new Set(options.deps.settings?.allProviderIds() ?? []);
   const searchEffective = options.resolved.effective.web.search;
   const fetchEffective = options.resolved.effective.web.fetch;
 
@@ -1950,6 +2208,7 @@ function settingsSections(options: {
       target: options.target,
       resolved: options.resolved,
       effective: effectiveModel,
+      providers: customProviders,
       returnTo: options.returnTo,
     })}`,
     details: scopeDetailsHtml(options.resolved, options.scope, "llm.model"),
@@ -1958,6 +2217,11 @@ function settingsSections(options: {
     scope: options.scope,
     target: options.target,
     returnTo: options.returnTo,
+  })}${customProvidersBlock({
+    scope: options.scope,
+    resolved: options.resolved,
+    providers: customProviders,
+    providerKeyIds,
   })}`;
 
   const webRows = `${settingRow({

@@ -38,6 +38,7 @@ import { ensureMasterAgent } from "../master/bootstrap.js";
 import { isMasterProject, MASTER_DIR_NAME } from "../master/constants.js";
 import { runRemoteMcpServer } from "../mcp/remote.js";
 import { runMcpServer } from "../mcp/server.js";
+import { ModelProviderService } from "../model-providers/index.js";
 import { InstanceManager, resolveBaselinePlugins } from "../opencode/manager.js";
 import { OmoProfileStore } from "../opencode/omo-profile.js";
 import { PreviewService } from "../preview/service.js";
@@ -616,10 +617,12 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
     db?.close();
     throw error;
   }
+  const modelProviders = new ModelProviderService({ db });
   const settings = new SettingsService({
     db,
     secretKey,
     hostAuthFile: process.env.HANSE_AUTH_FILE,
+    providerIds: () => modelProviders.list().map((provider) => provider.id),
   });
   const omoProfiles = new OmoProfileStore({
     path: path.join(os.homedir(), ".omo", "omo.jsonc"),
@@ -672,6 +675,7 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
     settings,
     omoProfiles,
     skills,
+    modelProviders,
     ...(previews === undefined ? {} : { previews }),
     ...(images === undefined ? {} : { images }),
     workspaceRoot: workspace,
@@ -733,6 +737,7 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
     git,
     manager,
     settings,
+    modelProviders,
     ssh,
     skills,
     dispatcher: handoffDispatcher,
