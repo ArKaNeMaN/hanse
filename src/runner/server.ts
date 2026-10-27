@@ -305,6 +305,11 @@ function containerState(inspect: DockerContainerInspect): RuntimeAppState {
   return "stopped";
 }
 
+function restartCount(inspect: DockerContainerInspect): number {
+  const value = inspect.RestartCount;
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
 function statusFromInspect(
   appId: string,
   containerName: string,
@@ -324,6 +329,11 @@ function statusFromInspect(
     containerId: inspect.Id,
     containerName,
     imageId: inspect.Image ?? null,
+    startedAt: inspect.State?.StartedAt ?? null,
+    restartCount: restartCount(inspect),
+    exitCode: inspect.State?.ExitCode ?? null,
+    oomKilled: inspect.State?.OOMKilled === true,
+    finishedAt: inspect.State?.FinishedAt ?? null,
     ...(inspect.State?.Error === undefined ? {} : { error: inspect.State.Error }),
   };
 }

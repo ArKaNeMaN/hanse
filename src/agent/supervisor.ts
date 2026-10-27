@@ -417,6 +417,11 @@ export class AgentSupervisor {
       specHash: entry.spec.specHash,
       version: entry.version,
       imageId: null,
+      startedAt: entry.startedAt,
+      restartCount: 0,
+      exitCode: null,
+      oomKilled: false,
+      finishedAt: null,
       ...(entry.error === undefined ? {} : { error: entry.error }),
     };
   }

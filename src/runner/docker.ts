@@ -302,6 +302,7 @@ export interface DockerContainerInspect {
   Name: string;
   /** Docker image ID the container was created from. */
   Image?: string;
+  RestartCount?: number;
   Config?: {
     Image?: string;
     Labels?: Record<string, string>;
@@ -315,6 +316,7 @@ export interface DockerContainerInspect {
     Running?: boolean;
     ExitCode?: number;
     Error?: string;
+    OOMKilled?: boolean;
     StartedAt?: string;
     FinishedAt?: string;
   };

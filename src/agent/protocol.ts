@@ -21,6 +21,16 @@ export interface RuntimeAppStatus {
   containerName?: string | null;
   /** Docker image ID the container was launched with; `null` when unknown. */
   imageId?: string | null;
+  /** Runtime epoch start; `null` when the backend cannot report it. */
+  startedAt?: string | null;
+  /** Docker restart counter; `0` when the backend cannot report one. */
+  restartCount?: number;
+  /** Last process exit code; `null` when unknown. */
+  exitCode?: number | null;
+  /** Whether Docker killed the process for running out of memory. */
+  oomKilled?: boolean;
+  /** Runtime epoch finish; `null` when the process has not finished or is unknown. */
+  finishedAt?: string | null;
   error?: string;
 }
 
@@ -33,6 +43,11 @@ export function stoppedStatus(appId: string): RuntimeAppStatus {
     specHash: null,
     version: null,
     imageId: null,
+    startedAt: null,
+    restartCount: 0,
+    exitCode: null,
+    oomKilled: false,
+    finishedAt: null,
   };
 }
 
@@ -80,4 +95,8 @@ export interface HostStatusPayload {
   pid: number | null;
   port: number;
   startedAt: string;
+  restartCount?: number;
+  exitCode?: number | null;
+  oomKilled?: boolean;
+  finishedAt?: string | null;
 }

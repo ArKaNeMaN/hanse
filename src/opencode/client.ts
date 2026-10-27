@@ -26,6 +26,16 @@ export interface OpencodeMessagePage {
   nextCursor?: string;
 }
 
+export interface OpencodeSessionStatus {
+  type: string;
+  attempt?: number;
+  message?: string;
+  next?: number;
+  action?: unknown;
+}
+
+export type OpencodeSessionStatusMap = Record<string, OpencodeSessionStatus>;
+
 export type OpencodeToolRef = Record<string, unknown>;
 
 export interface OpencodeModel {
@@ -193,6 +203,9 @@ export const PROVIDERS_RESPONSE_MAX_BYTES = 4 * 1024 * 1024;
 export const PROVIDERS_RESPONSE_TIMEOUT_MS = 10_000;
 export const SESSIONS_RESPONSE_MAX_BYTES = 2 * 1024 * 1024;
 export const SESSIONS_RESPONSE_TIMEOUT_MS = 5_000;
+export const SESSION_STATUS_RESPONSE_MAX_BYTES = 1024 * 1024;
+export const SESSION_STATUS_RESPONSE_TIMEOUT_MS = 5_000;
+const MAX_SESSION_STATUS_ENTRIES = 2_000;
 export const SUMMARIZE_RESPONSE_TIMEOUT_MS = 600_000;
 export const COMMANDS_RESPONSE_MAX_BYTES = 4 * 1024 * 1024;
 export const COMMANDS_RESPONSE_TIMEOUT_MS = 10_000;
@@ -241,6 +254,42 @@ export async function listSessionsBounded(endpoint: string): Promise<OpencodeSes
     options,
   );
   return readJson<OpencodeSession[]>(response, path, options);
+}
+
+/**
+ * `GET /session/status` returns only the in-memory active-session map. Idle sessions are absent,
+ * and the endpoint may answer with malformed entries, so every unrecognized value is dropped.
+ */
+export async function listSessionStatuses(endpoint: string): Promise<OpencodeSessionStatusMap> {
+  const path = "/session/status";
+  const body = await getJson<unknown>(
+    endpoint,
+    path,
+    {
+      maxBytes: SESSION_STATUS_RESPONSE_MAX_BYTES,
+      timeoutMs: SESSION_STATUS_RESPONSE_TIMEOUT_MS,
+    },
+    SESSION_STATUS_RESPONSE_TIMEOUT_MS,
+  );
+  if (typeof body !== "object" || body === null || Array.isArray(body)) return {};
+  const statuses: OpencodeSessionStatusMap = {};
+  let count = 0;
+  for (const [sessionId, value] of Object.entries(body)) {
+    if (count >= MAX_SESSION_STATUS_ENTRIES) break;
+    if (sessionId.length === 0) continue;
+    if (typeof value !== "object" || value === null || Array.isArray(value)) continue;
+    const record = value as Record<string, unknown>;
+    if (typeof record.type !== "string" || record.type.length === 0) continue;
+    statuses[sessionId] = {
+      type: record.type,
+      ...(typeof record.attempt === "number" ? { attempt: record.attempt } : {}),
+      ...(typeof record.message === "string" ? { message: record.message } : {}),
+      ...(typeof record.next === "number" ? { next: record.next } : {}),
+      ...(record.action === undefined ? {} : { action: record.action }),
+    };
+    count += 1;
+  }
+  return statuses;
 }
 
 export async function listCommands(

@@ -1,5 +1,23 @@
 # Open questions
 
+> Stage: `0030-agent-process-protection`. Owner decisions were collected on 2026-10-27, after the
+> design review PASS. There are no open items for this stage.
+
+## Stage `0030-agent-process-protection` - resolved owner decisions
+
+1. **Notice presentation** - inside the ordinary chat log as full-width "break" rows with a
+   horizontal rule and a label such as "Agent was restarted here", interleaved by timestamp with
+   messages. A separate notice timeline is rejected.
+2. **Auto-resume trigger** - any restart, including an explicit operator restart and an external
+   `docker restart`; the reason is shown in the notice but does not block auto-resume. A stopped app
+   is never auto-started.
+3. **TTL and attempts** - 30 minutes from the last `busy` observation, one automatic attempt. No
+   manual-attempt mechanism: if auto-resume is skipped or fails, the operator sends a normal chat
+   message (for example "Продолжай") with the session context intact.
+4. **Scope** - top-level sessions only; child/subagent sessions get a notice and are retried through
+   the parent.
+5. **Settings** - constants in this stage; a global setting/UI is a follow-up.
+
 > Stage: `0029-custom-model-providers`. Owner decisions were collected on 2026-10-27, before the
 > plan was written. There are no open items for this stage.
 

@@ -43,7 +43,8 @@ import {
 } from "../opencode/prompts.js";
 import { appDir, type FoundApp, findApp, toManagedApp } from "./apps.js";
 import { principalFrom } from "./auth.js";
-import { lifecycleErrorResponse, mapLifecycleHttpError } from "./errors.js";
+import { agentStoppedResponse } from "./chat.js";
+import { lifecycleErrorResponse } from "./errors.js";
 import type { HttpDeps, HttpRequest, HttpResponse } from "./handler.js";
 
 const MAX_ANSWER_BYTES = 32 * 1024;
@@ -578,11 +579,12 @@ export async function handlePrompts(deps: HttpDeps, request: HttpRequest): Promi
   }
 
   let endpoint: string;
-  const attached =
-    match.kind === "prompts" || match.kind === "saved-permissions" || match.kind === "todo"
-      ? deps.manager.endpointFor?.(found.app.id)
-      : undefined;
-  if (attached !== undefined) {
+  const readKind =
+    match.kind === "prompts" || match.kind === "saved-permissions" || match.kind === "todo";
+  if (readKind) {
+    // Reads never start a stopped app; mutation kinds below keep the explicit start path.
+    const attached = deps.manager.endpointFor?.(found.app.id);
+    if (attached === undefined) return agentStoppedResponse();
     endpoint = attached;
   } else {
     try {
@@ -697,6 +699,18 @@ export async function streamAppEvents(
     writeJson(response, 404, { error: `unknown application: ${appKey}` });
     return;
   }
+  if (found.app.deleting || found.project.deleting) {
+    writeJson(response, 409, {
+      error: "application is pending deletion",
+      code: "deletion_pending",
+    });
+    return;
+  }
+  const endpoint = deps.manager.endpointFor?.(found.app.id);
+  if (endpoint === undefined) {
+    writeJson(response, 503, { error: "agent is stopped", code: "agent_stopped" });
+    return;
+  }
   const releaseSlot = appStreams.acquireBrowser(found.app.id);
   if (releaseSlot === undefined) {
     writeJson(response, 429, {
@@ -713,29 +727,6 @@ export async function streamAppEvents(
   };
   response.once?.("close", releaseOnce);
   response.once?.("finish", releaseOnce);
-  let endpoint: string;
-  try {
-    endpoint = await deps.manager.ensure(toManagedApp(found));
-  } catch (error) {
-    if (error instanceof DeletionPendingError) {
-      writeJson(response, 409, { error: error.message, code: error.code });
-      releaseOnce();
-      return;
-    }
-    const mapped = mapLifecycleHttpError(error);
-    if (mapped !== undefined) {
-      response.writeHead(mapped.status, {
-        "content-type": "application/json; charset=utf-8",
-        ...(mapped.headers ?? {}),
-      });
-      response.end(JSON.stringify(mapped.body));
-      releaseOnce();
-      return;
-    }
-    writeJson(response, 502, { error: startFailureMessage(error) });
-    releaseOnce();
-    return;
-  }
   if (response.destroyed || response.writableEnded) {
     releaseOnce();
     return;
@@ -746,6 +737,7 @@ export async function streamAppEvents(
   let seq = 0;
   let heartbeat: NodeJS.Timeout | undefined;
   let unsubscribeContext: (() => void) | undefined;
+  let unsubscribeNotices: (() => void) | undefined;
   let queue: Promise<void> = Promise.resolve();
   const emit = (event: HanseEvent): string => {
     seq += 1;
@@ -760,6 +752,8 @@ export async function streamAppEvents(
     controller.abort();
     unsubscribeContext?.();
     unsubscribeContext = undefined;
+    unsubscribeNotices?.();
+    unsubscribeNotices = undefined;
     if (heartbeat !== undefined) {
       clearInterval(heartbeat);
       heartbeat = undefined;
@@ -817,6 +811,12 @@ export async function streamAppEvents(
             context: snapshot,
           }),
         );
+      });
+    }
+    if (typeof deps.manager.subscribeNotices === "function") {
+      unsubscribeNotices = deps.manager.subscribeNotices(found.app.id, (notice) => {
+        if (response.destroyed || response.writableEnded) return;
+        void write(emit({ type: "notice.created", notice }));
       });
     }
     for await (const event of stream.events) {

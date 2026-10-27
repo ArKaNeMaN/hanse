@@ -32,3 +32,4 @@
   OpenAI-compatible provider registry projected into `OPENCODE_CONFIG_CONTENT.provider`, encrypted
   provider keys, restart hashing, the settings API/UI, and an in-use delete guard. Status: design
   approved (oracle round 2 PASS; momus round 2 PASS); implemented and verified (journal 0035).
+- [0030 - Agent process protection](./0030-agent-process-protection.md) - persistent safe-test instruction, narrow bash self-kill denies with `/agent` verification, runtime-epoch stop detection, persisted chat notices, subagent-to-parent signals, recency-guarded top-level session auto-resume, non-starting chat read paths, tests and browser QA. Status: implemented and verified (journal 0037); commit/deployment pending owner authorization.

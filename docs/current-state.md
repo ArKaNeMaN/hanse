@@ -374,8 +374,9 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   order; migrations v10 (applied settings/profile state), v11 (deletion markers), v12 (skills),
   v13 (skill bundles), v14 (session-bound handoffs, reply routing, and handoff policy), and v15
   (chat drafts, session state, and pending sends) and v16 (file-only attachments and deliveries)
-  follow. The current schema versions are `[1..19]` (v17 adds handoff message-id lookup indexes;
-  v18 adds agent image validity; v19 adds the global custom model provider registry).
+  follow. The current schema versions are `[1..20]` (v17 adds handoff message-id lookup indexes;
+  v18 adds agent image validity; v19 adds the global custom model provider registry; v20 adds the
+  process-rule hash, runtime epoch/exit fields, and the session resume/notice tables).
 - Live on `deployment-host` (`sha-e2d89a2`): a temporary SSH target pinned and authenticated, an approval was
   approved, `echo QA_OK` and a 65 s `sleep` succeeded, upload/download round-tripped, a real
   `opencode` turn called `hanse_ssh_exec` and received the result after 65 s, and audit rows survived
@@ -398,6 +399,45 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   (`@colbymchenry/codegraph@1.6.2`, `/opt/hanse/codegraph`) through `HANSE_CODEGRAPH_BIN`. The
   application must be indexed with `codegraph init` (creates `.codegraph/`) before graph queries
   return data.
+- Every managed instance gets a coordinator-owned process-safety instruction at
+  `<app state>/hanse/agent-process-rules.md`, appended to `OPENCODE_CONFIG_CONTENT.instructions`.
+  The file tells the agent never to signal/kill the opencode server or its process group, and to
+  inspect it only through a disposable separate instance. A sidecar
+  `agent-process-rules.applied.md` plus `instances.applied_rule_hash` preserve the content actually
+  applied by the last explicit start; a missing/mismatched sidecar restores the current rule and
+  keeps the app `Restart required`. The file is agent-writable and the instruction is a guardrail,
+  not a sandbox.
+- The permission overlay adds deny-only `bash` patterns for `pkill *opencode*`,
+  `killall *opencode*`, and `kill` against PID 1/the process group (including `kill 0`); there is
+  no broad `kill *` deny and no `bash` catch-all. `ATTACHMENTS_POLICY_VERSION` is 3. `/agent`
+  verification requires every non-hidden agent, including subagents, to resolve all probes to
+  `deny`; warnings are visible through the existing policy path but are warning-only. Wrappers,
+  scripts, app-owned config/plugins, v1 `always` approvals, and v2 saved allows can widen the final
+  ruleset.
+- The coordinator records the runtime epoch (`started_at`, `restart_count`) and the last exit/OOM/
+  stop-intent fields on `instances`. A busy/retry session is tracked in `session_resume`; terminal
+  idle/error is confirmed after 5 s with `GET /session/status` and a live runtime status probe.
+  Completed tails clear the marker; an unfinished tail with a changed/failed epoch is preserved as
+  shutdown-induced. Detection never starts an app.
+- Process interruptions are persisted in `session_notices` (latest 50 per session, deduped by
+  epoch/cycle) and rendered inside the ordinary chat log as full-width break rows interleaved by
+  timestamp with messages. `GET /api/apps/:app/sessions/:sid/notices?limit=&before=` is DB-only and
+  works while the app is stopped; `notice.created` is an app-SSE frame. Operator restart/stop,
+  external restart/stop, deployment, crashes, and child aborts are distinguished; a completed tail
+  produces no interruption notice.
+- Auto-resume applies only to top-level sessions with an interrupted busy/retry cycle, an
+  unfinished tail, no newer user turn, and a 30-minute TTL. It requires an already-running/ready
+  runtime, never calls `ensure`, and makes one automatic attempt (with one provably-not-sent
+  dispatch retry). It sends one synthetic continuation prompt with
+  `metadata.hanse="agent-resume"`; the client hides that part and shows a `resume_started` notice.
+  There is no manual Resume route and no child auto-resume. A stopped app is never auto-started;
+  the operator starts it and sends a normal message. A resume that is superseded, fails, becomes
+  ambiguous, or expires leaves a notice; the client shows the persisted state.
+- Chat read routes (`/sessions`, `/messages`, app SSE, `/prompts`, `/saved-permissions`, `/todo`,
+  `/context`) never start a stopped app. They return `503 {error:"agent is stopped",
+  code:"agent_stopped"}` when no attached endpoint exists; the client renders a stopped shell with
+  notices and an explicit Start action, and keeps a cached feed on reload. Sending a message and the
+  explicit Start action remain the only starters.
 - Our chat UI (`/chat?app=<appKey>&project=<projectId>`) lists/filters sessions, streams assistant
   text and running tool output, renders tool calls (output/error/previews), reasoning, patches,
   syntax-highlighted `edit`/`apply_patch` diffs, `write` content, and completed `read` output
@@ -415,7 +455,8 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   does not see code before a hunk. The optional `project` query is additive and disambiguates
   duplicate app keys. API:
   `GET/POST /api/apps/:app/sessions`, `DELETE /api/apps/:app/sessions/:sid`,
-  `GET/POST /api/apps/:app/sessions/:sid/messages`, `GET/PUT .../sessions/:sid/draft`,
+  `GET/POST /api/apps/:app/sessions/:sid/messages`,
+  `GET .../sessions/:sid/notices`, `GET/PUT .../sessions/:sid/draft`,
   `POST .../sessions/:sid/touch`, `POST .../sessions/:sid/delete-if-empty`,
   `POST .../sessions/:sid/pending/:pid/retry`, `DELETE .../sessions/:sid/pending/:pid`,
   `POST /api/apps/:app/attachments`, and `GET/PATCH/DELETE /api/apps/:app/attachments/:id`;
@@ -441,9 +482,10 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   triggers (boot, focus, visibility, selection, send, idle/reconnect).
 - Session switching is optimistic and cancelable: the rail, title, URL, and message skeleton switch
   immediately, the previous draft is flushed in the background, the in-flight message/history read is
-  aborted, and a selection generation makes the last click win. `GET /sessions`, `GET /messages`, and
-  `GET .../todo` attach to an already running agent through `endpointFor`; they call `ensure` (runtime
-  inspection/start) only when no endpoint is attached or the attached upstream stops answering.
+  aborted, and a selection generation makes the last click win. `GET /sessions`, `GET /messages`,
+  `GET .../todo`, `/prompts`, `/saved-permissions`, and `/context` attach to an already running agent
+  through `endpointFor` and never start a stopped one; a missing endpoint returns `agent_stopped`
+  and the client shows the persisted notices plus a Start shell.
 - The chat composer has one slash-command palette (`/` at the start or the `Commands` button). It
   merges opencode's v1 `GET /command` catalog with six Hanse actions; custom
   `.opencode/command(s)`, JSON commands, MCP prompts, and skills appear automatically.
@@ -479,8 +521,8 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
 - The app-level SSE (`GET /api/apps/:app/events`) carries typed frames
   (`stream.ready`, `message.updated`, `message.part.updated`, `message.part.delta`,
   `message.part.omitted`, `session.status`, `session.error`, `session.compacted`,
-  `context.updated`, `session.activity`, `todo.updated`, question/permission events,
-  `stream.warning`) enveloped with `seq` and `streamID`. `stream.ready` starts at `seq: 0`;
+  `context.updated`, `session.activity`, `todo.updated`, `notice.created`, question/permission
+  events, `stream.warning`) enveloped with `seq` and `streamID`. `stream.ready` starts at `seq: 0`;
   the client drops `seq <= lastSeq` per stream, hydrates on a new `streamID`, and schedules one
   reconcile on a gap or `frame_too_large`/`invalid_json`/`delta_too_large` warning. Caps: 8 MiB app
   SSE frame, 256 KiB typed event, 64 KiB delta/text snapshot/tool output/patch, 64 KiB per-file

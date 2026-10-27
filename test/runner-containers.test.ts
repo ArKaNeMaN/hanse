@@ -539,4 +539,51 @@ describe("runner launch identity", () => {
     expect(status.state).toBe("running");
     expect(docker.creates[0]?.image).toBe(pinned);
   });
+
+  it("maps Docker StartedAt, RestartCount, ExitCode, OOMKilled, and FinishedAt", async () => {
+    const { f, docker, service } = await harness();
+    await service.ensure(rawSpec(f, "a"), "project:a");
+    const container = [...docker.containers.values()][0];
+    if (container === undefined) throw new Error("missing container");
+    container.RestartCount = 3;
+    container.State = {
+      Status: "exited",
+      Running: false,
+      ExitCode: 137,
+      OOMKilled: true,
+      StartedAt: "2026-10-27T10:00:00.000Z",
+      FinishedAt: "2026-10-27T10:05:00.000Z",
+    };
+
+    const status = await service.status("project:a");
+
+    expect(status).toMatchObject({
+      state: "error",
+      startedAt: "2026-10-27T10:00:00.000Z",
+      restartCount: 3,
+      exitCode: 137,
+      oomKilled: true,
+      finishedAt: "2026-10-27T10:05:00.000Z",
+    });
+  });
+
+  it("defaults unknown RestartCount and OOMKilled to zero and false", async () => {
+    const { f, docker, service } = await harness();
+    await service.ensure(rawSpec(f, "a"), "project:a");
+    const container = [...docker.containers.values()][0];
+    if (container === undefined) throw new Error("missing container");
+    delete container.RestartCount;
+    container.State = { Status: "running", Running: true, ExitCode: 0 };
+
+    const status = await service.status("project:a");
+
+    expect(status).toMatchObject({
+      state: "running",
+      restartCount: 0,
+      exitCode: 0,
+      oomKilled: false,
+      startedAt: null,
+      finishedAt: null,
+    });
+  });
 });

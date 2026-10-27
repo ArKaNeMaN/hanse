@@ -12,8 +12,9 @@ import {
   MASTER_DIR_NAME,
   MASTER_PROJECT_ID,
 } from "../src/master/constants.js";
-import { buildConfigOverlay } from "../src/opencode/instance.js";
+import { buildConfigOverlay, resolveInstanceEnv } from "../src/opencode/instance.js";
 import { InstanceManager } from "../src/opencode/manager.js";
+import { processRulePath } from "../src/opencode/process-rules.js";
 import { SettingsService } from "../src/settings/index.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
 import { FakeAgentRuntime } from "./fixtures/fake-runtime.js";
@@ -121,7 +122,15 @@ describe("master runtime wiring", () => {
     const overlay = JSON.parse(spec.env.OPENCODE_CONFIG_CONTENT ?? "{}") as {
       instructions?: string[];
     };
-    expect(overlay.instructions).toEqual([path.join(value.masterDir, "AGENTS.md")]);
+    expect(overlay.instructions).toEqual([
+      path.join(value.masterDir, "AGENTS.md"),
+      processRulePath(
+        resolveInstanceEnv(value.agents, {
+          projectId: MASTER_PROJECT_ID,
+          app: MASTER_APP_KEY,
+        }),
+      ),
+    ]);
     expect(spec.env.GIT_CONFIG_GLOBAL).toBeUndefined();
     expect(spec.env.GIT_SSH_COMMAND).toBeUndefined();
     expect(spec.env.GIT_ASKPASS).toBeUndefined();
@@ -162,7 +171,14 @@ describe("master runtime wiring", () => {
     const overlay = JSON.parse(spec.env.OPENCODE_CONFIG_CONTENT ?? "{}") as {
       instructions?: string[];
     };
-    expect(overlay.instructions).toBeUndefined();
+    expect(overlay.instructions).toEqual([
+      processRulePath(
+        resolveInstanceEnv(value.agents, {
+          projectId: app.projectId,
+          app: app.appKey,
+        }),
+      ),
+    ]);
     expect(spec.env.GIT_CONFIG_GLOBAL).toContain("hanse/git/config");
     await manager.stopAll();
   });

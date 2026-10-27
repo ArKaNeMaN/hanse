@@ -21,6 +21,7 @@ import {
   normalizeTodos,
   type PromptSource,
 } from "./prompts.js";
+import type { SessionNoticeView } from "./recovery.js";
 
 export const MAX_SSE_FRAME_BYTES = 1024 * 1024;
 /** App-stream parser frame cap: a 20 MiB inline PDF/video fits after base64 (design §D5). */
@@ -216,6 +217,7 @@ export type HanseEvent =
       message: string;
     }
   | { type: "session.compacted"; sessionID: string }
+  | { type: "notice.created"; notice: SessionNoticeView }
   | { type: "context.updated"; sessionID: string; context: ContextSnapshot }
   | { type: "session.activity"; sessionID: string; cause?: HanseActivityCause }
   | {

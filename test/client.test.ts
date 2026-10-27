@@ -14,6 +14,7 @@ import {
   listQuestions,
   listQuestionsV2,
   listSavedPermissions,
+  listSessionStatuses,
   listSessions,
   listSessionsBounded,
   listTodos,
@@ -30,6 +31,8 @@ import {
   replyPermissionV2,
   replyQuestion,
   replyQuestionV2,
+  SESSION_STATUS_RESPONSE_MAX_BYTES,
+  SESSION_STATUS_RESPONSE_TIMEOUT_MS,
   SESSIONS_RESPONSE_MAX_BYTES,
   SESSIONS_RESPONSE_TIMEOUT_MS,
   SUMMARIZE_RESPONSE_TIMEOUT_MS,
@@ -775,6 +778,38 @@ describe("bounded sessions client", () => {
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+describe("session status client", () => {
+  it("reads GET /session/status and drops absent or malformed entries", async () => {
+    const server = await upstream((request, response) => {
+      if (request.method === "GET" && request.url === "/session/status") {
+        json(response, {
+          ses_busy: { type: "busy" },
+          ses_retry: { type: "retry", attempt: 2, message: "retrying" },
+          ses_bad: { label: "no type" },
+          ses_null: null,
+          ses_list: [],
+        });
+        return;
+      }
+      response.writeHead(404);
+      response.end("missing");
+    });
+
+    await expect(listSessionStatuses(server.endpoint)).resolves.toEqual({
+      ses_busy: { type: "busy" },
+      ses_retry: { type: "retry", attempt: 2, message: "retrying" },
+    });
+    expect(SESSION_STATUS_RESPONSE_MAX_BYTES).toBe(1024 * 1024);
+    expect(SESSION_STATUS_RESPONSE_TIMEOUT_MS).toBe(5_000);
+  });
+
+  it("returns an empty map when the status body is not an object", async () => {
+    const server = await upstream((_request, response) => json(response, []));
+
+    await expect(listSessionStatuses(server.endpoint)).resolves.toEqual({});
   });
 });
 

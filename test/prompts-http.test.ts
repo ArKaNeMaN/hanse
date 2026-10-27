@@ -178,6 +178,7 @@ async function fakeOpencode(): Promise<FakeUpstream> {
 function useUpstream(deps: HttpDeps, endpoint: string, warnings: string[] = []): void {
   deps.manager = {
     ensure: async () => endpoint,
+    endpointFor: () => endpoint,
     policyWarnings: () => [...warnings],
   } as unknown as InstanceManager;
 }
@@ -927,6 +928,101 @@ describe("prompts HTTP", () => {
     expect(ensured).toBe(0);
   });
 
+  it("returns 503 agent_stopped for read kinds when no endpoint is attached and never calls ensure", async () => {
+    const f = fixture();
+    let ensured = 0;
+    f.deps.manager = {
+      ensure: async () => {
+        ensured += 1;
+        throw new Error("reads must not start the agent");
+      },
+      endpointFor: () => undefined,
+      policyWarnings: () => [],
+    } as unknown as InstanceManager;
+
+    const readPaths = [
+      "/api/apps/storefront/prompts",
+      "/api/apps/storefront/permissions/saved",
+      "/api/apps/storefront/sessions/ses_1/todo",
+    ];
+    for (const path of readPaths) {
+      const response = await handlePrompts(
+        f.deps,
+        request({ path, query: { project: "p1" }, headers: auth(f.token) }),
+      );
+      expect(response.status, path).toBe(503);
+      expect(JSON.parse(response.body), path).toEqual({
+        error: "agent is stopped",
+        code: "agent_stopped",
+      });
+    }
+
+    f.db.prepare("UPDATE apps SET deleting = 1 WHERE id = 'p1:storefront'").run();
+    for (const path of readPaths) {
+      const response = await handlePrompts(
+        f.deps,
+        request({ path, query: { project: "p1" }, headers: auth(f.token) }),
+      );
+      expect(response.status, path).toBe(409);
+      expect(JSON.parse(response.body), path).toEqual({
+        error: "application is pending deletion",
+        code: "deletion_pending",
+      });
+    }
+    expect(ensured).toBe(0);
+  });
+
+  it("starts mutation kinds through ensure even when no endpoint is attached", async () => {
+    const f = fixture();
+    const upstream = await fakeOpencode();
+    upstream.reply("GET", "/question", [question()]);
+    upstream.reply("POST", "/question/q1/reply", true);
+    upstream.reply("GET", "/permission", [permission()]);
+    upstream.reply("POST", "/permission/p1/reply", true);
+    upstream.reply("DELETE", "/api/permission/saved/saved_1", true);
+    let ensured = 0;
+    f.deps.manager = {
+      ensure: async () => {
+        ensured += 1;
+        return upstream.endpoint;
+      },
+      endpointFor: () => {
+        throw new Error("mutation kinds must not use the read resolver");
+      },
+      policyWarnings: () => [],
+    } as unknown as InstanceManager;
+
+    const questionReply = await handlePrompts(
+      f.deps,
+      post(f.token, "/api/apps/storefront/questions/q1/reply", {
+        source: "v1",
+        answers: [["A"]],
+      }),
+    );
+    expect(questionReply.status).toBe(200);
+
+    const permissionReply = await handlePrompts(
+      f.deps,
+      post(f.token, "/api/apps/storefront/permissions/p1/reply", {
+        source: "v1",
+        reply: "once",
+      }),
+    );
+    expect(permissionReply.status).toBe(200);
+
+    const revoke = await handlePrompts(
+      f.deps,
+      request({
+        method: "DELETE",
+        path: "/api/apps/storefront/permissions/saved/saved_1",
+        query: { project: "p1" },
+        headers: auth(f.token),
+      }),
+    );
+    expect(revoke.status).toBe(200);
+    expect(ensured).toBe(3);
+  });
+
   it("maps a runtime start failure to 502", async () => {
     const f = fixture();
     f.deps.manager = {
@@ -938,7 +1034,7 @@ describe("prompts HTTP", () => {
 
     const response = await handlePrompts(
       f.deps,
-      request({ query: { project: "p1" }, headers: auth(f.token) }),
+      post(f.token, "/api/apps/storefront/questions/q1/reply", { source: "v1", answers: [] }),
     );
     expect(response.status).toBe(502);
     expect(JSON.parse(response.body).error).toContain("port in use");
@@ -955,7 +1051,7 @@ describe("prompts HTTP", () => {
 
     const response = await handlePrompts(
       f.deps,
-      request({ query: { project: "p1" }, headers: auth(f.token) }),
+      post(f.token, "/api/apps/storefront/questions/q1/reply", { source: "v1", answers: [] }),
     );
     expect(response.status).toBe(409);
     expect(JSON.parse(response.body)).toEqual({
@@ -975,7 +1071,7 @@ describe("prompts HTTP", () => {
 
     const response = await handlePrompts(
       f.deps,
-      request({ query: { project: "p1" }, headers: auth(f.token) }),
+      post(f.token, "/api/apps/storefront/questions/q1/reply", { source: "v1", answers: [] }),
     );
     expect(response.status).toBe(409);
     expect(response.headers?.["retry-after"]).toBe("30");
@@ -997,7 +1093,7 @@ describe("prompts HTTP", () => {
 
     const response = await handlePrompts(
       f.deps,
-      request({ query: { project: "p1" }, headers: auth(f.token) }),
+      post(f.token, "/api/apps/storefront/questions/q1/reply", { source: "v1", answers: [] }),
     );
     expect(response.status).toBe(500);
     expect(JSON.parse(response.body)).toEqual({ error: "agent_token_reconcile_failed" });
@@ -1005,10 +1101,12 @@ describe("prompts HTTP", () => {
 
   it("maps a pending deletion on the app event stream to 409", async () => {
     const f = fixture();
+    f.db.prepare("UPDATE apps SET deleting = 1 WHERE id = 'p1:storefront'").run();
     f.deps.manager = {
       ensure: async () => {
-        throw new DeletionPendingError("p1:storefront");
+        throw new Error("app SSE must not start the agent");
       },
+      endpointFor: () => "http://127.0.0.1:1",
       policyWarnings: () => [],
     } as unknown as InstanceManager;
     const written: { status?: number; body?: string } = {};
@@ -1036,9 +1134,51 @@ describe("prompts HTTP", () => {
 
     expect(written.status).toBe(409);
     expect(JSON.parse(written.body ?? "")).toEqual({
-      error: "application p1:storefront is pending deletion",
+      error: "application is pending deletion",
       code: "deletion_pending",
     });
+  });
+
+  it("returns 503 agent_stopped on the app event stream when no endpoint is attached", async () => {
+    const f = fixture();
+    let ensured = 0;
+    f.deps.manager = {
+      ensure: async () => {
+        ensured += 1;
+        throw new Error("app SSE must not start the agent");
+      },
+      endpointFor: () => undefined,
+      policyWarnings: () => [],
+    } as unknown as InstanceManager;
+    const written: { status?: number; body?: string } = {};
+    const response = {
+      writeHead(status: number) {
+        written.status = status;
+        return response;
+      },
+      end(body?: string) {
+        written.body = body;
+      },
+      destroyed: false,
+      writableEnded: false,
+    } as unknown as Parameters<typeof streamAppEvents>[2];
+
+    await streamAppEvents(
+      f.deps,
+      request({
+        path: "/api/apps/storefront/events",
+        query: { project: "p1" },
+        headers: auth(f.token),
+      }),
+      response,
+    );
+
+    expect(written.status).toBe(503);
+    expect(JSON.parse(written.body ?? "")).toEqual({
+      error: "agent is stopped",
+      code: "agent_stopped",
+    });
+    expect(ensured).toBe(0);
   });
 
   it("is dispatched before the chat catch-all on the real server", async () => {
@@ -1079,7 +1219,7 @@ describe("prompts typed image failures", () => {
 
     const response = await handlePrompts(
       f.deps,
-      request({ query: { project: "p1" }, headers: auth(f.token) }),
+      post(f.token, "/api/apps/storefront/questions/q1/reply", { source: "v1", answers: [] }),
     );
 
     expect(response.status).toBe(409);
@@ -1107,7 +1247,7 @@ describe("prompts typed image failures", () => {
 
     const response = await handlePrompts(
       f.deps,
-      request({ query: { project: "p1" }, headers: auth(f.token) }),
+      post(f.token, "/api/apps/storefront/questions/q1/reply", { source: "v1", answers: [] }),
     );
 
     expect(response.status).toBe(503);
@@ -1117,48 +1257,6 @@ describe("prompts typed image failures", () => {
       message: "the default agent image is unavailable",
       appId: "p1:storefront",
       state: "unknown",
-    });
-  });
-
-  it("maps a typed image failure on the app event stream to a bounded JSON body", async () => {
-    const f = fixture();
-    f.deps.manager = {
-      ensure: async () => {
-        throw new ImageNotReadyError(
-          imageStateView({ appId: "p1:storefront", state: "not_ready" }),
-        );
-      },
-      policyWarnings: () => [],
-    } as unknown as InstanceManager;
-    const written: { status?: number; body?: string } = {};
-    const response = {
-      writeHead(status: number) {
-        written.status = status;
-        return response;
-      },
-      end(body?: string) {
-        written.body = body;
-      },
-      destroyed: false,
-      writableEnded: false,
-    } as unknown as Parameters<typeof streamAppEvents>[2];
-
-    await streamAppEvents(
-      f.deps,
-      request({
-        path: "/api/apps/storefront/events",
-        query: { project: "p1" },
-        headers: auth(f.token),
-      }),
-      response,
-    );
-
-    expect(written.status).toBe(409);
-    expect(JSON.parse(written.body ?? "")).toMatchObject({
-      error: "image_not_ready",
-      code: "image_not_ready",
-      appId: "p1:storefront",
-      state: "not_ready",
     });
   });
 });

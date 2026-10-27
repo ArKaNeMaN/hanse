@@ -642,4 +642,70 @@ CREATE TABLE model_providers (
 );
 `,
   },
+  {
+    version: 20,
+    name: "agent-process-protection",
+    sql: `
+ALTER TABLE instances ADD COLUMN applied_rule_hash TEXT;
+ALTER TABLE instances ADD COLUMN runtime_started_at TEXT;
+ALTER TABLE instances ADD COLUMN runtime_restart_count INTEGER;
+ALTER TABLE instances ADD COLUMN last_exit_code INTEGER;
+ALTER TABLE instances ADD COLUMN last_oom_killed INTEGER CHECK (last_oom_killed IN (0, 1));
+ALTER TABLE instances ADD COLUMN last_stop_reason TEXT;
+ALTER TABLE instances ADD COLUMN last_stop_at TEXT;
+
+CREATE TABLE session_resume (
+  app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+  session_id TEXT NOT NULL,
+  parent_session_id TEXT,
+  observed_status TEXT NOT NULL CHECK (observed_status IN ('busy', 'retry')),
+  observed_at TEXT NOT NULL,
+  last_busy_seen_at TEXT NOT NULL,
+  interrupted_at TEXT,
+  interruption_epoch TEXT,
+  interruption_key TEXT,
+  reason TEXT,
+  runtime_started_at TEXT,
+  runtime_restart_count INTEGER,
+  resume_state TEXT NOT NULL DEFAULT 'observing'
+    CHECK (resume_state IN ('observing','resuming','resumed','completed','failed','ambiguous','superseded','deferred','skipped_stopped','skipped_stale','skipped_missing')),
+  defer_reason TEXT,
+  dispatch_state TEXT NOT NULL DEFAULT 'none'
+    CHECK (dispatch_state IN ('none','prepared','sent','ambiguous','not_sent','failed')),
+  auto_dispatch_retries INTEGER NOT NULL DEFAULT 0,
+  auto_attempts INTEGER NOT NULL DEFAULT 0,
+  last_attempt_at TEXT,
+  resume_message_id TEXT,
+  last_error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (app_id, session_id)
+);
+CREATE INDEX session_resume_due
+  ON session_resume(resume_state, last_busy_seen_at);
+
+CREATE TABLE session_notices (
+  id TEXT PRIMARY KEY,
+  app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+  session_id TEXT NOT NULL,
+  parent_session_id TEXT,
+  dedupe_key TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('agent_stopped','subagent_interrupted','resume_started','resume_failed','resume_completed','resume_unavailable')),
+  reason TEXT,
+  payload_json TEXT NOT NULL CHECK (json_valid(payload_json) AND length(payload_json) <= 4096),
+  created_at TEXT NOT NULL,
+  UNIQUE (app_id, session_id, dedupe_key)
+);
+CREATE INDEX session_notices_page
+  ON session_notices(app_id, session_id, created_at DESC, id);
+
+CREATE TABLE session_notice_dedupe (
+  app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+  session_id TEXT NOT NULL,
+  dedupe_key TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (app_id, session_id, dedupe_key)
+);
+`,
+  },
 ];

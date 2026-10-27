@@ -291,6 +291,11 @@ describe("runtime protocol", () => {
       specHash: null,
       version: null,
       imageId: null,
+      startedAt: null,
+      restartCount: 0,
+      exitCode: null,
+      oomKilled: false,
+      finishedAt: null,
     });
   });
 

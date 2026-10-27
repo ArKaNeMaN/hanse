@@ -131,6 +131,7 @@ import {
 import { authorizationFor } from "../opencode/endpoint-auth.js";
 import { APP_STREAM_MAX_FRAME_BYTES, createRawEventStream } from "../opencode/events.js";
 import { DEFAULT_MODEL, DeletionPendingError } from "../opencode/manager.js";
+import { SESSION_NOTICE_MAX_PAGE, SessionNoticeStore } from "../opencode/recovery.js";
 import type { PreviewView } from "../preview/types.js";
 import type { RegisteredApp } from "../registry/index.js";
 import { appDir, type FoundApp, findApp, toManagedApp } from "./apps.js";
@@ -142,7 +143,7 @@ import {
   renderNotFound,
   type SiteModel,
 } from "./dashboard.js";
-import { lifecycleErrorResponse, mapLifecycleHttpError } from "./errors.js";
+import { lifecycleErrorResponse } from "./errors.js";
 import type { HttpDeps, HttpRequest, HttpResponse } from "./handler.js";
 import {
   appShell,
@@ -182,6 +183,26 @@ function pageLimit(value: string): number | undefined {
   if (!/^[1-9][0-9]*$/.test(value)) return undefined;
   const limit = Number(value);
   return limit <= 200 ? limit : undefined;
+}
+
+function noticePageLimit(value: string): number | undefined {
+  if (!/^[1-9][0-9]*$/.test(value)) return undefined;
+  const limit = Number(value);
+  return limit <= SESSION_NOTICE_MAX_PAGE ? limit : undefined;
+}
+
+function hasControlCharacter(value: string): boolean {
+  for (const character of value) {
+    const code = character.codePointAt(0) ?? 0;
+    if (code <= 0x1f || (code >= 0x7f && code <= 0x9f)) return true;
+  }
+  return false;
+}
+
+function noticeCursor(value: string): string | undefined {
+  if (value.length === 0 || value.length > 256) return undefined;
+  if (hasControlCharacter(value)) return undefined;
+  return value;
 }
 
 function requestPath(request: HttpRequest): string {
@@ -598,6 +619,12 @@ function renderChatPage(
   });
 }
 
+/**
+ * Legacy per-session event stream.
+ *
+ * @deprecated The app-scoped `/events` route carries the chat feed. This route is kept for
+ * compatibility but is non-starting: a stopped app returns `agent_stopped` and no stream.
+ */
 export async function streamSessionEvents(
   deps: HttpDeps,
   request: HttpRequest,
@@ -621,6 +648,19 @@ export async function streamSessionEvents(
     response.end();
     return;
   }
+  if (found.app.deleting || found.project.deleting) {
+    response.writeHead(409, { "content-type": "application/json; charset=utf-8" });
+    response.end(
+      JSON.stringify({ error: "application is pending deletion", code: "deletion_pending" }),
+    );
+    return;
+  }
+  const endpoint = deps.manager.endpointFor?.(found.app.id);
+  if (endpoint === undefined) {
+    response.writeHead(503, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify({ error: "agent is stopped", code: "agent_stopped" }));
+    return;
+  }
   const releaseSlot = appStreams.acquireBrowser(found.app.id);
   if (releaseSlot === undefined) {
     response.writeHead(429, { "content-type": "application/json; charset=utf-8" });
@@ -642,31 +682,6 @@ export async function streamSessionEvents(
   response.once?.("finish", releaseOnce);
   const controller = new AbortController();
   response.on("close", () => controller.abort());
-  let endpoint: string;
-  try {
-    endpoint = await deps.manager.ensure(toManagedApp(found));
-  } catch (error) {
-    if (error instanceof DeletionPendingError) {
-      response.writeHead(409, { "content-type": "application/json; charset=utf-8" });
-      response.end(JSON.stringify({ error: error.message, code: error.code }));
-      releaseOnce();
-      return;
-    }
-    const mapped = mapLifecycleHttpError(error);
-    if (mapped !== undefined) {
-      response.writeHead(mapped.status, {
-        "content-type": "application/json; charset=utf-8",
-        ...(mapped.headers ?? {}),
-      });
-      response.end(JSON.stringify(mapped.body));
-      releaseOnce();
-      return;
-    }
-    response.writeHead(502);
-    response.end();
-    releaseOnce();
-    return;
-  }
   const authorization = authorizationFor(endpoint);
   const upstream = await fetch(`${endpoint}/event`, {
     headers: {
@@ -2237,9 +2252,33 @@ function isTransportFailure(error: unknown): boolean {
   return error instanceof TypeError && /fetch failed/i.test(error.message);
 }
 
+/** Raised by read paths when no agent endpoint is attached; reads never start an app. */
+export class AgentStoppedError extends Error {
+  readonly code = "agent_stopped";
+
+  constructor() {
+    super("agent is stopped");
+    this.name = "AgentStoppedError";
+  }
+}
+
+/** The single response shape for a read attempt against a stopped app. */
+export function agentStoppedResponse(): HttpResponse {
+  return json(503, { error: "agent is stopped", code: "agent_stopped" });
+}
+
+/** Map read-path failures that have a stable HTTP response; `undefined` means "keep throwing". */
+function readFailureResponse(error: unknown): HttpResponse | undefined {
+  if (error instanceof AgentStoppedError) return agentStoppedResponse();
+  if (isTransportFailure(error)) {
+    return json(502, { error: "agent is unavailable", code: "agent_unavailable" });
+  }
+  return undefined;
+}
+
 /**
- * Attach read-only chat calls to the already running agent instead of inspecting the runtime on
- * every request. Only a missing endpoint or a transport failure falls back to `ensure`.
+ * Attach read-only chat calls to an already running agent. This never inspects the runtime and
+ * never starts a stopped app: with no attached endpoint it raises `AgentStoppedError`.
  */
 async function withReadEndpoint<T>(
   deps: HttpDeps,
@@ -2250,38 +2289,37 @@ async function withReadEndpoint<T>(
   if (manager === undefined) {
     throw new Error("agent runtime is not configured");
   }
-  const attached = manager.endpointFor?.(found.app.id);
-  if (attached !== undefined) {
-    try {
-      return await run(attached);
-    } catch (error) {
-      if (!isTransportFailure(error)) throw error;
-    }
-  }
-  const endpoint = await manager.ensure(toManagedApp(found));
+  const endpoint = manager.endpointFor?.(found.app.id);
+  if (endpoint === undefined) throw new AgentStoppedError();
   return run(endpoint);
 }
 
 async function readSessionsResponse(deps: HttpDeps, found: FoundApp): Promise<HttpResponse> {
-  return withReadEndpoint(deps, found, async (endpoint) => {
-    const sessions = await listSessions(endpoint);
-    const summaries = draftSummaries(
-      deps.db,
-      found.app.id,
-      sessions.map((session) => session.id),
-    );
-    return json(200, {
-      sessions: sessions.map((session) => ({
-        ...session,
-        draft: summaries.get(session.id) ?? {
-          hasText: false,
-          attachmentCount: 0,
-          emptyDraft: false,
-          updatedAt: null,
-        },
-      })),
+  try {
+    return await withReadEndpoint(deps, found, async (endpoint) => {
+      const sessions = await listSessions(endpoint);
+      const summaries = draftSummaries(
+        deps.db,
+        found.app.id,
+        sessions.map((session) => session.id),
+      );
+      return json(200, {
+        sessions: sessions.map((session) => ({
+          ...session,
+          draft: summaries.get(session.id) ?? {
+            hasText: false,
+            attachmentCount: 0,
+            emptyDraft: false,
+            updatedAt: null,
+          },
+        })),
+      });
     });
-  });
+  } catch (error) {
+    const mapped = readFailureResponse(error);
+    if (mapped !== undefined) return mapped;
+    throw error;
+  }
 }
 
 async function readMessagesResponse(
@@ -2291,66 +2329,72 @@ async function readMessagesResponse(
   limit: number | undefined,
   before: string | undefined,
 ): Promise<HttpResponse> {
-  return withReadEndpoint(deps, found, async (endpoint) => {
-    const project = createMessageProjector({
-      db: deps.db,
-      appId: found.app.id,
-      appKey: found.app.appKey,
-      projectId: found.project.id,
+  try {
+    return await withReadEndpoint(deps, found, async (endpoint) => {
+      const project = createMessageProjector({
+        db: deps.db,
+        appId: found.app.id,
+        appKey: found.app.appKey,
+        projectId: found.project.id,
+      });
+      const projectHistory = (messages: Parameters<typeof project>[0]): void => {
+        project(messages);
+        projectHandoffMessages(deps.db, sessionId, messages);
+      };
+      if (limit === undefined) {
+        const messages = await listMessages(endpoint, sessionId, { project: projectHistory });
+        const payload = { messages };
+        if (projectedResponseBytes(payload) > PROJECTED_RESPONSE_MAX_BYTES) {
+          return json(502, {
+            error: "session too large to refresh",
+            code: "messages_too_large",
+          });
+        }
+        return json(200, payload);
+      }
+      try {
+        const page = await readProjectedPage(
+          endpoint,
+          sessionId,
+          before === undefined
+            ? { limit, project: projectHistory }
+            : { limit, before, project: projectHistory },
+        );
+        const payload = { messages: page.messages, nextCursor: page.nextCursor ?? null };
+        if (projectedResponseBytes(payload) > PROJECTED_RESPONSE_MAX_BYTES) {
+          return json(502, {
+            error: "session too large to refresh",
+            code: "messages_too_large",
+          });
+        }
+        return json(200, payload);
+      } catch (error) {
+        if (error instanceof OpencodeHttpError && error.status === 400 && before !== undefined) {
+          return json(400, { error: "invalid message cursor", code: "invalid_cursor" });
+        }
+        if (error instanceof OpencodeHttpError && error.status === 404) {
+          return json(404, { error: "session not found", code: "session_not_found" });
+        }
+        if (error instanceof OpencodeHttpError && error.code === "messages_too_large") {
+          return json(502, {
+            error: "session too large to refresh",
+            code: "messages_too_large",
+          });
+        }
+        if (error instanceof OpencodeHttpError && error.code === "history_busy") {
+          return json(503, {
+            error: "history is busy; retry shortly",
+            code: "history_busy",
+          });
+        }
+        throw error;
+      }
     });
-    const projectHistory = (messages: Parameters<typeof project>[0]): void => {
-      project(messages);
-      projectHandoffMessages(deps.db, sessionId, messages);
-    };
-    if (limit === undefined) {
-      const messages = await listMessages(endpoint, sessionId, { project: projectHistory });
-      const payload = { messages };
-      if (projectedResponseBytes(payload) > PROJECTED_RESPONSE_MAX_BYTES) {
-        return json(502, {
-          error: "session too large to refresh",
-          code: "messages_too_large",
-        });
-      }
-      return json(200, payload);
-    }
-    try {
-      const page = await readProjectedPage(
-        endpoint,
-        sessionId,
-        before === undefined
-          ? { limit, project: projectHistory }
-          : { limit, before, project: projectHistory },
-      );
-      const payload = { messages: page.messages, nextCursor: page.nextCursor ?? null };
-      if (projectedResponseBytes(payload) > PROJECTED_RESPONSE_MAX_BYTES) {
-        return json(502, {
-          error: "session too large to refresh",
-          code: "messages_too_large",
-        });
-      }
-      return json(200, payload);
-    } catch (error) {
-      if (error instanceof OpencodeHttpError && error.status === 400 && before !== undefined) {
-        return json(400, { error: "invalid message cursor", code: "invalid_cursor" });
-      }
-      if (error instanceof OpencodeHttpError && error.status === 404) {
-        return json(404, { error: "session not found", code: "session_not_found" });
-      }
-      if (error instanceof OpencodeHttpError && error.code === "messages_too_large") {
-        return json(502, {
-          error: "session too large to refresh",
-          code: "messages_too_large",
-        });
-      }
-      if (error instanceof OpencodeHttpError && error.code === "history_busy") {
-        return json(503, {
-          error: "history is busy; retry shortly",
-          code: "history_busy",
-        });
-      }
-      throw error;
-    }
-  });
+  } catch (error) {
+    const mapped = readFailureResponse(error);
+    if (mapped !== undefined) return mapped;
+    throw error;
+  }
 }
 
 export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<HttpResponse> {
@@ -2396,6 +2440,7 @@ export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<
   const sessionsMatch = /^\/api\/apps\/([^/]+)\/sessions$/.exec(request.path);
   const sessionMatch = /^\/api\/apps\/([^/]+)\/sessions\/([^/]+)$/.exec(request.path);
   const messagesMatch = /^\/api\/apps\/([^/]+)\/sessions\/([^/]+)\/messages$/.exec(request.path);
+  const noticesMatch = /^\/api\/apps\/([^/]+)\/sessions\/([^/]+)\/notices$/.exec(request.path);
   const abortMatch = /^\/api\/apps\/([^/]+)\/sessions\/([^/]+)\/abort$/.exec(request.path);
   const draftMatch = /^\/api\/apps\/([^/]+)\/sessions\/([^/]+)\/draft$/.exec(request.path);
   const touchMatch = /^\/api\/apps\/([^/]+)\/sessions\/([^/]+)\/touch$/.exec(request.path);
@@ -2412,6 +2457,7 @@ export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<
     sessionsMatch === null &&
     sessionMatch === null &&
     messagesMatch === null &&
+    noticesMatch === null &&
     abortMatch === null &&
     draftMatch === null &&
     touchMatch === null &&
@@ -2438,6 +2484,12 @@ export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<
   if (sessionMatch !== null && request.method === "DELETE" && principal.kind !== "human") {
     return json(403, { error: "only a human principal may delete a session" });
   }
+  if (noticesMatch !== null && principal.kind !== "human") {
+    return json(403, { error: "only a human principal may read session notices" });
+  }
+  if (noticesMatch !== null && request.method !== "GET") {
+    return json(405, { error: "method not allowed" });
+  }
   const humanOnly =
     draftMatch !== null ||
     touchMatch !== null ||
@@ -2453,6 +2505,7 @@ export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<
     (sessionsMatch ??
       sessionMatch ??
       messagesMatch ??
+      noticesMatch ??
       abortMatch ??
       draftMatch ??
       touchMatch ??
@@ -2469,7 +2522,8 @@ export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<
       deleteIfEmptyMatch !== null ||
       pendingRetryMatch !== null ||
       pendingMatch !== null ||
-      attachmentMatch !== null;
+      attachmentMatch !== null ||
+      noticesMatch !== null;
     return newRoutes
       ? appNotFound(appKey)
       : json(404, { error: `unknown application: ${appKey}`, code: "unknown_app" });
@@ -2477,6 +2531,7 @@ export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<
   const sessionId = safeDecode(
     (sessionMatch ??
       messagesMatch ??
+      noticesMatch ??
       abortMatch ??
       draftMatch ??
       touchMatch ??
@@ -2487,6 +2542,7 @@ export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<
   const draftRoutes = draftMatch !== null || touchMatch !== null;
   if (
     (draftRoutes ||
+      noticesMatch !== null ||
       deleteIfEmptyMatch !== null ||
       pendingRetryMatch !== null ||
       pendingMatch !== null) &&
@@ -2536,6 +2592,30 @@ export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<
   if (sessionMatch !== null && request.method === "DELETE" && !isSessionId(sessionId)) {
     return invalidSession();
   }
+  if (noticesMatch !== null) {
+    if (found.app.deleting || found.project.deleting) {
+      return json(409, { error: "application is pending deletion", code: "deletion_pending" });
+    }
+    let limit: number | undefined;
+    if (request.query?.limit !== undefined) {
+      limit = noticePageLimit(request.query.limit);
+      if (limit === undefined) {
+        return json(400, { error: "invalid limit", code: "invalid_limit" });
+      }
+    }
+    let before: string | undefined;
+    if (request.query?.before !== undefined) {
+      before = noticeCursor(request.query.before.trim());
+      if (before === undefined) {
+        return json(400, { error: "invalid notice cursor", code: "invalid_cursor" });
+      }
+    }
+    const page = new SessionNoticeStore(deps.db).list(found.app.id, sessionId, {
+      ...(limit === undefined ? {} : { limit }),
+      ...(before === undefined ? {} : { before }),
+    });
+    return json(200, page);
+  }
   if (deps.manager === undefined) {
     return json(503, { error: "agent runtime is not configured" });
   }
@@ -2543,11 +2623,12 @@ export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<
     if (found.app.deleting || found.project.deleting) {
       return json(409, { error: "application is pending deletion", code: "deletion_pending" });
     }
-    const endpoint = deps.manager.endpointFor(found.app.id);
+    const endpoint = deps.manager.endpointFor?.(found.app.id);
     if (endpoint === undefined) {
       return json(503, { error: "agent is not running", code: "agent_not_running" });
     }
     try {
+      deps.manager.recordOperatorAbort?.(found.app.id, sessionId);
       return json(200, { aborted: await abortSession(endpoint, sessionId) });
     } catch (error) {
       if (error instanceof OpencodeHttpError && error.status === 404) {

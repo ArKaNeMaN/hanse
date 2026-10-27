@@ -481,7 +481,13 @@ export function markSessionHasMessages(
   ).run(now, now, appId, sessionId);
 }
 
-export type LocalBlockReason = "has_messages" | "has_draft" | "pending" | "uploading" | "in_flight";
+export type LocalBlockReason =
+  | "has_messages"
+  | "has_notice"
+  | "has_draft"
+  | "pending"
+  | "uploading"
+  | "in_flight";
 
 /** Shared lifecycle predicate for delete-if-empty and the sweep (fails closed). */
 export function localSessionBlockReason(
@@ -491,6 +497,10 @@ export function localSessionBlockReason(
 ): LocalBlockReason | undefined {
   const state = readSessionState(db, appId, sessionId);
   if (state !== undefined && state.hasMessages === 1) return "has_messages";
+  const notice = db
+    .prepare("SELECT 1 AS present FROM session_notices WHERE app_id = ? AND session_id = ? LIMIT 1")
+    .get(appId, sessionId) as { present: number } | undefined;
+  if (notice !== undefined) return "has_notice";
   if (readDraft(db, appId, sessionId) !== undefined) return "has_draft";
   const uploading = db
     .prepare(
@@ -540,6 +550,18 @@ export function deleteSessionChatRows(db: SqliteDatabase, appId: string, session
       sessionId,
     );
     db.prepare("DELETE FROM message_drafts WHERE app_id = ? AND session_id = ?").run(
+      appId,
+      sessionId,
+    );
+    db.prepare("DELETE FROM session_notices WHERE app_id = ? AND session_id = ?").run(
+      appId,
+      sessionId,
+    );
+    db.prepare("DELETE FROM session_notice_dedupe WHERE app_id = ? AND session_id = ?").run(
+      appId,
+      sessionId,
+    );
+    db.prepare("DELETE FROM session_resume WHERE app_id = ? AND session_id = ?").run(
       appId,
       sessionId,
     );

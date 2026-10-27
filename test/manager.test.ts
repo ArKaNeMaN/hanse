@@ -8,6 +8,8 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -30,6 +32,7 @@ import type {
   ContextSnapshot,
 } from "../src/opencode/context.js";
 import { authorizationFor, setEndpointAuthorization } from "../src/opencode/endpoint-auth.js";
+import { resolveInstanceEnv } from "../src/opencode/instance.js";
 import {
   AgentTokenReconcileError,
   DeletionPendingError,
@@ -47,9 +50,22 @@ import {
 import type { OmoProfileInput, OmoProfileResult } from "../src/opencode/omo-profile.js";
 import {
   ATTACHMENTS_POLICY_VERSION,
+  BASH_DENY_PROBES,
   credentialDenyPatterns,
   type VerifyPolicyOptions,
 } from "../src/opencode/policy.js";
+import {
+  hashFileContent,
+  PROCESS_RULE_HASH,
+  PROCESS_RULE_TEXT,
+  processRuleAppliedPath,
+  processRulePath,
+  readAppliedRule,
+  readProcessRule,
+  writeAppliedRule,
+  writeProcessRule,
+} from "../src/opencode/process-rules.js";
+import { SessionNoticeStore, SessionResumeStore } from "../src/opencode/recovery.js";
 import type { PreviewCleanup } from "../src/preview/types.js";
 import { hashValue } from "../src/settings/hash.js";
 import type {
@@ -72,8 +88,18 @@ import { FakeAgentRuntime } from "./fixtures/fake-runtime.js";
 
 const dirs: string[] = [];
 const databases: SqliteDatabase[] = [];
+const servers: Server[] = [];
 
-afterEach(() => {
+afterEach(async () => {
+  await Promise.all(
+    servers.splice(0).map(
+      (server) =>
+        new Promise<void>((resolve) => {
+          server.closeAllConnections();
+          server.close(() => resolve());
+        }),
+    ),
+  );
   for (const db of databases.splice(0)) {
     try {
       db.close();
@@ -310,6 +336,15 @@ function fixture(
   lifecycle?: { deploymentLock?: DeploymentLock; lifecycleActivity?: LifecycleActivity },
   logger?: Logger,
   previews?: PreviewCleanup,
+  dispatch?: (
+    endpoint: string,
+    sessionId: string,
+    text: string,
+    messageID: string,
+    options?: { timeoutMs?: number; maxBytes?: number },
+    model?: string,
+    parts?: Array<{ type: string; text?: string; [key: string]: unknown }>,
+  ) => Promise<void>,
 ): Fixture {
   const dir = mkdtempSync(path.join(tmpdir(), "hanse-manager-"));
   dirs.push(dir);
@@ -339,6 +374,7 @@ function fixture(
     ...(lifecycle === undefined ? {} : lifecycle),
     ...(logger === undefined ? {} : { logger }),
     ...(previews === undefined ? {} : { previews }),
+    ...(dispatch === undefined ? {} : { sendPromptAsync: dispatch }),
   });
   return { manager, runtime, db, dir };
 }
@@ -899,6 +935,20 @@ describe("InstanceManager lifecycle", () => {
     expect(settingsHashFor(snapshot, "profile-hash", undefined)).toBe(expected);
   });
 
+  it("includes the process-rule hash in the launch hash", () => {
+    const settings = fakeSettings();
+    const snapshot = settings.snapshot({ projectId: "p", appKey: "web" });
+    const withoutRule = settingsHashFor(snapshot, "profile-hash");
+    const withRule = settingsHashFor(snapshot, "profile-hash", undefined, undefined, "rule-a");
+    expect(withRule).not.toBe(withoutRule);
+    expect(settingsHashFor(snapshot, "profile-hash", undefined, undefined, "rule-a")).toBe(
+      withRule,
+    );
+    expect(settingsHashFor(snapshot, "profile-hash", undefined, undefined, "rule-b")).not.toBe(
+      withRule,
+    );
+  });
+
   it("does not mark a zero-skill install restart-required", async () => {
     const runtime = new FakeAgentRuntime();
     const settings = fakeSettings();
@@ -922,7 +972,13 @@ describe("InstanceManager lifecycle", () => {
       .get() as { appliedSettingsHash: string | null };
 
     expect(recorded.appliedSettingsHash).toBe(
-      settingsHashFor(settings.snapshot({ projectId: "p", appKey: "web" }), "profile-hash"),
+      settingsHashFor(
+        settings.snapshot({ projectId: "p", appKey: "web" }),
+        "profile-hash",
+        undefined,
+        undefined,
+        PROCESS_RULE_HASH,
+      ),
     );
     expect(manager.pendingRestart(APP.id)).toEqual({ pending: false, reasons: [] });
   });
@@ -2000,6 +2056,279 @@ describe("InstanceManager lifecycle", () => {
   });
 });
 
+class EpochRuntime extends FakeAgentRuntime {
+  startedAt: string | null = null;
+  restartCount = 0;
+
+  override async ensure(
+    spec: Parameters<FakeAgentRuntime["ensure"]>[0],
+  ): ReturnType<FakeAgentRuntime["ensure"]> {
+    const base = await super.ensure(spec);
+    const status = { ...base, startedAt: this.startedAt, restartCount: this.restartCount };
+    this.statuses.set(spec.appId, status);
+    return status;
+  }
+}
+
+const RECOVERY_START = "2026-10-27T10:00:00.000Z";
+const RECOVERY_NEXT = "2026-10-27T10:05:00.000Z";
+
+function recoveryBusy(db: SqliteDatabase, sessionId = "ses_1", startedAt = RECOVERY_START): void {
+  new SessionResumeStore(db).upsertBusy({
+    appId: APP.id,
+    sessionId,
+    status: "busy",
+    observedAt: RECOVERY_START,
+    runtimeStartedAt: startedAt,
+    runtimeRestartCount: 0,
+  });
+}
+
+describe("InstanceManager process recovery", () => {
+  it("persists stop reasons and consumes a fresh intent on the next epoch", async () => {
+    const runtime = new EpochRuntime();
+    runtime.startedAt = RECOVERY_START;
+    const f = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    await f.manager.ensure(APP);
+    recoveryBusy(f.db);
+
+    await f.manager.stopApp(APP.id);
+
+    const stopped = f.db
+      .prepare(
+        `SELECT state, runtime_started_at AS startedAt, last_stop_reason AS reason,
+                last_stop_at AS stoppedAt
+           FROM instances WHERE app_id = ?`,
+      )
+      .get(APP.id) as {
+      state: string;
+      startedAt: string;
+      reason: string;
+      stoppedAt: string;
+    };
+    expect(stopped.state).toBe("stopped");
+    expect(stopped.startedAt).toBe(RECOVERY_START);
+    expect(stopped.reason).toBe("stop");
+    expect(stopped.stoppedAt).toEqual(expect.any(String));
+    expect(new SessionNoticeStore(f.db).list(APP.id, "ses_1").notices[0]).toMatchObject({
+      kind: "agent_stopped",
+      reason: "operator_stop",
+    });
+
+    runtime.startedAt = RECOVERY_NEXT;
+    await f.manager.ensure(APP);
+    const started = f.db
+      .prepare(
+        "SELECT runtime_started_at AS startedAt, last_stop_reason AS reason FROM instances WHERE app_id = ?",
+      )
+      .get(APP.id) as { startedAt: string; reason: string | null };
+    expect(started.startedAt).toBe(RECOVERY_NEXT);
+    expect(started.reason).toBeNull();
+  });
+
+  it("records a deletion reason for stopForDeletion", async () => {
+    const runtime = new EpochRuntime();
+    runtime.startedAt = RECOVERY_START;
+    const f = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    await f.manager.ensure(APP);
+    recoveryBusy(f.db);
+
+    await f.manager.stopForDeletion(APP.id);
+
+    const row = f.db
+      .prepare("SELECT last_stop_reason AS reason FROM instances WHERE app_id = ?")
+      .get(APP.id) as { reason: string };
+    expect(row.reason).toBe("delete");
+    expect(new SessionNoticeStore(f.db).list(APP.id, "ses_1").notices[0]).toMatchObject({
+      reason: "deletion",
+    });
+  });
+
+  it("records a restart reason before the stop half of a restart", async () => {
+    const runtime = new EpochRuntime();
+    runtime.startedAt = RECOVERY_START;
+    const f = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    await f.manager.ensure(APP);
+    recoveryBusy(f.db);
+    runtime.startedAt = RECOVERY_NEXT;
+
+    await f.manager.restartIfRunning(APP);
+
+    expect(new SessionNoticeStore(f.db).list(APP.id, "ses_1").notices[0]).toMatchObject({
+      kind: "agent_stopped",
+      reason: "operator_restart",
+    });
+    expect(new SessionResumeStore(f.db).get(APP.id, "ses_1")?.resumeState).toBe("observing");
+  });
+
+  it("samples GET /session/status after the reconciler releases the app lock", async () => {
+    const server = createServer((request, response) => {
+      if (request.method === "GET" && request.url === "/session/status") {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ ses_live: { type: "busy" } }));
+        return;
+      }
+      response.writeHead(404);
+      response.end("{}");
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address() as AddressInfo;
+    const endpoint = `http://127.0.0.1:${address.port}`;
+    const runtime = new FakeAgentRuntime(() => endpoint);
+    const f = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    await f.manager.ensure(APP);
+
+    await f.manager.reconcileStatuses();
+
+    expect(new SessionResumeStore(f.db).get(APP.id, "ses_live")).toMatchObject({
+      observedStatus: "busy",
+    });
+    expect(runtime.ensured).toHaveLength(1);
+    expect(runtime.deleted).toEqual([]);
+  });
+
+  it("forwards monitor session.status events to recovery", async () => {
+    const runtime = new EpochRuntime();
+    runtime.startedAt = RECOVERY_START;
+    const monitors = fakeMonitorFactory();
+    const f = fixture(
+      runtime,
+      fakeSettings({ context: { enabled: true } }),
+      fakeProfiles().source,
+      undefined,
+      async () => [],
+      undefined,
+      { monitorFactory: monitors.factory },
+    );
+    await f.manager.ensure(APP);
+
+    monitors.monitors[0]?.options.onEvent?.({
+      type: "session.status",
+      sessionID: "ses_monitor",
+      status: { type: "busy" },
+    });
+    await waitFor(() => new SessionResumeStore(f.db).get(APP.id, "ses_monitor") !== undefined);
+
+    expect(new SessionResumeStore(f.db).get(APP.id, "ses_monitor")).toMatchObject({
+      observedStatus: "busy",
+    });
+  });
+
+  it("runs startup catch-up once after rebuilding running apps", async () => {
+    const runtime = new EpochRuntime();
+    runtime.startedAt = RECOVERY_START;
+    const f = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    await f.manager.ensure(APP);
+    recoveryBusy(f.db);
+    runtime.startedAt = RECOVERY_NEXT;
+    const current = runtime.statuses.get(APP.id);
+    if (current !== undefined) {
+      runtime.statuses.set(APP.id, { ...current, startedAt: RECOVERY_NEXT });
+    }
+
+    await f.manager.resumeRunning([APP]);
+    await waitFor(() => new SessionNoticeStore(f.db).list(APP.id, "ses_1").notices.length > 0);
+
+    const notices = new SessionNoticeStore(f.db).list(APP.id, "ses_1").notices;
+    expect(notices.find((notice) => notice.kind === "agent_stopped")).toMatchObject({
+      kind: "agent_stopped",
+      reason: "unknown_restart",
+    });
+  });
+
+  it("dispatches a resume outside the app lock without ensuring again", async () => {
+    const server = createServer((request, response) => {
+      const send = (body: unknown): void => {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify(body));
+      };
+      if (request.method === "GET" && request.url === "/session") {
+        send([{ id: "ses_1" }]);
+        return;
+      }
+      if (request.method === "GET" && request.url === "/session/status") {
+        send({});
+        return;
+      }
+      if (request.method === "GET" && request.url?.startsWith("/session/ses_1/message")) {
+        send([]);
+        return;
+      }
+      response.writeHead(404);
+      response.end("{}");
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address() as AddressInfo;
+    const endpoint = `http://127.0.0.1:${address.port}`;
+    const prompts: Array<{
+      endpoint: string;
+      sessionId: string;
+      text: string;
+      messageID: string;
+      parts: unknown;
+    }> = [];
+    const runtime = new EpochRuntime(() => endpoint);
+    runtime.startedAt = RECOVERY_START;
+    const f = fixture(
+      runtime,
+      fakeSettings(),
+      fakeProfiles().source,
+      undefined,
+      async () => [],
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      async (target, sessionId, text, messageID, _options, _model, parts) => {
+        prompts.push({ endpoint: target, sessionId, text, messageID, parts });
+      },
+    );
+    await f.manager.ensure(APP);
+    recoveryBusy(f.db);
+    const nowIso = new Date().toISOString();
+    f.db
+      .prepare(
+        "UPDATE session_resume SET last_busy_seen_at = ?, observed_at = ?, updated_at = ? WHERE app_id = ? AND session_id = ?",
+      )
+      .run(nowIso, nowIso, nowIso, APP.id, "ses_1");
+    new SessionResumeStore(f.db).markInterrupted({
+      appId: APP.id,
+      sessionId: "ses_1",
+      interruptedAt: nowIso,
+      interruptionEpoch: "epoch",
+      interruptionKey: "epoch|cycle",
+      reason: "process_exit",
+    });
+
+    await f.manager.reconcileStatuses();
+    await waitFor(() => prompts.length > 0);
+
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toMatchObject({
+      endpoint,
+      sessionId: "ses_1",
+      parts: [
+        {
+          type: "text",
+          text: expect.stringContaining("previous turn was interrupted"),
+          synthetic: true,
+          metadata: { hanse: "agent-resume" },
+        },
+      ],
+    });
+    expect(prompts[0]?.messageID).toMatch(/^msg_[0-9a-f]{32}$/);
+    expect(new SessionResumeStore(f.db).get(APP.id, "ses_1")).toMatchObject({
+      dispatchState: "sent",
+      autoAttempts: 1,
+    });
+    expect(runtime.ensured).toHaveLength(1);
+  });
+});
+
 describe("InstanceManager context monitors", () => {
   it("starts one monitor per running app and keeps it across repeated ensure", async () => {
     const runtime = new FakeAgentRuntime(() => "http://127.0.0.1:4201");
@@ -2289,6 +2618,7 @@ describe("InstanceManager context monitors", () => {
         gitAuthHash: "git-auth-hash",
         profile: "profile-hash",
         policyVersion: ATTACHMENTS_POLICY_VERSION,
+        ruleHash: PROCESS_RULE_HASH,
       }),
     );
     expect(manager.pendingRestart(APP.id)).toEqual({ pending: false, reasons: [] });
@@ -3432,6 +3762,7 @@ describe("InstanceManager attachments policy and runner marker", () => {
   it("pre-creates the attachments root, passes credential denies, and marks the runner bind", async () => {
     const runtime = new FakeAgentRuntime();
     let denyPatterns: string[] = [];
+    let bashProbes: string[] | undefined;
     const { manager, dir } = fixture(
       runtime,
       fakeSettings(),
@@ -3439,11 +3770,13 @@ describe("InstanceManager attachments policy and runner marker", () => {
       undefined,
       async (options) => {
         denyPatterns = options.denyPatterns;
+        bashProbes = options.bashProbes;
         return [];
       },
       { hostWorkspace: "/srv", hostAgents: "/agents", workspaceRoot: "/srv" },
     );
     await manager.ensure(APP);
+    expect(bashProbes).toEqual(BASH_DENY_PROBES);
     expect(runtime.ensured[0]?.attachmentsReadOnly).toBe(true);
     expect(manager.attachmentsPathMode()).toBe("host");
     expect(manager.containerAgentsRoot()).toBe("/data/agents");
@@ -3513,6 +3846,7 @@ describe("custom model provider projection", () => {
         "profile-hash",
         undefined,
         modelProviders.snapshot().hash,
+        PROCESS_RULE_HASH,
       ),
     );
   });
@@ -3526,7 +3860,13 @@ describe("custom model provider projection", () => {
       .prepare("SELECT applied_settings_hash AS hash FROM instances WHERE app_id = ?")
       .get(APP.id) as { hash: string };
     expect(recorded.hash).toBe(
-      settingsHashFor(fakeSettings().snapshot({ projectId: "p", appKey: "web" }), "profile-hash"),
+      settingsHashFor(
+        fakeSettings().snapshot({ projectId: "p", appKey: "web" }),
+        "profile-hash",
+        undefined,
+        undefined,
+        PROCESS_RULE_HASH,
+      ),
     );
   });
 
@@ -3540,5 +3880,194 @@ describe("custom model provider projection", () => {
       pending: true,
       reasons: ["settings_changed"],
     });
+  });
+});
+
+describe("InstanceManager process rule materialization", () => {
+  function captureLogs(): {
+    logger: Logger;
+    entries: Array<{ message: string; fields?: Record<string, unknown> }>;
+  } {
+    const entries: Array<{ message: string; fields?: Record<string, unknown> }> = [];
+    return {
+      entries,
+      logger: {
+        debug: () => undefined,
+        info: () => undefined,
+        warn: (message, fields) => {
+          entries.push({ message, fields });
+        },
+        error: () => undefined,
+      },
+    };
+  }
+
+  function replacementManager(
+    db: SqliteDatabase,
+    dir: string,
+    runtime: FakeAgentRuntime,
+    logger?: Logger,
+  ): InstanceManager {
+    return new InstanceManager(db, dir, {
+      runtime,
+      settings: fakeSettings(),
+      omoProfiles: fakeProfiles().source,
+      workspaceRoot: "/srv",
+      verify: async () => [],
+      ...(logger === undefined ? {} : { logger }),
+    });
+  }
+
+  it("writes the active rule, applied sidecar, and applied hash on start", async () => {
+    const runtime = new FakeAgentRuntime();
+    const { manager, db, dir } = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    const env = resolveInstanceEnv(dir, { projectId: "p", app: "web" });
+
+    await manager.ensure({
+      ...APP,
+      instructions: ["/srv/shared/AGENTS.md", "shared/notes.md"],
+    });
+
+    expect(readProcessRule(env)).toBe(PROCESS_RULE_TEXT);
+    expect(readAppliedRule(env)).toBe(PROCESS_RULE_TEXT);
+    const overlay = overlayOf(runtime.ensured[0] ?? { env: {} });
+    expect(overlay.instructions).toEqual([
+      "/srv/shared/AGENTS.md",
+      "shared/notes.md",
+      processRulePath(env),
+    ]);
+    expect(
+      db
+        .prepare("SELECT applied_rule_hash AS appliedRuleHash FROM instances WHERE app_id = ?")
+        .get(APP.id),
+    ).toEqual({ appliedRuleHash: PROCESS_RULE_HASH });
+  });
+
+  it("marks a running app restart-required when the applied hash predates the rule hash", async () => {
+    const runtime = new FakeAgentRuntime();
+    const settings = fakeSettings();
+    const { manager, db, dir } = fixture(runtime, settings, fakeProfiles().source);
+    await manager.ensure(APP);
+    expect(manager.pendingRestart(APP.id)).toEqual({ pending: false, reasons: [] });
+
+    const legacyHash = settingsHashFor(
+      settings.snapshot({ projectId: "p", appKey: "web" }),
+      "profile-hash",
+    );
+    db.prepare("UPDATE instances SET applied_settings_hash = ? WHERE app_id = ?").run(
+      legacyHash,
+      APP.id,
+    );
+
+    expect(replacementManager(db, dir, runtime).pendingRestart(APP.id)).toEqual({
+      pending: true,
+      reasons: ["settings_changed"],
+    });
+  });
+
+  it("restores a trusted applied sidecar on reconnect without changing applied hashes", async () => {
+    const runtime = new FakeAgentRuntime();
+    const { manager, db, dir } = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    await manager.ensure(APP);
+    const env = resolveInstanceEnv(dir, { projectId: "p", app: "web" });
+    const appliedContent = "applied safe-test rule";
+    const appliedHash = hashFileContent(appliedContent);
+    writeAppliedRule(env, appliedContent);
+    writeProcessRule(env, "newer code rule");
+    db.prepare("UPDATE instances SET applied_rule_hash = ? WHERE app_id = ?").run(
+      appliedHash,
+      APP.id,
+    );
+
+    await replacementManager(db, dir, runtime).ensure(APP);
+
+    expect(readProcessRule(env)).toBe(appliedContent);
+    expect(readAppliedRule(env)).toBe(appliedContent);
+    expect(
+      db
+        .prepare("SELECT applied_rule_hash AS appliedRuleHash FROM instances WHERE app_id = ?")
+        .get(APP.id),
+    ).toEqual({ appliedRuleHash: appliedHash });
+    expect(runtime.ensured).toHaveLength(1);
+    expect(runtime.deleted).toHaveLength(0);
+  });
+
+  it("restores the current rule, keeps the applied hash, and warns when the sidecar is missing", async () => {
+    const runtime = new FakeAgentRuntime();
+    const { manager, db, dir } = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    await manager.ensure(APP);
+    const env = resolveInstanceEnv(dir, { projectId: "p", app: "web" });
+    const appliedHash = hashFileContent("trusted but missing");
+    db.prepare(
+      "UPDATE instances SET applied_rule_hash = ?, applied_settings_hash = ? WHERE app_id = ?",
+    ).run(
+      appliedHash,
+      settingsHashFor(fakeSettings().snapshot({ projectId: "p", appKey: "web" }), "profile-hash"),
+      APP.id,
+    );
+    rmSync(processRuleAppliedPath(env), { force: true });
+    writeProcessRule(env, "tampered active rule");
+    const { logger, entries } = captureLogs();
+
+    const replacement = replacementManager(db, dir, runtime, logger);
+    await replacement.ensure(APP);
+
+    expect(readProcessRule(env)).toBe(PROCESS_RULE_TEXT);
+    expect(
+      db
+        .prepare("SELECT applied_rule_hash AS appliedRuleHash FROM instances WHERE app_id = ?")
+        .get(APP.id),
+    ).toEqual({ appliedRuleHash: appliedHash });
+    expect(entries.filter((entry) => entry.message === "process_rule_integrity_failed")).toEqual([
+      {
+        message: "process_rule_integrity_failed",
+        fields: { appId: APP.id, reason: "missing_sidecar" },
+      },
+    ]);
+    expect(replacement.pendingRestart(APP.id)).toEqual({
+      pending: true,
+      reasons: ["settings_changed"],
+    });
+    expect(runtime.ensured).toHaveLength(1);
+  });
+
+  it("restores the current rule and warns on a sidecar hash mismatch", async () => {
+    const runtime = new FakeAgentRuntime();
+    const { manager, db, dir } = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    await manager.ensure(APP);
+    const env = resolveInstanceEnv(dir, { projectId: "p", app: "web" });
+    writeAppliedRule(env, "tampered applied rule");
+    writeProcessRule(env, "tampered active rule");
+    const legacyHash = settingsHashFor(
+      fakeSettings().snapshot({ projectId: "p", appKey: "web" }),
+      "profile-hash",
+    );
+    db.prepare("UPDATE instances SET applied_settings_hash = ? WHERE app_id = ?").run(
+      legacyHash,
+      APP.id,
+    );
+    const { logger, entries } = captureLogs();
+
+    const replacement = replacementManager(db, dir, runtime, logger);
+    await replacement.ensure(APP);
+
+    expect(readProcessRule(env)).toBe(PROCESS_RULE_TEXT);
+    expect(readAppliedRule(env)).toBe("tampered applied rule");
+    expect(
+      db
+        .prepare("SELECT applied_rule_hash AS appliedRuleHash FROM instances WHERE app_id = ?")
+        .get(APP.id),
+    ).toEqual({ appliedRuleHash: PROCESS_RULE_HASH });
+    expect(entries.filter((entry) => entry.message === "process_rule_integrity_failed")).toEqual([
+      {
+        message: "process_rule_integrity_failed",
+        fields: { appId: APP.id, reason: "hash_mismatch" },
+      },
+    ]);
+    expect(replacement.pendingRestart(APP.id)).toEqual({
+      pending: true,
+      reasons: ["settings_changed"],
+    });
+    expect(runtime.ensured).toHaveLength(1);
   });
 });

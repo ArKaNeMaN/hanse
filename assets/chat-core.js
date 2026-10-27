@@ -193,6 +193,7 @@ const ATTACHMENT_MODES = new Set(["auto", "inline", "file"]);
 const ATTACHMENT_STATES = new Set(["draft", "in_flight", "sent", "missing"]);
 const INLINE_ATTACHMENT_KINDS = new Set(["image", "video", "pdf"]);
 const MANIFEST_MARKER = "attachment-manifest";
+const RESUME_MARKER = "agent-resume";
 const SYNTHETIC_READ_PREFIX = "Called the Read tool";
 const ATTACHMENT_WARNING_TEXT = Object.freeze({
   attachment_inline_unsupported:
@@ -235,8 +236,24 @@ export function isAttachmentManifestPart(part) {
 }
 
 /**
- * Text parts the feed never shows: the synthetic attachment manifest and opencode's synthetic
- * `Called the Read tool...` text added for `file:` inline parts. Both arrive as `synthetic: true`.
+ * The coordinator's auto-resume continuation prompt is model-visible but never part of the feed.
+ * Its text part carries `metadata.hanse === "agent-resume"`; the visible `resume_started` notice is
+ * the only UI representation.
+ *
+ * @param {Record<string, unknown>} part
+ * @returns {boolean}
+ */
+export function isResumeSyntheticPart(part) {
+  if (!isRecord(part)) return false;
+  const data = partData(part);
+  const metadata = isRecord(data.metadata) ? data.metadata : undefined;
+  return metadata !== undefined && metadata.hanse === RESUME_MARKER;
+}
+
+/**
+ * Text parts the feed never shows: the synthetic attachment manifest, the auto-resume continuation
+ * prompt, and opencode's synthetic `Called the Read tool...` text added for `file:` inline parts.
+ * They all arrive as `synthetic: true`.
  *
  * @param {Record<string, unknown>} part
  * @returns {boolean}
@@ -244,7 +261,7 @@ export function isAttachmentManifestPart(part) {
 export function isHiddenSyntheticTextPart(part) {
   if (!isRecord(part)) return false;
   if (part.type !== "text" && partData(part).type !== "text") return false;
-  if (isAttachmentManifestPart(part)) return true;
+  if (isAttachmentManifestPart(part) || isResumeSyntheticPart(part)) return true;
   if (!isSyntheticPart(part)) return false;
   const text = partText(part);
   return text === undefined || text.startsWith(SYNTHETIC_READ_PREFIX) || text.length === 0;
@@ -826,6 +843,9 @@ export function classifyOmo(message) {
     return null;
   }
   const parts = messageParts(message);
+  if (parts.some((part) => isResumeSyntheticPart(part))) {
+    return null;
+  }
   const textParts = parts
     .filter(isTextPart)
     .filter((part) => !isAttachmentManifestPart(part));
@@ -1001,6 +1021,172 @@ export function deriveQueue(store, status = {}) {
     turnContinues: false,
     nextActivePromptID: activeID,
   };
+}
+
+/**
+ * Normalize a timestamp to epoch milliseconds. Numbers below 1e12 are treated as seconds
+ * (opencode message times); ISO strings are parsed. Invalid values sort first.
+ *
+ * @param {unknown} value
+ * @returns {number}
+ */
+function timestampValue(value) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value > 0 && value < 1_000_000_000_000 ? value * 1000 : value;
+  }
+  if (typeof value === "string" && value.length > 0) {
+    const parsed = Date.parse(value);
+    return Number.isNaN(parsed) ? 0 : parsed;
+  }
+  return 0;
+}
+
+/**
+ * @param {MessageRecord | Record<string, unknown> | undefined} record
+ * @returns {number}
+ */
+export function messageCreatedAt(record) {
+  if (!isRecord(record)) return 0;
+  const time = isRecord(record.time) ? record.time : undefined;
+  return timestampValue(time?.created);
+}
+
+/**
+ * @param {{ createdAt?: unknown } | Record<string, unknown> | undefined} notice
+ * @returns {number}
+ */
+export function noticeCreatedAt(notice) {
+  if (!isRecord(notice)) return 0;
+  return timestampValue(notice.createdAt);
+}
+
+/**
+ * Merge the message store order with persisted notices into one chronological feed order.
+ *
+ * The result is used for rendering/sorting, scroll anchors, and empty-feed detection only; the
+ * message count still comes from the message order. Ties break deterministically by id, then kind.
+ *
+ * @param {unknown} messageOrder
+ * @param {unknown} messages
+ * @param {unknown} notices
+ * @returns {Array<{ type: "message" | "notice", id: string, createdAt: number }>}
+ */
+export function mergeFeedOrder(messageOrder, messages, notices) {
+  const order = Array.isArray(messageOrder) ? messageOrder : [];
+  const store = messages instanceof Map ? messages : new Map();
+  const noticeList =
+    notices instanceof Map
+      ? Array.from(notices.values())
+      : Array.isArray(notices)
+        ? notices
+        : [];
+  const items = [];
+  const seen = new Set();
+  for (const id of order) {
+    if (typeof id !== "string" || seen.has(id)) continue;
+    seen.add(id);
+    items.push({
+      type: "message",
+      id,
+      createdAt: messageCreatedAt(store.get(id)),
+    });
+  }
+  for (const notice of noticeList) {
+    if (!isRecord(notice)) continue;
+    const id = asString(notice.id);
+    if (id === undefined || seen.has(id)) continue;
+    seen.add(id);
+    items.push({ type: "notice", id, createdAt: noticeCreatedAt(notice) });
+  }
+  items.sort((left, right) => {
+    if (left.createdAt !== right.createdAt) return left.createdAt - right.createdAt;
+    if (left.id !== right.id) return left.id < right.id ? -1 : 1;
+    return left.type === right.type ? 0 : left.type < right.type ? -1 : 1;
+  });
+  return items;
+}
+
+/**
+ * The message-count label counts messages only, independent of interleaved notices.
+ *
+ * @param {number} count
+ * @param {boolean} historyComplete True when no older message page remains.
+ * @returns {string}
+ */
+export function messageCountLabel(count, historyComplete) {
+  const value = typeof count === "number" && Number.isFinite(count) && count > 0
+    ? Math.floor(count)
+    : 0;
+  const suffix = historyComplete === false ? "+" : "";
+  return `${value}${suffix} ${value === 1 ? "message" : "messages"}`;
+}
+
+const NOTICE_LABELS = Object.freeze({
+  agent_stopped: "Agent was restarted here",
+  subagent_interrupted: "Subagent interrupted",
+  resume_started: "Agent resumed here",
+  resume_failed: "Agent could not resume",
+  resume_completed: "Agent resumed and finished",
+  resume_unavailable: "Agent resume unavailable",
+});
+
+const NOTICE_REASONS = Object.freeze({
+  process_exit: "Process exited",
+  operator_restart: "Operator restart",
+  operator_stop: "Operator stop",
+  deletion: "Application deleted",
+  deployment: "Deployment",
+  unknown_restart: "Restart detected",
+  operator_abort: "Operator stop",
+  subagent_abort: "Subagent stop",
+  unknown: "Unknown reason",
+});
+
+/**
+ * Short human label for a notice break row, plus an optional bounded reason.
+ *
+ * @param {{ kind?: unknown, reason?: unknown } | Record<string, unknown> | undefined} notice
+ * @returns {{ label: string, reason: string }}
+ */
+export function noticeLabel(notice) {
+  if (!isRecord(notice)) return { label: "Agent notice", reason: "" };
+  const kind = asString(notice.kind) ?? "";
+  const rawReason = asString(notice.reason) ?? "";
+  const label = NOTICE_LABELS[kind] ?? "Agent notice";
+  const reason = NOTICE_REASONS[rawReason] ?? rawReason.replaceAll("_", " ").trim();
+  return { label, reason };
+}
+
+/**
+ * A session has history when it has at least one persisted message or notice. Optimistic rows that
+ * never reached the server do not count for draft/delete-if-empty purposes.
+ *
+ * @param {{ order?: unknown, messages?: unknown, notices?: unknown }} store
+ * @returns {boolean}
+ */
+export function sessionHasHistory(store) {
+  const order = Array.isArray(store?.order) ? store.order : [];
+  const messages = store?.messages instanceof Map ? store.messages : new Map();
+  for (const id of order) {
+    const record = messages.get(id);
+    if (!isRecord(record)) continue;
+    if (record.role !== "user" && record.role !== "assistant") continue;
+    if (
+      record.optimistic === "sending" ||
+      record.optimistic === "unknown" ||
+      record.optimistic === "failed"
+    ) {
+      continue;
+    }
+    return true;
+  }
+  const notices =
+    store?.notices instanceof Map
+      ? Array.from(store.notices.values())
+      : Array.isArray(store?.notices)
+        ? store.notices
+        : [];
+  return notices.some((notice) => isRecord(notice) && typeof notice.id === "string");
 }
 
 /**

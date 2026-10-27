@@ -47,6 +47,8 @@ import {
   isHanseTool,
   isHiddenSyntheticTextPart,
   isSlashCommandOnly,
+  mergeFeedOrder,
+  messageCountLabel,
   normalizeAttachment,
   normalizeAttachments,
   normalizeAttachmentWarnings,
@@ -54,6 +56,8 @@ import {
   normalizePendingSends,
   normalizeStreamWarning,
   normalizeToolName,
+  noticeCreatedAt,
+  noticeLabel,
   parseToolJsonOutput,
   pendingSendActions,
   pendingSendLabel,
@@ -65,6 +69,7 @@ import {
   runtimeChip as runtimeChipSpec,
   safeAttachmentUrl,
   sessionDraftBadge,
+  sessionHasHistory as coreSessionHasHistory,
   shortIdentifier,
   shouldResubscribe,
   toolDisplayName,
@@ -106,6 +111,7 @@ const OMO_CLASSIFY_QUIET_MS = 100;
 const OMO_DETAILS_CHAR_LIMIT = 600;
 const OMO_DETAILS_LINE_LIMIT = 8;
 const MESSAGES_PAGE_SIZE = 30;
+const NOTICE_PAGE_SIZE = 50;
 const AUTOSCROLL_THRESHOLD_PX = 32;
 const HISTORY_SCROLL_THRESHOLD_PX = 120;
 const HISTORY_MAX_CONTINUE_PAGES = 3;
@@ -348,6 +354,16 @@ function main() {
   let historyRequestSeq = 0;
   let historyRequest = null;
   let historyAbort = null;
+  let notices = new Map();
+  let noticeOrder = [];
+  let noticeBefore = null;
+  let noticeRequest = null;
+  let noticeRequestSeq = 0;
+  let noticeNodes = new Map();
+  let noticeDirty = new Set();
+  let stoppedState = false;
+  let stoppedShellNode = null;
+  let stoppedStartBusy = false;
   let selectionSeq = 0;
   let selectionAbort = null;
   let prependPending = false;
@@ -980,6 +996,12 @@ function main() {
   }
 
   function updateWorkingStatus() {
+    if (stoppedState) {
+      if (generatingEl !== null) generatingEl.hidden = true;
+      if (workingEl !== null) workingEl.hidden = true;
+      if (streamRetry !== null) streamRetry.hidden = true;
+      return;
+    }
     const label = activeStatusLabel();
     const waiting = label === "Waiting for you";
     const paused = label === "Paused";
@@ -1197,6 +1219,20 @@ function main() {
     return `${url}${url.includes("?") ? "&" : "?"}async=1`;
   }
 
+  function noticesUrl(id, options) {
+    const session = id === undefined ? sessionId : id;
+    const settings = options || {};
+    const params = new URLSearchParams();
+    if (projectId.length > 0) params.set("project", projectId);
+    if (settings.limit !== undefined) params.set("limit", String(settings.limit));
+    if (settings.before !== undefined && settings.before !== null) {
+      params.set("before", settings.before);
+    }
+    const query = params.toString();
+    const base = `${apiBase()}/sessions/${encodeURIComponent(session || "")}/notices`;
+    return query.length === 0 ? base : `${base}?${query}`;
+  }
+
   function eventsUrl() {
     return withProject(`${apiBase()}/events`);
   }
@@ -1331,9 +1367,8 @@ function main() {
     return `${count} ${count === 1 ? singular : pluralForm || `${singular}s`}`;
   }
 
-  function messageCountLabel(count) {
-    if (historyCursor === null) return plural(count, "message");
-    return `${count}+ ${count === 1 ? "message" : "messages"}`;
+  function currentMessageCountLabel(count) {
+    return messageCountLabel(count, historyCursor === null);
   }
 
   function relativeTime(value) {
@@ -1384,7 +1419,7 @@ function main() {
     liveEl.textContent = label;
     liveEl.dataset.state = state;
     if (streamRetry !== null) {
-      streamRetry.hidden = state !== "paused";
+      streamRetry.hidden = state !== "paused" && state !== "stopped";
     }
     updateWorkingStatus();
     if (sessionId !== null) refreshInlineQuestions();
@@ -1472,6 +1507,7 @@ function main() {
       },
     );
     hydrateMessages({ reason: "stream-limit", silent: true }).catch(() => {});
+    refreshNotices().catch(() => {});
     announce("Live updates paused: too many chat tabs are open. History still loads.");
   }
 
@@ -2114,6 +2150,13 @@ function main() {
     if (sessionsList === null) return;
     sessionsList.replaceChildren(
       element("p", "chat-empty", "No sessions yet. Send a message to start one."),
+    );
+  }
+
+  function showSessionsStopped() {
+    if (sessionsList === null) return;
+    sessionsList.replaceChildren(
+      element("p", "chat-empty", "Sessions load when the agent starts."),
     );
   }
 
@@ -2792,20 +2835,11 @@ function main() {
   }
 
   function sessionHasHistory() {
-    for (const id of store.order) {
-      const record = store.messages.get(id);
-      if (record === undefined) continue;
-      if (record.role !== "user" && record.role !== "assistant") continue;
-      if (
-        record.optimistic === "sending" ||
-        record.optimistic === "unknown" ||
-        record.optimistic === "failed"
-      ) {
-        continue;
-      }
-      return true;
-    }
-    return false;
+    return coreSessionHasHistory({
+      order: store.order,
+      messages: store.messages,
+      notices,
+    });
   }
 
   function cancelSessionCreate() {
@@ -3838,6 +3872,259 @@ function main() {
     if (newMessages !== null) newMessages.hidden = true;
   }
 
+  function isAgentStoppedError(error) {
+    return (
+      error !== null &&
+      typeof error === "object" &&
+      error.status === 503 &&
+      (error.code === "agent_stopped" || error.code === "agent_not_running")
+    );
+  }
+
+  function ensureStoppedShellNode() {
+    if (!stoppedState || messagesEl === null) {
+      if (stoppedShellNode !== null) {
+        stoppedShellNode.remove();
+        stoppedShellNode = null;
+      }
+      return;
+    }
+    const signature = sessionId === null ? "" : sessionId;
+    if (
+      stoppedShellNode !== null &&
+      stoppedShellNode.isConnected &&
+      stoppedShellNode.dataset.sessionId === signature
+    ) {
+      return;
+    }
+    if (stoppedShellNode !== null) stoppedShellNode.remove();
+    const shell = element("section", "chat-stopped");
+    shell.dataset.chatStopped = "true";
+    shell.dataset.sessionId = signature;
+    shell.setAttribute("role", "status");
+    shell.append(
+      element("h3", "chat-stopped__title", "Agent is stopped"),
+      element(
+        "p",
+        "chat-stopped__body",
+        sessionId === null
+          ? "Start the agent to begin a session. Nothing starts automatically."
+          : "This application is not running. Start it to continue this session. Nothing starts automatically.",
+      ),
+    );
+    const actions = element("div", "chat-stopped__actions");
+    const button = element("button", "btn btn-primary btn-sm", "Start agent");
+    button.type = "button";
+    button.dataset.chatStartAgent = "true";
+    button.addEventListener("click", () => {
+      void startStoppedAgent();
+    });
+    actions.append(button);
+    shell.append(actions);
+    stoppedShellNode = shell;
+    setStoppedStartBusy(stoppedStartBusy);
+  }
+
+  function setStoppedStartBusy(busy) {
+    stoppedStartBusy = busy;
+    if (stoppedShellNode === null) return;
+    for (const button of stoppedShellNode.querySelectorAll("[data-chat-start-agent]")) {
+      if (button instanceof HTMLButtonElement) setBusy(button, busy);
+    }
+  }
+
+  function enterStoppedState(options) {
+    const settings = options || {};
+    const wasStopped = stoppedState;
+    stoppedState = true;
+    if (sessionId === null && typeof settings.session === "string" && settings.session.length > 0) {
+      sessionId = settings.session;
+      updateUrl();
+    }
+    if (messagesEl !== null) messagesEl.removeAttribute("aria-busy");
+    setConnection("Agent stopped", "stopped");
+    if (newMessages !== null) newMessages.hidden = true;
+    ensureStoppedShellNode();
+    if (sessionId !== null) {
+      if (sessionTitleEl !== null && sessions.length === 0) {
+        sessionTitleEl.textContent = `Session ${sessionId.slice(0, 8)}`;
+      }
+      if (sessionIdEl !== null) {
+        sessionIdEl.textContent = sessionId.slice(0, 8);
+        sessionIdEl.title = sessionId;
+      }
+    }
+    orderDirty = true;
+    if (!wasStopped) {
+      forceFinalRender = true;
+      flushFrame({ full: true });
+    } else {
+      scheduleFlush();
+    }
+    const shouldFetchNotices =
+      settings.fetchNotices !== false &&
+      sessionId !== null &&
+      (!wasStopped || noticeOrder.length === 0);
+    if (shouldFetchNotices) refreshNotices().catch(() => {});
+  }
+
+  function leaveStoppedState() {
+    if (!stoppedState) return;
+    stoppedState = false;
+    if (stoppedShellNode !== null) {
+      stoppedShellNode.remove();
+      stoppedShellNode = null;
+    }
+    orderDirty = true;
+  }
+
+  async function startStoppedAgent() {
+    if (stoppedStartBusy) return;
+    setStoppedStartBusy(true);
+    const target = sessionId;
+    try {
+      await api(withProject(`${apiBase()}/start`), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      });
+    } catch (error) {
+      if (isTypedImageError(error)) {
+        await refreshImageView({ refresh: true });
+        showToast("The image is not ready yet. Retry from the card.", "error");
+      } else {
+        showToast(imageFailureMessage(error), "error");
+        await refreshImageView({ refresh: true });
+      }
+      return;
+    } finally {
+      setStoppedStartBusy(false);
+    }
+    announce("Starting agent...");
+    await afterImageReady();
+    if (target !== null) {
+      await selectSession(target, { focus: false, skipFlush: true }).catch(() => {});
+    }
+    await refreshNotices().catch(() => {});
+  }
+
+  function noticeSignature(notice) {
+    return [notice.kind, notice.reason ?? "", notice.createdAt ?? ""].join("\u0001");
+  }
+
+  function ensureNoticeNode(notice) {
+    let node = noticeNodes.get(notice.id);
+    if (node === undefined) {
+      node = element("div", "feed-notice");
+      node.dataset.noticeId = notice.id;
+      node.setAttribute("role", "note");
+      noticeNodes.set(notice.id, node);
+    }
+    const signature = noticeSignature(notice);
+    if (node.dataset.signature === signature) return node;
+    node.dataset.signature = signature;
+    node.dataset.kind = typeof notice.kind === "string" ? notice.kind : "";
+    const label = noticeLabel(notice);
+    const body = element("p", "feed-notice__body");
+    body.append(element("span", "feed-notice__label", label.label));
+    if (label.reason.length > 0) {
+      body.append(element("span", "feed-notice__reason", label.reason));
+    }
+    node.replaceChildren(
+      element("span", "feed-notice__rule"),
+      body,
+      element("span", "feed-notice__rule"),
+    );
+    return node;
+  }
+
+  function ingestNotices(list) {
+    if (!Array.isArray(list)) return false;
+    let changed = false;
+    for (const value of list) {
+      if (value === null || typeof value !== "object" || typeof value.id !== "string") continue;
+      const notice = {
+        id: value.id,
+        sessionId: typeof value.sessionId === "string" ? value.sessionId : sessionId,
+        parentSessionId:
+          typeof value.parentSessionId === "string" ? value.parentSessionId : undefined,
+        kind: typeof value.kind === "string" ? value.kind : "agent_stopped",
+        reason: typeof value.reason === "string" ? value.reason : undefined,
+        payload: value.payload !== null && typeof value.payload === "object" ? value.payload : {},
+        createdAt: typeof value.createdAt === "string" ? value.createdAt : "",
+      };
+      if (notice.sessionId !== sessionId) continue;
+      const existing = notices.get(notice.id);
+      if (existing !== undefined && noticeSignature(existing) === noticeSignature(notice)) continue;
+      notices.set(notice.id, notice);
+      if (!noticeOrder.includes(notice.id)) noticeOrder.push(notice.id);
+      noticeDirty.add(notice.id);
+      changed = true;
+    }
+    if (!changed) return false;
+    noticeOrder.sort((left, right) => {
+      const leftAt = noticeCreatedAt(notices.get(left));
+      const rightAt = noticeCreatedAt(notices.get(right));
+      if (leftAt !== rightAt) return leftAt - rightAt;
+      return left < right ? -1 : left > right ? 1 : 0;
+    });
+    orderDirty = true;
+    scheduleFlush();
+    return true;
+  }
+
+  async function refreshNotices(options) {
+    const settings = options || {};
+    const target = sessionId;
+    if (target === null) return;
+    const sequence = ++noticeRequestSeq;
+    try {
+      const data = await api(noticesUrl(target, { limit: NOTICE_PAGE_SIZE }));
+      if (sequence !== noticeRequestSeq || sessionId !== target) return;
+      ingestNotices(Array.isArray(data.notices) ? data.notices : []);
+      noticeBefore = typeof data.nextCursor === "string" ? data.nextCursor : null;
+      if (noticeDirty.size > 0) {
+        forceFinalRender = true;
+        flushFrame({ full: true });
+      }
+    } catch (error) {
+      if (isAbortError(error)) return;
+      if (isAgentStoppedError(error) && settings.markStopped !== false) {
+        enterStoppedState({ fetchNotices: false });
+      }
+    }
+  }
+
+  async function loadOlderNotices() {
+    if (sessionId === null || noticeBefore === null || noticeRequest !== null) return;
+    const target = sessionId;
+    const before = noticeBefore;
+    const sequence = ++noticeRequestSeq;
+    noticeRequest = { target, sequence, before };
+    try {
+      const data = await api(noticesUrl(target, { limit: NOTICE_PAGE_SIZE, before }));
+      if (
+        sessionId !== target ||
+        noticeRequest === null ||
+        noticeRequest.sequence !== sequence ||
+        noticeBefore !== before
+      ) {
+        return;
+      }
+      const loaded = ingestNotices(Array.isArray(data.notices) ? data.notices : []);
+      noticeBefore = typeof data.nextCursor === "string" ? data.nextCursor : null;
+      if (loaded) {
+        forceFinalRender = true;
+        flushFrame({ full: true, prepend: true });
+      }
+    } catch (error) {
+      if (isAbortError(error)) return;
+      if (isAgentStoppedError(error)) enterStoppedState({ fetchNotices: false });
+    } finally {
+      if (noticeRequest !== null && noticeRequest.sequence === sequence) noticeRequest = null;
+    }
+  }
+
   function statusChipFrom(entry) {
     const chip = element("span", "status");
     chip.dataset.state = entry.state;
@@ -4642,10 +4929,6 @@ function main() {
       error !== null && typeof error === "object" && typeof error.status === "number"
         ? error.status
         : 0;
-    const code =
-      error !== null && typeof error === "object" && typeof error.code === "string"
-        ? error.code
-        : "";
     if (status === 401) {
       contextLoginRedirect();
       return;
@@ -4660,7 +4943,7 @@ function main() {
     clearContextTimers();
     if (target !== sessionId) return;
     renderContextUnavailable("Context unavailable");
-    if (status === 503 && code === "agent_not_running" && settings.retryNotRunning === true) {
+    if (isAgentStoppedError(error) && settings.retryNotRunning === true) {
       if (contextRetryTimer !== null) window.clearTimeout(contextRetryTimer);
       contextRetryTimer = window.setTimeout(() => {
         contextRetryTimer = null;
@@ -7685,24 +7968,35 @@ function main() {
     store.pendingDeltas.clear();
   }
 
+  function feedChildSelected(child) {
+    return (
+      child.classList.contains("message") ||
+      child.classList.contains("feed-notice") ||
+      child.classList.contains("chat-stopped")
+    );
+  }
+
   function syncMessageOrder() {
     if (messagesEl === null) return;
     const desired = [];
-    for (const id of store.order) {
-      const node = messageNodes.get(id);
-      if (node !== undefined && node.parentNode === messagesEl) desired.push(node);
+    if (stoppedState) {
+      ensureStoppedShellNode();
+      if (stoppedShellNode !== null) desired.push(stoppedShellNode);
     }
-    const current = Array.from(messagesEl.children).filter((child) =>
-      child.classList.contains("message"),
-    );
+    for (const item of mergeFeedOrder(store.order, store.messages, noticeOrder.map((id) => notices.get(id)))) {
+      const node = item.type === "notice" ? noticeNodes.get(item.id) : messageNodes.get(item.id);
+      if (node !== undefined) desired.push(node);
+    }
+    const current = Array.from(messagesEl.children).filter(feedChildSelected);
     if (
       current.length === desired.length &&
       current.every((node, index) => node === desired[index])
     ) {
       return;
     }
+    const wanted = new Set(desired);
     for (const child of Array.from(messagesEl.children)) {
-      if (!child.classList.contains("message")) child.remove();
+      if (!wanted.has(child)) child.remove();
     }
     for (const node of desired) messagesEl.append(node);
   }
@@ -7711,6 +8005,17 @@ function main() {
     const throttled = new Set();
     if (full) {
       const wanted = new Set(store.order);
+      const wantedNotices = new Set(noticeOrder);
+      for (const [id, node] of noticeNodes) {
+        if (!wantedNotices.has(id)) {
+          node.remove();
+          noticeNodes.delete(id);
+        }
+      }
+      for (const id of noticeOrder) {
+        const notice = notices.get(id);
+        if (notice !== undefined) ensureNoticeNode(notice);
+      }
       for (const [id, node] of messageNodes) {
         if (!wanted.has(id)) {
           node.remove();
@@ -7753,6 +8058,18 @@ function main() {
         syncPartOrder(record, node);
       }
     } else {
+      for (const id of noticeDirty) {
+        const notice = notices.get(id);
+        if (notice === undefined) {
+          const node = noticeNodes.get(id);
+          if (node !== undefined) {
+            node.remove();
+            noticeNodes.delete(id);
+          }
+          continue;
+        }
+        ensureNoticeNode(notice);
+      }
       const rendered = new Set();
       for (const id of dirtyMessages) {
         const record = store.messages.get(id);
@@ -7781,14 +8098,14 @@ function main() {
         syncPartOrder(record, node);
       }
     }
-    if (full || orderDirty) syncMessageOrder();
+    if (full || orderDirty || stoppedState) syncMessageOrder();
     if (messagesEl !== null) {
-      const messages = messagesEl.querySelectorAll(".message");
-      if (messages.length === 0 && store.order.length === 0) {
+      const feed = messagesEl.querySelectorAll(".message, .feed-notice, .chat-stopped");
+      if (!stoppedState && feed.length === 0 && store.order.length === 0) {
         messagesEl.replaceChildren(emptyThread());
-      } else if (messages.length > 0) {
+      } else if (feed.length > 0) {
         for (const child of Array.from(messagesEl.children)) {
-          if (!child.classList.contains("message")) child.remove();
+          if (!feedChildSelected(child)) child.remove();
         }
       }
     }
@@ -7878,30 +8195,59 @@ function main() {
     if (scrollEl === null) return null;
     if (!force && isAtBottom()) return null;
     const top = scrollEl.getBoundingClientRect().top;
-    for (const id of store.order) {
-      const record = store.messages.get(id);
+    const items = mergeFeedOrder(
+      store.order,
+      store.messages,
+      noticeOrder.map((id) => notices.get(id)),
+    );
+    for (const item of items) {
+      if (item.type === "notice") {
+        const noticeNode = noticeNodes.get(item.id);
+        if (noticeNode === undefined) continue;
+        const rect = noticeNode.getBoundingClientRect();
+        if (rect.bottom > top + 1) {
+          return { kind: "notice", id: item.id, partID: null, offset: rect.top - top };
+        }
+        continue;
+      }
+      const record = store.messages.get(item.id);
       if (record === undefined) continue;
       for (const partID of record.partOrder) {
-        const node = partNodes.get(`${id}:${partID}`);
+        const node = partNodes.get(`${item.id}:${partID}`);
         if (node === undefined) continue;
         const rect = node.getBoundingClientRect();
-        if (rect.bottom > top + 1) return { messageID: id, partID, offset: rect.top - top };
+        if (rect.bottom > top + 1) {
+          return { kind: "message", id: item.id, partID, offset: rect.top - top };
+        }
       }
-      const messageNode = messageNodes.get(id);
+      const messageNode = messageNodes.get(item.id);
       if (messageNode === undefined) continue;
       const rect = messageNode.getBoundingClientRect();
-      if (rect.bottom > top + 1) return { messageID: id, partID: null, offset: rect.top - top };
+      if (rect.bottom > top + 1) {
+        return { kind: "message", id: item.id, partID: null, offset: rect.top - top };
+      }
+    }
+    if (stoppedShellNode !== null) {
+      const rect = stoppedShellNode.getBoundingClientRect();
+      if (rect.bottom > top + 1) {
+        return { kind: "stopped", id: "", partID: null, offset: rect.top - top };
+      }
     }
     return null;
   }
 
   function restoreScrollAnchor(anchor) {
     if (anchor === null || scrollEl === null) return;
-    const node =
-      anchor.partID === null
-        ? messageNodes.get(anchor.messageID)
-        : partNodes.get(`${anchor.messageID}:${anchor.partID}`);
-    if (node === undefined) return;
+    let node;
+    if (anchor.kind === "notice") node = noticeNodes.get(anchor.id);
+    else if (anchor.kind === "stopped") node = stoppedShellNode;
+    else {
+      node =
+        anchor.partID === null
+          ? messageNodes.get(anchor.id)
+          : partNodes.get(`${anchor.id}:${anchor.partID}`);
+    }
+    if (node === undefined || node === null) return;
     const top = node.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top;
     scrollEl.scrollTop += top - anchor.offset;
     recordProgrammaticScroll();
@@ -7954,7 +8300,7 @@ function main() {
     messagesEl.removeAttribute("aria-busy");
     const count = store.order.length;
     if (countEl !== null) {
-      const label = messageCountLabel(count);
+      const label = currentMessageCountLabel(count);
       if (countEl.textContent !== label) countEl.textContent = label;
     }
     if (follow) {
@@ -7969,6 +8315,7 @@ function main() {
     }
     lastRenderedCount = count;
     dirtyMessages = new Set();
+    noticeDirty = new Set();
     if (throttled.size > 0) {
       dirtyParts = throttled;
       scheduleFlushAt(MARKDOWN_THROTTLE_MS);
@@ -8032,6 +8379,7 @@ function main() {
         return;
       }
       failures += 1;
+      refreshNotices().catch(() => {});
       if (failures >= 3) {
         closeStream();
         setConnection("Paused", "paused");
@@ -8073,6 +8421,7 @@ function main() {
     hideStreamNotice();
     subscribe();
     hydrate().catch(() => {});
+    refreshNotices().catch(() => {});
     loadMessages({ reason: "reconnect", silent: true }).catch(() => {});
   }
 
@@ -8499,6 +8848,7 @@ function main() {
     refreshRuntime().catch(() => {});
     refreshCommands({ force: true, quiet: true }).catch(() => {});
     refreshContext(sessionId, { retryNotRunning: true }).catch(() => {});
+    refreshNotices().catch(() => {});
     hydrate({ reconnect: true }).catch(() => {});
     hydrateMessages({ reason: changed ? "reconnect" : "ready", silent: true }).catch(() => {});
   }
@@ -8530,6 +8880,18 @@ function main() {
       return;
     }
     if (!envelopeAccepted(payload)) return;
+
+    if (type === "notice.created") {
+      const notice = payload.notice;
+      if (
+        notice !== null &&
+        typeof notice === "object" &&
+        (typeof notice.sessionId !== "string" || notice.sessionId === sessionId)
+      ) {
+        ingestNotices([notice]);
+      }
+      return;
+    }
 
     if (type === "stream.warning") {
       const warning = normalizeStreamWarning(payload);
@@ -9140,6 +9502,13 @@ function main() {
         renderPromptDock();
       }
       refreshInlineQuestions();
+    }
+
+    if (
+      (promptResult.status === "rejected" && isAgentStoppedError(promptResult.reason)) ||
+      (savedResult.status === "rejected" && isAgentStoppedError(savedResult.reason))
+    ) {
+      enterStoppedState();
     }
 
     if (savedResult.status === "fulfilled") {
@@ -11351,7 +11720,12 @@ function main() {
       if (isAbortError(error)) return;
       if (fetchSeq !== todoFetchSeq || sessionId !== id) return;
       if ((todoEventSeq.get(id) || 0) !== eventSeq) return;
-      void error;
+      if (isAgentStoppedError(error)) {
+        todoState = todoCache.has(id) ? "ready" : "idle";
+        renderPlan();
+        enterStoppedState();
+        return;
+      }
       todoState = "error";
       renderPlan();
     }
@@ -11509,6 +11883,9 @@ function main() {
       currentStreamID: store.currentStreamID,
       historyCursor,
       historyLoaded,
+      notices,
+      noticeOrder: [...noticeOrder],
+      noticeBefore,
     });
   }
 
@@ -11517,6 +11894,10 @@ function main() {
     const next = createThreadStore(id);
     historyCursor = saved === undefined ? null : saved.historyCursor ?? null;
     historyLoaded = saved === undefined ? false : saved.historyLoaded ?? false;
+    notices = saved === undefined ? new Map() : saved.notices instanceof Map ? saved.notices : new Map();
+    noticeOrder =
+      saved === undefined ? [] : Array.isArray(saved.noticeOrder) ? [...saved.noticeOrder] : [];
+    noticeBefore = saved === undefined ? null : saved.noticeBefore ?? null;
     if (saved === undefined) return next;
     next.order = Array.isArray(saved.order) ? [...saved.order] : [];
     next.messages = saved.messages instanceof Map ? saved.messages : new Map();
@@ -11629,6 +12010,7 @@ function main() {
       clearAllOmoClassifyTimers();
       sessionSnapshotTooLarge = false;
       setSessionNotice(false);
+      leaveStoppedState();
       hideStreamNotice("warning");
       const buffer = hydrationBuffer;
       const contentDiscarded =
@@ -11676,6 +12058,10 @@ function main() {
     } catch (error) {
       if (isAbortError(error)) return;
       if (sequence !== hydrationSeq || sessionId !== target) return;
+      if (isAgentStoppedError(error)) {
+        enterStoppedState();
+        return;
+      }
       if (error !== null && typeof error === "object" && error.code === "messages_too_large") {
         if (store.order.length === 0) {
           showThreadError(error, () => hydrateMessages({ initial: true }));
@@ -11853,6 +12239,7 @@ function main() {
       sessions = fetched;
       sessionsFailed = false;
       sessionsLoaded = true;
+      leaveStoppedState();
       const tree = buildSessionTree(sessions);
       expandActiveAncestors();
       if (sessions.length === 0) {
@@ -11876,6 +12263,14 @@ function main() {
       }
     } catch (error) {
       if (seq !== sessionsFetchSeq) return;
+      if (isAgentStoppedError(error)) {
+        sessionsFailed = false;
+        sessionsLoaded = true;
+        if (sessions.length === 0) showSessionsStopped();
+        else renderSessions();
+        enterStoppedState();
+        return;
+      }
       showSessionsError(error, () => refreshSessions());
     }
   }
@@ -11900,6 +12295,10 @@ function main() {
     syncReasoningTimer();
     historyRequest = null;
     messageNodes = new Map();
+    noticeNodes = new Map();
+    noticeDirty = new Set();
+    stoppedShellNode = null;
+    stoppedState = false;
     partNodes = new Map();
     partOwner.clear();
     partRenderState.clear();
@@ -12054,6 +12453,7 @@ function main() {
     closeContext(false);
     await Promise.all([
       loadMessages({ initial: true, forceBottom: true }),
+      refreshNotices().catch(() => {}),
       loadDraftForSession(id, {
         applyText: previous !== id,
         signal: controller.signal,
@@ -12113,6 +12513,11 @@ function main() {
     hideContextConfirm(false);
     resetContextUi(true, "Waiting for a completed step.", "Start a session to compact.");
     store = createThreadStore(null);
+    notices = new Map();
+    noticeOrder = [];
+    noticeBefore = null;
+    noticeRequest = null;
+    noticeRequestSeq += 1;
     resetFeedDom();
     sessionSnapshotTooLarge = false;
     setSessionNotice(false);
@@ -12323,6 +12728,20 @@ function main() {
             : firstRootId(tree) ?? String(sessions[0].id);
       await selectSession(wanted, { focus: false });
     } catch (error) {
+      if (isAgentStoppedError(error)) {
+        sessions = [];
+        sessionsFailed = false;
+        sessionsLoaded = true;
+        showSessionError(null);
+        showSessionsStopped();
+        const requested = new URLSearchParams(window.location.search).get("session");
+        if (requested !== null && requested.length > 0) {
+          sessionId = requested;
+          updateUrl();
+        }
+        await enterStoppedState();
+        return;
+      }
       showSessionsError(error, bootSessions);
       showThreadError(error, bootSessions);
     }
@@ -13662,7 +14081,8 @@ function main() {
       historyScrollFrame = window.requestAnimationFrame(() => {
         historyScrollFrame = null;
         if (scrollEl.scrollTop <= HISTORY_SCROLL_THRESHOLD_PX) {
-          loadOlderMessages().catch(() => {});
+          if (historyCursor !== null) loadOlderMessages().catch(() => {});
+          if (noticeBefore !== null) loadOlderNotices().catch(() => {});
         }
       });
     });

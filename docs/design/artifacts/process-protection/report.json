@@ -1,0 +1,232 @@
+{
+  "tool": "process-protection-qa",
+  "mode": "deterministic",
+  "startedAt": "2026-10-27T21:53:32.997Z",
+  "status": "PASS",
+  "baseUrl": "http://127.0.0.1:<ephemeral-test-port>",
+  "app": "processqa",
+  "project": "22222222-2222-4222-8222-222222222222",
+  "scenarios": [
+    {
+      "name": "reload-stopped",
+      "status": "PASS",
+      "ms": 1154,
+      "checks": [
+        "stopped reload renders the shell",
+        "stopped reload renders one Start action",
+        "notice label is visible",
+        "notice reason is visible",
+        "stopped reload does not fake an empty running feed",
+        "stopped reload does not show the running empty state",
+        "boot never auto-starts the stopped app",
+        "Start posts the existing /start path once",
+        "Start refreshes sessions",
+        "Start refreshes notices"
+      ],
+      "data": {
+        "calls": {
+          "sessions": 2,
+          "messages": 3,
+          "notices": 5,
+          "start": 1
+        }
+      }
+    },
+    {
+      "name": "interleaved-notices",
+      "status": "PASS",
+      "ms": 708,
+      "checks": [
+        "notices interleave above and below messages: [\"message:msg_process_1\",\"notice:notice_process_stopped\",\"message:msg_process_2\",\"notice:notice_process_child\"]",
+        "first notice label",
+        "first notice reason",
+        "child notice label",
+        "child notice reason",
+        "message count excludes notices (got 2 messages)",
+        "live notice.created appends in order",
+        "live notice label renders"
+      ],
+      "data": {
+        "order": [
+          "message:msg_process_1",
+          "notice:notice_process_stopped",
+          "message:msg_process_2",
+          "notice:notice_process_child"
+        ],
+        "count": "2 messages",
+        "liveOrder": [
+          "message:msg_process_1",
+          "notice:notice_process_stopped",
+          "message:msg_process_2",
+          "notice:notice_process_child",
+          "notice:notice_process_live"
+        ]
+      }
+    },
+    {
+      "name": "notice-only",
+      "status": "PASS",
+      "ms": 816,
+      "checks": [
+        "notice-only session renders its notices",
+        "notice-only session is not treated as empty",
+        "notice-only count is messages only (got 0 messages)"
+      ],
+      "data": {
+        "notices": 2,
+        "empty": false,
+        "count": "0 messages"
+      }
+    },
+    {
+      "name": "resume-not-omo",
+      "status": "PASS",
+      "ms": 786,
+      "checks": [
+        "resume prompt is not rendered as an OMO/system card",
+        "resume synthetic message is hidden",
+        "resume prompt text is not in the visible feed",
+        "resume_started notice is visible",
+        "resume_started reason is visible"
+      ],
+      "data": {
+        "systemCards": 0,
+        "messageIDs": [
+          "msg_process_1",
+          "msg_process_a"
+        ],
+        "feedText": "OPoperator10:00 AMFirst questionAgent resumed hereOperator restartPRprocessqa10:00 AMContinuing the task.",
+        "noticeText": "Agent resumed hereOperator restart"
+      }
+    },
+    {
+      "name": "visual-1440-768",
+      "status": "PASS",
+      "ms": 3385,
+      "checks": [
+        "1440/dark: theme",
+        "1440/dark: no horizontal overflow",
+        "1440/dark: notice spans the feed width",
+        "1440/dark: notice row has height",
+        "1440/dark: notice color",
+        "1440/light: theme",
+        "1440/light: no horizontal overflow",
+        "1440/light: notice spans the feed width",
+        "1440/light: notice row has height",
+        "1440/light: notice color",
+        "768/dark: theme",
+        "768/dark: no horizontal overflow",
+        "768/dark: notice spans the feed width",
+        "768/dark: notice row has height",
+        "768/dark: notice color",
+        "768/light: theme",
+        "768/light: no horizontal overflow",
+        "768/light: notice spans the feed width",
+        "768/light: notice row has height",
+        "768/light: notice color"
+      ],
+      "data": {
+        "views": [
+          {
+            "width": 1440,
+            "height": 900,
+            "colorScheme": "dark",
+            "layout": {
+              "theme": "dark",
+              "overflowX": 0,
+              "inner": {
+                "left": 561.734375,
+                "right": 1062.265625,
+                "width": 500.53125,
+                "height": 233.09375
+              },
+              "notice": {
+                "left": 561.734375,
+                "right": 1062.265625,
+                "width": 500.53125,
+                "height": 24.796875
+              },
+              "height": 24.796875
+            }
+          },
+          {
+            "width": 1440,
+            "height": 900,
+            "colorScheme": "light",
+            "layout": {
+              "theme": "light",
+              "overflowX": 0,
+              "inner": {
+                "left": 561.734375,
+                "right": 1062.265625,
+                "width": 500.53125,
+                "height": 233.09375
+              },
+              "notice": {
+                "left": 561.734375,
+                "right": 1062.265625,
+                "width": 500.53125,
+                "height": 24.796875
+              },
+              "height": 24.796875
+            }
+          },
+          {
+            "width": 768,
+            "height": 900,
+            "colorScheme": "dark",
+            "layout": {
+              "theme": "dark",
+              "overflowX": 0,
+              "inner": {
+                "left": 296,
+                "right": 744,
+                "width": 448,
+                "height": 233.09375
+              },
+              "notice": {
+                "left": 296,
+                "right": 744,
+                "width": 448,
+                "height": 24.796875
+              },
+              "height": 24.796875
+            }
+          },
+          {
+            "width": 768,
+            "height": 900,
+            "colorScheme": "light",
+            "layout": {
+              "theme": "light",
+              "overflowX": 0,
+              "inner": {
+                "left": 296,
+                "right": 744,
+                "width": 448,
+                "height": 233.09375
+              },
+              "notice": {
+                "left": 296,
+                "right": 744,
+                "width": 448,
+                "height": 24.796875
+              },
+              "height": 24.796875
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "screenshots": [
+    "docs/design/artifacts/process-protection/stopped-reload-1440-dark.png",
+    "docs/design/artifacts/process-protection/interleaved-1440-dark.png",
+    "docs/design/artifacts/process-protection/interleaved-1440-light.png",
+    "docs/design/artifacts/process-protection/interleaved-768-dark.png",
+    "docs/design/artifacts/process-protection/interleaved-768-light.png"
+  ],
+  "consoleErrors": [],
+  "networkFailures": [],
+  "finishedAt": "2026-10-27T21:53:40.667Z"
+}

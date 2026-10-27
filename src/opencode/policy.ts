@@ -19,6 +19,7 @@ export interface PermissionPolicy {
   websearch: PermissionAction;
   hanse_web_search?: PermissionAction;
   hanse_web_fetch?: PermissionAction;
+  bash: PermissionRules;
   read: PermissionRules;
   edit: PermissionRules;
   doom_loop: PermissionAction;
@@ -62,7 +63,32 @@ export interface PermissionRootOptions {
  * Policy generation version. Bumping it changes every launch/settings hash so the existing
  * "Restart required" marker appears after a policy change.
  */
-export const ATTACHMENTS_POLICY_VERSION = 2;
+export const ATTACHMENTS_POLICY_VERSION = 3;
+
+/**
+ * Narrow deny-only bash patterns for commands that can terminate the agent runtime itself.
+ *
+ * Deliberately no `"*"` entry and no broad `kill *` deny: legitimate test-runner, dev-server, and
+ * `timeout` cleanup must keep working. The process-group forms cover the instruction's wording.
+ */
+export const BASH_DENY_PATTERNS = [
+  "pkill *opencode*",
+  "killall *opencode*",
+  "kill 1",
+  "kill -9 1",
+  "kill -KILL 1",
+  "kill -TERM 1",
+  "kill -15 1",
+  "kill -s KILL 1",
+  "kill -s TERM 1",
+  "kill -1",
+  "kill -- -1",
+  "kill -s KILL -1",
+  "kill 0",
+] as const;
+
+/** Probe commands used to verify that every non-hidden agent still denies the bash self-kills. */
+export const BASH_DENY_PROBES: string[] = [...BASH_DENY_PATTERNS];
 
 /** A single rule as exposed by `GET /agent` in the final (merged) ruleset. */
 export interface AgentPermissionRule {
@@ -86,6 +112,8 @@ export interface VerifyPolicyOptions {
   appDir: string;
   /** Credential patterns that the final ruleset must still resolve to `deny`. */
   denyPatterns: string[];
+  /** Bash commands that every non-hidden agent must still resolve to `deny`. */
+  bashProbes?: string[];
   /** Per-request timeout. Defaults to 1000 ms. */
   timeoutMs?: number;
   /** Number of retries after the first attempt. Defaults to 2. */
@@ -239,6 +267,9 @@ export function buildPermissionPolicy(
     websearch: options.websearch ?? "allow",
     ...(options.managedSearch === true ? { hanse_web_search: "allow" as const } : {}),
     ...(options.managedFetch === true ? { hanse_web_fetch: "allow" as const } : {}),
+    bash: Object.fromEntries(
+      BASH_DENY_PATTERNS.map((pattern): [string, PermissionAction] => [pattern, "deny"]),
+    ),
     read: {
       "*.env": "allow",
       "*.env.*": "allow",
@@ -376,7 +407,7 @@ function probePath(pattern: string): string {
  */
 export function evaluateAgentPolicy(
   agent: AgentPolicy,
-  options: { denyPatterns: string[] },
+  options: { denyPatterns: string[]; bashProbes?: string[] },
 ): string[] {
   if (agent.hidden) return [];
   const warnings: string[] = [];
@@ -386,6 +417,11 @@ export function evaluateAgentPolicy(
       warnings.push(
         `agent "${agent.name}": external_directory does not deny credential ${pattern}`,
       );
+    }
+  }
+  for (const probe of options.bashProbes ?? []) {
+    if (evaluatePermission(agent.rules, "bash", probe) !== "deny") {
+      warnings.push(`agent "${agent.name}": bash does not deny "${probe}"`);
     }
   }
   if (agent.mode === "subagent") return warnings;
@@ -478,6 +514,7 @@ export async function verifyInstancePolicy(options: VerifyPolicyOptions): Promis
         warnings.push(
           ...evaluateAgentPolicy(agent, {
             denyPatterns: options.denyPatterns,
+            ...(options.bashProbes === undefined ? {} : { bashProbes: options.bashProbes }),
           }),
         );
       }

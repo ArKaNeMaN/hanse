@@ -54,14 +54,14 @@ function insertProjectAndApp(db: ReturnType<typeof openDatabase>): void {
 describe("migration v6 app-images", () => {
   it("applies fresh migrations and defaults existing app inserts to missing", () => {
     const db = openDatabase(":memory:");
-    expect(runMigrations(db)).toBe(19);
+    expect(runMigrations(db)).toBe(20);
     expect(runMigrations(db)).toBe(0);
 
     const versions = db.prepare("SELECT version FROM schema_migrations ORDER BY version").all() as {
       version: number;
     }[];
     expect(versions.map((row) => row.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
     ]);
     const secretTables = (
       db
@@ -218,7 +218,7 @@ describe("migration v6 app-images", () => {
     insertProjectAndApp(db);
     expect(appColumns(db)).not.toContain("image_status");
 
-    expect(runMigrations(db)).toBe(14);
+    expect(runMigrations(db)).toBe(15);
 
     const row = db.prepare("SELECT image_status, image_error FROM apps WHERE id = 'a1'").get() as {
       image_status: string;
@@ -246,7 +246,7 @@ describe("migration v6 app-images", () => {
       "INSERT INTO instances (id, app_id, state, runtime_state, updated_at) VALUES ('a1','a1','running','running',?)",
     ).run(now);
 
-    expect(runMigrations(db)).toBe(10);
+    expect(runMigrations(db)).toBe(11);
 
     const row = db
       .prepare(
@@ -278,7 +278,7 @@ describe("migration v6 app-images", () => {
     expect(appColumns(db)).not.toContain("deleting");
     expect(projectColumns(db)).not.toContain("deleting");
 
-    expect(runMigrations(db)).toBe(9);
+    expect(runMigrations(db)).toBe(10);
 
     const app = db.prepare("SELECT deleting FROM apps WHERE id = 'a1'").get() as {
       deleting: number;
@@ -309,7 +309,7 @@ describe("migration v6 app-images", () => {
     insertProjectAndApp(db);
     expect(() => db.prepare("SELECT 1 FROM skills").get()).toThrow();
 
-    expect(runMigrations(db)).toBe(8);
+    expect(runMigrations(db)).toBe(9);
     expect(runMigrations(db)).toBe(0);
 
     const columns = (db.prepare("PRAGMA table_info(skills)").all() as Array<{ name: string }>).map(
@@ -354,7 +354,7 @@ describe("migration v6 app-images", () => {
     );
     db.prepare(
       "INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?, ?, ?, ?)",
-    ).run(20, "future", "future-checksum", now);
+    ).run(21, "future", "future-checksum", now);
 
     expect(() => runMigrations(db)).toThrowError(SchemaTooNewError);
     try {
@@ -362,11 +362,11 @@ describe("migration v6 app-images", () => {
     } catch (error) {
       expect(error).toMatchObject({
         code: "schema_too_new",
-        applied: 20,
-        known: 19,
+        applied: 21,
+        known: 20,
       });
+      expect((error as Error).message).toContain("21");
       expect((error as Error).message).toContain("20");
-      expect((error as Error).message).toContain("19");
     }
     expect(() => db.prepare("SELECT 1 FROM skills").get()).toThrow();
     db.close();
@@ -385,7 +385,7 @@ describe("migration v6 app-images", () => {
       db.exec(migration.sql);
       record.run(migration.version, migration.name, migrationChecksum(migration.sql), now);
     }
-    record.run(20, "future", "future-checksum", now);
+    record.run(21, "future", "future-checksum", now);
 
     expect(() => runMigrations(db)).toThrowError(SchemaTooNewError);
     expect(() => db.prepare("SELECT 1 FROM skills").get()).toThrow();
@@ -410,7 +410,7 @@ describe("migration v6 app-images", () => {
     try {
       runMigrations(db);
     } catch (error) {
-      expect(error).toMatchObject({ code: "unknown_migration", version: 0, knownMax: 19 });
+      expect(error).toMatchObject({ code: "unknown_migration", version: 0, knownMax: 20 });
     }
     db.close();
   });
@@ -431,7 +431,9 @@ describe("migration v6 app-images", () => {
     db.close();
   });
 
-  it("upgrades a real v12 database to v13 and preserves existing skills", () => {
+  it("upgrades a real v12 database to v13 and preserves existing skills", {
+    timeout: 15_000,
+  }, () => {
     const dir = mkdtempSync(path.join(tmpdir(), "hanse-v12-"));
     const file = path.join(dir, "coordinator.db");
     try {
@@ -457,7 +459,7 @@ describe("migration v6 app-images", () => {
       const reopened = openDatabase(file);
       const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
       try {
-        expect(runMigrations(reopened)).toBe(7);
+        expect(runMigrations(reopened)).toBe(8);
         expect(runMigrations(reopened)).toBe(0);
         expect(warn).not.toHaveBeenCalled();
       } finally {
@@ -466,7 +468,7 @@ describe("migration v6 app-images", () => {
       const max = reopened
         .prepare("SELECT MAX(version) AS version FROM schema_migrations")
         .get() as { version: number };
-      expect(max.version).toBe(19);
+      expect(max.version).toBe(20);
       const skill = reopened
         .prepare("SELECT license, compatibility, metadata_json FROM skills WHERE name = 'review'")
         .get() as { license: string | null; compatibility: string | null; metadata_json: string };
@@ -529,7 +531,7 @@ describe("migration v6 app-images", () => {
     const file = path.join(dir, "coordinator.db");
     try {
       const first = openDatabase(file);
-      expect(runMigrations(first)).toBe(19);
+      expect(runMigrations(first)).toBe(20);
       first.close();
 
       const reopened = openDatabase(file);
@@ -543,7 +545,7 @@ describe("migration v6 app-images", () => {
       const max = reopened
         .prepare("SELECT MAX(version) AS version FROM schema_migrations")
         .get() as { version: number };
-      expect(max.version).toBe(19);
+      expect(max.version).toBe(20);
       reopened.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -554,7 +556,7 @@ describe("migration v6 app-images", () => {
 describe("migration v19 custom model providers", () => {
   it("adds the model_providers table with JSON and npm checks", () => {
     const db = openDatabase(":memory:");
-    expect(runMigrations(db)).toBe(19);
+    expect(runMigrations(db)).toBe(20);
     expect(tableColumns(db, "model_providers")).toEqual([
       "id",
       "name",
@@ -595,11 +597,20 @@ describe("migration v19 custom model providers", () => {
     db.close();
   });
 
-  it("upgrades a v18 database with only the new table", () => {
+  it("upgrades a v18 database through v19 and v20", () => {
     const db = openDatabase(":memory:");
-    runMigrations(db);
-    db.exec("DELETE FROM schema_migrations WHERE version = 19; DROP TABLE model_providers;");
-    expect(runMigrations(db)).toBe(1);
+    db.exec(
+      "CREATE TABLE schema_migrations (" +
+        "version INTEGER PRIMARY KEY, name TEXT NOT NULL, checksum TEXT NOT NULL, applied_at TEXT NOT NULL)",
+    );
+    const record = db.prepare(
+      "INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?, ?, ?, ?)",
+    );
+    for (const migration of MIGRATIONS.filter((candidate) => candidate.version <= 18)) {
+      db.exec(migration.sql);
+      record.run(migration.version, migration.name, migrationChecksum(migration.sql), now);
+    }
+    expect(runMigrations(db)).toBe(2);
     expect(tableColumns(db, "model_providers")).toContain("id");
     db.close();
   });
@@ -627,7 +638,7 @@ function namedIndexes(db: ReturnType<typeof openDatabase>): string[] {
 describe("migration v15 chat drafts and pending sends", () => {
   it("applies from an empty database with tables, indexes, defaults, and constraints", () => {
     const db = openDatabase(":memory:");
-    expect(runMigrations(db)).toBe(19);
+    expect(runMigrations(db)).toBe(20);
     expect(runMigrations(db)).toBe(0);
 
     const tables = (
@@ -737,13 +748,13 @@ describe("migration v15 chat drafts and pending sends", () => {
 
     expect(() => db.prepare("SELECT 1 FROM message_drafts").get()).toThrow();
 
-    expect(runMigrations(db)).toBe(5);
+    expect(runMigrations(db)).toBe(6);
     expect(runMigrations(db)).toBe(0);
 
     const max = db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as {
       version: number;
     };
-    expect(max.version).toBe(19);
+    expect(max.version).toBe(20);
     expect(namedIndexes(db)).toEqual(["pending_sends_session_state", "session_state_activity"]);
     expect(db.prepare("SELECT id FROM handoffs WHERE id = 'h1'").get()).toEqual({ id: "h1" });
     expect(db.prepare("SELECT id FROM apps WHERE id = 'a1'").get()).toEqual({ id: "a1" });
@@ -777,7 +788,7 @@ function indexColumns(db: ReturnType<typeof openDatabase>, name: string): string
 describe("migration v16 chat attachments and deliveries", () => {
   it("applies from an empty database with tables, columns, and indexes", () => {
     const db = openDatabase(":memory:");
-    expect(runMigrations(db)).toBe(19);
+    expect(runMigrations(db)).toBe(20);
     expect(runMigrations(db)).toBe(0);
 
     const tables = (
@@ -884,13 +895,13 @@ describe("migration v16 chat attachments and deliveries", () => {
     ).run(now);
     expect(() => db.prepare("SELECT 1 FROM app_attachments").get()).toThrow();
 
-    expect(runMigrations(db)).toBe(4);
+    expect(runMigrations(db)).toBe(5);
     expect(runMigrations(db)).toBe(0);
 
     const max = db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as {
       version: number;
     };
-    expect(max.version).toBe(19);
+    expect(max.version).toBe(20);
     expect(db.prepare("SELECT id FROM apps WHERE id = 'a1'").get()).toEqual({ id: "a1" });
     expect(db.prepare("SELECT text FROM message_drafts WHERE app_id = 'a1'").get()).toEqual({
       text: "draft",
@@ -1063,7 +1074,7 @@ describe("migration v16 chat attachments and deliveries", () => {
 describe("migration v18 agent image validity", () => {
   it("adds durable build identity columns with defaults and constraints", () => {
     const db = openDatabase(":memory:");
-    expect(runMigrations(db)).toBe(19);
+    expect(runMigrations(db)).toBe(20);
     insertProjectAndApp(db);
 
     const app = db
@@ -1163,11 +1174,11 @@ describe("migration v18 agent image validity", () => {
     expect(appColumns(db)).not.toContain("build_configured");
     expect(tableColumns(db, "app_image_versions")).not.toContain("hash_version");
 
-    expect(runMigrations(db)).toBe(2);
+    expect(runMigrations(db)).toBe(3);
     expect(runMigrations(db)).toBe(0);
 
     expect(db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get()).toEqual({
-      version: 19,
+      version: 20,
     });
     expect(
       db
@@ -1212,6 +1223,181 @@ describe("migration v18 agent image validity", () => {
     expect(
       db.prepare("SELECT image_ref, applied_image_id FROM instances WHERE id = 'i1'").get(),
     ).toEqual({ image_ref: "old-ref", applied_image_id: null });
+    db.close();
+  });
+});
+
+describe("migration v20 agent process protection", () => {
+  it("adds instances columns, session tables, indexes, and constraints", () => {
+    const db = openDatabase(":memory:");
+    expect(runMigrations(db)).toBe(20);
+    expect(runMigrations(db)).toBe(0);
+
+    const instanceColumns = tableColumns(db, "instances");
+    for (const column of [
+      "applied_rule_hash",
+      "runtime_started_at",
+      "runtime_restart_count",
+      "last_exit_code",
+      "last_oom_killed",
+      "last_stop_reason",
+      "last_stop_at",
+    ]) {
+      expect(instanceColumns).toContain(column);
+    }
+
+    expect(tableColumns(db, "session_resume")).toEqual([
+      "app_id",
+      "session_id",
+      "parent_session_id",
+      "observed_status",
+      "observed_at",
+      "last_busy_seen_at",
+      "interrupted_at",
+      "interruption_epoch",
+      "interruption_key",
+      "reason",
+      "runtime_started_at",
+      "runtime_restart_count",
+      "resume_state",
+      "defer_reason",
+      "dispatch_state",
+      "auto_dispatch_retries",
+      "auto_attempts",
+      "last_attempt_at",
+      "resume_message_id",
+      "last_error",
+      "created_at",
+      "updated_at",
+    ]);
+    expect(tableColumns(db, "session_notices")).toEqual([
+      "id",
+      "app_id",
+      "session_id",
+      "parent_session_id",
+      "dedupe_key",
+      "kind",
+      "reason",
+      "payload_json",
+      "created_at",
+    ]);
+    expect(tableColumns(db, "session_notice_dedupe")).toEqual([
+      "app_id",
+      "session_id",
+      "dedupe_key",
+      "created_at",
+    ]);
+
+    const indexes = (
+      db
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type = 'index' AND name IN ('session_resume_due', 'session_notices_page') ORDER BY name",
+        )
+        .all() as Array<{ name: string }>
+    ).map((row) => row.name);
+    expect(indexes).toEqual(["session_notices_page", "session_resume_due"]);
+
+    insertProjectAndApp(db);
+    const insertResume = db.prepare(
+      `INSERT INTO session_resume
+         (app_id, session_id, observed_status, observed_at, last_busy_seen_at, created_at, updated_at)
+       VALUES ('a1', 'ses_1', ?, ?, ?, ?, ?)`,
+    );
+    expect(() => insertResume.run("idle", now, now, now, now)).toThrow();
+    expect(() => insertResume.run("busy", now, now, now, now)).not.toThrow();
+    expect(
+      db.prepare("SELECT resume_state, dispatch_state, auto_attempts FROM session_resume").get(),
+    ).toEqual({ resume_state: "observing", dispatch_state: "none", auto_attempts: 0 });
+    expect(() => db.prepare("UPDATE session_resume SET resume_state = 'bogus'").run()).toThrow();
+    expect(() => db.prepare("UPDATE session_resume SET dispatch_state = 'bogus'").run()).toThrow();
+
+    const insertNotice = db.prepare(
+      `INSERT INTO session_notices
+         (id, app_id, session_id, dedupe_key, kind, payload_json, created_at)
+       VALUES (?, 'a1', 'ses_1', ?, ?, ?, ?)`,
+    );
+    expect(() => insertNotice.run("notice_1", "k1", "bogus", "{}", now)).toThrow();
+    expect(() => insertNotice.run("notice_2", "k2", "agent_stopped", "not json", now)).toThrow();
+    expect(() =>
+      insertNotice.run("notice_3", "k3", "agent_stopped", JSON.stringify("x".repeat(4096)), now),
+    ).toThrow();
+    expect(() => insertNotice.run("notice_4", "k4", "agent_stopped", "{}", now)).not.toThrow();
+    expect(() => insertNotice.run("notice_5", "k4", "agent_stopped", "{}", now)).toThrow();
+
+    expect(() =>
+      db
+        .prepare(
+          "INSERT INTO session_notice_dedupe (app_id, session_id, dedupe_key, created_at) VALUES ('a1', 'ses_1', 'k4', ?)",
+        )
+        .run(now),
+    ).not.toThrow();
+    expect(() =>
+      db
+        .prepare(
+          "INSERT INTO session_notice_dedupe (app_id, session_id, dedupe_key, created_at) VALUES ('a1', 'ses_1', 'k4', ?)",
+        )
+        .run(now),
+    ).toThrow();
+
+    db.prepare("DELETE FROM apps WHERE id = 'a1'").run();
+    expect(db.prepare("SELECT COUNT(*) AS count FROM session_resume").get()).toEqual({ count: 0 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM session_notices").get()).toEqual({ count: 0 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM session_notice_dedupe").get()).toEqual({
+      count: 0,
+    });
+    db.close();
+  });
+
+  it("upgrades a populated v19 database additively without rewriting rows", () => {
+    const db = openDatabase(":memory:");
+    db.exec(
+      "CREATE TABLE schema_migrations (" +
+        "version INTEGER PRIMARY KEY, name TEXT NOT NULL, checksum TEXT NOT NULL, applied_at TEXT NOT NULL)",
+    );
+    const record = db.prepare(
+      "INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?, ?, ?, ?)",
+    );
+    for (const migration of MIGRATIONS.filter((candidate) => candidate.version <= 19)) {
+      db.exec(migration.sql);
+      record.run(migration.version, migration.name, migrationChecksum(migration.sql), now);
+    }
+    insertProjectAndApp(db);
+    db.prepare(
+      `INSERT INTO instances
+         (id, app_id, endpoint, state, runtime_state, started_at, updated_at, applied_settings_hash)
+       VALUES ('i1', 'a1', 'http://127.0.0.1:4100', 'running', 'running', ?, ?, 'old-hash')`,
+    ).run(now, now);
+    expect(tableColumns(db, "instances")).not.toContain("applied_rule_hash");
+    expect(() => db.prepare("SELECT 1 FROM session_resume").get()).toThrow();
+
+    expect(runMigrations(db)).toBe(1);
+    expect(runMigrations(db)).toBe(0);
+
+    expect(
+      db
+        .prepare(
+          `SELECT endpoint, state, runtime_state, started_at, applied_settings_hash,
+                  applied_rule_hash, runtime_started_at, runtime_restart_count,
+                  last_exit_code, last_oom_killed, last_stop_reason, last_stop_at
+           FROM instances WHERE id = 'i1'`,
+        )
+        .get(),
+    ).toEqual({
+      endpoint: "http://127.0.0.1:4100",
+      state: "running",
+      runtime_state: "running",
+      started_at: now,
+      applied_settings_hash: "old-hash",
+      applied_rule_hash: null,
+      runtime_started_at: null,
+      runtime_restart_count: null,
+      last_exit_code: null,
+      last_oom_killed: null,
+      last_stop_reason: null,
+      last_stop_at: null,
+    });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM session_resume").get()).toEqual({ count: 0 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM session_notices").get()).toEqual({ count: 0 });
     db.close();
   });
 });

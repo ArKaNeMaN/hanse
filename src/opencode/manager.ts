@@ -58,6 +58,16 @@ import type { SqliteDatabase } from "../store/index.js";
 import { buildWebMcpConfig } from "../web/config.js";
 import { writeAuthFile } from "./auth.js";
 import {
+  listMessagePage,
+  listMessages,
+  listSessionStatuses,
+  listSessionsBounded,
+  type OpencodePart,
+  type OpencodeRequestOptions,
+  type OpencodeSessionStatusMap,
+  sendPromptAsync,
+} from "./client.js";
+import {
   AgentNotRunningError,
   ContextMonitor,
   type ContextMonitorLike,
@@ -84,6 +94,7 @@ import type { OmoProfileInput, OmoProfileResult } from "./omo-profile.js";
 import { ensureOpencodePassword, opencodePasswordPath, readOpencodePassword } from "./password.js";
 import {
   ATTACHMENTS_POLICY_VERSION,
+  BASH_DENY_PROBES,
   buildPermissionPolicy,
   credentialDenyPatterns,
   type PermissionAction,
@@ -92,6 +103,20 @@ import {
   verifyInstancePolicy,
   type WebPermissionOptions,
 } from "./policy.js";
+import {
+  PROCESS_RULE_HASH,
+  PROCESS_RULE_TEXT,
+  processRulePath,
+  restoreAppliedRule,
+  writeAppliedRule,
+  writeProcessRule,
+} from "./process-rules.js";
+import {
+  ProcessRecovery,
+  type RuntimeObservation,
+  type SessionNoticeView,
+  type StopIntentReason,
+} from "./recovery.js";
 
 /**
  * Thrown by {@link InstanceManager.ensure} when the application or its project is marked for
@@ -285,6 +310,16 @@ export interface InstanceManagerOptions {
    * passes a bounded poll; tests omit it because their runtime is in-memory and has no HTTP server.
    */
   waitForReady?: (appId: string, endpoint: string) => Promise<void>;
+  /** Injectable `prompt_async` dispatch for resume tests; production uses the opencode client. */
+  sendPromptAsync?: (
+    endpoint: string,
+    sessionId: string,
+    text: string,
+    messageID: string,
+    options?: OpencodeRequestOptions,
+    model?: string,
+    parts?: OpencodePart[],
+  ) => Promise<void>;
   /** Root used to validate `appDir`. Defaults to the application's parent directory. */
   workspaceRoot?: string;
   /** Agents root used to validate `stateDir`. Defaults to the manager runtime root. */
@@ -333,6 +368,7 @@ export function settingsHashFor(
   profile: string,
   skillsHash?: string,
   providersHash?: string,
+  ruleHash?: string,
 ): string {
   return hashValue({
     effective: launchEffectiveSettings(snapshot.resolved.effective),
@@ -343,6 +379,7 @@ export function settingsHashFor(
     ...(providersHash === undefined ? {} : { providers: providersHash }),
     policyVersion: ATTACHMENTS_POLICY_VERSION,
     ...(skillsHash === undefined ? {} : { skills: skillsHash }),
+    ...(ruleHash === undefined ? {} : { ruleHash }),
   });
 }
 
@@ -486,14 +523,21 @@ export class InstanceManager {
   readonly #running = new Map<string, Entry>();
   readonly #monitors = new Map<string, MonitorEntry>();
   readonly #contextListeners = new Map<string, Set<(snapshot: ContextSnapshot) => void>>();
+  readonly #noticeListeners = new Map<string, Set<(notice: SessionNoticeView) => void>>();
   readonly #locks = new Map<string, Promise<unknown>>();
   readonly #restartClaims = new Map<string, () => void>();
   readonly #pending: PendingRecovery;
   readonly #sweep: ChatSweep;
+  readonly #recovery: ProcessRecovery;
   #maintenanceStarted = false;
   #monitorGeneration = 0;
   #statusReconcile: Promise<void> | undefined;
   #statusTimer: ReturnType<typeof setInterval> | undefined;
+  #observations: Array<{
+    appId: string;
+    previous: RuntimeObservation | null | undefined;
+    current: RuntimeObservation;
+  }> = [];
 
   constructor(db: SqliteDatabase, runtimeRoot: string, options: InstanceManagerOptions) {
     this.#db = db;
@@ -509,6 +553,22 @@ export class InstanceManager {
       db,
       agentsHome: runtimeRoot,
       endpointFor: (appId) => this.endpointFor(appId),
+    });
+    this.#recovery = new ProcessRecovery({
+      db,
+      runtimeStatus: (appId) => this.#options.runtime.status(appId),
+      endpointFor: (appId) => this.endpointFor(appId),
+      listSessionsBounded,
+      listSessionStatuses,
+      listMessages,
+      listMessagePage,
+      sendPromptAsync: this.#options.sendPromptAsync ?? sendPromptAsync,
+      waitForReady: (appId, endpoint) => this.#awaitReady(appId, endpoint),
+      isRestarting: (appId) => this.isRestarting(appId),
+      isDeploymentLocked: () => this.#options.deploymentLock?.isActive() ?? false,
+      now: () => Date.now(),
+      ...(this.#options.logger === undefined ? {} : { logger: this.#options.logger }),
+      onNotice: (appId, notice) => this.#emitNotice(appId, notice),
     });
   }
 
@@ -627,6 +687,21 @@ export class InstanceManager {
         // Reconnect after a coordinator restart or a caller retry. Settings/spec changes stay
         // "restart required" until an explicit stop and restart.
         this.#recordAppliedImageId(app.id, current.imageId);
+        const persisted = this.#db
+          .prepare(
+            `SELECT applied_settings_hash AS appliedSettingsHash,
+                    applied_profile AS appliedProfile,
+                    applied_rule_hash AS appliedRuleHash
+             FROM instances WHERE app_id = ?`,
+          )
+          .get(app.id) as
+          | {
+              appliedSettingsHash: string | null;
+              appliedProfile: number | null;
+              appliedRuleHash: string | null;
+            }
+          | undefined;
+        this.#restoreProcessRuleOnReconnect(app.id, isolated, persisted?.appliedRuleHash ?? null);
         const endpoint = current.endpoint ?? existing?.endpoint;
         if (endpoint !== undefined && endpoint !== null) {
           setEndpointAuthorization(endpoint, OPENCODE_BASIC_USERNAME, existingPassword);
@@ -634,15 +709,6 @@ export class InstanceManager {
             await this.#awaitReady(app.id, endpoint);
           }
           if (existing === undefined) {
-            const persisted = this.#db
-              .prepare(
-                `SELECT applied_settings_hash AS appliedSettingsHash,
-                        applied_profile AS appliedProfile
-                 FROM instances WHERE app_id = ?`,
-              )
-              .get(app.id) as
-              | { appliedSettingsHash: string | null; appliedProfile: number | null }
-              | undefined;
             const entry: Entry = {
               endpoint,
               projectId: app.projectId,
@@ -705,6 +771,8 @@ export class InstanceManager {
     mkdirSync(path.dirname(isolated.HOME), { recursive: true, mode: 0o700 });
     mkdirSync(isolated.HOME, { recursive: true, mode: 0o700 });
     this.#ensureAttachmentsRoot(isolated.HOME);
+    writeAppliedRule(isolated, PROCESS_RULE_TEXT);
+    writeProcessRule(isolated, PROCESS_RULE_TEXT);
     const passwordFile = opencodePasswordPath(isolated.XDG_STATE_HOME);
     const existing = this.#running.get(app.id);
     const current = await this.#options.runtime.status(app.id);
@@ -805,6 +873,7 @@ export class InstanceManager {
         profile.contentHash,
         skillsHash,
         modelProviderSnapshot?.hash,
+        PROCESS_RULE_HASH,
       );
       const webConfig = buildWebMcpConfig(web);
       if (webConfig !== undefined) {
@@ -862,7 +931,7 @@ export class InstanceManager {
       coordinatorCommand: [process.execPath, process.argv[1] ?? "", "mcp"],
       codegraphCommand: resolveCodegraphCommand(),
       environment: coordinatorEnvironment,
-      ...(app.instructions === undefined ? {} : { instructions: app.instructions }),
+      instructions: [...(app.instructions ?? []), processRulePath(isolated)],
       plugins: baselinePlugins,
       permission,
       model,
@@ -926,7 +995,7 @@ export class InstanceManager {
     );
 
     const status = await this.#options.runtime.ensure(spec);
-    this.#recordStatus(app, status, image, settingsHash, appliedProfile);
+    await this.#recordStatus(app, status, image, settingsHash, appliedProfile, PROCESS_RULE_HASH);
     if (status.state !== "running" || status.endpoint === null) {
       throw new Error(`agent runtime did not start ${app.id}: ${status.error ?? status.state}`);
     }
@@ -1195,6 +1264,7 @@ export class InstanceManager {
           preview.contentHash,
           skillsHash,
           this.#options.modelProviders?.snapshot().hash,
+          PROCESS_RULE_HASH,
         ) !== target.settingsHash
       ) {
         reasons.push("settings_changed");
@@ -1210,7 +1280,7 @@ export class InstanceManager {
       const end = this.#beginLifecycle("stop");
       try {
         this.#assertDeploymentUnlocked("stop");
-        return await this.#stopLocked(appId);
+        return await this.#stopLocked(appId, "stop");
       } finally {
         end();
       }
@@ -1241,13 +1311,13 @@ export class InstanceManager {
   }
 
   async #stopForDeletionLocked(appId: string): Promise<boolean> {
-    const stopped = await this.#stopLocked(appId);
+    const stopped = await this.#stopLocked(appId, "delete");
     this.#db.prepare("UPDATE apps SET deleting = 1 WHERE id = ?").run(appId);
     return stopped;
   }
 
   /** Stop logic shared by {@link stopApp} and {@link stopForDeletion}; callers hold the app lock. */
-  async #stopLocked(appId: string): Promise<boolean> {
+  async #stopLocked(appId: string, reason: StopIntentReason): Promise<boolean> {
     const entry = this.#running.get(appId);
     let status: Awaited<ReturnType<AgentRuntimeClient["status"]>>;
     try {
@@ -1259,6 +1329,11 @@ export class InstanceManager {
       entry !== undefined ||
       (status !== undefined && (status.state === "running" || status.state === "starting"));
     const endpoint = entry?.endpoint ?? status?.endpoint ?? undefined;
+    await this.#recovery.recordStopIntent(appId, reason);
+    const stoppedAt = new Date().toISOString();
+    this.#db
+      .prepare("UPDATE instances SET last_stop_reason = ?, last_stop_at = ? WHERE app_id = ?")
+      .run(reason, stoppedAt, appId);
     let finalStatus: Awaited<ReturnType<AgentRuntimeClient["delete"]>>;
     try {
       finalStatus = await this.#options.runtime.delete(appId);
@@ -1274,7 +1349,7 @@ export class InstanceManager {
     if (endpoint !== undefined && endpoint !== null) {
       clearEndpointAuthorization(endpoint);
     }
-    this.#recordStatusById(appId, finalStatus);
+    await this.#recordStatusById(appId, finalStatus);
     this.#revokeAgentToken(appId, entry);
     return wasRunning;
   }
@@ -1301,6 +1376,7 @@ export class InstanceManager {
     if (this.#statusTimer !== undefined) {
       return;
     }
+    this.#recovery.start();
     const tick = (): void => {
       void this.reconcileStatuses().catch(() => undefined);
     };
@@ -1311,6 +1387,7 @@ export class InstanceManager {
   }
 
   stopStatusReconciler(): void {
+    this.#recovery.stop();
     if (this.#statusTimer === undefined) {
       return;
     }
@@ -1380,7 +1457,8 @@ export class InstanceManager {
       return false;
     }
     const status = await this.#options.runtime.status(appId);
-    this.#recordStatusById(appId, status ?? stoppedStatus(appId));
+    await this.#recordStatusById(appId, status ?? stoppedStatus(appId));
+    await this.#flushObservations();
     return true;
   }
 
@@ -1437,11 +1515,11 @@ export class InstanceManager {
     const running = status?.state === "running" || status?.state === "starting";
     if (!running) {
       this.#forgetRunning(app.id);
-      this.#recordStatusById(app.id, status ?? stoppedStatus(app.id));
+      await this.#recordStatusById(app.id, status ?? stoppedStatus(app.id));
       return false;
     }
     await this.#preflightImage(app);
-    await this.#stopLocked(app.id);
+    await this.#stopLocked(app.id, "restart");
     await this.#ensureLocked(app);
     return true;
   }
@@ -1577,6 +1655,7 @@ export class InstanceManager {
       this.#stopAllMonitors();
       this.#pending.dispose();
       this.#sweep.stop();
+      this.#recovery.stop();
       await this.#options.runtime.reconcile([]);
       const appIds = new Set(this.#running.keys());
       const active = this.#db
@@ -1610,6 +1689,7 @@ export class InstanceManager {
     this.#stopAllMonitors();
     this.#pending.dispose();
     this.#sweep.stop();
+    this.#recovery.stop();
     this.stopStatusReconciler();
     for (const entry of this.#running.values()) {
       clearEndpointAuthorization(entry.endpoint);
@@ -1632,6 +1712,13 @@ export class InstanceManager {
       } catch {
         process.stderr.write(`hanse: context monitor resume failed for ${app.id}\n`);
       }
+    }
+    this.#recovery.start();
+    await this.#sampleSessionStatuses();
+    try {
+      await this.#recovery.startupCatchUp();
+    } catch {
+      process.stderr.write("hanse: process recovery catch-up failed\n");
     }
   }
 
@@ -1739,6 +1826,44 @@ export class InstanceManager {
     }
   }
 
+  /** Subscribe to persisted notice writes for one app; mirrors {@link subscribeContext}. */
+  subscribeNotices(appId: string, listener: (notice: SessionNoticeView) => void): () => void {
+    let listeners = this.#noticeListeners.get(appId);
+    if (listeners === undefined) {
+      listeners = new Set();
+      this.#noticeListeners.set(appId, listeners);
+    }
+    listeners.add(listener);
+    return () => {
+      const current = this.#noticeListeners.get(appId);
+      if (current === undefined) return;
+      current.delete(listener);
+      if (current.size === 0) this.#noticeListeners.delete(appId);
+    };
+  }
+
+  #emitNotice(appId: string, notice: SessionNoticeView): void {
+    const listeners = this.#noticeListeners.get(appId);
+    if (listeners === undefined) return;
+    for (const listener of [...listeners]) {
+      try {
+        listener(notice);
+      } catch {
+        // A closed browser stream must not affect detection or other listeners.
+      }
+    }
+  }
+
+  /** Record a server-side operator-abort tombstone before calling opencode. */
+  recordOperatorAbort(appId: string, sessionId: string): void {
+    this.#recovery.recordOperatorAbort(appId, sessionId);
+  }
+
+  /** Whether the external deployment lock currently forbids destructive operations. */
+  isDeploymentLocked(): boolean {
+    return this.#options.deploymentLock?.isActive() ?? false;
+  }
+
   async contextSnapshot(appId: string, sessionId: string): Promise<ContextSnapshot> {
     const monitor = this.#running.has(appId) ? this.#monitors.get(appId)?.monitor : undefined;
     if (monitor === undefined) throw new AgentNotRunningError();
@@ -1781,6 +1906,24 @@ export class InstanceManager {
       settings: { contextPolicy: (target) => contextPolicy.call(settings, target) },
       onEvent: (event: HanseEvent) => {
         this.#pending.observe(app.id, event);
+        if (event.type === "session.status") {
+          void this.#recovery
+            .observeSessionStatus(app, {
+              sessionID: event.sessionID,
+              status: event.status,
+            })
+            .catch(() => undefined);
+        } else if (event.type === "stream.ready") {
+          void this.#sampleAppSessionStatuses(app.id, entry.endpoint).catch(() => undefined);
+        } else if (event.type === "session.error") {
+          void this.#recovery
+            .observeSessionError(app, {
+              sessionID: event.sessionID,
+              ...(event.name === undefined ? {} : { name: event.name }),
+              message: event.message,
+            })
+            .catch(() => undefined);
+        }
         this.#options.onEvent?.(app, event);
       },
       onContextUpdate: (snapshot) => this.#emitContext(app.id, snapshot),
@@ -1837,13 +1980,58 @@ export class InstanceManager {
             ) {
               this.#forgetRunning(appId);
             }
-            this.#recordStatusById(appId, status ?? stoppedStatus(appId));
+            await this.#recordStatusById(appId, status ?? stoppedStatus(appId));
           });
         } catch {
           // A DB or lock failure must not stop the background reconciler.
         }
       }),
     );
+    await this.#flushObservations();
+    await this.#sampleSessionStatuses();
+    try {
+      await this.#recovery.reconcile();
+    } catch {
+      // A DB failure must not stop the background reconciler.
+    }
+  }
+
+  async #sampleSessionStatuses(): Promise<void> {
+    await Promise.all(
+      [...this.#running.entries()].map(([appId, entry]) =>
+        this.#sampleAppSessionStatuses(appId, entry.endpoint),
+      ),
+    );
+  }
+
+  async #sampleAppSessionStatuses(appId: string, endpoint: string): Promise<void> {
+    let statuses: OpencodeSessionStatusMap;
+    try {
+      statuses = await listSessionStatuses(endpoint);
+    } catch {
+      return;
+    }
+    const seen = new Set<string>();
+    for (const [sessionID, status] of Object.entries(statuses)) {
+      seen.add(sessionID);
+      try {
+        await this.#recovery.observeSessionStatus({ id: appId }, { sessionID, status });
+      } catch {
+        // One bad session entry must not block the rest of the sample.
+      }
+    }
+    const active = this.#recovery.listActiveSessions(appId);
+    for (const row of active) {
+      if (seen.has(row.sessionId)) continue;
+      try {
+        await this.#recovery.observeSessionStatus(
+          { id: appId },
+          { sessionID: row.sessionId, status: null },
+        );
+      } catch {
+        // The next sample retries.
+      }
+    }
   }
 
   #logSkillWarnings(appId: string, phase: "probe" | "apply", result: SkillMaterializeResult): void {
@@ -1879,20 +2067,130 @@ export class InstanceManager {
       .run(appId, appId, new Date().toISOString());
   }
 
-  #recordStatus(
+  #queueObservation(
+    appId: string,
+    previous: RuntimeObservation | null | undefined,
+    current: RuntimeObservation,
+  ): void {
+    this.#observations.push({ appId, previous, current });
+  }
+
+  #scheduleObservationFlush(): void {
+    if (this.#observations.length === 0) return;
+    const timer = setTimeout(() => {
+      void this.#flushObservations();
+    }, 0);
+    timer.unref?.();
+  }
+
+  async #flushObservations(): Promise<void> {
+    const batch = this.#observations.splice(0);
+    for (const observation of batch) {
+      try {
+        await this.#recovery.observeRuntime(
+          observation.appId,
+          observation.previous,
+          observation.current,
+        );
+      } catch {
+        // Detection is best-effort and must never break a stop/start caller.
+      }
+    }
+  }
+
+  #readRuntimeRow(appId: string): RuntimeObservation | undefined {
+    const row = this.#db
+      .prepare(
+        `SELECT runtime_started_at AS startedAt,
+                runtime_restart_count AS restartCount,
+                COALESCE(runtime_state, state) AS state,
+                last_exit_code AS exitCode,
+                last_oom_killed AS oomKilled,
+                last_stop_reason AS stopReason,
+                last_stop_at AS stopAt
+           FROM instances WHERE app_id = ?`,
+      )
+      .get(appId) as
+      | {
+          startedAt: string | null;
+          restartCount: number | null;
+          state: string;
+          exitCode: number | null;
+          oomKilled: number | null;
+          stopReason: string | null;
+          stopAt: string | null;
+        }
+      | undefined;
+    if (row === undefined) return undefined;
+    return {
+      startedAt: row.startedAt,
+      restartCount: row.restartCount,
+      state: row.state as RuntimeObservation["state"],
+      exitCode: row.exitCode,
+      oomKilled: row.oomKilled === 1,
+      stopReason: row.stopReason,
+      stopAt: row.stopAt,
+    };
+  }
+
+  #observationFromStatus(
+    status: Awaited<ReturnType<AgentRuntimeClient["ensure"]>>,
+    startedAt: string | null,
+    restartCount: number | null,
+    stopReason: string | null,
+    stopAt: string | null,
+  ): RuntimeObservation {
+    return {
+      startedAt,
+      restartCount,
+      state: status.state,
+      exitCode: status.exitCode ?? null,
+      oomKilled: status.oomKilled === true,
+      finishedAt: status.finishedAt ?? null,
+      stopReason,
+      stopAt,
+    };
+  }
+
+  #nextRuntimeFields(
+    previous: RuntimeObservation | undefined,
+    status: Awaited<ReturnType<AgentRuntimeClient["ensure"]>>,
+  ): {
+    startedAt: string | null;
+    restartCount: number | null;
+    stopReason: string | null;
+    stopAt: string | null;
+  } {
+    const startedAt = status.startedAt ?? previous?.startedAt ?? null;
+    const restartCount = status.restartCount ?? previous?.restartCount ?? null;
+    const changed =
+      previous !== undefined &&
+      (previous.startedAt !== startedAt || previous.restartCount !== restartCount);
+    return {
+      startedAt,
+      restartCount,
+      stopReason: changed ? null : (previous?.stopReason ?? null),
+      stopAt: changed ? null : (previous?.stopAt ?? null),
+    };
+  }
+
+  async #recordStatus(
     app: ManagedApp,
     status: Awaited<ReturnType<AgentRuntimeClient["ensure"]>>,
     image: string,
     settingsHash?: string,
     appliedProfile?: boolean,
-  ): void {
+    appliedRuleHash?: string,
+  ): Promise<void> {
     const now = new Date().toISOString();
     const startedAt = status.state === "running" ? now : null;
+    const previous = this.#readRuntimeRow(app.id);
+    const runtime = this.#nextRuntimeFields(previous, status);
     this.#db
       .prepare(
         `INSERT INTO instances
-           (id, app_id, endpoint, state, runtime_state, spec_hash, container_id, container_name, image_ref, started_at, updated_at, applied_settings_hash, applied_profile, applied_image_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           (id, app_id, endpoint, state, runtime_state, spec_hash, container_id, container_name, image_ref, started_at, updated_at, applied_settings_hash, applied_profile, applied_image_id, applied_rule_hash, runtime_started_at, runtime_restart_count, last_exit_code, last_oom_killed, last_stop_reason, last_stop_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(app_id) DO UPDATE SET
            endpoint = excluded.endpoint,
            state = excluded.state,
@@ -1908,7 +2206,17 @@ export class InstanceManager {
            updated_at = excluded.updated_at,
            applied_settings_hash = excluded.applied_settings_hash,
            applied_profile = excluded.applied_profile,
-           applied_image_id = COALESCE(excluded.applied_image_id, instances.applied_image_id)`,
+           applied_image_id = COALESCE(excluded.applied_image_id, instances.applied_image_id),
+           applied_rule_hash = CASE
+             WHEN excluded.applied_rule_hash IS NULL THEN instances.applied_rule_hash
+             ELSE excluded.applied_rule_hash
+           END,
+           runtime_started_at = excluded.runtime_started_at,
+           runtime_restart_count = excluded.runtime_restart_count,
+           last_exit_code = excluded.last_exit_code,
+           last_oom_killed = excluded.last_oom_killed,
+           last_stop_reason = excluded.last_stop_reason,
+           last_stop_at = excluded.last_stop_at`,
       )
       .run(
         app.id,
@@ -1925,13 +2233,31 @@ export class InstanceManager {
         settingsHash ?? null,
         appliedProfile === undefined ? null : appliedProfile ? 1 : 0,
         status.imageId ?? null,
+        appliedRuleHash ?? null,
+        runtime.startedAt,
+        runtime.restartCount,
+        status.exitCode ?? null,
+        status.oomKilled === true ? 1 : 0,
+        runtime.stopReason,
+        runtime.stopAt,
       );
+    const current = this.#observationFromStatus(
+      status,
+      runtime.startedAt,
+      runtime.restartCount,
+      runtime.stopReason,
+      runtime.stopAt,
+    );
+    this.#queueObservation(app.id, previous, current);
   }
 
-  #recordStatusById(
+  async #recordStatusById(
     appId: string,
     status: Awaited<ReturnType<AgentRuntimeClient["delete"]>>,
-  ): void {
+  ): Promise<void> {
+    const previous = this.#readRuntimeRow(appId);
+    const now = new Date().toISOString();
+    const runtime = this.#nextRuntimeFields(previous, status);
     this.#db
       .prepare(
         `UPDATE instances SET
@@ -1942,6 +2268,12 @@ export class InstanceManager {
            container_id = ?,
            container_name = ?,
            applied_image_id = COALESCE(?, applied_image_id),
+           runtime_started_at = ?,
+           runtime_restart_count = ?,
+           last_exit_code = ?,
+           last_oom_killed = ?,
+           last_stop_reason = ?,
+           last_stop_at = ?,
            updated_at = ?
          WHERE app_id = ?`,
       )
@@ -1953,9 +2285,37 @@ export class InstanceManager {
         status.containerId ?? null,
         status.containerName ?? null,
         status.imageId ?? null,
-        new Date().toISOString(),
+        runtime.startedAt,
+        runtime.restartCount,
+        status.exitCode ?? null,
+        status.oomKilled === true ? 1 : 0,
+        runtime.stopReason,
+        runtime.stopAt,
+        now,
         appId,
       );
+    const current = this.#observationFromStatus(
+      status,
+      runtime.startedAt,
+      runtime.restartCount,
+      runtime.stopReason,
+      runtime.stopAt,
+    );
+    this.#queueObservation(appId, previous, current);
+  }
+
+  #restoreProcessRuleOnReconnect(
+    appId: string,
+    isolated: IsolatedEnv,
+    appliedHash: string | null,
+  ): void {
+    const result = restoreAppliedRule(isolated, appliedHash);
+    if (result.restored) return;
+    this.#options.logger?.warn("process_rule_integrity_failed", {
+      appId,
+      reason: result.reason,
+    });
+    writeProcessRule(isolated, PROCESS_RULE_TEXT);
   }
 
   #beginLifecycle(operation: string): () => void {
@@ -1976,6 +2336,10 @@ export class InstanceManager {
       }
     };
     result.then(cleanup, cleanup);
+    void result.then(
+      () => this.#scheduleObservationFlush(),
+      () => this.#scheduleObservationFlush(),
+    );
     return result;
   }
 
@@ -1992,6 +2356,7 @@ export class InstanceManager {
         endpoint,
         appDir: app.appDir,
         denyPatterns,
+        bashProbes: BASH_DENY_PROBES,
         timeoutMs: this.#options.verificationTimeoutMs,
         retries: this.#options.verificationRetries,
         retryDelayMs: this.#options.verificationRetryDelayMs,

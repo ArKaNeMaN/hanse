@@ -1,3 +1,4 @@
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import type { ProviderOverlay } from "../src/model-providers/types.js";
 import {
@@ -9,6 +10,7 @@ import {
 } from "../src/opencode/instance.js";
 import {
   type AgentPermissionRule,
+  BASH_DENY_PATTERNS,
   buildPermissionPolicy,
   credentialDenyPatterns,
   evaluatePermission,
@@ -61,6 +63,16 @@ describe("buildConfigOverlay", () => {
   it("omits instructions when none are provided", () => {
     const overlay = buildConfigOverlay({ coordinatorCommand: ["hanse", "mcp"] });
     expect(overlay.instructions).toBeUndefined();
+  });
+
+  it("preserves an absolute process-rule path after app-specific instructions", () => {
+    const rulePath = "/data/agents/p/web/state/hanse/agent-process-rules.md";
+    const overlay = buildConfigOverlay({
+      coordinatorCommand: ["hanse", "mcp"],
+      instructions: ["shared/AGENTS.md", rulePath],
+    });
+    expect(overlay.instructions).toEqual(["shared/AGENTS.md", rulePath]);
+    expect(path.isAbsolute(overlay.instructions?.[1] ?? "")).toBe(true);
   });
 
   it("injects baseline plugins", () => {
@@ -207,6 +219,7 @@ describe("permission policy", () => {
       "todoread",
       "webfetch",
       "websearch",
+      "bash",
       "read",
       "edit",
       "doom_loop",
@@ -228,6 +241,9 @@ describe("permission policy", () => {
     expect(policy.todoread).toBe("allow");
     expect(policy.webfetch).toBe("allow");
     expect(policy.websearch).toBe("allow");
+    expect(policy.bash).toEqual(
+      Object.fromEntries(BASH_DENY_PATTERNS.map((pattern) => [pattern, "deny"])),
+    );
     expect(policy.doom_loop).toBe("ask");
   });
 

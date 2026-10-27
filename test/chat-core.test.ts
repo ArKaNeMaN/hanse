@@ -30,8 +30,13 @@ import {
   imageGateFromView,
   imagePollDelay,
   imageWarningFromView,
+  isHiddenSyntheticTextPart,
+  isResumeSyntheticPart,
+  mergeFeedOrder,
+  messageCountLabel,
   normalizeHandoffMeta,
   normalizeToolName,
+  noticeLabel,
   parseMarkdownTable,
   parseToolJsonOutput,
   provisionalPartType,
@@ -39,6 +44,7 @@ import {
   rekeyOptimistic,
   resolveActiveStatusLabel,
   runtimeChip,
+  sessionHasHistory,
   shouldResubscribe,
   toolDisplayName,
   toolFailure,
@@ -2929,5 +2935,130 @@ describe("agent image presentation", () => {
     ])("labels $action as $expected", ({ action, expected }) => {
       expect(imageActionLabel(action)).toBe(expected);
     });
+  });
+});
+
+describe("feed notices", () => {
+  const notices = [
+    {
+      id: "notice_b",
+      kind: "agent_stopped",
+      reason: "operator_restart",
+      createdAt: "2026-10-27T10:00:02.000Z",
+    },
+    {
+      id: "notice_a",
+      kind: "resume_started",
+      reason: "unknown_restart",
+      createdAt: "2026-10-27T10:00:00.000Z",
+    },
+  ];
+
+  it("merges messages and notices by createdAt and breaks ties by id", () => {
+    const at = (iso: string) => Date.parse(iso) / 1000;
+    const store = makeStore({
+      messages: [
+        {
+          id: "msg_c",
+          role: "assistant",
+          time: { created: at("2026-10-27T10:00:03.000Z") },
+          parts: [],
+        },
+        {
+          id: "msg_a",
+          role: "user",
+          time: { created: at("2026-10-27T10:00:01.000Z") },
+          parts: [],
+        },
+      ],
+    });
+    const merged = mergeFeedOrder(
+      [...store.order, "msg_b"],
+      new Map([
+        ...store.messages,
+        [
+          "msg_b",
+          makeMessage({
+            id: "msg_b",
+            role: "assistant",
+            time: { created: at("2026-10-27T10:00:01.500Z") },
+            parts: [],
+          }),
+        ],
+      ]),
+      notices,
+    );
+    expect(merged.map((item) => `${item.type}:${item.id}`)).toEqual([
+      "notice:notice_a",
+      "message:msg_a",
+      "message:msg_b",
+      "notice:notice_b",
+      "message:msg_c",
+    ]);
+  });
+
+  it("breaks equal timestamps deterministically by id", () => {
+    const merged = mergeFeedOrder([], new Map(), [
+      { id: "notice_z", createdAt: "2026-10-27T10:00:00.000Z" },
+      { id: "notice_a", createdAt: "2026-10-27T10:00:00.000Z" },
+    ]);
+    expect(merged.map((item) => item.id)).toEqual(["notice_a", "notice_z"]);
+  });
+
+  it("counts messages only, even when a notice is present", () => {
+    expect(messageCountLabel(0, true)).toBe("0 messages");
+    expect(messageCountLabel(1, true)).toBe("1 message");
+    expect(messageCountLabel(3, true)).toBe("3 messages");
+    expect(messageCountLabel(3, false)).toBe("3+ messages");
+  });
+
+  it("treats a notice-only session as having history", () => {
+    const store = makeStore({ messages: [] });
+    expect(sessionHasHistory({ order: store.order, messages: store.messages, notices: [] })).toBe(
+      false,
+    );
+    expect(
+      sessionHasHistory({ order: store.order, messages: store.messages, notices: notices }),
+    ).toBe(true);
+    expect(
+      sessionHasHistory({
+        order: store.order,
+        messages: store.messages,
+        notices: new Map([["notice_a", notices[1]]]),
+      }),
+    ).toBe(true);
+  });
+
+  it("labels notices with a short label and readable reason", () => {
+    expect(noticeLabel({ kind: "agent_stopped", reason: "operator_restart" })).toEqual({
+      label: "Agent was restarted here",
+      reason: "Operator restart",
+    });
+    expect(noticeLabel({ kind: "subagent_interrupted" }).label).toBe("Subagent interrupted");
+    expect(noticeLabel({ kind: "unknown_kind", reason: "custom_reason" })).toEqual({
+      label: "Agent notice",
+      reason: "custom reason",
+    });
+  });
+});
+
+describe("agent-resume synthetic parts", () => {
+  const resumePart = {
+    id: "prt_resume",
+    type: "text",
+    data: {
+      text: "The previous turn was interrupted because the agent process stopped and restarted.",
+      synthetic: true,
+      metadata: { hanse: "agent-resume" },
+    },
+  };
+
+  it("is hidden from the visible feed", () => {
+    expect(isResumeSyntheticPart(resumePart)).toBe(true);
+    expect(isHiddenSyntheticTextPart(resumePart)).toBe(true);
+  });
+
+  it("is never classified as an OMO system card", () => {
+    expect(classifyOmo({ role: "user", parts: [resumePart] })).toBeNull();
   });
 });

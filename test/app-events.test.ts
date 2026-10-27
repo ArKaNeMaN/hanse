@@ -156,6 +156,7 @@ async function fakeEventUpstream(status = 200): Promise<EventUpstream> {
 function useUpstream(deps: HttpDeps, endpoint: string): void {
   deps.manager = {
     ensure: async () => endpoint,
+    endpointFor: () => endpoint,
     policyWarnings: () => [],
   } as unknown as InstanceManager;
 }
@@ -268,6 +269,7 @@ describe("app event stream", () => {
         ensured += 1;
         return "http://127.0.0.1:1";
       },
+      endpointFor: () => "http://127.0.0.1:1",
       policyWarnings: () => [],
     } as unknown as InstanceManager;
 
@@ -331,6 +333,7 @@ describe("app event stream", () => {
     let unsubscribed = false;
     f.deps.manager = {
       ensure: async () => upstream.endpoint,
+      endpointFor: () => upstream.endpoint,
       policyWarnings: () => [],
       subscribeContext: (_appId: string, accept: (snapshot: ContextSnapshot) => void) => {
         listener = accept;
@@ -355,6 +358,52 @@ describe("app event stream", () => {
         used: 120000,
         limit: 200000,
         percent: 60,
+      });
+    } finally {
+      await stream.close();
+    }
+    await waitUntil(() => unsubscribed);
+  });
+
+  it("pushes notice.created frames over the app event stream", async () => {
+    const f = await fixture();
+    const upstream = await fakeEventUpstream();
+    let listener: ((notice: Record<string, unknown>) => void) | undefined;
+    let unsubscribed = false;
+    f.deps.manager = {
+      ensure: async () => upstream.endpoint,
+      endpointFor: () => upstream.endpoint,
+      policyWarnings: () => [],
+      subscribeNotices: (_appId: string, accept: (notice: Record<string, unknown>) => void) => {
+        listener = accept;
+        return () => {
+          unsubscribed = true;
+        };
+      },
+    } as unknown as InstanceManager;
+
+    const response = await fetch(`${f.base}/api/apps/storefront/events`, {
+      headers: auth(f.token),
+    });
+    const stream = probe(response);
+    try {
+      await stream.waitFor('"type":"stream.ready"');
+      listener?.({
+        id: "notice_1",
+        appId: "p1:storefront",
+        sessionId: "ses_live",
+        kind: "agent_stopped",
+        reason: "operator_restart",
+        payload: {},
+        createdAt: "2026-10-27T10:00:00.000Z",
+      });
+      const text = await stream.waitFor('"type":"notice.created"');
+      const frame = frames(text).find((event) => event.type === "notice.created");
+      expect(frame?.notice).toMatchObject({
+        id: "notice_1",
+        sessionId: "ses_live",
+        kind: "agent_stopped",
+        reason: "operator_restart",
       });
     } finally {
       await stream.close();
@@ -929,20 +978,27 @@ describe("app event stream", () => {
     expect(((await response.json()) as { error: string }).error).toContain("500");
   });
 
-  it("returns 502 when the runtime fails to start", async () => {
+  it("returns 503 agent_stopped without starting the app when no endpoint is attached", async () => {
     const f = await fixture();
+    let ensured = 0;
     f.deps.manager = {
       ensure: async () => {
+        ensured += 1;
         throw new Error("did not start");
       },
+      endpointFor: () => undefined,
       policyWarnings: () => [],
     } as unknown as InstanceManager;
 
     const response = await fetch(`${f.base}/api/apps/storefront/events`, {
       headers: auth(f.token),
     });
-    expect(response.status).toBe(502);
-    expect(((await response.json()) as { error: string }).error).toContain("did not start");
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({
+      error: "agent is stopped",
+      code: "agent_stopped",
+    });
+    expect(ensured).toBe(0);
   });
 
   it("forwards session.compacted without changing existing frames", async () => {

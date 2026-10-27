@@ -261,6 +261,39 @@ function seedSessionChatRows(db: SqliteDatabase, sessionId: string): void {
        (id, app_id, session_id, message_id, text, attachments_json, state, created_at, updated_at)
      VALUES (?, ?, ?, ?, 'queued', '[]', 'unknown', ?, ?)`,
   ).run(`pend_${sessionId}`, appId, sessionId, `msg_pending_${sessionId}`, now, now);
+  db.prepare(
+    `INSERT INTO session_notices
+       (id, app_id, session_id, parent_session_id, dedupe_key, kind, reason, payload_json, created_at)
+     VALUES (?, ?, ?, NULL, ?, 'agent_stopped', 'process_exit', '{}', ?)`,
+  ).run(`notice_${sessionId}`, appId, sessionId, `stop|${sessionId}`, now);
+  db.prepare(
+    `INSERT INTO session_notice_dedupe (app_id, session_id, dedupe_key, created_at)
+     VALUES (?, ?, ?, ?)`,
+  ).run(appId, sessionId, `stop|${sessionId}`, now);
+  db.prepare(
+    `INSERT INTO session_resume
+       (app_id, session_id, observed_status, observed_at, last_busy_seen_at, created_at, updated_at)
+     VALUES (?, ?, 'busy', ?, ?, ?, ?)`,
+  ).run(appId, sessionId, now, now, now, now);
+}
+
+function seedNotice(
+  db: SqliteDatabase,
+  sessionId: string,
+  id: string,
+  createdAt: string,
+  kind = "agent_stopped",
+  reason = "process_exit",
+): void {
+  db.prepare(
+    `INSERT INTO session_notices
+       (id, app_id, session_id, parent_session_id, dedupe_key, kind, reason, payload_json, created_at)
+     VALUES (?, 'p1:storefront', ?, NULL, ?, ?, ?, '{"exitCode":137}', ?)`,
+  ).run(id, sessionId, `key-${id}`, kind, reason, createdAt);
+  db.prepare(
+    `INSERT INTO session_notice_dedupe (app_id, session_id, dedupe_key, created_at)
+     VALUES ('p1:storefront', ?, ?, ?)`,
+  ).run(sessionId, `key-${id}`, createdAt);
 }
 
 function countSessionRows(db: SqliteDatabase, table: string, sessionId: string): number {
@@ -294,6 +327,7 @@ function asyncRequest(overrides: Partial<HttpRequest> = {}): HttpRequest {
 function useUpstream(deps: HttpDeps, endpoint: string): void {
   deps.manager = {
     ensure: async () => endpoint,
+    endpointFor: () => endpoint,
   } as unknown as InstanceManager;
 }
 
@@ -768,6 +802,35 @@ describe("chat page", () => {
     expect(response.body).toContain("export function applySnapshot");
   });
 
+  it("wires notice rendering and the stopped shell without auto-starting", () => {
+    const chat = readFileSync(path.join(process.cwd(), "assets", "chat.js"), "utf8");
+    const core = readFileSync(path.join(process.cwd(), "assets", "chat-core.js"), "utf8");
+    expect(chat).toContain('type === "notice.created"');
+    expect(chat).toContain('"feed-notice"');
+    expect(chat).toContain("chatStartAgent");
+    expect(chat).toContain('"agent_stopped"');
+    expect(chat).toContain("function refreshNotices(");
+    expect(chat).toContain("function enterStoppedState(");
+    expect(chat).toContain("function startStoppedAgent(");
+    expect(chat).toContain("mergeFeedOrder(store.order, store.messages");
+    expect(core).toContain("export function mergeFeedOrder");
+    expect(core).toContain("export function sessionHasHistory");
+    expect(core).toContain("export function isResumeSyntheticPart");
+    expect(core).toContain("export function messageCountLabel");
+    expect(core).toContain("agent-resume");
+
+    const bootStart = chat.indexOf("async function bootSessions(");
+    const bootEnd = chat.indexOf("\n  function resizePrompt(", bootStart);
+    const bootScope = chat.slice(bootStart, bootEnd);
+    expect(bootStart).toBeGreaterThan(-1);
+    expect(bootScope).toContain("isAgentStoppedError(error)");
+    expect(bootScope).toContain("enterStoppedState(");
+    expect(bootScope).not.toContain("/start");
+    expect(bootScope.indexOf("isAgentStoppedError(error)")).toBeLessThan(
+      bootScope.indexOf("showThreadError(error, bootSessions)"),
+    );
+  });
+
   it("serves the diff model and highlight worker modules from the asset allowlist", () => {
     const f = fixture();
     const assets = [
@@ -1043,6 +1106,9 @@ console.log(JSON.stringify(Object.keys(Prism.languages)));`;
       "app_attachments",
       "attachment_deliveries",
       "pending_sends",
+      "session_notices",
+      "session_notice_dedupe",
+      "session_resume",
     ];
     for (const table of tables) {
       expect(countSessionRows(f.db, table, "ses_parent")).toBe(0);
@@ -1056,6 +1122,165 @@ console.log(JSON.stringify(Object.keys(Prism.languages)));`;
       .prepare("SELECT source_session_deleted_at AS deletedAt FROM handoffs WHERE id = ?")
       .get("handoff_parent") as { deletedAt: string | null };
     expect(handoff.deletedAt).not.toBeNull();
+  });
+
+  it("serves persisted notices from the coordinator database without a runtime", async () => {
+    const f = fixture();
+    seedNotice(f.db, "ses_1", "notice_1", "2026-10-27T10:00:00.000Z");
+
+    const response = await handleChat(
+      f.deps,
+      request({
+        path: "/api/apps/storefront/sessions/ses_1/notices",
+        query: { project: "p1" },
+        headers: auth(f.token),
+      }),
+    );
+
+    expect(f.deps.manager).toBeUndefined();
+    expect(response.status).toBe(200);
+    const body = JSON.parse(response.body) as {
+      notices: Array<Record<string, unknown>>;
+      nextCursor: string | null;
+    };
+    expect(body.nextCursor).toBeNull();
+    expect(body.notices).toHaveLength(1);
+    expect(body.notices[0]).toMatchObject({
+      id: "notice_1",
+      appId: "p1:storefront",
+      sessionId: "ses_1",
+      kind: "agent_stopped",
+      reason: "process_exit",
+      payload: { exitCode: 137 },
+      createdAt: "2026-10-27T10:00:00.000Z",
+    });
+  });
+
+  it("requires a human principal for notices", async () => {
+    const f = fixture();
+    seedNotice(f.db, "ses_1", "notice_1", "2026-10-27T10:00:00.000Z");
+    const agent = createPrincipal(f.db, { kind: "agent", name: "bot" });
+
+    const anonymous = await handleChat(
+      f.deps,
+      request({
+        path: "/api/apps/storefront/sessions/ses_1/notices",
+        query: { project: "p1" },
+      }),
+    );
+    expect(anonymous.status).toBe(401);
+
+    const nonHuman = await handleChat(
+      f.deps,
+      request({
+        path: "/api/apps/storefront/sessions/ses_1/notices",
+        query: { project: "p1" },
+        headers: auth(agent.token),
+      }),
+    );
+    expect(nonHuman.status).toBe(403);
+  });
+
+  it("bounds notice limits and cursors and paginates by before", async () => {
+    const f = fixture();
+    seedNotice(f.db, "ses_1", "notice_a", "2026-10-27T10:00:00.000Z");
+    seedNotice(f.db, "ses_1", "notice_b", "2026-10-27T10:01:00.000Z");
+    seedNotice(f.db, "ses_1", "notice_c", "2026-10-27T10:02:00.000Z");
+
+    for (const limit of ["0", "101", "abc"]) {
+      const invalid = await handleChat(
+        f.deps,
+        request({
+          path: "/api/apps/storefront/sessions/ses_1/notices",
+          query: { project: "p1", limit },
+          headers: auth(f.token),
+        }),
+      );
+      expect(invalid.status).toBe(400);
+      expect(JSON.parse(invalid.body).code).toBe("invalid_limit");
+    }
+
+    const longCursor = await handleChat(
+      f.deps,
+      request({
+        path: "/api/apps/storefront/sessions/ses_1/notices",
+        query: { project: "p1", before: "a".repeat(257) },
+        headers: auth(f.token),
+      }),
+    );
+    expect(longCursor.status).toBe(400);
+    expect(JSON.parse(longCursor.body).code).toBe("invalid_cursor");
+
+    const first = await handleChat(
+      f.deps,
+      request({
+        path: "/api/apps/storefront/sessions/ses_1/notices",
+        query: { project: "p1", limit: "2" },
+        headers: auth(f.token),
+      }),
+    );
+    const firstBody = JSON.parse(first.body) as {
+      notices: Array<{ id: string }>;
+      nextCursor: string;
+    };
+    expect(firstBody.notices.map((notice) => notice.id)).toEqual(["notice_c", "notice_b"]);
+    expect(firstBody.nextCursor).not.toBeNull();
+
+    const second = await handleChat(
+      f.deps,
+      request({
+        path: "/api/apps/storefront/sessions/ses_1/notices",
+        query: {
+          project: "p1",
+          limit: "2",
+          before: firstBody.nextCursor,
+        },
+        headers: auth(f.token),
+      }),
+    );
+    const secondBody = JSON.parse(second.body) as {
+      notices: Array<{ id: string }>;
+      nextCursor: string | null;
+    };
+    expect(secondBody.notices.map((notice) => notice.id)).toEqual(["notice_a"]);
+    expect(secondBody.nextCursor).toBeNull();
+  });
+
+  it("rejects notices for a deleting app and keeps a notice-only session on delete-if-empty", async () => {
+    const f = fixture();
+    const now = new Date().toISOString();
+    f.db
+      .prepare(
+        `INSERT INTO session_state (app_id, session_id, has_messages, last_activity_at, created_at, updated_at)
+         VALUES ('p1:storefront', 'ses_1', 0, ?, ?, ?)`,
+      )
+      .run(now, now, now);
+    seedNotice(f.db, "ses_1", "notice_1", now);
+    useUpstream(f.deps, "http://unused");
+
+    const deleted = await handleChat(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/apps/storefront/sessions/ses_1/delete-if-empty",
+        query: { project: "p1" },
+        headers: auth(f.token),
+      }),
+    );
+    expect(deleted.status).toBe(200);
+    expect(JSON.parse(deleted.body)).toEqual({ deleted: false, reason: "has_notice" });
+
+    f.db.prepare("UPDATE apps SET deleting = 1 WHERE id = 'p1:storefront'").run();
+    const blocked = await handleChat(
+      f.deps,
+      request({
+        path: "/api/apps/storefront/sessions/ses_1/notices",
+        query: { project: "p1" },
+        headers: auth(f.token),
+      }),
+    );
+    expect(blocked.status).toBe(409);
+    expect(JSON.parse(blocked.body).code).toBe("deletion_pending");
   });
 
   it("deletes only the requested id when the session list is not an array", async () => {
@@ -1197,6 +1422,7 @@ describe("abort route", () => {
   function managerFor(
     endpoint: string | undefined,
     counters: { ensure: number; endpoint: number },
+    aborts?: string[],
   ): InstanceManager {
     return {
       ensure: async () => {
@@ -1207,6 +1433,13 @@ describe("abort route", () => {
         counters.endpoint += 1;
         return endpoint;
       },
+      ...(aborts === undefined
+        ? {}
+        : {
+            recordOperatorAbort: (appId: string, sessionId: string) => {
+              aborts.push(`${appId}:${sessionId}`);
+            },
+          }),
     } as unknown as InstanceManager;
   }
 
@@ -1312,13 +1545,15 @@ describe("abort route", () => {
     const f = fixture();
     const upstream = await fakeOpencode(200, "true");
     const counters = newCounters();
-    f.deps.manager = managerFor(upstream.endpoint, counters);
+    const aborts: string[] = [];
+    f.deps.manager = managerFor(upstream.endpoint, counters, aborts);
 
     const response = await handleChat(f.deps, abortRequest({ headers: auth(f.token) }));
 
     expect(response.status).toBe(200);
     expect(JSON.parse(response.body)).toEqual({ aborted: true });
     expect(upstream.calls).toEqual([{ method: "POST", url: "/session/ses_1/abort", body: "" }]);
+    expect(aborts).toEqual(["p1:storefront:ses_1"]);
     expect(counters).toEqual({ ensure: 0, endpoint: 1 });
   });
 
@@ -1618,32 +1853,81 @@ describe("read routes attach to the running agent", () => {
     ]);
   });
 
-  it("starts the agent through ensure when no endpoint is attached", async () => {
+  it("returns 503 agent_stopped for reads when no endpoint is attached and never calls ensure", async () => {
     const f = fixture();
-    const upstream = await emptyUpstream();
     const calls = counters();
-    f.deps.manager = readManager(undefined, upstream.endpoint, calls);
+    f.deps.manager = {
+      ensure: async () => {
+        calls.ensure += 1;
+        throw new Error("reads must not start the agent");
+      },
+      endpointFor: () => {
+        calls.endpoint += 1;
+        return undefined;
+      },
+    } as unknown as InstanceManager;
 
-    const response = await handleChat(f.deps, sessionsRequest(f));
+    const sessions = await handleChat(f.deps, sessionsRequest(f));
+    expect(sessions.status).toBe(503);
+    expect(JSON.parse(sessions.body)).toEqual({
+      error: "agent is stopped",
+      code: "agent_stopped",
+    });
 
-    expect(response.status).toBe(200);
-    expect(calls).toEqual({ ensure: 1, endpoint: 1 });
+    const messages = await handleChat(f.deps, messagesRequest(f));
+    expect(messages.status).toBe(503);
+    expect(JSON.parse(messages.body)).toEqual({
+      error: "agent is stopped",
+      code: "agent_stopped",
+    });
+
+    expect(calls).toEqual({ ensure: 0, endpoint: 2 });
   });
 
-  it("falls back to ensure when the attached endpoint stops answering", async () => {
+  it("does not start the agent when the attached endpoint stops answering", async () => {
     const f = fixture();
-    const upstream = await emptyUpstream();
     const calls = counters();
-    f.deps.manager = readManager("http://127.0.0.1:1", upstream.endpoint, calls);
+    f.deps.manager = readManager("http://127.0.0.1:1", "http://127.0.0.1:2", calls);
 
     const response = await handleChat(f.deps, messagesRequest(f));
 
-    expect(response.status).toBe(200);
-    expect(JSON.parse(response.body)).toEqual({ messages: [], nextCursor: null });
-    expect(calls).toEqual({ ensure: 1, endpoint: 1 });
-    expect(upstream.calls.map((call) => `${call.method} ${call.url}`)).toEqual([
-      "GET /session/ses_1/message?limit=30",
-    ]);
+    expect(response.status).toBe(502);
+    expect(JSON.parse(response.body)).toEqual({
+      error: "agent is unavailable",
+      code: "agent_unavailable",
+    });
+    expect(calls).toEqual({ ensure: 0, endpoint: 1 });
+  });
+
+  it("keeps deletion and unknown-app responses on the read routes", async () => {
+    const f = fixture();
+    const calls = counters();
+    f.deps.manager = readManager(undefined, "http://127.0.0.1:1", calls);
+    f.db.prepare("UPDATE apps SET deleting = 1 WHERE id = 'p1:storefront'").run();
+
+    for (const deletionRequest of [sessionsRequest(f), messagesRequest(f)]) {
+      const deleting = await handleChat(f.deps, deletionRequest);
+      expect(deleting.status).toBe(409);
+      expect(JSON.parse(deleting.body)).toEqual({
+        error: "application is pending deletion",
+        code: "deletion_pending",
+      });
+    }
+
+    const unknown = await handleChat(
+      f.deps,
+      request({
+        path: "/api/apps/nope/sessions",
+        query: { project: "p1" },
+        headers: auth(f.token),
+      }),
+    );
+    expect(unknown.status).toBe(404);
+    expect(JSON.parse(unknown.body)).toEqual({
+      error: "unknown application: nope",
+      code: "unknown_app",
+    });
+    expect(calls).toEqual({ ensure: 0, endpoint: 0 });
   });
 });
 
@@ -1933,8 +2217,56 @@ describe("async chat send", () => {
     });
   });
 
-  it("maps a pending deletion on the SSE ensure path to 409", async () => {
+  it("returns 503 agent_stopped on the legacy session SSE without calling ensure", async () => {
     const f = fixture();
+    let ensureCalls = 0;
+    let endpointCalls = 0;
+    f.deps.manager = {
+      ensure: async () => {
+        ensureCalls += 1;
+        throw new DeletionPendingError("p1:storefront");
+      },
+      endpointFor: () => {
+        endpointCalls += 1;
+        return undefined;
+      },
+    } as unknown as InstanceManager;
+    const written: { status?: number; body?: string } = {};
+    const response = {
+      writeHead(status: number) {
+        written.status = status;
+        return response;
+      },
+      end(body?: string) {
+        written.body = body;
+      },
+      on() {},
+      destroyed: false,
+      writableEnded: false,
+    } as unknown as ServerResponse;
+
+    await streamSessionEvents(
+      f.deps,
+      request({
+        path: "/api/apps/storefront/sessions/ses_1/events",
+        query: { project: "p1" },
+        headers: auth(f.token),
+      }),
+      response,
+    );
+
+    expect(written.status).toBe(503);
+    expect(JSON.parse(written.body ?? "")).toEqual({
+      error: "agent is stopped",
+      code: "agent_stopped",
+    });
+    expect(ensureCalls).toBe(0);
+    expect(endpointCalls).toBe(1);
+  });
+
+  it("keeps the pending-deletion response on the legacy session SSE", async () => {
+    const f = fixture();
+    f.db.prepare("UPDATE apps SET deleting = 1 WHERE id = 'p1:storefront'").run();
     f.deps.manager = {
       ensure: async () => {
         throw new DeletionPendingError("p1:storefront");
@@ -1966,7 +2298,7 @@ describe("async chat send", () => {
 
     expect(written.status).toBe(409);
     expect(JSON.parse(written.body ?? "")).toEqual({
-      error: "application p1:storefront is pending deletion",
+      error: "application is pending deletion",
       code: "deletion_pending",
     });
   });
@@ -2000,45 +2332,6 @@ describe("async chat send", () => {
     const response = await handleChat(f.deps, asyncRequest({ headers: auth(f.token) }));
     expect(response.status).toBe(500);
     expect(JSON.parse(response.body)).toEqual({ error: "agent_token_reconcile_failed" });
-  });
-
-  it("maps a deployment lock on the SSE ensure path to 409", async () => {
-    const f = fixture();
-    f.deps.manager = {
-      ensure: async () => {
-        throw new DeploymentInProgressError("ensure", { phase: "switching" });
-      },
-    } as unknown as InstanceManager;
-    const written: { status?: number; body?: string } = {};
-    const response = {
-      writeHead(status: number) {
-        written.status = status;
-        return response;
-      },
-      end(body?: string) {
-        written.body = body;
-      },
-      on() {},
-      destroyed: false,
-      writableEnded: false,
-    } as unknown as ServerResponse;
-
-    await streamSessionEvents(
-      f.deps,
-      request({
-        path: "/api/apps/storefront/sessions/ses_1/events",
-        query: { project: "p1" },
-        headers: auth(f.token),
-      }),
-      response,
-    );
-
-    expect(written.status).toBe(409);
-    expect(JSON.parse(written.body ?? "")).toEqual({
-      error: "deployment_in_progress",
-      message: "deployment in progress: switching",
-      retryAfter: 30,
-    });
   });
 
   it("keeps the existing auth, manager, and unknown-app responses", async () => {

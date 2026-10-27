@@ -7,6 +7,9 @@ import type { Logger } from "../src/logging/logger.js";
 import { InstanceManager, type InstanceManagerOptions } from "../src/opencode/manager.js";
 import {
   type AgentPermissionRule,
+  ATTACHMENTS_POLICY_VERSION,
+  BASH_DENY_PATTERNS,
+  BASH_DENY_PROBES,
   buildPermissionPolicy,
   credentialDenyPatterns,
   evaluateAgentPolicy,
@@ -66,6 +69,9 @@ function rules(...extra: AgentPermissionRule[]): AgentPermissionRule[] {
     ),
     { permission: "question", pattern: "*", action: "allow" },
     { permission: "todowrite", pattern: "*", action: "allow" },
+    ...BASH_DENY_PATTERNS.map(
+      (pattern): AgentPermissionRule => ({ permission: "bash", pattern, action: "deny" }),
+    ),
     ...extra,
   ];
 }
@@ -83,7 +89,7 @@ function evaluate(agent: {
       mode: agent.mode ?? "primary",
       rules: agent.permission,
     },
-    { denyPatterns: DENY },
+    { denyPatterns: DENY, bashProbes: BASH_DENY_PROBES },
   );
 }
 
@@ -157,6 +163,53 @@ describe("final ruleset evaluation", () => {
       const probe = pattern.endsWith("/*") ? `${pattern.slice(0, -2)}/probe` : pattern;
       expect(evaluatePermission(externalRules, "external_directory", probe)).toBe("deny");
     }
+  });
+
+  it("builds deny-only bash rules with no catch-all and no broad kill deny", () => {
+    const policy = buildPermissionPolicy(ROOTS);
+    expect(Object.keys(policy.bash)).toEqual([...BASH_DENY_PATTERNS]);
+    expect(policy.bash["*"]).toBeUndefined();
+    expect(policy.bash["kill *"]).toBeUndefined();
+    expect(BASH_DENY_PATTERNS).not.toContain("kill *");
+    for (const pattern of BASH_DENY_PATTERNS) {
+      expect(policy.bash[pattern]).toBe("deny");
+    }
+    expect(ATTACHMENTS_POLICY_VERSION).toBe(3);
+  });
+
+  it("requires every non-hidden agent including subagents to deny every bash probe", () => {
+    expect(BASH_DENY_PROBES).toEqual([...BASH_DENY_PATTERNS]);
+    const compliant = evaluate({ name: "build", permission: rules() });
+    expect(compliant).toEqual([]);
+    const subagent = evaluate({ name: "explore", mode: "subagent", permission: rules() });
+    expect(subagent).toEqual([]);
+
+    const missingOne = evaluate({
+      name: "explore",
+      mode: "subagent",
+      permission: rules().filter(
+        (rule) => !(rule.permission === "bash" && rule.pattern === "kill 1"),
+      ),
+    });
+    expect(missingOne).toEqual(['agent "explore": bash does not deny "kill 1"']);
+
+    const widened = evaluate({
+      name: "build",
+      permission: [
+        ...rules(),
+        { permission: "bash", pattern: "pkill *opencode*", action: "allow" },
+      ],
+    });
+    expect(widened).toEqual(['agent "build": bash does not deny "pkill *opencode*"']);
+  });
+
+  it("skips bash verification entirely for hidden agents", () => {
+    const warnings = evaluate({
+      name: "compaction",
+      hidden: true,
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+    });
+    expect(warnings).toEqual([]);
   });
 
   it("skips hidden system agents with intentional deny profiles", () => {
@@ -482,6 +535,7 @@ describe("web permission policy", () => {
       "websearch",
       "hanse_web_search",
       "hanse_web_fetch",
+      "bash",
       "read",
       "edit",
       "doom_loop",

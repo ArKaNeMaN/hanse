@@ -2384,6 +2384,102 @@
     min-inline-size: 0;
   }
 
+  .feed-notice {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    inline-size: 100%;
+    min-inline-size: 0;
+    padding-block: var(--space-1);
+    color: var(--text-3);
+  }
+
+  .feed-notice__rule {
+    flex: 1 1 2rem;
+    min-inline-size: var(--space-4);
+    border-block-start: 1px solid var(--line);
+  }
+
+  .feed-notice__body {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: center;
+    gap: var(--space-1) var(--space-2);
+    margin: 0;
+    min-inline-size: 0;
+    text-align: center;
+  }
+
+  .feed-notice__label {
+    color: var(--text-2);
+    font-family: var(--font-mono);
+    font-size: var(--text-micro);
+    letter-spacing: 0.06em;
+    line-height: 1.4;
+    text-transform: uppercase;
+  }
+
+  .feed-notice__reason {
+    color: var(--text-3);
+    font-size: var(--text-caption);
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+  }
+
+  .feed-notice[data-kind="resume_started"] .feed-notice__label {
+    color: var(--brass);
+  }
+
+  .chat-stopped {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-2);
+    padding: var(--space-4);
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius-md);
+    background: color-mix(in oklab, var(--surface-1) 72%, transparent);
+  }
+
+  .chat-stopped__title {
+    margin: 0;
+    font-family: var(--font-display);
+    font-size: var(--text-h4);
+    font-weight: 600;
+    line-height: 1.25;
+  }
+
+  .chat-stopped__body {
+    margin: 0;
+    max-inline-size: 54ch;
+    color: var(--text-2);
+    font-size: var(--text-sm);
+    line-height: 1.55;
+    overflow-wrap: anywhere;
+  }
+
+  .chat-stopped__actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    margin-block-start: var(--space-1);
+  }
+
+  @media (max-width: 767px) {
+    .feed-notice {
+      gap: var(--space-2);
+    }
+
+    .feed-notice__rule {
+      min-inline-size: var(--space-2);
+    }
+
+    .chat-stopped {
+      padding: var(--space-3);
+    }
+  }
+
   .message__meta {
     display: flex;
     align-items: center;
