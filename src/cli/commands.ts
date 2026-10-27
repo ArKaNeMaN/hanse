@@ -39,7 +39,12 @@ import { isMasterProject, MASTER_DIR_NAME } from "../master/constants.js";
 import { runRemoteMcpServer } from "../mcp/remote.js";
 import { runMcpServer } from "../mcp/server.js";
 import { ModelProviderService } from "../model-providers/index.js";
-import { InstanceManager, resolveBaselinePlugins } from "../opencode/manager.js";
+import { waitForOpenCodeReady } from "../opencode/client.js";
+import {
+  AgentStartingError,
+  InstanceManager,
+  resolveBaselinePlugins,
+} from "../opencode/manager.js";
 import { OmoProfileStore } from "../opencode/omo-profile.js";
 import { PreviewService } from "../preview/service.js";
 import { discoverProject, registerProject } from "../registry/index.js";
@@ -676,6 +681,11 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
     omoProfiles,
     skills,
     modelProviders,
+    waitForReady: async (appId, endpoint) => {
+      if (!(await waitForOpenCodeReady(endpoint))) {
+        throw new AgentStartingError(appId);
+      }
+    },
     ...(previews === undefined ? {} : { previews }),
     ...(images === undefined ? {} : { images }),
     workspaceRoot: workspace,

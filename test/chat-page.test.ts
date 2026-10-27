@@ -32,6 +32,7 @@ import { createHttpServer } from "../src/http/server.js";
 import { createPrincipal } from "../src/identity/principals.js";
 import { DefaultImageUnavailableError, ImageNotReadyError } from "../src/images/service.js";
 import {
+  AgentStartingError,
   AgentTokenReconcileError,
   DeletionPendingError,
   type InstanceManager,
@@ -1896,6 +1897,23 @@ describe("async chat send", () => {
     expect(JSON.parse(response.body)).toMatchObject({
       code: "agent_unavailable",
       outcome: "not_sent",
+    });
+  });
+
+  it("maps a not-ready agent to a transient 503", async () => {
+    const f = fixture();
+    f.deps.manager = {
+      ensure: async () => {
+        throw new AgentStartingError("p1:storefront");
+      },
+    } as unknown as InstanceManager;
+
+    const response = await handleChat(f.deps, asyncRequest({ headers: auth(f.token) }));
+    expect(response.status).toBe(503);
+    expect(response.headers?.["retry-after"]).toBe("5");
+    expect(JSON.parse(response.body)).toMatchObject({
+      error: "agent is starting; retry shortly",
+      code: "agent_starting",
     });
   });
 

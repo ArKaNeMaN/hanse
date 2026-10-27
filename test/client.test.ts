@@ -5,6 +5,7 @@ import {
   abortSession,
   deleteSavedPermission,
   deleteSession,
+  isOpenCodeReady,
   listMessagePage,
   listMessages,
   listPermissions,
@@ -35,6 +36,7 @@ import {
   sendPrompt,
   sendPromptAsync,
   summarizeSession,
+  waitForOpenCodeReady,
 } from "../src/opencode/client.js";
 import { setEndpointAuthorization } from "../src/opencode/endpoint-auth.js";
 
@@ -898,5 +900,45 @@ describe("summarize client", () => {
     expect(error).toBeInstanceOf(OpencodeHttpError);
     expect((error as OpencodeHttpError).status).toBe(0);
     expect((error as OpencodeHttpError).bodyExcerpt).toContain("boolean");
+  });
+});
+
+describe("opencode readiness probe", () => {
+  it("polls /agent until the server answers", async () => {
+    let attempts = 0;
+    const server = await upstream((_request, response) => {
+      attempts += 1;
+      if (attempts < 3) {
+        response.writeHead(503);
+        response.end("booting");
+        return;
+      }
+      json(response, []);
+    });
+
+    await expect(
+      waitForOpenCodeReady(server.endpoint, {
+        timeoutMs: 1_000,
+        pollMs: 10,
+        probeTimeoutMs: 100,
+      }),
+    ).resolves.toBe(true);
+    expect(server.calls.map((call) => call.url)).toEqual(["/agent", "/agent", "/agent"]);
+  });
+
+  it("returns false when the deadline expires", async () => {
+    const server = await upstream((_request, response) => {
+      response.writeHead(503);
+      response.end("booting");
+    });
+
+    await expect(
+      waitForOpenCodeReady(server.endpoint, {
+        timeoutMs: 50,
+        pollMs: 10,
+        probeTimeoutMs: 100,
+      }),
+    ).resolves.toBe(false);
+    expect(await isOpenCodeReady(server.endpoint, 100)).toBe(false);
   });
 });

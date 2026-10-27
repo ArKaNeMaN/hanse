@@ -139,6 +139,19 @@ export class RestartInProgressError extends Error {
   }
 }
 
+/** Thrown when a started container never answers opencode HTTP; HTTP callers map it to 503. */
+export class AgentStartingError extends Error {
+  readonly code = "agent_starting";
+  readonly status = 503;
+  readonly appId: string;
+
+  constructor(appId: string) {
+    super(`agent ${appId} did not become ready`);
+    this.name = "AgentStartingError";
+    this.appId = appId;
+  }
+}
+
 /** Thrown when an image rollback restarted the app but the restart failed; all image fields were restored. */
 export class ImageRollbackIncompleteError extends Error {
   readonly code = "image_rollback_incomplete";
@@ -267,6 +280,11 @@ export interface InstanceManagerOptions {
   logger?: Logger;
   /** Injectable model-propagation verifier for tests. */
   modelVerifier?: (endpoint: string, expected: string) => Promise<string[]>;
+  /**
+   * Wait until the fresh instance answers opencode HTTP before {@link ensure} returns. Production
+   * passes a bounded poll; tests omit it because their runtime is in-memory and has no HTTP server.
+   */
+  waitForReady?: (appId: string, endpoint: string) => Promise<void>;
   /** Root used to validate `appDir`. Defaults to the application's parent directory. */
   workspaceRoot?: string;
   /** Agents root used to validate `stateDir`. Defaults to the manager runtime root. */
@@ -612,6 +630,9 @@ export class InstanceManager {
         const endpoint = current.endpoint ?? existing?.endpoint;
         if (endpoint !== undefined && endpoint !== null) {
           setEndpointAuthorization(endpoint, OPENCODE_BASIC_USERNAME, existingPassword);
+          if (existing === undefined || existing.endpoint !== endpoint) {
+            await this.#awaitReady(app.id, endpoint);
+          }
           if (existing === undefined) {
             const persisted = this.#db
               .prepare(
@@ -911,6 +932,7 @@ export class InstanceManager {
     }
     const endpoint = status.endpoint;
     setEndpointAuthorization(endpoint, OPENCODE_BASIC_USERNAME, password);
+    await this.#awaitReady(app.id, endpoint);
 
     const entry: Entry = {
       endpoint,
@@ -939,6 +961,12 @@ export class InstanceManager {
       entry.modelWarnings = await verifyModel(endpoint, model);
     }
     return endpoint;
+  }
+
+  async #awaitReady(appId: string, endpoint: string): Promise<void> {
+    if (this.#options.waitForReady !== undefined) {
+      await this.#options.waitForReady(appId, endpoint);
+    }
   }
 
   /**

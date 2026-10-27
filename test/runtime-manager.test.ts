@@ -103,6 +103,7 @@ describe("InstanceManager B1 runner spec", () => {
       appKey: "a",
       appDir: f.appDir,
     };
+    const ready: Array<{ appId: string; endpoint: string }> = [];
     const manager = new InstanceManager(db, f.containerAgents, {
       runtime,
       workspaceRoot: f.containerWorkspace,
@@ -110,9 +111,13 @@ describe("InstanceManager B1 runner spec", () => {
       hostWorkspace: f.hostWorkspace,
       hostAgents: f.hostAgents,
       verify: async () => [],
+      waitForReady: async (appId, endpoint) => {
+        ready.push({ appId, endpoint });
+      },
     });
 
     await expect(manager.ensure(app)).resolves.toBe("http://hanse-app-p-a:4100");
+    expect(ready).toEqual([{ appId: "p:a", endpoint: "http://hanse-app-p-a:4100" }]);
     expect(observed?.pathMode).toBe("host");
     expect(observed?.networkName).toBe("hanse-app-p-a");
     expect(observed?.port).toBe(4100);

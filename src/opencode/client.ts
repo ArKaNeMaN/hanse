@@ -179,6 +179,10 @@ export interface OpencodeMessageReadOptions extends OpencodeRequestOptions {
 
 export const OPENCODE_READ_TIMEOUT_MS = 5_000;
 export const OPENCODE_REPLY_TIMEOUT_MS = 10_000;
+/** How long a fresh agent may take to answer HTTP before the coordinator reports a start failure. */
+export const OPENCODE_READY_TIMEOUT_MS = 30_000;
+export const OPENCODE_READY_PROBE_TIMEOUT_MS = 1_500;
+export const OPENCODE_READY_POLL_MS = 250;
 export const OPENCODE_MAX_BODY_BYTES = 1024 * 1024;
 export const MESSAGES_RESPONSE_MAX_BYTES = 8 * 1024 * 1024;
 /** Raw history cap; the fallback path may read one message at a time above this. */
@@ -781,6 +785,39 @@ async function getJson<T>(
 ): Promise<T> {
   const response = await requestResponse(endpoint, path, { method: "GET" }, timeoutMs, options);
   return readJson<T>(response, path, options);
+}
+
+/** One cheap GET that succeeds only once opencode serves its HTTP API. */
+export async function isOpenCodeReady(
+  endpoint: string,
+  timeoutMs = OPENCODE_READY_PROBE_TIMEOUT_MS,
+): Promise<boolean> {
+  try {
+    await getJson<unknown>(endpoint, "/agent", { timeoutMs }, timeoutMs);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Poll until opencode answers, or return false once the overall deadline expires. */
+export async function waitForOpenCodeReady(
+  endpoint: string,
+  options: { timeoutMs?: number; pollMs?: number; probeTimeoutMs?: number } = {},
+): Promise<boolean> {
+  const deadline = Date.now() + (options.timeoutMs ?? OPENCODE_READY_TIMEOUT_MS);
+  for (;;) {
+    if (await isOpenCodeReady(endpoint, options.probeTimeoutMs)) {
+      return true;
+    }
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
+      return false;
+    }
+    await new Promise((resolve) =>
+      setTimeout(resolve, Math.min(options.pollMs ?? OPENCODE_READY_POLL_MS, remaining)),
+    );
+  }
 }
 
 async function sendJson<T>(

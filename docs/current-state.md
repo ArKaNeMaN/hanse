@@ -299,6 +299,10 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   persists `stopped` before showing `Agent is not running; settings apply on next start.`; a status
   transport failure leaves the last known state unchanged. This prevents stale `Restart required`
   markers after a deployment or coordinator restart.
+- A fresh start or reconnect only returns its endpoint after opencode answers `GET /agent` (bounded
+  poll, 30 s). A container that is running but not HTTP-ready is therefore never handed to chat; if
+  the deadline expires the API returns `503` `agent_starting` with `Retry-After: 5` instead of a raw
+  `fetch failed`.
 - Human-only JSON API under `/api/projects/:projectId/apps/:appKey/git`:
   `GET /status`, `POST /fetch`, `/update`, `/push`, `/commit`, `/branches/switch`. Mutations are
   JSON-only and require the operator session; agent principals receive `403`.

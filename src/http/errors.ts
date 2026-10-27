@@ -1,6 +1,10 @@
 import { DeploymentInProgressError } from "../coordinator/deployment-lock.js";
 import { DefaultImageUnavailableError, ImageNotReadyError } from "../images/service.js";
-import { AgentTokenReconcileError, RestartInProgressError } from "../opencode/manager.js";
+import {
+  AgentStartingError,
+  AgentTokenReconcileError,
+  RestartInProgressError,
+} from "../opencode/manager.js";
 import type { HttpResponse } from "./handler.js";
 
 export interface MappedHttpError {
@@ -30,6 +34,13 @@ export function mapLifecycleHttpError(error: unknown): MappedHttpError | undefin
   }
   if (error instanceof RestartInProgressError) {
     return { status: 409, body: { error: "restart_in_progress" } };
+  }
+  if (error instanceof AgentStartingError) {
+    return {
+      status: 503,
+      body: { error: "agent is starting; retry shortly", code: "agent_starting" },
+      headers: { "retry-after": "5" },
+    };
   }
   if (error instanceof AgentTokenReconcileError) {
     return { status: 500, body: { error: "agent_token_reconcile_failed" } };
