@@ -210,6 +210,25 @@ describe("ModelProviderService", () => {
     );
   });
 
+  it("enforces the projection cap when repairing an invalid row", () => {
+    const { db, service } = fixture();
+    const bigModels = Array.from({ length: 64 }, (_, index) =>
+      model(`${String(index).padStart(2, "0")}${"x".repeat(198)}`, {
+        name: "n".repeat(128),
+      }),
+    );
+    service.create(input({ id: "p0", models: bigModels }), "operator");
+    service.create(input({ id: "p1", models: bigModels }), "operator");
+    db.prepare(
+      `INSERT INTO model_providers (id, name, npm, base_url, models_json, created_at, updated_at)
+       VALUES ('bad', 'Bad', '@ai-sdk/openai-compatible', 'http://host', '[]', ?, ?)`,
+    ).run(NOW, NOW);
+
+    expect(() =>
+      service.update("bad", { name: "Bad", baseUrl: "http://host", models: bigModels }, "operator"),
+    ).toThrow(/overlay budget/);
+  });
+
   it("filters a manually edited invalid row from every consumer", () => {
     const { db, service } = fixture();
     db.prepare(

@@ -123,16 +123,19 @@ export class ModelProviderService {
         : {};
     const normalized = validateInput({ ...base, id });
     const now = this.#nowIso();
-    const providers = this.#readAll().map((provider) =>
-      provider.id === id
-        ? {
-            ...provider,
-            ...normalized,
-            createdAt: provider.createdAt,
-            updatedAt: now,
-          }
-        : provider,
-    );
+    const current = this.#readAll();
+    const providers = current.some((provider) => provider.id === id)
+      ? current.map((provider) =>
+          provider.id === id
+            ? {
+                ...provider,
+                ...normalized,
+                createdAt: provider.createdAt,
+                updatedAt: now,
+              }
+            : provider,
+        )
+      : [...current, { ...normalized, createdAt: now, updatedAt: now }];
     this.#ensureProjection(providers);
     this.#db.transaction(() => {
       this.#db
