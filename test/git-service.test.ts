@@ -376,7 +376,11 @@ describe("GitService status", () => {
       commands.push(command);
       return realRunner(command);
     };
-    const service = new GitService({ workspaceRoot: root, runner });
+    const service = new GitService({
+      workspaceRoot: root,
+      runner,
+      env: { PATH: process.env.PATH ?? "" },
+    });
     await service.status(await service.resolveRepository(root, "repo"));
 
     const fixedConfig = [
