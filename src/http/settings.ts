@@ -1241,6 +1241,12 @@ function modelProviderWarning(resolved: ResolvedSettings): string | undefined {
   if (status === undefined || status.state === "missing") {
     return `No provider key or host auth is configured for "${provider}". The selected model may fail to authenticate.`;
   }
+  if (status.state === "cleared") {
+    return `The provider key for "${provider}" is cleared and no wider scope provides one. The selected model may fail to authenticate.`;
+  }
+  if (status.state === "host" && status.authType !== "api") {
+    return `Host auth for "${provider}" is ${status.authType}, not an API key. The selected model may fail to authenticate.`;
+  }
   if (status.state === "error") {
     return `Provider "${provider}" has an unusable key: ${status.message}`;
   }
@@ -1440,12 +1446,19 @@ function webToolWarning(
     }
     return undefined;
   }
-  const status = resolved.providerKeys[value.options.provider];
+  const provider = value.options.provider;
+  const status = resolved.providerKeys[provider];
   if (status === undefined || status.state === "missing") {
-    return `No provider key or host auth is configured for "${value.options.provider}". The managed web tool will be unavailable.`;
+    return `No provider key or host auth is configured for "${provider}". The managed web tool will be unavailable.`;
+  }
+  if (status.state === "cleared") {
+    return `The provider key for "${provider}" is cleared and no wider scope provides one. The managed web tool will be unavailable.`;
+  }
+  if (status.state === "host" && status.authType !== "api") {
+    return `Host auth for "${provider}" is ${status.authType}, not an API key. The managed web tool will be unavailable.`;
   }
   if (status.state === "error") {
-    return `Provider "${value.options.provider}" has an unusable key: ${status.message}`;
+    return `Provider "${provider}" has an unusable key: ${status.message}`;
   }
   return undefined;
 }

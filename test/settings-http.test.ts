@@ -1436,6 +1436,34 @@ describe("settings pages and pending state", () => {
     expect(response.body).toContain("existing sessions may keep their model");
   });
 
+  it("warns when the effective provider key is cleared", async () => {
+    const f = fixture();
+    f.settings.setProviderKey("global", {}, "deepseek", "secret", "owner");
+    f.settings.clearProviderKey("global", {}, "deepseek", "owner");
+    f.settings.set(
+      "global",
+      {},
+      "web.search",
+      { driver: "deepseek", options: { provider: "deepseek" } },
+      "owner",
+    );
+    const response = await handleSettings(
+      f.deps,
+      request({ path: "/settings", headers: htmlAuth(f.token) }),
+    );
+    expect(response.body).toContain("is cleared and no wider scope provides one");
+    expect(response.body).toContain("The managed web tool will be unavailable");
+  });
+
+  it("warns when host auth is not an API key", async () => {
+    const f = fixture({ hostAuth: { deepseek: { type: "oauth", access: "token" } } });
+    const response = await handleSettings(
+      f.deps,
+      request({ path: "/settings", headers: htmlAuth(f.token) }),
+    );
+    expect(response.body).toContain("is oauth, not an API key");
+  });
+
   it("warns that built-in search needs OMO when HANSE_OMO_PLUGIN is unset", async () => {
     const previous = process.env.HANSE_OMO_PLUGIN;
     delete process.env.HANSE_OMO_PLUGIN;
