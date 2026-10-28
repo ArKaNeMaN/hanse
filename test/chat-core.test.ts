@@ -3039,6 +3039,10 @@ describe("feed notices", () => {
       label: "Agent notice",
       reason: "custom reason",
     });
+    expect(noticeLabel({ kind: "resume_failed", reason: "ambiguous" })).toEqual({
+      label: "Agent resume unconfirmed",
+      reason: "Outcome unknown",
+    });
   });
 });
 

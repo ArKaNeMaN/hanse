@@ -2042,6 +2042,22 @@ export class ProcessRecovery {
           continue;
         }
       }
+      const outcome = await this.#resumeTailOutcome(row, row.appId);
+      if (outcome === "newer") {
+        this.#markSuperseded(row);
+        continue;
+      }
+      if (outcome === "completed") {
+        const completed = this.#resumes.transition(
+          row.appId,
+          row.sessionId,
+          ["resuming", "resumed"],
+          "completed",
+          { at: this.#iso() },
+        );
+        if (completed) this.#resumeCompletedNotice(row);
+        continue;
+      }
       const changed = this.#resumes.transition(
         row.appId,
         row.sessionId,
@@ -2114,7 +2130,15 @@ export class ProcessRecovery {
     const messages = await this.#fetchTail(appId, row.sessionId);
     if (messages === undefined) return "pending";
     const index = messages.findIndex((message) => message.info.id === row.resumeMessageId);
-    if (index < 0) return "pending";
+    if (index < 0) {
+      // The resume prompt fell outside the bounded tail, so the whole tail is after it: any user
+      // message means a newer turn, and a completed final assistant means the resumed turn finished.
+      if (messages.some((message) => message.info.role === "user")) return "newer";
+      const last = messages.filter((message) => message.info.role === "assistant").at(-1);
+      if (last === undefined) return "pending";
+      if (last.info.finish === "tool-calls") return "pending";
+      return assistantCompleted(last) ? "completed" : "pending";
+    }
     const after = messages.slice(index + 1);
     if (after.some((message) => message.info.role === "user")) return "newer";
     const assistants = after.filter((message) => message.info.role === "assistant");

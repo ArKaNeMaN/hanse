@@ -894,6 +894,52 @@ describe("ProcessRecovery resume dispatch", () => {
     expect(h.emitted.at(-1)).toMatchObject({ kind: "resume_failed", reason: "ambiguous" });
   });
 
+  it("settles an expired lease as completed when the resume prompt is outside the tail window", async () => {
+    const h = harness();
+    resumable(h);
+    await h.recovery.resumePass();
+    const resumeId = h.resumes.get(APP, "ses_1")?.resumeMessageId;
+    if (resumeId === null || resumeId === undefined) throw new Error("missing resume id");
+    h.messages.set("ses_1", [
+      user(resumeId, START_MS + 1),
+      ...Array.from({ length: 25 }, (_, index) =>
+        assistant(`msg_long_${index}`, { created: START_MS + 2 + index }),
+      ),
+    ]);
+    h.now = START_MS + RESUME_LEASE_MS;
+
+    await h.recovery.reconcile();
+
+    expect(h.resumes.get(APP, "ses_1")?.resumeState).toBe("completed");
+    expect(h.emitted.at(-1)).toMatchObject({ kind: "resume_completed" });
+    expect(h.emitted.some((notice) => notice.kind === "resume_failed")).toBe(false);
+  });
+
+  it("settles an expired lease as superseded when a newer user turn follows the out-of-window prompt", async () => {
+    const h = harness();
+    resumable(h);
+    await h.recovery.resumePass();
+    const resumeId = h.resumes.get(APP, "ses_1")?.resumeMessageId;
+    if (resumeId === null || resumeId === undefined) throw new Error("missing resume id");
+    h.messages.set("ses_1", [
+      user(resumeId, START_MS + 1),
+      ...Array.from({ length: 25 }, (_, index) =>
+        assistant(`msg_long_${index}`, { created: START_MS + 2 + index }),
+      ),
+      user("msg_new", START_MS + 40),
+    ]);
+    h.now = START_MS + RESUME_LEASE_MS;
+
+    await h.recovery.reconcile();
+
+    expect(h.resumes.get(APP, "ses_1")?.resumeState).toBe("superseded");
+    expect(h.emitted.at(-1)).toMatchObject({
+      kind: "resume_unavailable",
+      reason: "superseded",
+    });
+    expect(h.emitted.some((notice) => notice.kind === "resume_failed")).toBe(false);
+  });
+
   it("reconciles a prepared dispatch whose message exists without sending again", async () => {
     const h = harness();
     resumable(h);

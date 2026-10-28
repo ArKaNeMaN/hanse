@@ -431,8 +431,10 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   dispatch retry). It sends one synthetic continuation prompt with
   `metadata.hanse="agent-resume"`; the client hides that part and shows a `resume_started` notice.
   There is no manual Resume route and no child auto-resume. A stopped app is never auto-started;
-  the operator starts it and sends a normal message. A resume that is superseded, fails, becomes
-  ambiguous, or expires leaves a notice; the client shows the persisted state.
+  the operator starts it and sends a normal message. Lease expiry first re-checks the session tail:
+  a finished resumed turn settles as `completed` (`resume_completed`) and a newer user turn as
+  `superseded`; only a genuinely unconfirmed outcome leaves an `ambiguous` notice, shown as
+  "Agent resume unconfirmed". The client shows the persisted state.
 - Chat read routes (`/sessions`, `/messages`, app SSE, `/prompts`, `/saved-permissions`, `/todo`,
   `/context`) never start a stopped app. They return `503 {error:"agent is stopped",
   code:"agent_stopped"}` when no attached endpoint exists; the client renders a stopped shell with

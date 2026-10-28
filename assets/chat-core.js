@@ -1152,6 +1152,9 @@ export function noticeLabel(notice) {
   if (!isRecord(notice)) return { label: "Agent notice", reason: "" };
   const kind = asString(notice.kind) ?? "";
   const rawReason = asString(notice.reason) ?? "";
+  if (kind === "resume_failed" && rawReason === "ambiguous") {
+    return { label: "Agent resume unconfirmed", reason: "Outcome unknown" };
+  }
   const label = NOTICE_LABELS[kind] ?? "Agent notice";
   const reason = NOTICE_REASONS[rawReason] ?? rawReason.replaceAll("_", " ").trim();
   return { label, reason };

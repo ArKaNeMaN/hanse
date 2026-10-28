@@ -580,7 +580,8 @@ Dispatch and outcome state machine:
     (`auto_dispatch_retries <= 1`), then `dispatch_state=failed`.
   - cannot prove (opencode unavailable) -> leave `ambiguous`, write `resume_failed`/notice.
 - A `resuming` lease (recommended 2 minutes, extended while `busy`/`retry`) prevents a stuck row; on
-  expiry -> `ambiguous`/notice, never a silent auto-loop.
+  expiry it first re-reads the bounded tail and settles `completed`/`superseded` when the messages
+  prove it, otherwise -> `ambiguous`/notice, never a silent auto-loop.
 - **No manual Resume mechanism (owner decision).** There is no `POST /resume` and no manual attempt
   budget. If auto-resume is skipped, failed, or the app is stopped, the notice tells the operator;
   they start/restart the app if needed and send a normal chat message (for example "Продолжай"), which
