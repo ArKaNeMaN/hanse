@@ -16,7 +16,12 @@ export const DEEPSEEK_PROVIDER_MAX_CHARS = 128;
 /** Strict DeepSeek options schema; unknown fields are rejected. */
 export const deepseekOptionsSchema = z
   .object({
-    provider: z.string().min(1).max(DEEPSEEK_PROVIDER_MAX_CHARS),
+    provider: z
+      .string()
+      .trim()
+      .min(1)
+      .max(DEEPSEEK_PROVIDER_MAX_CHARS)
+      .refine((value) => !/[\s/]/.test(value), "provider must not contain whitespace or '/'"),
     count: z.number().int().min(DEEPSEEK_COUNT_MIN).max(DEEPSEEK_COUNT_MAX).optional(),
     needContent: z.boolean().optional(),
     timeoutMs: z

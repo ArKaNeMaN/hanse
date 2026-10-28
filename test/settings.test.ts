@@ -565,6 +565,39 @@ describe("clear, invalid rows, and validation", () => {
     expect(() => service.setProviderKey("global", {}, "__proto__", "key", "owner")).toThrow(
       SettingsValidationError,
     );
+    expect(() => service.setProviderKey("global", {}, "deep seek", "key", "owner")).toThrow(
+      SettingsValidationError,
+    );
+    expect(() => service.setProviderKey("global", {}, "deep/seek", "key", "owner")).toThrow(
+      SettingsValidationError,
+    );
+  });
+
+  it("normalizes provider ids before storing a key", () => {
+    const { service } = fixture();
+    service.setProviderKey("global", {}, "  deepseek  ", "secret", "owner");
+
+    expect(service.resolve({}).providerKeys.deepseek).toEqual({
+      state: "set",
+      source: "global",
+    });
+    expect(service.resolve({}).providerKeys["  deepseek  "]).toBeUndefined();
+  });
+
+  it("normalizes the managed web tool provider", () => {
+    const { service } = fixture();
+    service.set(
+      "global",
+      {},
+      "web.search",
+      { driver: "deepseek", options: { provider: "  deepseek  " } },
+      "owner",
+    );
+
+    expect(service.resolve({}).effective.web.search.value).toMatchObject({
+      driver: "deepseek",
+      options: { provider: "deepseek" },
+    });
   });
 });
 

@@ -144,16 +144,30 @@ function requireDefinition(key: string) {
 }
 
 function validateProvider(provider: unknown): string {
-  if (typeof provider !== "string" || provider.trim().length === 0) {
+  if (typeof provider !== "string") {
     throw new SettingsValidationError("provider must be a non-empty string");
   }
-  if (provider.length > 128) {
+  const normalized = provider.trim();
+  if (normalized.length === 0) {
+    throw new SettingsValidationError("provider must be a non-empty string");
+  }
+  if (normalized.length > 128) {
     throw new SettingsValidationError("provider must be at most 128 characters");
   }
-  if (provider === "__proto__" || provider === "constructor" || provider === "prototype") {
+  if (
+    normalized.includes("/") ||
+    /\s/.test(normalized) ||
+    [...normalized].some((character) => {
+      const code = character.codePointAt(0) ?? 0;
+      return code < 0x20 || code === 0x7f;
+    })
+  ) {
+    throw new SettingsValidationError("provider must not contain whitespace or '/'");
+  }
+  if (normalized === "__proto__" || normalized === "constructor" || normalized === "prototype") {
     throw new SettingsValidationError("provider is not allowed");
   }
-  return provider;
+  return normalized;
 }
 
 function validateProviderKey(key: unknown): string {

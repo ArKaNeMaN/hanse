@@ -29,7 +29,12 @@ export const llmModelSchema = z
 
 export const deepSeekOptionsSchema = z
   .object({
-    provider: z.string().min(1).max(128),
+    provider: z
+      .string()
+      .trim()
+      .min(1)
+      .max(128)
+      .refine((value) => !/[\s/]/.test(value), "provider must not contain whitespace or '/'"),
     count: z.number().int().min(1).max(20).optional(),
     needContent: z.boolean().optional(),
     timeoutMs: z.number().int().min(1000).max(60000).optional(),
