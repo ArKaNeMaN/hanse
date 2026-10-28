@@ -1,4 +1,13 @@
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -47,5 +56,20 @@ describe("opencode server password", () => {
     const password = ensureOpencodePassword(file);
     expect(password.length).toBeGreaterThan(0);
     expect(readFileSync(file, "utf8").trim()).toBe(password);
+  });
+
+  it("does not read or reuse a symlinked password file", () => {
+    const file = fixture();
+    mkdirSync(path.dirname(file), { recursive: true });
+    const target = path.join(path.dirname(path.dirname(file)), "host-secret");
+    writeFileSync(target, "host-secret\n", { mode: 0o600 });
+    symlinkSync(target, file);
+
+    expect(readOpencodePassword(file)).toBeUndefined();
+    const password = ensureOpencodePassword(file);
+
+    expect(password).not.toBe("host-secret");
+    expect(lstatSync(file).isSymbolicLink()).toBe(false);
+    expect(readFileSync(target, "utf8")).toBe("host-secret\n");
   });
 });

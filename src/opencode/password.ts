@@ -1,5 +1,16 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  closeSync,
+  constants as fsConstants,
+  fstatSync,
+  mkdirSync,
+  openSync,
+  readSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 
 /** File name of the per-app opencode server password under `XDG_STATE_HOME`. */
@@ -10,11 +21,47 @@ export function opencodePasswordPath(stateDir: string): string {
   return path.join(stateDir, OPENCODE_PASSWORD_FILENAME);
 }
 
-/** Read the existing password, or `undefined` when the file is missing or empty. */
+/**
+ * Read a small file without following a symlink in the final component.
+ *
+ * The path can be agent-writable (the per-app state directory is mounted read-write into the app
+ * container), so a symlink planted there must never make the coordinator or the runner read an
+ * arbitrary host file. Missing files return `undefined`; every other failure throws.
+ */
+export function readRegularFileNoFollow(file: string, maxBytes = 4096): string | undefined {
+  let fd: number;
+  try {
+    fd = openSync(file, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return undefined;
+    }
+    throw error;
+  }
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile()) {
+      throw new Error("secret file is not a regular file");
+    }
+    if (stat.size > maxBytes) {
+      throw new Error("secret file is too large");
+    }
+    const buffer = Buffer.alloc(maxBytes + 1);
+    const size = readSync(fd, buffer, 0, buffer.length, 0);
+    if (size > maxBytes) {
+      throw new Error("secret file is too large");
+    }
+    return buffer.subarray(0, size).toString("utf8");
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** Read the existing password, or `undefined` when the file is missing, empty, or not a regular file. */
 export function readOpencodePassword(file: string): string | undefined {
   try {
-    const password = readFileSync(file, "utf8").trim();
-    return password.length === 0 ? undefined : password;
+    const password = readRegularFileNoFollow(file)?.trim();
+    return password === undefined || password.length === 0 ? undefined : password;
   } catch {
     return undefined;
   }

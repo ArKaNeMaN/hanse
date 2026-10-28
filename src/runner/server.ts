@@ -1,13 +1,5 @@
 import { randomUUID, timingSafeEqual } from "node:crypto";
-import {
-  existsSync,
-  lstatSync,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  realpathSync,
-  rmSync,
-} from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import {
   createServer,
   type IncomingMessage,
@@ -48,6 +40,7 @@ import {
   validateGitRequest,
   validateGitTestRequest,
 } from "../git/request.js";
+import { readRegularFileNoFollow } from "../opencode/password.js";
 import { isInside, resolveWithinRoot } from "../runtime/app-path.js";
 import { VERSION } from "../version.js";
 import {
@@ -364,7 +357,7 @@ function containerEnvironment(spec: RunnerSpec): Record<string, string> {
   if (passwordFile !== undefined) {
     let password: string;
     try {
-      password = readFileSync(passwordFile, "utf8").trim();
+      password = (readRegularFileNoFollow(passwordFile) ?? "").trim();
     } catch (error) {
       throw new RunnerError(
         400,

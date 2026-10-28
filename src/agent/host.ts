@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { ConfigError } from "../config/load.js";
+import { readRegularFileNoFollow } from "../opencode/password.js";
 import { resolveWithinRoot } from "../runtime/app-path.js";
 import { VERSION } from "../version.js";
 import type { HostStatusPayload, RuntimeAppState } from "./protocol.js";
@@ -135,7 +136,7 @@ export function buildOpencodeEnv(
   const passwordFile = spec.env.HANSE_OPENCODE_PASSWORD_FILE;
   if (passwordFile !== undefined && passwordFile.length > 0) {
     const resolved = requireAgentPath(passwordFile, agentsRoot, "HANSE_OPENCODE_PASSWORD_FILE");
-    const password = readFileSync(resolved, "utf8").trim();
+    const password = (readRegularFileNoFollow(resolved) ?? "").trim();
     if (password.length === 0) {
       throw hostError(`opencode password file is empty: ${resolved}`);
     }
