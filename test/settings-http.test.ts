@@ -429,6 +429,33 @@ describe("settings mutations", () => {
     expect(row.value_json).toBe("null");
   });
 
+  it("offers and applies a clear action for the global git identity", async () => {
+    const f = fixture();
+    f.settings.set("global", {}, "git.user.name", "Global Agent", "owner");
+    const page = await handleSettings(
+      f.deps,
+      request({ path: "/settings", headers: htmlAuth(f.token) }),
+    );
+    const row = rowMarkup(page.body, "setting-git-user-name");
+    expect(row).toContain('value="clear"');
+    expect(row).toContain('data-setting-label="User name"');
+
+    const clear = await handleSettings(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/settings",
+        headers: auth(f.token, { "content-type": "application/x-www-form-urlencoded" }),
+        body: form({ scope: "global", key: "git.user.name", action: "clear" }),
+      }),
+    );
+    expect(clear.status).toBe(200);
+    expect(f.settings.resolve({}).effective.git.user.name).toMatchObject({
+      value: null,
+      state: "cleared",
+    });
+  });
+
   it("rejects clearing llm.model", async () => {
     const f = fixture();
     const response = await handleSettings(
@@ -1477,15 +1504,16 @@ describe("settings pages and pending state", () => {
   it("escapes dynamic content and returns styled 404s for unknown scopes", async () => {
     const f = fixture();
     f.db.prepare("UPDATE projects SET name = ? WHERE id = 'p1'").run('<script>alert("x")</script>');
-    f.settings.setProviderKey("global", {}, "<img src=x onerror=alert(1)>", "secret", "owner");
+    f.settings.setProviderKey("global", {}, "a<b>c", "secret", "owner");
     const page = await handleSettings(
       f.deps,
       request({ path: "/settings", headers: htmlAuth(f.token) }),
     );
     expect(page.status).toBe(200);
     expect(page.body).not.toContain("<script>alert");
-    expect(page.body).not.toContain("<img src=x");
+    expect(page.body).not.toContain("<b>");
     expect(page.body).toContain("&lt;script&gt;alert");
+    expect(page.body).toContain("a&lt;b&gt;c");
 
     for (const pathname of ["/projects/nope/settings", "/projects/p1/apps/nope/settings"]) {
       const response = await handleSettings(

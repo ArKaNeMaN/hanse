@@ -2017,7 +2017,7 @@ function gitIdentityRow(options: {
         ownState: own.state,
         effective: options.effective as EffectiveValue<unknown>,
         label: options.title,
-        clearable: false,
+        clearable: true,
       })}
     </form>
   </div>`;
