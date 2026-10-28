@@ -1231,7 +1231,11 @@ export class SseParser {
         },
       ];
       const resumed = this.resumeAfterSkip(text);
-      return { frames: resumed.frames, warnings: [...warnings, ...resumed.warnings] };
+      return {
+        frames: resumed.frames,
+        warnings: [...warnings, ...resumed.warnings],
+        ...(resumed.reservedBytes === undefined ? {} : { reservedBytes: resumed.reservedBytes }),
+      };
     }
 
     this.parts.push(text);
@@ -1288,6 +1292,7 @@ export class SseParser {
     if (!this.reserve(bytes)) return { frames: [], warnings: [] };
     this.parts.push(rest);
     this.pendingBytes += bytes;
+    this.pendingHasNewline = rest.includes("\n");
     return this.drain();
   }
 

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { RawStreamBudget } from "../src/attachments/budget.js";
 import {
   APP_STREAM_MAX_FRAME_BYTES,
   createEventStream,
@@ -238,6 +239,22 @@ describe("SseParser", () => {
     expect(oversized.warnings).toHaveLength(1);
     const batch = parser.push(frame('{"type":"ok"}'));
     expect(batch.frames).toEqual([{ data: '{"type":"ok"}' }]);
+  });
+
+  it("keeps complete frames that follow a budget-rejected chunk", () => {
+    const budget = new RawStreamBudget(200);
+    const parser = new SseParser({ maxFrameBytes: 10_000, budget });
+    const batch = parser.push(
+      `${frame("x".repeat(300))}${frame('{"type":"permission.asked"}')}${frame(
+        '{"type":"session.status"}',
+      )}`,
+    );
+    expect(batch.warnings.map((warning) => warning.code)).toEqual(["stream_budget"]);
+    expect(batch.frames).toEqual([
+      { data: '{"type":"permission.asked"}' },
+      { data: '{"type":"session.status"}' },
+    ]);
+    expect(batch.reservedBytes).toBeGreaterThan(0);
   });
 
   it("exports the app-stream contract constants", () => {
