@@ -1,36 +1,54 @@
-import path from "node:path";
-import { resolveInstanceEnv } from "../opencode/instance.js";
-import type { RegisteredApp } from "../registry/index.js";
 import {
-  type EffectiveSkill,
-  type ResolvedSkills,
   SKILL_LIMITS,
-  type SkillApplyOptions,
   SkillConflictError,
   type SkillMetadata,
-  type SkillPreview,
   type SkillReference,
   type SkillRow,
   type SkillScope,
   SkillService,
-  type SkillStoredIssue,
-  type SkillSummary,
   type SkillTarget,
   type SkillUpdate,
   SkillValidationError,
-  type SkillWarning,
 } from "../skills/index.js";
-import { appDir } from "./apps.js";
 import { principalFrom } from "./auth.js";
 import {
   buildSite,
   type PageChrome,
-  type ProjectView,
   renderErrorPage,
   renderNotFound,
   type SiteModel,
 } from "./dashboard.js";
 import type { HttpDeps, HttpRequest, HttpResponse } from "./handler.js";
+import {
+  type BundleValues,
+  buildSkillCreateProps,
+  buildSkillDetailProps,
+  buildSkillsInventoryProps,
+  bundleFromRow,
+  createTargetFromQuery,
+  parseExplicitTarget,
+  parseInventoryFilter,
+  previewFor,
+  rowPagePath,
+  rowTarget,
+  type SkillActionLinkProps,
+  type SkillActionsProps,
+  type SkillDangerProps,
+  type SkillFormProps,
+  type SkillIssueProps,
+  type SkillsInventoryProps,
+  SkillsTargetError,
+  type SkillTargetFieldsProps,
+  type SkillWarningProps,
+  type SkillWorkspaceError,
+  type SkillWorkspaceProps,
+  scopeLabel,
+  skillsPagePath,
+  targetExists,
+  targetFromQuery,
+  type WorkspaceValues,
+  workspacePath,
+} from "./props/skills.js";
 import {
   absoluteTime,
   appShell,
@@ -105,15 +123,6 @@ class SkillsBodyError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "SkillsBodyError";
-  }
-}
-
-class SkillsTargetError extends Error {
-  readonly code = "invalid_scope_target";
-
-  constructor(message: string) {
-    super(message);
-    this.name = "SkillsTargetError";
   }
 }
 
@@ -271,16 +280,6 @@ function stringValue(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
-function stringField(source: Record<string, unknown>, ...keys: string[]): string | undefined {
-  for (const key of keys) {
-    const value = stringValue(source[key]);
-    if (value !== undefined) {
-      return value;
-    }
-  }
-  return undefined;
-}
-
 function enabledFrom(value: unknown): boolean | undefined {
   if (value === undefined) {
     return undefined;
@@ -328,171 +327,8 @@ function requestPath(request: HttpRequest): string {
 }
 
 /* ------------------------------------------------------------------------- */
-/* Scope and target                                                           */
+/* Return paths                                                               */
 /* ------------------------------------------------------------------------- */
-
-function scopeLabel(scope: SkillScope): string {
-  if (scope === "global") {
-    return "Global";
-  }
-  return scope === "project" ? "Project" : "Application";
-}
-
-function scopeRank(scope: SkillScope): number {
-  return scope === "global" ? 0 : scope === "project" ? 1 : 2;
-}
-
-function parseScope(value: unknown): SkillScope {
-  if (value === "global" || value === "project" || value === "app") {
-    return value;
-  }
-  throw new SkillsTargetError("scope must be global, project, or app");
-}
-
-function nonEmpty(value: string | undefined): string | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  const trimmed = value.trim();
-  return trimmed.length === 0 ? undefined : trimmed;
-}
-
-function targetForScope(scope: SkillScope, target: SkillTarget): SkillTarget {
-  if (scope === "global") {
-    return {};
-  }
-  if (scope === "project") {
-    return { projectId: target.projectId ?? "" };
-  }
-  return { projectId: target.projectId ?? "", appKey: target.appKey ?? "" };
-}
-
-function rowTarget(row: SkillRow): SkillTarget {
-  return targetForScope(row.scope, {
-    projectId: row.projectId,
-    appKey: row.appKey,
-  });
-}
-
-function sameTarget(scope: SkillScope, left: SkillTarget, right: SkillTarget): boolean {
-  if (scope === "global") {
-    return true;
-  }
-  if ((left.projectId ?? "") !== (right.projectId ?? "")) {
-    return false;
-  }
-  if (scope === "project") {
-    return true;
-  }
-  return (left.appKey ?? "") === (right.appKey ?? "");
-}
-
-function parseExplicitTarget(source: Record<string, unknown>): {
-  scope: SkillScope;
-  target: SkillTarget;
-} {
-  const scope = parseScope(source.scope);
-  const projectId = nonEmpty(stringField(source, "projectId", "project"));
-  const appKey = nonEmpty(stringField(source, "appKey", "app"));
-  if (scope === "global") {
-    if (projectId !== undefined || appKey !== undefined) {
-      throw new SkillsTargetError("global scope does not accept a project or application");
-    }
-    return { scope, target: {} };
-  }
-  if (scope === "project") {
-    if (projectId === undefined) {
-      throw new SkillsTargetError("project scope requires a project");
-    }
-    if (appKey !== undefined) {
-      throw new SkillsTargetError("project scope does not accept an application");
-    }
-    return { scope, target: { projectId } };
-  }
-  if (projectId === undefined || appKey === undefined) {
-    throw new SkillsTargetError("app scope requires a project and an application");
-  }
-  return { scope, target: { projectId, appKey } };
-}
-
-function targetFromQuery(query: Record<string, string>): {
-  scope: SkillScope;
-  target: SkillTarget;
-} {
-  const projectId = nonEmpty(query.project);
-  const appKey = nonEmpty(query.app);
-  if (appKey !== undefined && projectId === undefined) {
-    throw new SkillsTargetError("app requires a project");
-  }
-  if (projectId === undefined) {
-    return { scope: "global", target: {} };
-  }
-  if (appKey === undefined) {
-    return { scope: "project", target: { projectId } };
-  }
-  return { scope: "app", target: { projectId, appKey } };
-}
-
-function createTargetFromQuery(query: Record<string, string>): {
-  scope: SkillScope;
-  target: SkillTarget;
-} {
-  const projectId = nonEmpty(query.project);
-  const appKey = nonEmpty(query.app);
-  if (query.scope === undefined || query.scope.trim().length === 0) {
-    return targetFromQuery(query);
-  }
-  return parseExplicitTarget({ scope: query.scope, project: projectId, app: appKey });
-}
-
-function skillsPagePath(scope: SkillScope, target: SkillTarget): string {
-  if (scope === "global") {
-    return "/skills";
-  }
-  const projectId = encodeURIComponent(target.projectId ?? "");
-  if (scope === "project") {
-    return `/projects/${projectId}/skills`;
-  }
-  return `/projects/${projectId}/apps/${encodeURIComponent(target.appKey ?? "")}/skills`;
-}
-
-function createPagePath(scope: SkillScope, target: SkillTarget): string {
-  const params = new URLSearchParams();
-  params.set("scope", scope);
-  if (scope !== "global") {
-    params.set("project", target.projectId ?? "");
-  }
-  if (scope === "app") {
-    params.set("app", target.appKey ?? "");
-  }
-  return `/skills/new?${params.toString()}`;
-}
-
-function rowPagePath(row: SkillRow): string {
-  return skillsPagePath(row.scope, rowTarget(row));
-}
-
-function workspacePath(row: SkillRow, from?: string): string {
-  const base = `/skills/${row.id}`;
-  if (from === undefined || from === rowPagePath(row)) {
-    return base;
-  }
-  return `${base}?from=${encodeURIComponent(from)}`;
-}
-
-function targetExists(deps: HttpDeps, scope: SkillScope, target: SkillTarget): boolean {
-  if (scope === "global") {
-    return true;
-  }
-  const project = deps.getProjects().find((entry) => entry.id === target.projectId);
-  if (project === undefined) {
-    return false;
-  }
-  if (scope === "project") {
-    return true;
-  }
-  return project.service.listApps().some((app) => app.appKey === target.appKey);
-}
 
 function safeSkillReturn(value: string | undefined, fallback: string): string {
   const target = safeLocalPath(value, fallback);
@@ -529,134 +365,32 @@ function originAllowed(request: HttpRequest): boolean {
 }
 
 /* ------------------------------------------------------------------------- */
-/* Preview and models                                                         */
+/* Warning and issue formatting                                               */
 /* ------------------------------------------------------------------------- */
 
-interface SurfaceModel {
-  scope: SkillScope;
-  target: SkillTarget;
-  resolved: ResolvedSkills;
-  preview?: SkillPreview;
-  returnTo: string;
-}
-
-function previewFor(
-  deps: HttpDeps,
-  skills: SkillService,
-  scope: SkillScope,
-  target: SkillTarget,
-): SkillPreview | undefined {
-  if (scope !== "app") {
-    return undefined;
-  }
-  const project = deps.getProjects().find((entry) => entry.id === target.projectId);
-  const app =
-    project === undefined || target.appKey === undefined
-      ? undefined
-      : project.service.listApps().find((entry) => entry.appKey === target.appKey);
-  if (project === undefined || app === undefined || target.appKey === undefined) {
-    return undefined;
-  }
-  const directory = appDir(project, app);
-  const isolated =
-    deps.agentsHome === undefined
-      ? undefined
-      : resolveInstanceEnv(deps.agentsHome, { projectId: project.id, app: app.appKey });
-  const options: SkillApplyOptions = {
-    appRoot: isolated === undefined ? directory : path.dirname(isolated.HOME),
-    home: isolated?.HOME ?? path.join(directory, ".hanse-no-home"),
-    xdgCacheHome: isolated?.XDG_CACHE_HOME ?? path.join(directory, ".hanse-no-cache"),
-    appDir: directory,
-    ...(deps.baselinePlugins === undefined ? {} : { baselinePlugins: deps.baselinePlugins }),
-  };
-  return skills.preview(target, options);
-}
-
-function surfaceModel(
-  deps: HttpDeps,
-  skills: SkillService,
-  scope: SkillScope,
-  target: SkillTarget,
-  returnTo: string,
-): SurfaceModel {
-  const resolved = skills.resolve(target);
-  const preview = previewFor(deps, skills, scope, target);
-  return {
-    scope,
-    target,
-    resolved,
-    ...(preview === undefined ? {} : { preview }),
-    returnTo,
-  };
-}
-
-function warningsFor(
-  warnings: readonly SkillWarning[],
-  name: string,
-  codes: readonly SkillWarning["code"][],
-): SkillWarning[] {
-  return warnings.filter((warning) => warning.name === name && codes.includes(warning.code));
-}
-
-function warningText(warning: SkillWarning): string {
-  if (warning.code === "skill_collision") {
-    return `"${warning.name ?? ""}" also exists at ${warning.root ?? "another skill root"}`;
-  }
-  return `"${warning.name ?? ""}" is disabled here but also exists at ${warning.root ?? "another skill root"}`;
-}
-
-function warningList(warnings: readonly SkillWarning[]): string {
+function warningList(warnings: readonly SkillWarningProps[]): string {
   if (warnings.length === 0) {
     return "";
   }
   return warnings
     .map(
       (warning) =>
-        `<p class="field-error" role="alert">${icon("alert-triangle")}${escapeHtml(warningText(warning))}</p>`,
+        `<p class="field-error" role="alert">${icon("alert-triangle")}${escapeHtml(warning.text)}</p>`,
     )
     .join("");
 }
 
-/* ------------------------------------------------------------------------- */
-/* Stored issue rendering                                                     */
-/* ------------------------------------------------------------------------- */
-
-function issueText(issue: SkillStoredIssue): string {
-  switch (issue.code) {
-    case "invalid_skill_name":
-      return "The stored name is not a valid skill name. Names are immutable; delete and re-create the skill.";
-    case "invalid_skill_metadata":
-      return `The stored metadata is not valid JSON: ${issue.detail}`;
-    case "invalid_skill_reference":
-      return `Reference ${issue.path}: ${issue.detail}`;
-    case "invalid_skill_bundle":
-      return `The stored bundle is invalid: ${issue.detail}`;
-  }
-}
-
-function issueAnchor(issue: SkillStoredIssue): string | undefined {
-  switch (issue.code) {
-    case "invalid_skill_metadata":
-      return "#skill-metadata-raw";
-    case "invalid_skill_reference":
-      return "#skill-references";
-    case "invalid_skill_bundle":
-      return "#skill-details";
-    case "invalid_skill_name":
-      return undefined;
-  }
-}
-
-function issueList(issues: readonly SkillStoredIssue[], owned: boolean): string {
+function issueList(issues: readonly SkillIssueProps[]): string {
   if (issues.length === 0) {
     return "";
   }
   const items = issues
     .map((issue) => {
-      const anchor = owned ? issueAnchor(issue) : undefined;
       const link =
-        anchor === undefined ? "" : ` <a class="small" href="${escapeHtml(anchor)}">Repair</a>`;
-      return `<li>${escapeHtml(issueText(issue))}${link}</li>`;
+        issue.anchor === null
+          ? ""
+          : ` <a class="small" href="${escapeHtml(issue.anchor)}">Repair</a>`;
+      return `<li>${escapeHtml(issue.message)}${link}</li>`;
     })
     .join("");
   return `<section class="settings-warning" role="alert" data-skill-issues>
@@ -665,11 +399,11 @@ function issueList(issues: readonly SkillStoredIssue[], owned: boolean): string 
   </section>`;
 }
 
-function issueGlyph(issues: readonly SkillStoredIssue[]): string {
+function issueGlyph(issues: readonly SkillIssueProps[]): string {
   if (issues.length === 0) {
     return "";
   }
-  return `<span class="status" data-state="failed" title="${escapeHtml(issueText(issues[0] as SkillStoredIssue))}">${icon("alert-triangle")}<span class="sr-only">Invalid</span></span>`;
+  return `<span class="status" data-state="failed" title="${escapeHtml((issues[0] as SkillIssueProps).message)}">${icon("alert-triangle")}<span class="sr-only">Invalid</span></span>`;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -716,222 +450,15 @@ function navProjects(site: SiteModel): Array<{ id: string; name: string; appCoun
   }));
 }
 
-function pageEntities(
-  site: SiteModel,
-  scope: SkillScope,
-  target: SkillTarget,
-): { project?: ProjectView; app?: RegisteredApp } | undefined {
-  if (scope === "global") {
-    return {};
-  }
-  const project =
-    target.projectId === undefined
-      ? undefined
-      : site.projects.find((entry) => entry.id === target.projectId);
-  if (project === undefined) {
-    return undefined;
-  }
-  if (scope === "project") {
-    return { project };
-  }
-  const app = project.apps.find((entry) => entry.appKey === target.appKey);
-  if (app === undefined) {
-    return undefined;
-  }
-  return { project, app };
-}
-
-function pendingApps(
-  site: SiteModel,
-  scope: SkillScope,
-  target: SkillTarget,
-): Array<{ projectId: string; appKey: string }> {
-  const entries: Array<{ projectId: string; appKey: string }> = [];
-  for (const project of site.projects) {
-    if (scope !== "global" && project.id !== target.projectId) {
-      continue;
-    }
-    for (const app of project.apps) {
-      if (scope === "app" && app.appKey !== target.appKey) {
-        continue;
-      }
-      if (site.pendingRestart.get(app.id) === true) {
-        entries.push({ projectId: project.id, appKey: app.appKey });
-      }
-    }
-  }
-  return entries;
-}
-
 /* ------------------------------------------------------------------------- */
 /* Inventory                                                                  */
 /* ------------------------------------------------------------------------- */
-
-type InventoryState = "enabled" | "inherited" | "disabled" | "invalid";
-type InventoryFilter = "all" | "defined" | "inherited" | "disabled" | "invalid";
-
-interface InventoryRow {
-  id: number;
-  name: string;
-  description: string;
-  scope: SkillScope;
-  state: InventoryState;
-  stateLabel: string;
-  originScope: SkillScope;
-  originText: string;
-  references: number;
-  updatedAt: string;
-  issues: SkillStoredIssue[];
-  collisions: SkillWarning[];
-  repairId?: number;
-  effectiveId?: number;
-  effectiveScope?: SkillScope;
-}
-
-function parseInventoryFilter(value: string | undefined): InventoryFilter {
-  if (value === "defined" || value === "inherited" || value === "disabled" || value === "invalid") {
-    return value;
-  }
-  return "all";
-}
-
-function buildInventoryRows(
-  model: SurfaceModel,
-  warnings: readonly SkillWarning[],
-): InventoryRow[] {
-  const effectiveByName = new Map<string, EffectiveSkill>();
-  for (const skill of model.resolved.effective) {
-    effectiveByName.set(skill.name, skill);
-  }
-  const scopedByName = new Map<string, SkillSummary>();
-  for (const row of model.resolved.rows) {
-    scopedByName.set(row.name, row);
-  }
-  const disabledByName = new Map(model.resolved.disabled.map((entry) => [entry.name, entry]));
-  const names = new Set<string>([...effectiveByName.keys(), ...scopedByName.keys()]);
-  const rows: InventoryRow[] = [];
-  for (const name of [...names].sort((left, right) => (left < right ? -1 : left > right ? 1 : 0))) {
-    const scoped = scopedByName.get(name);
-    const effective = effectiveByName.get(name);
-    if (scoped === undefined && effective === undefined) {
-      continue;
-    }
-    const collisions = warningsFor(warnings, name, ["skill_collision", "skill_disabled_elsewhere"]);
-    const base = scoped ?? effective;
-    if (base === undefined) {
-      continue;
-    }
-    let state: InventoryState;
-    let stateLabel: string;
-    let originScope: SkillScope;
-    let originText: string;
-    let repairId: number | undefined;
-    let effectiveId: number | undefined;
-    let effectiveScope: SkillScope | undefined;
-    if (scoped !== undefined) {
-      if (scoped.storedIssues.length > 0) {
-        state = "invalid";
-        const invalidName = scoped.storedIssues.some(
-          (issue) => issue.code === "invalid_skill_name",
-        );
-        if (effective !== undefined && effective.id !== scoped.id) {
-          stateLabel = invalidName ? "Invalid here" : "Invalid local override";
-          effectiveId = effective.id;
-          effectiveScope = effective.source;
-          originScope = effective.source;
-          originText = `Effective source: ${scopeLabel(effective.source)}`;
-        } else {
-          stateLabel = "Invalid here";
-          originScope = scoped.scope;
-          originText = "Defined here";
-        }
-        repairId = scoped.id;
-      } else if (!scoped.enabled) {
-        const disabled = disabledByName.get(name);
-        state = "disabled";
-        stateLabel = "Disabled here";
-        originScope = disabled?.source ?? scoped.scope;
-        originText =
-          disabled?.source === null || disabled?.source === undefined
-            ? "Hidden at this scope"
-            : `Inherited from ${scopeLabel(disabled.source)}`;
-      } else {
-        state = "enabled";
-        stateLabel = "Enabled here";
-        originScope = scoped.scope;
-        originText =
-          effective === undefined || effective.shadows.length === 0
-            ? "Defined here"
-            : `Overrides ${effective.shadows.map(scopeLabel).join(", ")}`;
-      }
-      rows.push({
-        id: scoped.id,
-        name,
-        description: scoped.description,
-        scope: scoped.scope,
-        state,
-        stateLabel,
-        originScope,
-        originText,
-        references: scoped.references.length,
-        updatedAt: scoped.updatedAt,
-        issues: scoped.storedIssues,
-        collisions,
-        ...(repairId === undefined ? {} : { repairId }),
-        ...(effectiveId === undefined ? {} : { effectiveId }),
-        ...(effectiveScope === undefined ? {} : { effectiveScope }),
-      });
-      continue;
-    }
-    if (effective === undefined) {
-      continue;
-    }
-    rows.push({
-      id: effective.id,
-      name,
-      description: effective.description,
-      scope: effective.source,
-      state: "inherited",
-      stateLabel: "Inherited",
-      originScope: effective.source,
-      originText: `Inherited from ${scopeLabel(effective.source)}`,
-      references: effective.references.length,
-      updatedAt: effective.updatedAt,
-      issues: [],
-      collisions,
-    });
-  }
-  return rows;
-}
-
-function inventoryMatchesFilter(row: InventoryRow, filter: InventoryFilter): boolean {
-  switch (filter) {
-    case "all":
-      return true;
-    case "defined":
-      return row.state !== "inherited";
-    case "inherited":
-      return row.state === "inherited";
-    case "disabled":
-      return row.state === "disabled";
-    case "invalid":
-      return row.state === "invalid";
-  }
-}
-
-function inventoryMatchesSearch(row: InventoryRow, query: string): boolean {
-  if (query.length === 0) {
-    return true;
-  }
-  const needle = query.toLowerCase();
-  return row.name.toLowerCase().includes(needle) || row.description.toLowerCase().includes(needle);
-}
 
 function scopeBadge(scope: SkillScope): string {
   return `<span class="badge">${escapeHtml(scopeLabel(scope))}</span>`;
 }
 
-function stateBadge(row: InventoryRow): string {
+function stateBadge(row: SkillsInventoryProps["rows"][number]): string {
   const tone =
     row.state === "enabled"
       ? "badge-success"
@@ -943,89 +470,54 @@ function stateBadge(row: InventoryRow): string {
   return `<span class="badge ${tone}">${escapeHtml(row.stateLabel)}</span>`;
 }
 
-function scopeNav(scope: SkillScope, target: SkillTarget): string {
-  const projectHref =
-    target.projectId === undefined
-      ? undefined
-      : `/projects/${encodeURIComponent(target.projectId)}/skills`;
-  const appHref =
-    target.projectId === undefined || target.appKey === undefined
-      ? undefined
-      : `/projects/${encodeURIComponent(target.projectId)}/apps/${encodeURIComponent(target.appKey)}/skills`;
+function scopeNav(scope: SkillsInventoryProps["scope"]): string {
   const current = (label: string, short?: string): string =>
     short === undefined
       ? `<span class="settings-nav__link" aria-current="page">${icon("check")}${escapeHtml(label)}</span>`
       : `<span class="settings-nav__link" aria-current="page">${icon("check")}<span class="settings-nav__scope-full">${escapeHtml(label)}</span><span class="settings-nav__scope-short">${escapeHtml(short)}</span></span>`;
-  const scopes = [
-    scope === "global"
-      ? current("Global")
-      : '<a class="settings-nav__link" href="/skills">Global</a>',
-    projectHref === undefined
-      ? ""
-      : scope === "project"
-        ? current("Project")
-        : `<a class="settings-nav__link" href="${escapeHtml(projectHref)}">Project</a>`,
-    appHref === undefined
-      ? ""
-      : scope === "app"
-        ? current("Application", "App")
-        : `<a class="settings-nav__link" href="${escapeHtml(appHref)}">Application</a>`,
-  ].join("");
-  return `<nav class="settings-nav" aria-label="Skills">
-    <div class="settings-nav__scopes" role="group" aria-label="Skills scope">${scopes}</div>
+  const scopes = scope.options
+    .map((option) => {
+      if (option.current) {
+        return current(option.label, option.shortLabel ?? undefined);
+      }
+      return option.href === null
+        ? ""
+        : `<a class="settings-nav__link" href="${escapeHtml(option.href)}">${escapeHtml(option.label)}</a>`;
+    })
+    .join("");
+  return `<nav class="settings-nav" aria-label="${escapeHtml(scope.nav.ariaLabel)}">
+    <div class="settings-nav__scopes" role="group" aria-label="${escapeHtml(scope.nav.groupLabel)}">${scopes}</div>
   </nav>`;
 }
 
-function inventoryToolbar(model: SurfaceModel, filter: InventoryFilter, search: string): string {
-  const pagePath = skillsPagePath(model.scope, model.target);
-  const filterHref = (value: InventoryFilter): string => {
-    const params = new URLSearchParams();
-    if (value !== "all") {
-      params.set("filter", value);
-    }
-    if (search.length > 0) {
-      params.set("q", search);
-    }
-    const query = params.toString();
-    return query.length === 0 ? pagePath : `${pagePath}?${query}`;
-  };
-  const filters: Array<{ value: InventoryFilter; label: string }> = [
-    { value: "all", label: "All" },
-    { value: "defined", label: "Defined here" },
-    { value: "inherited", label: "Inherited" },
-    { value: "disabled", label: "Disabled" },
-    { value: "invalid", label: "Invalid" },
-  ];
+function inventoryToolbar(props: SkillsInventoryProps): string {
+  const filter = props.filter;
+  const search = props.search;
   return `<div class="toolbar skill-toolbar" data-skill-inventory-toolbar>
-    <form method="get" action="${escapeHtml(pagePath)}" role="search" class="cluster">
+    <form method="get" action="${escapeHtml(search.action)}" role="search" class="cluster">
       <label class="sr-only" for="skill-search">Search skills</label>
-      ${filter === "all" ? "" : `<input type="hidden" name="filter" value="${escapeHtml(filter)}" />`}
-      <input class="input search-input" id="skill-search" type="search" name="q" value="${escapeHtml(search)}" placeholder="Search skills" autocomplete="off" />
+      ${search.hiddenFilter === null ? "" : `<input type="hidden" name="filter" value="${escapeHtml(search.hiddenFilter)}" />`}
+      <input class="input search-input" id="skill-search" type="search" name="q" value="${escapeHtml(search.query)}" placeholder="Search skills" autocomplete="off" />
       <button class="btn btn-secondary" type="submit">${icon("search")}Search</button>
     </form>
     <div class="segmented" role="group" aria-label="Filter skills">
-      ${filters
+      ${props.filters
         .map(
           (entry) =>
-            `<a class="segmented__item" href="${escapeHtml(filterHref(entry.value))}"${entry.value === filter ? ' aria-current="page"' : ""}>${escapeHtml(entry.label)}</a>`,
+            `<a class="segmented__item" href="${escapeHtml(entry.href)}"${entry.value === filter ? ' aria-current="page"' : ""}>${escapeHtml(entry.label)}</a>`,
         )
         .join("")}
     </div>
   </div>`;
 }
 
-function inventoryTable(model: SurfaceModel, rows: readonly InventoryRow[]): string {
-  const from = encodeURIComponent(skillsPagePath(model.scope, model.target));
-  const body = rows
+function inventoryTable(props: SkillsInventoryProps): string {
+  const body = props.rows
     .map((row) => {
-      const primaryId = row.repairId ?? row.effectiveId ?? row.id;
-      const href = `/skills/${primaryId}?from=${from}`;
-      const effectiveHref =
-        row.effectiveId === undefined ? undefined : `/skills/${row.effectiveId}?from=${from}`;
       const secondary =
-        effectiveHref === undefined
+        row.effectiveHref === null
           ? ""
-          : `<a class="small" href="${escapeHtml(effectiveHref)}" data-skill-effective-link>Open effective source</a>`;
+          : `<a class="small" href="${escapeHtml(row.effectiveHref)}" data-skill-effective-link>Open effective source</a>`;
       const updated = `<span class="mono" title="${escapeHtml(row.updatedAt)}">${escapeHtml(absoluteTime(row.updatedAt))}</span>`;
       const references =
         row.references === 0
@@ -1033,15 +525,15 @@ function inventoryTable(model: SurfaceModel, rows: readonly InventoryRow[]): str
           : `<span class="mono">${row.references}</span>`;
       return `<tr data-skill-name="${escapeHtml(row.name)}" data-skill-state="${row.state}" data-skill-state-label="${escapeHtml(row.stateLabel)}">
         <td class="table__primary" data-label="Skill">
-          <a class="mono" href="${escapeHtml(href)}">${escapeHtml(row.name)}</a>
+          <a class="mono" href="${escapeHtml(row.href)}">${escapeHtml(row.name)}</a>
           <p class="small">${escapeHtml(row.description)}</p>
           ${secondary}
         </td>
         <td data-label="Origin"><span class="cluster">${scopeBadge(row.originScope)}<span class="small">${escapeHtml(row.originText)}</span></span></td>
-        <td data-label="State"><span class="cluster">${stateBadge(row)}${issueGlyph(row.issues)}${row.collisions.length === 0 ? "" : `<span class="status" data-state="awaiting_approval" title="${escapeHtml(warningText(row.collisions[0] as SkillWarning))}">${icon("alert-triangle")}<span class="sr-only">Collision</span></span>`}</span></td>
+        <td data-label="State"><span class="cluster">${stateBadge(row)}${issueGlyph(row.issues)}${row.collisions.length === 0 ? "" : `<span class="status" data-state="awaiting_approval" title="${escapeHtml((row.collisions[0] as SkillWarningProps).text)}">${icon("alert-triangle")}<span class="sr-only">Collision</span></span>`}</span></td>
         <td data-label="References">${references}</td>
         <td data-label="Updated">${updated}</td>
-        <td class="table__actions"><a class="btn btn-ghost btn-icon" href="${escapeHtml(href)}" aria-label="Open ${escapeHtml(row.name)}">${icon("chevron-right")}</a></td>
+        <td class="table__actions"><a class="btn btn-ghost btn-icon" href="${escapeHtml(row.href)}" aria-label="${escapeHtml(row.actionLabel)}">${icon("chevron-right")}</a></td>
       </tr>`;
     })
     .join("");
@@ -1055,46 +547,26 @@ function inventoryTable(model: SurfaceModel, rows: readonly InventoryRow[]): str
   </div>`;
 }
 
-function inventoryEmptyState(options: {
-  model: SurfaceModel;
-  allEmpty: boolean;
-  search: string;
-}): string {
-  const createHref = createPagePath(options.model.scope, options.model.target);
-  const pagePath = skillsPagePath(options.model.scope, options.model.target);
-  if (options.allEmpty) {
-    return emptyState({
-      iconName: "code",
-      title: "No skills here yet",
-      body: "A skill is a reusable procedure an agent loads at start. Create the first skill at this scope, or inherit one from a wider scope.",
-      action: `<a class="btn btn-primary" href="${escapeHtml(createHref)}">${icon("plus")}Create the first skill</a>`,
-    });
+function inventoryEmptyState(empty: SkillsInventoryProps["empty"]): string {
+  if (empty === null) {
+    return "";
   }
-  if (options.search.length > 0) {
-    return emptyState({
-      iconName: "search",
-      title: "No skills match your search",
-      body: `Nothing matches “${options.search}” at this scope.`,
-      action: `<a class="btn btn-secondary" href="${escapeHtml(pagePath)}">Clear search</a>`,
-    });
-  }
+  const action =
+    empty.actionIcon === null
+      ? `<a class="btn btn-${empty.actionStyle}" href="${escapeHtml(empty.actionHref)}">${escapeHtml(empty.actionLabel)}</a>`
+      : `<a class="btn btn-${empty.actionStyle}" href="${escapeHtml(empty.actionHref)}">${icon(empty.actionIcon)}${escapeHtml(empty.actionLabel)}</a>`;
   return emptyState({
-    iconName: "inbox",
-    title: "No skills match this filter",
-    body: "Try another filter to see the skills at this scope.",
-    action: `<a class="btn btn-secondary" href="${escapeHtml(pagePath)}">Show all skills</a>`,
+    iconName: empty.iconName,
+    title: empty.title,
+    body: empty.body,
+    action,
   });
 }
 
-function inventoryRail(
-  model: SurfaceModel,
-  site: SiteModel,
-  rows: readonly InventoryRow[],
-): string {
-  const pending = pendingApps(site, model.scope, model.target);
-  const warnings = model.preview?.warnings ?? [];
+function inventoryRail(props: SkillsInventoryProps): string {
+  const warnings = props.warnings;
   const collisionSection =
-    warnings.length === 0 && model.preview?.truncated === undefined
+    warnings.length === 0 && props.truncated === null
       ? ""
       : `<section class="card" aria-labelledby="skills-collisions-title">
           <div class="card__head">
@@ -1103,26 +575,26 @@ function inventoryRail(
           </div>
           <div class="card__body stack--tight">
             ${warningList(warnings)}
-            ${model.preview?.truncated === undefined ? "" : `<p class="hint">${model.preview.truncated} more collision warnings omitted.</p>`}
+            ${props.truncated === null ? "" : `<p class="hint">${props.truncated} more collision warnings omitted.</p>`}
           </div>
         </section>`;
   const pendingSection =
-    pending.length === 0
+    props.pending.length === 0
       ? ""
       : `<section class="card" aria-labelledby="skills-restart-title" data-skill-restart-rail>
           <div class="card__head">
             <h2 class="card__title" id="skills-restart-title">Restart required</h2>
-            <span class="badge">${pending.length}</span>
+            <span class="badge">${props.pending.length}</span>
           </div>
           <div class="card__body stack--tight">
             <p class="hint">Skills changed. A restart applies the effective set; it is never automatic.</p>
-            ${pending
+            ${props.pending
               .map(
                 (entry) => `<div class="cluster">
-                  <a class="small" href="/projects/${encodeURIComponent(entry.projectId)}/apps/${encodeURIComponent(entry.appKey)}">${escapeHtml(entry.appKey)}</a>
+                  <a class="small" href="${escapeHtml(entry.href)}">${escapeHtml(entry.appKey)}</a>
                   <span class="status" data-state="awaiting_approval">${icon("stamp")}Restart required</span>
-                  <form method="post" action="/api/apps/${encodeURIComponent(entry.appKey)}/restart?project=${encodeURIComponent(entry.projectId)}">
-                    <input type="hidden" name="return_to" value="${escapeHtml(skillsPagePath(model.scope, model.target))}" />
+                  <form method="post" action="${escapeHtml(entry.restartAction)}">
+                    <input type="hidden" name="return_to" value="${escapeHtml(entry.returnTo)}" />
                     <button class="btn btn-primary btn-sm" type="submit">${icon("refresh")}Restart agent</button>
                   </form>
                 </div>`,
@@ -1130,12 +602,6 @@ function inventoryRail(
               .join("")}
           </div>
         </section>`;
-  const counts = {
-    enabled: rows.filter((row) => row.state === "enabled").length,
-    inherited: rows.filter((row) => row.state === "inherited").length,
-    disabled: rows.filter((row) => row.state === "disabled").length,
-    invalid: rows.filter((row) => row.state === "invalid").length,
-  };
   return `<aside class="rail-stack" aria-label="Skills information">
     <section class="card" aria-labelledby="skills-scope-title">
       <div class="card__head"><h2 class="card__title" id="skills-scope-title">Scope &amp; inheritance</h2></div>
@@ -1149,8 +615,8 @@ function inventoryRail(
     <section class="card" aria-labelledby="skills-count-title">
       <div class="card__head"><h2 class="card__title" id="skills-count-title">Summary</h2></div>
       <div class="card__body stack--tight">
-        <p class="mono">${counts.enabled} enabled &middot; ${counts.inherited} inherited</p>
-        <p class="mono">${counts.disabled} disabled &middot; ${counts.invalid} invalid</p>
+        <p class="mono">${props.counts.enabled} enabled &middot; ${props.counts.inherited} inherited</p>
+        <p class="mono">${props.counts.disabled} disabled &middot; ${props.counts.invalid} invalid</p>
         <p class="hint">Counts are Hanse-effective at this scope, not every skill on disk.</p>
       </div>
     </section>
@@ -1161,109 +627,44 @@ function inventoryRail(
 function renderInventoryPage(options: {
   site: SiteModel;
   chrome: PageChrome;
-  model: SurfaceModel;
-  project?: ProjectView;
-  app?: RegisteredApp;
-  filter: InventoryFilter;
-  search: string;
+  props: SkillsInventoryProps;
 }): string {
-  const { model } = options;
-  const project = options.project;
-  const app = options.app;
-  const warnings = model.preview?.warnings ?? model.resolved.warnings;
-  const allRows = buildInventoryRows(model, warnings);
-  const rows = allRows
-    .filter((row) => inventoryMatchesFilter(row, options.filter))
-    .filter((row) => inventoryMatchesSearch(row, options.search));
-  const description =
-    model.scope === "global"
-      ? "Reusable procedures every application can load. Project and application scopes can override or disable them."
-      : model.scope === "project"
-        ? `Skills for ${project?.name ?? ""}. Application scopes can override or disable them.`
-        : `Skills for ${app?.appKey ?? ""}. This is the narrowest scope.`;
-  const breadcrumb =
-    model.scope === "global"
-      ? [{ label: "Workbench", href: "/" }, { label: "Skills" }]
-      : model.scope === "project"
-        ? [
-            { label: "Projects", href: "/projects" },
-            {
-              label: project?.name ?? "",
-              href: `/projects/${encodeURIComponent(project?.id ?? "")}`,
-            },
-            { label: "Skills" },
-          ]
-        : [
-            { label: "Projects", href: "/projects" },
-            {
-              label: project?.name ?? "",
-              href: `/projects/${encodeURIComponent(project?.id ?? "")}`,
-            },
-            {
-              label: app?.appKey ?? "",
-              href: `/projects/${encodeURIComponent(project?.id ?? "")}/apps/${encodeURIComponent(app?.appKey ?? "")}`,
-            },
-            { label: "Skills" },
-          ];
+  const props = options.props;
   const header = pageHeader({
-    overline: scopeLabel(model.scope),
-    title: "Skills",
-    description,
-    meta: [
-      ...(model.scope === "global" ? [] : [project?.name ?? ""]),
-      ...(model.scope === "app" ? [app?.appKey ?? ""] : []),
-    ].filter((entry) => entry.length > 0),
-    actions: `<a class="btn btn-primary" href="${escapeHtml(createPagePath(model.scope, model.target))}">${icon("plus")}New skill</a>`,
+    overline: props.overline,
+    title: props.title,
+    description: props.description,
+    meta: [...props.meta],
+    actions: `<a class="btn btn-primary" href="${escapeHtml(props.createHref)}">${icon("plus")}${escapeHtml(props.createLabel)}</a>`,
   });
-  const content =
-    allRows.length === 0
-      ? inventoryEmptyState({ model, allEmpty: true, search: options.search })
-      : rows.length === 0
-        ? inventoryEmptyState({ model, allEmpty: false, search: options.search })
-        : inventoryTable(model, rows);
-  const body = `${scopeNav(model.scope, model.target)}
+  const content = props.empty === null ? inventoryTable(props) : inventoryEmptyState(props.empty);
+  const body = `${scopeNav(props.scope)}
     <div class="workbench-grid section">
       <div class="stack">
-        ${inventoryToolbar(model, options.filter, options.search)}
-        <p class="hint" data-skill-count>${rows.length} of ${allRows.length} skills at this scope</p>
+        ${inventoryToolbar(props)}
+        <p class="hint" data-skill-count>${props.matchedCount} of ${props.allCount} skills at this scope</p>
         ${content}
       </div>
-      ${inventoryRail(model, options.site, allRows)}
+      ${inventoryRail(props)}
     </div>`;
   return appShell({
-    title: "Skills",
+    title: props.title,
     active: "skills",
-    activeProjectId: project?.id,
-    breadcrumb,
+    ...(props.scope.projectId === null ? {} : { activeProjectId: props.scope.projectId }),
+    breadcrumb: [...props.breadcrumb],
     projects: navProjects(options.site),
     pendingCount: options.site.pendingCount,
     operatorName: options.chrome.operatorName,
     notice: options.chrome.notice,
     header,
     body,
-    skillsHref: skillsPagePath(model.scope, model.target),
+    skillsHref: props.scope.href,
   });
 }
 
 /* ------------------------------------------------------------------------- */
 /* Workspace models                                                           */
 /* ------------------------------------------------------------------------- */
-
-interface BundleValues {
-  license: string | null;
-  compatibility: string | null;
-  metadata: SkillMetadata;
-  metadataRaw: string | null;
-  references: SkillReference[];
-}
-
-interface WorkspaceValues {
-  name?: string;
-  description: string;
-  content: string;
-  enabled: boolean;
-  bundle: BundleValues;
-}
 
 interface ParsedBundle {
   license?: string | null;
@@ -1287,19 +688,6 @@ function detailOf(row: SkillRow): Record<string, unknown> {
         size: Buffer.byteLength(content, "utf8"),
       };
     }),
-  };
-}
-
-function bundleFromRow(row: SkillRow): BundleValues {
-  return {
-    license: row.license,
-    compatibility: row.compatibility,
-    metadata: row.metadata,
-    metadataRaw: row.metadataRaw,
-    references: row.references.map((reference) => ({
-      path: reference.path,
-      content: reference.content,
-    })),
   };
 }
 
@@ -1491,330 +879,21 @@ function updatePatch(payload: Record<string, unknown>, parsed: ParsedBundle): Sk
   return patch;
 }
 
-type WorkspaceStateName =
-  | "editable"
-  | "tombstone"
-  | "invalid-owned"
-  | "invalid-owned-name"
-  | "inherited"
-  | "shadowed"
-  | "hidden"
-  | "invalid-context"
-  | "not-effective";
-
-interface WorkspaceState {
-  name: WorkspaceStateName;
-  contextScope: SkillScope;
-  contextTarget: SkillTarget;
-  resolved: ResolvedSkills;
-  scoped?: SkillSummary;
-  effective?: EffectiveSkill;
-  editable: boolean;
-}
-
-function stateLabelFor(name: WorkspaceStateName): string {
-  switch (name) {
-    case "editable":
-      return "Enabled here";
-    case "tombstone":
-      return "Disabled here";
-    case "invalid-owned":
-      return "Invalid here";
-    case "invalid-owned-name":
-      return "Invalid here";
-    case "inherited":
-      return "Inherited";
-    case "shadowed":
-      return "Shadowed";
-    case "hidden":
-      return "Hidden at this context";
-    case "invalid-context":
-      return "Invalid here";
-    case "not-effective":
-      return "Not effective here";
-  }
-}
-
-function stateNote(state: WorkspaceState, row: SkillRow): string {
-  switch (state.name) {
-    case "editable":
-      return "Defined at this scope. Saving changes applies to this row only.";
-    case "tombstone":
-      return "This tombstone hides the wider skill. Enable it and save to restore the inherited body, or revert below.";
-    case "invalid-owned":
-      return "This row is invalid and is not effective. Repair the issues above and save.";
-    case "invalid-owned-name":
-      return "The stored name is invalid, so this row cannot be repaired in place. Delete and re-create it with a valid name.";
-    case "inherited":
-      return `Inherited from ${scopeLabel(row.scope)}. Override here to edit a copy at this context.`;
-    case "shadowed":
-      return "A different row is the effective winner at this context. Edit that row or open it to inspect the effective source.";
-    case "hidden":
-      return "A tombstone at this context hides this wider skill.";
-    case "invalid-context":
-      return "A row at this context is invalid and is being repaired there. This wider source is read-only here.";
-    case "not-effective":
-      return "This row is disabled or invalid and is not effective at this context.";
-  }
-}
-
-function parseScopePath(
-  value: string | undefined,
-): { scope: SkillScope; target: SkillTarget } | undefined {
-  if (value === undefined || value.trim().length === 0) {
-    return undefined;
-  }
-  const withoutHash = value.split("#")[0] ?? "";
-  const pathname = withoutHash.split("?")[0] ?? "";
-  if (!pathname.startsWith("/") || pathname.startsWith("//") || pathname.includes("\\")) {
-    return undefined;
-  }
-  return skillsPageFor(pathname);
-}
-
-function viewContext(
-  deps: HttpDeps,
-  from: string | undefined,
-  row: SkillRow,
-): { scope: SkillScope; target: SkillTarget; page: string } {
-  const own = { scope: row.scope, target: rowTarget(row) };
-  const parsed = parseScopePath(from);
-  if (parsed !== undefined && targetExists(deps, parsed.scope, parsed.target)) {
-    if (scopeRank(parsed.scope) >= scopeRank(row.scope)) {
-      return { ...parsed, page: skillsPagePath(parsed.scope, parsed.target) };
-    }
-  }
-  return { ...own, page: skillsPagePath(own.scope, own.target) };
-}
-
-function workspaceState(
-  skills: SkillService,
-  row: SkillRow,
-  context: { scope: SkillScope; target: SkillTarget },
-): WorkspaceState {
-  if (row.scope === context.scope && sameTarget(row.scope, rowTarget(row), context.target)) {
-    const editableName = row.storedIssues.some((issue) => issue.code === "invalid_skill_name");
-    const invalid = row.storedIssues.length > 0;
-    const name: WorkspaceStateName = invalid
-      ? editableName
-        ? "invalid-owned-name"
-        : "invalid-owned"
-      : row.enabled
-        ? "editable"
-        : "tombstone";
-    return {
-      name,
-      contextScope: context.scope,
-      contextTarget: context.target,
-      resolved: skills.resolve(context.target),
-      editable: !editableName,
-    };
-  }
-  const resolved = skills.resolve(context.target);
-  const scoped = resolved.rows.find((entry) => entry.name === row.name && entry.id !== row.id);
-  const effective = resolved.effective.find((entry) => entry.name === row.name);
-  let name: WorkspaceStateName;
-  if (scoped !== undefined) {
-    if (scoped.storedIssues.length > 0) {
-      name = "invalid-context";
-    } else if (!scoped.enabled) {
-      name = "hidden";
-    } else if (effective !== undefined && effective.id === scoped.id) {
-      name = "shadowed";
-    } else {
-      name = "invalid-context";
-    }
-  } else if (effective !== undefined && effective.id === row.id) {
-    name = "inherited";
-  } else if (effective !== undefined) {
-    name = "shadowed";
-  } else {
-    name = "not-effective";
-  }
-  return {
-    name,
-    contextScope: context.scope,
-    contextTarget: context.target,
-    resolved,
-    ...(scoped === undefined ? {} : { scoped }),
-    ...(effective === undefined ? {} : { effective }),
-    editable: false,
-  };
-}
-
 /* ------------------------------------------------------------------------- */
 /* Workspace rendering                                                        */
 /* ------------------------------------------------------------------------- */
 
-function scopeStrip(state: WorkspaceState, row: SkillRow): string {
-  const { contextTarget } = state;
-  const projectHref =
-    contextTarget.projectId === undefined
-      ? undefined
-      : `/projects/${encodeURIComponent(contextTarget.projectId)}/skills`;
-  const appHref =
-    contextTarget.projectId === undefined || contextTarget.appKey === undefined
-      ? undefined
-      : `/projects/${encodeURIComponent(contextTarget.projectId)}/apps/${encodeURIComponent(contextTarget.appKey)}/skills`;
-  const current = (scope: SkillScope, label: string): string =>
-    scope === state.contextScope
-      ? `<span class="settings-nav__link" aria-current="page">${icon("check")}${escapeHtml(label)}</span>`
-      : `<span class="settings-nav__link">${escapeHtml(label)}</span>`;
-  return `<nav class="settings-nav skill-scope-strip" aria-label="Viewing scope" data-skill-scope-strip>
-    <div class="settings-nav__scopes" role="group" aria-label="Skill scope">
-      ${current("global", "Global")}
-      ${projectHref === undefined ? "" : current("project", "Project")}
-      ${appHref === undefined ? "" : current("app", "Application")}
-    </div>
-    <p class="hint">Source: <strong class="mono">${escapeHtml(scopeLabel(row.scope))}</strong> &middot; ${escapeHtml(stateNote(state, row))}</p>
-  </nav>`;
-}
-
-function scopeBreadcrumb(
-  site: SiteModel,
-  state: WorkspaceState,
-  row: SkillRow,
-): Array<{ label: string; href?: string }> {
-  const project =
-    state.contextTarget.projectId === undefined
-      ? undefined
-      : site.projects.find((entry) => entry.id === state.contextTarget.projectId);
-  const app =
-    project === undefined
-      ? undefined
-      : project.apps.find((entry) => entry.appKey === state.contextTarget.appKey);
-  const scopePage = skillsPagePath(state.contextScope, state.contextTarget);
-  if (state.contextScope === "global") {
-    return [
-      { label: "Workbench", href: "/" },
-      { label: "Skills", href: scopePage },
-      { label: row.name },
-    ];
-  }
-  if (state.contextScope === "project") {
-    return [
-      { label: "Projects", href: "/projects" },
-      {
-        label: project?.name ?? "",
-        href: `/projects/${encodeURIComponent(project?.id ?? "")}`,
-      },
-      { label: "Skills", href: scopePage },
-      { label: row.name },
-    ];
-  }
-  return [
-    { label: "Projects", href: "/projects" },
-    {
-      label: project?.name ?? "",
-      href: `/projects/${encodeURIComponent(project?.id ?? "")}`,
-    },
-    {
-      label: app?.appKey ?? "",
-      href: `/projects/${encodeURIComponent(project?.id ?? "")}/apps/${encodeURIComponent(app?.appKey ?? "")}`,
-    },
-    { label: "Skills", href: scopePage },
-    { label: row.name },
-  ];
-}
-
-function restartBanner(state: WorkspaceState, site: SiteModel, row: SkillRow): string {
-  const pending = pendingApps(site, state.contextScope, state.contextTarget);
-  const effectiveHere =
-    state.name === "editable" || state.name === "tombstone" || state.name === "inherited";
-  if (!effectiveHere) {
-    return `<p class="hint" data-skill-restart-banner="none">${icon("check")}This change does not affect a running agent; no restart is needed.</p>`;
-  }
-  if (pending.length === 0) {
-    return "";
-  }
-  return `<section class="settings-warning" role="status" data-skill-restart-banner>
-    <p class="settings-warning__title">${icon("refresh")}Restart required</p>
-    <p class="small">The effective skill set changed. Restart an agent to apply it; Hanse never restarts automatically.</p>
-    ${pending
-      .map(
-        (entry) => `<div class="cluster">
-          <a class="small" href="/projects/${encodeURIComponent(entry.projectId)}/apps/${encodeURIComponent(entry.appKey)}">${escapeHtml(entry.appKey)}</a>
-          <form method="post" action="/api/apps/${encodeURIComponent(entry.appKey)}/restart?project=${encodeURIComponent(entry.projectId)}">
-            <input type="hidden" name="return_to" value="${escapeHtml(workspacePath(row))}" />
-            <button class="btn btn-primary btn-sm" type="submit">${icon("refresh")}Restart agent</button>
-          </form>
-        </div>`,
-      )
-      .join("")}
-  </section>`;
-}
-
-function workspaceActions(state: WorkspaceState, row: SkillRow, sourcePage: string): string {
-  switch (state.name) {
-    case "inherited": {
-      const targetFields = hiddenTargetFields(state.contextScope, state.contextTarget, sourcePage);
-      return `<div class="cluster skill-page-actions" data-skill-actions>
-        <form method="post" action="/api/skills" data-skill-override data-skill-confirm="Create an editable copy of this skill at this context?">
-          <input type="hidden" name="action" value="override" />
-          <input type="hidden" name="from_id" value="${row.id}" />
-          <input type="hidden" name="enabled" value="1" />
-          ${targetFields}
-          <button class="btn btn-primary" type="submit">Override here</button>
-        </form>
-        <form method="post" action="/api/skills" data-skill-disable data-skill-confirm="Disable this skill at this context? A wider skill stays hidden until you revert.">
-          <input type="hidden" name="action" value="override" />
-          <input type="hidden" name="from_id" value="${row.id}" />
-          <input type="hidden" name="enabled" value="0" />
-          ${targetFields}
-          <button class="btn btn-secondary" type="submit">Disable here</button>
-        </form>
-        <a class="btn btn-ghost" href="${escapeHtml(workspacePath(row))}">Edit at source</a>
-      </div>`;
-    }
-    case "shadowed":
-      return `<div class="cluster skill-page-actions" data-skill-actions>
-        <a class="btn btn-primary" href="${escapeHtml(workspacePath(row))}">Edit at source</a>
-        ${state.effective === undefined ? "" : `<a class="btn btn-secondary" href="/skills/${state.effective.id}?from=${encodeURIComponent(sourcePage)}">Open effective source</a>`}
-      </div>`;
-    case "hidden": {
-      const tombstone = state.scoped;
-      const tombstoneLink =
-        tombstone === undefined
-          ? ""
-          : `<a class="btn btn-secondary" href="/skills/${tombstone.id}?from=${encodeURIComponent(sourcePage)}">Open tombstone</a>`;
-      const revert =
-        tombstone === undefined
-          ? ""
-          : `<form method="post" action="/api/skills/${tombstone.id}/delete" data-skill-revert data-skill-confirm="Revert this tombstone? The wider skill becomes effective here.">
-              <input type="hidden" name="return_to" value="${escapeHtml(sourcePage)}" />
-              <button class="btn btn-secondary" type="submit">Revert to inherited</button>
-            </form>`;
-      return `<div class="cluster skill-page-actions" data-skill-actions>${tombstoneLink}${revert}</div>`;
-    }
-    case "invalid-context": {
-      const scoped = state.scoped;
-      return `<div class="cluster skill-page-actions" data-skill-actions>${
-        scoped === undefined
-          ? ""
-          : `<a class="btn btn-primary" href="/skills/${scoped.id}?from=${encodeURIComponent(sourcePage)}">Open/repair at context</a>`
-      }</div>`;
-    }
-    case "not-effective":
-      return `<div class="cluster skill-page-actions" data-skill-actions><a class="btn btn-secondary" href="${escapeHtml(workspacePath(row))}">Open source</a></div>`;
-    case "editable":
-    case "tombstone":
-    case "invalid-owned":
-    case "invalid-owned-name":
-      return "";
-  }
-}
-
-function hiddenTargetFields(scope: SkillScope, target: SkillTarget, returnTo: string): string {
+function targetFieldsHtml(target: SkillTargetFieldsProps): string {
   const fields = [
-    `<input type="hidden" name="scope" value="${escapeHtml(scope)}" />`,
-    `<input type="hidden" name="return_to" value="${escapeHtml(returnTo)}" />`,
+    `<input type="hidden" name="scope" value="${escapeHtml(target.scope)}" />`,
+    `<input type="hidden" name="return_to" value="${escapeHtml(target.returnTo)}" />`,
   ];
-  if (scope !== "global") {
+  if (target.scope !== "global") {
     fields.push(
       `<input type="hidden" name="project" value="${escapeHtml(target.projectId ?? "")}" />`,
     );
   }
-  if (scope === "app") {
+  if (target.scope === "app") {
     fields.push(`<input type="hidden" name="app" value="${escapeHtml(target.appKey ?? "")}" />`);
   }
   return fields.join("");
@@ -1977,10 +1056,10 @@ function fieldGuide(): string {
 }
 
 function detailsCard(
-  values: WorkspaceValues,
-  row: SkillRow,
+  values: SkillWorkspaceProps["values"],
+  name: string,
   editable: boolean,
-  error: WorkspaceError | undefined,
+  error: SkillWorkspaceError | null,
   includeName: boolean,
 ): string {
   const metadata = values.bundle.metadata;
@@ -2062,7 +1141,7 @@ function detailsCard(
           includeName
             ? `<div class="field">
           <label class="label" for="skill-name">Name</label>
-          <input class="input mono" id="skill-name" type="text" value="${escapeHtml(row.name)}" readonly disabled aria-describedby="skill-name-hint" />
+          <input class="input mono" id="skill-name" type="text" value="${escapeHtml(name)}" readonly disabled aria-describedby="skill-name-hint" />
           ${fieldHint("skill-name-hint", "Names are immutable. Delete and re-create the skill to rename it.")}
         </div>`
             : ""
@@ -2150,9 +1229,9 @@ function referenceEditor(
 }
 
 function sourceWorkspace(
-  values: WorkspaceValues,
+  values: SkillWorkspaceProps["values"],
   editable: boolean,
-  error: WorkspaceError | undefined,
+  error: SkillWorkspaceError | null,
 ): string {
   const contentError = error?.field === "content" ? error.message : undefined;
   const referencesError = error?.field === "references" ? error.message : undefined;
@@ -2266,209 +1345,214 @@ function sourceWorkspace(
   </section>`;
 }
 
-function bundleSnapshot(values: WorkspaceValues, preserveInvalid: boolean): string {
-  const bundle: Record<string, unknown> = {
-    license: values.bundle.license,
-    compatibility: values.bundle.compatibility,
-    metadata: values.bundle.metadata,
-    references: values.bundle.references.map((reference) => ({
-      path: reference.path,
-      content: reference.content,
-    })),
-  };
-  if (values.bundle.metadataRaw !== null) {
-    bundle.metadataRaw = values.bundle.metadataRaw;
-  }
-  if (preserveInvalid) {
-    bundle.preserveInvalid = true;
-  }
-  return JSON.stringify(bundle);
-}
-
-function editBar(editable: boolean, mode: "update" | "create"): string {
-  if (!editable) {
-    return "";
-  }
-  const label = mode === "create" ? "Create skill" : "Save changes";
+function editBar(form: SkillFormProps): string {
   return `<div class="skill-editbar" data-skill-editbar>
     <p class="hint" data-skill-status role="status">All changes saved</p>
-    <button class="btn btn-primary" type="submit" name="action" value="${mode === "create" ? "create" : "update"}" data-skill-save>${label}</button>
-    <button class="btn btn-ghost" type="submit" name="action" value="discard" formnovalidate data-skill-discard>Discard${mode === "create" ? "" : " changes"}</button>
+    <button class="btn btn-primary" type="submit" name="action" value="${form.mode === "create" ? "create" : "update"}" data-skill-save>${escapeHtml(form.saveLabel)}</button>
+    <button class="btn btn-ghost" type="submit" name="action" value="discard" formnovalidate data-skill-discard>${escapeHtml(form.discardLabel)}</button>
   </div>`;
 }
 
-function dangerZone(
-  row: SkillRow,
-  returnTo: string,
-  editable: boolean,
-  error: WorkspaceError | undefined,
-): string {
-  if (!editable) {
-    return "";
-  }
-  const invalidName = row.storedIssues.some((issue) => issue.code === "invalid_skill_name");
-  const isTombstone = !row.enabled && !invalidName;
-  const label = invalidName
-    ? "Delete and re-create"
-    : isTombstone
-      ? "Revert to inherited"
-      : "Delete skill";
-  const explanation = invalidName
-    ? "The stored name is invalid, so this row cannot be repaired in place. Delete it and create a skill with a valid name."
-    : isTombstone
-      ? "Reverting deletes this tombstone so the wider skill becomes effective again."
-      : row.scope === "global"
-        ? "Delete this skill permanently. This cannot be undone."
-        : "Delete this row. A wider skill with the same name becomes effective here.";
+function dangerZone(danger: SkillDangerProps, error: SkillWorkspaceError | null): string {
   const mismatch = error?.field === "confirm_name" ? error.message : undefined;
   return `<section class="card skill-danger" data-skill-danger>
     <div class="card__head"><h2 class="card__title">Danger zone</h2></div>
     <div class="card__body stack">
-      <p class="small">${escapeHtml(explanation)}</p>
-      <form method="post" action="/api/skills/${row.id}/delete" data-skill-delete-form>
-        <input type="hidden" name="return_to" value="${escapeHtml(returnTo)}" />
+      <p class="small">${escapeHtml(danger.explanation)}</p>
+      <form method="post" action="${escapeHtml(danger.action)}" data-skill-delete-form>
+        <input type="hidden" name="return_to" value="${escapeHtml(danger.returnTo)}" />
         <div class="field">
           <label class="label" for="skill-confirm-name">Type the exact skill name to confirm</label>
           <input class="input mono" id="skill-confirm-name" type="text" name="confirm_name" required autocomplete="off" spellcheck="false"${mismatch === undefined ? "" : ' aria-describedby="skill-confirm-name-error"'} />
           ${fieldError("skill-confirm-name", mismatch)}
         </div>
-        <button class="btn btn-danger" type="submit">${icon("trash")}${escapeHtml(label)}</button>
+        <button class="btn btn-danger" type="submit">${icon("trash")}${escapeHtml(danger.label)}</button>
       </form>
     </div>
+  </section>`;
+}
+
+function actionLink(link: SkillActionLinkProps): string {
+  return `<a class="btn btn-${link.style}" href="${escapeHtml(link.href)}">${escapeHtml(link.label)}</a>`;
+}
+
+function actionsHtml(actions: SkillActionsProps): string {
+  const parts: string[] = [];
+  if (actions.override !== null) {
+    parts.push(`<form method="post" action="${escapeHtml(actions.override.action)}" data-skill-override data-skill-confirm="${escapeHtml(actions.override.confirm ?? "")}">
+          <input type="hidden" name="action" value="override" />
+          <input type="hidden" name="from_id" value="${actions.override.fromId ?? 0}" />
+          <input type="hidden" name="enabled" value="${actions.override.enabled ?? "1"}" />
+          ${targetFieldsHtml(actions.target)}
+          <button class="btn btn-${actions.override.style}" type="submit">${escapeHtml(actions.override.label)}</button>
+        </form>`);
+  }
+  if (actions.disable !== null) {
+    parts.push(`<form method="post" action="${escapeHtml(actions.disable.action)}" data-skill-disable data-skill-confirm="${escapeHtml(actions.disable.confirm ?? "")}">
+          <input type="hidden" name="action" value="override" />
+          <input type="hidden" name="from_id" value="${actions.disable.fromId ?? 0}" />
+          <input type="hidden" name="enabled" value="${actions.disable.enabled ?? "0"}" />
+          ${targetFieldsHtml(actions.target)}
+          <button class="btn btn-${actions.disable.style}" type="submit">${escapeHtml(actions.disable.label)}</button>
+        </form>`);
+  }
+  if (actions.editAtSource !== null) {
+    parts.push(actionLink(actions.editAtSource));
+  }
+  if (actions.openEffective !== null) {
+    parts.push(actionLink(actions.openEffective));
+  }
+  if (actions.openTombstone !== null) {
+    parts.push(actionLink(actions.openTombstone));
+  }
+  if (actions.revert !== null) {
+    parts.push(`<form method="post" action="${escapeHtml(actions.revert.action)}" data-skill-revert data-skill-confirm="${escapeHtml(actions.revert.confirm ?? "")}">
+              <input type="hidden" name="return_to" value="${escapeHtml(actions.revert.returnTo)}" />
+              <button class="btn btn-${actions.revert.style}" type="submit">${escapeHtml(actions.revert.label)}</button>
+            </form>`);
+  }
+  if (actions.openRepair !== null) {
+    parts.push(actionLink(actions.openRepair));
+  }
+  if (actions.openSource !== null) {
+    parts.push(actionLink(actions.openSource));
+  }
+  if (parts.length === 0) {
+    return "";
+  }
+  return `<div class="cluster skill-page-actions" data-skill-actions>${parts.join("")}</div>`;
+}
+
+function scopeStrip(props: SkillWorkspaceProps): string {
+  const current = (option: SkillsInventoryProps["scope"]["options"][number]): string =>
+    option.current
+      ? `<span class="settings-nav__link" aria-current="page">${icon("check")}${escapeHtml(option.label)}</span>`
+      : `<span class="settings-nav__link">${escapeHtml(option.label)}</span>`;
+  const options = props.scope.options
+    .filter((option) => option.scope === "global" || option.href !== null)
+    .map(current)
+    .join("");
+  return `<nav class="settings-nav skill-scope-strip" aria-label="Viewing scope" data-skill-scope-strip>
+    <div class="settings-nav__scopes" role="group" aria-label="Skill scope">
+      ${options}
+    </div>
+    <p class="hint">Source: <strong class="mono">${escapeHtml(scopeLabel(props.row.scope))}</strong> &middot; ${escapeHtml(props.state.note)}</p>
+  </nav>`;
+}
+
+function restartBanner(restart: SkillWorkspaceProps["restart"]): string {
+  if (restart === null) {
+    return "";
+  }
+  if (restart.kind === "none") {
+    return `<p class="hint" data-skill-restart-banner="none">${icon("check")}${escapeHtml(restart.hint)}</p>`;
+  }
+  return `<section class="settings-warning" role="status" data-skill-restart-banner>
+    <p class="settings-warning__title">${icon("refresh")}Restart required</p>
+    <p class="small">${escapeHtml(restart.hint)}</p>
+    ${restart.entries
+      .map(
+        (entry) => `<div class="cluster">
+          <a class="small" href="${escapeHtml(entry.href)}">${escapeHtml(entry.appKey)}</a>
+          <form method="post" action="${escapeHtml(entry.restartAction)}">
+            <input type="hidden" name="return_to" value="${escapeHtml(entry.returnTo)}" />
+            <button class="btn btn-primary btn-sm" type="submit">${icon("refresh")}Restart agent</button>
+          </form>
+        </div>`,
+      )
+      .join("")}
   </section>`;
 }
 
 function renderWorkspacePage(options: {
   site: SiteModel;
   chrome: PageChrome;
-  row: SkillRow;
-  state: WorkspaceState;
-  values: WorkspaceValues;
-  error?: WorkspaceError;
-  create?: boolean;
-  conflictId?: number;
+  props: SkillWorkspaceProps;
 }): string {
-  const { row, state, values, site } = options;
-  const editable = options.create || state.editable;
-  const contextPage = skillsPagePath(state.contextScope, state.contextTarget);
-  const returnTo = options.create ? contextPage : contextPage;
-  const formValues = bundleSnapshot(values, !options.create && row.storedIssues.length > 0);
-  const project =
-    state.contextTarget.projectId === undefined
-      ? undefined
-      : site.projects.find((entry) => entry.id === state.contextTarget.projectId);
-  const title = options.create ? "New skill" : row.name;
-  const overline = options.create
-    ? `${scopeLabel(state.contextScope).toUpperCase()} SKILL`
-    : `${scopeLabel(row.scope).toUpperCase()} SKILL`;
-  const description = options.create
-    ? "Create a reusable procedure for agents to load at start. Details, the body, and references save as one bundle."
-    : row.description;
-  const meta: string[] = [];
-  if (values.bundle.license !== null) {
-    meta.push(values.bundle.license);
-  }
-  if (values.bundle.compatibility !== null) {
-    meta.push(values.bundle.compatibility);
-  }
-  if (values.bundle.metadata.version !== undefined) {
-    meta.push(`v${values.bundle.metadata.version}`);
-  }
-  if (!options.create) {
-    meta.push(`Updated ${absoluteTime(row.updatedAt)}`);
-  }
-  meta.push(`${values.bundle.references.length} references`);
-  const warnings = options.create
-    ? []
-    : warningsFor(options.state.resolved.warnings, row.name, [
-        "skill_collision",
-        "skill_disabled_elsewhere",
-      ]);
-  const header = pageHeader({
-    overline,
-    title,
-    description,
-    meta,
-    actions: options.create
-      ? `<a class="btn btn-ghost" href="${escapeHtml(contextPage)}">Back to skills</a>`
-      : workspaceActions(state, row, contextPage),
-  });
+  const props = options.props;
+  const error: SkillWorkspaceError | null =
+    props.error === null
+      ? null
+      : {
+          message: props.error.message,
+          ...(props.error.field === null ? {} : { field: props.error.field }),
+        };
+  const form = props.form;
+  const editable = form !== null;
   const conflict =
-    options.conflictId === undefined
+    props.conflict === null
       ? ""
-      : `<p class="field-error" role="alert" data-skill-conflict>This name already exists at this scope. <a href="/skills/${options.conflictId}?from=${encodeURIComponent(contextPage)}">Open the existing skill</a>.</p>`;
-  const errorSummaryHtml = options.error === undefined ? "" : errorSummary(options.error);
-  const workspace = editable
-    ? `<div class="stack skill-edit-workspace" data-skill-edit-workspace>
-        <form class="stack skill-bundle-form" method="post" action="${options.create ? "/api/skills" : `/api/skills/${row.id}`}" data-skill-form data-skill-mode="${options.create ? "create" : "update"}" data-skill-name="${escapeHtml(row.name)}">
-          ${options.create ? hiddenTargetFields(state.contextScope, state.contextTarget, returnTo) : `<input type="hidden" name="return_to" value="${escapeHtml(workspacePath(row))}" />`}
-          <input type="hidden" name="bundle" value="${escapeHtml(formValues)}" data-skill-bundle />
-          ${editBar(true, options.create ? "create" : "update")}
+      : `<p class="field-error" role="alert" data-skill-conflict>This name already exists at this scope. <a href="${escapeHtml(props.conflict.href)}">Open the existing skill</a>.</p>`;
+  const errorSummaryHtml = error === null ? "" : errorSummary(error);
+  const header = pageHeader({
+    overline: props.header.overline,
+    title: props.header.title,
+    description: props.header.description,
+    meta: [...props.header.meta],
+    actions:
+      props.create && props.header.backHref !== null
+        ? `<a class="btn btn-ghost" href="${escapeHtml(props.header.backHref)}">${escapeHtml(props.labels.backToSkills)}</a>`
+        : actionsHtml(props.actions),
+  });
+  const workspace =
+    editable && form !== null
+      ? `<div class="stack skill-edit-workspace" data-skill-edit-workspace>
+        <form class="stack skill-bundle-form" method="post" action="${escapeHtml(form.action)}" data-skill-form data-skill-mode="${form.mode}" data-skill-name="${escapeHtml(form.name)}">
+          ${form.mode === "create" ? targetFieldsHtml(form.target) : `<input type="hidden" name="return_to" value="${escapeHtml(form.returnTo)}" />`}
+          <input type="hidden" name="bundle" value="${escapeHtml(form.bundleSnapshot)}" data-skill-bundle />
+          ${editBar(form)}
           ${
-            options.create
+            form.mode === "create" && form.nameField !== null
               ? `<div class="field">
                 <label class="label" for="skill-name">Name</label>
-                <input class="input mono" id="skill-name" name="name" type="text" value="${escapeHtml(values.name ?? "")}" required maxlength="${SKILL_LIMITS.name}" pattern="[a-z0-9]+(?:-[a-z0-9]+)*" autocomplete="off" spellcheck="false" placeholder="release-checklist"${fieldDescribedBy("skill-name-hint", options.error?.field === "name" ? "skill-name-error" : undefined)} />
-                ${fieldError("skill-name", options.error?.field === "name" ? options.error.message : undefined)}
-                ${fieldHint("skill-name-hint", "Lowercase letters, digits, and single hyphens.")}
+                <input class="input mono" id="skill-name" name="name" type="text" value="${escapeHtml(form.nameField.value)}" required maxlength="${form.nameField.maxlength}" pattern="${escapeHtml(form.nameField.pattern)}" autocomplete="off" spellcheck="false" placeholder="release-checklist"${fieldDescribedBy("skill-name-hint", form.nameField.error === null ? undefined : "skill-name-error")} />
+                ${fieldError("skill-name", form.nameField.error ?? undefined)}
+                ${fieldHint("skill-name-hint", form.nameField.hint)}
               </div>`
               : ""
           }
           ${errorSummaryHtml}
           ${conflict}
-          ${detailsCard(values, row, true, options.error, !options.create)}
-          ${sourceWorkspace(values, true, options.error)}
+          ${detailsCard(props.values, props.name, true, error, form.mode !== "create")}
+          ${sourceWorkspace(props.values, true, error)}
         </form>
-        ${dangerZone(row, contextPage, !options.create, options.error)}
+        ${props.danger === null ? "" : dangerZone(props.danger, error)}
       </div>`
-    : `<div class="stack skill-readonly-workspace" data-skill-readonly-workspace>
-        <div class="stack skill-readonly" data-skill-readonly data-skill-name="${escapeHtml(row.name)}">
-          ${detailsCard(values, row, false, options.error, true)}
-          ${sourceWorkspace(values, false, options.error)}
+      : `<div class="stack skill-readonly-workspace" data-skill-readonly-workspace>
+        <div class="stack skill-readonly" data-skill-readonly data-skill-name="${escapeHtml(props.name)}">
+          ${detailsCard(props.values, props.name, false, error, true)}
+          ${sourceWorkspace(props.values, false, error)}
         </div>
-        ${state.name === "invalid-owned-name" ? dangerZone(row, contextPage, true, options.error) : ""}
+        ${props.danger === null || props.state.name !== "invalid-owned-name" ? "" : dangerZone(props.danger, error)}
       </div>`;
-  const issues =
-    !options.create && row.storedIssues.length > 0
-      ? issueList(row.storedIssues, state.editable)
-      : "";
+  const issues = issueList(props.issues);
   const collisions =
-    warnings.length === 0
+    props.collisions.length === 0
       ? ""
-      : `<section class="settings-warning" role="alert" data-skill-collisions>${warningList(warnings)}</section>`;
-  const restart = options.create ? "" : restartBanner(state, site, row);
-  const stateBadgeHtml = options.create
+      : `<section class="settings-warning" role="alert" data-skill-collisions>${warningList(props.collisions)}</section>`;
+  const restart = props.create ? "" : restartBanner(props.restart);
+  const stateBadgeHtml = props.create
     ? '<span class="badge badge-info">Draft</span>'
-    : `<span class="badge skill-state ${state.name === "editable" || state.name === "inherited" ? "badge-success" : state.name === "tombstone" || state.name === "not-effective" || state.name === "shadowed" || state.name === "hidden" ? "badge-warning" : "badge-error"}" data-skill-state>${escapeHtml(stateLabelFor(state.name))}</span>`;
-  const body = `${options.create ? "" : scopeStrip(state, row)}
-    <div class="cluster section">${stateBadgeHtml}<a class="small" href="${escapeHtml(contextPage)}">Back to skills</a></div>
+    : `<span class="badge skill-state badge-${props.stateBadge.tone}" data-skill-state>${escapeHtml(props.stateBadge.label)}</span>`;
+  const body = `${props.create ? "" : scopeStrip(props)}
+    <div class="cluster section">${stateBadgeHtml}<a class="small" href="${escapeHtml(props.contextPage)}">${escapeHtml(props.labels.backToSkills)}</a></div>
     ${restart}
     ${collisions}
     ${issues}
     ${workspace}`;
   return appShell({
-    title: options.create ? "New skill" : row.name,
+    title: props.title,
     active: "skills",
-    activeProjectId: project?.id,
-    breadcrumb: options.create
-      ? [
-          ...(state.contextScope === "global"
-            ? [
-                { label: "Workbench", href: "/" },
-                { label: "Skills", href: contextPage },
-              ]
-            : scopeBreadcrumb(site, state, { ...row, name: "Skills" })),
-          { label: "New skill" },
-        ]
-      : scopeBreadcrumb(site, state, row),
-    projects: navProjects(site),
-    pendingCount: site.pendingCount,
+    ...(props.projectId === null ? {} : { activeProjectId: props.projectId }),
+    breadcrumb: [...props.breadcrumb],
+    projects: navProjects(options.site),
+    pendingCount: options.site.pendingCount,
     operatorName: options.chrome.operatorName,
     notice: options.chrome.notice,
     header,
     body,
     moduleScripts: ["/assets/skill-detail.js"],
-    skillsHref: contextPage,
+    skillsHref: props.contextPage,
   });
 }
 
@@ -2806,22 +1890,17 @@ export async function handleSkills(deps: HttpDeps, request: HttpRequest): Promis
       } catch (error) {
         if (error instanceof SkillsConfirmError && browser) {
           const site = buildSite(deps);
-          const context = { scope: row.scope, target: rowTarget(row) };
+          const props = buildSkillDetailProps({
+            deps,
+            site,
+            skills,
+            row,
+            context: { scope: row.scope, target: rowTarget(row) },
+            error: { message: error.message, field: error.field },
+          });
           return html(
             422,
-            renderWorkspacePage({
-              site,
-              chrome: pageChrome(actor, request),
-              row,
-              state: workspaceState(skills, row, context),
-              values: {
-                description: row.description,
-                content: row.content,
-                enabled: row.enabled,
-                bundle: bundleFromRow(row),
-              },
-              error: { message: error.message, field: error.field },
-            }),
+            renderWorkspacePage({ site, chrome: pageChrome(actor, request), props }),
           );
         }
         const mapped = mutationError(error, browser, returnTo);
@@ -2879,22 +1958,17 @@ export async function handleSkills(deps: HttpDeps, request: HttpRequest): Promis
           } catch (error) {
             if (error instanceof SkillsConfirmError && browser) {
               const site = buildSite(deps);
-              const context = { scope: row.scope, target: rowTarget(row) };
+              const props = buildSkillDetailProps({
+                deps,
+                site,
+                skills,
+                row,
+                context: { scope: row.scope, target: rowTarget(row) },
+                error: { message: error.message, field: error.field },
+              });
               return html(
                 422,
-                renderWorkspacePage({
-                  site,
-                  chrome: pageChrome(actor, request),
-                  row,
-                  state: workspaceState(skills, row, context),
-                  values: {
-                    description: row.description,
-                    content: row.content,
-                    enabled: row.enabled,
-                    bundle: bundleFromRow(row),
-                  },
-                  error: { message: error.message, field: error.field },
-                }),
+                renderWorkspacePage({ site, chrome: pageChrome(actor, request), props }),
               );
             }
             const mapped = mutationError(error, browser, returnTo);
@@ -2955,22 +2029,18 @@ export async function handleSkills(deps: HttpDeps, request: HttpRequest): Promis
           const workspaceError = skillError(error);
           if (browser && workspaceError !== undefined) {
             const site = buildSite(deps);
-            const context = { scope: row.scope, target: rowTarget(row) };
+            const props = buildSkillDetailProps({
+              deps,
+              site,
+              skills,
+              row,
+              context: { scope: row.scope, target: rowTarget(row) },
+              ...(values === undefined ? {} : { values }),
+              error: workspaceError,
+            });
             return html(
               422,
-              renderWorkspacePage({
-                site,
-                chrome: pageChrome(actor, request),
-                row,
-                state: workspaceState(skills, row, context),
-                values: values ?? {
-                  description: row.description,
-                  content: row.content,
-                  enabled: row.enabled,
-                  bundle: bundleFromRow(row),
-                },
-                error: workspaceError,
-              }),
+              renderWorkspacePage({ site, chrome: pageChrome(actor, request), props }),
             );
           }
           const mapped = mutationError(error, browser, returnTo);
@@ -3015,23 +2085,14 @@ export async function handleSkills(deps: HttpDeps, request: HttpRequest): Promis
         return notFound(browser, site, pageChrome(actor, request));
       }
       const site = buildSite(deps);
-      const context = viewContext(deps, request.query?.from, row);
-      const state = workspaceState(skills, row, context);
-      return html(
-        200,
-        renderWorkspacePage({
-          site,
-          chrome: pageChrome(actor, request),
-          row,
-          state,
-          values: {
-            description: row.description,
-            content: row.content,
-            enabled: row.enabled,
-            bundle: bundleFromRow(row),
-          },
-        }),
-      );
+      const props = buildSkillDetailProps({
+        deps,
+        site,
+        skills,
+        row,
+        ...(request.query?.from === undefined ? {} : { from: request.query.from }),
+      });
+      return html(200, renderWorkspacePage({ site, chrome: pageChrome(actor, request), props }));
     }
 
     const page = skillsPageFor(request.path);
@@ -3039,29 +2100,20 @@ export async function handleSkills(deps: HttpDeps, request: HttpRequest): Promis
       return notFound(browser);
     }
     const site = buildSite(deps);
-    const entities = pageEntities(site, page.scope, page.target);
-    if (entities === undefined) {
-      return html(404, renderNotFound(site, pageChrome(actor, request)));
-    }
-    const model = surfaceModel(
+    const chrome = pageChrome(actor, request);
+    const props = buildSkillsInventoryProps({
       deps,
+      site,
       skills,
-      page.scope,
-      page.target,
-      skillsPagePath(page.scope, page.target),
-    );
-    return html(
-      200,
-      renderInventoryPage({
-        site,
-        chrome: pageChrome(actor, request),
-        model,
-        ...(entities.project === undefined ? {} : { project: entities.project }),
-        ...(entities.app === undefined ? {} : { app: entities.app }),
-        filter: parseInventoryFilter(request.query?.filter),
-        search: (request.query?.q ?? "").trim(),
-      }),
-    );
+      scope: page.scope,
+      target: page.target,
+      filter: parseInventoryFilter(request.query?.filter),
+      search: (request.query?.q ?? "").trim(),
+    });
+    if (props === undefined) {
+      return html(404, renderNotFound(site, chrome));
+    }
+    return html(200, renderInventoryPage({ site, chrome, props }));
   } catch (error) {
     if (error instanceof SkillsTargetError || error instanceof SkillsBodyError) {
       const mapped = mutationError(error, browser, "/skills");
@@ -3090,77 +2142,27 @@ interface CreatePageOptions {
   error?: WorkspaceError;
 }
 
-function emptyRow(scope: SkillScope, target: SkillTarget): SkillRow {
-  const timestamp = new Date(0).toISOString();
-  return {
-    id: 0,
-    scope,
-    projectId: target.projectId ?? "",
-    appKey: target.appKey ?? "",
-    name: "",
-    description: "",
-    content: "",
-    enabled: true,
-    license: null,
-    compatibility: null,
-    metadata: {},
-    references: [],
-    createdAt: timestamp,
-    updatedAt: timestamp,
-    updatedBy: null,
-    storedIssues: [],
-    metadataRaw: null,
-  };
-}
-
-function createState(scope: SkillScope, target: SkillTarget): WorkspaceState {
-  return {
-    name: "editable",
-    contextScope: scope,
-    contextTarget: target,
-    resolved: { scope, effective: [], rows: [], disabled: [], warnings: [] },
-    editable: true,
-  };
-}
-
 function renderCreatePage(options: CreatePageOptions & { values?: WorkspaceValues }): string {
-  const values = options.values ?? {
-    name: "",
-    description: "",
-    content: "",
-    enabled: true,
-    bundle: {
-      license: null,
-      compatibility: null,
-      metadata: {},
-      metadataRaw: null,
-      references: [],
-    },
-  };
-  const row = emptyRow(options.scope, options.target);
-  return renderWorkspacePage({
+  const props = buildSkillCreateProps({
     site: options.site,
-    chrome: options.chrome,
-    row,
-    state: createState(options.scope, options.target),
-    values,
+    scope: options.scope,
+    target: options.target,
+    ...(options.values === undefined ? {} : { values: options.values }),
     ...(options.error === undefined ? {} : { error: options.error }),
-    create: true,
   });
+  return renderWorkspacePage({ site: options.site, chrome: options.chrome, props });
 }
 
 function renderCreateConflictPage(
   options: CreatePageOptions & { values: WorkspaceValues; existingId?: number },
 ): string {
-  const row = emptyRow(options.scope, options.target);
-  return renderWorkspacePage({
+  const props = buildSkillCreateProps({
     site: options.site,
-    chrome: options.chrome,
-    row,
-    state: createState(options.scope, options.target),
+    scope: options.scope,
+    target: options.target,
     values: options.values,
     error: { message: "A skill with this name already exists at this scope.", field: "name" },
-    create: true,
     ...(options.existingId === undefined ? {} : { conflictId: options.existingId }),
   });
+  return renderWorkspacePage({ site: options.site, chrome: options.chrome, props });
 }

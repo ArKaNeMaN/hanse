@@ -11,6 +11,7 @@ import {
   type RouteId,
   routeById,
 } from "../shared/routes.js";
+import { SkillService, type SkillTarget } from "../skills/index.js";
 import { humanFromCookie } from "./auth.js";
 import { buildSite, type SiteModel } from "./dashboard.js";
 import {
@@ -25,6 +26,17 @@ import { buildOverviewProps } from "./props/overview.js";
 import { buildProjectProps } from "./props/project.js";
 import { buildProjectsProps } from "./props/projects.js";
 import { buildSettingsProps, parseSettingsTarget, type SettingsProps } from "./props/settings.js";
+import {
+  buildSkillCreateProps,
+  buildSkillDetailProps,
+  buildSkillsInventoryProps,
+  createTargetFromQuery,
+  inventoryTargetFromQuery,
+  parseInventoryFilter,
+  SkillsTargetError,
+  type SkillWorkspaceProps,
+  targetExists,
+} from "./props/skills.js";
 import { buildSshProps, resolveSshScope } from "./props/ssh.js";
 import {
   appShell,
@@ -561,6 +573,117 @@ function settingsPropsForMatch(
   });
 }
 
+function skillsServiceFor(deps: HttpDeps): SkillService | undefined {
+  if (deps.skills !== undefined) {
+    return deps.skills;
+  }
+  try {
+    return new SkillService({ db: deps.db });
+  } catch {
+    return undefined;
+  }
+}
+
+function skillsTargetForMatch(
+  match: PageMatch,
+): { scope: "global" | "project" | "app"; target: SkillTarget } | undefined {
+  if (match.id === "skills-global") {
+    return { scope: "global", target: {} };
+  }
+  if (match.id === "skills-project") {
+    return { scope: "project", target: { projectId: match.params.id ?? "" } };
+  }
+  if (match.id === "skills-app") {
+    return {
+      scope: "app",
+      target: { projectId: match.params.id ?? "", appKey: match.params.app ?? "" },
+    };
+  }
+  return undefined;
+}
+
+function parseSkillId(value: string | undefined): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  if (!/^\d+$/.test(trimmed)) {
+    return undefined;
+  }
+  const parsed = Number(trimmed);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function skillsInventoryPropsForMatch(
+  deps: HttpDeps,
+  site: SiteModel,
+  match: PageMatch,
+  request: HttpRequest,
+): ReturnType<typeof buildSkillsInventoryProps> {
+  const scopeTarget = skillsTargetForMatch(match);
+  const skills = skillsServiceFor(deps);
+  if (scopeTarget === undefined || skills === undefined) {
+    return undefined;
+  }
+  return buildSkillsInventoryProps({
+    deps,
+    site,
+    skills,
+    scope: scopeTarget.scope,
+    target: scopeTarget.target,
+    filter: parseInventoryFilter(request.query?.filter),
+    search: (request.query?.q ?? "").trim(),
+  });
+}
+
+function skillCreatePropsFor(
+  deps: HttpDeps,
+  site: SiteModel,
+  request: HttpRequest,
+): SkillWorkspaceProps | null {
+  let scopeTarget: { scope: "global" | "project" | "app"; target: SkillTarget };
+  try {
+    scopeTarget = createTargetFromQuery(request.query ?? {});
+  } catch (error) {
+    if (error instanceof SkillsTargetError) {
+      return null;
+    }
+    throw error;
+  }
+  if (!targetExists(deps, scopeTarget.scope, scopeTarget.target)) {
+    return null;
+  }
+  return buildSkillCreateProps({
+    site,
+    scope: scopeTarget.scope,
+    target: scopeTarget.target,
+  });
+}
+
+function skillDetailPropsFor(
+  deps: HttpDeps,
+  site: SiteModel,
+  match: PageMatch,
+  request: HttpRequest,
+): SkillWorkspaceProps | null {
+  const skills = skillsServiceFor(deps);
+  const id = parseSkillId(match.params.id);
+  if (skills === undefined || id === undefined) {
+    return null;
+  }
+  const row = skills.get(id);
+  if (row === undefined) {
+    return null;
+  }
+  return buildSkillDetailProps({
+    deps,
+    site,
+    skills,
+    row,
+    ...(request.query?.from === undefined ? {} : { from: request.query.from }),
+  });
+}
+
 function pagePropsFor(
   deps: HttpDeps,
   site: SiteModel,
@@ -596,6 +719,15 @@ function pagePropsFor(
   ) {
     const props = settingsPropsForMatch(deps, site, match, request);
     return props ?? null;
+  }
+  if (match.id === "skills-global" || match.id === "skills-project" || match.id === "skills-app") {
+    return skillsInventoryPropsForMatch(deps, site, match, request) ?? null;
+  }
+  if (match.id === "skills-new") {
+    return skillCreatePropsFor(deps, site, request);
+  }
+  if (match.id === "skills-detail") {
+    return skillDetailPropsFor(deps, site, match, request);
   }
   return {};
 }
@@ -682,11 +814,19 @@ const UI_API_PATHS = new Set([
   "/api/ui/handoffs",
   "/api/ui/ssh",
   "/api/ui/settings",
+  "/api/ui/skills",
 ]);
+const UI_SKILL_PATH = /^\/api\/ui\/skills\/([^/]+)$/;
 const UI_PROJECT_PATH = /^\/api\/ui\/projects\/([^/]+)$/;
 
 function uiProjectId(pathname: string): string | undefined {
   const match = UI_PROJECT_PATH.exec(pathname);
+  const raw = match?.[1];
+  return raw === undefined ? undefined : safeDecode(raw);
+}
+
+function uiSkillPath(pathname: string): string | undefined {
+  const match = UI_SKILL_PATH.exec(pathname);
   const raw = match?.[1];
   return raw === undefined ? undefined : safeDecode(raw);
 }
@@ -697,7 +837,8 @@ export function handleUiApi(deps: HttpDeps, request: HttpRequest): HttpResponse 
     return undefined;
   }
   const projectId = uiProjectId(request.path);
-  if (!UI_API_PATHS.has(request.path) && projectId === undefined) {
+  const skillPath = uiSkillPath(request.path);
+  if (!UI_API_PATHS.has(request.path) && projectId === undefined && skillPath === undefined) {
     return undefined;
   }
   const presented = agentTokenFor(request);
@@ -820,6 +961,92 @@ export function handleUiApi(deps: HttpDeps, request: HttpRequest): HttpResponse 
         ...(scope === "app" ? { app: target.appKey ?? "" } : {}),
       },
     };
+    return jsonResponse(
+      200,
+      { ...props, chrome: chromeFor(site, match).chrome },
+      { "cache-control": "no-store" },
+    );
+  }
+
+  if (request.path === "/api/ui/skills") {
+    const skills = skillsServiceFor(deps);
+    if (skills === undefined) {
+      return jsonResponse(
+        503,
+        { error: "skills are not available", code: "skills_unavailable" },
+        { "cache-control": "no-store" },
+      );
+    }
+    let scope: "global" | "project" | "app";
+    let target: SkillTarget;
+    try {
+      ({ scope, target } = inventoryTargetFromQuery(request.query ?? {}));
+    } catch (error) {
+      if (error instanceof SkillsTargetError) {
+        return jsonResponse(
+          400,
+          { error: error.message, code: error.code },
+          { "cache-control": "no-store" },
+        );
+      }
+      throw error;
+    }
+    const props = buildSkillsInventoryProps({
+      deps,
+      site,
+      skills,
+      scope,
+      target,
+      filter: parseInventoryFilter(request.query?.filter),
+      search: (request.query?.q ?? "").trim(),
+    });
+    if (props === undefined) {
+      return jsonResponse(404, { error: "not found" }, { "cache-control": "no-store" });
+    }
+    const match: PageMatch = {
+      id:
+        scope === "global"
+          ? "skills-global"
+          : scope === "project"
+            ? "skills-project"
+            : "skills-app",
+      params: {
+        ...(scope === "global" ? {} : { id: target.projectId ?? "" }),
+        ...(scope === "app" ? { app: target.appKey ?? "" } : {}),
+      },
+    };
+    return jsonResponse(
+      200,
+      { ...props, chrome: chromeFor(site, match).chrome },
+      { "cache-control": "no-store" },
+    );
+  }
+
+  if (skillPath !== undefined) {
+    const skillId = parseSkillId(skillPath);
+    if (skillId === undefined) {
+      return jsonResponse(404, { error: "not found" }, { "cache-control": "no-store" });
+    }
+    const skills = skillsServiceFor(deps);
+    if (skills === undefined) {
+      return jsonResponse(
+        503,
+        { error: "skills are not available", code: "skills_unavailable" },
+        { "cache-control": "no-store" },
+      );
+    }
+    const row = skills.get(skillId);
+    if (row === undefined) {
+      return jsonResponse(404, { error: "not found" }, { "cache-control": "no-store" });
+    }
+    const props = buildSkillDetailProps({
+      deps,
+      site,
+      skills,
+      row,
+      ...(request.query?.from === undefined ? {} : { from: request.query.from }),
+    });
+    const match: PageMatch = { id: "skills-detail", params: { id: String(skillId) } };
     return jsonResponse(
       200,
       { ...props, chrome: chromeFor(site, match).chrome },

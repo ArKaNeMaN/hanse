@@ -245,6 +245,7 @@ describe("/api/ui auth and props", () => {
       "/api/ui/handoffs",
       "/api/ui/projects/p",
       "/api/ui/ssh",
+      "/api/ui/skills",
     ]) {
       const anonymous = handleUiApi(f.deps, request(pathname, {}));
       expect(anonymous?.status, pathname).toBe(401);
@@ -558,7 +559,12 @@ describe("/api/ui auth and props", () => {
       expect(chrome?.body, route.id).not.toContain(settingSecret);
     }
 
-    for (const pathname of ["/api/ui/overview", "/api/ui/handoffs", "/api/ui/projects/p"]) {
+    for (const pathname of [
+      "/api/ui/overview",
+      "/api/ui/handoffs",
+      "/api/ui/projects/p",
+      "/api/ui/skills",
+    ]) {
       const props = handleUiApi(f.deps, request(pathname, cookie(f.humanToken)));
       expect(props?.status, pathname).toBe(200);
       expect(props?.body, pathname).not.toContain(providerSecret);
