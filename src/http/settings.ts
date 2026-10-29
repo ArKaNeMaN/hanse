@@ -4,43 +4,35 @@ import {
   type ModelProvider,
   ModelProviderConflictError,
   ModelProviderInUseError,
-  type ModelProviderModel,
   ModelProviderNotFoundError,
   ModelProviderValidationError,
   parseModelLines,
   providerBaseUrlWarnings,
 } from "../model-providers/index.js";
-import type { RegisteredApp } from "../registry/index.js";
 import {
-  type EffectiveValue,
   type PendingRestart,
   type ResolvedSettings,
-  type ScopedValue,
   type SettingsService,
   SettingsValidationError,
 } from "../settings/index.js";
-import type {
-  GitAuthKind,
-  GitAuthScoped,
-  GitAuthScopedState,
-  GitAuthStatus,
-  SettingsScope,
-  SettingsTarget,
-} from "../settings/types.js";
-import { DEEPSEEK_FIELDS, webDriverDefinitions } from "../web/registry.js";
-import type { WebToolConfig } from "../web/types.js";
+import type { SettingsScope, SettingsTarget } from "../settings/types.js";
 import { findApp, toManagedApp } from "./apps.js";
 import { humanFrom, principalFrom } from "./auth.js";
 import { crossSiteMutation } from "./chat.js";
-import {
-  buildSite,
-  type PageChrome,
-  type ProjectView,
-  renderNotFound,
-  type SiteModel,
-} from "./dashboard.js";
+import { buildSite, type PageChrome, renderNotFound, type SiteModel } from "./dashboard.js";
 import { lifecycleErrorResponse } from "./errors.js";
 import type { HttpDeps, HttpRequest, HttpResponse } from "./handler.js";
+import {
+  buildSettingsProps,
+  parseSettingsTarget,
+  type SettingsGitCredentialProps,
+  type SettingsProps,
+  type SettingsProviderRowProps,
+  type SettingsRowActionsProps,
+  type SettingsRowProps,
+  type SettingsScopeDetailProps,
+  settingsPagePath,
+} from "./props/settings.js";
 import { appShell, escapeHtml, icon, pageHeader, plural, safeLocalPath } from "./ui.js";
 
 const JSON_HEADERS = { "cache-control": "no-store" };
@@ -101,36 +93,6 @@ const SECTION_KEYS = ["agent", "web", "context", "git", "restart", "warnings"] a
 type SettingsSectionKey = (typeof SECTION_KEYS)[number];
 
 type SettingsSections = Record<SettingsSectionKey, string>;
-
-interface SettingsPageEntities {
-  project?: ProjectView;
-  app?: RegisteredApp;
-}
-
-function pageEntities(
-  site: SiteModel,
-  scope: SettingsScope,
-  target: SettingsTarget,
-): SettingsPageEntities | undefined {
-  if (scope === "global") {
-    return {};
-  }
-  const project =
-    target.projectId === undefined
-      ? undefined
-      : site.projects.find((entry) => entry.id === target.projectId);
-  if (project === undefined) {
-    return undefined;
-  }
-  if (scope === "project") {
-    return { project };
-  }
-  const app = project.apps.find((entry) => entry.appKey === target.appKey);
-  if (app === undefined) {
-    return undefined;
-  }
-  return { project, app };
-}
 
 function targetExists(deps: HttpDeps, scope: SettingsScope, target: SettingsTarget): boolean {
   if (scope === "global") {
@@ -241,64 +203,11 @@ function stringValue(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
-function scopeValue(value: unknown): SettingsScope {
-  if (value === "global" || value === "project" || value === "app") {
-    return value;
-  }
-  throw new SettingsValidationError("scope must be global, project, or app");
-}
-
-function targetFrom(source: Record<string, unknown>, scope: SettingsScope): SettingsTarget {
-  const projectId = stringValue(source.projectId ?? source.project);
-  const appKey = stringValue(source.appKey ?? source.app);
-  if (scope === "global") {
-    return {};
-  }
-  if (scope === "project") {
-    if (projectId === undefined || projectId.length === 0) {
-      throw new SettingsValidationError("project scope requires projectId");
-    }
-    return { projectId };
-  }
-  if (projectId === undefined || projectId.length === 0) {
-    throw new SettingsValidationError("app scope requires projectId");
-  }
-  if (appKey === undefined || appKey.length === 0) {
-    throw new SettingsValidationError("app scope requires appKey");
-  }
-  return { projectId, appKey };
-}
-
-function settingsPagePath(scope: SettingsScope, target: SettingsTarget): string {
-  if (scope === "global") {
-    return "/settings";
-  }
-  if (scope === "project") {
-    return `/projects/${encodeURIComponent(target.projectId ?? "")}/settings`;
-  }
-  return `/projects/${encodeURIComponent(target.projectId ?? "")}/apps/${encodeURIComponent(
-    target.appKey ?? "",
-  )}/settings`;
-}
-
-function firstAppSettingsPath(site: SiteModel, projectId?: string): string | undefined {
-  const project =
-    projectId === undefined
-      ? site.projects.find((entry) => entry.apps.length > 0)
-      : site.projects.find((entry) => entry.id === projectId);
-  const app = project?.apps[0];
-  if (project === undefined || app === undefined) {
-    return undefined;
-  }
-  return `/projects/${encodeURIComponent(project.id)}/apps/${encodeURIComponent(app.appKey)}/settings`;
-}
-
 function parseTarget(source: Record<string, unknown>): {
   scope: SettingsScope;
   target: SettingsTarget;
 } {
-  const scope = scopeValue(source.scope);
-  return { scope, target: targetFrom(source, scope) };
+  return parseSettingsTarget(source);
 }
 
 function pendingFor(
@@ -347,27 +256,16 @@ function settingsResponse(
 
 function fragmentResponse(
   deps: HttpDeps,
-  settings: SettingsService,
   scope: SettingsScope,
   target: SettingsTarget,
   changed: SettingsSectionKey[],
 ): HttpResponse {
   const site = buildSite(deps);
-  const entities = pageEntities(site, scope, target);
-  if (entities === undefined) {
+  const props = buildSettingsProps({ deps, site, scope, target });
+  if (props === undefined) {
     return json(404, { error: "not found" });
   }
-  const resolved = settingsResponse(settings, deps, scope, target);
-  const sections = settingsSections({
-    site,
-    scope,
-    target,
-    resolved,
-    deps,
-    returnTo: settingsPagePath(scope, target),
-    ...(entities.project === undefined ? {} : { project: entities.project }),
-    ...(entities.app === undefined ? {} : { app: entities.app }),
-  });
+  const sections = settingsSections(props);
   const selected: Partial<SettingsSections> = {};
   for (const key of changed) {
     selected[key] = sections[key];
@@ -642,7 +540,7 @@ export async function handleSettings(deps: HttpDeps, request: HttpRequest): Prom
       return mutationError(browser, returnTo, error);
     }
     if (fragment) {
-      return fragmentResponse(deps, settings, scope, target, mutationSections(key));
+      return fragmentResponse(deps, scope, target, mutationSections(key));
     }
     return browser
       ? redirectNotice(returnTo, "Settings saved.", "success")
@@ -682,7 +580,7 @@ export async function handleSettings(deps: HttpDeps, request: HttpRequest): Prom
         throw new SettingsValidationError("action must be set, clear, or inherit");
       }
       if (fragment) {
-        return fragmentResponse(deps, settings, scope, target, ["git", "restart"]);
+        return fragmentResponse(deps, scope, target, ["git", "restart"]);
       }
       return json(200, settingsResponse(settings, deps, scope, target));
     } catch (error) {
@@ -735,7 +633,7 @@ export async function handleSettings(deps: HttpDeps, request: HttpRequest): Prom
         return modelProviderMutationError(browser, returnTo, error);
       }
       if (fragment) {
-        return fragmentResponse(deps, settings, "global", {}, ["agent", "restart", "warnings"]);
+        return fragmentResponse(deps, "global", {}, ["agent", "restart", "warnings"]);
       }
       if (browser) {
         const deleted = payload.delete === "1" || payload.action === "delete";
@@ -782,7 +680,7 @@ export async function handleSettings(deps: HttpDeps, request: HttpRequest): Prom
       return mutationError(browser, returnTo, error);
     }
     if (fragment) {
-      return fragmentResponse(deps, settings, scope, target, [
+      return fragmentResponse(deps, scope, target, [
         "agent",
         "web",
         "context",
@@ -913,29 +811,26 @@ export async function handleSettings(deps: HttpDeps, request: HttpRequest): Prom
     return json(404, { error: "not found" });
   }
   const site = buildSite(deps);
-  let resolved: ResolvedSettings & { pendingRestart: PendingRestart[] };
+  const chrome = pageChrome(actor, request);
+  let props: SettingsProps | undefined;
   try {
-    resolved = settingsResponse(settings, deps, page.scope, page.target);
+    props = buildSettingsProps({
+      deps,
+      site,
+      scope: page.scope,
+      target: page.target,
+      notice: chrome.notice ?? null,
+    });
   } catch (error) {
     if (error instanceof SettingsValidationError) {
       return redirectNotice("/settings", error.message, "error");
     }
     throw error;
   }
-  const chrome = pageChrome(actor, request);
-  const rendered = renderSettingsPage({
-    site,
-    scope: page.scope,
-    target: page.target,
-    resolved,
-    chrome,
-    deps,
-    path: request.path,
-  });
-  if (rendered === undefined) {
+  if (props === undefined) {
     return html(404, renderNotFound(site, chrome));
   }
-  return html(200, rendered);
+  return html(200, renderSettingsPage({ props, site, chrome, path: request.path }));
 }
 
 function settingsPageFor(
@@ -968,106 +863,11 @@ function settingsPageFor(
 /* Settings pages                                                            */
 /* ------------------------------------------------------------------------- */
 
-function scopeLabel(scope: SettingsScope): string {
-  if (scope === "global") {
-    return "Global";
-  }
-  return scope === "project" ? "Project" : "Application";
-}
-
-function applicableScopes(scope: SettingsScope): SettingsScope[] {
-  if (scope === "global") {
-    return ["global"];
-  }
-  return scope === "project" ? ["global", "project"] : ["global", "project", "app"];
-}
-
-function formatValue(value: unknown): string {
-  if (value === null || value === undefined) {
-    return "Cleared";
-  }
-  if (typeof value === "string") {
-    return value;
-  }
-  return JSON.stringify(value);
-}
-
-function effectiveText(effective: EffectiveValue<unknown>): string {
-  if (effective.state === "default") {
-    return effective.value === null ? "Not set" : formatValue(effective.value);
-  }
-  if (effective.state === "cleared") {
-    return "Cleared";
-  }
-  return formatValue(effective.value);
-}
-
-function sourceName(source: SettingsScope | "default"): string {
-  return source === "default" ? "default" : scopeLabel(source);
-}
-
-function sourceLine(effective: EffectiveValue<unknown>): string {
-  if (effective.state === "cleared" && effective.source !== "default") {
-    return `Cleared at ${scopeLabel(effective.source)}`;
-  }
-  if (effective.source === "default") {
-    return "default";
-  }
-  return `from ${scopeLabel(effective.source)}`;
-}
-
-function ownValue(
-  resolved: ResolvedSettings,
-  scope: SettingsScope,
-  key: string,
-): ScopedValue<unknown> {
-  return resolved.scoped[`${scope}:${key}`] ?? { state: "absent", value: null };
-}
-
-function stringPrefill(
-  scope: SettingsScope,
-  own: ScopedValue<unknown>,
-  effective: EffectiveValue<string>,
-): { value: string; placeholder: string } {
-  if (own.state === "set" && typeof own.value === "string") {
-    return { value: own.value, placeholder: "" };
-  }
-  const prefix = scope === "global" ? "Default" : "Inherited";
-  const fallback =
-    effective.state === "cleared"
-      ? "Cleared"
-      : effective.value === null
-        ? "Not set"
-        : effective.value;
-  return { value: "", placeholder: `${prefix}: ${fallback}` };
-}
-
-function isWebToolConfig(value: unknown): value is WebToolConfig {
-  if (typeof value !== "object" || value === null || !("driver" in value)) {
-    return false;
-  }
-  const driver = (value as { driver?: unknown }).driver;
-  return driver === "builtin" || driver === "deepseek";
-}
-
-function ownWebValue(
-  resolved: ResolvedSettings,
-  scope: SettingsScope,
-  key: string,
-): WebToolConfig | null {
-  const own = ownValue(resolved, scope, key);
-  return own.state === "set" && isWebToolConfig(own.value) ? own.value : null;
-}
-
-function withHash(pathname: string, hash: string): string {
-  return `${pathname}${hash}`;
-}
-
 function fieldErrorSlot(id: string): string {
   return `<p class="field-error" id="${escapeHtml(id)}" data-settings-error role="alert" hidden></p>`;
 }
 
-function warningList(warnings: string[]): string {
+function warningList(warnings: readonly string[]): string {
   return warnings
     .map(
       (warning) =>
@@ -1076,124 +876,38 @@ function warningList(warnings: string[]): string {
     .join("");
 }
 
-function scopeStateLabel(state: ScopedValue<unknown>["state"]): string {
-  if (state === "set") {
-    return "Set";
-  }
-  return state === "cleared" ? "Cleared" : "Inherited";
-}
-
-function scopeDetailsHtml(resolved: ResolvedSettings, scope: SettingsScope, key: string): string {
-  if (scope === "global") {
-    return "";
-  }
-  const rows = applicableScopes(scope)
-    .map((entry) => {
-      const row = resolved.scoped[`${entry}:${key}`] ?? { state: "absent", value: null };
-      const value =
-        row.state === "set"
-          ? `<span class="mono">${escapeHtml(formatValue(row.value))}</span>`
-          : "";
-      return `<div class="scope-list__row"><dt>${escapeHtml(scopeLabel(entry))}</dt><dd>${value}<span class="scope-list__state">${escapeHtml(scopeStateLabel(row.state))}</span></dd></div>`;
-    })
-    .join("");
-  return `<details class="disclosure scope-details">
-    <summary>Scope details${icon("chevron-down", "disclosure__chevron")}</summary>
-    <dl class="scope-list">${rows}</dl>
-  </details>`;
-}
-
-function hiddenTarget(scope: SettingsScope, target: SettingsTarget, returnTo: string): string {
+function hiddenTarget(
+  form: SettingsProps["rows"]["model"]["form"],
+  returnTo: string = form.hidden.returnTo,
+): string {
   const fields = [
-    `<input type="hidden" name="scope" value="${escapeHtml(scope)}" />`,
+    `<input type="hidden" name="scope" value="${escapeHtml(form.hidden.scope)}" />`,
     `<input type="hidden" name="return_to" value="${escapeHtml(returnTo)}" />`,
   ];
-  if (scope !== "global") {
+  if (form.hidden.scope !== "global") {
     fields.push(
-      `<input type="hidden" name="projectId" value="${escapeHtml(target.projectId ?? "")}" />`,
+      `<input type="hidden" name="projectId" value="${escapeHtml(form.hidden.projectId ?? "")}" />`,
     );
   }
-  if (scope === "app") {
-    fields.push(`<input type="hidden" name="appKey" value="${escapeHtml(target.appKey ?? "")}" />`);
+  if (form.hidden.scope === "app") {
+    fields.push(
+      `<input type="hidden" name="appKey" value="${escapeHtml(form.hidden.appKey ?? "")}" />`,
+    );
   }
   return fields.join("");
 }
 
-function inheritAction(options: {
-  scope: SettingsScope;
-  ownState: ScopedValue<unknown>["state"];
-  effective: EffectiveValue<unknown>;
-}): { button: string; reason: string } {
-  if (options.scope === "global") {
-    return { button: "", reason: "" };
-  }
-  const attributes =
-    'class="btn btn-secondary btn-sm" type="submit" name="action" value="inherit" formnovalidate data-settings-inherit';
-  if (options.ownState !== "absent") {
-    return { button: `<button ${attributes}>Inherit</button>`, reason: "" };
-  }
-  const inherited =
-    options.effective.source !== "default" &&
-    (options.effective.state === "set" || options.effective.state === "cleared");
-  const reason = inherited
-    ? `Already inherited from ${scopeLabel(options.effective.source as SettingsScope)}.`
-    : "Already uses the default.";
-  return {
-    button: `<button ${attributes} disabled>Inherit</button>`,
-    reason: `<p class="hint setting-row__reason">${escapeHtml(reason)}</p>`,
-  };
-}
-
-function clearAction(options: {
-  scope: SettingsScope;
-  ownState: ScopedValue<unknown>["state"];
-  label: string;
-  globalWarning: boolean;
-}): { button: string; reason: string; warning: string } {
-  const warning =
-    options.scope === "global" && options.globalWarning
-      ? '<p class="hint setting-row__reason">Clearing here disables this setting for every application.</p>'
-      : "";
-  const attributes = `class="btn btn-danger btn-sm" type="submit" name="action" value="clear" formnovalidate data-confirm-clear data-setting-label="${escapeHtml(options.label)}"`;
-  if (options.ownState === "cleared") {
-    return {
-      button: `<button ${attributes} disabled>Clear</button>`,
-      reason: '<p class="hint setting-row__reason">Already cleared at this scope.</p>',
-      warning,
-    };
-  }
-  return { button: `<button ${attributes}>Clear</button>`, reason: "", warning };
-}
-
-function standardActions(options: {
-  scope: SettingsScope;
-  ownState: ScopedValue<unknown>["state"];
-  effective: EffectiveValue<unknown>;
-  label: string;
-  clearable: boolean;
-  globalWarning?: boolean;
-}): string {
-  const inherit = inheritAction({
-    scope: options.scope,
-    ownState: options.ownState,
-    effective: options.effective,
-  });
-  const clear = options.clearable
-    ? clearAction({
-        scope: options.scope,
-        ownState: options.ownState,
-        label: options.label,
-        globalWarning: options.globalWarning === true,
-      })
-    : { button: "", reason: "", warning: "" };
+function actionButtons(actions: SettingsRowActionsProps): string {
+  const inherit = actions.inherit;
+  const clear = actions.clear;
   return `<div class="setting-row__actions">
       <button class="btn btn-primary btn-sm" type="submit" name="action" value="set">Save</button>
-      ${inherit.button}
-      ${clear.button}
+      ${inherit === null ? "" : `<button class="btn btn-secondary btn-sm" type="submit" name="action" value="inherit" formnovalidate data-settings-inherit${inherit.enabled ? "" : " disabled"}>Inherit</button>`}
+      ${clear === null ? "" : `<button class="btn btn-danger btn-sm" type="submit" name="action" value="clear" formnovalidate data-confirm-clear data-setting-label="${escapeHtml(clear.confirmLabel ?? "")}"${clear.enabled ? "" : " disabled"}>Clear</button>`}
     </div>
-    ${inherit.reason}
-    ${clear.reason}
-    ${clear.warning}`;
+    ${inherit === null || inherit.reason === null ? "" : `<p class="hint setting-row__reason">${escapeHtml(inherit.reason)}</p>`}
+    ${clear === null || clear.reason === null ? "" : `<p class="hint setting-row__reason">${escapeHtml(clear.reason)}</p>`}
+    ${clear === null || clear.warning === null ? "" : `<p class="hint setting-row__reason">${escapeHtml(clear.warning)}</p>`}`;
 }
 
 function settingRow(options: {
@@ -1203,8 +917,8 @@ function settingRow(options: {
   effectiveText: string;
   source: string;
   state?: string;
-  hint?: string;
-  warnings?: string[];
+  hint?: string | null;
+  warnings?: readonly string[];
   body: string;
   details?: string;
 }): string {
@@ -1223,7 +937,7 @@ function settingRow(options: {
       <span class="setting-row__chevron">${icon("chevron-down")}</span>
     </summary>
     <div class="setting-row__body">
-      ${options.hint === undefined ? "" : `<p class="hint">${escapeHtml(options.hint)}</p>`}
+      ${options.hint === undefined || options.hint === null ? "" : `<p class="hint">${escapeHtml(options.hint)}</p>`}
       ${options.warnings === undefined || options.warnings.length === 0 ? "" : warningList(options.warnings)}
       ${options.body}
       ${options.details ?? ""}
@@ -1231,254 +945,157 @@ function settingRow(options: {
   </details>`;
 }
 
-function modelProviderWarning(resolved: ResolvedSettings): string | undefined {
-  const model = resolved.effective.llm.model.value;
-  if (model === null) {
-    return undefined;
+function scopeDetailsHtml(details: readonly SettingsScopeDetailProps[]): string {
+  if (details.length === 0) {
+    return "";
   }
-  const provider = model.split("/")[0] ?? "";
-  const status = resolved.providerKeys[provider];
-  if (status === undefined || status.state === "missing") {
-    return `No provider key or host auth is configured for "${provider}". The selected model may fail to authenticate.`;
-  }
-  if (status.state === "cleared") {
-    return `The provider key for "${provider}" is cleared and no wider scope provides one. The selected model may fail to authenticate.`;
-  }
-  if (status.state === "host" && status.authType !== "api") {
-    return `Host auth for "${provider}" is ${status.authType}, not an API key. The selected model may fail to authenticate.`;
-  }
-  if (status.state === "error") {
-    return `Provider "${provider}" has an unusable key: ${status.message}`;
-  }
-  return undefined;
-}
-
-function driverFields(current: WebToolConfig | null, key: string): string {
-  const deepseekSelected = current !== null && current.driver === "deepseek";
-  const options = deepseekSelected && current.driver === "deepseek" ? current.options : {};
-  const prefix = key.replace(/\./g, "-");
-  const fields = DEEPSEEK_FIELDS.map((field) => {
-    const raw = (options as Record<string, unknown>)[field.name];
-    if (field.type === "checkbox") {
-      const checked = raw === true ? " checked" : "";
-      return `<label class="check"><input class="checkbox" type="checkbox" name="${escapeHtml(field.name)}" value="1"${checked} /><span>${escapeHtml(field.label)}</span></label>`;
-    }
-    const type = field.type === "number" ? "number" : "text";
-    const min = field.min === undefined ? "" : ` min="${field.min}"`;
-    const max = field.max === undefined ? "" : ` max="${field.max}"`;
-    const placeholder =
-      field.placeholder === undefined ? "" : ` placeholder="${escapeHtml(field.placeholder)}"`;
-    const value = raw === undefined ? "" : String(raw);
-    const required = field.required === true && deepseekSelected ? " required" : "";
-    const id = `${prefix}-${field.name}`;
-    return `<div class="field"><label class="label" for="${escapeHtml(id)}">${escapeHtml(field.label)}</label><input class="input" id="${escapeHtml(id)}" name="${escapeHtml(field.name)}" type="${type}"${min}${max}${required} value="${escapeHtml(value)}"${placeholder} /></div>`;
-  }).join("");
-  return `<div class="stack--tight" data-driver-fields="deepseek"${deepseekSelected ? "" : " hidden"}>${fields}</div>`;
-}
-
-function webControls(options: {
-  key: string;
-  title: string;
-  scope: SettingsScope;
-  target: SettingsTarget;
-  returnTo: string;
-  resolved: ResolvedSettings;
-  effective: EffectiveValue<WebToolConfig>;
-  current: WebToolConfig | null;
-}): string {
-  const driver = options.current?.driver;
-  const choices = webDriverDefinitions
+  const rows = details
     .map(
-      (definition) =>
-        `<option value="${escapeHtml(definition.id)}"${definition.id === driver ? " selected" : ""}>${escapeHtml(definition.label)}</option>`,
+      (row) =>
+        `<div class="scope-list__row"><dt>${escapeHtml(row.label)}</dt><dd>${row.valueText === null ? "" : `<span class="mono">${escapeHtml(row.valueText)}</span>`}<span class="scope-list__state">${escapeHtml(row.stateLabel)}</span></dd></div>`,
     )
     .join("");
-  const placeholder = `<option value=""${driver === undefined ? " selected" : ""} disabled>Choose a driver</option>`;
-  const own = ownValue(options.resolved, options.scope, options.key);
-  const inherited =
-    options.scope !== "global" && own.state === "absent" && options.effective.value !== null
-      ? `<p class="hint">This scope inherits ${escapeHtml(options.effective.value.driver)} from ${escapeHtml(sourceName(options.effective.source))}. Saving creates an override.</p>`
-      : "";
-  return `<form class="setting-row__form" method="post" action="/api/settings" data-settings-form data-no-busy data-success-notice="Settings saved.">
-    ${hiddenTarget(options.scope, options.target, withHash(options.returnTo, `#${options.key.replace(/\./g, "-")}`))}
-    <input type="hidden" name="key" value="${escapeHtml(options.key)}" />
-    ${inherited}
+  return `<details class="disclosure scope-details">
+    <summary>Scope details${icon("chevron-down", "disclosure__chevron")}</summary>
+    <dl class="scope-list">${rows}</dl>
+  </details>`;
+}
+
+function textField(row: SettingsRowProps, label: string): string {
+  const text = row.text;
+  if (text === null) {
+    return "";
+  }
+  const listAttribute = text.listId === null ? "" : ` list="${escapeHtml(text.listId)}"`;
+  const datalist =
+    text.listId === null
+      ? ""
+      : `<datalist id="${escapeHtml(text.listId)}">${text.options
+          .map((value) => `<option value="${escapeHtml(value)}"></option>`)
+          .join("")}</datalist>`;
+  const id =
+    row.kind === "model"
+      ? "model-value"
+      : row.key === "git.user.name"
+        ? "git-user-name"
+        : "git-user-email";
+  const name = row.kind === "model" ? "value" : "value";
+  return `<div class="field">
+      <label class="label" for="${escapeHtml(id)}">${escapeHtml(label)}</label>
+      <input class="input" id="${escapeHtml(id)}" name="${escapeHtml(name)}" type="text"${listAttribute} placeholder="${escapeHtml(text.placeholder)}" value="${escapeHtml(text.value)}"${text.required ? " required" : ""}${text.autocomplete === null ? "" : ` autocomplete="${escapeHtml(text.autocomplete)}"`} />
+      ${datalist}
+    </div>`;
+}
+
+function modelControls(row: SettingsRowProps): string {
+  return `<form class="setting-row__form" method="post" action="${escapeHtml(row.form.action)}" data-settings-form data-no-busy data-success-notice="${escapeHtml(row.form.successNotice)}">
+    ${hiddenTarget(row.form)}
+    <input type="hidden" name="key" value="${escapeHtml(row.key)}" />
+    ${textField(row, "Model")}
+    ${actionButtons(row.actions)}
+  </form>`;
+}
+
+function driverFields(row: SettingsRowProps): string {
+  const driver = row.driver;
+  if (driver === null) {
+    return "";
+  }
+  const prefix = row.key.replace(/\./g, "-");
+  const fields = driver.fields
+    .map((field) => {
+      if (field.type === "checkbox") {
+        return `<label class="check"><input class="checkbox" type="checkbox" name="${escapeHtml(field.name)}" value="1"${field.checked ? " checked" : ""} /><span>${escapeHtml(field.label)}</span></label>`;
+      }
+      const min = field.min === null ? "" : ` min="${field.min}"`;
+      const max = field.max === null ? "" : ` max="${field.max}"`;
+      const placeholder =
+        field.placeholder === null ? "" : ` placeholder="${escapeHtml(field.placeholder)}"`;
+      const required = field.required && driver.showFields ? " required" : "";
+      const id = `${prefix}-${field.name}`;
+      return `<div class="field"><label class="label" for="${escapeHtml(id)}">${escapeHtml(field.label)}</label><input class="input" id="${escapeHtml(id)}" name="${escapeHtml(field.name)}" type="${field.type}"${min}${max}${required} value="${escapeHtml(field.value)}"${placeholder} /></div>`;
+    })
+    .join("");
+  return `<div class="stack--tight" data-driver-fields="deepseek"${driver.showFields ? "" : " hidden"}>${fields}</div>`;
+}
+
+function webControls(row: SettingsRowProps): string {
+  const driver = row.driver;
+  if (driver === null) {
+    return "";
+  }
+  const choices = driver.options
+    .map(
+      (option) =>
+        `<option value="${escapeHtml(option.value)}"${option.selected ? " selected" : ""}>${escapeHtml(option.label)}</option>`,
+    )
+    .join("");
+  const placeholder =
+    driver.placeholder === null
+      ? ""
+      : `<option value="${escapeHtml(driver.placeholder.value)}"${driver.placeholder.selected ? " selected" : ""}${driver.placeholder.disabled ? " disabled" : ""}>${escapeHtml(driver.placeholder.label)}</option>`;
+  return `<form class="setting-row__form" method="post" action="${escapeHtml(row.form.action)}" data-settings-form data-no-busy data-success-notice="${escapeHtml(row.form.successNotice)}">
+    ${hiddenTarget(row.form)}
+    <input type="hidden" name="key" value="${escapeHtml(row.key)}" />
+    ${row.inheritedNote === null ? "" : `<p class="hint">${escapeHtml(row.inheritedNote)}</p>`}
     <div class="field">
-      <label class="label" for="${escapeHtml(options.key.replace(/\./g, "-"))}-driver">Driver</label>
+      <label class="label" for="${escapeHtml(row.key.replace(/\./g, "-"))}-driver">Driver</label>
       <div class="select-wrap">
-        <select class="select" id="${escapeHtml(options.key.replace(/\./g, "-"))}-driver" name="driver" data-settings-driver required>${placeholder}${choices}</select>
+        <select class="select" id="${escapeHtml(row.key.replace(/\./g, "-"))}-driver" name="driver" data-settings-driver required>${placeholder}${choices}</select>
         ${icon("chevron-down")}
       </div>
     </div>
-    ${driverFields(options.current, options.key)}
-    ${standardActions({
-      scope: options.scope,
-      ownState: own.state,
-      effective: options.effective as EffectiveValue<unknown>,
-      label: options.title,
-      clearable: true,
-      globalWarning: true,
-    })}
+    ${driverFields(row)}
+    ${actionButtons(row.actions)}
   </form>`;
 }
 
-function modelControls(options: {
-  scope: SettingsScope;
-  target: SettingsTarget;
-  resolved: ResolvedSettings;
-  effective: EffectiveValue<string>;
-  providers: readonly ModelProvider[];
-  returnTo: string;
-}): string {
-  const own = ownValue(options.resolved, options.scope, "llm.model");
-  const prefill = stringPrefill(options.scope, own, options.effective);
-  const pairs = [
-    ...new Set(
-      options.providers.flatMap((provider) =>
-        provider.models.map((model) => `${provider.id}/${model.id}`),
-      ),
-    ),
-  ].sort();
-  const datalist =
-    pairs.length === 0
-      ? ""
-      : `<datalist id="model-options">${pairs
-          .map((value) => `<option value="${escapeHtml(value)}"></option>`)
-          .join("")}</datalist>`;
-  const listAttribute = pairs.length === 0 ? "" : ' list="model-options"';
-  return `<form class="setting-row__form" method="post" action="/api/settings" data-settings-form data-no-busy data-success-notice="Settings saved.">
-    ${hiddenTarget(options.scope, options.target, withHash(options.returnTo, "#setting-llm-model"))}
-    <input type="hidden" name="key" value="llm.model" />
-    <div class="field">
-      <label class="label" for="model-value">Model</label>
-      <input class="input" id="model-value" name="value" type="text"${listAttribute} placeholder="${escapeHtml(prefill.placeholder)}" value="${escapeHtml(prefill.value)}" required autocomplete="off" />
-      ${datalist}
-    </div>
-    ${standardActions({
-      scope: options.scope,
-      ownState: own.state,
-      effective: options.effective as EffectiveValue<unknown>,
-      label: "Model",
-      clearable: false,
-    })}
-  </form>`;
-}
-
-function scopePrefillPrefix(scope: SettingsScope): string {
-  return scope === "global" ? "Default" : "Inherited";
-}
-
-function contextEnabledControls(options: {
-  scope: SettingsScope;
-  target: SettingsTarget;
-  resolved: ResolvedSettings;
-  effective: EffectiveValue<boolean>;
-  returnTo: string;
-}): string {
-  const own = ownValue(options.resolved, options.scope, "context.auto_compact.enabled");
-  const prefill =
-    own.state === "set" && typeof own.value === "boolean" ? (own.value ? "true" : "false") : "";
+function contextEnabledControls(row: SettingsRowProps): string {
+  const select = row.select;
+  if (select === null) {
+    return "";
+  }
   const placeholder =
-    prefill.length > 0
+    select.placeholder === null
       ? ""
-      : `<option value="" selected disabled>${escapeHtml(scopePrefillPrefix(options.scope))}: ${options.effective.value === true ? "On" : "Off"}</option>`;
-  return `<form class="setting-row__form" method="post" action="/api/settings" data-settings-form data-no-busy data-success-notice="Settings saved.">
-    ${hiddenTarget(options.scope, options.target, withHash(options.returnTo, "#setting-context-auto-compact"))}
-    <input type="hidden" name="key" value="context.auto_compact.enabled" />
+      : `<option value="${escapeHtml(select.placeholder.value)}"${select.placeholder.selected ? " selected" : ""}${select.placeholder.disabled ? " disabled" : ""}>${escapeHtml(select.placeholder.label)}</option>`;
+  const options = select.options
+    .map(
+      (option) =>
+        `<option value="${escapeHtml(option.value)}"${option.selected ? " selected" : ""}>${escapeHtml(option.label)}</option>`,
+    )
+    .join("");
+  return `<form class="setting-row__form" method="post" action="${escapeHtml(row.form.action)}" data-settings-form data-no-busy data-success-notice="${escapeHtml(row.form.successNotice)}">
+    ${hiddenTarget(row.form)}
+    <input type="hidden" name="key" value="${escapeHtml(row.key)}" />
     <div class="field">
       <label class="label" for="context-auto-compact-enabled">Auto-compaction</label>
       <div class="select-wrap">
-        <select class="select" id="context-auto-compact-enabled" name="value" required>${placeholder}<option value="true"${prefill === "true" ? " selected" : ""}>On</option><option value="false"${prefill === "false" ? " selected" : ""}>Off</option></select>
+        <select class="select" id="context-auto-compact-enabled" name="value" required>${placeholder}${options}</select>
         ${icon("chevron-down")}
       </div>
     </div>
-    ${standardActions({
-      scope: options.scope,
-      ownState: own.state,
-      effective: options.effective as EffectiveValue<unknown>,
-      label: "Auto-compaction",
-      clearable: false,
-    })}
+    ${actionButtons(row.actions)}
   </form>`;
 }
 
-function contextPercentControls(options: {
-  scope: SettingsScope;
-  target: SettingsTarget;
-  resolved: ResolvedSettings;
-  effective: EffectiveValue<number>;
-  returnTo: string;
-}): string {
-  const own = ownValue(options.resolved, options.scope, "context.auto_compact.percent");
-  const value = own.state === "set" && typeof own.value === "number" ? String(own.value) : "";
-  const effectivePercent = options.effective.value ?? 80;
-  const placeholder =
-    value.length > 0 ? "" : `${scopePrefillPrefix(options.scope)}: ${effectivePercent}%`;
-  return `<form class="setting-row__form" method="post" action="/api/settings" data-settings-form data-no-busy data-success-notice="Settings saved.">
-    ${hiddenTarget(options.scope, options.target, withHash(options.returnTo, "#setting-context-auto-compact-percent"))}
-    <input type="hidden" name="key" value="context.auto_compact.percent" />
+function contextPercentControls(row: SettingsRowProps): string {
+  const number = row.number;
+  if (number === null) {
+    return "";
+  }
+  return `<form class="setting-row__form" method="post" action="${escapeHtml(row.form.action)}" data-settings-form data-no-busy data-success-notice="${escapeHtml(row.form.successNotice)}">
+    ${hiddenTarget(row.form)}
+    <input type="hidden" name="key" value="${escapeHtml(row.key)}" />
     <div class="field">
       <label class="label" for="context-auto-compact-percent">Threshold</label>
-      <input class="input" id="context-auto-compact-percent" name="value" type="number" min="1" max="99" step="1" placeholder="${escapeHtml(placeholder)}" value="${escapeHtml(value)}" required />
+      <input class="input" id="context-auto-compact-percent" name="value" type="number" min="${number.min}" max="${number.max}" step="${number.step}" placeholder="${escapeHtml(number.placeholder)}" value="${escapeHtml(number.value)}"${number.required ? " required" : ""} />
     </div>
-    ${standardActions({
-      scope: options.scope,
-      ownState: own.state,
-      effective: options.effective as EffectiveValue<unknown>,
-      label: "Auto-compaction threshold",
-      clearable: false,
-    })}
+    ${actionButtons(row.actions)}
   </form>`;
 }
 
-function webToolWarning(
-  key: string,
-  effective: EffectiveValue<WebToolConfig>,
-  resolved: ResolvedSettings,
-): string | undefined {
-  const value = effective.value;
-  if (value === null) {
-    return undefined;
-  }
-  if (value.driver === "builtin") {
-    if (key === "web.search" && (process.env.HANSE_OMO_PLUGIN ?? "").trim().length === 0) {
-      return "Built-in search requires the OMO baseline (HANSE_OMO_PLUGIN). No built-in search tool is available until OMO is installed and enabled.";
-    }
-    return undefined;
-  }
-  const provider = value.options.provider;
-  const status = resolved.providerKeys[provider];
-  if (status === undefined || status.state === "missing") {
-    return `No provider key or host auth is configured for "${provider}". The managed web tool will be unavailable.`;
-  }
-  if (status.state === "cleared") {
-    return `The provider key for "${provider}" is cleared and no wider scope provides one. The managed web tool will be unavailable.`;
-  }
-  if (status.state === "host" && status.authType !== "api") {
-    return `Host auth for "${provider}" is ${status.authType}, not an API key. The managed web tool will be unavailable.`;
-  }
-  if (status.state === "error") {
-    return `Provider "${provider}" has an unusable key: ${status.message}`;
-  }
-  return undefined;
-}
-
-function providerStatusLabel(status: ResolvedSettings["providerKeys"][string]): string {
-  switch (status.state) {
-    case "set":
-      return `Set at ${status.source}`;
-    case "cleared":
-      return `Cleared at ${status.source}`;
-    case "host":
-      return `Host auth (${status.authType})`;
-    case "error":
-      return `Error: ${status.message}`;
-    default:
-      return "Missing";
-  }
-}
-
-function providerPill(status: ResolvedSettings["providerKeys"][string]): string {
+function providerPill(status: SettingsProviderRowProps["status"]): string {
   switch (status.state) {
     case "set":
       return `<span class="status" data-state="delivered">${icon("check")}Set</span>`;
@@ -1493,139 +1110,117 @@ function providerPill(status: ResolvedSettings["providerKeys"][string]): string 
   }
 }
 
-function providerSourceLine(status: ResolvedSettings["providerKeys"][string]): string {
-  if (status.state === "set") {
-    return `from ${scopeLabel(status.source)}`;
-  }
-  if (status.state === "cleared") {
-    return `Cleared at ${scopeLabel(status.source)}`;
-  }
-  if (status.state === "host") {
-    return "from host auth";
-  }
-  if (status.state === "error") {
-    return "error";
-  }
-  return "default";
+function providerSection(props: SettingsProps): string {
+  const providers = props.providers;
+  const rows =
+    providers.length === 0
+      ? '<p class="hint">No providers are referenced by the effective model or web tools.</p>'
+      : providers
+          .map((provider) =>
+            settingRow({
+              id: provider.rowId,
+              title: provider.provider,
+              summaryNote: "Change key",
+              effectiveText: provider.effectiveText,
+              source: provider.sourceLine,
+              state: providerPill(provider.status),
+              body: `${fieldErrorSlot(provider.errorSlotId)}<form class="setting-row__form" method="post" action="${escapeHtml(provider.form.action)}" data-settings-form data-no-busy data-success-notice="${escapeHtml(provider.form.successNotice)}">
+              ${hiddenTarget(provider.form)}
+              <input type="hidden" name="provider" value="${escapeHtml(provider.provider)}" />
+              <div class="field">
+                <label class="label" for="provider-key-${providers.indexOf(provider)}">API key</label>
+                <input class="input" id="provider-key-${providers.indexOf(provider)}" name="key" type="password" autocomplete="new-password" placeholder="${escapeHtml(provider.masked)}" required />
+              </div>
+              <div class="setting-row__actions">
+                <button class="btn btn-primary btn-sm" type="submit" name="action" value="set">Save</button>
+                ${provider.actions.inherit === null ? "" : `<button class="btn btn-secondary btn-sm" type="submit" name="action" value="inherit" formnovalidate data-settings-inherit${provider.actions.inherit.enabled ? "" : " disabled"}>Inherit</button>`}
+                ${provider.actions.clear === null ? "" : `<button class="btn btn-danger btn-sm" type="submit" name="action" value="clear" formnovalidate data-confirm-clear data-setting-label="${escapeHtml(provider.actions.clear.confirmLabel ?? "")}"${provider.actions.clear.enabled ? "" : " disabled"}>Clear</button>`}
+              </div>
+              ${provider.actions.inherit === null || provider.actions.inherit.reason === null ? "" : `<p class="hint setting-row__reason">${escapeHtml(provider.actions.inherit.reason)}</p>`}
+              ${provider.actions.clear === null || provider.actions.clear.reason === null ? "" : `<p class="hint setting-row__reason">${escapeHtml(provider.actions.clear.reason)}</p>`}
+            </form>`,
+            }),
+          )
+          .join("");
+  return `<div class="providers" id="providers" aria-labelledby="providers-title">
+    <div class="providers__head">
+      <h3 class="card__title" id="providers-title">Providers</h3>
+      <span class="badge">${plural(providers.length, "provider")}</span>
+    </div>
+    <p class="hint providers__hint">Keys are encrypted at rest and never shown again. A cleared key suppresses wider scopes and host auth.</p>
+    ${rows}
+    <details class="disclosure provider-add">
+      <summary>Add provider key${icon("chevron-down", "disclosure__chevron")}</summary>
+      <form class="setting-row__form provider-add__form" method="post" action="/api/settings/provider" data-settings-form data-no-busy data-success-notice="Provider key updated.">
+        ${hiddenTarget(props.rows.model.form, `${props.scope.href}#providers`)}
+        ${fieldErrorSlot("provider-add-error")}
+        <div class="field">
+          <label class="label" for="provider-new">Provider</label>
+          <input class="input" id="provider-new" name="provider" type="text" placeholder="deepseek" required autocomplete="off" />
+        </div>
+        <div class="field">
+          <label class="label" for="provider-new-key">API key</label>
+          <input class="input" id="provider-new-key" name="key" type="password" autocomplete="new-password" required />
+        </div>
+        <div class="setting-row__actions">
+          <button class="btn btn-primary btn-sm" type="submit" name="action" value="set">Save</button>
+        </div>
+      </form>
+    </details>
+  </div>`;
 }
 
-function providerInheritAction(
-  status: ResolvedSettings["providerKeys"][string],
-  scope: SettingsScope,
-): { button: string; reason: string } {
-  if (scope === "global") {
-    return { button: "", reason: "" };
-  }
-  const attributes =
-    'class="btn btn-secondary btn-sm" type="submit" name="action" value="inherit" formnovalidate data-settings-inherit';
-  if ((status.state === "set" || status.state === "cleared") && status.source === scope) {
-    return { button: `<button ${attributes}>Inherit</button>`, reason: "" };
-  }
-  const inheritedFrom =
-    status.state === "set" || status.state === "cleared"
-      ? scopeLabel(status.source)
-      : status.state === "host"
-        ? "host auth"
-        : "default";
-  return {
-    button: `<button ${attributes} disabled>Inherit</button>`,
-    reason: `<p class="hint setting-row__reason">Already inherited from ${escapeHtml(inheritedFrom)}.</p>`,
-  };
-}
-
-function providerClearAction(
-  status: ResolvedSettings["providerKeys"][string],
-  scope: SettingsScope,
-  provider: string,
-): { button: string; reason: string } {
-  const attributes = `class="btn btn-danger btn-sm" type="submit" name="action" value="clear" formnovalidate data-confirm-clear data-setting-label="${escapeHtml(`${provider} key`)}"`;
-  if (status.state === "cleared" && status.source === scope) {
-    return {
-      button: `<button ${attributes} disabled>Clear</button>`,
-      reason: '<p class="hint setting-row__reason">Already cleared at this scope.</p>',
-    };
-  }
-  return { button: `<button ${attributes}>Clear</button>`, reason: "" };
-}
-
-function formatModelsText(models: readonly ModelProviderModel[]): string {
-  return models
-    .map((model) =>
-      [
-        model.id,
-        String(model.limit.context),
-        String(model.limit.output),
-        ...(model.name === undefined ? [] : [model.name]),
-      ].join(" | "),
-    )
-    .join("\n");
-}
-
-function customProvidersBlock(options: {
-  scope: SettingsScope;
-  resolved: ResolvedSettings;
-  providers: readonly ModelProvider[];
-  providerKeyIds: ReadonlySet<string>;
-}): string {
-  if (options.scope !== "global") {
-    return `<p class="hint">Custom model providers are global. <a href="/settings#custom-providers">Manage in Global settings</a>.</p>`;
+function customProvidersBlock(props: SettingsProps): string {
+  const block = props.modelProviders;
+  if (props.scope.scope !== "global") {
+    return `<p class="hint">Custom model providers are global. <a href="${escapeHtml(block.manageHref)}">Manage in Global settings</a>.</p>`;
   }
   const rows =
-    options.providers.length === 0
+    block.providers.length === 0
       ? '<p class="hint">No custom providers yet.</p>'
-      : options.providers
-          .map((provider, index) => {
-            const keyStatus =
-              options.resolved.providerKeys[provider.id] ?? ({ state: "missing" } as const);
-            const warnings = [
-              ...collisionWarnings(provider.id, options.providerKeyIds),
-              ...providerBaseUrlWarnings(provider.baseUrl),
-            ];
-            const nameId = `custom-provider-name-${index}`;
-            const urlId = `custom-provider-url-${index}`;
-            const modelsId = `custom-provider-models-${index}`;
-            const body = `<p class="hint">Key: <a href="#${providerRowId(provider.id)}">${providerStatusLabel(keyStatus)}</a> · ${plural(provider.models.length, "model")}</p>
-              <form class="setting-row__form" method="post" action="/api/settings/model-providers" data-settings-form data-no-busy data-success-notice="Provider saved.">
+      : block.providers
+          .map((provider) =>
+            settingRow({
+              id: provider.rowId,
+              title: `${provider.name} (${provider.id})`,
+              summaryNote: "Edit",
+              effectiveText: provider.baseUrl,
+              source: "Global",
+              state: providerPill(provider.key.status),
+              warnings: provider.warnings,
+              body: `<p class="hint">Key: <a href="#provider-${encodeURIComponent(provider.id)}">${escapeHtml(provider.key.label)}</a> · ${plural(provider.models.length, "model")}</p>
+              <form class="setting-row__form" method="post" action="${escapeHtml(block.add.action)}" data-settings-form data-no-busy data-success-notice="Provider saved.">
                 <input type="hidden" name="action" value="update" />
                 <input type="hidden" name="id" value="${escapeHtml(provider.id)}" />
-                <input type="hidden" name="return_to" value="/settings#custom-providers" />
-                ${fieldErrorSlot(`custom-provider-error-${index}`)}
+                <input type="hidden" name="return_to" value="${escapeHtml(block.add.returnTo)}" />
+                ${fieldErrorSlot(provider.errorId)}
                 <div class="field">
-                  <label class="label" for="${nameId}">Name</label>
-                  <input class="input" id="${nameId}" name="name" type="text" value="${escapeHtml(provider.name)}" autocomplete="off" />
+                  <label class="label" for="${escapeHtml(provider.nameInputId)}">Name</label>
+                  <input class="input" id="${escapeHtml(provider.nameInputId)}" name="name" type="text" value="${escapeHtml(provider.name)}" autocomplete="off" />
                 </div>
                 <div class="field">
-                  <label class="label" for="${urlId}">Base URL</label>
-                  <input class="input" id="${urlId}" name="baseUrl" type="text" value="${escapeHtml(provider.baseUrl)}" required autocomplete="off" />
+                  <label class="label" for="${escapeHtml(provider.urlInputId)}">Base URL</label>
+                  <input class="input" id="${escapeHtml(provider.urlInputId)}" name="baseUrl" type="text" value="${escapeHtml(provider.baseUrl)}" required autocomplete="off" />
                 </div>
                 <div class="field">
-                  <label class="label" for="${modelsId}">Models</label>
-                  <textarea class="input" id="${modelsId}" name="models" rows="4" required>${escapeHtml(formatModelsText(provider.models))}</textarea>
+                  <label class="label" for="${escapeHtml(provider.modelsInputId)}">Models</label>
+                  <textarea class="input" id="${escapeHtml(provider.modelsInputId)}" name="models" rows="4" required>${escapeHtml(provider.modelsText)}</textarea>
                   <p class="hint">One per line: id | context | output | optional name.</p>
                 </div>
                 <div class="setting-row__actions">
                   <button class="btn btn-primary btn-sm" type="submit">Save</button>
                   <button class="btn btn-danger btn-sm" type="submit" name="delete" value="1" data-confirm="Delete provider ${escapeHtml(provider.id)}?">Delete</button>
                 </div>
-              </form>`;
-            return settingRow({
-              id: `custom-provider-${encodeURIComponent(provider.id)}`,
-              title: `${provider.name} (${provider.id})`,
-              summaryNote: "Edit",
-              effectiveText: provider.baseUrl,
-              source: "Global",
-              state: providerPill(keyStatus),
-              warnings,
-              body,
-            });
-          })
+              </form>`,
+            }),
+          )
           .join("");
   const add = `<details class="disclosure provider-add">
     <summary>Add custom provider${icon("chevron-down", "disclosure__chevron")}</summary>
-    <form class="setting-row__form provider-add__form" method="post" action="/api/settings/model-providers" data-settings-form data-no-busy data-success-notice="Provider saved.">
+    <form class="setting-row__form provider-add__form" method="post" action="${escapeHtml(block.add.action)}" data-settings-form data-no-busy data-success-notice="Provider saved.">
       <input type="hidden" name="action" value="create" />
-      <input type="hidden" name="return_to" value="/settings#custom-providers" />
-      ${fieldErrorSlot("custom-provider-add-error")}
+      <input type="hidden" name="return_to" value="${escapeHtml(block.add.returnTo)}" />
+      ${fieldErrorSlot(block.add.errorId)}
       <div class="field">
         <label class="label" for="custom-provider-new-id">Provider id</label>
         <input class="input" id="custom-provider-new-id" name="id" type="text" placeholder="llm-lan" required autocomplete="off" />
@@ -1652,137 +1247,44 @@ function customProvidersBlock(options: {
   return `<div class="providers" id="custom-providers" aria-labelledby="custom-providers-title">
     <div class="providers__head">
       <h3 class="card__title" id="custom-providers-title">Custom model providers</h3>
-      <span class="badge">${plural(options.providers.length, "provider")}</span>
+      <span class="badge">${plural(block.count, "provider")}</span>
     </div>
     <p class="hint providers__hint">Global OpenAI-compatible endpoints. The API key stays in the Providers block.</p>
     ${rows}${add}
   </div>`;
 }
 
-function providerRowId(provider: string): string {
-  return `provider-${encodeURIComponent(provider)}`;
-}
-
-function providerSection(options: {
-  resolved: ResolvedSettings;
-  scope: SettingsScope;
-  target: SettingsTarget;
-  returnTo: string;
-}): string {
-  const providers = Object.entries(options.resolved.providerKeys).sort(([a], [b]) =>
-    a.localeCompare(b),
-  );
+function pendingSection(restart: SettingsProps["restart"]): string {
   const rows =
-    providers.length === 0
-      ? '<p class="hint">No providers are referenced by the effective model or web tools.</p>'
-      : providers
-          .map(([provider, status], index) => {
-            const inherit = providerInheritAction(status, options.scope);
-            const clear = providerClearAction(status, options.scope, provider);
-            const errorId = `provider-error-${index}`;
-            const form = `<form class="setting-row__form" method="post" action="/api/settings/provider" data-settings-form data-no-busy data-success-notice="Provider key updated.">
-              ${hiddenTarget(options.scope, options.target, withHash(options.returnTo, "#providers"))}
-              <input type="hidden" name="provider" value="${escapeHtml(provider)}" />
-              <div class="field">
-                <label class="label" for="provider-key-${index}">API key</label>
-                <input class="input" id="provider-key-${index}" name="key" type="password" autocomplete="new-password" placeholder="Not shown" required />
-              </div>
-              <div class="setting-row__actions">
-                <button class="btn btn-primary btn-sm" type="submit" name="action" value="set">Save</button>
-                ${inherit.button}
-                ${clear.button}
-              </div>
-              ${inherit.reason}
-              ${clear.reason}
-            </form>`;
-            return settingRow({
-              id: providerRowId(provider),
-              title: provider,
-              summaryNote: "Change key",
-              effectiveText: providerStatusLabel(status),
-              source: providerSourceLine(status),
-              state: providerPill(status),
-              body: `${fieldErrorSlot(errorId)}${form}`,
-            });
-          })
-          .join("");
-  return `<div class="providers" id="providers" aria-labelledby="providers-title">
-    <div class="providers__head">
-      <h3 class="card__title" id="providers-title">Providers</h3>
-      <span class="badge">${plural(providers.length, "provider")}</span>
-    </div>
-    <p class="hint providers__hint">Keys are encrypted at rest and never shown again. A cleared key suppresses wider scopes and host auth.</p>
-    ${rows}
-    <details class="disclosure provider-add">
-      <summary>Add provider key${icon("chevron-down", "disclosure__chevron")}</summary>
-      <form class="setting-row__form provider-add__form" method="post" action="/api/settings/provider" data-settings-form data-no-busy data-success-notice="Provider key updated.">
-        ${hiddenTarget(options.scope, options.target, withHash(options.returnTo, "#providers"))}
-        ${fieldErrorSlot("provider-add-error")}
-        <div class="field">
-          <label class="label" for="provider-new">Provider</label>
-          <input class="input" id="provider-new" name="provider" type="text" placeholder="deepseek" required autocomplete="off" />
-        </div>
-        <div class="field">
-          <label class="label" for="provider-new-key">API key</label>
-          <input class="input" id="provider-new-key" name="key" type="password" autocomplete="new-password" required />
-        </div>
-        <div class="setting-row__actions">
-          <button class="btn btn-primary btn-sm" type="submit" name="action" value="set">Save</button>
-        </div>
-      </form>
-    </details>
-  </div>`;
-}
-
-function humanReason(reason: string): string {
-  if (reason === "settings_changed") {
-    return "Settings changed";
-  }
-  if (reason === "profile_not_applied") {
-    return "Agent profile not applied";
-  }
-  if (reason === "applied_state_unknown") {
-    return "Applied state unknown";
-  }
-  return reason;
-}
-
-function pendingSection(options: {
-  pending: PendingRestart[];
-  returnTo: string;
-  profileWarnings: string[];
-}): string {
-  const rows =
-    options.pending.length === 0
+    restart.pending.length === 0
       ? '<p class="hint">No running agents are waiting for a restart.</p>'
-      : `<div class="stack--tight">${options.pending
-          .map((entry) => {
-            const href = `/projects/${encodeURIComponent(entry.projectId)}/apps/${encodeURIComponent(entry.appKey)}`;
-            return `<div class="cluster" id="pending-${escapeHtml(entry.appId)}">
+      : `<div class="stack--tight">${restart.pending
+          .map(
+            (entry) => `<div class="cluster" id="pending-${escapeHtml(entry.appId)}">
               <span class="status" data-state="awaiting_approval">${icon("stamp")}Restart required</span>
-              <a class="small" href="${escapeHtml(href)}">${escapeHtml(entry.appKey)}</a>
-              <span class="small">${escapeHtml(entry.reasons.map(humanReason).join(", "))}</span>
-              <form method="post" action="/api/apps/${encodeURIComponent(entry.appKey)}/restart?project=${encodeURIComponent(entry.projectId)}">
-                <input type="hidden" name="return_to" value="${escapeHtml(options.returnTo)}" />
+              <a class="small" href="${escapeHtml(entry.href)}">${escapeHtml(entry.appKey)}</a>
+              <span class="small">${escapeHtml(entry.reasonLabels.join(", "))}</span>
+              <form method="post" action="${escapeHtml(entry.restartAction)}">
+                <input type="hidden" name="return_to" value="${escapeHtml(entry.returnTo)}" />
                 <button class="btn btn-primary btn-sm" type="submit">${icon("refresh")}Restart agent</button>
               </form>
-            </div>`;
-          })
+            </div>`,
+          )
           .join("")}</div>`;
   return `<section class="card settings-section" id="settings-restart" aria-labelledby="restart-pending-title">
     <div class="card__head">
       <h2 class="card__title" id="restart-pending-title">Restart &amp; pending</h2>
-      <span class="badge">${options.pending.length}</span>
+      <span class="badge">${restart.pending.length}</span>
     </div>
     <div class="card__body" id="restart-pending">
       <p class="hint">Settings changes apply only on an explicit restart. A restart interrupts an active turn; sessions are kept.</p>
       ${rows}
     </div>
-    ${profileWarningsSection(options.profileWarnings)}
+    ${profileWarningsSection(restart.profileWarnings)}
   </section>`;
 }
 
-function warningsSection(warnings: string[]): string {
+function warningsSection(warnings: readonly string[]): string {
   if (warnings.length === 0) {
     return "";
   }
@@ -1792,7 +1294,7 @@ function warningsSection(warnings: string[]): string {
   </section>`;
 }
 
-function profileWarningsSection(warnings: string[]): string {
+function profileWarningsSection(warnings: readonly string[]): string {
   if (warnings.length === 0) {
     return "";
   }
@@ -1802,7 +1304,7 @@ function profileWarningsSection(warnings: string[]): string {
   </div>`;
 }
 
-function gitAuthPill(status: GitAuthStatus): string {
+function gitAuthPill(status: SettingsGitCredentialProps["status"]): string {
   switch (status.state) {
     case "set":
       return `<span class="status" data-state="delivered">${icon("check")}Set</span>`;
@@ -1815,92 +1317,38 @@ function gitAuthPill(status: GitAuthStatus): string {
   }
 }
 
-function gitAuthSourceLine(status: GitAuthStatus): string {
-  if (status.state === "set") {
-    return `from ${scopeLabel(status.source)}`;
-  }
-  if (status.state === "cleared") {
-    return `Cleared at ${scopeLabel(status.source)}`;
-  }
-  return "default";
-}
-
-function gitAuthMetadata(status: GitAuthStatus): string {
-  if (status.state === "set" && status.kind === "ssh") {
-    return status.publicKey;
-  }
-  if (status.state === "set" && status.kind === "https") {
-    return status.hosts.join(", ");
-  }
-  if (status.state === "cleared") {
-    return "Cleared";
-  }
-  if (status.state === "error") {
-    return "Error";
-  }
-  return "Not set";
-}
-
-function gitAuthScopeDetails(
-  scoped: Record<SettingsScope, GitAuthScopedState>,
-  scope: SettingsScope,
-): string {
-  if (scope === "global") {
-    return "";
-  }
-  const rows = applicableScopes(scope)
-    .map((entry) => {
-      const state = scoped[entry] ?? "absent";
-      const label = state === "absent" ? "Inherited" : state === "cleared" ? "Cleared" : "Set";
-      return `<div class="scope-list__row"><dt>${escapeHtml(scopeLabel(entry))}</dt><dd><span class="scope-list__state">${escapeHtml(label)}</span></dd></div>`;
-    })
-    .join("");
-  return `<details class="disclosure scope-details">
-    <summary>Scope details${icon("chevron-down", "disclosure__chevron")}</summary>
-    <dl class="scope-list">${rows}</dl>
-  </details>`;
-}
-
-function gitAuthDetails(status: GitAuthStatus): string {
-  if (status.state === "set" && status.kind === "ssh") {
+function gitAuthDetails(credential: SettingsGitCredentialProps): string {
+  if (credential.status.state === "set" && credential.status.kind === "ssh") {
     return `<div class="stack--tight">
       <span class="overline">Public key</span>
-      <span class="mono small" id="git-ssh-public-key">${escapeHtml(status.publicKey)}</span>
+      <span class="mono small" id="git-ssh-public-key">${escapeHtml(credential.details.publicKey ?? "")}</span>
       <span class="overline">Fingerprint</span>
-      <span class="mono small" id="git-ssh-fingerprint">${escapeHtml(status.fingerprint)}</span>
+      <span class="mono small" id="git-ssh-fingerprint">${escapeHtml(credential.details.fingerprint ?? "")}</span>
       <span class="overline">known_hosts</span>
-      <span class="small">${status.hasKnownHosts ? "Set — strict host checking." : "Not set — accept-new (TOFU) on first connection."}</span>
+      <span class="small">${credential.details.hasKnownHosts === true ? "Set — strict host checking." : "Not set — accept-new (TOFU) on first connection."}</span>
     </div>`;
   }
-  if (status.state === "set" && status.kind === "https") {
+  if (credential.status.state === "set" && credential.status.kind === "https") {
     return `<div class="stack--tight">
       <span class="overline">Allowed hosts</span>
-      <span class="mono small" id="git-https-allowed-hosts">${escapeHtml(status.hosts.join(", "))}</span>
+      <span class="mono small" id="git-https-allowed-hosts">${escapeHtml((credential.details.hosts ?? []).join(", "))}</span>
       <span class="overline">Username</span>
-      <span class="mono small" id="git-https-username-value">${escapeHtml(status.username)}</span>
+      <span class="mono small" id="git-https-username-value">${escapeHtml(credential.details.username ?? "")}</span>
     </div>`;
   }
-  if (status.state === "error") {
-    return `<p class="field-error" role="alert">${icon("alert-triangle")}${escapeHtml(status.message)}</p>`;
+  if (credential.status.state === "error") {
+    return `<p class="field-error" role="alert">${icon("alert-triangle")}${escapeHtml(credential.details.error ?? "")}</p>`;
   }
-  if (status.state === "cleared") {
+  if (credential.status.state === "cleared") {
     return '<p class="hint">A tombstone at this scope suppresses wider credentials; nothing is materialized for the app.</p>';
   }
   return '<p class="hint">No credential is set or inherited; git operations that need a remote credential fail closed.</p>';
 }
 
-function gitAuthForm(options: {
-  kind: GitAuthKind;
-  scope: SettingsScope;
-  target: SettingsTarget;
-  returnTo: string;
-  allowTest: boolean;
-  inheritReason?: string;
-  clearReason?: string;
-}): string {
-  const prefix = `git-${options.kind}`;
+function gitAuthForm(credential: SettingsGitCredentialProps): string {
+  const prefix = `git-${credential.kind}`;
   const fields =
-    options.kind === "ssh"
+    credential.kind === "ssh"
       ? `<div class="field">
           <label class="label" for="${prefix}-private-key">SSH private key</label>
           <textarea class="textarea" id="${prefix}-private-key" name="privateKey" rows="6" autocomplete="off" spellcheck="false" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea>
@@ -1921,23 +1369,23 @@ function gitAuthForm(options: {
           <label class="label" for="${prefix}-token">Token</label>
           <input class="input" id="${prefix}-token" name="token" type="password" autocomplete="new-password" placeholder="Not shown" />
         </div>`;
-  const testFields = options.allowTest
+  const testFields = credential.allowTest
     ? `<div class="field">
           <label class="label" for="${prefix}-test-remote">Remote (optional)</label>
           <input class="input" id="${prefix}-test-remote" name="testRemote" type="text" autocomplete="off" spellcheck="false" placeholder="Defaults to origin" />
         </div>`
     : "";
-  const testButton = options.allowTest
+  const testButton = credential.allowTest
     ? '<button class="btn btn-secondary btn-sm" type="submit" data-git-test>Test connection</button>'
     : "";
   const inheritButton =
-    options.scope === "global"
+    credential.form.hidden.scope === "global"
       ? ""
-      : `<button class="btn btn-secondary btn-sm" type="submit" name="action" value="inherit" formnovalidate data-settings-inherit${options.inheritReason === undefined ? "" : " disabled"}>Inherit</button>`;
-  const clearButton = `<button class="btn btn-danger btn-sm" type="submit" name="action" value="clear" formnovalidate${options.clearReason === undefined ? "" : " disabled"}>Clear</button>`;
-  return `<form class="stack--tight" data-git-auth data-no-busy method="post" action="/api/settings/git">
-    ${hiddenTarget(options.scope, options.target, options.returnTo)}
-    <input type="hidden" name="kind" value="${escapeHtml(options.kind)}" />
+      : `<button class="btn btn-secondary btn-sm" type="submit" name="action" value="inherit" formnovalidate data-settings-inherit${credential.inheritReason === null ? "" : " disabled"}>Inherit</button>`;
+  const clearButton = `<button class="btn btn-danger btn-sm" type="submit" name="action" value="clear" formnovalidate${credential.clearReason === null ? "" : " disabled"}>Clear</button>`;
+  return `<form class="stack--tight" data-git-auth data-no-busy method="post" action="${escapeHtml(credential.actions.action)}">
+    ${hiddenTarget(credential.form)}
+    <input type="hidden" name="kind" value="${escapeHtml(credential.kind)}" />
     ${fields}
     ${testFields}
     <div class="setting-row__actions">
@@ -1946,10 +1394,10 @@ function gitAuthForm(options: {
       ${clearButton}
       ${testButton}
     </div>
-    ${options.inheritReason === undefined ? "" : `<p class="hint setting-row__reason">${escapeHtml(options.inheritReason)}</p>`}
-    ${options.clearReason === undefined ? "" : `<p class="hint setting-row__reason">${escapeHtml(options.clearReason)}</p>`}
+    ${credential.inheritReason === null ? "" : `<p class="hint setting-row__reason">${escapeHtml(credential.inheritReason)}</p>`}
+    ${credential.clearReason === null ? "" : `<p class="hint setting-row__reason">${escapeHtml(credential.clearReason)}</p>`}
     ${
-      options.allowTest
+      credential.allowTest
         ? `<div class="stack--tight" data-git-test-result hidden>
       <p class="small" data-git-test-summary role="status" aria-live="polite"></p>
       <ul class="small" data-git-test-warnings hidden></ul>
@@ -1961,130 +1409,61 @@ function gitAuthForm(options: {
   </form>`;
 }
 
-function gitCredentialRow(options: {
-  kind: GitAuthKind;
-  title: string;
-  status: GitAuthStatus;
-  scoped: Record<SettingsScope, GitAuthScopedState>;
-  scope: SettingsScope;
-  target: SettingsTarget;
-  returnTo: string;
-  allowTest: boolean;
-}): string {
-  const scopedState = options.scoped[options.scope] ?? "absent";
-  const inheritReason =
-    options.scope === "global" || scopedState !== "absent"
-      ? undefined
-      : options.status.state === "set" || options.status.state === "cleared"
-        ? `Already inherited from ${scopeLabel(options.status.source)}.`
-        : "No credential is set at this scope.";
-  const clearReason = scopedState === "cleared" ? "Already cleared at this scope." : undefined;
+function gitCredentialRow(credential: SettingsGitCredentialProps): string {
   return settingRow({
-    id: `setting-git-${options.kind}`,
-    title: options.title,
-    effectiveText: gitAuthMetadata(options.status),
-    source: gitAuthSourceLine(options.status),
-    state: gitAuthPill(options.status),
-    body: `<div class="stack--tight" id="git-${options.kind}">
-      ${gitAuthDetails(options.status)}
-      ${gitAuthForm({
-        kind: options.kind,
-        scope: options.scope,
-        target: options.target,
-        returnTo: withHash(options.returnTo, `#setting-git-${options.kind}`),
-        allowTest: options.allowTest,
-        ...(inheritReason === undefined ? {} : { inheritReason }),
-        ...(clearReason === undefined ? {} : { clearReason }),
-      })}
+    id: `setting-git-${credential.kind}`,
+    title: credential.title,
+    effectiveText: credential.effectiveText,
+    source: credential.sourceLine,
+    state: gitAuthPill(credential.status),
+    body: `<div class="stack--tight" id="git-${credential.kind}">
+      ${gitAuthDetails(credential)}
+      ${gitAuthForm(credential)}
     </div>`,
-    details: gitAuthScopeDetails(options.scoped, options.scope),
+    details: scopeDetailsHtml(credential.scopeDetails),
   });
 }
 
-function gitIdentityRow(options: {
-  key: "git.user.name" | "git.user.email";
-  title: string;
-  id: "git-identity-name" | "git-identity-email";
-  inputId: string;
-  effective: EffectiveValue<string>;
-  scope: SettingsScope;
-  target: SettingsTarget;
-  returnTo: string;
-  resolved: ResolvedSettings;
-}): string {
-  const own = ownValue(options.resolved, options.scope, options.key);
-  const prefill = stringPrefill(options.scope, own, options.effective);
-  const rowId =
-    options.key === "git.user.name" ? "setting-git-user-name" : "setting-git-user-email";
-  const errorId = `${rowId}-error`;
-  const form = `<div id="${options.id}">
-    <form class="setting-row__form" method="post" action="/api/settings" data-settings-form data-no-busy data-success-notice="Settings saved.">
-      ${hiddenTarget(options.scope, options.target, withHash(options.returnTo, `#${rowId}`))}
-      <input type="hidden" name="key" value="${escapeHtml(options.key)}" />
+function gitIdentityRow(row: SettingsRowProps, title: string): string {
+  const text = row.text;
+  if (text === null) {
+    return "";
+  }
+  const identityId = row.key === "git.user.name" ? "git-identity-name" : "git-identity-email";
+  const inputId = row.key === "git.user.name" ? "git-user-name" : "git-user-email";
+  const form = `<div id="${identityId}">
+    <form class="setting-row__form" method="post" action="${escapeHtml(row.form.action)}" data-settings-form data-no-busy data-success-notice="${escapeHtml(row.form.successNotice)}">
+      ${hiddenTarget(row.form)}
+      <input type="hidden" name="key" value="${escapeHtml(row.key)}" />
       <div class="field">
-        <label class="label" for="${escapeHtml(options.inputId)}">${escapeHtml(options.title)}</label>
-        <input class="input" id="${escapeHtml(options.inputId)}" name="value" type="text" autocomplete="off" placeholder="${escapeHtml(prefill.placeholder)}" value="${escapeHtml(prefill.value)}" />
+        <label class="label" for="${inputId}">${escapeHtml(title)}</label>
+        <input class="input" id="${inputId}" name="value" type="text" autocomplete="off" placeholder="${escapeHtml(text.placeholder)}" value="${escapeHtml(text.value)}" />
       </div>
-      ${standardActions({
-        scope: options.scope,
-        ownState: own.state,
-        effective: options.effective as EffectiveValue<unknown>,
-        label: options.title,
-        clearable: true,
-      })}
+      ${actionButtons(row.actions)}
     </form>
   </div>`;
   return settingRow({
-    id: rowId,
-    title: options.title,
-    effectiveText: effectiveText(options.effective as EffectiveValue<unknown>),
-    source: sourceLine(options.effective as EffectiveValue<unknown>),
-    body: `${fieldErrorSlot(errorId)}${form}`,
-    details: scopeDetailsHtml(options.resolved, options.scope, options.key),
+    id: row.id,
+    title,
+    effectiveText: row.effectiveText,
+    source: row.sourceLine,
+    body: `${fieldErrorSlot(row.errorSlotId)}${form}`,
+    details: scopeDetailsHtml(row.scopeDetails),
   });
 }
 
-function gitSection(options: {
-  resolved: ResolvedSettings;
-  scope: SettingsScope;
-  target: SettingsTarget;
-  returnTo: string;
-  testAppPath?: string;
-}): string {
-  const gitAuth: ResolvedSettings["gitAuth"] = options.resolved.gitAuth;
-  const scoped: GitAuthScoped = options.resolved.gitAuthScoped;
-  const credentials = [
-    gitCredentialRow({
-      kind: "ssh",
-      title: "SSH credential",
-      status: gitAuth.ssh,
-      scoped: scoped.ssh,
-      scope: options.scope,
-      target: options.target,
-      returnTo: options.returnTo,
-      allowTest: options.scope === "app",
-    }),
-    gitCredentialRow({
-      kind: "https",
-      title: "HTTPS credential",
-      status: gitAuth.https,
-      scoped: scoped.https,
-      scope: options.scope,
-      target: options.target,
-      returnTo: options.returnTo,
-      allowTest: options.scope === "app",
-    }),
-  ].join("");
+function gitSection(props: SettingsProps): string {
+  const credentials = [gitCredentialRow(props.git.ssh), gitCredentialRow(props.git.https)].join("");
   const testNote =
-    options.scope === "app"
-      ? '<p class="hint">Test connection checks the draft values against the remote without saving them. The agent must be running.</p>'
+    props.scope.scope === "app"
+      ? `<p class="hint">${escapeHtml(props.git.testCheck.hint)}</p>`
       : `<div class="stack--tight">
         <span class="overline">Credential check</span>
-        <p class="hint">Run the remote check from an application settings page.</p>
+        <p class="hint">${escapeHtml(props.git.testCheck.hint)}</p>
         ${
-          options.testAppPath === undefined
+          props.git.testCheck.href === null
             ? ""
-            : `<a class="btn btn-ghost btn-sm" href="${escapeHtml(options.testAppPath)}">Application settings</a>`
+            : `<a class="btn btn-ghost btn-sm" href="${escapeHtml(props.git.testCheck.href)}">Application settings</a>`
         }
       </div>`;
   return `<section class="card settings-section" id="settings-git" aria-labelledby="git-title">
@@ -2094,28 +1473,8 @@ function gitSection(options: {
     </div>
     <div class="card__body card__body--flush" id="git">
       <noscript><p class="hint settings-noscript">Git credential changes require JavaScript.</p></noscript>
-      ${gitIdentityRow({
-        key: "git.user.name",
-        title: "User name",
-        id: "git-identity-name",
-        inputId: "git-user-name",
-        effective: options.resolved.effective.git.user.name,
-        scope: options.scope,
-        target: options.target,
-        returnTo: options.returnTo,
-        resolved: options.resolved,
-      })}
-      ${gitIdentityRow({
-        key: "git.user.email",
-        title: "User email",
-        id: "git-identity-email",
-        inputId: "git-user-email",
-        effective: options.resolved.effective.git.user.email,
-        scope: options.scope,
-        target: options.target,
-        returnTo: options.returnTo,
-        resolved: options.resolved,
-      })}
+      ${gitIdentityRow(props.rows.gitName, "User name")}
+      ${gitIdentityRow(props.rows.gitEmail, "User email")}
       ${credentials}
       <div class="stack--tight git-notes">
         ${testNote}
@@ -2126,34 +1485,29 @@ function gitSection(options: {
   </section>`;
 }
 
-function settingsNav(options: { scope: SettingsScope; target: SettingsTarget }): string {
-  const globalLink = `<a class="settings-nav__link" href="/settings">Global</a>`;
-  const projectHref =
-    options.target.projectId === undefined
-      ? undefined
-      : `/projects/${encodeURIComponent(options.target.projectId)}/settings`;
-  const appHref =
-    options.target.projectId === undefined || options.target.appKey === undefined
-      ? undefined
-      : `/projects/${encodeURIComponent(options.target.projectId)}/apps/${encodeURIComponent(options.target.appKey)}/settings`;
+function settingsNav(props: SettingsProps): string {
+  const scope = props.scope;
+  const globalLink = `<a class="settings-nav__link" href="${escapeHtml(scope.nav.globalHref)}">Global</a>`;
+  const projectHref = scope.nav.projectHref;
+  const appHref = scope.nav.appHref;
   const current = (label: string, short?: string): string =>
     short === undefined
       ? `<span class="settings-nav__link" aria-current="page">${icon("check")}${escapeHtml(label)}</span>`
       : `<span class="settings-nav__link" aria-current="page">${icon("check")}<span class="settings-nav__scope-full">${escapeHtml(label)}</span><span class="settings-nav__scope-short">${escapeHtml(short)}</span></span>`;
   const scopes =
-    options.scope === "global"
+    scope.scope === "global"
       ? ""
       : `<div class="settings-nav__scopes" role="group" aria-label="Settings scope">
         ${globalLink}
         ${
-          options.scope === "project"
+          scope.scope === "project"
             ? current("Project")
             : `<a class="settings-nav__link" href="${escapeHtml(projectHref ?? "/settings")}">Project</a>`
         }
         ${
-          options.scope === "app"
+          scope.scope === "app"
             ? current("Application", "App")
-            : appHref === undefined
+            : appHref === null
               ? ""
               : `<a class="settings-nav__link" href="${escapeHtml(appHref)}">Application</a>`
         }
@@ -2170,17 +1524,18 @@ function settingsNav(options: { scope: SettingsScope; target: SettingsTarget }):
   </nav>`;
 }
 
-function clearDialog(): string {
-  return `<dialog class="dialog" id="settings-clear-dialog" aria-labelledby="settings-clear-title">
+function clearDialog(dialogs: SettingsProps["dialogs"]): string {
+  const clear = dialogs.clear;
+  return `<dialog class="dialog" id="${clear.id}" aria-labelledby="${clear.titleId}">
     <div class="dialog__frame">
-      <form class="dialog__form" method="post" action="/api/settings" id="settings-clear-form" data-no-busy>
+      <form class="dialog__form" method="post" action="${escapeHtml(clear.action)}" id="${clear.formId}" data-no-busy>
         <input type="hidden" name="action" value="clear" />
         <div class="dialog__head">
-          <h2 class="dialog__title" id="settings-clear-title">Clear setting at this scope?</h2>
-          <p class="dialog__meta" id="settings-clear-meta"></p>
+          <h2 class="dialog__title" id="${clear.titleId}">Clear setting at this scope?</h2>
+          <p class="dialog__meta" id="${clear.metaId}"></p>
         </div>
         <div class="dialog__body">
-          <p id="settings-clear-body">Wider scopes will no longer apply. The setting stays disabled until you set it again.</p>
+          <p id="${clear.bodyId}">Wider scopes will no longer apply. The setting stays disabled until you set it again.</p>
           <p class="field-error" data-settings-error role="alert" hidden></p>
         </div>
         <div class="dialog__foot">
@@ -2192,138 +1547,23 @@ function clearDialog(): string {
   </dialog>`;
 }
 
-function settingsSections(options: {
-  site: SiteModel;
-  scope: SettingsScope;
-  target: SettingsTarget;
-  resolved: ResolvedSettings & { pendingRestart: PendingRestart[] };
-  deps: HttpDeps;
-  returnTo: string;
-  project?: ProjectView;
-  app?: RegisteredApp;
-}): SettingsSections {
-  const effectiveModel = options.resolved.effective.llm.model;
-  const modelWarning = modelProviderWarning(options.resolved);
-  const customProviders = options.deps.modelProviders?.list() ?? [];
-  const providerKeyIds = new Set(options.deps.settings?.allProviderIds() ?? []);
-  const searchEffective = options.resolved.effective.web.search;
-  const fetchEffective = options.resolved.effective.web.fetch;
+function settingsRowCard(row: SettingsRowProps, body: string): string {
+  return settingRow({
+    id: row.id,
+    title: row.title,
+    hint: row.hint ?? undefined,
+    effectiveText: row.effectiveText,
+    source: row.sourceLine,
+    warnings: row.warnings,
+    body: `${fieldErrorSlot(row.errorSlotId)}${body}`,
+    details: scopeDetailsHtml(row.scopeDetails),
+  });
+}
 
-  const agentRows = `${settingRow({
-    id: "setting-llm-model",
-    title: "Model",
-    effectiveText: effectiveText(effectiveModel as EffectiveValue<unknown>),
-    source: sourceLine(effectiveModel as EffectiveValue<unknown>),
-    hint: "Selected model applies to new sessions and OMO agents; existing sessions may keep their model.",
-    ...(modelWarning === undefined ? {} : { warnings: [modelWarning] }),
-    body: `${fieldErrorSlot("setting-llm-model-error")}${modelControls({
-      scope: options.scope,
-      target: options.target,
-      resolved: options.resolved,
-      effective: effectiveModel,
-      providers: customProviders,
-      returnTo: options.returnTo,
-    })}`,
-    details: scopeDetailsHtml(options.resolved, options.scope, "llm.model"),
-  })}${providerSection({
-    resolved: options.resolved,
-    scope: options.scope,
-    target: options.target,
-    returnTo: options.returnTo,
-  })}${customProvidersBlock({
-    scope: options.scope,
-    resolved: options.resolved,
-    providers: customProviders,
-    providerKeyIds,
-  })}`;
-
-  const webRows = `${settingRow({
-    id: "setting-web-search",
-    title: "Web search",
-    effectiveText:
-      searchEffective.value === null
-        ? effectiveText(searchEffective as EffectiveValue<unknown>)
-        : searchEffective.value.driver,
-    source: sourceLine(searchEffective as EffectiveValue<unknown>),
-    hint: "Built-in uses the existing OMO/opencode tools. DeepSeek uses the managed hanse_web MCP server.",
-    ...(webToolWarning("web.search", searchEffective, options.resolved) === undefined
-      ? {}
-      : { warnings: [webToolWarning("web.search", searchEffective, options.resolved) as string] }),
-    body: `${fieldErrorSlot("setting-web-search-error")}${webControls({
-      key: "web.search",
-      title: "Web search",
-      scope: options.scope,
-      target: options.target,
-      returnTo: options.returnTo,
-      resolved: options.resolved,
-      effective: searchEffective,
-      current: ownWebValue(options.resolved, options.scope, "web.search"),
-    })}`,
-    details: scopeDetailsHtml(options.resolved, options.scope, "web.search"),
-  })}${settingRow({
-    id: "setting-web-fetch",
-    title: "Web fetch",
-    effectiveText:
-      fetchEffective.value === null
-        ? effectiveText(fetchEffective as EffectiveValue<unknown>)
-        : fetchEffective.value.driver,
-    source: sourceLine(fetchEffective as EffectiveValue<unknown>),
-    hint: "Built-in uses opencode webfetch. DeepSeek uses the managed hanse_web MCP server.",
-    ...(webToolWarning("web.fetch", fetchEffective, options.resolved) === undefined
-      ? {}
-      : { warnings: [webToolWarning("web.fetch", fetchEffective, options.resolved) as string] }),
-    body: `${fieldErrorSlot("setting-web-fetch-error")}${webControls({
-      key: "web.fetch",
-      title: "Web fetch",
-      scope: options.scope,
-      target: options.target,
-      returnTo: options.returnTo,
-      resolved: options.resolved,
-      effective: fetchEffective,
-      current: ownWebValue(options.resolved, options.scope, "web.fetch"),
-    })}`,
-    details: scopeDetailsHtml(options.resolved, options.scope, "web.fetch"),
-  })}`;
-
-  const enabledEffective = options.resolved.effective.context.autoCompact.enabled;
-  const percentEffective = options.resolved.effective.context.autoCompact.percent;
-  const contextRows = `${settingRow({
-    id: "setting-context-auto-compact",
-    title: "Auto-compaction",
-    effectiveText: enabledEffective.value === true ? "On" : "Off",
-    source: sourceLine(enabledEffective as EffectiveValue<unknown>),
-    hint: "Automatically compacts top-level sessions when context usage crosses the threshold. Live; no restart is required.",
-    body: `${fieldErrorSlot("setting-context-auto-compact-error")}${contextEnabledControls({
-      scope: options.scope,
-      target: options.target,
-      resolved: options.resolved,
-      effective: enabledEffective,
-      returnTo: options.returnTo,
-    })}`,
-    details: scopeDetailsHtml(options.resolved, options.scope, "context.auto_compact.enabled"),
-  })}${settingRow({
-    id: "setting-context-auto-compact-percent",
-    title: "Auto-compaction threshold",
-    effectiveText:
-      percentEffective.value === null
-        ? effectiveText(percentEffective as EffectiveValue<unknown>)
-        : `${percentEffective.value}%`,
-    source: sourceLine(percentEffective as EffectiveValue<unknown>),
-    hint: "Percentage of the model context window used when auto-compaction is on. opencode's own overflow compaction remains a fallback.",
-    body: `${fieldErrorSlot("setting-context-auto-compact-percent-error")}${contextPercentControls({
-      scope: options.scope,
-      target: options.target,
-      resolved: options.resolved,
-      effective: percentEffective,
-      returnTo: options.returnTo,
-    })}`,
-    details: scopeDetailsHtml(options.resolved, options.scope, "context.auto_compact.percent"),
-  })}`;
-
-  const profileWarnings =
-    options.scope === "app" && options.app !== undefined
-      ? (options.deps.manager?.profileWarnings(options.app.id) ?? [])
-      : [];
+export function settingsSections(props: SettingsProps): SettingsSections {
+  const agentRows = `${settingsRowCard(props.rows.model, modelControls(props.rows.model))}${providerSection(props)}${customProvidersBlock(props)}`;
+  const webRows = `${settingsRowCard(props.rows.webSearch, webControls(props.rows.webSearch))}${settingsRowCard(props.rows.webFetch, webControls(props.rows.webFetch))}`;
+  const contextRows = `${settingsRowCard(props.rows.contextEnabled, contextEnabledControls(props.rows.contextEnabled))}${settingsRowCard(props.rows.contextPercent, contextPercentControls(props.rows.contextPercent))}`;
 
   return {
     agent: `<section class="card settings-section" id="settings-agent" aria-labelledby="settings-agent-title">
@@ -2347,90 +1587,21 @@ function settingsSections(options: {
         </div>
         <div class="card__body card__body--flush">${contextRows}</div>
       </section>`,
-    git: gitSection({
-      resolved: options.resolved,
-      scope: options.scope,
-      target: options.target,
-      returnTo: options.returnTo,
-      ...(options.scope === "app"
-        ? {}
-        : { testAppPath: firstAppSettingsPath(options.site, options.project?.id) }),
-    }),
-    restart: pendingSection({
-      pending: options.resolved.pendingRestart,
-      returnTo: options.returnTo,
-      profileWarnings,
-    }),
-    warnings: warningsSection(options.resolved.warnings),
+    git: gitSection(props),
+    restart: pendingSection(props.restart),
+    warnings: warningsSection(props.warnings),
   };
 }
 
 function renderSettingsPage(options: {
+  props: SettingsProps;
   site: SiteModel;
-  scope: SettingsScope;
-  target: SettingsTarget;
-  resolved: ResolvedSettings & { pendingRestart: PendingRestart[] };
   chrome: PageChrome;
-  deps: HttpDeps;
   path: string;
-}): string | undefined {
-  const entities = pageEntities(options.site, options.scope, options.target);
-  if (entities === undefined) {
-    return undefined;
-  }
-  const project = entities.project;
-  const app = entities.app;
-
-  const title =
-    options.scope === "global"
-      ? "Settings"
-      : options.scope === "project" && project !== undefined
-        ? `${project.name} settings`
-        : `${app?.appKey ?? ""} settings`;
-  const description =
-    options.scope === "global"
-      ? "Coordinator-wide defaults for models, provider keys, and web tools. Narrower scopes can override them."
-      : options.scope === "project"
-        ? `Project overrides for ${project?.name ?? ""}. Application scopes can override these values.`
-        : `Application overrides for ${app?.appKey ?? ""}. These values are the narrowest scope.`;
-
-  const breadcrumb =
-    options.scope === "global"
-      ? [{ label: "Workbench", href: "/" }, { label: "Settings" }]
-      : options.scope === "project"
-        ? [
-            { label: "Projects", href: "/projects" },
-            {
-              label: project?.name ?? "",
-              href: `/projects/${encodeURIComponent(project?.id ?? "")}`,
-            },
-            { label: "Settings" },
-          ]
-        : [
-            { label: "Projects", href: "/projects" },
-            {
-              label: project?.name ?? "",
-              href: `/projects/${encodeURIComponent(project?.id ?? "")}`,
-            },
-            {
-              label: app?.appKey ?? "",
-              href: `/projects/${encodeURIComponent(project?.id ?? "")}/apps/${encodeURIComponent(app?.appKey ?? "")}`,
-            },
-            { label: "Settings" },
-          ];
-
-  const sections = settingsSections({
-    site: options.site,
-    scope: options.scope,
-    target: options.target,
-    resolved: options.resolved,
-    deps: options.deps,
-    returnTo: options.path,
-    ...(project === undefined ? {} : { project }),
-    ...(app === undefined ? {} : { app }),
-  });
-
-  const body = `${settingsNav({ scope: options.scope, target: options.target })}
+}): string {
+  const props = options.props;
+  const sections = settingsSections(props);
+  const body = `${settingsNav(props)}
     <div id="settings-warnings">${sections.warnings}</div>
     <div class="settings-sections">
       ${sections.agent}
@@ -2439,26 +1610,21 @@ function renderSettingsPage(options: {
       ${sections.git}
       ${sections.restart}
     </div>
-    ${clearDialog()}`;
+    ${clearDialog(props.dialogs)}`;
 
   const header = pageHeader({
     overline: "Settings",
-    title,
-    description,
+    title: props.scope.title,
+    description: props.scope.description,
   });
 
   return appShell({
-    title,
+    title: props.scope.title,
     active: "settings",
-    activeProjectId: project?.id,
+    ...(props.scope.projectId === null ? {} : { activeProjectId: props.scope.projectId }),
     settingsHref: options.path,
-    skillsHref:
-      options.scope === "global"
-        ? "/skills"
-        : options.scope === "project"
-          ? `/projects/${encodeURIComponent(options.target.projectId ?? "")}/skills`
-          : `/projects/${encodeURIComponent(options.target.projectId ?? "")}/apps/${encodeURIComponent(options.target.appKey ?? "")}/skills`,
-    breadcrumb,
+    skillsHref: props.scope.skillsHref,
+    breadcrumb: [...props.scope.breadcrumb],
     projects: options.site.projects.map((entry) => ({
       id: entry.id,
       name: entry.name,

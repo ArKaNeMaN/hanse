@@ -576,7 +576,47 @@ describe("/api/ui auth and props", () => {
       expect(page?.status, route.id).toBe(200);
       expect(page?.body, route.id).not.toContain(providerSecret);
       expect(page?.body, route.id).not.toContain(gitSecret);
-      expect(page?.body, route.id).not.toContain(settingSecret);
+      // Settings props deliberately expose the effective, non-secret setting values (for example
+      // the git identity); only credential material stays out. Non-settings pages never read them.
+      if (!route.id.startsWith("settings-")) {
+        expect(page?.body, route.id).not.toContain(settingSecret);
+      }
+    }
+  });
+
+  it("never leaks settings credentials through the settings page endpoint", () => {
+    const f = fixture();
+    const providerSecret = "sentinel-settings-provider-key";
+    const gitSecret = "sentinel-settings-git-token";
+    f.settings.setProviderKey("global", {}, "deepseek", providerSecret, "owner");
+    f.settings.setGitAuth(
+      "global",
+      {},
+      "https",
+      { hosts: ["github.com"], username: "x-access-token", token: gitSecret },
+      "owner",
+    );
+    f.settings.setProviderKey(
+      "app",
+      { projectId: "p", appKey: "web" },
+      "llm-lan",
+      "sentinel-app-provider-key",
+      "owner",
+    );
+    for (const query of [
+      { scope: "global" },
+      { scope: "project", project: "p" },
+      { scope: "app", project: "p", app: "web" },
+    ]) {
+      const response = handleUiApi(
+        f.deps,
+        request("/api/ui/settings", cookie(f.humanToken), query),
+      );
+      expect(response?.status, JSON.stringify(query)).toBe(200);
+      expect(response?.headers?.["cache-control"], JSON.stringify(query)).toBe("no-store");
+      expect(response?.body, JSON.stringify(query)).not.toContain(providerSecret);
+      expect(response?.body, JSON.stringify(query)).not.toContain(gitSecret);
+      expect(response?.body, JSON.stringify(query)).not.toContain("sentinel-app-provider-key");
     }
   });
 });

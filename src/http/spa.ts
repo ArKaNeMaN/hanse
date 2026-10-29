@@ -1,6 +1,8 @@
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import { verifyAgentToken } from "../mcp/agent-tokens.js";
+import { SettingsValidationError } from "../settings/index.js";
+import type { SettingsScope, SettingsTarget } from "../settings/types.js";
 import {
   isSpaRoute,
   matchPage,
@@ -22,6 +24,7 @@ import { buildHandoffsProps } from "./props/handoffs.js";
 import { buildOverviewProps } from "./props/overview.js";
 import { buildProjectProps } from "./props/project.js";
 import { buildProjectsProps } from "./props/projects.js";
+import { buildSettingsProps, parseSettingsTarget, type SettingsProps } from "./props/settings.js";
 import { buildSshProps, resolveSshScope } from "./props/ssh.js";
 import {
   appShell,
@@ -523,6 +526,41 @@ function logUnknownRoutes(deps: HttpDeps): void {
   }
 }
 
+function settingsScopeForMatch(match: PageMatch): {
+  scope: SettingsScope;
+  target: SettingsTarget;
+} {
+  if (match.id === "settings-project") {
+    return { scope: "project", target: { projectId: match.params.id ?? "" } };
+  }
+  if (match.id === "settings-app") {
+    return {
+      scope: "app",
+      target: { projectId: match.params.id ?? "", appKey: match.params.app ?? "" },
+    };
+  }
+  return { scope: "global", target: {} };
+}
+
+function settingsPropsForMatch(
+  deps: HttpDeps,
+  site: SiteModel,
+  match: PageMatch,
+  request: HttpRequest,
+): SettingsProps | undefined {
+  if (deps.settings === undefined) {
+    return undefined;
+  }
+  const { scope, target } = settingsScopeForMatch(match);
+  return buildSettingsProps({
+    deps,
+    site,
+    scope,
+    target,
+    notice: noticeFromQuery(request) ?? null,
+  });
+}
+
 function pagePropsFor(
   deps: HttpDeps,
   site: SiteModel,
@@ -550,6 +588,14 @@ function pagePropsFor(
       site,
       scope: resolveSshScope(deps, request.query),
     });
+  }
+  if (
+    match.id === "settings-global" ||
+    match.id === "settings-project" ||
+    match.id === "settings-app"
+  ) {
+    const props = settingsPropsForMatch(deps, site, match, request);
+    return props ?? null;
   }
   return {};
 }
@@ -635,6 +681,7 @@ const UI_API_PATHS = new Set([
   "/api/ui/overview",
   "/api/ui/handoffs",
   "/api/ui/ssh",
+  "/api/ui/settings",
 ]);
 const UI_PROJECT_PATH = /^\/api\/ui\/projects\/([^/]+)$/;
 
@@ -729,6 +776,53 @@ export function handleUiApi(deps: HttpDeps, request: HttpRequest): HttpResponse 
         }),
         chrome: chromeFor(site, match).chrome,
       },
+      { "cache-control": "no-store" },
+    );
+  }
+
+  if (request.path === "/api/ui/settings") {
+    if (deps.settings === undefined) {
+      return jsonResponse(
+        503,
+        { error: "settings are not configured" },
+        { "cache-control": "no-store" },
+      );
+    }
+    let scope: SettingsScope;
+    let target: SettingsTarget;
+    try {
+      ({ scope, target } = parseSettingsTarget(request.query ?? {}));
+    } catch (error) {
+      if (error instanceof SettingsValidationError) {
+        return jsonResponse(400, { error: error.message }, { "cache-control": "no-store" });
+      }
+      throw error;
+    }
+    const props = buildSettingsProps({
+      deps,
+      site,
+      scope,
+      target,
+      notice: noticeFromQuery(request) ?? null,
+    });
+    if (props === undefined) {
+      return jsonResponse(404, { error: "not found" }, { "cache-control": "no-store" });
+    }
+    const match: PageMatch = {
+      id:
+        scope === "global"
+          ? "settings-global"
+          : scope === "project"
+            ? "settings-project"
+            : "settings-app",
+      params: {
+        ...(scope === "global" ? {} : { id: target.projectId ?? "" }),
+        ...(scope === "app" ? { app: target.appKey ?? "" } : {}),
+      },
+    };
+    return jsonResponse(
+      200,
+      { ...props, chrome: chromeFor(site, match).chrome },
       { "cache-control": "no-store" },
     );
   }
