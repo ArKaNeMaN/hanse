@@ -275,22 +275,23 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   diffs/write content) and imports the pure helpers in `assets/chat-core.js`,
   `assets/chat-commands.js`, `assets/chat-diff.js`, and the lazy worker controller in
   `assets/chat-highlight.js`. `assets/git.js` hydrates the
-  application git panel. All routes except `/`, `/projects`, `/projects/:id`, and `/handoffs` remain
-  server-rendered by default; the Vue/Vite client has cut those four routes over and is scaffolded
-  for later routes (see **UI rendering modes**).
+  application git panel. All routes except `/`, `/projects`, `/projects/:id`, `/handoffs`, `/ssh`,
+  and the three settings scopes remain server-rendered by default; the Vue/Vite client has cut those
+  routes over and is scaffolded for later routes (see **UI rendering modes**).
 - The chat workspace is the stage-3 three-pane surface: sessions rail, thread, and context rail.
   Below 1360 the context pane is a drawer; below 768 both rails are drawers. The thread is the only
   scroll owner. `session` is mirrored to the URL, and the optional `project` query disambiguates
   duplicate app keys across projects.
 
-## UI rendering modes (Phase 4B)
+## UI rendering modes (Phase 5B)
 
 - `/` (fleet overview), `/projects`, `/projects/:id` (project detail), `/handoffs` (handoff
-  inbox), and `/ssh` (SSH console) are SPA routes: the shared registry (`src/shared/routes.ts`) has
-  `spa: true` for `overview`, `projects`, `project`, `handoffs`, and `ssh`, and `spa: false` for
-  every other page. The application detail (`/projects/:id/apps/:app`), settings, skills, chat, and
-  terminal stay legacy documents, so the project-to-application hop is a full document load. The
-  page dispatcher
+  inbox), `/ssh` (SSH console), and the three settings scopes (`/settings`,
+  `/projects/:id/settings`, `/projects/:id/apps/:app/settings`) are SPA routes: the shared registry
+  (`src/shared/routes.ts`) has `spa: true` for `overview`, `projects`, `project`, `handoffs`, `ssh`,
+  `settings-global`, `settings-project`, and `settings-app`, and `spa: false` for every other page.
+  Application detail (`/projects/:id/apps/:app`), skills, chat, and terminal stay legacy documents,
+  so the project-to-application hop is a full document load. The page dispatcher
   is the only place that chooses a renderer:
   `HANSE_UI_LEGACY=1` > `?legacy=1` > `HANSE_UI_SPA_ROUTES` > the registry flag. A missing, invalid,
   or partial `assets/ui/.vite/manifest.json` also falls back to legacy and logs
@@ -317,13 +318,19 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   delete dialogs, the per-application allowlist and grant table, pending approve/reject cards, and
   the read-only audit table, with loading/error/retry/`?legacy=1` states. SSH host private keys stay
   write-only: page props, boot JSON, toasts, and rendered output contain only the derived public
-  key, fingerprint, and key type. Application, settings, skills, chat, terminal, and session links
-  remain plain anchors; the overview/projects/project/handoffs links client-navigate, and the
-  native new-project dialog is a shared Vue component used by the overview and projects pages.
+  key, fingerprint, and key type. The settings page renders the scope/target navigation, the
+  Agent/Web tools/Context/Git/Restart sections, inherited/overridden/cleared setting rows with
+  effective/source/scope-detail metadata, provider keys and custom model-provider CRUD, git
+  SSH/HTTPS credentials with Test connection, the restart prompt/action, and warnings. Provider
+  keys, git tokens, private keys, and known-hosts content are write-only: props, boot JSON, toasts,
+  and the DOM contain only the literal `Not shown` marker plus public metadata (public key,
+  fingerprint, allowed hosts, username). Application, skills, chat, terminal, and session links
+  remain plain anchors; the overview/projects/project/handoffs/settings links client-navigate, and
+  the native new-project dialog is a shared Vue component used by the overview and projects pages.
 - Built client assets are served from `/assets/ui/*` with immutable caching; compressible responses
   are gzip-encoded when the client offers it (first loads measure ~136 KiB for `/projects`,
-  ~134 KiB for `/`, and ~146 KiB for `/projects/:id` on the deterministic fixture). `/ssh` is a
-  lazy route chunk; no new transfer budget was assigned.
+  ~134 KiB for `/`, and ~146 KiB for `/projects/:id` on the deterministic fixture). `/ssh` and the
+  settings scopes are lazy route chunks; no new transfer budget was assigned.
 - SPA documents and `/api/ui/*` are cookie-only. `/api/ui/*` returns `401` without a human cookie,
   `403 cookie_required` for a human bearer without a cookie, and `403` for agent tokens; responses are
   `no-store`.

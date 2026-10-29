@@ -165,9 +165,10 @@ npm run build        # tsc + Tailwind CSS + Vite UI -> dist/, assets/app.css, as
 node dist/index.js --help
 ```
 
-`/` (fleet overview) and `/projects` are served by the Vue/Vite client, which lives under `ui/` and
-builds into `assets/ui/`; every other page, including `/projects/:id`, still renders a legacy
-document. The coordinator chooses the renderer through the shared registry and
+`/` (fleet overview), `/projects`, `/projects/:id`, `/handoffs`, `/ssh`, and the three settings
+scopes are served by the Vue/Vite client, which lives under `ui/` and builds into `assets/ui/`;
+skills, application detail, chat, and terminal still render legacy documents. The coordinator
+chooses the renderer through the shared registry and
 `HANSE_UI_SPA_ROUTES`; `HANSE_UI_LEGACY=1` (or `?legacy=1` on a page) forces the legacy renderer. Run the client dev server with `npm run dev:ui` and the coordinator with
 `HANSE_UI_DEV_URL=http://127.0.0.1:5173` to load Vite modules from the dev server;
 `npm run check:ui-dev` is an optional Vite-entry smoke that is not part of CI. See

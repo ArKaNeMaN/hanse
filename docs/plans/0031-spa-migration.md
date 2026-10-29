@@ -9,7 +9,9 @@ complete (2026-10-28; `/projects` is the first cutover, all gates green); Phase 
 complete (2026-10-29; `/handoffs` cut over, Phase 3 complete - `/`, `/projects`, `/projects/:id`,
 and `/handoffs` are SPA); Phase 4B complete (2026-10-29; `/ssh` cut over, Phase 4 complete - `/`,
 `/projects`, `/projects/:id`, `/handoffs`, and `/ssh` are SPA, settings/skills/app detail and every
-later route stay legacy).
+later route stay legacy); Phase 5B complete (2026-10-29; the three settings scopes cut over, Phase 5
+complete - `/`, `/projects`, `/projects/:id`, `/handoffs`, `/ssh`, and settings are SPA; skills,
+app detail, chat, and terminal stay legacy).
 Design: [Incremental SPA migration](../design/spa-migration.md) (approved, `oracle` round 5 PASS;
 flag/test-glob/no-JS clarifications recorded in revision 6).
 Owner decisions: [open questions](../open-questions.md), 2026-10-28.
@@ -837,6 +839,68 @@ Keep all `test/settings-http.test.ts` API/fragment/auth/secret tests, including 
 `describe("settings pages and pending state")` HTML assertions, as legacy rollback coverage until
 cleanup. Keep `test/settings-store.test.ts`. Keep `test/settings-asset.test.ts` until cleanup because
 the legacy rollback page still loads `settings.js`; add component/E2E tests for the Vue page.
+
+### Completion record - Phase 5B (2026-10-29)
+
+Phase 5B finishes Phase 5: the registry has `spa: true` for `overview`, `projects`, `project`,
+`handoffs`, `ssh`, `settings-global`, `settings-project`, and `settings-app`; `skills-*`, `app`,
+chat, and terminal stay `spa: false`.
+
+- **Page.** `ui/pages/SettingsPage.vue` reproduces the legacy settings header, Global/Project/App
+  scope navigation, a target picker built from `SettingsProps.scope.projects`, the
+  Agent/Web tools/Context/Git/Restart section nav, warnings, restart-required banner, and the
+  native clear dialog. `SettingsRow.vue` renders model, web-driver, context enable/threshold, and
+  git identity controls with effective value/source, own state (Set/Inherited/Default/Cleared),
+  hints, warnings, scope details, action availability/reasons, and Save/Inherit/Clear semantics.
+  `SettingsProviderSection.vue`, `SettingsModelProviderSection.vue`, `SettingsGitSection.vue`, and
+  `SettingsRestartSection.vue` own the provider key, custom-model-provider, git SSH/HTTPS, and
+  restart flows.
+- **Actions.** Settings Save/Inherit/Clear use the existing `POST /api/settings` JSON handler;
+  provider rows use `/api/settings/provider`; model providers use
+  `/api/settings/model-providers` (create/update/delete); git credentials use
+  `/api/settings/git` and the app-scoped `/api/projects/:id/apps/:app/git/test`; restart uses the
+  existing `/api/apps/:app/restart?project=` endpoint. Every success refetches
+  `/api/ui/settings?scope=&project=&app=` and applies its chrome fragment; failures raise error
+  toasts and keep the entered values. No parallel write path and no other backend route flag or
+  legacy HTML/API contract changed.
+- **Masking.** Provider key inputs are write-only and read from the form element at submit time.
+  The git SSH private key, known_hosts, and HTTPS token are never stored in reactive state; they
+  are read at submit/test time and cleared after success. Props, boot JSON, toasts, and the DOM
+  contain only the literal `Not shown` marker and public metadata (SSH public key, fingerprint,
+  known-host presence, HTTPS allowed hosts/username). Component and E2E tests assert synthetic
+  sentinels never appear in `page.content()`.
+- **Boot/query.** Boot props are trusted only when `boot.route.id` is one of the three settings
+  ids and `props.scope.href` matches the current route; otherwise the page fetches
+  `/api/ui/settings?scope=&project=&app=` with Vue Query. Scope and target changes use
+  `router.push`, so refresh, deep links, back/forward, `?legacy=1`, and both rollback servers keep
+  working. Loading, generic error with Retry, and 404 states are covered.
+- **Routing/chrome.** `src/shared/routes.ts` flips the three settings ids to `spa: true`;
+  `ui/router.ts` registers `/settings`, `/projects/:id/settings`, and
+  `/projects/:id/apps/:app/settings` before the generic project route. Chrome, title, breadcrumb,
+  `data-nav-id="settings"`, and scoped settings/skills links come from the shared `chromeFor`.
+- **Tests.** New `SettingsPage` component tests (15) cover global/project/app boot,
+  inheritance/override/cleared rows, scope switching, setting save/error, inherit/clear, provider
+  key masking, model-provider update/delete/create, git save/test without secret text, restart,
+  cross-route boot fetch, loading, 404, generic error/Retry, and no `<style>`. `settings.spec.ts`
+  now runs in `spa`, `legacy`, and `allowlist-empty` and covers the boot marker, three scopes,
+  save/inherit/clear, provider/model-provider masking and CRUD, git credential masking and Test
+  connection, restart, the legacy `303`, and absent sentinel secrets. `spa-settings.spec.ts` covers
+  deep links, refresh, target navigation, back/forward, chrome/title/active nav, `?legacy=1`, both
+  rollback servers, no fallback flash, and console/page errors. `shared-routes` now expects the
+  three settings routes to be SPA.
+- **Fixture.** `e2e/support/seed.ts` adds a global `deepseek` provider key, one custom
+  `e2e-llm` model provider, and app-scoped SSH/HTTPS git credentials with synthetic sentinel
+  values. `e2e/support/server.ts` supplies a deterministic git `testConnection`, a mutable
+  alpha pending-restart flag with `preflightRestart`/`beginRestart`, and the model-provider service.
+- **Gate fix.** `ui/components/SshHostDialog.vue` used a private-range placeholder, which the
+  required `check:sensitive` gate flags; it now uses the TEST-NET-3 placeholder `203.0.113.10`.
+  Behavior is unchanged.
+- **Gate results.** `lint` 584 files exit 0 (18 pre-existing warnings); `typecheck`,
+  `typecheck:ui`, `typecheck:e2e` exit 0; `test` 158 files / 2873 tests; `build` exit 0
+  (`SettingsPage-*.js` 55.3 kB / 13.1 kB gzip); `check:sensitive` pass; `check:ui` 29 SFCs;
+  `test:e2e` 101 passed, 1 skipped (settings SPA 5 + SPA-only 4, legacy 6, allowlist-empty 6).
+- **Not done.** No transfer budget for settings; `/projects` remains the S16 route. Skills, app
+  detail, chat, and terminal remain legacy for Phases 6/7/D1.
 
 ## Phase 6 - `/skills` (five routes)
 

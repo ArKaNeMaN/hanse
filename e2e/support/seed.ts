@@ -13,6 +13,7 @@ import {
   MASTER_PROJECT_ID,
   MASTER_PROJECT_NAME,
 } from "../../src/master/constants.js";
+import { ModelProviderService } from "../../src/model-providers/index.js";
 import { SettingsService } from "../../src/settings/index.js";
 import { SkillService } from "../../src/skills/index.js";
 import { SshService } from "../../src/ssh/service.js";
@@ -31,6 +32,19 @@ const PRIVATE_KEY = [
   "-----END OPENSSH PRIVATE KEY-----",
   "",
 ].join("\n");
+
+/** Synthetic sentinels used by the settings specs to prove secret material never reaches the DOM. */
+export const E2E_PROVIDER_SECRET = "e2e-provider-secret-sentinel";
+export const E2E_HTTPS_TOKEN = "e2e-https-token-sentinel";
+export const E2E_PRIVATE_KEY_SENTINEL = "e2e-private-key-sentinel";
+export const E2E_KNOWN_HOSTS_SENTINEL = "e2e-known-hosts-sentinel";
+export const E2E_GIT_SSH_PRIVATE_KEY = [
+  "-----BEGIN OPENSSH PRIVATE KEY-----",
+  E2E_PRIVATE_KEY_SENTINEL,
+  "-----END OPENSSH PRIVATE KEY-----",
+  "",
+].join("\n");
+export const E2E_GIT_KNOWN_HOSTS = `git.example.test ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEUyRUZpeHR1cmU ${E2E_KNOWN_HOSTS_SENTINEL}\n`;
 
 /** Deterministic stand-in for ssh-keygen so the fixture carries no real key material. */
 const fakeSshKeygen: RunSshKeygen = (args) => {
@@ -71,6 +85,7 @@ export interface SeedResult {
   projects: SeededProject[];
   projectRoots: Record<string, string>;
   settings: SettingsService;
+  modelProviders: ModelProviderService;
   skills: SkillService;
   ssh: SshService;
   handoffId: string;
@@ -239,7 +254,13 @@ export function seed(options: SeedOptions = {}): SeedResult {
     now,
   );
 
-  const settings = new SettingsService({ db, secretKey: randomBytes(32) });
+  const modelProviders = new ModelProviderService({ db });
+  const settings = new SettingsService({
+    db,
+    secretKey: randomBytes(32),
+    providerIds: () => modelProviders.list().map((provider) => provider.id),
+    runSshKeygen: fakeSshKeygen,
+  });
   settings.set("global", {}, "llm.model", "test-provider/test-model", E2E_OPERATOR);
   settings.set(
     "project",
@@ -253,6 +274,31 @@ export function seed(options: SeedOptions = {}): SeedResult {
     { projectId: PROJECT_ONE, appKey: "alpha" },
     "git.user.name",
     "E2E Operator",
+    E2E_OPERATOR,
+  );
+  settings.setProviderKey("global", {}, "deepseek", E2E_PROVIDER_SECRET, E2E_OPERATOR);
+  modelProviders.create(
+    {
+      id: "e2e-llm",
+      name: "E2E LLM",
+      baseUrl: "http://llm.example.test/v1",
+      models: [{ id: "e2e-model", name: "E2E Model", limit: { context: 100000, output: 8192 } }],
+    },
+    E2E_OPERATOR,
+  );
+  const alphaSettingsTarget = { projectId: PROJECT_ONE, appKey: "alpha" };
+  settings.setGitAuth(
+    "app",
+    alphaSettingsTarget,
+    "ssh",
+    { privateKey: E2E_GIT_SSH_PRIVATE_KEY, knownHosts: E2E_GIT_KNOWN_HOSTS },
+    E2E_OPERATOR,
+  );
+  settings.setGitAuth(
+    "app",
+    alphaSettingsTarget,
+    "https",
+    { hosts: ["git.example.test"], username: "x-access-token", token: E2E_HTTPS_TOKEN },
     E2E_OPERATOR,
   );
 
@@ -416,6 +462,7 @@ export function seed(options: SeedOptions = {}): SeedResult {
     projects,
     projectRoots: Object.fromEntries(projects.map((project) => [project.id, project.rootPath])),
     settings,
+    modelProviders,
     skills,
     ssh,
     handoffId,

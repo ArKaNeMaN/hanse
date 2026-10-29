@@ -90,7 +90,7 @@ const ROUTE_DEFINITIONS: readonly RouteDefinition[] = [
     path: "/settings",
     nav: "settings",
     label: "Settings",
-    spa: false,
+    spa: true,
   },
   {
     id: "skills-global",
@@ -118,14 +118,14 @@ const ROUTE_DEFINITIONS: readonly RouteDefinition[] = [
     path: "/projects/:id/settings",
     nav: "settings",
     label: "Settings",
-    spa: false,
+    spa: true,
   },
   {
     id: "settings-app",
     path: "/projects/:id/apps/:app/settings",
     nav: "settings",
     label: "Settings",
-    spa: false,
+    spa: true,
   },
   {
     id: "skills-project",

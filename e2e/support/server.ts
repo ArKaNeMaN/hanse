@@ -33,6 +33,7 @@ const services = new Map(
 );
 
 const FIXTURE_FINGERPRINT = "SHA256:e2e-fixture-fingerprint";
+const FIXTURE_ALPHA_APP = "e2e-project-one:alpha";
 
 /**
  * Deterministic stand-in for the SSH transport. Hosts whose address starts with `fail.` always
@@ -133,13 +134,41 @@ function projectService(projectId: string): CoordinatorService {
  * The fixture never starts Docker or opencode. `createHttpServer` only calls
  * `startChatMaintenance`; the remaining methods keep page rendering deterministic.
  */
+let alphaRestartPending = true;
+
 const manager = {
   startChatMaintenance() {},
-  pendingRestart: () => ({ pending: false, reasons: [] }),
+  pendingRestart: (appId: string) =>
+    appId === FIXTURE_ALPHA_APP && alphaRestartPending
+      ? { pending: true, reasons: ["settings_changed"] }
+      : { pending: false, reasons: [] },
   profileWarnings: () => [],
   probeStatus: async () => false,
   isRestarting: () => false,
+  preflightRestart: async () => true,
+  beginRestart: () => {
+    alphaRestartPending = false;
+    return { accepted: true, completion: Promise.resolve(true) };
+  },
 } as unknown as InstanceManager;
+
+/** Deterministic git remote check; no network, runner, or credential material is used. */
+const git = new Proxy(new GitService({ workspaceRoot: fixture.workspaceRoot }), {
+  get(target, property) {
+    if (property === "testConnection") {
+      return async () => ({
+        ok: true,
+        kind: "https",
+        remote: "origin",
+        refs: 2,
+        head: "main",
+        warnings: ["Host key is not pinned."],
+      });
+    }
+    const value = Reflect.get(target, property) as unknown;
+    return typeof value === "function" ? value.bind(target) : value;
+  },
+}) as unknown as GitService;
 
 function imageView(appId: string): ImageStateView {
   const row = fixture.db.prepare("SELECT app_key AS appKey FROM apps WHERE id = ?").get(appId) as
@@ -266,9 +295,11 @@ const deps: HttpDeps = {
       service: projectService(row.id),
     }));
   },
-  git: new GitService({ workspaceRoot: fixture.workspaceRoot }),
+  git,
+  runner: { url: "http://127.0.0.1:1", token: "e2e-fixture" },
   manager,
   settings: fixture.settings,
+  modelProviders: fixture.modelProviders,
   ssh,
   skills: fixture.skills,
   images,

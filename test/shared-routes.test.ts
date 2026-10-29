@@ -19,7 +19,7 @@ describe("shared route manifest", () => {
     expect(source).not.toMatch(/require\(["']node:/);
   });
 
-  it("publishes the complete route table and cuts projects, overview, handoffs, ssh, and project over", () => {
+  it("publishes the complete route table and cuts projects, overview, handoffs, ssh, project, and settings over", () => {
     expect(ROUTES.map((route) => [route.id, route.path, route.nav])).toEqual([
       ["projects", "/projects", "projects"],
       ["overview", "/", "overview"],
@@ -41,6 +41,9 @@ describe("shared route manifest", () => {
       "overview",
       "handoffs",
       "ssh",
+      "settings-global",
+      "settings-project",
+      "settings-app",
       "project",
     ]);
   });
@@ -116,7 +119,10 @@ describe("shared route manifest", () => {
         route.id === "overview" ||
         route.id === "project" ||
         route.id === "handoffs" ||
-        route.id === "ssh";
+        route.id === "ssh" ||
+        route.id === "settings-global" ||
+        route.id === "settings-project" ||
+        route.id === "settings-app";
       expect(isSpaRoute(route.id, { env: {} }), route.id).toBe(migrated);
     }
     expect(isSpaPath("/projects", { env: {} })).toBe(true);
@@ -125,6 +131,11 @@ describe("shared route manifest", () => {
     expect(isSpaPath("/projects/alpha/apps/web", { env: {} })).toBe(false);
     expect(isSpaPath("/handoffs", { env: {} })).toBe(true);
     expect(isSpaPath("/ssh", { env: {} })).toBe(true);
+    expect(isSpaPath("/settings", { env: {} })).toBe(true);
+    expect(isSpaPath("/projects/alpha/settings", { env: {} })).toBe(true);
+    expect(isSpaPath("/projects/alpha/apps/web/settings", { env: {} })).toBe(true);
+    expect(isSpaPath("/skills", { env: {} })).toBe(false);
+    expect(isSpaPath("/projects/alpha/apps/web", { env: {} })).toBe(false);
   });
 
   it("applies HANSE_UI_LEGACY and manifest validity before the allowlist", () => {

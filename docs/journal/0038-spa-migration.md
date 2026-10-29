@@ -439,8 +439,69 @@ Commands ran with `NODE_ENV=development` and `PLAYWRIGHT_CHROMIUM=/usr/bin/chrom
 
 No transfer budget was assigned for `/ssh`; `/projects` remains the S16 budget route.
 
+## Phase 5B implementation - settings scopes cutover (2026-10-29)
+
+Phase 5B finishes Phase 5: `overview`, `projects`, `project`, `handoffs`, `ssh`,
+`settings-global`, `settings-project`, and `settings-app` are the only registry routes with
+`spa: true`. Skills, app detail, chat, and terminal stay legacy.
+
+- **Page.** `ui/pages/SettingsPage.vue` mirrors the legacy settings header, Global/Project/App
+  scope navigation, a target picker built from `SettingsProps.scope.projects`, the
+  Agent/Web tools/Context/Git/Restart sections, warnings, the restart-required banner, and the
+  clear dialog. `SettingsRow.vue` covers model, web-driver, context enable/threshold, and git
+  identity rows with effective/source text, own state (Set/Inherited/Default/Cleared), hints,
+  warnings, scope details, action availability/reasons, and Save/Inherit/Clear. The provider,
+  custom-model-provider, git credential, and restart sections are separate small components.
+- **Actions.** Save/inherit/clear reuse `POST /api/settings`; provider keys use
+  `/api/settings/provider`; model providers use `/api/settings/model-providers`; git credentials
+  use `/api/settings/git` plus the app-scoped
+  `/api/projects/:id/apps/:app/git/test`; restart reuses `/api/apps/:app/restart?project=`.
+  Success refetches `/api/ui/settings?scope=&project=&app=` and applies its chrome fragment;
+  failures raise error toasts. No parallel write path or legacy contract changed.
+- **Masking.** Provider keys, git SSH private keys, known_hosts, and HTTPS tokens are read from
+  the form element at submit/test time, never kept in reactive state, and cleared after success.
+  Props, boot, toasts, and the DOM carry only `Not shown` and public metadata (SSH public key,
+  fingerprint, known-host presence, HTTPS hosts/username). Sentinels are asserted absent in the
+  component and E2E tests.
+- **Boot/query/routing.** Boot props are trusted only when the boot route id is a settings id and
+  `scope.href` matches the current route; otherwise Vue Query fetches the endpoint. Scope/target
+  changes use `router.push`. `src/shared/routes.ts` flips the three settings ids to `spa: true`;
+  `ui/router.ts` registers the three paths before the generic project route. Chrome, title,
+  breadcrumb, `data-nav-id="settings"`, and scoped settings/skills links come from `chromeFor`.
+- **Tests.** New `SettingsPage` component tests (15) and updated `shared-routes` cutover
+  assertions. `settings.spec.ts` runs in `spa`, `legacy`, and `allowlist-empty` (boot marker,
+  three scopes, save/inherit/clear, provider/model-provider masking and CRUD, git masking and Test
+  connection, restart, legacy 303, no sentinel text). `spa-settings.spec.ts` covers deep links,
+  refresh, target navigation, back/forward, chrome/title/active nav, `?legacy=1`, both rollback
+  servers, no fallback flash, and console/page errors.
+- **Fixture.** The seed adds a global `deepseek` provider key, one `e2e-llm` custom model provider,
+  app-scoped SSH/HTTPS git credentials with synthetic sentinels, and a mutable alpha pending
+  restart. The server supplies deterministic git `testConnection` and
+  `preflightRestart`/`beginRestart`.
+- **Gate fix.** `ui/components/SshHostDialog.vue` used a private-range placeholder that
+  `check:sensitive` flags; it now uses the TEST-NET-3 placeholder `203.0.113.10`. Behavior is
+  unchanged.
+
+### Phase 5B verification
+
+Commands ran with `NODE_ENV=development` and `PLAYWRIGHT_CHROMIUM=/usr/bin/chromium`.
+
+| Command | Result |
+| --- | --- |
+| `npm run lint` | 584 files, exit 0 (18 pre-existing warnings) |
+| `npm run typecheck` | exit 0 |
+| `npm run typecheck:ui` | exit 0 |
+| `npm run typecheck:e2e` | exit 0 |
+| `npm test` | 158 files / 2873 tests, exit 0 |
+| `npm run build` | exit 0; settings chunk 55.3 kB / 13.1 kB gzip |
+| `npm run check:sensitive` | exit 0 |
+| `npm run check:ui` | exit 0 (29 SFCs, sentinel present) |
+| `npm run test:e2e` | 101 passed, 1 skipped, exit 0 |
+
+No transfer budget was assigned for settings; `/projects` remains the S16 budget route.
+
 ## Next
 
-Phase 5: cut over the three `/settings` routes, keeping the masked-value contract and the existing
-settings/provider/model-provider/git handlers.
+Phase 6: cut over the five `/skills` routes, reusing `/api/skills*`, porting the workspace behavior
+with `SafeMarkdown`, and keeping the legacy no-JS snapshot fallback on the rollback page only.
 

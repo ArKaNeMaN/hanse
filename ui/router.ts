@@ -19,9 +19,24 @@ const routes: readonly RouteRecordRaw[] = [
     component: () => import("./pages/ProjectsPage.vue"),
   },
   {
+    path: "/projects/:id/apps/:app/settings",
+    name: "settings-app",
+    component: () => import("./pages/SettingsPage.vue"),
+  },
+  {
+    path: "/projects/:id/settings",
+    name: "settings-project",
+    component: () => import("./pages/SettingsPage.vue"),
+  },
+  {
     path: "/projects/:id",
     name: "project",
     component: () => import("./pages/ProjectPage.vue"),
+  },
+  {
+    path: "/settings",
+    name: "settings-global",
+    component: () => import("./pages/SettingsPage.vue"),
   },
   {
     path: "/handoffs",

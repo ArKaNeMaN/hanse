@@ -255,7 +255,7 @@ defineExpose({ open });
                   class="input"
                   name="address"
                   required
-                  placeholder="10.0.0.12"
+                  placeholder="203.0.113.10"
                   :aria-describedby="`${dialogId}-address-hint`"
                   :disabled="busy"
                 >
