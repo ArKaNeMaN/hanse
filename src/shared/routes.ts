@@ -69,7 +69,7 @@ const ROUTE_DEFINITIONS: readonly RouteDefinition[] = [
     path: "/",
     nav: "overview",
     label: "Overview",
-    spa: false,
+    spa: true,
   },
   {
     id: "handoffs",

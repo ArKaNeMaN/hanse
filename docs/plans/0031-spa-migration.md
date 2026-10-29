@@ -2,7 +2,10 @@
 
 Status: **in progress** - plan review (`momus`) round 3 PASS (2026-10-28); Phase 0 complete
 (journal 0038); Phase 1A complete (2026-10-28; all gates green, no route cut over); Phase 1B
-complete (2026-10-28; `/projects` is the first cutover, all gates green); Phase 2 next.
+complete (2026-10-28; `/projects` is the first cutover, all gates green); Phase 2A complete
+(2026-10-29; overview/project props and `/api/ui/*` endpoints); Phase 2B complete (2026-10-29;
+`/` cut over - `/` and `/projects` are SPA, `/projects/:id` remains legacy); Phase 2C project
+detail next.
 Design: [Incremental SPA migration](../design/spa-migration.md) (approved, `oracle` round 5 PASS;
 flag/test-glob/no-JS clarifications recorded in revision 6).
 Owner decisions: [open questions](../open-questions.md), 2026-10-28.
@@ -503,6 +506,41 @@ Out of scope: app detail, chat, settings, skills, SSH.
 - The legacy form path still returns `303` + notice; CLI/MCP/extension tests unchanged.
 - Master variants expose no mutating action.
 - Rollback and boundary matrices pass.
+
+### Completion record - Phase 2B (2026-10-29)
+
+Phase 2A (props/endpoints) landed before this record. Phase 2B cuts over the fleet overview only:
+the registry now has `spa: true` for `overview` and `projects`; `project` and every later route stay
+`spa: false`, and `/projects/:id` remains a legacy document.
+
+- **Page.** `ui/pages/OverviewPage.vue` renders the legacy header, four-cell `watch-strip`, project
+  ledger, recent-handoffs card, waiting-for-approval `route-card`s, runtime summary, both empty
+  states, and the new-project action only when projects exist. It reads boot props immediately and
+  uses Vue Query keyed on the overview endpoint with a non-blocking refresh indicator and an inline
+  error state with Retry and `?legacy=1`. Project links are `SmartLink`s; the detail route is not an
+  SPA path, so it renders a plain anchor and crosses the boundary with a full document load.
+- **Shared components.** `ui/components/NewProjectDialog.vue` is the single native `#new-project`
+  dialog used by both `OverviewPage` and `ProjectsPage`; it keeps the legacy labels/hint, required
+  input, pending state, error toast, `apiMutation` form request with `X-Hanse-Client: spa`, and the
+  full-document navigation to `/projects/:id?notice=Project+created.&tone=success`.
+  `StatusPill`, `RouteText`, and `RouteCard` plus `ui/status.ts` mirror the legacy
+  status/reply/runtime vocabulary without importing server code.
+- **Navigation.** `ui/router.ts` registers `/` with a lazy `OverviewPage`. `ProjectsPage` and
+  `OverviewPage` only trust boot props when `boot.route.id` matches their route, so a client
+  navigation fetches that route's `/api/ui/*` props instead of rendering the previous page's data.
+- **Tests.** New `OverviewPage` component tests cover boot rendering, the empty state, shared-dialog
+  creation, cross-route boot fetch, and the legacy boundary link. `e2e/overview.spec.ts` runs in
+  `spa`, `legacy`, and `allowlist-empty` and covers counts, ledger, recent handoffs, waiting cards,
+  runtime, create-project, and the project-detail boundary. `e2e/spa-overview.spec.ts` covers deep
+  link, refresh, client navigation to `/projects`, chrome swap/title/active nav, `?legacy=1`, the
+  rollback servers, no fallback flash, no console/page errors, and records the first-load transfer.
+  `test/shared-routes.test.ts` updates its deliberate Phase 1B cutover assertions to include
+  `overview`.
+- **Measured.** Overview first load: document 4,930 + CSS 27,635 + entry 98,982 + route chunk 5,099 =
+  **136,646 bytes** (recorded, no hard budget because S16 remains `/projects`). `/projects` first
+  load stayed at **134,719 bytes** with CLS 0.0.
+- **Not done.** `ProjectPage.vue`, add-app/new-handoff/policy/delete/project actions, and the
+  `project` registry flag are Phase 2C.
 
 ### Verification
 

@@ -9,6 +9,7 @@ const reuseExistingServer = process.env.HANSE_E2E_REUSE === "1";
 
 const routeSpecs = [
   "**/auth.spec.ts",
+  "**/overview.spec.ts",
   "**/projects.spec.ts",
   "**/project-detail.spec.ts",
   "**/app.spec.ts",
@@ -49,7 +50,12 @@ export default defineConfig({
   projects: [
     {
       name: "spa",
-      testMatch: ["**/projects.spec.ts", "**/spa-projects.spec.ts"],
+      testMatch: [
+        "**/overview.spec.ts",
+        "**/spa-overview.spec.ts",
+        "**/projects.spec.ts",
+        "**/spa-projects.spec.ts",
+      ],
       use: { baseURL: "http://127.0.0.1:4310" },
     },
     {
@@ -59,7 +65,7 @@ export default defineConfig({
     },
     {
       name: "allowlist-empty",
-      testMatch: ["**/projects.spec.ts"],
+      testMatch: ["**/overview.spec.ts", "**/projects.spec.ts"],
       use: { baseURL: "http://127.0.0.1:4312" },
     },
   ],

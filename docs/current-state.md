@@ -275,19 +275,20 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   diffs/write content) and imports the pure helpers in `assets/chat-core.js`,
   `assets/chat-commands.js`, `assets/chat-diff.js`, and the lazy worker controller in
   `assets/chat-highlight.js`. `assets/git.js` hydrates the
-  application git panel. All routes except `/projects` remain server-rendered by default; the
-  Vue/Vite client has cut over `/projects` and is scaffolded for later routes (see **UI rendering
-  modes**).
+  application git panel. All routes except `/` and `/projects` remain server-rendered by default;
+  the Vue/Vite client has cut those two routes over and is scaffolded for later routes (see
+  **UI rendering modes**).
 - The chat workspace is the stage-3 three-pane surface: sessions rail, thread, and context rail.
   Below 1360 the context pane is a drawer; below 768 both rails are drawers. The thread is the only
   scroll owner. `session` is mirrored to the URL, and the optional `project` query disambiguates
   duplicate app keys across projects.
 
-## UI rendering modes (Phase 1B)
+## UI rendering modes (Phase 2B)
 
-- `/projects` is the first and only SPA route: the shared registry (`src/shared/routes.ts`) has
-  `spa: true` for `projects` and `spa: false` for every other page, and `/projects/:id` stays a
-  legacy document. The page dispatcher is the only place that chooses a renderer:
+- `/` (fleet overview) and `/projects` are SPA routes: the shared registry
+  (`src/shared/routes.ts`) has `spa: true` for `overview` and `projects` and `spa: false` for every
+  other page. `/projects/:id` and every later route stay legacy documents. The page dispatcher is
+  the only place that chooses a renderer:
   `HANSE_UI_LEGACY=1` > `?legacy=1` > `HANSE_UI_SPA_ROUTES` > the registry flag. A missing, invalid,
   or partial `assets/ui/.vite/manifest.json` also falls back to legacy and logs
   `ui.manifest_invalid`.
@@ -295,11 +296,14 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   (`npm run build:ui`), and mounts into the existing server shell `<main id="main">` (no second
   wrapper). Server-rendered chrome is refreshed through `GET /api/ui/chrome?path=`, and page data
   comes from boot JSON plus per-route `/api/ui/*` endpoints. `/projects` renders the legacy header,
-  six-column ledger, search, empty states, deletion status, and create dialog in Vue; navigating to
-  a project crosses a full document boundary to the legacy detail page.
+  six-column ledger, search, empty states, deletion status, and create dialog in Vue. `/` renders
+  the legacy header, four-cell watch strip, project ledger, recent handoffs, waiting route cards,
+  runtime rail, and empty state; project links cross a full document boundary to the legacy detail
+  page, while the overview-to-`/projects` link stays client-side. The native new-project dialog is a
+  shared Vue component used by both pages.
 - Built client assets are served from `/assets/ui/*` with immutable caching; compressible responses
-  are gzip-encoded when the client offers it (the `/projects` first load measures ~137 KiB on the
-  deterministic fixture).
+  are gzip-encoded when the client offers it (first loads measure ~137 KiB for `/projects` and
+  ~133 KiB for `/` on the deterministic fixture).
 - SPA documents and `/api/ui/*` are cookie-only. `/api/ui/*` returns `401` without a human cookie,
   `403 cookie_required` for a human bearer without a cookie, and `403` for agent tokens; responses are
   `no-store`.

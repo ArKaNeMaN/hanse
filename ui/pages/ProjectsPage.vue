@@ -2,13 +2,12 @@
 import { keepPreviousData, useQuery } from "@tanstack/vue-query";
 import { computed, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { ApiError, apiMutation, apiQuery } from "../api.js";
+import { ApiError, apiQuery } from "../api.js";
 import type { BootChrome, BootPayload } from "../boot.js";
 import AppIcon from "../components/AppIcon.vue";
+import NewProjectDialog from "../components/NewProjectDialog.vue";
 import SmartLink from "../components/SmartLink.vue";
 import { absoluteTime, timeAgo } from "../format.js";
-import { fullDocumentNavigate } from "../navigation.js";
-import { useToastStore } from "../stores/toasts.js";
 
 interface ProjectRow {
   readonly id: string;
@@ -32,18 +31,23 @@ interface ProjectsResponse extends ProjectsProps {
   readonly chrome?: BootChrome;
 }
 
-interface CreateProjectResponse {
-  readonly ok: true;
-  readonly project: { readonly id: string; readonly name: string };
-}
+const EMPTY: ProjectsProps = {
+  query: "",
+  rows: [],
+  projectCount: 0,
+  appCount: 0,
+  matchedCount: 0,
+};
 
 const props = defineProps<{ boot: BootPayload }>();
 const route = useRoute();
 const router = useRouter();
-const toasts = useToastStore();
 
-const initial = props.boot.props as ProjectsProps;
-const initialQuery = typeof initial.query === "string" ? initial.query : "";
+// A route reached by client navigation still receives the boot payload of the first document.
+// Only trust it when it belongs to this page; otherwise fetch the current props.
+const bootProps =
+  props.boot.route.id === "projects" ? (props.boot.props as ProjectsProps) : undefined;
+const initialQuery = typeof bootProps?.query === "string" ? bootProps.query : "";
 
 const activeQuery = computed(() => {
   const raw = route.query.q;
@@ -64,13 +68,15 @@ const projectsQuery = useQuery<ProjectsResponse>({
         ? "/api/ui/projects"
         : `/api/ui/projects?q=${encodeURIComponent(activeQuery.value)}`,
     ),
-  initialData: () => (activeQuery.value === initialQuery ? initial : undefined),
+  initialData: () =>
+    bootProps !== undefined && activeQuery.value === initialQuery ? bootProps : undefined,
   placeholderData: keepPreviousData,
   staleTime: 30_000,
   retry: false,
 });
 
-const view = computed<ProjectsProps>(() => projectsQuery.data.value ?? initial);
+const view = computed<ProjectsProps>(() => projectsQuery.data.value ?? bootProps ?? EMPTY);
+const hasData = computed(() => projectsQuery.data.value !== undefined || bootProps !== undefined);
 const loading = computed(() => projectsQuery.isFetching.value);
 const failed = computed(() => projectsQuery.isError.value);
 const failure = computed(() => {
@@ -93,42 +99,10 @@ function onSearch(): void {
   void router.push({ path: "/projects", query: q.length === 0 ? {} : { q } });
 }
 
-const nameInput = ref("");
-const creating = ref(false);
-const dialog = ref<HTMLDialogElement | null>(null);
+const newProjectDialog = ref<InstanceType<typeof NewProjectDialog> | null>(null);
 
 function openDialog(): void {
-  nameInput.value = "";
-  dialog.value?.showModal();
-}
-
-function closeDialog(): void {
-  if (!creating.value) {
-    dialog.value?.close();
-  }
-}
-
-async function createProject(): Promise<void> {
-  const name = nameInput.value.trim();
-  if (name.length === 0 || creating.value) {
-    return;
-  }
-  creating.value = true;
-  try {
-    const result = await apiMutation<CreateProjectResponse>("/api/projects", {
-      form: { name },
-    });
-    const params = new URLSearchParams({ notice: "Project created.", tone: "success" });
-    fullDocumentNavigate(`/projects/${encodeURIComponent(result.project.id)}?${params.toString()}`);
-  } catch (error) {
-    const message =
-      error instanceof ApiError || error instanceof Error
-        ? error.message
-        : "Could not create project.";
-    toasts.push(message, "error");
-  } finally {
-    creating.value = false;
-  }
+  newProjectDialog.value?.open();
 }
 </script>
 
@@ -154,7 +128,9 @@ async function createProject(): Promise<void> {
   </header>
 
   <div class="page__body">
-    <p v-if="loading" class="hint" role="status" aria-live="polite">Updating projects…</p>
+    <p v-if="loading && hasData" class="hint" role="status" aria-live="polite">
+      Updating projects…
+    </p>
 
     <section v-if="failed" class="card" aria-labelledby="projects-error-title">
       <div class="card__head">
@@ -170,6 +146,8 @@ async function createProject(): Promise<void> {
         </div>
       </div>
     </section>
+
+    <p v-else-if="!hasData" class="hint" role="status" aria-live="polite">Loading projects…</p>
 
     <template v-else-if="view.projectCount === 0">
       <div class="empty-state">
@@ -283,57 +261,5 @@ async function createProject(): Promise<void> {
     </template>
   </div>
 
-  <dialog ref="dialog" class="dialog" id="new-project" aria-labelledby="new-project-title">
-    <div class="dialog__frame">
-      <header class="dialog__head">
-        <h2 class="dialog__title" id="new-project-title">New project</h2>
-        <p class="dialog__meta">Creates a project manifest in the workspace</p>
-      </header>
-      <form
-        class="dialog__form"
-        method="post"
-        action="/api/projects"
-        @submit.prevent="createProject"
-      >
-        <div class="dialog__body">
-          <div class="field">
-            <label class="label" for="new-project-name">Project name (required)</label>
-            <input
-              id="new-project-name"
-              v-model="nameInput"
-              class="input"
-              name="name"
-              required
-              autocomplete="off"
-              placeholder="northbank"
-              aria-describedby="new-project-hint"
-              :disabled="creating"
-            >
-            <p class="hint" id="new-project-hint">
-              A slugged folder with .hanse/project.yaml is created under the workspace root.
-            </p>
-          </div>
-        </div>
-        <footer class="dialog__foot">
-          <button
-            class="btn btn-ghost"
-            type="button"
-            data-dialog-close
-            :disabled="creating"
-            @click="closeDialog"
-          >
-            Cancel
-          </button>
-          <button
-            class="btn btn-primary"
-            type="submit"
-            :disabled="creating"
-            :aria-busy="creating ? 'true' : undefined"
-          >
-            {{ creating ? "Creating…" : "Create project" }}
-          </button>
-        </footer>
-      </form>
-    </div>
-  </dialog>
+  <NewProjectDialog ref="newProjectDialog" />
 </template>

@@ -38,4 +38,6 @@
   cookie-only page props, `X-Hanse-Client` mutation branches, deterministic E2E fixtures, per-route
   rollback, and stages 0-8 with a chat/terminal decision gate. Status: Phase 0 complete
   (journal 0038); Phase 1A complete (2026-10-28; gates green, no route cut over); Phase 1B complete
-  (2026-10-28; `/projects` cut over, all gates green); Phase 2 next.
+  (2026-10-28; `/projects` cut over, all gates green); Phase 2A complete (2026-10-29); Phase 2B
+  complete (2026-10-29; `/` cut over, `/` and `/projects` are SPA, `/projects/:id` stays legacy);
+  Phase 2C project detail next.

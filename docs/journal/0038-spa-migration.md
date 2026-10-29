@@ -187,10 +187,64 @@ Commands ran with `NODE_ENV=development` and `PLAYWRIGHT_CHROMIUM=/usr/bin/chrom
 Measured on the deterministic fixture: `/projects` first load = document 4,638 + CSS 27,635 +
 entry 98,834 + route chunk 8,821 = **139,928 bytes** (limit 204,800); **CLS 0.0** (limit 0.1).
 
+## Phase 2B implementation (`/` cutover)
+
+The fleet overview is the second client-rendered route. The registry now has `spa: true` for
+`overview` and `projects`; `project` and every later route stay `spa: false`, so `/projects/:id`
+remains a legacy document. Phase 2A props/endpoints were already in place.
+
+- **Page.** `ui/pages/OverviewPage.vue` reproduces the legacy header (Workbench overline, fleet
+  title/description/counts, header action only when projects exist), the four-cell `watch-strip`,
+  project ledger with `SmartLink`s to the legacy detail route, recent handoffs, waiting-for-approval
+  `route-card`s, the runtime summary, both empty states, and the new-project dialog. Boot props
+  render immediately; Vue Query uses `/api/ui/overview` with a non-blocking refresh indicator and an
+  inline error state with Retry and `?legacy=1`. No `<style>`, no `v-html`; icons use the server
+  sprite.
+- **Shared client pieces.** `NewProjectDialog.vue` is now the single native `#new-project` dialog for
+  both `OverviewPage` and `ProjectsPage` (legacy labels/hint, required input, pending state, error
+  toast, `apiMutation` form post with `X-Hanse-Client: spa`, full-document success navigation).
+  `StatusPill`, `RouteText`, `RouteCard`, and `ui/status.ts` mirror the legacy status/reply/runtime
+  vocabulary without importing server code. `ProjectsPage` and `OverviewPage` only trust boot props
+  when `boot.route.id` matches their route, so client navigation fetches the destination route's
+  props instead of rendering the previous page's data.
+- **Routing.** `/` is registered in `ui/router.ts` with a lazy `OverviewPage`; `SmartLink` now keeps
+  the overview-to-projects hop client-side while project links stay plain anchors.
+- **Tests.** New `OverviewPage` component tests (5) cover boot rendering, the empty state, the shared
+  dialog, cross-route boot fetch, and the legacy boundary. `e2e/overview.spec.ts` runs in `spa`,
+  `legacy`, and `allowlist-empty` (counts, ledger, recent handoffs, waiting cards, runtime,
+  create-project, detail boundary). `e2e/spa-overview.spec.ts` covers deep link, refresh, client
+  navigation to `/projects`, chrome swap/title/active nav, `?legacy=1`, rollback servers, no fallback
+  flash, no console/page errors, and an annotated transfer measurement. The Phase 1B route-table
+  assertions were updated to include `overview`; no other test was weakened.
+
+## Phase 2B verification
+
+Commands ran with `NODE_ENV=development` and `PLAYWRIGHT_CHROMIUM=/usr/bin/chromium`.
+
+| Command | Result |
+| --- | --- |
+| `npm run lint` | 547 files, exit 0 (18 pre-existing warnings) |
+| `npm run typecheck` | exit 0 |
+| `npm run typecheck:ui` | exit 0 |
+| `npm run typecheck:e2e` | exit 0 |
+| `npm test` | 150 files / 2787 tests, exit 0 |
+| `npm run build` | exit 0; entry `main-7vauEzKX.js`, overview `OverviewPage-Ce6EL7yb.js`, projects `ProjectsPage-DTVqYcEq.js` |
+| `npm run check:sensitive` | exit 0 |
+| `npm run check:ui` | exit 0 (12 SFCs, sentinel present) |
+| `npm run test:e2e` | 40 passed, exit 0 (spa 18, legacy 16, allowlist-empty 6) |
+
+Measured on the deterministic fixture: `/` first load = document 4,930 + CSS 27,635 + entry 98,982
++ overview chunk 5,099 = **136,646 bytes** (recorded; S16 remains the `/projects` budget). `/projects`
+first load stayed at **134,719 bytes**; CLS 0.0.
+
+Visual parity: normalized `#main` structure and key computed styles/layout boxes for the header,
+watch strip, workbench grid, cards, tables, route cards, runtime rows, and empty state match the
+legacy page at 390/768/1440 in dark and light. The only structural deltas were the hidden
+`hanse-ui-sentinel` element and the per-server temp workspace path text.
+
 ## Next
 
-Phase 2: migrate `/` (fleet overview) and `/projects/:id` (project detail), add their props and
-`/api/ui/*` endpoints, the add-app/create-handoff/decision SPA branches, master variants, and the
-SPA/legacy E2E plus rollback matrix. The `/projects/:id` → app-detail boundary stays a full document
-load until Phase 7.
+Phase 2C: migrate `/projects/:id` (project detail), add-app/new-handoff/policy/delete actions, the
+master variant, and the `project` registry flag. Until then `/projects/:id` stays legacy and the
+`/projects/:id` → app-detail boundary stays a full document load.
 

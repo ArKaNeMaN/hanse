@@ -74,7 +74,7 @@
   server-rendered chrome with a client-owned `<main>`, a shared route manifest, cookie-only
   `/api/ui/*` props, `X-Hanse-Client` mutation branches, deterministic E2E fixtures, and per-route
   rollback. Status: approved (`oracle` round 5 PASS, 2026-10-28); plan 0031 approved (`momus`
-  round 3 PASS); Phases 0-1B complete, `/projects` cut over.
+  round 3 PASS); Phases 0-2B complete, `/` and `/projects` cut over, `/projects/:id` still legacy.
 - [Architecture overview](./overview.md) - the coordinator architecture and stage plan.
 - [Agent runtime isolation and per-app toolchains](./agent-runtime.md) - staged B0/B1/B2 runtime split, layered agent images, per-app containers, app image builds, and deployment constraints. Status: proposed, revised after design review.
 - [Agent process protection and interrupted-turn recovery](./agent-process-protection.md) - safe-test instructions, narrow bash self-kill denies, runtime-epoch stop detection, persisted system notices, subagent parent signals, and recency-guarded top-level session resume. Status: deployed (design `oracle` round 10 PASS; journal 0037; commit `25e5c81`).

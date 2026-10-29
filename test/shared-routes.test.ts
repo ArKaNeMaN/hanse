@@ -19,7 +19,7 @@ describe("shared route manifest", () => {
     expect(source).not.toMatch(/require\(["']node:/);
   });
 
-  it("publishes the complete route table and cuts only projects over", () => {
+  it("publishes the complete route table and cuts projects and overview over", () => {
     expect(ROUTES.map((route) => [route.id, route.path, route.nav])).toEqual([
       ["projects", "/projects", "projects"],
       ["overview", "/", "overview"],
@@ -36,7 +36,10 @@ describe("shared route manifest", () => {
       ["app", "/projects/:id/apps/:app", "project"],
       ["project", "/projects/:id", "project"],
     ]);
-    expect(ROUTES.filter((route) => route.spa).map((route) => route.id)).toEqual(["projects"]);
+    expect(ROUTES.filter((route) => route.spa).map((route) => route.id)).toEqual([
+      "projects",
+      "overview",
+    ]);
   });
 
   it("matches every route path and decodes parameters", () => {
@@ -103,11 +106,13 @@ describe("shared route manifest", () => {
     expect(matchPage("/skills/1/extra")).toBeUndefined();
   });
 
-  it("enables only projects by default in Phase 1B", () => {
+  it("enables the cut-over routes by default", () => {
     for (const route of ROUTES) {
-      expect(isSpaRoute(route.id, { env: {} }), route.id).toBe(route.id === "projects");
+      const migrated = route.id === "projects" || route.id === "overview";
+      expect(isSpaRoute(route.id, { env: {} }), route.id).toBe(migrated);
     }
     expect(isSpaPath("/projects", { env: {} })).toBe(true);
+    expect(isSpaPath("/", { env: {} })).toBe(true);
     expect(isSpaPath("/handoffs", { env: {} })).toBe(false);
   });
 
@@ -122,7 +127,7 @@ describe("shared route manifest", () => {
   it("treats an unset allowlist as the registry flag", () => {
     expect(isSpaRoute("projects", { env: {} })).toBe(true);
     expect(isSpaRoute("projects", { env: { spaRoutes: undefined } })).toBe(true);
-    expect(isSpaRoute("overview", { env: {} })).toBe(false);
+    expect(isSpaRoute("overview", { env: {} })).toBe(true);
   });
 
   it("treats an empty allowlist as all legacy", () => {
