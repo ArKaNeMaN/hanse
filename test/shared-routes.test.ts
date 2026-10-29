@@ -19,7 +19,7 @@ describe("shared route manifest", () => {
     expect(source).not.toMatch(/require\(["']node:/);
   });
 
-  it("publishes the complete route table and cuts projects and overview over", () => {
+  it("publishes the complete route table and cuts projects, overview, and project over", () => {
     expect(ROUTES.map((route) => [route.id, route.path, route.nav])).toEqual([
       ["projects", "/projects", "projects"],
       ["overview", "/", "overview"],
@@ -39,6 +39,7 @@ describe("shared route manifest", () => {
     expect(ROUTES.filter((route) => route.spa).map((route) => route.id)).toEqual([
       "projects",
       "overview",
+      "project",
     ]);
   });
 
@@ -108,11 +109,13 @@ describe("shared route manifest", () => {
 
   it("enables the cut-over routes by default", () => {
     for (const route of ROUTES) {
-      const migrated = route.id === "projects" || route.id === "overview";
+      const migrated = route.id === "projects" || route.id === "overview" || route.id === "project";
       expect(isSpaRoute(route.id, { env: {} }), route.id).toBe(migrated);
     }
     expect(isSpaPath("/projects", { env: {} })).toBe(true);
     expect(isSpaPath("/", { env: {} })).toBe(true);
+    expect(isSpaPath("/projects/alpha", { env: {} })).toBe(true);
+    expect(isSpaPath("/projects/alpha/apps/web", { env: {} })).toBe(false);
     expect(isSpaPath("/handoffs", { env: {} })).toBe(false);
   });
 

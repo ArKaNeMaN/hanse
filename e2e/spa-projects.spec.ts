@@ -58,20 +58,16 @@ test("deep links, refreshes, swaps chrome, and restores history", async ({ page 
   expectNoPageErrors(errors);
 });
 
-test("project links cross the SPA boundary with a full document load", async ({ page }) => {
+test("project links client-navigate to the SPA project detail", async ({ page }) => {
   const errors = collectPageErrors(page);
   await signIn(page);
 
-  const responsePromise = page.waitForResponse(
-    (response) =>
-      new URL(response.url()).pathname === `/projects/${PROJECT_ONE}` && response.status() === 200,
-  );
   await page.getByRole("link", { name: "E2E Project One", exact: true }).click();
-  await responsePromise;
 
   await expect(page).toHaveURL(new RegExp(`/projects/${PROJECT_ONE}$`));
-  await expect(page.locator("#hanse-boot")).toHaveCount(0);
+  await expect(page.locator("#hanse-boot")).toHaveCount(1);
   await expect(page.getByRole("heading", { name: "E2E Project One" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Applications" })).toBeVisible();
 
   await settle(page);
   expectNoPageErrors(errors);

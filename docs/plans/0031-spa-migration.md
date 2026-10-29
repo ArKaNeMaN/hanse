@@ -4,8 +4,8 @@ Status: **in progress** - plan review (`momus`) round 3 PASS (2026-10-28); Phase
 (journal 0038); Phase 1A complete (2026-10-28; all gates green, no route cut over); Phase 1B
 complete (2026-10-28; `/projects` is the first cutover, all gates green); Phase 2A complete
 (2026-10-29; overview/project props and `/api/ui/*` endpoints); Phase 2B complete (2026-10-29;
-`/` cut over - `/` and `/projects` are SPA, `/projects/:id` remains legacy); Phase 2C project
-detail next.
+`/` cut over); Phase 2C complete (2026-10-29; `/projects/:id` cut over, Phase 2 complete - `/`,
+`/projects`, and `/projects/:id` are SPA, app detail and every later route stay legacy).
 Design: [Incremental SPA migration](../design/spa-migration.md) (approved, `oracle` round 5 PASS;
 flag/test-glob/no-JS clarifications recorded in revision 6).
 Owner decisions: [open questions](../open-questions.md), 2026-10-28.
@@ -541,6 +541,56 @@ the registry now has `spa: true` for `overview` and `projects`; `project` and ev
   load stayed at **134,719 bytes** with CLS 0.0.
 - **Not done.** `ProjectPage.vue`, add-app/new-handoff/policy/delete/project actions, and the
   `project` registry flag are Phase 2C.
+
+### Completion record - Phase 2C (2026-10-29)
+
+Phase 2C finishes Phase 2: the registry has `spa: true` for `overview`, `projects`, and `project`;
+`app` and every later route stay `spa: false`. `/projects/:id` is client-rendered, and the
+project-to-application hop remains a full document load.
+
+- **Page.** `ui/pages/ProjectPage.vue` reproduces the legacy project header (Project overline,
+  name/description, root/base/application/waiting meta, Settings, Open IDE, New handoff), the
+  four-cell watch strip, applications table (kind, path, runtime, pending-restart link, chat/IDE/app
+  links, add app), handoffs table with review dialogs, waiting route cards, manifest, handoff-policy
+  editor, and the danger zone. The reserved master project renders the read-only master header and
+  card (runtime/kind strip, chat/settings/skills links) with no mutating controls. Application,
+  settings, skills, chat, and IDE links are plain anchors; project/overview/projects links use
+  `SmartLink`.
+- **Actions.** `AddAppDialog`, `NewHandoffDialog`, `HandoffReviewDialog`, `ProjectPolicyCard`, and
+  `ProjectDeleteDialog` use the existing handlers: form-encoded add-app (`200 {ok:true, app}`),
+  handoff create (`201` queued / `202` awaiting / `403` denied / `409` existing / `400`
+  summary-required), decision (`200 {ok:true, decision}`), reply relaunch/retry/cancel, cancel,
+  policy save/delete, and project deletion with exact-name confirmation. Every successful mutation
+  refetches `/api/ui/projects/:id` and applies its chrome fragment; failures keep the dialog open
+  and raise an error toast. No backend route flag or legacy HTML/API semantics changed.
+- **Boot/query.** The page trusts boot props only when the boot route id is `project` and its id
+  matches the current route; client navigation fetches `/api/ui/projects/:id` with Vue Query.
+  Loading, generic error, 404 ("Project not found"), Retry, and `?legacy=1` states are covered.
+- **Tests.** New `ProjectPage` component tests (17) cover normal/master rendering, apps/handoffs/
+  policy/manifest/danger zone, empty states, cross-route boot fetch, loading/404/error/retry, the
+  legacy app boundary, and add-app/create-handoff/decision/relaunch/policy/delete success and
+  failure paths. `e2e/project.spec.ts` runs in `spa` and covers render, add app by path and by
+  clone (deterministic git daemon), queued/awaiting handoffs, approve/reject, relaunch/retry/cancel,
+  policy save/delete, the exact-name deletion contract with a fake deletion service, and the master
+  read-only variant. `e2e/spa-project.spec.ts` covers deep link, refresh, client navigation from
+  overview and projects, chrome swap/title/history, `?legacy=1`, both rollback servers, the
+  app-detail full-document boundary, no fallback flash, no console/page errors, and the transfer
+  measurement. The legacy `project-detail.spec.ts` remains the rollback smoke. Existing HTML tests
+  were retained rather than retired (the task prohibited test deletion); all remain green.
+- **Measured.** `/projects/:id` first load: document 5,610 + CSS 27,635 + entry 99,746 + route chunk
+  12,947 = **145,938 bytes** (recorded; S16 remains the `/projects` budget). `/projects` stayed at
+  **135,505 bytes** with CLS 0.0.
+- **Visual QA.** SPA vs legacy project pages were compared at 390/768/1440 in dark and light:
+  matching `h1`, watch-strip labels, table count, `#main` scroll width, and no horizontal overflow in
+  either mode. Screenshots are in the untracked workspace evidence directory (`phase2c-visual/`). The
+  only structural deltas are the hidden boot marker (`#hanse-boot`), the Vue sentinel, and the
+  per-server temp workspace path text.
+- **Accepted parity delta.** Handoff spec/result/operator-note text in the SPA review dialog renders as
+  pre-wrapped plain text (no `v-html`); the legacy page hydrates those fields as Markdown through
+  `handoff.js`. The shared `SafeMarkdown` component lands with the Phase 3 handoff-inbox port.
+- **Gaps.** None of the plan-required flows are missing. The fixture adds a fake deletion service
+  (contract-only, never destructive) and a fake dispatcher for reply actions; Docker/opencode were
+  not used.
 
 ### Verification
 

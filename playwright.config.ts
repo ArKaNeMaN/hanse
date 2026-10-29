@@ -55,6 +55,8 @@ export default defineConfig({
         "**/spa-overview.spec.ts",
         "**/projects.spec.ts",
         "**/spa-projects.spec.ts",
+        "**/project.spec.ts",
+        "**/spa-project.spec.ts",
       ],
       use: { baseURL: "http://127.0.0.1:4310" },
     },

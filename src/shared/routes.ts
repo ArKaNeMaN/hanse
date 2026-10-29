@@ -153,7 +153,7 @@ const ROUTE_DEFINITIONS: readonly RouteDefinition[] = [
     path: "/projects/:id",
     nav: "project",
     label: "Project",
-    spa: false,
+    spa: true,
   },
 ];
 

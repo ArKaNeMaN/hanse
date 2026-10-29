@@ -1,7 +1,8 @@
 # 0038 - Incremental SPA migration: Phase 0 harness and Phase 1A infrastructure
 
 Status: **in progress** - Phase 0 complete (2026-10-28); Phase 1A complete, flag off (2026-10-28);
-Phase 1B complete, `/projects` cut over (2026-10-28); Phase 2 next.
+Phase 1B complete, `/projects` cut over (2026-10-28); Phase 2 complete, `/` and `/projects/:id`
+cut over (2026-10-29); Phase 3 (`/handoffs`) next.
 Design: [Incremental SPA migration](../design/spa-migration.md) (approved, `oracle` round 5 PASS).
 Plan: [0031 - Incremental SPA migration](../plans/0031-spa-migration.md) (`momus` round 3 PASS).
 Owner decisions: [open questions](../open-questions.md), 2026-10-28.
@@ -242,9 +243,69 @@ watch strip, workbench grid, cards, tables, route cards, runtime rows, and empty
 legacy page at 390/768/1440 in dark and light. The only structural deltas were the hidden
 `hanse-ui-sentinel` element and the per-server temp workspace path text.
 
+## Phase 2C implementation (`/projects/:id` cutover)
+
+Phase 2C completes Phase 2. The registry has `spa: true` for `overview`, `projects`, and `project`;
+`app` and every later route stay `spa: false`, so the project-to-application hop remains a full
+document load. The legacy renderer and all non-SPA API/redirect behavior are unchanged.
+
+- **Page.** `ui/pages/ProjectPage.vue` renders the legacy project header (Project overline,
+  name/description, root/base/application/waiting meta, Settings, Open IDE, New handoff), four-cell
+  watch strip, applications table, handoffs table, waiting route cards, manifest, policy card, and
+  danger zone. The reserved master project renders the read-only master header/card with
+  chat/settings/skills links and no mutating controls. Application/settings/skills/chat/IDE links
+  are plain anchors; `SmartLink` now client-navigates overview/projects/project links.
+- **Components.** `AddAppDialog`, `NewHandoffDialog`, `HandoffReviewDialog`, `ProjectPolicyCard`, and
+  `ProjectDeleteDialog` sit next to the page. They use `apiMutation` with form bodies and
+  `X-Hanse-Client: spa`, keep failures open with an error toast, and refetch
+  `/api/ui/projects/:id` (then apply its chrome fragment) on success. The decision/reply/cancel/
+  policy/deletion handlers are reused as-is; no parallel write path was added.
+- **Boot/query.** Boot props are trusted only when `boot.route.id === "project"` and the id matches
+  the current route. Client navigation fetches `/api/ui/projects/:id` via Vue Query. Loading,
+  generic error, 404, Retry, and `?legacy=1` are covered.
+- **Fixture.** The deterministic seed now includes the reserved master project, a bare git remote
+  served by a loopback `git daemon` (for add-app clone), two reply-waiting handoffs, a cancellable
+  handoff, and a contract-only fake deletion service plus a fake reply dispatcher in
+  `e2e/support/server.ts`. No Docker or opencode is used.
+- **Tests.** `ProjectPage` component tests cover normal/master, all cards, empty states, cross-route
+  boot fetch, 404/error/retry, the legacy app boundary, and add-app/create-handoff/decision/
+  relaunch/policy/delete success and failure paths. `e2e/project.spec.ts` (spa) covers the render,
+  clone/path add, queued/awaiting handoffs, approve/reject, relaunch/retry/cancel, policy, deletion
+  contract, and master read-only. `e2e/spa-project.spec.ts` covers deep link, refresh, client
+  navigation from overview/projects, chrome/history, `?legacy=1`, both rollback servers, the app
+  boundary, no fallback flash/errors, and transfer. `project-detail.spec.ts` stays the legacy
+  rollback smoke. Existing HTML tests were kept (the task prohibited deleting tests).
+
+- **Accepted parity delta.** Handoff spec/result/operator-note text in the SPA review dialog renders as
+  pre-wrapped plain text (no `v-html`); the legacy page hydrates those fields as Markdown through
+  `handoff.js`. The shared `SafeMarkdown` component lands with the Phase 3 handoff-inbox port.
+## Phase 2C verification
+
+Commands ran with `NODE_ENV=development` and `PLAYWRIGHT_CHROMIUM=/usr/bin/chromium`.
+
+| Command | Result |
+| --- | --- |
+| `npm run lint` | 557 files, exit 0 (18 pre-existing warnings) |
+| `npm run typecheck` | exit 0 |
+| `npm run typecheck:ui` | exit 0 |
+| `npm run typecheck:e2e` | exit 0 |
+| `npm test` | 151 files / 2804 tests, exit 0 |
+| `npm run build` | exit 0; entry `main-BhPRc5y4.js`, project `ProjectPage-CA_eCmK1.js` |
+| `npm run check:sensitive` | exit 0 |
+| `npm run check:ui` | exit 0 (18 SFCs, sentinel present) |
+| `npm run test:e2e` | 54 passed, exit 0 (spa 32, legacy 17, allowlist-empty 5) |
+
+Measured on the deterministic fixture: `/projects/:id` first load = document 5,610 + CSS 27,635 +
+entry 99,746 + project chunk 12,947 = **145,938 bytes** (recorded; S16 remains the `/projects`
+budget). `/projects` stayed at **135,505 bytes** with CLS 0.0.
+
+Visual QA compared the SPA and legacy project pages at 390/768/1440 in dark and light: matching
+`h1`, watch-strip labels, table count, `#main` scroll width, and no horizontal overflow. Screenshots
+live in the untracked workspace evidence directory (`phase2c-visual/`). Structural deltas: the hidden
+`#hanse-boot` marker, the Vue sentinel, and per-server temp path text.
+
 ## Next
 
-Phase 2C: migrate `/projects/:id` (project detail), add-app/new-handoff/policy/delete actions, the
-master variant, and the `project` registry flag. Until then `/projects/:id` stays legacy and the
-`/projects/:id` → app-detail boundary stays a full document load.
+Phase 3: cut over `/handoffs` (inbox, filters, inline decisions, reply/relaunch/cancel, project
+policy links), keeping the existing handoff JSON APIs and the legacy rollback page.
 

@@ -3,6 +3,9 @@ import { expect, type Page } from "@playwright/test";
 export const E2E_TOKEN = "test-operator-token";
 export const PROJECT_ONE = "e2e-project-one";
 export const PROJECT_TWO = "e2e-project-two";
+export const MASTER_PROJECT = "hanse-master";
+/** Bare repository served by the spa fixture's git daemon (port 4310 + 1000). */
+export const E2E_SPA_REMOTE = "git://127.0.0.1:5310/remote.git";
 
 export async function signIn(page: Page, next = "/projects"): Promise<void> {
   await page.goto(`/login?next=${encodeURIComponent(next)}`);

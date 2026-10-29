@@ -3,9 +3,16 @@ import { randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { transitionHandoff, updateHandoff } from "../../src/coordinator/handoff.js";
 import { CoordinatorService } from "../../src/coordinator/service.js";
 import type { RunSshKeygen } from "../../src/git/credentials.js";
 import { upsertPrincipalWithToken } from "../../src/identity/principals.js";
+import {
+  MASTER_APP_KEY,
+  MASTER_DIR_NAME,
+  MASTER_PROJECT_ID,
+  MASTER_PROJECT_NAME,
+} from "../../src/master/constants.js";
 import { SettingsService } from "../../src/settings/index.js";
 import { SkillService } from "../../src/skills/index.js";
 import { SshService } from "../../src/ssh/service.js";
@@ -47,6 +54,8 @@ const fakeSshKeygen: RunSshKeygen = (args) => {
 export interface SeedOptions {
   dbPath?: string;
   token?: string;
+  /** When provided, a deterministic bare git repository is created at this path for clone E2E. */
+  remotePath?: string;
 }
 
 export interface SeededProject {
@@ -65,6 +74,10 @@ export interface SeedResult {
   skills: SkillService;
   ssh: SshService;
   handoffId: string;
+  replyHandoffId: string;
+  retryReplyHandoffId: string;
+  cancelHandoffId: string;
+  fixtureRemotePath: string | null;
   skillIds: number[];
   sshHostId: string;
   cleanup: () => void;
@@ -90,6 +103,17 @@ function initFixtureRepo(directory: string): void {
   execFileSync("git", ["add", "README.md"], { cwd: directory, env, stdio: "ignore" });
   execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-q", "-m", "fixture commit"], {
     cwd: directory,
+    env,
+    stdio: "ignore",
+  });
+}
+
+/** Create a bare repository with one commit so add-app clone has a deterministic remote. */
+function initBareRemote(directory: string, sourceDirectory: string): void {
+  rmSync(directory, { recursive: true, force: true });
+  mkdirSync(path.dirname(directory), { recursive: true });
+  const env = gitEnv();
+  execFileSync("git", ["clone", "--bare", "-q", sourceDirectory, directory], {
     env,
     stdio: "ignore",
   });
@@ -162,6 +186,12 @@ export function seed(options: SeedOptions = {}): SeedResult {
       appKeys: ["gamma"],
     },
   ];
+  const masterProject = {
+    id: MASTER_PROJECT_ID,
+    name: MASTER_PROJECT_NAME,
+    rootPath: path.join(workspaceRoot, "master"),
+    appKeys: [MASTER_APP_KEY],
+  };
 
   const now = new Date().toISOString();
   const insertProject = db.prepare(
@@ -188,6 +218,26 @@ export function seed(options: SeedOptions = {}): SeedResult {
   insertInstance.run(`${PROJECT_ONE}:alpha`, `${PROJECT_ONE}:alpha`, "running", "running", now);
   insertInstance.run(`${PROJECT_ONE}:beta`, `${PROJECT_ONE}:beta`, "stopped", "stopped", now);
   insertInstance.run(`${PROJECT_TWO}:gamma`, `${PROJECT_TWO}:gamma`, "stopped", "stopped", now);
+
+  // Reserved master project: powers the read-only master variant. It is excluded from operator
+  // aggregates, so its presence does not change project/application counts.
+  mkdirSync(path.join(masterProject.rootPath, MASTER_DIR_NAME), { recursive: true });
+  insertProject.run(masterProject.id, masterProject.name, masterProject.rootPath, now, now);
+  insertApp.run(
+    `${MASTER_PROJECT_ID}:${MASTER_APP_KEY}`,
+    MASTER_PROJECT_ID,
+    MASTER_APP_KEY,
+    MASTER_DIR_NAME,
+    "master",
+    now,
+  );
+  insertInstance.run(
+    `${MASTER_PROJECT_ID}:${MASTER_APP_KEY}`,
+    `${MASTER_PROJECT_ID}:${MASTER_APP_KEY}`,
+    "running",
+    "running",
+    now,
+  );
 
   const settings = new SettingsService({ db, secretKey: randomBytes(32) });
   settings.set("global", {}, "llm.model", "test-provider/test-model", E2E_OPERATOR);
@@ -266,13 +316,48 @@ export function seed(options: SeedOptions = {}): SeedResult {
   );
   ssh.decideApproval(approvalId, `${PROJECT_ONE}:alpha`, "approve", E2E_OPERATOR);
 
-  const { handoffId } = new CoordinatorService(db, PROJECT_ONE).requestSiblingChange({
+  const projectOne = new CoordinatorService(db, PROJECT_ONE);
+  const { handoffId } = projectOne.requestSiblingChange({
     fromAppKey: "alpha",
     toAppKey: "beta",
     summary: "E2E handoff summary",
     spec: "E2E handoff spec",
     requiresApproval: true,
   });
+
+  function deliveredReply(summary: string): string {
+    const { handoffId: id } = projectOne.requestSiblingChange({
+      fromAppKey: "beta",
+      toAppKey: "alpha",
+      summary,
+      spec: "E2E reply spec",
+    });
+    transitionHandoff(db, id, "dispatching");
+    transitionHandoff(db, id, "in_progress");
+    transitionHandoff(db, id, "delivered", { result: "E2E reply result", outcome: "completed" });
+    updateHandoff(db, id, {
+      replyState: "waiting_operator",
+      sourceSessionId: "ses_e2e_source_reply",
+    });
+    return id;
+  }
+
+  const replyHandoffId = deliveredReply("E2E reply handoff");
+  const retryReplyHandoffId = deliveredReply("E2E retry reply handoff");
+  const { handoffId: cancelHandoffId } = projectOne.requestSiblingChange({
+    fromAppKey: "alpha",
+    toAppKey: "beta",
+    summary: "E2E cancel handoff",
+    spec: "E2E cancel spec",
+  });
+
+  let fixtureRemotePath: string | null = null;
+  if (options.remotePath !== undefined) {
+    const source = path.join(tempRoot, "remote-source");
+    initFixtureRepo(source);
+    initBareRemote(options.remotePath, source);
+    fixtureRemotePath = options.remotePath;
+  }
 
   return {
     db,
@@ -283,8 +368,17 @@ export function seed(options: SeedOptions = {}): SeedResult {
     skills,
     ssh,
     handoffId,
+    replyHandoffId,
+    retryReplyHandoffId,
+    cancelHandoffId,
+    fixtureRemotePath,
     skillIds: [globalSkill.id, projectSkill.id],
     sshHostId: host.id,
-    cleanup,
+    cleanup: () => {
+      if (fixtureRemotePath !== null) {
+        rmSync(fixtureRemotePath, { recursive: true, force: true });
+      }
+      cleanup();
+    },
   };
 }

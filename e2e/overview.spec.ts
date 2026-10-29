@@ -97,24 +97,30 @@ test("creates a project from the overview dialog and lands on its notice", async
   expectNoPageErrors(errors);
 });
 
-test("an overview project link crosses the boundary to the legacy project page", async ({
-  page,
-}) => {
+test("an overview project link opens the project page", async ({ page }) => {
   const errors = collectPageErrors(page);
+  const spa = isSpaProject();
   await signIn(page, "/");
 
-  const responsePromise = page.waitForResponse(
-    (response) =>
-      new URL(response.url()).pathname === `/projects/${PROJECT_ONE}` && response.status() === 200,
-  );
+  const responsePromise = spa
+    ? undefined
+    : page.waitForResponse(
+        (response) =>
+          new URL(response.url()).pathname === `/projects/${PROJECT_ONE}` &&
+          response.status() === 200,
+      );
   await page
     .locator('section[aria-labelledby="project-ledger-title"]')
     .getByRole("link", { name: "E2E Project One", exact: true })
     .click();
-  await responsePromise;
+  if (responsePromise !== undefined) {
+    await responsePromise;
+  }
 
   await expect(page).toHaveURL(new RegExp(`/projects/${PROJECT_ONE}$`));
-  await expect(page.locator("#hanse-boot")).toHaveCount(0);
+  // SPA client navigation keeps the document (and its boot marker); the legacy rollback servers
+  // cross the boundary with a full document load.
+  await expect(page.locator("#hanse-boot")).toHaveCount(spa ? 1 : 0);
   await expect(page.getByRole("heading", { name: "E2E Project One" })).toBeVisible();
 
   await settle(page);

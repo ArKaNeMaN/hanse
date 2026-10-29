@@ -275,20 +275,22 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   diffs/write content) and imports the pure helpers in `assets/chat-core.js`,
   `assets/chat-commands.js`, `assets/chat-diff.js`, and the lazy worker controller in
   `assets/chat-highlight.js`. `assets/git.js` hydrates the
-  application git panel. All routes except `/` and `/projects` remain server-rendered by default;
-  the Vue/Vite client has cut those two routes over and is scaffolded for later routes (see
-  **UI rendering modes**).
+  application git panel. All routes except `/`, `/projects`, and `/projects/:id` remain
+  server-rendered by default; the Vue/Vite client has cut those three routes over and is scaffolded
+  for later routes (see **UI rendering modes**).
 - The chat workspace is the stage-3 three-pane surface: sessions rail, thread, and context rail.
   Below 1360 the context pane is a drawer; below 768 both rails are drawers. The thread is the only
   scroll owner. `session` is mirrored to the URL, and the optional `project` query disambiguates
   duplicate app keys across projects.
 
-## UI rendering modes (Phase 2B)
+## UI rendering modes (Phase 2C)
 
-- `/` (fleet overview) and `/projects` are SPA routes: the shared registry
-  (`src/shared/routes.ts`) has `spa: true` for `overview` and `projects` and `spa: false` for every
-  other page. `/projects/:id` and every later route stay legacy documents. The page dispatcher is
-  the only place that chooses a renderer:
+- `/` (fleet overview), `/projects`, and `/projects/:id` (project detail) are SPA routes: the
+  shared registry (`src/shared/routes.ts`) has `spa: true` for `overview`, `projects`, and
+  `project`, and `spa: false` for every other page. The application detail
+  (`/projects/:id/apps/:app`) and every later route stay legacy documents, so the
+  project-to-application hop is a full document load. The page dispatcher is the only place that
+  chooses a renderer:
   `HANSE_UI_LEGACY=1` > `?legacy=1` > `HANSE_UI_SPA_ROUTES` > the registry flag. A missing, invalid,
   or partial `assets/ui/.vite/manifest.json` also falls back to legacy and logs
   `ui.manifest_invalid`.
@@ -298,19 +300,27 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   comes from boot JSON plus per-route `/api/ui/*` endpoints. `/projects` renders the legacy header,
   six-column ledger, search, empty states, deletion status, and create dialog in Vue. `/` renders
   the legacy header, four-cell watch strip, project ledger, recent handoffs, waiting route cards,
-  runtime rail, and empty state; project links cross a full document boundary to the legacy detail
-  page, while the overview-to-`/projects` link stays client-side. The native new-project dialog is a
-  shared Vue component used by both pages.
+  runtime rail, and empty state. The project-detail page renders the legacy header (Settings, Open
+  IDE, New handoff), four-cell watch strip, applications table (runtime, pending restart, chat/IDE/app
+  links, add app), handoffs table and review dialogs (approve/reject, relaunch, retry, cancel),
+  waiting route cards, manifest, handoff-policy editor, danger zone, and the add-app/new-handoff/
+  delete dialogs; the reserved master project renders the read-only master header/card with chat,
+  settings, and skills links and no mutating controls. Application, settings, skills, chat, and IDE
+  links remain plain anchors. The overview/projects/project links client-navigate; the native
+  new-project dialog is a shared Vue component used by the overview and projects pages.
 - Built client assets are served from `/assets/ui/*` with immutable caching; compressible responses
-  are gzip-encoded when the client offers it (first loads measure ~137 KiB for `/projects` and
-  ~133 KiB for `/` on the deterministic fixture).
+  are gzip-encoded when the client offers it (first loads measure ~136 KiB for `/projects`,
+  ~134 KiB for `/`, and ~146 KiB for `/projects/:id` on the deterministic fixture).
 - SPA documents and `/api/ui/*` are cookie-only. `/api/ui/*` returns `401` without a human cookie,
   `403 cookie_required` for a human bearer without a cookie, and `403` for agent tokens; responses are
   `no-store`.
 - Script split: legacy pages and `/login` load `app.js` + `app-content.js`; SPA documents load only
   the shell `app.js`. SPA toasts are owned by the Vue `ToastHost`, not `app-content.js`. SPA
-  mutations send `X-Hanse-Client: spa`; `POST /api/projects` then answers `200 {ok:true, project}`,
-  while the legacy form path keeps its `303` + notice.
+  mutations send `X-Hanse-Client: spa`; `POST /api/projects` answers `200 {ok:true, project}`,
+  `POST /api/projects/:id/apps` answers `200 {ok:true, app}`, `POST /api/handoffs/:id/decision`
+  answers `200 {ok:true, decision}`, and `POST /api/handoffs` answers `201/202` queued/awaiting or
+  `403/409/400` denied/existing/summary-required, while the legacy form path keeps its `303` +
+  notice. Reply, cancel, policy, and deletion requests reuse the existing JSON handlers.
 - `#ui-fallback` stays hidden, then reveals after 4 s only if the client did not mount;
   `vite:preloadError` reloads once and then renders a safe `?legacy=1` fallback.
 
