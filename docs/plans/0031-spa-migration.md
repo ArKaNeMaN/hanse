@@ -12,7 +12,9 @@ and `/handoffs` are SPA); Phase 4B complete (2026-10-29; `/ssh` cut over, Phase 
 later route stay legacy); Phase 5B complete (2026-10-29; the three settings scopes cut over, Phase 5
 complete - `/`, `/projects`, `/projects/:id`, `/handoffs`, `/ssh`, and settings are SPA); Phase 6B
 complete (2026-10-29; the five skills routes cut over, Phase 6 complete - skills are SPA; app
-detail, chat, and terminal stay legacy).
+detail, chat, and terminal stay legacy); Phase 7A complete (2026-10-29; the read-only
+application-detail SPA shell and restart are previewable with `HANSE_UI_SPA_ROUTES=app`; the
+registry keeps `app` legacy; 7B git and 7C image/SSH/delete/cutover remain).
 Design: [Incremental SPA migration](../design/spa-migration.md) (approved, `oracle` round 5 PASS;
 flag/test-glob/no-JS clarifications recorded in revision 6).
 Owner decisions: [open questions](../open-questions.md), 2026-10-28.
@@ -1036,6 +1038,46 @@ gate after 7C.
 4. Cutover `/projects/:id/apps/:app`; remove `git.js`/`images.js`/`ssh.js` from the SPA document.
 5. E2E legacy + SPA: runtime, restart, image build/rollback/check, git actions, SSH grants, delete,
    chat/terminal/IDE links; rollback; visual QA at all widths.
+
+### Completion record - Phase 7A (2026-10-29)
+
+Phase 7A adds the read-only application-detail shell and restart. `src/shared/routes.ts` still has
+`spa: false` for `app` and every later route; the page is reachable only through
+`HANSE_UI_SPA_ROUTES=app`, `?legacy=1` still serves the legacy document, and Phase 7 is **not**
+complete.
+
+- **Backend prerequisite.** `d519ae2` supplied `src/http/props/app.ts` and
+  `GET /api/ui/apps/:app?project=`; the UI consumes that contract without changing route flags,
+  legacy HTML, or API semantics.
+- **Page.** `ui/pages/AppPage.vue` renders the application header and project/app identity, chat/
+  terminal/settings/skills/IDE links, the Runtime/Settings state strip, the read-only image rail
+  (`AppImagePanel.vue`), the Repository/Changes workbench and Last commit (`AppGitPanel.vue`), the
+  app-scoped grants/approvals/audit read panels (`AppSshPanel.vue`), and the read-only master
+  variant. Delete controls stay out of 7A; a pending deletion only shows the read-only banner.
+- **Reads/polling.** Boot props are trusted only for `route.id === "app"` with matching project and
+  application; otherwise the page fetches `/api/ui/apps/:app?project=`. The endpoint is also
+  refetched on mount and on manual refresh because boot props carry `git.summary.loaded=false`.
+  Runtime polls every 10 s, and image status polls every 3 s only while building. No legacy island
+  scripts load on the SPA route.
+- **Restart.** The state-strip control opens a confirmation dialog and reuses
+  `/api/apps/:app/restart?project=` with same-origin credentials and a JSON body. Success refreshes
+  props/runtime and raises a toast; failure keeps the page intact and raises an error toast. No
+  git, image, SSH, or delete mutation exists in 7A.
+- **Routing/E2E.** `ui/router.ts` registers `/projects/:id/apps/:app` for the preview while the
+  registry stays false. `playwright.config.ts` adds the `app-preview` project and a fourth
+  `webServer` on `4313` (`HANSE_E2E_MODE=spa`, `HANSE_UI_SPA_ROUTES=app`, own `mkdtemp` DB).
+  `e2e/spa-app.spec.ts` covers deep link/refresh, runtime/image/git/SSH read panels, restart
+  success and error, missing legacy scripts, `?legacy=1`, the legacy/empty-allowlist servers, no
+  fallback flash, and console/page errors. `e2e/app.spec.ts` stays the legacy rollback smoke.
+- **Tests/gates.** New `AppPage` component tests (29) cover runtime/settings matrices, image states,
+  git states, SSH panels, boot/cross-route fetching, restart success/error, 404/loading/error/retry,
+  master, deletion-banner-only, no `<style>`, and no legacy scripts. `lint` 608 files exit 0 (18
+  pre-existing warnings); `typecheck`, `typecheck:ui`, `typecheck:e2e` exit 0; `test` 164 files /
+  2952 tests; `build` exit 0 (`AppPage` 36.3 kB / 9.9 kB gzip); `check:sensitive` and `check:ui`
+  (39 SFCs) pass; `test:e2e` 128 passed, 1 skipped.
+- **Not done.** 7B git actions, 7C image/SSH/delete actions and the registry cutover, legacy-script
+  removal, and the full visual-QA/transfer budget remain. Application detail is still legacy by
+  default.
 
 ### Acceptance criteria
 

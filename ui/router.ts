@@ -4,8 +4,9 @@ import { createRouter, createWebHistory, type RouteRecordRaw } from "vue-router"
  * Only routes whose registry `spa` flag is enabled are registered here. Phase 1B registered
  * `/projects`; Phase 2B adds the fleet overview at `/`; Phase 2C adds project detail at
  * `/projects/:id`; Phase 3B adds the handoff inbox at `/handoffs`; Phase 4B adds the SSH console
- * at `/ssh`; Phase 6B adds the five skills routes. Every other route stays a server-rendered
- * document and is reached with a full document load (including `/projects/:id/apps/:app`).
+ * at `/ssh`; Phase 6B adds the five skills routes; Phase 7A registers the application-detail route
+ * for the `HANSE_UI_SPA_ROUTES=app` preview while the registry keeps `app` legacy by default. Every
+ * other route stays a server-rendered document and is reached with a full document load.
  */
 const routes: readonly RouteRecordRaw[] = [
   {
@@ -17,6 +18,11 @@ const routes: readonly RouteRecordRaw[] = [
     path: "/projects",
     name: "projects",
     component: () => import("./pages/ProjectsPage.vue"),
+  },
+  {
+    path: "/projects/:id/apps/:app",
+    name: "app",
+    component: () => import("./pages/AppPage.vue"),
   },
   {
     path: "/projects/:id/apps/:app/settings",

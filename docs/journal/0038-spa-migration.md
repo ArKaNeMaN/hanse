@@ -559,8 +559,60 @@ limited to the automated E2E and component evidence: the SPA and legacy pages sh
 `src/http/styles.css` classes, the same scope/table/card markup vocabulary, and SafeMarkdown renders
 through the same DOM builder. Screenshots/parity captures were not added to tracked docs.
 
+## Phase 7A implementation - application-detail read shell + restart (2026-10-29)
+
+Phase 7A adds the read-only application-detail SPA shell and restart. The registry still has
+`spa: false` for `app` (and every later route); the page is reachable only through
+`HANSE_UI_SPA_ROUTES=app` and `?legacy=1` still serves the legacy document. Phase 7 is not complete.
+
+- **Page/components.** `ui/pages/AppPage.vue` renders the application header/identity and
+  chat/terminal/settings/skills/IDE links, the Runtime/Settings state strip, the image rail, the
+  Repository/Changes workbench plus Last commit, the app-scoped SSH grants/approvals/audit panels,
+  and the read-only master variant. `AppImagePanel.vue`, `AppGitPanel.vue`, `AppSshPanel.vue`,
+  `AppStateStrip.vue`, and `AppRestartDialog.vue` hold the read panels and confirmation dialog.
+  Delete controls are intentionally absent; a pending deletion renders only its read-only banner.
+- **Data/polling.** Boot props are trusted only for `route.id === "app"` with matching project and
+  application; otherwise the page fetches `/api/ui/apps/:app?project=`. The endpoint is refetched on
+  mount/manual refresh because boot props carry `git.summary.loaded=false`. Runtime polls every 10 s;
+  image status polls every 3 s only while building. The SPA route loads no `git.js`, `images.js`, or
+  `ssh.js`.
+- **Restart only.** The state-strip control opens a native confirmation dialog and reuses
+  `/api/apps/:app/restart?project=` with same-origin credentials and a JSON body. Success refreshes
+  props/runtime and raises a toast; failure keeps the page and raises an error toast. No git, image,
+  SSH, or delete mutation exists in 7A.
+- **Routing/E2E.** `ui/router.ts` registers `/projects/:id/apps/:app` for the preview; the registry
+  flag stays false. `playwright.config.ts` adds the `app-preview` project and a fourth `webServer` on
+  `4313` (`HANSE_E2E_MODE=spa`, `HANSE_UI_SPA_ROUTES=app`, own `mkdtemp` DB).
+  `e2e/spa-app.spec.ts` covers deep link/refresh, runtime/image/git/SSH read panels, restart success
+  and the intentional-503 error path, absent legacy scripts, `?legacy=1`, the legacy/empty-allowlist
+  servers, no fallback flash, and console/page errors. `e2e/app.spec.ts` remains the legacy smoke.
+- **Tests.** New `AppPage` component tests (29) cover runtime/settings matrices, image states, git
+  states, SSH panels, boot/cross-route fetching, restart success/error, 404/loading/error/retry,
+  master, deletion-banner-only, no `<style>`, and no legacy scripts. All existing tests remain.
+
+### Phase 7A verification
+
+Commands ran with `NODE_ENV=development` and `PLAYWRIGHT_CHROMIUM=/usr/bin/chromium`.
+
+| Command | Result |
+| --- | --- |
+| `npm run lint` | 608 files, exit 0 (18 pre-existing warnings) |
+| `npm run typecheck` | exit 0 |
+| `npm run typecheck:ui` | exit 0 |
+| `npm run typecheck:e2e` | exit 0 |
+| `npm test` | 164 files / 2952 tests, exit 0 |
+| `npm run build` | exit 0; `AppPage` 36.3 kB / 9.9 kB gzip |
+| `npm run check:sensitive` | exit 0 |
+| `npm run check:ui` | exit 0 (39 SFCs, sentinel present) |
+| `npm run test:e2e` | 128 passed, 1 skipped, exit 0 |
+
+No transfer budget was assigned for the app preview; `/projects` remains the S16 route. The
+deliberate restart-failure E2E injects a 503, so that one test asserts app-level error handling
+without claiming a clean browser console; the read/success tests assert no console or page errors.
+
 ## Next
 
-Phase 7: application detail (`/projects/:id/apps/:app`) in 7A read/restart, 7B git, and 7C
-image/SSH/delete, with one cutover gate after 7C and the registry `app` flag still false until then.
+Phase 7B: port the `assets/git.js` status/fetch/update/push/commit/branch-switch/test behavior into
+the application-detail route while keeping the existing JSON contracts and the `app` registry flag
+false. Phase 7C then ports image/SSH/delete and performs the one cutover.
 

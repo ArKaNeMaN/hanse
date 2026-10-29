@@ -181,8 +181,14 @@ async function mutateRow(
     });
     pendingClear.value = null;
     clearDirty(row);
-    await refreshChromeAndProps();
     toasts.push(action === "clear" ? "Setting cleared." : row.form.successNotice, "success");
+    await refreshChromeAndProps().catch((error: unknown) => {
+      const message =
+        error instanceof ApiError || error instanceof Error
+          ? error.message
+          : "The page could not be refreshed after saving.";
+      toasts.push(message, "error");
+    });
   } catch (error) {
     const message =
       error instanceof ApiError || error instanceof Error
@@ -194,9 +200,15 @@ async function mutateRow(
   }
 }
 
-async function onSectionChanged(message: string): Promise<void> {
-  await refreshChromeAndProps();
+function onSectionChanged(message: string): void {
   toasts.push(message, "success");
+  void refreshChromeAndProps().catch((error: unknown) => {
+    const failure =
+      error instanceof ApiError || error instanceof Error
+        ? error.message
+        : "The page could not be refreshed after saving.";
+    toasts.push(failure, "error");
+  });
 }
 
 async function confirmClearRow(): Promise<void> {

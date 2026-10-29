@@ -47,4 +47,6 @@
   skills, app detail, chat, and terminal stay legacy); Phase 5B complete (2026-10-29; the three
   settings scopes cut over, Phase 5 complete - `/`, `/projects`, `/projects/:id`, `/handoffs`,
   `/ssh`, and settings are SPA); Phase 6B complete (2026-10-29; the five skills routes cut over,
-  Phase 6 complete - skills are SPA; app detail, chat, and terminal stay legacy).
+  Phase 6 complete - skills are SPA); Phase 7A complete (2026-10-29; the read-only
+  application-detail SPA shell and restart are previewable with `HANSE_UI_SPA_ROUTES=app`, while the
+  registry keeps `app` legacy; 7B/7C pending).

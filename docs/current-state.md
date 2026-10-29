@@ -276,14 +276,16 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   `assets/chat-commands.js`, `assets/chat-diff.js`, and the lazy worker controller in
   `assets/chat-highlight.js`. `assets/git.js` hydrates the
   application git panel. All routes except `/`, `/projects`, `/projects/:id`, `/handoffs`, `/ssh`,
-  and the three settings scopes remain server-rendered by default; the Vue/Vite client has cut those
-  routes over and is scaffolded for later routes (see **UI rendering modes**).
+  the three settings scopes, and the five skills routes remain server-rendered by default; the
+  application-detail SPA shell exists but is preview-only (`HANSE_UI_SPA_ROUTES=app`) and the
+  registry keeps `app` legacy until Phase 7C. The Vue/Vite client has cut the other routes over and
+  is scaffolded for later routes (see **UI rendering modes**).
 - The chat workspace is the stage-3 three-pane surface: sessions rail, thread, and context rail.
   Below 1360 the context pane is a drawer; below 768 both rails are drawers. The thread is the only
   scroll owner. `session` is mirrored to the URL, and the optional `project` query disambiguates
   duplicate app keys across projects.
 
-## UI rendering modes (Phase 6B)
+## UI rendering modes (Phase 7A preview)
 
 - `/` (fleet overview), `/projects`, `/projects/:id` (project detail), `/handoffs` (handoff
   inbox), `/ssh` (SSH console), the three settings scopes (`/settings`,
@@ -293,8 +295,9 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   `overview`, `projects`, `project`, `handoffs`, `ssh`, `settings-global`, `settings-project`,
   `settings-app`, `skills-global`, `skills-project`, `skills-app`, `skills-new`, and
   `skills-detail`, and `spa: false` for every other page. Application detail
-  (`/projects/:id/apps/:app`), chat, and terminal stay legacy documents, so the
-  project-to-application hop is a full document load. The page dispatcher
+  (`/projects/:id/apps/:app`) stays legacy by default and can be previewed as an SPA with
+  `HANSE_UI_SPA_ROUTES=app`; chat and terminal stay legacy documents, so the default
+  project-to-application hop remains a full document load. The page dispatcher
   is the only place that chooses a renderer:
   `HANSE_UI_LEGACY=1` > `?legacy=1` > `HANSE_UI_SPA_ROUTES` > the registry flag. A missing, invalid,
   or partial `assets/ui/.vite/manifest.json` also falls back to legacy and logs
@@ -333,14 +336,23 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   bundle identity/description, details/metadata, references, source/preview tabs, issues with repair
   anchors, override/disable/revert plus danger-zone delete, and the restart banner. Detail content
   and references render through `SafeMarkdown`; `assets/skill-detail.js` remains only on the legacy
-  rollback pages. Application, chat, terminal, and session links remain plain anchors;
+  rollback pages. The application-detail preview reads boot props only for a matching app route and
+  otherwise fetches `/api/ui/apps/:app?project=`, whose response also carries the live git read
+  summary (boot props load it as `git.summary.loaded=false`). It renders the application header and
+  links, the Runtime/Settings state strip, the read-only image rail (state, ref, hash, base, drift,
+  blocked/usable, rollback availability), the read-only Repository/Changes/Last-commit workbench,
+  the app-scoped SSH grants/approvals/audit panels, and the master variant. Runtime and image are
+  polled at the existing cadence (runtime 10 s, image 3 s while building); git is refreshed through
+  the app endpoint. Restart is the only mutation in this preview and reuses
+  `/api/apps/:app/restart?project=`; git, image, SSH, and delete actions stay disabled until 7B/7C.
+  Application, chat, terminal, settings, skills, and session links remain plain anchors;
   the overview/projects/project/handoffs/settings/skills links client-navigate, and the native
   new-project dialog is a shared Vue component used by the overview and projects pages.
 - Built client assets are served from `/assets/ui/*` with immutable caching; compressible responses
   are gzip-encoded when the client offers it (first loads measure ~136 KiB for `/projects`,
   ~134 KiB for `/`, and ~146 KiB for `/projects/:id` on the deterministic fixture). `/ssh`, the
   settings scopes, and the skills pages are lazy route chunks (skills inventory ~18.8 kB, detail
-  ~16.1 kB before gzip); no new transfer budget was assigned.
+  ~16.1 kB, application-detail preview ~36.3 kB before gzip); no new transfer budget was assigned.
 - SPA documents and `/api/ui/*` are cookie-only. `/api/ui/*` returns `401` without a human cookie,
   `403 cookie_required` for a human bearer without a cookie, and `403` for agent tokens; responses are
   `no-store`.
@@ -356,13 +368,15 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
 
 ## Git workbench
 
-- The Application page (`/projects/:projectId/apps/:appKey`) is human-only and server-rendered; the
-  git panel is hydrated by `assets/git.js`. The page header has `Open chat`, `Terminal`, and a
-  `More actions` disclosure (`Open IDE in this folder`, `Application settings`); a two-cell state
-  strip (`Runtime`, `Settings`) precedes the git workbench. Repository and Changes occupy the main
-  column; the rail holds Image, SSH access, Remotes, and Last commit. The page's only brass action is
-  `Commit all`. It is linked from the project application table, the chat context rail, and the chat
-  breadcrumb.
+- The Application page (`/projects/:projectId/apps/:appKey`) is human-only and server-rendered by
+  default; the git panel is hydrated by `assets/git.js`. The page header has `Open chat`, `Terminal`,
+  and a `More actions` disclosure (`Open IDE in this folder`, `Application settings`); a two-cell
+  state strip (`Runtime`, `Settings`) precedes the git workbench. Repository and Changes occupy the
+  main column; the rail holds Image, SSH access, Remotes, and Last commit. The page's only brass
+  action is `Commit all`. It is linked from the project application table, the chat context rail,
+  and the chat breadcrumb. The Phase 7A SPA preview renders the same read state from
+  `/api/ui/apps/:app?project=` with no git actions, no legacy island scripts, and restart as its only
+  mutation; the legacy renderer and its scripts remain the default and rollback path.
 - Runtime state uses one vocabulary from the runner: `starting`, `running`, `stopped`, `error`
   (legacy `failed` normalizes to `error`). The overview shows all four counts; the app, chat, and
   terminal surfaces use the same pill mapping. `POST /api/apps/:app/restart` calls
