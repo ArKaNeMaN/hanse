@@ -40,4 +40,6 @@
   (journal 0038); Phase 1A complete (2026-10-28; gates green, no route cut over); Phase 1B complete
   (2026-10-28; `/projects` cut over, all gates green); Phase 2A complete (2026-10-29); Phase 2B
   complete (2026-10-29; `/` cut over); Phase 2C complete (2026-10-29; `/projects/:id` cut over,
-  Phase 2 complete - `/`, `/projects`, and `/projects/:id` are SPA; app detail stays legacy).
+  Phase 2 complete - `/`, `/projects`, and `/projects/:id` are SPA; app detail stays legacy);
+  Phase 3B complete (2026-10-29; `/handoffs` cut over, Phase 3 complete - `/`, `/projects`,
+  `/projects/:id`, and `/handoffs` are SPA; SSH and every later route stay legacy).

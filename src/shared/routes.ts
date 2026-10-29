@@ -76,7 +76,7 @@ const ROUTE_DEFINITIONS: readonly RouteDefinition[] = [
     path: "/handoffs",
     nav: "handoffs",
     label: "Handoffs",
-    spa: false,
+    spa: true,
   },
   {
     id: "ssh",

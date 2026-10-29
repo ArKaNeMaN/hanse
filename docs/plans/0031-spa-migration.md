@@ -5,7 +5,9 @@ Status: **in progress** - plan review (`momus`) round 3 PASS (2026-10-28); Phase
 complete (2026-10-28; `/projects` is the first cutover, all gates green); Phase 2A complete
 (2026-10-29; overview/project props and `/api/ui/*` endpoints); Phase 2B complete (2026-10-29;
 `/` cut over); Phase 2C complete (2026-10-29; `/projects/:id` cut over, Phase 2 complete - `/`,
-`/projects`, and `/projects/:id` are SPA, app detail and every later route stay legacy).
+`/projects`, and `/projects/:id` are SPA, app detail and every later route stay legacy); Phase 3B
+complete (2026-10-29; `/handoffs` cut over, Phase 3 complete - `/`, `/projects`, `/projects/:id`,
+and `/handoffs` are SPA, SSH and every later route stay legacy).
 Design: [Incremental SPA migration](../design/spa-migration.md) (approved, `oracle` round 5 PASS;
 flag/test-glob/no-JS clarifications recorded in revision 6).
 Owner decisions: [open questions](../open-questions.md), 2026-10-28.
@@ -653,6 +655,52 @@ Keep `test/handoff-http.test.ts` API tests. Keep `renders all nine handoff state
 dialogs` as the legacy smoke; retire `filters handoffs by group and search` and
 `test/handoff-ui.test.ts` `loads the hydrator...` after the component/E2E replacement. Keep
 `serves the handoff Markdown hydrator` while `handoff.js` is still in the allowlist.
+
+### Completion record - Phase 3B (2026-10-29)
+
+Phase 3B finishes Phase 3: the registry has `spa: true` for `overview`, `projects`, `project`, and
+`handoffs`; `ssh`, settings, skills, app detail, chat, and terminal stay `spa: false`.
+
+- **Page.** `ui/pages/HandoffsPage.vue` reproduces the legacy Handoffs header (Workbench overline,
+  title, description, total/waiting/active/replies counts), segmented All/Waiting/Active/Closed/
+  Replies filters with `aria-current="page"` and counts, the `#handoff-search` form with the hidden
+  filter and clear-search link, the Id/Route/State/Summary/Updated/Actions table, `StatusPill`/
+  `RouteText`/time tags, inline approve/reject for dispatch and reply approvals, and the shared
+  `HandoffReviewDialog` for review and reply actions. Inline decisions use `apiMutation` with
+  `decision`, `approval_kind`, and `return_to`; success refreshes props plus chrome and shows a
+  toast, failure shows an error toast, and both buttons disable while pending. Review uses
+  `row.dialog`, reopens after a refresh, and refetches on `changed`. Empty state, loading, generic
+  error, 404, Retry, and `?legacy=1` match the other SPA pages.
+- **Boot/query.** The page trusts boot props only when `boot.route.id === "handoffs"` and the
+  boot filter/query equal the current route; otherwise it fetches
+  `/api/ui/handoffs?filter=&q=` with Vue Query. Filter links and the search form use `router.push`,
+  so the URL is the source of truth for filter/query.
+- **SafeMarkdown.** `ui/components/SafeMarkdown.vue` clears its container and calls the existing
+  `renderMarkdown(container, text)` DOM builder in `onMounted`/`watch`. The review dialog now renders
+  specification, result, and operator note through it; the legacy `handoff.js` path is unchanged.
+  No `v-html` and no SFC `<style>` were added.
+- **Tests.** `SafeMarkdown` component tests cover initial render, text replacement, and no duplicate
+  nodes. `HandoffsPage` tests cover boot rendering, filters/search, inline approve/reject success and
+  failure (including the pending state), the review dialog with safe Markdown, empty/loading/404/
+  generic error/Retry, the project `SmartLink`, and no `<style>`. `handoffs.spec.ts` now runs in
+  `spa`, `legacy`, and `allowlist-empty` and covers the boot marker, filters/search, inline
+  approve/reject, review/relaunch/retry/cancel, safe Markdown, and the legacy `303` path.
+  `spa-handoffs.spec.ts` covers deep links and filter query, refresh, back/forward, chrome/title/
+  active nav from the overview, `?legacy=1`, both rollback servers, no fallback flash, no console
+  errors, safe Markdown, and client-side project navigation from the empty state. `shared-routes`
+  assertions now include `handoffs`. The plan's suggested retirements
+  (`filters handoffs by group and search`, `loads the hydrator...`) were not applied because the
+  task requires keeping existing tests; the legacy smoke and `test/handoff-http.test.ts` remain.
+- **Fixture.** The E2E seed adds three inbox-owned reply/cancel rows with older timestamps and pins
+  the long-lived approval summary above them so the existing overview recent-handoffs assertions
+  stay stable after the inbox spec mutates its rows.
+- **Measured.** No new transfer budget was assigned for `/handoffs`; `/projects` remains the S16
+  budget route. The E2E suite is green in all three modes.
+- **Visual QA.** The SPA and legacy inbox share the same header, segmented control, toolbar, table,
+  and dialog classes from `src/http/ui.ts`. Browser measurements at 390/768/1440 matched the
+  `h1`, counts, filter labels, row count, toolbar/segmented/search/table boxes, zero document/page
+  overflow, and zero dialog overflow; safe Markdown rendered the same heading/strong/code nodes once.
+  The only structural deltas are the hidden boot marker and the Vue sentinel.
 
 ## Phase 4 - `/ssh`
 

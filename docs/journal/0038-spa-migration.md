@@ -2,7 +2,7 @@
 
 Status: **in progress** - Phase 0 complete (2026-10-28); Phase 1A complete, flag off (2026-10-28);
 Phase 1B complete, `/projects` cut over (2026-10-28); Phase 2 complete, `/` and `/projects/:id`
-cut over (2026-10-29); Phase 3 (`/handoffs`) next.
+cut over (2026-10-29); Phase 3 complete, `/handoffs` cut over (2026-10-29); Phase 4 (`/ssh`) next.
 Design: [Incremental SPA migration](../design/spa-migration.md) (approved, `oracle` round 5 PASS).
 Plan: [0031 - Incremental SPA migration](../plans/0031-spa-migration.md) (`momus` round 3 PASS).
 Owner decisions: [open questions](../open-questions.md), 2026-10-28.
@@ -304,8 +304,77 @@ Visual QA compared the SPA and legacy project pages at 390/768/1440 in dark and 
 live in the untracked workspace evidence directory (`phase2c-visual/`). Structural deltas: the hidden
 `#hanse-boot` marker, the Vue sentinel, and per-server temp path text.
 
+## Phase 3B implementation - `/handoffs` cutover (2026-10-29)
+
+Phase 3B finishes Phase 3: `overview`, `projects`, `project`, and `handoffs` are the only registry
+routes with `spa: true`. SSH, settings, skills, app detail, chat, and terminal stay legacy.
+
+- **SafeMarkdown.** `ui/components/SafeMarkdown.vue` clears its container and calls the existing
+  `assets/markdown.js` `renderMarkdown(container, text)` DOM builder from `onMounted` and a `watch`
+  on `text`. `assets/markdown.d.ts` types the browser module for `vue-tsc`; `tsconfig.ui.json`
+  includes it. `HandoffReviewDialog` now renders specification, result, and operator note through
+  `SafeMarkdown` with the legacy `prose handoff-md` classes. The legacy `handoff.js` hydration path
+  is unchanged; there is no `v-html` and no SFC `<style>`.
+- **Inbox page.** `ui/pages/HandoffsPage.vue` mirrors `renderHandoffs`: Workbench header with
+  total/waiting/active/replies counts, segmented filters with explicit `aria-current="page"` and
+  counts, `#handoff-search` with the hidden filter and clear-search link, the inbox table with
+  `StatusPill`/`RouteText`/time tags, inline approve/reject for dispatch and reply approvals, and
+  the shared review dialog. Inline decisions use `apiMutation` with `decision`, `approval_kind`, and
+  `return_to`; success refreshes props plus chrome and toasts, failure toasts the typed error, and
+  both buttons disable while pending. Review opens `row.dialog`; `changed` refetches. Empty state,
+  loading, 404, generic error, Retry, and `?legacy=1` follow the other SPA pages. Boot props are
+  trusted only when the route id and filter/query match; otherwise the page fetches
+  `/api/ui/handoffs?filter=&q=`. Filters and search use `router.push`.
+- **Routing.** `src/shared/routes.ts` flips only `handoffs` to `spa: true`; `ui/router.ts` registers
+  `/handoffs`. `SmartLink` now lets an explicit `aria-current` override its exact-active fallback so
+  the segmented control can mark the query-specific filter. Chrome, title, and active nav swap
+  through the existing shell path.
+- **Tests.** New `SafeMarkdown.test.ts` covers initial render, text replacement, and no duplicate
+  nodes. New `HandoffsPage.test.ts` covers the boot table/counts/filters, filter and search
+  navigation, inline approve/reject success and failure with pending state, the review dialog with
+  safe Markdown, empty/loading/404/generic error/Retry, the project `SmartLink`, and no `<style>`.
+  `shared-routes.test.ts` updates its deliberate cutover list. `handoffs.spec.ts` now runs in `spa`,
+  `legacy`, and `allowlist-empty` and covers the `#hanse-boot` mode marker, filters/search, inline
+  approve/reject, review/relaunch/retry/cancel, safe Markdown, and the legacy `303` path.
+  `spa-handoffs.spec.ts` covers deep link and filter query, refresh, back/forward, chrome/title/
+  active nav from the overview, `?legacy=1`, both rollback servers, no fallback flash/console
+  errors, safe Markdown, and project-link client navigation from an intercepted empty state.
+  The plan's suggested retirements were not applied because the task requires keeping existing
+  tests; the legacy smoke and `test/handoff-http.test.ts` remain.
+- **Fixture.** `e2e/support/seed.ts` adds three inbox-owned reply/cancel rows with old timestamps for
+  deterministic relaunch/retry/cancel coverage and pins the long-lived approval summary above them
+  so the overview's existing recent-handoffs assertions survive the inbox spec's mutations.
+- **Gaps.** `/handoffs` has no first-load transfer budget (S16 stays `/projects`). The E2E fixture
+  still stubs the dispatcher and never starts Docker/opencode. Project navigation coverage uses an
+  intercepted empty state because the legacy inbox has no per-row project link; row session links
+  stay plain anchors.
+
+### Phase 3B verification
+
+Commands ran with `NODE_ENV=development` and `PLAYWRIGHT_CHROMIUM=/usr/bin/chromium`.
+
+| Command | Result |
+| --- | --- |
+| `npm run lint` | 565 files, exit 0 (18 pre-existing warnings) |
+| `npm run typecheck` | exit 0 |
+| `npm run typecheck:ui` | exit 0 |
+| `npm run typecheck:e2e` | exit 0 |
+| `npm test` | 154 files / 2827 tests, exit 0 |
+| `npm run build` | exit 0; handoffs chunk `HandoffsPage-DJVAEaSh.js`, review dialog `HandoffReviewDialog-tdv4V2rx.js` |
+| `npm run check:sensitive` | exit 0 |
+| `npm run check:ui` | exit 0 (20 SFCs, sentinel present) |
+| `npm run test:e2e` | 67 passed, exit 0 (spa 40, legacy 18, allowlist-empty 9) |
+
+Visual note: the SPA and legacy inbox reuse the same `page-header`, `toolbar`, `segmented`, `table`,
+`status`, and dialog primitives. Browser measurements at 390/768/1440 matched legacy for the `h1`,
+counts, filter labels, row count, toolbar/segmented/search/table boxes, `document`/`.page` overflow
+(0), and dialog overflow (0); the SafeMarkdown container rendered the same `h4`/`strong`/`code`
+nodes exactly once after hydration. Structural deltas remain the hidden `#hanse-boot` marker and the
+Vue sentinel; no SFC `<style>` exists. Screenshots were captured to the untracked workspace
+evidence directory but are not checked in.
+
 ## Next
 
-Phase 3: cut over `/handoffs` (inbox, filters, inline decisions, reply/relaunch/cancel, project
-policy links), keeping the existing handoff JSON APIs and the legacy rollback page.
+Phase 4: cut over `/ssh` (hosts, test/re-pin, grants, approvals, audit), reusing the existing
+`/api/ssh/*` and `/api/apps/:app/ssh/*` handlers and keeping the legacy rollback page.
 

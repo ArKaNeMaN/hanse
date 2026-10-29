@@ -14,5 +14,11 @@
     "skipLibCheck": true,
     "types": ["vite/client"]
   },
-  "include": ["ui/**/*.ts", "ui/**/*.vue", "ui/**/*.d.ts", "src/shared/routes.ts"]
+  "include": [
+    "ui/**/*.ts",
+    "ui/**/*.vue",
+    "ui/**/*.d.ts",
+    "src/shared/routes.ts",
+    "assets/markdown.d.ts"
+  ]
 }

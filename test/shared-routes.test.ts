@@ -19,7 +19,7 @@ describe("shared route manifest", () => {
     expect(source).not.toMatch(/require\(["']node:/);
   });
 
-  it("publishes the complete route table and cuts projects, overview, and project over", () => {
+  it("publishes the complete route table and cuts projects, overview, project, and handoffs over", () => {
     expect(ROUTES.map((route) => [route.id, route.path, route.nav])).toEqual([
       ["projects", "/projects", "projects"],
       ["overview", "/", "overview"],
@@ -39,6 +39,7 @@ describe("shared route manifest", () => {
     expect(ROUTES.filter((route) => route.spa).map((route) => route.id)).toEqual([
       "projects",
       "overview",
+      "handoffs",
       "project",
     ]);
   });
@@ -109,14 +110,18 @@ describe("shared route manifest", () => {
 
   it("enables the cut-over routes by default", () => {
     for (const route of ROUTES) {
-      const migrated = route.id === "projects" || route.id === "overview" || route.id === "project";
+      const migrated =
+        route.id === "projects" ||
+        route.id === "overview" ||
+        route.id === "project" ||
+        route.id === "handoffs";
       expect(isSpaRoute(route.id, { env: {} }), route.id).toBe(migrated);
     }
     expect(isSpaPath("/projects", { env: {} })).toBe(true);
     expect(isSpaPath("/", { env: {} })).toBe(true);
     expect(isSpaPath("/projects/alpha", { env: {} })).toBe(true);
     expect(isSpaPath("/projects/alpha/apps/web", { env: {} })).toBe(false);
-    expect(isSpaPath("/handoffs", { env: {} })).toBe(false);
+    expect(isSpaPath("/handoffs", { env: {} })).toBe(true);
   });
 
   it("applies HANSE_UI_LEGACY and manifest validity before the allowlist", () => {

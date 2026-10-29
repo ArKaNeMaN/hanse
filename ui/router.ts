@@ -3,8 +3,9 @@ import { createRouter, createWebHistory, type RouteRecordRaw } from "vue-router"
 /**
  * Only routes whose registry `spa` flag is enabled are registered here. Phase 1B registered
  * `/projects`; Phase 2B adds the fleet overview at `/`; Phase 2C adds project detail at
- * `/projects/:id`. Every other route stays a server-rendered document and is reached with a full
- * document load (including `/projects/:id/apps/:app`).
+ * `/projects/:id`; Phase 3B adds the handoff inbox at `/handoffs`. Every other route stays a
+ * server-rendered document and is reached with a full document load (including
+ * `/projects/:id/apps/:app`).
  */
 const routes: readonly RouteRecordRaw[] = [
   {
@@ -21,6 +22,11 @@ const routes: readonly RouteRecordRaw[] = [
     path: "/projects/:id",
     name: "project",
     component: () => import("./pages/ProjectPage.vue"),
+  },
+  {
+    path: "/handoffs",
+    name: "handoffs",
+    component: () => import("./pages/HandoffsPage.vue"),
   },
   {
     path: "/:pathMatch(.*)*",

@@ -103,6 +103,17 @@ describe("SmartLink", () => {
     wrapper.unmount();
   });
 
+  it("keeps an explicit aria-current from the caller", async () => {
+    routeState.spa = true;
+    const router = createTestRouter();
+    const wrapper = await mountSpaLink("/projects?filter=waiting", router, {
+      "aria-current": "page",
+    });
+
+    expect(wrapper.attributes("aria-current")).toBe("page");
+    wrapper.unmount();
+  });
+
   it("renders a plain anchor for hash-only links", () => {
     routeState.spa = true;
     const wrapper = mount(SmartLink, {

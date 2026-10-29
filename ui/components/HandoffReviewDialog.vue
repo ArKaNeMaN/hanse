@@ -6,6 +6,7 @@ import type { ProjectHandoff } from "../project-types.js";
 import { replyPill, statusPill } from "../status.js";
 import { useToastStore } from "../stores/toasts.js";
 import AppIcon from "./AppIcon.vue";
+import SafeMarkdown from "./SafeMarkdown.vue";
 import StatusPill from "./StatusPill.vue";
 
 interface DecisionResponse {
@@ -182,7 +183,7 @@ defineExpose({ open });
 
           <div class="stack--tight">
             <p class="overline">Specification</p>
-            <div class="prose prose--pre">{{ handoff.spec }}</div>
+            <SafeMarkdown class="prose handoff-md" :text="handoff.spec" />
           </div>
 
           <div class="field">
@@ -296,7 +297,7 @@ defineExpose({ open });
 
           <div class="stack--tight">
             <p class="overline">Specification</p>
-            <div class="prose prose--pre">{{ handoff.spec }}</div>
+            <SafeMarkdown class="prose handoff-md" :text="handoff.spec" />
           </div>
 
           <div class="stack--tight">
@@ -322,7 +323,7 @@ defineExpose({ open });
             <p class="overline">
               Result{{ handoff.outcome === null ? "" : ` (${handoff.outcome})` }}
             </p>
-            <div class="prose prose--pre">{{ handoff.result }}</div>
+            <SafeMarkdown class="prose handoff-md" :text="handoff.result" />
           </div>
 
           <div v-if="handoff.replyState !== 'none'" class="stack--tight">
@@ -357,7 +358,7 @@ defineExpose({ open });
               class="stack--tight"
             >
               <p class="overline">Operator note</p>
-              <div class="prose prose--pre">{{ handoff.operatorNote }}</div>
+              <SafeMarkdown class="prose handoff-md" :text="handoff.operatorNote" />
             </div>
           </div>
 

@@ -52,9 +52,9 @@ function onClick(event: MouseEvent, navigate: (event?: MouseEvent) => Promise<un
 <template>
   <RouterLink v-if="spa" v-slot="{ href, navigate, isExactActive }" :to="to" custom>
     <a
-      v-bind="$attrs"
       :href="href"
       :aria-current="isExactActive ? 'page' : undefined"
+      v-bind="$attrs"
       @click="onClick($event, navigate)"
     >
       <slot />

@@ -275,22 +275,22 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   diffs/write content) and imports the pure helpers in `assets/chat-core.js`,
   `assets/chat-commands.js`, `assets/chat-diff.js`, and the lazy worker controller in
   `assets/chat-highlight.js`. `assets/git.js` hydrates the
-  application git panel. All routes except `/`, `/projects`, and `/projects/:id` remain
-  server-rendered by default; the Vue/Vite client has cut those three routes over and is scaffolded
+  application git panel. All routes except `/`, `/projects`, `/projects/:id`, and `/handoffs` remain
+  server-rendered by default; the Vue/Vite client has cut those four routes over and is scaffolded
   for later routes (see **UI rendering modes**).
 - The chat workspace is the stage-3 three-pane surface: sessions rail, thread, and context rail.
   Below 1360 the context pane is a drawer; below 768 both rails are drawers. The thread is the only
   scroll owner. `session` is mirrored to the URL, and the optional `project` query disambiguates
   duplicate app keys across projects.
 
-## UI rendering modes (Phase 2C)
+## UI rendering modes (Phase 3B)
 
-- `/` (fleet overview), `/projects`, and `/projects/:id` (project detail) are SPA routes: the
-  shared registry (`src/shared/routes.ts`) has `spa: true` for `overview`, `projects`, and
-  `project`, and `spa: false` for every other page. The application detail
-  (`/projects/:id/apps/:app`) and every later route stay legacy documents, so the
-  project-to-application hop is a full document load. The page dispatcher is the only place that
-  chooses a renderer:
+- `/` (fleet overview), `/projects`, `/projects/:id` (project detail), and `/handoffs` (handoff
+  inbox) are SPA routes: the shared registry (`src/shared/routes.ts`) has `spa: true` for
+  `overview`, `projects`, `project`, and `handoffs`, and `spa: false` for every other page. The
+  application detail (`/projects/:id/apps/:app`), SSH, settings, skills, chat, and terminal stay
+  legacy documents, so the project-to-application hop is a full document load. The page dispatcher
+  is the only place that chooses a renderer:
   `HANSE_UI_LEGACY=1` > `?legacy=1` > `HANSE_UI_SPA_ROUTES` > the registry flag. A missing, invalid,
   or partial `assets/ui/.vite/manifest.json` also falls back to legacy and logs
   `ui.manifest_invalid`.
@@ -305,9 +305,15 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   links, add app), handoffs table and review dialogs (approve/reject, relaunch, retry, cancel),
   waiting route cards, manifest, handoff-policy editor, danger zone, and the add-app/new-handoff/
   delete dialogs; the reserved master project renders the read-only master header/card with chat,
-  settings, and skills links and no mutating controls. Application, settings, skills, chat, and IDE
-  links remain plain anchors. The overview/projects/project links client-navigate; the native
-  new-project dialog is a shared Vue component used by the overview and projects pages.
+  settings, and skills links and no mutating controls. `/handoffs` renders the legacy header and
+  counts, the All/Waiting/Active/Closed/Replies segmented filters, the search form, the Id/Route/
+  State/Summary/Updated/Actions inbox table, inline approve/reject, review dialogs, and its empty,
+  loading, error, and retry states. The dialog renders specification, result, and operator note
+  through the shared `SafeMarkdown` component, which clears its container and reuses
+  `assets/markdown.js` on every text change. Application, settings, skills, chat, terminal, and
+  session links remain plain anchors; the overview/projects/project/handoffs links client-navigate,
+  and the native new-project dialog is a shared Vue component used by the overview and projects
+  pages.
 - Built client assets are served from `/assets/ui/*` with immutable caching; compressible responses
   are gzip-encoded when the client offers it (first loads measure ~136 KiB for `/projects`,
   ~134 KiB for `/`, and ~146 KiB for `/projects/:id` on the deterministic fixture).
@@ -1053,11 +1059,12 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
 - The dispatcher reuses the existing per-app context-monitor stream rather than opening a second SSE
   connection. If context monitors are disabled, source-session binding is unavailable and agent-created
   handoffs stay unbound (and are failed by the binding deadline).
-- Operator UI: `/handoffs` has `All`/`Waiting`/`Active`/`Closed`/`Replies` filters, inline approvals,
-  and a detail dialog with source/target session links, policy, outcome, reply state, and the
-  relaunch/retry/cancel actions. The review/detail dialog is wide and renders the spec, result, and
-  operator note as safe Markdown through the shared browser renderer. Project pages have a
-  **Handoff policy** card.
+- Operator UI: `/handoffs` (Vue SPA, with the legacy page as rollback) has
+  `All`/`Waiting`/`Active`/`Closed`/`Replies` filters, inline approvals, and a detail dialog with
+  source/target session links, policy, outcome, reply state, and the relaunch/retry/cancel actions.
+  The review/detail dialog is wide and renders the spec, result, and operator note as safe Markdown
+  through the shared browser renderer; the Vue dialog uses the `SafeMarkdown` component instead of
+  `v-html`. Project pages have a **Handoff policy** card.
 - Human-only API: `POST /api/handoffs/:id/decision` (optional `approval_kind=dispatch|reply`),
   `POST /api/handoffs/:id/reply/relaunch|deliver|cancel`, `POST /api/handoffs/:id/cancel`,
   `POST /api/projects/:id/handoff-policy`, `POST /api/projects/:id/handoff-policy/delete`, and

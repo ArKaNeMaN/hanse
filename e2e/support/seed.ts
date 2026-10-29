@@ -325,12 +325,12 @@ export function seed(options: SeedOptions = {}): SeedResult {
     requiresApproval: true,
   });
 
-  function deliveredReply(summary: string): string {
+  function deliveredReply(summary: string, spec = "E2E reply spec"): string {
     const { handoffId: id } = projectOne.requestSiblingChange({
       fromAppKey: "beta",
       toAppKey: "alpha",
       summary,
-      spec: "E2E reply spec",
+      spec,
     });
     transitionHandoff(db, id, "dispatching");
     transitionHandoff(db, id, "in_progress");
@@ -350,6 +350,35 @@ export function seed(options: SeedOptions = {}): SeedResult {
     summary: "E2E cancel handoff",
     spec: "E2E cancel spec",
   });
+
+  // Dedicated inbox rows for the handoffs spec. Their timestamps are older so the overview's
+  // recent-handoffs list and project ordering keep the rows the other specs assert on.
+  const inboxRelaunchReplyId = deliveredReply(
+    "E2E inbox relaunch reply",
+    "## Relaunch reply\n\nA **bold** reply and `code`.",
+  );
+  const inboxRetryReplyId = deliveredReply("E2E inbox retry reply", "E2E inbox retry spec");
+  const { handoffId: inboxCancelId } = projectOne.requestSiblingChange({
+    fromAppKey: "alpha",
+    toAppKey: "beta",
+    summary: "E2E inbox cancel handoff",
+    spec: "E2E inbox cancel spec",
+  });
+  const old = "2020-01-01T00:00:00.000Z";
+  db.prepare("UPDATE handoffs SET created_at = ?, updated_at = ? WHERE id IN (?, ?, ?)").run(
+    old,
+    old,
+    inboxRelaunchReplyId,
+    inboxRetryReplyId,
+    inboxCancelId,
+  );
+  // Keep the overview's recent-handoffs row stable even after the inbox spec updates its own rows
+  // (relaunch/retry/cancel refresh `updated_at`). The fixture sorts by `updated_at`, so the
+  // long-lived summary must rank above those test-owned rows.
+  db.prepare("UPDATE handoffs SET updated_at = ? WHERE id = ?").run(
+    "2099-01-01T00:00:00.000Z",
+    handoffId,
+  );
 
   let fixtureRemotePath: string | null = null;
   if (options.remotePath !== undefined) {
