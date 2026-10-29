@@ -720,7 +720,7 @@ describe("/api/ui/skills endpoints", () => {
           references: [{ path: "references/a.md", content: "A", size: 1 }],
         },
       },
-      chrome: { title: "Skill", active: "skills" },
+      chrome: { title: "workspace", active: "skills" },
     });
     expect(payload.actions).toMatchObject({
       target: {
@@ -792,7 +792,7 @@ describe("/api/ui/skills endpoints", () => {
     }
   });
 
-  it("boots all five skills routes with props and chrome while flags stay false", () => {
+  it("boots all five skills routes with props and chrome after cutover", () => {
     const f = fixture();
     const row = f.skills.create(
       "global",
@@ -825,7 +825,7 @@ describe("/api/ui/skills endpoints", () => {
       }
     }
     expect(
-      ROUTES.filter((route) => route.id.startsWith("skills-")).every((route) => !route.spa),
+      ROUTES.filter((route) => route.id.startsWith("skills-")).every((route) => route.spa),
     ).toBe(true);
   });
 });

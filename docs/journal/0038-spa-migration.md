@@ -500,8 +500,67 @@ Commands ran with `NODE_ENV=development` and `PLAYWRIGHT_CHROMIUM=/usr/bin/chrom
 
 No transfer budget was assigned for settings; `/projects` remains the S16 budget route.
 
+## Phase 6B implementation - skills routes cutover (2026-10-29)
+
+Phase 6B finishes Phase 6: `overview`, `projects`, `project`, `handoffs`, `ssh`, the three settings
+scopes, and the five skills routes (`skills-global`, `skills-project`, `skills-app`, `skills-new`,
+`skills-detail`) are the only registry routes with `spa: true`. Application detail, chat, and
+terminal stay legacy.
+
+- **Pages.** `ui/pages/SkillsPage.vue` replaces the inventory and create renderers with Vue: scope
+  navigation, counts, All/Defined/Inherited/Disabled/Invalid filters, search, the inventory table
+  (origin, state, references, updated, effective-source link), empty/search/filter states,
+  collision/restart rails, and the scoped new-skill form. `ui/pages/SkillDetailPage.vue` renders the
+  workspace: state/visibility, restart banner, collisions, issues with repair anchors, details and
+  custom metadata, references, source/preview tabs, generated frontmatter with Copy, danger-zone
+  delete/revert, and override/disable/revert plus source/effective links. `SkillBundleEditor.vue`
+  ports the metadata/reference/source behavior from `assets/skill-detail.js`; `SafeMarkdown` owns
+  every Markdown preview, clears before re-render, and no `v-html` or SFC `<style>` was added.
+- **Actions.** Create/update/override/disable/revert/delete reuse the existing `/api/skills*`
+  handlers through `apiMutation`; restart reuses `/api/apps/:app/restart?project=`. Successes
+  refresh props/chrome and remove the cached inventory so a client navigation back does not show the
+  pre-write boot snapshot; failures keep the form open and raise an error toast. Local validation
+  mirrors the server limits for name, description, content, metadata JSON, and reference paths/
+  aggregate. The legacy `303` form path and `skill-detail.js` remain for the rollback pages only.
+- **Boot/query/chrome.** Inventory trusts boot props only when route/scope/filter/search match;
+  create trusts `skills-new` only for its context and otherwise fetches the scope inventory; detail
+  trusts only the matching id and otherwise fetches `/api/ui/skills/:id?from=`. A per-document write
+  marker prevents boot reuse after mutations. `chromeFor` gained a scope hint so new/detail pages
+  get the context project/app skills href, breadcrumb, and skill title. `/skills/new` is registered
+  before `/skills/:id`.
+- **Tests.** New component tests (10 inventory/create + 9 detail) cover boot/scoped rendering,
+  filters/search, create success/duplicate/local validation, cross-route fetch, source/references/
+  metadata/issues, safe Markdown once, override/disable/revert, save/discard, danger delete,
+  restart, 404/loading/error/retry, no `<style>`, and no secrets. `skills.spec.ts` runs in `spa`,
+  `legacy`, and `allowlist-empty` (boot marker, inventory, filters/search, create, detail,
+  override/disable/revert at application scope, legacy 303, secret absence).
+  `spa-skills.spec.ts` covers deep links, refresh, back/forward, client scope navigation,
+  chrome/title/active nav, `?legacy=1`, both rollback servers, no fallback flash, and console/page
+  errors. `shared-routes`/`skills-props` cutover assertions and the detail chrome title were updated.
+
+### Phase 6B verification
+
+Commands ran with `NODE_ENV=development` and `PLAYWRIGHT_CHROMIUM=/usr/bin/chromium`.
+
+| Command | Result |
+| --- | --- |
+| `npm run lint` | 596 files, exit 0 (18 pre-existing warnings) |
+| `npm run typecheck` | exit 0 |
+| `npm run typecheck:ui` | exit 0 |
+| `npm run typecheck:e2e` | exit 0 |
+| `npm test` | 161 files / 2906 tests, exit 0 |
+| `npm run build` | exit 0; `SkillsPage` 18.8 kB, `SkillDetailPage` 16.1 kB |
+| `npm run check:sensitive` | exit 0 |
+| `npm run check:ui` | exit 0 (33 SFCs, sentinel present) |
+| `npm run test:e2e` | 122 passed, 1 skipped (pre-existing), exit 0 |
+
+No transfer budget was assigned for skills; `/projects` remains the S16 budget route. Visual QA was
+limited to the automated E2E and component evidence: the SPA and legacy pages share the same
+`src/http/styles.css` classes, the same scope/table/card markup vocabulary, and SafeMarkdown renders
+through the same DOM builder. Screenshots/parity captures were not added to tracked docs.
+
 ## Next
 
-Phase 6: cut over the five `/skills` routes, reusing `/api/skills*`, porting the workspace behavior
-with `SafeMarkdown`, and keeping the legacy no-JS snapshot fallback on the rollback page only.
+Phase 7: application detail (`/projects/:id/apps/:app`) in 7A read/restart, 7B git, and 7C
+image/SSH/delete, with one cutover gate after 7C and the registry `app` flag still false until then.
 

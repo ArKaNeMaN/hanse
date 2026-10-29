@@ -380,15 +380,28 @@ const PROJECT_ROUTES: ReadonlySet<RouteId> = new Set<RouteId>([
 ]);
 const APP_ROUTES: ReadonlySet<RouteId> = new Set<RouteId>(["settings-app", "skills-app", "app"]);
 
-export function chromeFor(site: SiteModel, match: PageMatch): ChromeData {
+export interface ChromeScopeHint {
+  readonly projectId?: string;
+  readonly appKey?: string;
+  readonly title?: string;
+  readonly breadcrumb?: readonly Crumb[];
+}
+
+export function chromeFor(
+  site: SiteModel,
+  match: PageMatch,
+  hint: ChromeScopeHint = {},
+): ChromeData {
   const definition = routeById(match.id);
-  const projectId = PROJECT_ROUTES.has(match.id) ? match.params.id : undefined;
+  const projectId = hint.projectId ?? (PROJECT_ROUTES.has(match.id) ? match.params.id : undefined);
   const project =
     projectId === undefined
       ? undefined
       : site.projects.find((candidate) => candidate.id === projectId);
-  const appKey = APP_ROUTES.has(match.id) ? match.params.app : undefined;
-  const { title, breadcrumb } = routeChrome(match.id, projectId, project?.name, appKey);
+  const appKey = hint.appKey ?? (APP_ROUTES.has(match.id) ? match.params.app : undefined);
+  const chromeRoute = routeChrome(match.id, projectId, project?.name, appKey);
+  const title = hint.title ?? chromeRoute.title;
+  const breadcrumb = hint.breadcrumb === undefined ? chromeRoute.breadcrumb : [...hint.breadcrumb];
   const active = definition?.nav ?? "none";
   const projects: NavProject[] = site.projects.map((entry) => ({
     id: entry.id,
@@ -424,6 +437,30 @@ export function chromeFor(site: SiteModel, match: PageMatch): ChromeData {
     sshPendingCount: site.sshPendingCount,
     ...(scoped.settings === undefined ? {} : { settingsHref: scoped.settings }),
     ...(scoped.skills === undefined ? {} : { skillsHref: scoped.skills }),
+  };
+}
+
+/** Derive the scoped chrome for the skills new/detail pages from their page props. */
+function skillsChromeHint(match: PageMatch, props: unknown): ChromeScopeHint {
+  if (match.id !== "skills-new" && match.id !== "skills-detail") {
+    return {};
+  }
+  if (typeof props !== "object" || props === null) {
+    return {};
+  }
+  const candidate = props as {
+    title?: unknown;
+    breadcrumb?: unknown;
+    scope?: { projectId?: unknown; appKey?: unknown };
+  };
+  const scope = candidate.scope;
+  return {
+    ...(typeof scope?.projectId === "string" ? { projectId: scope.projectId } : {}),
+    ...(typeof scope?.appKey === "string" ? { appKey: scope.appKey } : {}),
+    ...(typeof candidate.title === "string" ? { title: candidate.title } : {}),
+    ...(Array.isArray(candidate.breadcrumb)
+      ? { breadcrumb: candidate.breadcrumb as readonly Crumb[] }
+      : {}),
   };
 }
 
@@ -780,7 +817,8 @@ export function maybeServeSpa(deps: HttpDeps, request: HttpRequest): HttpRespons
   }
 
   const site = buildSite(deps);
-  const data = chromeFor(site, match);
+  const props = pagePropsFor(deps, site, match, request);
+  const data = chromeFor(site, match, skillsChromeHint(match, props));
   const notice = noticeFromQuery(request);
   return {
     status: 200,
@@ -798,7 +836,7 @@ export function maybeServeSpa(deps: HttpDeps, request: HttpRequest): HttpRespons
       ...(data.settingsHref === undefined ? {} : { settingsHref: data.settingsHref }),
       ...(data.skillsHref === undefined ? {} : { skillsHref: data.skillsHref }),
       route: match,
-      props: pagePropsFor(deps, site, match, request),
+      props,
       chrome: data.chrome,
       ...(notice === undefined ? {} : { notice }),
       ...(devUrl === undefined ? {} : { devUrl }),
@@ -1049,7 +1087,7 @@ export function handleUiApi(deps: HttpDeps, request: HttpRequest): HttpResponse 
     const match: PageMatch = { id: "skills-detail", params: { id: String(skillId) } };
     return jsonResponse(
       200,
-      { ...props, chrome: chromeFor(site, match).chrome },
+      { ...props, chrome: chromeFor(site, match, skillsChromeHint(match, props)).chrome },
       { "cache-control": "no-store" },
     );
   }

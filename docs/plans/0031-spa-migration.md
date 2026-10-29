@@ -10,8 +10,9 @@ complete (2026-10-29; `/handoffs` cut over, Phase 3 complete - `/`, `/projects`,
 and `/handoffs` are SPA); Phase 4B complete (2026-10-29; `/ssh` cut over, Phase 4 complete - `/`,
 `/projects`, `/projects/:id`, `/handoffs`, and `/ssh` are SPA, settings/skills/app detail and every
 later route stay legacy); Phase 5B complete (2026-10-29; the three settings scopes cut over, Phase 5
-complete - `/`, `/projects`, `/projects/:id`, `/handoffs`, `/ssh`, and settings are SPA; skills,
-app detail, chat, and terminal stay legacy).
+complete - `/`, `/projects`, `/projects/:id`, `/handoffs`, `/ssh`, and settings are SPA); Phase 6B
+complete (2026-10-29; the five skills routes cut over, Phase 6 complete - skills are SPA; app
+detail, chat, and terminal stay legacy).
 Design: [Incremental SPA migration](../design/spa-migration.md) (approved, `oracle` round 5 PASS;
 flag/test-glob/no-JS clarifications recorded in revision 6).
 Owner decisions: [open questions](../open-questions.md), 2026-10-28.
@@ -949,6 +950,54 @@ the legacy smoke. Retire the redundant inventory/workspace HTML assertions after
 replacement, but keep the no-JS snapshot tests (`preserves the hidden bundle snapshot...`,
 `preserves invalid metadata...`, `preserves an invalid stored reference...`) until Phase 8 because
 they cover the legacy rollback page. Keep `test/skills-asset.test.ts` until cleanup.
+
+### Completion record - Phase 6B (2026-10-29)
+
+Phase 6B finishes Phase 6: the registry has `spa: true` for `overview`, `projects`, `project`,
+`handoffs`, `ssh`, the three settings scopes, and `skills-global`, `skills-project`, `skills-app`,
+`skills-new`, and `skills-detail`; `app`, chat, and terminal stay `spa: false`. The five skills
+routes are client-rendered; `/projects/:id/apps/:app` remains a full document load.
+
+- **Pages.** `ui/pages/SkillsPage.vue` covers the global/project/application inventory and
+  `/skills/new`. Inventory reproduces the legacy header, scope nav, counts, All/Defined/Inherited/
+  Disabled/Invalid filters, search form, inventory table with origin/state/references/updated and
+  effective-source links, empty/search/filter states, collision and restart rails, and the summary.
+  The create page uses the same bundle editor with name/description/enabled, details, custom
+  metadata, references, source/preview tabs, generated frontmatter with Copy, and local validation
+  before the existing `POST /api/skills` create handler. `ui/pages/SkillDetailPage.vue` reproduces
+  the workspace: state badge and scope note, restart banner, collisions, issues with repair anchors,
+  editable details/metadata/references/source, frontmatter copy, preview via `SafeMarkdown`,
+  override/disable/revert and source/effective links, danger-zone delete/revert with exact-name
+  confirmation, and read-only inherited/shadowed/hidden/invalid states. No SFC `<style>` or
+  `v-html` was added.
+- **Actions.** Create/update/override/disable/revert/delete use the existing `/api/skills*`
+  handlers through `apiMutation` (JSON bodies and the SPA header); restart reuses
+  `/api/apps/:app/restart?project=`. Success refreshes the page props and chrome, raises a toast,
+  and removes the cached inventory so a client navigation back does not render the pre-write boot
+  snapshot. Failures keep the form open and raise an error toast. No parallel write path exists.
+- **Boot/query.** Inventory trusts boot props only when the boot route id matches and
+  scope/filter/search match the URL; create trusts `skills-new` props only for the matching context
+  and otherwise fetches the scope's inventory props to build the form; detail trusts `skills-detail`
+  only for the matching id, otherwise fetches `/api/ui/skills/:id?from=`. A per-document mutation
+  marker prevents stale boot props from being reused after a write.
+- **Chrome.** `chromeFor` gained an optional scope hint so the new/detail pages get the context
+  project/app sidebar skills href, breadcrumb, and skill title instead of the unscoped global link.
+  `/skills/new` is registered before `/skills/:id`; skills routes precede the generic project route.
+- **Tests.** New `SkillsPage` (10) and `SkillDetailPage` (9) component tests cover boot/scoped
+  rendering, filters/search, create success/error/local validation, cross-route fetch, source/
+  references/metadata/issues, safe Markdown once, override/disable/revert, save/discard, danger
+  delete, restart, 404/loading/error/retry, no `<style>`, and no secrets. `e2e/skills.spec.ts` runs
+  in `spa`, `legacy`, and `allowlist-empty` and covers the boot marker, inventory/filters/search,
+  create, detail, override/disable/revert at application scope, the legacy 303 path, and secret
+  absence. `e2e/spa-skills.spec.ts` covers deep links, refresh, history, client scope navigation,
+  chrome/title/active nav, `?legacy=1`, both rollback servers, no fallback flash, and console/page
+  errors. `shared-routes` and `skills-props` cutover assertions were updated.
+- **Gate results.** `lint` 596 files exit 0 (18 pre-existing warnings); `typecheck`,
+  `typecheck:ui`, and `typecheck:e2e` exit 0; `test` 161 files / 2906 tests; `build` exit 0
+  (`SkillsPage` 18.8 kB, `SkillDetailPage` 16.1 kB); `check:sensitive` pass; `check:ui` 33 SFCs;
+  `test:e2e` 122 passed, 1 skipped (pre-existing).
+- **Not done.** No transfer budget was assigned for skills; `/projects` remains the S16 route.
+  Application detail, chat, and terminal remain legacy.
 
 ## Phase 7 - Application detail (7A/7B/7C, one cutover)
 

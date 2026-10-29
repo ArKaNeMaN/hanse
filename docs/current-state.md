@@ -283,15 +283,18 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   scroll owner. `session` is mirrored to the URL, and the optional `project` query disambiguates
   duplicate app keys across projects.
 
-## UI rendering modes (Phase 5B)
+## UI rendering modes (Phase 6B)
 
 - `/` (fleet overview), `/projects`, `/projects/:id` (project detail), `/handoffs` (handoff
-  inbox), `/ssh` (SSH console), and the three settings scopes (`/settings`,
-  `/projects/:id/settings`, `/projects/:id/apps/:app/settings`) are SPA routes: the shared registry
-  (`src/shared/routes.ts`) has `spa: true` for `overview`, `projects`, `project`, `handoffs`, `ssh`,
-  `settings-global`, `settings-project`, and `settings-app`, and `spa: false` for every other page.
-  Application detail (`/projects/:id/apps/:app`), skills, chat, and terminal stay legacy documents,
-  so the project-to-application hop is a full document load. The page dispatcher
+  inbox), `/ssh` (SSH console), the three settings scopes (`/settings`,
+  `/projects/:id/settings`, `/projects/:id/apps/:app/settings`), and the five skills routes
+  (`/skills`, `/projects/:id/skills`, `/projects/:id/apps/:app/skills`, `/skills/new`,
+  `/skills/:id`) are SPA routes: the shared registry (`src/shared/routes.ts`) has `spa: true` for
+  `overview`, `projects`, `project`, `handoffs`, `ssh`, `settings-global`, `settings-project`,
+  `settings-app`, `skills-global`, `skills-project`, `skills-app`, `skills-new`, and
+  `skills-detail`, and `spa: false` for every other page. Application detail
+  (`/projects/:id/apps/:app`), chat, and terminal stay legacy documents, so the
+  project-to-application hop is a full document load. The page dispatcher
   is the only place that chooses a renderer:
   `HANSE_UI_LEGACY=1` > `?legacy=1` > `HANSE_UI_SPA_ROUTES` > the registry flag. A missing, invalid,
   or partial `assets/ui/.vite/manifest.json` also falls back to legacy and logs
@@ -324,13 +327,20 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   SSH/HTTPS credentials with Test connection, the restart prompt/action, and warnings. Provider
   keys, git tokens, private keys, and known-hosts content are write-only: props, boot JSON, toasts,
   and the DOM contain only the literal `Not shown` marker plus public metadata (public key,
-  fingerprint, allowed hosts, username). Application, skills, chat, terminal, and session links
-  remain plain anchors; the overview/projects/project/handoffs/settings links client-navigate, and
-  the native new-project dialog is a shared Vue component used by the overview and projects pages.
+  fingerprint, allowed hosts, username). The skills pages render scope/target navigation, counts
+  and filters, the search form, the inventory table with enabled/inherited/disabled/invalid and
+  override/shadow state, collision and restart rails, the create form, and the detail workspace:
+  bundle identity/description, details/metadata, references, source/preview tabs, issues with repair
+  anchors, override/disable/revert plus danger-zone delete, and the restart banner. Detail content
+  and references render through `SafeMarkdown`; `assets/skill-detail.js` remains only on the legacy
+  rollback pages. Application, chat, terminal, and session links remain plain anchors;
+  the overview/projects/project/handoffs/settings/skills links client-navigate, and the native
+  new-project dialog is a shared Vue component used by the overview and projects pages.
 - Built client assets are served from `/assets/ui/*` with immutable caching; compressible responses
   are gzip-encoded when the client offers it (first loads measure ~136 KiB for `/projects`,
-  ~134 KiB for `/`, and ~146 KiB for `/projects/:id` on the deterministic fixture). `/ssh` and the
-  settings scopes are lazy route chunks; no new transfer budget was assigned.
+  ~134 KiB for `/`, and ~146 KiB for `/projects/:id` on the deterministic fixture). `/ssh`, the
+  settings scopes, and the skills pages are lazy route chunks (skills inventory ~18.8 kB, detail
+  ~16.1 kB before gzip); no new transfer budget was assigned.
 - SPA documents and `/api/ui/*` are cookie-only. `/api/ui/*` returns `401` without a human cookie,
   `403 cookie_required` for a human bearer without a cookie, and `403` for agent tokens; responses are
   `no-store`.

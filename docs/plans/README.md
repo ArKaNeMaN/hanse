@@ -46,4 +46,5 @@
   Phase 4 complete - `/`, `/projects`, `/projects/:id`, `/handoffs`, and `/ssh` are SPA; settings,
   skills, app detail, chat, and terminal stay legacy); Phase 5B complete (2026-10-29; the three
   settings scopes cut over, Phase 5 complete - `/`, `/projects`, `/projects/:id`, `/handoffs`,
-  `/ssh`, and settings are SPA; skills, app detail, chat, and terminal stay legacy).
+  `/ssh`, and settings are SPA); Phase 6B complete (2026-10-29; the five skills routes cut over,
+  Phase 6 complete - skills are SPA; app detail, chat, and terminal stay legacy).

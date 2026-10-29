@@ -42,8 +42,13 @@ describe("shared route manifest", () => {
       "handoffs",
       "ssh",
       "settings-global",
+      "skills-global",
+      "skills-new",
+      "skills-detail",
       "settings-project",
       "settings-app",
+      "skills-project",
+      "skills-app",
       "project",
     ]);
   });
@@ -122,7 +127,12 @@ describe("shared route manifest", () => {
         route.id === "ssh" ||
         route.id === "settings-global" ||
         route.id === "settings-project" ||
-        route.id === "settings-app";
+        route.id === "settings-app" ||
+        route.id === "skills-global" ||
+        route.id === "skills-project" ||
+        route.id === "skills-app" ||
+        route.id === "skills-new" ||
+        route.id === "skills-detail";
       expect(isSpaRoute(route.id, { env: {} }), route.id).toBe(migrated);
     }
     expect(isSpaPath("/projects", { env: {} })).toBe(true);
@@ -134,7 +144,11 @@ describe("shared route manifest", () => {
     expect(isSpaPath("/settings", { env: {} })).toBe(true);
     expect(isSpaPath("/projects/alpha/settings", { env: {} })).toBe(true);
     expect(isSpaPath("/projects/alpha/apps/web/settings", { env: {} })).toBe(true);
-    expect(isSpaPath("/skills", { env: {} })).toBe(false);
+    expect(isSpaPath("/skills", { env: {} })).toBe(true);
+    expect(isSpaPath("/projects/alpha/skills", { env: {} })).toBe(true);
+    expect(isSpaPath("/projects/alpha/apps/web/skills", { env: {} })).toBe(true);
+    expect(isSpaPath("/skills/new", { env: {} })).toBe(true);
+    expect(isSpaPath("/skills/42", { env: {} })).toBe(true);
     expect(isSpaPath("/projects/alpha/apps/web", { env: {} })).toBe(false);
   });
 
