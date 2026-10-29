@@ -672,3 +672,68 @@ Phase 7C: port `images.js` (build/rollback/check/logs/poll), the app SSH panel, 
 exact-name confirmation; then perform the single application-detail cutover and remove the legacy
 island scripts from the SPA document. The `app` registry flag stays false until that cutover.
 
+
+## Phase 7C implementation - image, SSH, delete, and cutover (2026-10-29)
+
+Phase 7C finishes Phase 7. `src/shared/routes.ts` flips `app` to `spa: true`, so every page route is
+client-rendered except `/chat` and `/terminal`. The legacy application document remains reachable
+through `HANSE_UI_LEGACY=1`, `?legacy=1`, or a `HANSE_UI_SPA_ROUTES` allowlist and still loads
+`/assets/git.js`, `/assets/images.js`, and `/assets/ssh.js`.
+
+- **Image rail.** `ui/composables/useAppImage.ts` ports `assets/images.js`: one status read on entry
+  and on manual refresh, a 3 s status/log poll only while building, and build/rollback/check/logs
+  through the existing `/api/apps/:app/{build,image/rollback,image/check,image/logs}` handlers.
+  `ui/components/AppImagePanel.vue` renders the legacy state vocabulary (current, restart_required,
+  rebuild_required, building, build_error, not_ready, unknown, plus default-image
+  current/restart/unknown), the build label/disabled reason, drift/blocked/usable/rollback badges,
+  base/hash/built details, logs, the restart notice, and the rollback confirmation dialog. Action
+  success refreshes props/chrome; failures raise the server message as an error toast.
+- **App-scoped SSH.** `ui/components/AppSshPanel.vue` keeps the read tables and adds the allowlist
+  editor (`GET /api/ssh/hosts` for the full host list plus `GET/POST
+  /api/projects/:id/apps/:app/ssh`), grant revoke, approval approve/reject, and an on-demand audit
+  read. Each action is busy-disabled and emits one props/chrome refresh; errors become toasts. No
+  private key, provider key, git token, or MCP token is read, stored, or rendered.
+- **Deletion.** `ui/components/AppDeleteDialog.vue` reproduces the exact-name confirmation,
+  `deleteFiles`, `return_to`, retry labels, and project-deletion retry variant from
+  `src/http/deletion.ts`. It reuses the existing `POST .../delete` handler and navigates to the
+  project page or `/projects` on success with the legacy success/warning message.
+- **Cutover.** `AppPage.vue` is the default `/projects/:id/apps/:app` renderer. ProjectPage app links
+  and the git workbench project link use `SmartLink`; chat, terminal, settings, skills, and IDE stay
+  full documents. The SPA document loads only `app.js`. The temporary `app-preview` server/project on
+  4313 was retired: app E2E now runs on the default `spa` server on 4310, and the fixture uses beta
+  and gamma for image/SSH state so the alpha rows owned by the SSH console spec stay stable.
+- **Tests.** New `AppImagePanel` (15), `AppSshPanel` (7), and `AppDeleteDialog` (6) component tests
+  cover the state matrix, busy/disabled reasons, logs, exact-name confirmation, all SSH mutations,
+  error toasts, no `<style>`, and no key/script text. `AppPage` tests grew to 40 with image
+  build/rollback/check/busy/error and delete retry coverage. `ProjectPage` tests assert client-side
+  application links. `spa-app.spec.ts` adds custom-image build/poll/log/rollback, default check,
+  stale drift, SSH grant/revoke/approve/reject/audit, and exact-name delete flows; the legacy
+  `app.spec.ts` still runs on the legacy and empty-allowlist servers and `?legacy=1` keeps the
+  island-script smoke.
+
+### Phase 7C verification
+
+Commands ran with `NODE_ENV=development` and `PLAYWRIGHT_CHROMIUM=/usr/bin/chromium`.
+
+| Command | Result |
+| --- | --- |
+| `npm run lint` | 617 files, exit 0 (18 pre-existing warnings) |
+| `npm run typecheck` | exit 0 |
+| `npm run typecheck:ui` | exit 0 |
+| `npm run typecheck:e2e` | exit 0 |
+| `npm test` | 168 files / 2999 tests, exit 0 |
+| `npm run build` | exit 0; `AppPage` 77.56 kB / 22.03 kB gzip |
+| `npm run check:sensitive` | exit 0 |
+| `npm run check:ui` | exit 0 (41 SFCs, sentinel present) |
+| `npm run test:e2e` | 139 passed, 1 skipped, exit 0 |
+
+No transfer budget was assigned for application detail; `/projects` remains the S16 route. Visual
+geometry was checked on the beta fixture at 390/768/1440 in dark and light: zero document and
+`.page` horizontal overflow, and the image, SSH, and danger-zone cards were visible at every size.
+Screenshots are untracked workspace evidence. Chat and terminal migration and Phase 8 cleanup were
+not started.
+
+## Next
+
+Gate D1: record the `/chat` and `/terminal` request soak and operator feedback, then decide whether
+either remains a legacy document. Phase 8 cleanup is out of scope until that decision.

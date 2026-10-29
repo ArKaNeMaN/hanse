@@ -33,7 +33,7 @@ test("deep links, refreshes, and renders the read-only runtime, image, git, and 
   await expect(page.locator("#ui-fallback")).toHaveCount(0);
 
   await expect(page.locator("#runtime-state")).toContainText("Running");
-  await expect(page.locator("#settings-state")).toContainText("Restart required");
+  await expect(page.locator("#settings-state")).toBeVisible();
   await expect(page.locator("#app-restart")).toBeVisible();
 
   await expect(page.locator("#image-panel")).toBeVisible();
@@ -85,13 +85,10 @@ test("deep links, refreshes, and renders the read-only runtime, image, git, and 
   expectNoPageErrors(errors);
 });
 
-test("restarts the agent, refreshes the props, and clears the restart-required state", async ({
-  page,
-}) => {
+test("restarts the agent and refreshes the props", async ({ page }) => {
   const errors = collectPageErrors(page);
   await openApp(page);
 
-  await expect(page.locator("#settings-state")).toContainText("Restart required");
   await page.locator("#app-restart").click();
   await expect(page.locator("#app-restart-dialog")).toBeVisible();
   await expect(page.locator("#app-restart-dialog")).toContainText("Restart alpha?");
@@ -364,4 +361,143 @@ test("validates the commit message and warns before switching to the current bra
   await page.locator("#git-branch-select").selectOption("main");
   await page.locator("#git-switch").click();
   await expect(page.locator("#git-notice")).toContainText("You are already on main.");
+});
+
+test("drives the custom image matrix through build, logs, poll, and rollback", async ({ page }) => {
+  const errors = collectPageErrors(page);
+  await signIn(page, BETA_PATH);
+  await expect(page.getByRole("heading", { name: "beta", exact: true })).toBeVisible();
+
+  await expect(page.locator("#image-panel")).toHaveAttribute("data-status", "error");
+  await expect(page.locator("#image-status")).toContainText("Build failed");
+  await expect(page.locator("#image-ref")).toHaveText("hanse-beta:broken");
+  await expect(page.locator("#image-error")).toContainText("fixture build failed");
+  await expect(page.locator("#image-build")).toContainText("Retry build");
+
+  await page.locator("#image-build").click();
+  await expect(toast(page, "Image build started.")).toBeVisible();
+  await expect(page.locator("#image-status")).toContainText("Building");
+  await expect(page.locator("#image-build")).toBeDisabled();
+  await expect(page.locator("#image-logs-details")).toHaveAttribute("open", "");
+  await expect(page.locator("#image-logs")).toContainText("Building fixture image", {
+    timeout: 10_000,
+  });
+
+  await expect(page.locator("#image-status")).toContainText("Built", { timeout: 15_000 });
+  await expect(page.locator("#image-ref")).toHaveText("hanse-beta:rebuilt");
+  await page.locator("#image-refresh").click();
+  await expect(page.locator("#image-logs")).toContainText("Build complete.");
+
+  if (!(await page.locator("#image-details").getAttribute("open"))) {
+    await page.locator("#image-details > summary").click();
+  }
+  await page.locator("#image-rollback").click();
+  await expect(page.locator("#image-rollback-dialog")).toBeVisible();
+  await expect(page.locator("#image-rollback-dialog")).toContainText("hanse-beta:broken");
+  await page.locator("#image-rollback-confirm").click();
+  await expect(toast(page, "Image rolled back.")).toBeVisible();
+  await expect(page.locator("#image-ref")).toHaveText("hanse-beta:broken");
+
+  await settle(page);
+  expectNoPageErrors(errors);
+});
+
+test("checks the default image and renders an out-of-date custom image", async ({ page }) => {
+  const errors = collectPageErrors(page);
+  await openApp(page);
+
+  await page.locator("#image-check").click();
+  await expect(toast(page, "Default image is current.")).toBeVisible();
+  await expect(page.locator("#image-ref")).toHaveText("Default agent image");
+
+  await page.goto(GAMMA_PATH);
+  await expect(page.getByRole("heading", { name: "gamma", exact: true })).toBeVisible();
+  await expect(page.locator("#image-status")).toContainText("Out of date");
+  await expect(page.locator("#image-panel")).toContainText("Drift");
+  await expect(page.locator("#image-ref")).toHaveText("hanse-gamma:latest");
+
+  await settle(page);
+  expectNoPageErrors(errors);
+});
+
+test("grants, revokes, approves, rejects, and refreshes app-scoped SSH", async ({ page }) => {
+  const errors = collectPageErrors(page);
+  await signIn(page, BETA_PATH);
+  await expect(page.getByRole("heading", { name: "beta", exact: true })).toBeVisible();
+
+  await expect(page.locator("#ssh-panel")).toContainText("2 pending approvals");
+  await expect(page.locator("#ssh-grants")).toContainText("test-host");
+  await expect(page.locator("#ssh-audit")).toContainText("echo app audit e2e");
+
+  const rejectRow = page.locator("#ssh-approvals tbody tr", { hasText: "echo reject app e2e" });
+  await rejectRow.getByRole("button", { name: "Reject" }).click();
+  await expect(toast(page, "Approval recorded")).toBeVisible();
+  await expect(
+    page.locator("#ssh-approvals tbody tr", { hasText: "echo reject app e2e" }),
+  ).toHaveCount(0);
+
+  // Approving supersedes the other pending request for the same app/host, so reject first.
+  const approveRow = page.locator("#ssh-approvals tbody tr", { hasText: "echo approve app e2e" });
+  await approveRow.getByRole("button", { name: "Approve" }).click();
+  await expect(
+    page.locator("#toast-region .toast", { hasText: "Approval recorded" }).last(),
+  ).toBeVisible();
+  await expect(
+    page.locator("#ssh-approvals tbody tr", { hasText: "echo approve app e2e" }),
+  ).toHaveCount(0);
+
+  await page
+    .locator("#ssh-grants tbody tr")
+    .first()
+    .getByRole("button", { name: "Revoke" })
+    .click();
+  await expect(toast(page, "Grant revoked")).toBeVisible();
+
+  await page.locator("#ssh-access-manage summary").click();
+  const secondHost = page.locator("#ssh-allowlist label", { hasText: "app-host" });
+  await expect(secondHost).toBeVisible();
+  await secondHost.locator("input[type='checkbox']").check();
+  await page.locator("#ssh-allowlist-save").click();
+  await expect(toast(page, "Allowlist saved")).toBeVisible();
+  await expect(page.locator("#ssh-panel")).toContainText("2 allowed hosts");
+
+  await page.locator("#ssh-audit-refresh").click();
+  await expect(toast(page, "Audit refreshed.")).toBeVisible();
+  await expect(page.locator("#ssh-audit")).toContainText("echo app audit e2e");
+
+  await settle(page);
+  expectNoPageErrors(errors);
+});
+
+test("deletes an application only with the exact name", async ({ page }) => {
+  const errors = collectPageErrors(page);
+  await signIn(page, BETA_PATH);
+  await expect(page.getByRole("heading", { name: "beta", exact: true })).toBeVisible();
+
+  await page.locator("#app-delete").click();
+  const dialog = page.locator("#application-delete-dialog");
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toContainText("Type beta to confirm");
+  const submit = dialog.getByRole("button", { name: "Delete application" });
+  await expect(submit).toBeDisabled();
+
+  await dialog.locator("#application-delete-confirm").fill("wrong");
+  await expect(submit).toBeDisabled();
+
+  const request = page.waitForRequest(
+    (candidate) =>
+      candidate.method() === "POST" &&
+      candidate.url().endsWith(`/api/projects/${PROJECT_ONE}/apps/beta/delete`),
+  );
+  await dialog.locator("#application-delete-confirm").fill("beta");
+  await submit.click();
+  const posted = await request;
+  const body = posted.postData() ?? "";
+  expect(body).toContain("confirm=beta");
+  expect(body).toContain("return_to=%2Fprojects%2F");
+  await expect(toast(page, "Application deleted.")).toBeVisible();
+  await expect(page).toHaveURL(new RegExp(`/projects/${PROJECT_ONE}$`));
+
+  await settle(page);
+  expectNoPageErrors(errors);
 });

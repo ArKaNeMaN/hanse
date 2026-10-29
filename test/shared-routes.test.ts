@@ -49,6 +49,7 @@ describe("shared route manifest", () => {
       "settings-app",
       "skills-project",
       "skills-app",
+      "app",
       "project",
     ]);
   });
@@ -132,13 +133,14 @@ describe("shared route manifest", () => {
         route.id === "skills-project" ||
         route.id === "skills-app" ||
         route.id === "skills-new" ||
-        route.id === "skills-detail";
+        route.id === "skills-detail" ||
+        route.id === "app";
       expect(isSpaRoute(route.id, { env: {} }), route.id).toBe(migrated);
     }
     expect(isSpaPath("/projects", { env: {} })).toBe(true);
     expect(isSpaPath("/", { env: {} })).toBe(true);
     expect(isSpaPath("/projects/alpha", { env: {} })).toBe(true);
-    expect(isSpaPath("/projects/alpha/apps/web", { env: {} })).toBe(false);
+    expect(isSpaPath("/projects/alpha/apps/web", { env: {} })).toBe(true);
     expect(isSpaPath("/handoffs", { env: {} })).toBe(true);
     expect(isSpaPath("/ssh", { env: {} })).toBe(true);
     expect(isSpaPath("/settings", { env: {} })).toBe(true);
@@ -149,7 +151,7 @@ describe("shared route manifest", () => {
     expect(isSpaPath("/projects/alpha/apps/web/skills", { env: {} })).toBe(true);
     expect(isSpaPath("/skills/new", { env: {} })).toBe(true);
     expect(isSpaPath("/skills/42", { env: {} })).toBe(true);
-    expect(isSpaPath("/projects/alpha/apps/web", { env: {} })).toBe(false);
+    expect(isSpaPath("/projects/alpha/apps/web", { env: {} })).toBe(true);
   });
 
   it("applies HANSE_UI_LEGACY and manifest validity before the allowlist", () => {

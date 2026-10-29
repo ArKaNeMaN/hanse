@@ -408,6 +408,9 @@ function installQueries(
         status: live.git === undefined ? statusForSummary(appProps.git.summary) : live.git,
       });
     }
+    if (path.includes("/image/logs")) {
+      return Promise.resolve({ logs: "Step 1/2: fixture build\n" });
+    }
     if (path.includes("/image")) {
       return Promise.resolve(
         live.image ?? {
@@ -547,7 +550,7 @@ describe("AppPage", () => {
     expect(wrapper.text()).toContain("current default image");
     expect(wrapper.find("#image-build").exists()).toBe(false);
     expect(wrapper.find("#image-rollback").exists()).toBe(false);
-    expect(wrapper.find("#image-check").exists()).toBe(false);
+    expect(wrapper.find("#image-check").exists()).toBe(true);
   });
 
   it.each([
@@ -584,8 +587,9 @@ describe("AppPage", () => {
     expect(wrapper.get("#image-panel").text()).toContain(label);
     expect(wrapper.get("#image-ref").text()).toBe("hanse-alpha:latest");
     expect(wrapper.find("#image-details").exists()).toBe(true);
-    expect(wrapper.find("#image-build").exists()).toBe(false);
-    expect(wrapper.find("#image-rollback").exists()).toBe(false);
+    expect(wrapper.find("#image-build").exists()).toBe(true);
+    expect(wrapper.find("#image-rollback").exists()).toBe(true);
+    expect(wrapper.find("#image-check").exists()).toBe(false);
     if (status === "stale") {
       expect(wrapper.text()).toContain("Drift");
     }
@@ -626,7 +630,8 @@ describe("AppPage", () => {
     expect(wrapper.text()).toContain("Blocked");
     expect(wrapper.text()).toContain("No usable image");
     expect(wrapper.text()).toContain("No rollback");
-    expect(wrapper.text()).toContain("Build disabled");
+    expect(wrapper.text()).toContain("Image actions are disabled while deletion is pending.");
+    expect(wrapper.get("#image-build").attributes("disabled")).toBeDefined();
   });
 
   it("renders a clean repository, changes, upstream, and last commit", async () => {
@@ -759,8 +764,9 @@ describe("AppPage", () => {
     expect(wrapper.get("#ssh-approvals").text()).toContain("echo e2e");
     expect(wrapper.get("#ssh-audit").text()).toContain("uptime");
     expect(wrapper.find("#ssh-manage").attributes("href")).toBe("/ssh?project=p&app=alpha");
-    expect(wrapper.find("#ssh-panel").text()).not.toContain("Revoke");
-    expect(wrapper.find("#ssh-panel").text()).not.toContain("Approve");
+    expect(wrapper.find("#ssh-grants").text()).toContain("Revoke");
+    expect(wrapper.find("#ssh-approvals").text()).toContain("Approve");
+    expect(wrapper.find("#ssh-approvals").text()).toContain("Reject");
   });
 
   it("renders the SSH unavailable and empty states", async () => {
@@ -908,7 +914,7 @@ describe("AppPage", () => {
     expect(wrapper.get("h1").text()).toBe("alpha");
   });
 
-  it("shows the deletion banner but no delete action in 7A", async () => {
+  it("shows the deletion banner and the retry delete action", async () => {
     const appProps = props({
       delete: {
         ...props().delete,
@@ -926,9 +932,8 @@ describe("AppPage", () => {
     const wrapper = await mountPage(boot(appProps));
 
     expect(wrapper.get("#deletion-banner").text()).toContain("Deletion incomplete");
-    expect(wrapper.find("#danger-zone").exists()).toBe(false);
-    expect(wrapper.find("button.btn-danger").exists()).toBe(false);
-    expect(wrapper.text()).not.toContain("Delete application");
+    expect(wrapper.find("#danger-zone").exists()).toBe(true);
+    expect(wrapper.get("#app-delete").text()).toContain("Retry deletion");
     expect(wrapper.find("#app-restart").exists()).toBe(false);
   });
 
@@ -1106,6 +1111,83 @@ describe("AppPage", () => {
     finish({ status: fullStatus(), message: "Committed as abc1234." });
     await flushPromises();
     expect(toasts().map((toast) => toast.message)).toContain("Committed as abc1234.");
+  });
+
+  it("builds an image, shows the busy label, and refreshes the props", async () => {
+    const appProps = props({ image: imageProps("missing") });
+    installQueries(appProps);
+    let finish: (value: unknown) => void = () => {};
+    mocks.apiMutation.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const wrapper = await mountPage(boot(appProps));
+
+    await wrapper.get("#image-build").trigger("click");
+    await nextTick();
+    expect(wrapper.get("#image-build").text()).toContain("Starting build…");
+    expect(wrapper.get("#image-build").attributes("disabled")).toBeDefined();
+    expect(mocks.apiMutation).toHaveBeenCalledWith("/api/apps/alpha/build?project=p", {
+      json: {},
+    });
+
+    finish({ status: "building" });
+    await flushPromises();
+    expect(toasts().map((toast) => toast.message)).toContain("Image build started.");
+  });
+
+  it("confirms and rolls back an image", async () => {
+    const appProps = props({ image: imageProps("ready") });
+    installQueries(appProps);
+    mocks.apiMutation.mockResolvedValue({ status: "ready", restarted: true });
+    const wrapper = await mountPage(boot(appProps));
+
+    await wrapper.get("#image-details summary").trigger("click");
+    await wrapper.get("#image-rollback").trigger("click");
+    expect(wrapper.get("#image-rollback-dialog").attributes("open")).toBeDefined();
+    expect(wrapper.get("#image-rollback-dialog").text()).toContain("Roll back and restart");
+    await wrapper.get("#image-rollback-confirm").trigger("click");
+    await flushPromises();
+
+    expect(mocks.apiMutation).toHaveBeenCalledWith("/api/apps/alpha/image/rollback?project=p", {
+      json: {},
+    });
+    expect(toasts().map((toast) => toast.message)).toContain(
+      "Image rolled back; the agent restarted.",
+    );
+  });
+
+  it("checks the default image and surfaces the notice", async () => {
+    const appProps = props();
+    installQueries(appProps);
+    mocks.apiMutation.mockResolvedValue({
+      notice: "Image is up to date.",
+      tone: "success",
+    });
+    const wrapper = await mountPage(boot(appProps));
+
+    await wrapper.get("#image-check").trigger("click");
+    await flushPromises();
+
+    expect(mocks.apiMutation).toHaveBeenCalledWith("/api/apps/alpha/image/check?project=p", {
+      json: {},
+    });
+    expect(toasts().map((toast) => toast.message)).toContain("Image is up to date.");
+  });
+
+  it("maps image action failures to an error toast", async () => {
+    const appProps = props({ image: imageProps("error") });
+    installQueries(appProps);
+    mocks.apiMutation.mockRejectedValue(new ApiError("docker unavailable", 503));
+    const wrapper = await mountPage(boot(appProps));
+
+    await wrapper.get("#image-build").trigger("click");
+    await flushPromises();
+
+    expect(toasts().map((toast) => toast.message)).toContain("docker unavailable");
+    expect(wrapper.get("h1").text()).toBe("alpha");
   });
 
   it("shows a status load error with retry and recovers on refresh", async () => {

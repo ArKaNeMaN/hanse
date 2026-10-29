@@ -219,6 +219,7 @@ function testRouter(): Router {
       { path: "/", component: { template: "<div />" } },
       { path: "/projects", component: { template: "<div />" } },
       { path: "/projects/:id", component: { template: "<div />" } },
+      { path: "/projects/:id/apps/:app", component: { template: "<div />" } },
       { path: "/handoffs", component: { template: "<div />" } },
     ],
   });
@@ -390,7 +391,7 @@ describe("ProjectPage", () => {
     expect(wrapper.text()).toContain("Project is unavailable.");
   });
 
-  it("keeps application links as full-document legacy boundaries", async () => {
+  it("navigates application links client-side after the cutover", async () => {
     const wrapper = await mountPage(boot(PROPS));
     const link = wrapper.get('a[aria-label="Open alpha application"]');
 
@@ -403,7 +404,7 @@ describe("ProjectPage", () => {
       clickEvent.preventDefault();
     });
     link.element.dispatchEvent(event);
-    expect(preventedByApp).toBe(false);
+    expect(preventedByApp).toBe(true);
   });
 
   it("adds an application by path, refreshes, and raises a success toast", async () => {

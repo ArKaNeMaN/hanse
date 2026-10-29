@@ -274,18 +274,16 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   messages, typed SSE, composer, queue, questions, OMO cards, safe markdown/tables, syntax-highlighted
   diffs/write content) and imports the pure helpers in `assets/chat-core.js`,
   `assets/chat-commands.js`, `assets/chat-diff.js`, and the lazy worker controller in
-  `assets/chat-highlight.js`. `assets/git.js` hydrates the
-  application git panel. All routes except `/`, `/projects`, `/projects/:id`, `/handoffs`, `/ssh`,
-  the three settings scopes, and the five skills routes remain server-rendered by default; the
-  application-detail SPA shell exists but is preview-only (`HANSE_UI_SPA_ROUTES=app`) and the
-  registry keeps `app` legacy until Phase 7C. The Vue/Vite client has cut the other routes over and
-  is scaffolded for later routes (see **UI rendering modes**).
+  `assets/chat-highlight.js`. `assets/git.js` hydrates the legacy rollback application git panel.
+  Every page route except `/chat` and `/terminal` is an SPA route by default; the legacy renderers
+  remain reachable through `HANSE_UI_LEGACY=1`, `?legacy=1`, or a `HANSE_UI_SPA_ROUTES` allowlist
+  (see **UI rendering modes**).
 - The chat workspace is the stage-3 three-pane surface: sessions rail, thread, and context rail.
   Below 1360 the context pane is a drawer; below 768 both rails are drawers. The thread is the only
   scroll owner. `session` is mirrored to the URL, and the optional `project` query disambiguates
   duplicate app keys across projects.
 
-## UI rendering modes (Phase 7B preview)
+## UI rendering modes (Phase 7 complete)
 
 - `/` (fleet overview), `/projects`, `/projects/:id` (project detail), `/handoffs` (handoff
   inbox), `/ssh` (SSH console), the three settings scopes (`/settings`,
@@ -293,11 +291,10 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   (`/skills`, `/projects/:id/skills`, `/projects/:id/apps/:app/skills`, `/skills/new`,
   `/skills/:id`) are SPA routes: the shared registry (`src/shared/routes.ts`) has `spa: true` for
   `overview`, `projects`, `project`, `handoffs`, `ssh`, `settings-global`, `settings-project`,
-  `settings-app`, `skills-global`, `skills-project`, `skills-app`, `skills-new`, and
-  `skills-detail`, and `spa: false` for every other page. Application detail
-  (`/projects/:id/apps/:app`) stays legacy by default and can be previewed as an SPA with
-  `HANSE_UI_SPA_ROUTES=app`; chat and terminal stay legacy documents, so the default
-  project-to-application hop remains a full document load. The page dispatcher
+  `settings-app`, `skills-global`, `skills-project`, `skills-app`, `skills-new`,
+  `skills-detail`, and `app`; only chat and terminal remain legacy documents. Application detail
+  (`/projects/:id/apps/:app`) is the default SPA route, and its legacy rollback page still loads
+  `git.js`, `images.js`, and `ssh.js`. The page dispatcher
   is the only place that chooses a renderer:
   `HANSE_UI_LEGACY=1` > `?legacy=1` > `HANSE_UI_SPA_ROUTES` > the registry flag. A missing, invalid,
   or partial `assets/ui/.vite/manifest.json` also falls back to legacy and logs
@@ -336,26 +333,32 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   bundle identity/description, details/metadata, references, source/preview tabs, issues with repair
   anchors, override/disable/revert plus danger-zone delete, and the restart banner. Detail content
   and references render through `SafeMarkdown`; `assets/skill-detail.js` remains only on the legacy
-  rollback pages. The application-detail preview reads boot props only for a matching app route and
-  otherwise fetches `/api/ui/apps/:app?project=`, whose response also carries the live git read
-  summary (boot props load it as `git.summary.loaded=false`). It renders the application header and
-  links, the Runtime/Settings state strip, the read-only image rail (state, ref, hash, base, drift,
-  blocked/usable, rollback availability), the Repository/Changes/Remotes/Last-commit git workbench,
-  the app-scoped SSH grants/approvals/audit panels, and the master variant. Runtime and image are
-  polled at the existing cadence (runtime 10 s, image 3 s while building). Git status loads from
-  `/api/projects/:id/apps/:app/git/status` on entry, on demand, and after an action only when the
-  action response carries no status; fetch, update, push, commit-all, and branch switch reuse the
-  existing git JSON handlers, preserve the clean/dirty/detached/conflicted/upstream/ahead/behind
-  vocabulary, and map failures to the legacy title/message copy. Restart and the git workbench are
-  the mutations in this preview; image, SSH, and delete actions stay disabled until 7C.
-  Application, chat, terminal, settings, skills, and session links remain plain anchors;
-  the overview/projects/project/handoffs/settings/skills links client-navigate, and the native
-  new-project dialog is a shared Vue component used by the overview and projects pages.
+  rollback pages. The application page reads boot props only for a matching app route and otherwise
+  fetches `/api/ui/apps/:app?project=`, whose response also carries the live git read summary (boot
+  props load it as `git.summary.loaded=false`). It renders the application header and links, the
+  Runtime/Settings state strip, the image rail with build/rollback/check/logs and the full legacy
+  state matrix, the Repository/Changes/Remotes/Last-commit git workbench, the app-scoped SSH
+  allowlist/grant/revoke/approve/reject/audit actions, the exact-name delete dialog, and the master
+  variant. Runtime and image are polled at the existing cadence (runtime 10 s, image 3 s while
+  building). Git status loads from `/api/projects/:id/apps/:app/git/status` on entry, on demand, and
+  after an action only when the action response carries no status; fetch, update, push, commit-all,
+  and branch switch reuse the existing git JSON handlers, preserve the
+  clean/dirty/detached/conflicted/upstream/ahead/behind vocabulary, and map failures to the legacy
+  title/message copy. Image build/rollback/check/logs reuse `/api/apps/:app/*`; app SSH
+  allowlist/grant/revoke/approve/reject/audit reuse `/api/projects/:id/apps/:app/ssh*` and
+  `/api/apps/:app/ssh/*`; deletion reuses the existing `POST .../delete` contract with the exact app
+  key (or project name when retrying project deletion) and `return_to`. Application, chat, terminal,
+  settings, skills, and session links remain plain anchors; project links are client-side, and the
+  native new-project dialog is a shared Vue component used by the overview and projects pages.
+- The SPA document loads only the shell `app.js`; `git.js`, `images.js`, and `ssh.js` are loaded only
+  by the legacy rollback application document. No app-scoped SSH key material, provider key, git
+  token, or MCP token enters props, boot JSON, toasts, errors, or the DOM.
 - Built client assets are served from `/assets/ui/*` with immutable caching; compressible responses
   are gzip-encoded when the client offers it (first loads measure ~136 KiB for `/projects`,
   ~134 KiB for `/`, and ~146 KiB for `/projects/:id` on the deterministic fixture). `/ssh`, the
-  settings scopes, and the skills pages are lazy route chunks (skills inventory ~18.8 kB, detail
-  ~16.1 kB, application-detail preview ~59.1 kB before gzip); no new transfer budget was assigned.
+  settings scopes, the skills pages, and application detail are lazy route chunks (skills inventory
+  ~18.8 kB, detail ~16.1 kB, application detail ~77.6 kB before gzip); no new transfer budget was
+  assigned.
 - SPA documents and `/api/ui/*` are cookie-only. `/api/ui/*` returns `401` without a human cookie,
   `403 cookie_required` for a human bearer without a cookie, and `403` for agent tokens; responses are
   `no-store`.
@@ -371,19 +374,20 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
 
 ## Git workbench
 
-- The Application page (`/projects/:projectId/apps/:appKey`) is human-only and server-rendered by
-  default; the git panel is hydrated by `assets/git.js`. The page header has `Open chat`, `Terminal`,
+- The Application page (`/projects/:projectId/apps/:appKey`) is human-only, SPA-rendered by default,
+  and represented by `ui/pages/AppPage.vue`. The legacy rollback document still hydrates its git
+  panel with `assets/git.js`. The page header has `Open chat`, `Terminal`,
   and a `More actions` disclosure (`Open IDE in this folder`, `Application settings`); a two-cell
   state strip (`Runtime`, `Settings`) precedes the git workbench. Repository and Changes occupy the
   main column; the rail holds Image, SSH access, Remotes, and Last commit. The page's only brass
   action is `Commit all`. It is linked from the project application table, the chat context rail,
-  and the chat breadcrumb. The Phase 7B SPA preview renders the same read state from
+  and the chat breadcrumb. The SPA application page renders the same read state from
   `/api/ui/apps/:app?project=` and ports status refresh, fetch, update, push, commit-all, branch
   switch, and the remotes card onto the existing git JSON handlers with no legacy island scripts.
   Busy/disabled reasons, confirmation-free branch switching, commit-message validation, warnings,
-  toasts, and the legacy error mapping are preserved. Restart and git are its mutations; image,
-  SSH, and delete stay out until 7C, and the legacy renderer and its scripts remain the default and
-  rollback path.
+  toasts, and the legacy error mapping are preserved. Restart, git, image build/rollback/check/logs,
+  app SSH allowlist/grant/revoke/approve/reject/audit, and exact-name deletion are its mutations; the
+  legacy renderer and its `git.js`/`images.js`/`ssh.js` scripts remain only as the rollback path.
 - Runtime state uses one vocabulary from the runner: `starting`, `running`, `stopped`, `error`
   (legacy `failed` normalizes to `error`). The overview shows all four counts; the app, chat, and
   terminal surfaces use the same pill mapping. `POST /api/apps/:app/restart` calls

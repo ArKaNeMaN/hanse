@@ -16,7 +16,9 @@ detail, chat, and terminal stay legacy); Phase 7A complete (2026-10-29; the read
 application-detail SPA shell and restart are previewable with `HANSE_UI_SPA_ROUTES=app`; the
 registry keeps `app` legacy); Phase 7B complete (2026-10-29; the git workbench status/refresh,
 fetch/update/push/commit-all/branch-switch flow and remotes are ported onto the existing git JSON
-handlers; the registry keeps `app` legacy; 7C image/SSH/delete/cutover remain).
+handlers; the registry kept `app` legacy). Phase 7C complete (2026-10-29; image build/rollback/
+check/logs/poll, app-scoped SSH allowlist/grant/revoke/approve/reject/audit, and exact-name deletion
+are ported; `app` is now `spa: true`, and only chat/terminal remain legacy).
 Design: [Incremental SPA migration](../design/spa-migration.md) (approved, `oracle` round 5 PASS;
 flag/test-glob/no-JS clarifications recorded in revision 6).
 Owner decisions: [open questions](../open-questions.md), 2026-10-28.
@@ -1116,6 +1118,53 @@ Phase 7B ports the application git workbench into the SPA preview. `src/shared/r
   `check:sensitive` and `check:ui` (40 SFCs) pass; `test:e2e` 134 passed, 1 skipped.
 - **Not done.** 7C image/SSH/delete actions, the one registry cutover, legacy-script removal, and
   the full visual-QA pass remain. Application detail is still legacy by default.
+
+
+### Completion record - Phase 7C (2026-10-29)
+
+Phase 7C finishes Phase 7 and cuts over application detail. The registry has `spa: true` for every
+page route including `app`; only `/chat` and `/terminal` remain legacy documents.
+
+- **Image rail.** `ui/composables/useAppImage.ts` ports `assets/images.js`: one status read on entry
+  and on manual refresh, a 3 s status/log poll only while `building`, build/rollback/check through
+  the existing `/api/apps/:app/{build,image/rollback,image/check,image/logs}` handlers, and the
+  legacy state matrix (current, restart_required, rebuild_required, building, build_error,
+  not_ready, unknown, plus the default-image current/restart/unknown states). `AppImagePanel.vue`
+  renders the status pill, action label/disabled reason, drift/blocked/usable/rollback badges, base
+  and hash details, build logs, restart notice, rollback confirmation dialog, and busy/error states.
+  Props/chrome are refreshed after every successful action; errors become toasts with the server
+  message.
+- **App SSH.** `AppSshPanel.vue` keeps the read tables and adds the allowlist editor
+  (`GET /api/ssh/hosts` plus `GET/POST /api/projects/:id/apps/:app/ssh`), grant revoke
+  (`POST .../ssh/grants/:id/revoke`), approval approve/reject
+  (`POST /api/apps/:app/ssh/approvals/:id/decision`), and an on-demand audit read
+  (`GET /api/apps/:app/ssh/audit`). Every action is busy-disabled, emits one refresh, and surfaces
+  server errors as toasts. No private key, token, or secret is read or rendered.
+- **Delete.** `AppDeleteDialog.vue` reproduces the exact-name confirmation, the `deleteFiles`
+  checkbox, `return_to`, retry title/label, and the project-deletion retry variant from
+  `src/http/deletion.ts`. It reuses `POST /api/projects/:id/apps/:app/delete` (or the project delete
+  action when the project is marked), then navigates to the project page or `/projects` and raises
+  the legacy success/warning message. The E2E fake deletion validates the contract without deleting
+  fixture data.
+- **Cutover.** `src/shared/routes.ts` flips `app` to `spa: true`; `AppPage.vue` is the default
+  `/projects/:id/apps/:app` renderer. Project links inside the git workbench use `SmartLink`; chat,
+  terminal, settings, skills, and IDE remain plain full-document links. The SPA document loads only
+  `app.js`; the legacy rollback page still loads `git.js`, `images.js`, and `ssh.js`. The temporary
+  `app-preview` webServer/project on 4313 was retired; app E2E now runs against the default `spa`
+  server on 4310, and the fixture prepares image/SSH state on beta/gamma without touching the alpha
+  rows used by the SSH console spec.
+- **Tests.** New `AppImagePanel` (15), `AppSshPanel` (7), and `AppDeleteDialog` (6) component tests
+  cover the state matrix, busy/disabled reasons, logs, exact-name confirmation, all SSH mutations,
+  error toasts, no `<style>`, and no key/script text. `AppPage` tests grew to 40 with image
+  build/rollback/check/busy/error and delete retry coverage. `spa-app.spec.ts` adds custom-image
+  build/poll/log/rollback, default check, stale drift, SSH grant/revoke/approve/reject/audit, and
+  exact-name delete flows on the default SPA server; the legacy `app.spec.ts` still runs on the
+  legacy and empty-allowlist servers and `?legacy=1` keeps the island-script smoke.
+- **Verification.** See the journal 0038 Phase 7C entry for the exact gate output. Visual geometry
+  was checked at 390/768/1440 in dark and light with zero document/page horizontal overflow.
+- **Not done.** No transfer budget was assigned for application detail; `/projects` remains the S16
+  route. Chat/terminal migration and Phase 8 cleanup are out of scope; Gate D1 still owns that
+  decision.
 
 ### Acceptance criteria
 

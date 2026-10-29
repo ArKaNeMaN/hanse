@@ -13,7 +13,11 @@ import { CoordinatorService } from "../../src/coordinator/service.js";
 import { GitService } from "../../src/git/service.js";
 import type { HttpDeps } from "../../src/http/handler.js";
 import { createHttpServer } from "../../src/http/server.js";
-import type { ImageService, ImageStateView } from "../../src/images/service.js";
+import {
+  type ImageService,
+  ImageServiceError,
+  type ImageStateView,
+} from "../../src/images/service.js";
 import type { InstanceManager } from "../../src/opencode/manager.js";
 import { seed } from "./seed.js";
 
@@ -159,6 +163,10 @@ const manager = {
       : { pending: false, reasons: [] },
   profileWarnings: () => [],
   probeStatus: async () => false,
+  rollbackImage: async (_app: unknown, rollback: () => Promise<unknown>) => ({
+    result: await rollback(),
+    restarted: false,
+  }),
   isRestarting: () => false,
   preflightRestart: async () => true,
   beginRestart: () => {
@@ -185,49 +193,207 @@ const git = new Proxy(new GitService({ workspaceRoot: fixture.workspaceRoot }), 
   },
 }) as unknown as GitService;
 
-function imageView(appId: string): ImageStateView {
-  const row = fixture.db.prepare("SELECT app_key AS appKey FROM apps WHERE id = ?").get(appId) as
-    | { appKey: string }
-    | undefined;
+interface ImageRow {
+  appKey: string;
+  buildConfigured: number;
+  imageStatus: string;
+  imageRef: string | null;
+  imageHash: string | null;
+  imageBuiltAt: string | null;
+  imageError: string | null;
+  imageBaseRef: string | null;
+  imageBaseKind: string | null;
+  imageBaseDigest: string | null;
+  imageHashVersion: number;
+  imageRollbackRef: string | null;
+  imageRollbackBuiltAt: string | null;
+}
+
+function imageRow(appId: string): ImageRow {
+  const row = fixture.db
+    .prepare(
+      `SELECT app_key AS appKey, build_configured AS buildConfigured,
+         image_status AS imageStatus, image_ref AS imageRef, image_hash AS imageHash,
+         image_built_at AS imageBuiltAt, image_error AS imageError,
+         image_base_ref AS imageBaseRef, image_base_kind AS imageBaseKind,
+         image_base_digest AS imageBaseDigest, image_hash_version AS imageHashVersion,
+         (SELECT v.image_ref FROM app_image_versions v
+           WHERE v.app_id = apps.id AND apps.image_ref IS NOT NULL
+             AND v.image_ref <> apps.image_ref
+           ORDER BY v.created_at DESC, v.id DESC LIMIT 1) AS imageRollbackRef,
+         (SELECT v.built_at FROM app_image_versions v
+           WHERE v.app_id = apps.id AND apps.image_ref IS NOT NULL
+             AND v.image_ref <> apps.image_ref
+           ORDER BY v.created_at DESC, v.id DESC LIMIT 1) AS imageRollbackBuiltAt
+       FROM apps WHERE id = ?`,
+    )
+    .get(appId) as ImageRow | undefined;
+  if (row === undefined) throw new ImageServiceError(404, "app not found", "not_found");
+  return row;
+}
+
+function imageState(row: ImageRow, buildActive: boolean): ImageStateView["state"] {
+  if (!row.buildConfigured) return "current";
+  if (buildActive) return "building";
+  if (row.imageStatus === "error") return "build_error";
+  if (row.imageRef === null) return "not_ready";
+  if (row.imageStatus === "stale") return "rebuild_required";
+  return "current";
+}
+
+function imageView(appId: string, buildActive = false): ImageStateView {
+  const row = imageRow(appId);
+  const usable =
+    row.buildConfigured && row.imageRef !== null && row.imageStatus !== "error"
+      ? row.imageRef
+      : null;
+  const state = imageState(row, buildActive);
   return {
     appId,
-    appKey: row?.appKey ?? "",
-    status: "ready",
-    imageRef: null,
-    imageId: null,
-    buildId: null,
-    hash: null,
-    currentHash: null,
-    baseDigest: null,
-    builtAt: null,
-    error: null,
+    appKey: row.appKey,
+    status: row.imageStatus as ImageStateView["status"],
+    imageRef: row.imageRef,
+    imageId: row.imageRef === null ? null : `sha256:${row.appKey}-image`,
+    buildId: buildActive ? `e2e-build-${appId}` : null,
+    hash: row.imageHash,
+    currentHash: row.imageHash,
+    baseDigest: row.imageBaseDigest,
+    builtAt: row.imageBuiltAt,
+    error: row.imageError,
     updatedAt: null,
-    previousImageRef: null,
-    previousImageBuiltAt: null,
-    runnerAvailable: false,
-    buildConfigured: false,
-    state: "current",
-    running: false,
-    usableImageRef: null,
-    targetImageId: null,
-    appliedImageId: null,
-    hashVersion: null,
-    currentBaseDigest: null,
-    baseKind: "default",
-    baseRef: null,
-    baseDrift: false,
-    hashDrift: false,
-    blocked: false,
-    selectedImage: "unknown",
+    previousImageRef: row.imageRollbackRef,
+    previousImageBuiltAt: row.imageRollbackBuiltAt,
+    runnerAvailable: true,
+    buildConfigured: row.buildConfigured === 1,
+    state,
+    running: row.appKey === "alpha",
+    usableImageRef: usable,
+    targetImageId: row.imageRef === null ? null : `sha256:${row.appKey}-image`,
+    appliedImageId: row.imageRef === null ? null : `sha256:${row.appKey}-image`,
+    hashVersion: row.imageHashVersion,
+    currentBaseDigest: row.imageBaseDigest,
+    baseKind: (row.imageBaseKind ?? "unknown") as ImageStateView["baseKind"],
+    baseRef: row.imageBaseRef,
+    baseDrift: row.imageStatus === "stale",
+    hashDrift: row.imageStatus === "stale",
+    blocked: row.buildConfigured === 1 && usable === null && row.imageRef === null,
+    selectedImage: row.imageRef === null ? "missing" : "present",
     imageBuildId: null,
     latestBuildImageId: null,
   };
 }
 
-/** No image runner in the fixture; the page only needs a stable read view. */
+const buildStarted = new Map<string, number>();
+const buildLogs = new Map<string, string>();
+const BUILD_MS = 3_500;
+
+function insertImageVersion(appId: string, ref: string | null, builtAt: string | null): void {
+  if (ref === null) return;
+  fixture.db
+    .prepare(
+      `INSERT OR IGNORE INTO app_image_versions
+         (app_id, image_ref, image_id, built_at, created_at, hash_version)
+       VALUES (?, ?, ?, ?, ?, 2)`,
+    )
+    .run(appId, ref, `sha256:${ref}`, builtAt, new Date().toISOString());
+}
+
+function updateImage(appId: string, fields: Record<string, string | number | null>): void {
+  const keys = Object.keys(fields);
+  const assignments = keys.map((key) => `${key} = ?`).join(", ");
+  fixture.db
+    .prepare(`UPDATE apps SET ${assignments} WHERE id = ?`)
+    .run(...keys.map((key) => fields[key] ?? null), appId);
+}
+
+/** Stateful deterministic image service: build, poll, rollback, check, and logs for E2E. */
 const images = {
-  status: async (appId: string) => imageView(appId),
-  logs: async () => ({ logs: "" }),
+  status: async (appId: string) => {
+    const started = buildStarted.get(appId);
+    if (started !== undefined) {
+      if (Date.now() - started < BUILD_MS) return imageView(appId, true);
+      buildStarted.delete(appId);
+      const row = imageRow(appId);
+      const builtAt = new Date().toISOString();
+      insertImageVersion(appId, row.imageRef, row.imageBuiltAt);
+      insertImageVersion(appId, `hanse-${row.appKey}:rebuilt`, builtAt);
+      updateImage(appId, {
+        image_status: "ready",
+        image_ref: `hanse-${row.appKey}:rebuilt`,
+        image_hash: `sha256:${row.appKey}-rebuilt`,
+        image_built_at: builtAt,
+        image_error: null,
+      });
+      buildLogs.set(appId, "Build complete.\n");
+    }
+    return imageView(appId);
+  },
+  build: async (appId: string, appKey?: string) => {
+    const row = imageRow(appId);
+    insertImageVersion(appId, row.imageRef, row.imageBuiltAt);
+    updateImage(appId, {
+      image_status: "building",
+      image_error: null,
+    });
+    buildStarted.set(appId, Date.now());
+    buildLogs.set(appId, "Building fixture image...\nStep 1/2: context loaded\n");
+    return {
+      appId,
+      appKey: appKey ?? row.appKey,
+      status: "building",
+      imageRef: row.imageRef,
+      buildId: `e2e-build-${appId}`,
+    };
+  },
+  rollback: async (appId: string, appKey?: string) => {
+    const row = imageRow(appId);
+    if (row.imageRollbackRef === null) {
+      throw new ImageServiceError(409, "no previous image to roll back to", "no_rollback");
+    }
+    const previous = row.imageRollbackRef;
+    insertImageVersion(appId, row.imageRef, row.imageBuiltAt);
+    updateImage(appId, {
+      image_status: "ready",
+      image_ref: previous,
+      image_hash: `sha256:${row.appKey}-previous`,
+      image_built_at: row.imageRollbackBuiltAt,
+      image_error: null,
+    });
+    return {
+      appId,
+      appKey: appKey ?? row.appKey,
+      status: "ready",
+      imageRef: previous,
+      previousImageRef: row.imageRef,
+      builtAt: row.imageRollbackBuiltAt,
+    };
+  },
+  check: async (appId: string, appKey?: string) => {
+    const row = imageRow(appId);
+    return {
+      appId,
+      appKey: appKey ?? row.appKey,
+      status: row.imageStatus,
+      imageRef: row.imageRef,
+      imageHash: row.imageHash,
+      buildConfigured: row.buildConfigured === 1,
+      state: imageState(row, false),
+      notice: row.buildConfigured ? "Image is up to date." : "Default image is current.",
+      tone: "success" as const,
+    };
+  },
+  logs: async (appId: string) => {
+    const row = imageRow(appId);
+    return {
+      appId,
+      buildId: `e2e-build-${appId}`,
+      status: row.imageStatus,
+      logs: buildLogs.get(appId) ?? "No build logs yet.",
+      runnerAvailable: true,
+    };
+  },
+  usage: async () => ({ totalBytes: 0, images: [] }),
+  gc: async () => ({ removed: 0, reclaimedBytes: 0 }),
 } as unknown as ImageService;
 
 /**

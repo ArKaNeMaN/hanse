@@ -270,6 +270,32 @@ export function seed(options: SeedOptions = {}): SeedResult {
   insertInstance.run(`${PROJECT_ONE}:beta`, `${PROJECT_ONE}:beta`, "stopped", "stopped", now);
   insertInstance.run(`${PROJECT_TWO}:gamma`, `${PROJECT_TWO}:gamma`, "stopped", "stopped", now);
 
+  // Beta is the deterministic custom-image fixture: a failed build with a previous image to roll
+  // back to, which the app E2E drives forward through build/rollback. Gamma starts out of date.
+  db.prepare(
+    `UPDATE apps SET build_configured = 1, image_status = 'error', image_ref = 'hanse-beta:broken',
+       image_hash = 'sha256:beta-broken', image_built_at = '2026-10-20T10:00:00.000Z',
+       image_error = 'fixture build failed', image_base_kind = 'default',
+       image_base_ref = 'hanse-agent-default:latest', image_base_digest = 'sha256:base-v1',
+       image_hash_version = 2
+     WHERE id = ?`,
+  ).run(`${PROJECT_ONE}:beta`);
+  db.prepare(
+    `INSERT INTO app_image_versions
+       (app_id, image_ref, image_id, base_digest, built_at, created_at, base_ref, base_kind,
+        hash_version)
+     VALUES (?, 'hanse-beta:previous', 'sha256:beta-previous', 'sha256:base-v1',
+        '2026-10-19T10:00:00.000Z', '2026-10-19T10:00:00.000Z',
+        'hanse-agent-default:latest', 'default', 2)`,
+  ).run(`${PROJECT_ONE}:beta`);
+  db.prepare(
+    `UPDATE apps SET build_configured = 1, image_status = 'stale', image_ref = 'hanse-gamma:latest',
+       image_hash = 'sha256:gamma', image_built_at = '2026-10-20T10:00:00.000Z',
+       image_base_kind = 'base', image_base_ref = 'hanse-agent-base:latest',
+       image_base_digest = 'sha256:old-base', image_hash_version = 2
+     WHERE id = ?`,
+  ).run(`${PROJECT_TWO}:gamma`);
+
   // Reserved master project: powers the read-only master variant. It is excluded from operator
   // aggregates, so its presence does not change project/application counts.
   mkdirSync(path.join(masterProject.rootPath, MASTER_DIR_NAME), { recursive: true });
@@ -380,6 +406,17 @@ export function seed(options: SeedOptions = {}): SeedResult {
     E2E_OPERATOR,
   );
   ssh.replaceAppHosts(`${PROJECT_ONE}:alpha`, [host.id], E2E_OPERATOR);
+  ssh.createHost(
+    {
+      name: "app-host",
+      address: "203.0.113.11",
+      username: "tester",
+      privateKey: PRIVATE_KEY,
+      requireApproval: false,
+    },
+    E2E_OPERATOR,
+  );
+  ssh.replaceAppHosts(`${PROJECT_ONE}:beta`, [host.id], E2E_OPERATOR);
 
   const approvalId = "e2e-ssh-approval";
   const requestedAt = new Date();
@@ -419,6 +456,43 @@ export function seed(options: SeedOptions = {}): SeedResult {
       "2099-01-01T00:00:00.000Z",
     );
   }
+
+  // Application-page SSH actions use beta so the global SSH console spec keeps alpha's rows.
+  const betaGrantApproval = "e2e-ssh-app-grant";
+  pendingApproval.run(
+    betaGrantApproval,
+    `${PROJECT_ONE}:beta`,
+    host.id,
+    "e2e-ssh-app-grant-hash",
+    "echo grant app e2e",
+    "echo grant app e2e".length,
+    requestedAt.toISOString(),
+    "2099-01-01T00:00:00.000Z",
+  );
+  ssh.decideApproval(betaGrantApproval, `${PROJECT_ONE}:beta`, "approve", E2E_OPERATOR);
+  for (const [id, preview] of [
+    ["e2e-ssh-app-approve", "echo approve app e2e"],
+    ["e2e-ssh-app-reject", "echo reject app e2e"],
+  ] as const) {
+    pendingApproval.run(
+      id,
+      `${PROJECT_ONE}:beta`,
+      host.id,
+      `e2e-${id}-hash`,
+      preview,
+      preview.length,
+      requestedAt.toISOString(),
+      "2099-01-01T00:00:00.000Z",
+    );
+  }
+  db.prepare(
+    `INSERT INTO ssh_audit
+       (app_id, project_id, app_key, host_id, host_name, address, username, action,
+        command_hash, command_preview, started_at, finished_at, exit_code, truncated)
+     VALUES (?, ?, 'beta', ?, 'test-host', '203.0.113.10', 'tester', 'exec',
+        'e2e-app-audit-hash', 'echo app audit e2e', '2026-10-28T09:00:00.000Z',
+        '2026-10-28T09:00:01.000Z', 0, 0)`,
+  ).run(`${PROJECT_ONE}:beta`, PROJECT_ONE, host.id);
 
   const projectOne = new CoordinatorService(db, PROJECT_ONE);
   const { handoffId } = projectOne.requestSiblingChange({

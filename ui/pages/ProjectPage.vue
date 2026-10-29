@@ -11,6 +11,7 @@ import NewHandoffDialog from "../components/NewHandoffDialog.vue";
 import ProjectDeleteDialog from "../components/ProjectDeleteDialog.vue";
 import ProjectPolicyCard from "../components/ProjectPolicyCard.vue";
 import RouteText from "../components/RouteText.vue";
+import SmartLink from "../components/SmartLink.vue";
 import StatusPill from "../components/StatusPill.vue";
 import { applyChrome } from "../composables/useChrome.js";
 import { absoluteTime, timeAgo } from "../format.js";
@@ -326,7 +327,7 @@ async function refreshProject(): Promise<void> {
                       <td data-label="Application">
                         <div class="cluster">
                           <strong class="table__primary">
-                            <a :href="app.href">{{ app.appKey }}</a>
+                            <SmartLink :to="app.href">{{ app.appKey }}</SmartLink>
                           </strong>
                           <span v-if="app.deleting" class="status" data-state="failed">
                             <AppIcon name="alert-triangle" />Deletion incomplete
@@ -368,14 +369,14 @@ async function refreshProject(): Promise<void> {
                           >
                             <AppIcon name="external" />
                           </a>
-                          <a
+                          <SmartLink
                             class="btn btn-ghost btn-icon btn-sm"
-                            :href="app.href"
+                            :to="app.href"
                             :aria-label="`Open ${app.appKey} application`"
                             title="Open application"
                           >
                             <AppIcon name="chevron-right" />
-                          </a>
+                          </SmartLink>
                         </div>
                       </td>
                     </tr>

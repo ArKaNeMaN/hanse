@@ -49,4 +49,9 @@
   `/ssh`, and settings are SPA); Phase 6B complete (2026-10-29; the five skills routes cut over,
   Phase 6 complete - skills are SPA); Phase 7A complete (2026-10-29; the read-only
   application-detail SPA shell and restart are previewable with `HANSE_UI_SPA_ROUTES=app`, while the
-  registry keeps `app` legacy; 7B/7C pending).
+  registry keeps `app` legacy); Phase 7B complete (2026-10-29; the application git workbench
+  status/refresh, fetch/update/push/commit-all/branch-switch flow, and remotes are ported while
+  `app` stays legacy); Phase 7C complete (2026-10-29; image build/rollback/check/logs/poll,
+  app-scoped SSH allowlist/grant/revoke/approve/reject/audit, and exact-name deletion are ported;
+  `app` is `spa: true`, so every page route except chat and terminal is SPA). Gate D1 (chat/
+  terminal decision) and Phase 8 (cleanup) remain.

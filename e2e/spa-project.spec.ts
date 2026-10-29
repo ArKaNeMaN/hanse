@@ -96,24 +96,24 @@ test("the legacy and empty-allowlist servers still serve the project page", asyn
   expectNoPageErrors(errors);
 });
 
-test("an application link crosses the SPA boundary with a full document load", async ({ page }) => {
+test("an application link navigates client-side after the cutover", async ({ page }) => {
   const errors = collectPageErrors(page);
   await signIn(page, `/projects/${PROJECT_ONE}`);
 
-  const responsePromise = page.waitForResponse(
-    (response) =>
-      new URL(response.url()).pathname === `/projects/${PROJECT_ONE}/apps/alpha` &&
-      response.status() === 200,
-  );
+  let documentLoads = 0;
+  page.on("request", (request) => {
+    if (request.resourceType() === "document") documentLoads += 1;
+  });
+
   await page
     .locator('section[aria-labelledby="apps-title"]')
     .getByRole("link", { name: "alpha", exact: true })
     .click();
-  await responsePromise;
 
   await expect(page).toHaveURL(new RegExp(`/projects/${PROJECT_ONE}/apps/alpha$`));
-  await expect(page.locator("#hanse-boot")).toHaveCount(0);
+  await expect(page.locator("#hanse-boot")).toHaveCount(1);
   await expect(page.getByRole("heading", { name: "alpha", exact: true })).toBeVisible();
+  expect(documentLoads).toBe(0);
 
   await settle(page);
   expectNoPageErrors(errors);

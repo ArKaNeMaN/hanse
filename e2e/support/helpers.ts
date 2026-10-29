@@ -46,13 +46,13 @@ function runGit(cwd: string, args: readonly string[], allowFailure = false): str
   }
 }
 
-export function fixtureRepos(port = 4313): E2EFixtureRepos {
+export function fixtureRepos(port = 4310): E2EFixtureRepos {
   return JSON.parse(
     readFileSync(path.join(tmpdir(), `hanse-e2e-repos-${port}.json`), "utf8"),
   ) as E2EFixtureRepos;
 }
 
-export function appRepo(projectId: string, appKey: string, port = 4313): string {
+export function appRepo(projectId: string, appKey: string, port = 4310): string {
   const repo = fixtureRepos(port).apps[`${projectId}:${appKey}`];
   if (repo === undefined) {
     throw new Error(`No fixture repository for ${projectId}:${appKey}`);
@@ -119,7 +119,7 @@ export function prepareGitState(
   projectId: string,
   appKey: string,
   scenario: GitScenario,
-  port = 4313,
+  port = 4310,
 ): void {
   const repo = appRepo(projectId, appKey, port);
   resetRepo(repo);

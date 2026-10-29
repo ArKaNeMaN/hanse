@@ -146,7 +146,7 @@ const ROUTE_DEFINITIONS: readonly RouteDefinition[] = [
     path: "/projects/:id/apps/:app",
     nav: "project",
     label: "Application",
-    spa: false,
+    spa: true,
   },
   {
     id: "project",

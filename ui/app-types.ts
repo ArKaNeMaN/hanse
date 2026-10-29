@@ -203,6 +203,28 @@ export interface AppSshProps {
   readonly audit: readonly AppSshAuditProps[];
 }
 
+/** One host in `GET /api/projects/:id/apps/:app/ssh`; never contains key material. */
+export interface AppSshHostProps {
+  readonly id: string;
+  readonly name: string;
+  readonly address: string;
+  readonly port: number;
+  readonly username: string;
+  readonly requireApproval: boolean;
+  readonly allowed: boolean;
+  readonly grant: { readonly id: string } | null;
+  readonly pendingApprovals: number;
+}
+
+export interface AppSshAllowlistResponse {
+  readonly hosts: readonly AppSshHostProps[];
+  readonly grants: readonly AppSshGrantProps[];
+}
+
+export interface AppSshAuditResponse {
+  readonly audit: readonly AppSshAuditProps[];
+}
+
 export interface AppLinksProps {
   readonly chat: string;
   readonly terminal: string;
@@ -248,6 +270,13 @@ export interface AppHeaderProps {
   readonly description: string;
   readonly meta: readonly string[];
   readonly showChatTerminal: boolean;
+}
+
+export interface AppDeleteResult {
+  readonly deleted: boolean;
+  readonly kind: "project" | "app";
+  readonly projectId: string;
+  readonly warnings: readonly string[];
 }
 
 export interface AppProps {

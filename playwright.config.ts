@@ -65,6 +65,8 @@ export default defineConfig({
         "**/spa-settings.spec.ts",
         "**/skills.spec.ts",
         "**/spa-skills.spec.ts",
+        "**/app.spec.ts",
+        "**/spa-app.spec.ts",
       ],
       use: { baseURL: "http://127.0.0.1:4310" },
     },
@@ -84,11 +86,6 @@ export default defineConfig({
         "**/skills.spec.ts",
       ],
       use: { baseURL: "http://127.0.0.1:4312" },
-    },
-    {
-      name: "app-preview",
-      testMatch: ["**/spa-app.spec.ts"],
-      use: { baseURL: "http://127.0.0.1:4313" },
     },
   ],
   webServer: [
@@ -114,16 +111,6 @@ export default defineConfig({
       env: fixtureEnv(4312, "spa", {
         HANSE_UI_LEGACY: "",
         HANSE_UI_SPA_ROUTES: "",
-      }),
-    },
-    {
-      command: "node --import tsx e2e/support/server.ts",
-      url: "http://127.0.0.1:4313/healthz",
-      reuseExistingServer,
-      timeout: 60_000,
-      env: fixtureEnv(4313, "spa", {
-        HANSE_UI_LEGACY: "",
-        HANSE_UI_SPA_ROUTES: "app",
       }),
     },
   ],

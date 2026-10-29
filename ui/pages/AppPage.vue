@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { useQuery } from "@tanstack/vue-query";
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
-import { useRoute } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import { ApiError, apiMutation, apiQuery } from "../api.js";
-import type { AppImageLive, AppProps, AppResponse, AppRuntimeLive } from "../app-types.js";
+import type { AppDeleteResult, AppProps, AppResponse, AppRuntimeLive } from "../app-types.js";
 import type { BootPayload } from "../boot.js";
+import AppDeleteDialog from "../components/AppDeleteDialog.vue";
 import AppGitPanel from "../components/AppGitPanel.vue";
 import AppGitRemotes from "../components/AppGitRemotes.vue";
 import AppIcon from "../components/AppIcon.vue";
@@ -13,16 +14,17 @@ import AppRestartDialog from "../components/AppRestartDialog.vue";
 import AppSshPanel from "../components/AppSshPanel.vue";
 import AppStateStrip from "../components/AppStateStrip.vue";
 import { useAppGit } from "../composables/useAppGit.js";
+import { useAppImage } from "../composables/useAppImage.js";
 import { applyChrome } from "../composables/useChrome.js";
 import { absoluteTime, timeAgo } from "../format.js";
 import type { RuntimeState } from "../status.js";
 import { useToastStore } from "../stores/toasts.js";
 
 const RUNTIME_POLL_MS = 10_000;
-const IMAGE_POLL_MS = 3_000;
 
 const props = defineProps<{ boot: BootPayload }>();
 const route = useRoute();
+const router = useRouter();
 const toasts = useToastStore();
 
 function queryString(value: unknown): string {
@@ -126,14 +128,13 @@ function isRuntimeState(value: unknown): value is RuntimeState {
   return value === "starting" || value === "running" || value === "stopped" || value === "error";
 }
 
-// Runtime and image are polled. The page shows boot props immediately; these reads keep the strip
-// and the rail truthful after a restart or a build started in another tab.
+// Runtime is polled; image status polls only while a build is active (inside useAppImage). The page
+// shows boot props immediately; these reads keep the strip and the rail truthful after a restart or
+// a build started in another tab.
 const runtimeState = ref<RuntimeState>("stopped");
+const runtimeImageRef = ref<string | null>(null);
 const runtimeError = ref<string | null>(null);
-const imageLive = ref<AppImageLive | null>(null);
-const imageLiveError = ref<string | null>(null);
 let runtimeTimer: ReturnType<typeof setInterval> | undefined;
-let imageTimer: ReturnType<typeof setTimeout> | undefined;
 
 watch(
   () => view.value?.runtime.state,
@@ -155,6 +156,8 @@ async function refreshRuntime(): Promise<void> {
     if (isRuntimeState(data.state)) {
       runtimeState.value = data.state;
     }
+    runtimeImageRef.value =
+      typeof data.imageRef === "string" && data.imageRef.length > 0 ? data.imageRef : null;
     runtimeError.value = null;
   } catch (error) {
     // Runtime is secondary here; keep the last known state and surface the read failure.
@@ -165,58 +168,30 @@ async function refreshRuntime(): Promise<void> {
   }
 }
 
-function stopImagePoll(): void {
-  if (imageTimer !== undefined) {
-    clearTimeout(imageTimer);
-    imageTimer = undefined;
-  }
-}
-
-function scheduleImagePoll(): void {
-  if (imageTimer !== undefined) return;
-  imageTimer = setTimeout(() => {
-    imageTimer = undefined;
-    void refreshImage();
-  }, IMAGE_POLL_MS);
-}
-
-async function refreshImage(): Promise<void> {
-  const href = view.value?.image.hrefs.image ?? "";
-  if (href.length === 0) return;
-  try {
-    const data = await apiQuery<AppImageLive>(href);
-    imageLive.value = data;
-    imageLiveError.value = null;
-    if (data.status === "building") {
-      scheduleImagePoll();
-    } else {
-      stopImagePoll();
-    }
-  } catch (error) {
-    imageLiveError.value =
-      error instanceof ApiError || error instanceof Error
-        ? error.message
-        : "Image status is unavailable.";
-    if (view.value?.image.building === true) {
-      scheduleImagePoll();
-    } else {
-      stopImagePoll();
-    }
-  }
-}
+const {
+  live: imageLive,
+  liveError: imageLiveError,
+  logs: imageLogs,
+  logsError: imageLogsError,
+  logsOpen: imageLogsOpen,
+  busy: imageBusy,
+  refreshStatus: refreshImage,
+  refreshLogs: refreshImageLogs,
+  setLogsOpen: setImageLogsOpen,
+  build: buildImage,
+  rollback: rollbackImage,
+  check: checkImage,
+} = useAppImage(
+  computed(() => view.value?.image),
+  {
+    onChanged: () => refreshApp(),
+  },
+);
 
 watch(
   runtimeHref,
   (href) => {
     if (href.length > 0) void refreshRuntime();
-  },
-  { immediate: true },
-);
-
-watch(
-  () => view.value?.image.hrefs.image,
-  (href) => {
-    if (href !== undefined && href.length > 0) void refreshImage();
   },
   { immediate: true },
 );
@@ -231,7 +206,6 @@ onUnmounted(() => {
   if (runtimeTimer !== undefined) {
     clearInterval(runtimeTimer);
   }
-  stopImagePoll();
 });
 
 const canRestart = computed(() => {
@@ -253,6 +227,23 @@ async function refreshApp(): Promise<void> {
   }
   void refreshRuntime();
   void refreshImage();
+}
+
+const appDeleteDialog = ref<InstanceType<typeof AppDeleteDialog> | null>(null);
+
+function onDeleted(result: AppDeleteResult): void {
+  const warningCount = result.warnings.length;
+  const base = result.kind === "project" ? "Project deleted." : "Application deleted.";
+  const message =
+    warningCount === 0
+      ? base
+      : `${base} Completed with ${warningCount} warning${warningCount === 1 ? "" : "s"}.`;
+  toasts.push(message, warningCount === 0 ? "success" : "error");
+  if (result.kind === "project") {
+    void router.push("/projects");
+  } else {
+    void router.push(`/projects/${encodeURIComponent(result.projectId)}`);
+  }
 }
 
 const restartDialog = ref<InstanceType<typeof AppRestartDialog> | null>(null);
@@ -486,7 +477,24 @@ async function restartAgent(): Promise<void> {
             @switch="requestGitSwitch"
           />
           <aside class="rail-stack" aria-label="Application details">
-            <AppImagePanel :image="view.image" :live="imageLive" :live-error="imageLiveError" />
+            <AppImagePanel
+              :logs-open="imageLogsOpen"
+              :image="view.image"
+              :live="imageLive"
+              :live-error="imageLiveError"
+              :logs="imageLogs"
+              :logs-error="imageLogsError"
+              :busy-action="imageBusy"
+              :runtime-active="runtimeState === 'running' || runtimeState === 'starting'"
+              :runtime-image-ref="runtimeImageRef"
+              :ide-href="view.links.ide"
+              @build="buildImage"
+              @rollback="rollbackImage"
+              @check="checkImage"
+              @refresh="refreshImage"
+              @refresh-logs="refreshImageLogs"
+              @update:logs-open="setImageLogsOpen"
+            />
             <AppGitRemotes
               :status="gitStatus"
               :failure="gitFailure !== null"
@@ -527,7 +535,42 @@ async function restartAgent(): Promise<void> {
         </div>
       </div>
 
-      <AppSshPanel :ssh="view.ssh" />
+      <AppSshPanel
+        :ssh="view.ssh"
+        :project-id="view.identity.projectId"
+        :app-key="view.identity.appKey"
+        :disabled="deletionPending"
+        @changed="refreshApp"
+      />
+
+      <section class="card section" id="danger-zone" aria-labelledby="danger-zone-title">
+        <div class="card__head">
+          <h2 class="card__title" id="danger-zone-title">Danger zone</h2>
+          <span v-if="view.delete.statusLabel !== null" class="badge">
+            {{ view.delete.statusLabel }}
+          </span>
+          <span v-else class="badge">Destructive</span>
+        </div>
+        <div class="card__body stack--tight">
+          <p class="small">
+            Deleting this application removes its sessions, handoffs, credentials, and managed
+            images. Source files are kept unless you choose to delete them too.
+          </p>
+        </div>
+        <div class="card__foot">
+          <button
+            class="btn btn-danger"
+            id="app-delete"
+            type="button"
+            @click="appDeleteDialog?.open()"
+          >
+            <AppIcon name="trash" />
+            {{ view.delete.pending ? "Retry deletion" : "Delete application" }}
+          </button>
+        </div>
+      </section>
+
+      <AppDeleteDialog ref="appDeleteDialog" :deletion="view.delete" @deleted="onDeleted" />
 
       <AppRestartDialog
         v-if="canRestart"

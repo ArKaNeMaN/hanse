@@ -17,6 +17,7 @@ import {
 } from "../git-types.js";
 import type { PillSpec } from "../status.js";
 import AppIcon from "./AppIcon.vue";
+import SmartLink from "./SmartLink.vue";
 import StatusPill from "./StatusPill.vue";
 
 const props = defineProps<{
@@ -280,9 +281,9 @@ function submitSwitch(): void {
           <div>
             <h3 class="error-state__title">{{ failure.title }}</h3>
             <p class="error-state__body">{{ failure.message }}</p>
-            <a v-if="failure.outside" class="btn btn-secondary btn-sm" :href="projectHref">
+            <SmartLink v-if="failure.outside" class="btn btn-secondary btn-sm" :to="projectHref">
               <AppIcon name="folder" />Open project
-            </a>
+            </SmartLink>
             <button v-else class="btn btn-secondary btn-sm" type="button" @click="refresh">
               Retry
             </button>
@@ -305,13 +306,13 @@ function submitSwitch(): void {
           >
             <AppIcon name="external" />Open IDE
           </a>
-          <a
+          <SmartLink
             v-else-if="repositoryState.action === 'project'"
             class="btn btn-secondary btn-sm"
-            :href="projectHref"
+            :to="projectHref"
           >
             <AppIcon name="folder" />Open project
-          </a>
+          </SmartLink>
         </div>
 
         <p v-else-if="!summary.loaded" class="hint" id="git-unavailable">

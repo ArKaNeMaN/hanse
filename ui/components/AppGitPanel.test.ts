@@ -1,5 +1,6 @@
 import { mount } from "@vue/test-utils";
 import { describe, expect, it, vi } from "vitest";
+import { createMemoryHistory, createRouter } from "vue-router";
 import type { AppGitSummaryProps } from "../app-types.js";
 import type { GitLoadFailure, GitNotice } from "../composables/useAppGit.js";
 import { actionsHint, type GitStatus, gitControlRules, summaryFromStatus } from "../git-types.js";
@@ -56,7 +57,15 @@ function mountPanel(
   const live = options.statusOverride === undefined ? value : options.statusOverride;
   const display = options.summaryOverride ?? (live === null ? summary(status()) : summary(live));
   const rules = gitControlRules(live);
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes: [
+      { path: "/", component: { template: "<div />" } },
+      { path: "/projects/:id", component: { template: "<div />" } },
+    ],
+  });
   return mount(AppGitPanel, {
+    global: { plugins: [router] },
     props: {
       ...(options.onRefresh === undefined ? {} : { onRefresh: options.onRefresh }),
       ...(options.onAction === undefined ? {} : { onAction: options.onAction }),
