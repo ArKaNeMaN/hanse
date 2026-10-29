@@ -147,6 +147,9 @@ interface BootPayload {
   props: {
     counts?: Record<string, number>;
     project?: { id?: string; name?: string };
+    filter?: string;
+    query?: string;
+    rows?: readonly unknown[];
   };
   chrome: { title?: string; active?: string; activeProjectId?: string };
 }
@@ -237,7 +240,7 @@ describe("/api/ui auth and props", () => {
 
   it("applies the cookie-only auth envelope to every read endpoint", () => {
     const f = fixture();
-    for (const pathname of ["/api/ui/overview", "/api/ui/projects/p"]) {
+    for (const pathname of ["/api/ui/overview", "/api/ui/handoffs", "/api/ui/projects/p"]) {
       const anonymous = handleUiApi(f.deps, request(pathname, {}));
       expect(anonymous?.status, pathname).toBe(401);
       expect(anonymous?.headers?.["cache-control"], pathname).toBe("no-store");
@@ -325,6 +328,72 @@ describe("/api/ui auth and props", () => {
       sshPendingCount: 0,
     });
     expect(payload.chrome.activeProjectId).toBeUndefined();
+  });
+
+  it("returns handoff props plus chrome for a valid human cookie", () => {
+    const f = fixture();
+    const response = handleUiApi(
+      f.deps,
+      request("/api/ui/handoffs", cookie(f.humanToken), { filter: "waiting", q: "  demo  " }),
+    );
+    expect(response).toMatchObject({ status: 200 });
+    expect(response?.headers?.["cache-control"]).toBe("no-store");
+    const payload = JSON.parse(response?.body ?? "{}");
+    expect(payload.counts).toEqual({ all: 0, waiting: 0, active: 0, closed: 0, replies: 0 });
+    expect(payload.filter).toBe("waiting");
+    expect(payload.query).toBe("demo");
+    expect(payload.filters).toEqual([
+      expect.objectContaining({ value: "all", href: "/handoffs?q=demo", current: false }),
+      expect.objectContaining({
+        value: "waiting",
+        href: "/handoffs?filter=waiting&q=demo",
+        current: true,
+      }),
+      expect.objectContaining({ value: "active", current: false }),
+      expect.objectContaining({ value: "closed", current: false }),
+      expect.objectContaining({ value: "replies", current: false }),
+    ]);
+    expect(payload.search).toMatchObject({
+      action: "/handoffs",
+      hiddenFilter: "waiting",
+      query: "demo",
+      clearHref: "/handoffs?filter=waiting",
+    });
+    expect(payload.returnTo).toBe("/handoffs?filter=waiting");
+    expect(payload.rows).toEqual([]);
+    expect(payload.emptyState).toMatchObject({
+      title: "No handoffs yet",
+      actionLabel: "Open a project",
+      actionHref: "/projects",
+    });
+    expect(payload.chrome).toMatchObject({
+      title: "Handoffs",
+      active: "handoffs",
+      pendingCount: 0,
+      sshPendingCount: 0,
+    });
+  });
+
+  it("falls back to the all filter and 404s an unknown handoff endpoint", () => {
+    const f = fixture();
+    const response = handleUiApi(
+      f.deps,
+      request("/api/ui/handoffs", cookie(f.humanToken), { filter: "bogus" }),
+    );
+    expect(response).toMatchObject({ status: 200 });
+    const payload = JSON.parse(response?.body ?? "{}");
+    expect(payload.filter).toBe("all");
+    expect(payload.filters[0]).toMatchObject({ value: "all", current: true });
+
+    expect(
+      handleUiApi(f.deps, request("/api/ui/handoffs/extra", cookie(f.humanToken))),
+    ).toBeUndefined();
+    const throughHandler = handleRequest(f.deps, {
+      method: "GET",
+      path: "/api/ui/handoffs/extra",
+      headers: cookie(f.humanToken),
+    });
+    expect(throughHandler).toMatchObject({ status: 404 });
   });
 
   it("returns project props and scoped chrome for a valid human cookie", () => {
@@ -484,7 +553,7 @@ describe("/api/ui auth and props", () => {
       expect(chrome?.body, route.id).not.toContain(settingSecret);
     }
 
-    for (const pathname of ["/api/ui/overview", "/api/ui/projects/p"]) {
+    for (const pathname of ["/api/ui/overview", "/api/ui/handoffs", "/api/ui/projects/p"]) {
       const props = handleUiApi(f.deps, request(pathname, cookie(f.humanToken)));
       expect(props?.status, pathname).toBe(200);
       expect(props?.body, pathname).not.toContain(providerSecret);
@@ -627,6 +696,33 @@ describe("maybeServeSpa", () => {
       active: "project",
       activeProjectId: "p",
     });
+  });
+
+  it("boots handoff props for an allowlisted handoffs document", () => {
+    const f = fixture();
+    enable(f);
+    const response = maybeServeSpa(
+      f.deps,
+      request(
+        "/handoffs",
+        { ...cookie(f.humanToken), accept: "text/html" },
+        { filter: "waiting", q: "  demo  " },
+      ),
+    );
+    expect(response).toMatchObject({ status: 200 });
+    const payload = boot(response?.body ?? "");
+    expect(payload.route.id).toBe("handoffs");
+    expect(payload.props.filter).toBe("waiting");
+    expect(payload.props.query).toBe("demo");
+    expect(payload.props.counts).toEqual({
+      all: 0,
+      waiting: 0,
+      active: 0,
+      closed: 0,
+      replies: 0,
+    });
+    expect(payload.props.rows).toEqual([]);
+    expect(payload.chrome).toMatchObject({ title: "Handoffs", active: "handoffs" });
   });
 
   it("logs unknown allowlist ids and keeps them legacy", () => {

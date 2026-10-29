@@ -117,6 +117,48 @@ export function shortId(id: string): string {
   return id.slice(0, 8);
 }
 
+export function parseHandoffFilter(value: string | undefined): HandoffFilter {
+  return value === "waiting" || value === "active" || value === "closed" || value === "replies"
+    ? value
+    : "all";
+}
+
+export function filterHref(filter: HandoffFilter, q: string): string {
+  const params = new URLSearchParams();
+  if (filter !== "all") {
+    params.set("filter", filter);
+  }
+  if (q.length > 0) {
+    params.set("q", q);
+  }
+  const query = params.toString();
+  return query.length === 0 ? "/handoffs" : `/handoffs?${query}`;
+}
+
+export interface HandoffQuerySource {
+  readonly apps: ReadonlyMap<string, { readonly appKey: string; readonly projectName: string }>;
+}
+
+export function matchesQuery(
+  site: HandoffQuerySource,
+  handoff: Pick<Handoff, "id" | "summary" | "fromAppId" | "toAppId">,
+  needle: string,
+): boolean {
+  if (needle.length === 0) {
+    return true;
+  }
+  const from = appKeyFor(site, handoff.fromAppId).toLowerCase();
+  const to = appKeyFor(site, handoff.toAppId).toLowerCase();
+  const project = site.apps.get(handoff.fromAppId)?.projectName.toLowerCase() ?? "";
+  return (
+    handoff.id.toLowerCase().includes(needle) ||
+    handoff.summary.toLowerCase().includes(needle) ||
+    from.includes(needle) ||
+    to.includes(needle) ||
+    project.includes(needle)
+  );
+}
+
 export function reviewHref(handoff: Pick<Handoff, "id">, filter: HandoffFilter = "all"): string {
   const params = new URLSearchParams();
   if (filter !== "all") {

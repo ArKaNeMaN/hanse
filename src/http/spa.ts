@@ -18,6 +18,7 @@ import {
   type HttpResponse,
   safeDecode,
 } from "./handler.js";
+import { buildHandoffsProps } from "./props/handoffs.js";
 import { buildOverviewProps } from "./props/overview.js";
 import { buildProjectProps } from "./props/project.js";
 import { buildProjectsProps } from "./props/projects.js";
@@ -531,6 +532,9 @@ function pagePropsFor(site: SiteModel, match: PageMatch, request: HttpRequest): 
   if (match.id === "project") {
     return buildProjectProps(site, match.params.id ?? "") ?? null;
   }
+  if (match.id === "handoffs") {
+    return buildHandoffsProps(site, request.query?.filter, request.query?.q);
+  }
   return {};
 }
 
@@ -609,7 +613,12 @@ export function maybeServeSpa(deps: HttpDeps, request: HttpRequest): HttpRespons
   };
 }
 
-const UI_API_PATHS = new Set(["/api/ui/projects", "/api/ui/chrome", "/api/ui/overview"]);
+const UI_API_PATHS = new Set([
+  "/api/ui/projects",
+  "/api/ui/chrome",
+  "/api/ui/overview",
+  "/api/ui/handoffs",
+]);
 const UI_PROJECT_PATH = /^\/api\/ui\/projects\/([^/]+)$/;
 
 function uiProjectId(pathname: string): string | undefined {
@@ -672,6 +681,18 @@ export function handleUiApi(deps: HttpDeps, request: HttpRequest): HttpResponse 
     return jsonResponse(
       200,
       { ...buildOverviewProps(site), chrome: chromeFor(site, match).chrome },
+      { "cache-control": "no-store" },
+    );
+  }
+
+  if (request.path === "/api/ui/handoffs") {
+    const match: PageMatch = { id: "handoffs", params: {} };
+    return jsonResponse(
+      200,
+      {
+        ...buildHandoffsProps(site, request.query?.filter, request.query?.q),
+        chrome: chromeFor(site, match).chrome,
+      },
       { "cache-control": "no-store" },
     );
   }

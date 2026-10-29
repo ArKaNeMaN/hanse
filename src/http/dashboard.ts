@@ -5,10 +5,10 @@ import { isMasterProject } from "../master/constants.js";
 import type { InstanceManager } from "../opencode/manager.js";
 import type { RegisteredApp } from "../registry/index.js";
 import type { SqliteDatabase } from "../store/index.js";
+import { buildHandoffsProps, type HandoffFilterProps } from "./props/handoffs.js";
 import { buildOverviewProps } from "./props/overview.js";
 import {
   type AddAppDialogProps,
-  buildProjectHandoffProps,
   buildProjectProps,
   type NewHandoffDialogProps,
   type ProjectDeletionProps,
@@ -16,16 +16,7 @@ import {
   type ProjectPolicyProps,
 } from "./props/project.js";
 import { buildProjectsProps } from "./props/projects.js";
-import {
-  ACTIVE_HANDOFF_STATES,
-  allHandoffs,
-  appKeyFor,
-  CLOSED_HANDOFF_STATES,
-  type HandoffFilter,
-  handoffCounts,
-  shortId,
-  sortedHandoffs,
-} from "./props/shared.js";
+import { parseHandoffFilter, sortedHandoffs } from "./props/shared.js";
 import {
   appShell,
   deletionStatus,
@@ -109,12 +100,7 @@ export interface PageChrome {
 }
 
 export type { HandoffFilter } from "./props/shared.js";
-
-export function parseHandoffFilter(value: string | undefined): HandoffFilter {
-  return value === "waiting" || value === "active" || value === "closed" || value === "replies"
-    ? value
-    : "all";
-}
+export { parseHandoffFilter };
 
 function projectMeta(db: SqliteDatabase): Map<string, { baseBranch: string; createdAt: string }> {
   const rows = db.prepare("SELECT id, base_branch, created_at FROM projects").all() as Array<{
@@ -1023,68 +1009,12 @@ export function renderProject(
 /* Handoffs inbox                                                           */
 /* ------------------------------------------------------------------------- */
 
-function filterHref(filter: HandoffFilter, q: string): string {
-  const params = new URLSearchParams();
-  if (filter !== "all") {
-    params.set("filter", filter);
-  }
-  if (q.length > 0) {
-    params.set("q", q);
-  }
-  const query = params.toString();
-  return query.length === 0 ? "/handoffs" : `/handoffs?${query}`;
-}
-
-function matchesQuery(site: SiteModel, handoff: Handoff, needle: string): boolean {
-  if (needle.length === 0) {
-    return true;
-  }
-  const from = appKeyFor(site, handoff.fromAppId).toLowerCase();
-  const to = appKeyFor(site, handoff.toAppId).toLowerCase();
-  const project = site.apps.get(handoff.fromAppId)?.projectName.toLowerCase() ?? "";
-  return (
-    handoff.id.toLowerCase().includes(needle) ||
-    handoff.summary.toLowerCase().includes(needle) ||
-    from.includes(needle) ||
-    to.includes(needle) ||
-    project.includes(needle)
-  );
-}
-
 export function renderHandoffs(
   site: SiteModel,
   options: { filter?: string; q?: string; chrome: PageChrome },
 ): string {
-  const filter = parseHandoffFilter(options.filter);
-  const query = (options.q ?? "").trim();
-  const needle = query.toLowerCase();
-  const counts = handoffCounts(allHandoffs(site));
-  const filtered = sortedHandoffs(
-    allHandoffs(site).filter((handoff) => {
-      if (
-        filter === "waiting" &&
-        handoff.state !== "awaiting_approval" &&
-        handoff.replyState !== "awaiting_approval"
-      ) {
-        return false;
-      }
-      if (filter === "active" && !ACTIVE_HANDOFF_STATES.includes(handoff.state)) {
-        return false;
-      }
-      if (filter === "closed" && !CLOSED_HANDOFF_STATES.includes(handoff.state)) {
-        return false;
-      }
-      if (
-        filter === "replies" &&
-        handoff.replyState !== "waiting_operator" &&
-        handoff.replyState !== "failed" &&
-        handoff.replyState !== "awaiting_approval"
-      ) {
-        return false;
-      }
-      return matchesQuery(site, handoff, needle);
-    }),
-  );
+  const props = buildHandoffsProps(site, options.filter, options.q);
+  const counts = props.counts;
 
   const header = pageHeader({
     overline: "Workbench",
@@ -1098,79 +1028,46 @@ export function renderHandoffs(
     ],
   });
 
-  const segment = (value: HandoffFilter, label: string, count: number): string => {
-    const active = filter === value;
-    return `<a class="segmented__item" href="${escapeHtml(filterHref(value, query))}"${active ? ' aria-current="page"' : ""}>${label} <span class="mono">${count}</span></a>`;
-  };
+  const segment = (entry: HandoffFilterProps): string =>
+    `<a class="segmented__item" href="${escapeHtml(entry.href)}"${entry.current ? ' aria-current="page"' : ""}>${entry.label} <span class="mono">${entry.count}</span></a>`;
 
   const toolbar = `<div class="toolbar">
     <div class="segmented" role="group" aria-label="Handoff filter">
-      ${segment("all", "All", counts.all)}
-      ${segment("waiting", "Waiting", counts.waiting)}
-      ${segment("active", "Active", counts.active)}
-      ${segment("closed", "Closed", counts.closed)}
-      ${segment("replies", "Replies", counts.replies)}
+      ${props.filters.map(segment).join("\n      ")}
     </div>
-    <form class="cluster" method="get" action="/handoffs" role="search">
-      ${filter === "all" ? "" : `<input type="hidden" name="filter" value="${filter}" />`}
+    <form class="cluster" method="get" action="${props.search.action}" role="search">
+      ${props.search.hiddenFilter === null ? "" : `<input type="hidden" name="filter" value="${props.search.hiddenFilter}" />`}
       <label class="sr-only" for="handoff-search">Search handoffs</label>
-      <input class="input search-input" id="handoff-search" name="q" value="${escapeHtml(query)}" placeholder="Id, summary, application" autocomplete="off" />
+      <input class="input search-input" id="handoff-search" name="q" value="${escapeHtml(props.search.query)}" placeholder="${escapeHtml(props.search.placeholder)}" autocomplete="off" />
       <button class="btn btn-secondary" type="submit">${icon("search")}Search</button>
-      ${query.length > 0 ? `<a class="btn btn-ghost" href="${escapeHtml(filterHref(filter, ""))}">Clear search</a>` : ""}
+      ${props.search.clearHref === null ? "" : `<a class="btn btn-ghost" href="${escapeHtml(props.search.clearHref)}">Clear search</a>`}
     </form>
   </div>`;
 
   let content: string;
-  if (filtered.length === 0) {
-    const allEmpty = counts.all === 0;
-    const title = allEmpty
-      ? "No handoffs yet"
-      : query.length > 0
-        ? "No matching handoffs"
-        : filter === "waiting"
-          ? "No handoffs waiting"
-          : filter === "active"
-            ? "No active handoffs"
-            : filter === "replies"
-              ? "No replies waiting"
-              : "No closed handoffs";
-    const body = allEmpty
-      ? "Handoffs route work between applications. Open a project to create the first one."
-      : query.length > 0
-        ? `Nothing matches “${query}” in this filter.`
-        : filter === "waiting"
-          ? "Approval requests arrive here when an agent requires a human decision."
-          : filter === "active"
-            ? "Queued, dispatching, and in-progress handoffs appear here."
-            : filter === "replies"
-              ? "Sibling replies that need a source session or an operator decision appear here."
-              : "Delivered, rejected, failed, expired, and cancelled handoffs appear here.";
-    const action = allEmpty
-      ? `<a class="btn btn-secondary btn-sm" href="/projects">Open a project</a>`
-      : query.length > 0
-        ? `<a class="btn btn-secondary btn-sm" href="${escapeHtml(filterHref(filter, ""))}">Clear search</a>`
-        : `<a class="btn btn-secondary btn-sm" href="/handoffs">Show all handoffs</a>`;
+  if (props.emptyState !== null) {
+    const empty = props.emptyState;
     content = `${toolbar}${emptyState({
-      iconName: allEmpty ? "branch" : "search",
-      title,
-      body,
-      action,
+      iconName: empty.iconName,
+      title: empty.title,
+      body: empty.body,
+      action: `<a class="btn btn-secondary btn-sm" href="${escapeHtml(empty.actionHref)}">${empty.actionLabel}</a>`,
     })}`;
   } else {
-    const rows = filtered
+    const rows = props.rows
       .map((handoff) => {
         const inline =
-          handoff.state === "awaiting_approval" || handoff.replyState === "awaiting_approval"
-            ? `<form class="table__inline-form" method="post" action="/api/handoffs/${encodeURIComponent(handoff.id)}/decision">
-                <input type="hidden" name="approval_kind" value="${handoff.replyState === "awaiting_approval" ? "reply" : "dispatch"}" />
-                <input type="hidden" name="return_to" value="${escapeHtml(filterHref(filter, ""))}" />
+          handoff.inlineDecision === null
+            ? ""
+            : `<form class="table__inline-form" method="post" action="${handoff.inlineDecision.action}">
+                <input type="hidden" name="approval_kind" value="${handoff.inlineDecision.approvalKind}" />
+                <input type="hidden" name="return_to" value="${escapeHtml(handoff.inlineDecision.returnTo)}" />
                 <button class="btn btn-danger btn-sm" type="submit" name="decision" value="rejected">Reject</button>
                 <button class="btn btn-primary btn-sm" type="submit" name="decision" value="approved">Approve</button>
-              </form>`
-            : "";
+              </form>`;
         return `<tr id="handoff-${escapeHtml(handoff.id)}">
-          <td data-label="Id"><span class="mono table__nowrap">${escapeHtml(shortId(handoff.id))}</span></td>
-          <td data-label="Route">${routeText(appKeyFor(site, handoff.fromAppId), appKeyFor(site, handoff.toAppId))}</td>
+          <td data-label="Id"><span class="mono table__nowrap">${escapeHtml(handoff.shortId)}</span></td>
+          <td data-label="Route">${routeText(handoff.fromAppKey, handoff.toAppKey)}</td>
           <td data-label="State"><div class="cluster">${statusPill(handoff.state)}${replyPill(handoff.replyState)}</div></td>
           <td data-label="Summary"><span class="table__primary">${escapeHtml(handoff.summary)}</span></td>
           <td data-label="Updated"><span class="mono table__nowrap">${timeTag(handoff.updatedAt)}</span></td>
@@ -1180,7 +1077,7 @@ export function renderHandoffs(
       .join("");
     content = `${toolbar}
       <section class="card" aria-labelledby="handoffs-table-title">
-        <div class="card__head"><h2 class="card__title" id="handoffs-table-title">${filter === "all" ? "All handoffs" : filter === "waiting" ? "Waiting for approval" : filter === "active" ? "Active handoffs" : "Closed handoffs"}</h2><span class="mono">${filtered.length}</span></div>
+        <div class="card__head"><h2 class="card__title" id="handoffs-table-title">${props.tableTitle}</h2><span class="mono">${props.rows.length}</span></div>
         <div class="card__body card__body--flush">
           <div class="table-wrap">
             <table class="table table--stack table--handoffs table--inbox">
@@ -1190,9 +1087,7 @@ export function renderHandoffs(
           </div>
         </div>
       </section>
-      ${handoffDialogs(
-        filtered.map((handoff) => buildProjectHandoffProps(site, handoff, filterHref(filter, ""))),
-      )}`;
+      ${handoffDialogs(props.rows.map((row) => row.dialog))}`;
   }
 
   return shell(site, options.chrome, {
