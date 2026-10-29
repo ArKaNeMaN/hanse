@@ -52,6 +52,29 @@ export function humanFrom(deps: Pick<HttpDeps, "db">, request: HttpRequest): Pri
   return principal?.kind === "human" ? principal : undefined;
 }
 
+/**
+ * Authenticate a human operator from the session cookie only.
+ *
+ * The SPA document and `/api/ui/*` use this instead of `humanFrom`: a bearer token is deliberately
+ * not accepted there, so a leaked operator bearer cannot read SPA page props. Agent cookies are
+ * rejected as well because only `kind === "human"` is returned.
+ */
+export function humanFromCookie(
+  deps: Pick<HttpDeps, "db">,
+  request: HttpRequest,
+): Principal | undefined {
+  const token = cookieToken(request.headers.cookie);
+  if (token === undefined || token.length === 0) {
+    return undefined;
+  }
+  try {
+    const principal = authenticate(deps.db, `Bearer ${token}`);
+    return principal.kind === "human" ? principal : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Human check for cookie-only surfaces such as the IDE and the operator terminal. */
 export function isHumanCookie(
   deps: Pick<HttpDeps, "db">,

@@ -16,10 +16,11 @@ ARG PHP_VERSION=8.3
 FROM --platform=$BUILDPLATFORM node:${NODE_VERSION}-bookworm-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
-# The build stage only runs tsc and Tailwind; better-sqlite3 is compiled for the target in `deps`.
+# The build stage only runs tsc, Tailwind, and Vite; better-sqlite3 is compiled for the target in `deps`.
 RUN npm ci --ignore-scripts --no-audit --no-fund
-COPY tsconfig.json ./
+COPY tsconfig.json tsconfig.ui.json vite.config.ts ./
 COPY src ./src
+COPY ui ./ui
 COPY assets ./assets
 RUN npm run build
 

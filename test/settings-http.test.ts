@@ -2119,7 +2119,7 @@ describe("git settings API", () => {
       } else {
         expect(page.body).not.toContain("Test connection");
       }
-      const ids = [...page.body.matchAll(/id="([^"]+)"/g)].map((match) => match[1]);
+      const ids = [...page.body.matchAll(/\sid="([^"]+)"/g)].map((match) => match[1]);
       expect(new Set(ids).size).toBe(ids.length);
     }
   });

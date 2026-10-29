@@ -1,5 +1,23 @@
 # Open questions
 
+> Stage: `0031-spa-migration`. Owner decisions were collected on 2026-10-28, before the design was
+> written. There are no open items for this stage.
+
+## Stage `0031-spa-migration` - resolved owner decisions
+
+1. **Framework** - Vue 3 + Vue Router + Pinia. Server data uses `@tanstack/vue-query`; Pinia is
+   limited to boot/session, toasts, dialogs, and other client UI state.
+2. **Chat and terminal** - decided after the app-detail stage (Stage 7 in the revised order). Default
+   expectation is to keep `/chat` and `/terminal` as legacy documents; migrating them requires a
+   separate design and review.
+3. **Test harness** - Playwright (`@playwright/test`) for E2E plus Vitest with jsdom and
+   `@vue/test-utils` for component tests. Both are devDependencies.
+4. **Turbo / Inertia** - rejected. The program goes directly to the Vue SPA; full-page boundary
+   loads are accepted.
+5. **SPA auth** - cookie-only applies to both the SPA HTML document and the whole `/api/ui/*`
+   surface. Legacy pages keep their current behavior. This is an intentional hardening recorded in
+   design S7; a bearer-only client cannot open the SPA and then read page props.
+
 > Stage: `0030-agent-process-protection`. Owner decisions were collected on 2026-10-27, after the
 > design review PASS. There are no open items for this stage.
 

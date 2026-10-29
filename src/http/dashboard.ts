@@ -1,11 +1,31 @@
-import { type Handoff, type HandoffState, listHandoffs } from "../coordinator/handoff.js";
+import { type Handoff, listHandoffs } from "../coordinator/handoff.js";
 import { type HandoffPolicy, listHandoffPolicies } from "../coordinator/policy.js";
 import type { CoordinatorService } from "../coordinator/service.js";
-import { isMasterProject, masterChatHref } from "../master/constants.js";
+import { isMasterProject } from "../master/constants.js";
 import type { InstanceManager } from "../opencode/manager.js";
 import type { RegisteredApp } from "../registry/index.js";
 import type { SqliteDatabase } from "../store/index.js";
-import { appDir } from "./apps.js";
+import { buildOverviewProps } from "./props/overview.js";
+import {
+  type AddAppDialogProps,
+  buildProjectHandoffProps,
+  buildProjectProps,
+  type NewHandoffDialogProps,
+  type ProjectDeletionProps,
+  type ProjectHandoffProps,
+  type ProjectPolicyProps,
+} from "./props/project.js";
+import { buildProjectsProps } from "./props/projects.js";
+import {
+  ACTIVE_HANDOFF_STATES,
+  allHandoffs,
+  appKeyFor,
+  CLOSED_HANDOFF_STATES,
+  type HandoffFilter,
+  handoffCounts,
+  shortId,
+  sortedHandoffs,
+} from "./props/shared.js";
 import {
   appShell,
   deletionStatus,
@@ -13,7 +33,6 @@ import {
   escapeHtml,
   handoffDialog,
   icon,
-  ideFolderUrl,
   type NavProject,
   type Notice,
   pageHeader,
@@ -89,16 +108,7 @@ export interface PageChrome {
   notice?: Notice;
 }
 
-const ACTIVE_STATES: readonly HandoffState[] = ["queued", "dispatching", "in_progress"];
-const CLOSED_STATES: readonly HandoffState[] = [
-  "delivered",
-  "rejected",
-  "failed",
-  "expired",
-  "cancelled",
-];
-
-export type HandoffFilter = "all" | "waiting" | "active" | "closed" | "replies";
+export type { HandoffFilter } from "./props/shared.js";
 
 export function parseHandoffFilter(value: string | undefined): HandoffFilter {
   return value === "waiting" || value === "active" || value === "closed" || value === "replies"
@@ -302,98 +312,14 @@ function shell(
   });
 }
 
-function handoffCounts(handoffs: Handoff[]): {
-  all: number;
-  waiting: number;
-  active: number;
-  closed: number;
-  replies: number;
-} {
-  let waiting = 0;
-  let active = 0;
-  let closed = 0;
-  let replies = 0;
-  for (const handoff of handoffs) {
-    if (handoff.state === "awaiting_approval" || handoff.replyState === "awaiting_approval") {
-      waiting += 1;
-    }
-    if (ACTIVE_STATES.includes(handoff.state)) {
-      active += 1;
-    }
-    if (CLOSED_STATES.includes(handoff.state)) {
-      closed += 1;
-    }
-    if (
-      handoff.replyState === "waiting_operator" ||
-      handoff.replyState === "failed" ||
-      handoff.replyState === "awaiting_approval"
-    ) {
-      replies += 1;
-    }
-  }
-  return { all: handoffs.length, waiting, active, closed, replies };
-}
-
-function appKeyFor(site: SiteModel, appId: string): string {
-  return site.apps.get(appId)?.appKey ?? appId.split(":").pop() ?? appId;
-}
-
-function shortId(id: string): string {
-  return id.slice(0, 8);
-}
-
-function shortTime(iso: string): string {
-  return timeAgo(iso);
-}
-
-function projectLastActivity(project: ProjectView): string {
-  let latest = project.createdAt;
-  for (const handoff of project.handoffs) {
-    if (handoff.updatedAt > latest) {
-      latest = handoff.updatedAt;
-    }
-  }
-  return latest;
-}
-
-function allHandoffs(site: SiteModel): Handoff[] {
-  return site.projects.flatMap((project) => project.handoffs);
-}
-
-function sortedHandoffs(handoffs: Handoff[]): Handoff[] {
-  return [...handoffs].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-}
-
-function waitingHandoffs(site: SiteModel): Handoff[] {
-  return sortedHandoffs(
-    allHandoffs(site).filter(
-      (handoff) =>
-        handoff.state === "awaiting_approval" || handoff.replyState === "awaiting_approval",
-    ),
-  );
-}
-
-function displayState(handoff: Handoff): HandoffState {
-  return handoff.replyState === "awaiting_approval" ? "awaiting_approval" : handoff.state;
-}
-
-function reviewHref(handoff: Handoff, filter: HandoffFilter = "all"): string {
-  const params = new URLSearchParams();
-  if (filter !== "all") {
-    params.set("filter", filter);
-  }
-  params.set("q", shortId(handoff.id));
-  return `/handoffs?${params.toString()}`;
-}
-
-function projectHandoffRows(site: SiteModel, project: ProjectView): string {
-  if (project.handoffs.length === 0) {
+function projectHandoffRows(handoffs: readonly ProjectHandoffProps[]): string {
+  if (handoffs.length === 0) {
     return "";
   }
-  return sortedHandoffs(project.handoffs)
+  return handoffs
     .map((handoff) => {
       return `<tr id="handoff-${escapeHtml(handoff.id)}">
-        <td data-label="Route">${routeText(appKeyFor(site, handoff.fromAppId), appKeyFor(site, handoff.toAppId))}</td>
+        <td data-label="Route">${routeText(handoff.fromAppKey, handoff.toAppKey)}</td>
         <td data-label="State"><div class="cluster">${statusPill(handoff.state)}${replyPill(handoff.replyState)}</div></td>
         <td data-label="Summary"><span class="table__primary">${escapeHtml(handoff.summary)}</span></td>
         <td data-label="Updated"><span class="mono table__nowrap">${timeTag(handoff.updatedAt)}</span></td>
@@ -431,14 +357,14 @@ function newProjectDialog(): string {
   </dialog>`;
 }
 
-function addAppDialog(project: ProjectView): string {
+function addAppDialog(dialog: AddAppDialogProps): string {
   return `<dialog class="dialog" id="add-app" aria-labelledby="add-app-title">
     <div class="dialog__frame">
       <header class="dialog__head">
         <h2 class="dialog__title" id="add-app-title">Add application</h2>
-        <p class="dialog__meta">${escapeHtml(project.name)} / ${escapeHtml(project.rootPath)}</p>
+        <p class="dialog__meta">${escapeHtml(dialog.projectName)} / ${escapeHtml(dialog.rootPath)}</p>
       </header>
-      <form class="dialog__form" method="post" action="/api/projects/${encodeURIComponent(project.id)}/apps">
+      <form class="dialog__form" method="post" action="${escapeHtml(dialog.action)}">
         <div class="dialog__body">
           <div class="field">
             <label class="label" for="add-app-name">Application name (required)</label>
@@ -455,7 +381,7 @@ function addAppDialog(project: ProjectView): string {
             <input class="input" id="add-app-remote" name="remote" autocomplete="off" placeholder="git@github.com:org/gateway.git" aria-describedby="add-app-remote-hint" />
             <p class="hint" id="add-app-remote-hint">Clones the repository into the path when provided.</p>
           </div>
-          <input type="hidden" name="return_to" value="/projects/${escapeHtml(project.id)}" />
+          <input type="hidden" name="return_to" value="${escapeHtml(dialog.returnTo)}" />
         </div>
         <footer class="dialog__foot">
           <button class="btn btn-ghost" type="button" data-dialog-close>Cancel</button>
@@ -466,19 +392,19 @@ function addAppDialog(project: ProjectView): string {
   </dialog>`;
 }
 
-function projectDeleteDialog(project: ProjectView): string {
-  const retrying = project.deleting;
+function projectDeleteDialog(dialog: ProjectDeletionProps): string {
+  const retrying = dialog.deleting;
   return `<dialog class="dialog" id="project-delete-dialog" aria-labelledby="project-delete-title">
     <div class="dialog__frame">
       <header class="dialog__head">
         <h2 class="dialog__title" id="project-delete-title">${retrying ? "Retry project deletion?" : "Delete project?"}</h2>
-        <p class="dialog__meta">${escapeHtml(project.name)} / ${plural(project.apps.length, "application")}</p>
+        <p class="dialog__meta">${escapeHtml(dialog.projectName)} / ${plural(dialog.appCount, "application")}</p>
       </header>
-      <form class="dialog__form" method="post" action="/api/projects/${encodeURIComponent(project.id)}/delete">
+      <form class="dialog__form" method="post" action="${escapeHtml(dialog.action)}">
         <div class="dialog__body">
           <p class="body">This removes every application in the project, including their sessions, handoffs, credentials, and managed images. Checking <strong>Delete files too</strong> also deletes the project and application source files on disk.</p>
           <div class="field">
-            <label class="label" for="project-delete-confirm">Type ${escapeHtml(project.name)} to confirm (required)</label>
+            <label class="label" for="project-delete-confirm">Type ${escapeHtml(dialog.confirmName)} to confirm (required)</label>
             <input class="input" id="project-delete-confirm" name="confirm" required autocomplete="off" spellcheck="false" aria-describedby="project-delete-confirm-hint" />
             <p class="hint" id="project-delete-confirm-hint">The project name must match exactly.</p>
           </div>
@@ -486,7 +412,7 @@ function projectDeleteDialog(project: ProjectView): string {
             <input class="checkbox" type="checkbox" name="deleteFiles" value="true" />
             <span>Delete files too</span>
           </label>
-          <input type="hidden" name="return_to" value="/projects/${escapeHtml(encodeURIComponent(project.id))}" />
+          <input type="hidden" name="return_to" value="${escapeHtml(dialog.returnTo)}" />
         </div>
         <footer class="dialog__foot">
           <button class="btn btn-ghost" type="button" data-dialog-close>Cancel</button>
@@ -497,12 +423,13 @@ function projectDeleteDialog(project: ProjectView): string {
   </dialog>`;
 }
 
-function handoffPolicyCard(project: ProjectView): string {
+function handoffPolicyCard(projectId: string, policy: ProjectPolicyProps): string {
   const key = (value: string): string => (value === "*" ? "Any application" : value);
   const appOption = (appKey: string): string =>
     `<option value="${escapeHtml(appKey)}">${escapeHtml(appKey)}</option>`;
   const anyOption = '<option value="*">Any application</option>';
-  const rules = project.handoffPolicies;
+  const rules = policy.rules;
+  const encodedId = encodeURIComponent(projectId);
   const rows =
     rules.length === 0
       ? '<p class="small">No rules. Dispatch and replies are autonomous for every directed pair.</p>'
@@ -515,10 +442,10 @@ function handoffPolicyCard(project: ProjectView): string {
                 <td data-label="To"><span class="mono">${escapeHtml(key(rule.toAppKey))}</span></td>
                 <td data-label="Dispatch"><span class="mono">${escapeHtml(rule.dispatchMode)}</span></td>
                 <td data-label="Reply"><span class="mono">${escapeHtml(rule.replyMode)}</span></td>
-                <td data-label="" class="table__actions"><form method="post" action="/api/projects/${encodeURIComponent(project.id)}/handoff-policy/delete">
+                <td data-label="" class="table__actions"><form method="post" action="/api/projects/${encodedId}/handoff-policy/delete">
                   <input type="hidden" name="from" value="${escapeHtml(rule.fromAppKey)}" />
                   <input type="hidden" name="to" value="${escapeHtml(rule.toAppKey)}" />
-                  <input type="hidden" name="return_to" value="/projects/${escapeHtml(encodeURIComponent(project.id))}" />
+                  <input type="hidden" name="return_to" value="/projects/${encodedId}" />
                   <button class="btn btn-ghost btn-sm" type="submit">Delete</button>
                 </form></td>
               </tr>`,
@@ -530,35 +457,33 @@ function handoffPolicyCard(project: ProjectView): string {
     <div class="card__body stack--tight">
       <p class="small">The most specific rule wins: exact pair, then one wildcard (a from-specific rule wins a tie), then the project default. No matching rule means <span class="mono">auto</span> dispatch and <span class="mono">auto</span> reply.</p>
       ${rows}
-      <form class="stack--tight" method="post" action="/api/projects/${encodeURIComponent(project.id)}/handoff-policy">
+      <form class="stack--tight" method="post" action="/api/projects/${encodedId}/handoff-policy">
         <div class="cluster">
-          <div class="field"><label class="label" for="handoff-policy-from">From</label><div class="select-wrap"><select class="select" id="handoff-policy-from" name="from">${anyOption}${project.apps.map((app) => appOption(app.appKey)).join("")}</select>${icon("chevron-down")}</div></div>
-          <div class="field"><label class="label" for="handoff-policy-to">To</label><div class="select-wrap"><select class="select" id="handoff-policy-to" name="to">${anyOption}${project.apps.map((app) => appOption(app.appKey)).join("")}</select>${icon("chevron-down")}</div></div>
+          <div class="field"><label class="label" for="handoff-policy-from">From</label><div class="select-wrap"><select class="select" id="handoff-policy-from" name="from">${anyOption}${policy.appOptions.map((appKey) => appOption(appKey)).join("")}</select>${icon("chevron-down")}</div></div>
+          <div class="field"><label class="label" for="handoff-policy-to">To</label><div class="select-wrap"><select class="select" id="handoff-policy-to" name="to">${anyOption}${policy.appOptions.map((appKey) => appOption(appKey)).join("")}</select>${icon("chevron-down")}</div></div>
           <div class="field"><label class="label" for="handoff-policy-dispatch">Dispatch</label><div class="select-wrap"><select class="select" id="handoff-policy-dispatch" name="dispatch_mode"><option value="auto">Auto</option><option value="approve">Approve</option><option value="deny">Deny</option></select>${icon("chevron-down")}</div></div>
           <div class="field"><label class="label" for="handoff-policy-reply">Reply</label><div class="select-wrap"><select class="select" id="handoff-policy-reply" name="reply_mode"><option value="auto">Auto</option><option value="approve">Approve</option></select>${icon("chevron-down")}</div></div>
         </div>
-        <input type="hidden" name="return_to" value="/projects/${escapeHtml(encodeURIComponent(project.id))}" />
+        <input type="hidden" name="return_to" value="/projects/${encodedId}" />
         <div class="cluster"><button class="btn btn-secondary btn-sm" type="submit">Save rule</button></div>
       </form>
     </div>
   </section>`;
 }
 
-function newHandoffDialog(project: ProjectView): string {
-  const fromKey = project.apps[0]?.appKey;
-  const toKey = project.apps[1]?.appKey ?? fromKey;
-  const option = (appKey: string, selectedKey: string | undefined): string =>
+function newHandoffDialog(dialog: NewHandoffDialogProps): string {
+  const option = (appKey: string, selectedKey: string | null): string =>
     `<option value="${escapeHtml(appKey)}"${appKey === selectedKey ? " selected" : ""}>${escapeHtml(appKey)}</option>`;
-  const fromOptions = project.apps.map((app) => option(app.appKey, fromKey)).join("");
-  const toOptions = project.apps.map((app) => option(app.appKey, toKey)).join("");
-  const empty = project.apps.length === 0;
+  const fromOptions = dialog.appOptions.map((appKey) => option(appKey, dialog.fromKey)).join("");
+  const toOptions = dialog.appOptions.map((appKey) => option(appKey, dialog.toKey)).join("");
+  const empty = dialog.disabled;
   return `<dialog class="dialog" id="new-handoff" aria-labelledby="new-handoff-title">
     <div class="dialog__frame">
       <header class="dialog__head">
         <h2 class="dialog__title" id="new-handoff-title">New handoff</h2>
-        <p class="dialog__meta">${escapeHtml(project.name)} / ${plural(project.apps.length, "application")}</p>
+        <p class="dialog__meta">${escapeHtml(dialog.projectName)} / ${plural(dialog.appOptions.length, "application")}</p>
       </header>
-      <form class="dialog__form" method="post" action="/api/handoffs">
+      <form class="dialog__form" method="post" action="${escapeHtml(dialog.action)}">
         <div class="dialog__body">
           <div class="field">
             <label class="label" for="handoff-summary">Summary (required)</label>
@@ -589,8 +514,8 @@ function newHandoffDialog(project: ProjectView): string {
             <span>Require operator approval for this handoff</span>
           </label>
           ${empty ? '<p class="hint">Add an application to this project before creating a handoff.</p>' : ""}
-          <input type="hidden" name="project" value="${escapeHtml(project.id)}" />
-          <input type="hidden" name="return_to" value="/projects/${escapeHtml(project.id)}" />
+          <input type="hidden" name="project" value="${escapeHtml(dialog.projectId)}" />
+          <input type="hidden" name="return_to" value="${escapeHtml(dialog.returnTo)}" />
         </div>
         <footer class="dialog__foot">
           <button class="btn btn-ghost" type="button" data-dialog-close>Cancel</button>
@@ -601,43 +526,14 @@ function newHandoffDialog(project: ProjectView): string {
   </dialog>`;
 }
 
-function chatSessionHref(site: SiteModel, appId: string, sessionId: string | null): string | null {
-  if (sessionId === null) return null;
-  const app = site.apps.get(appId);
-  if (app === undefined) return null;
-  return `/chat?app=${encodeURIComponent(app.appKey)}&project=${encodeURIComponent(app.projectId)}&session=${encodeURIComponent(sessionId)}`;
-}
-
-function handoffDialogs(handoffs: Handoff[], site: SiteModel, returnTo: string): string {
+function handoffDialogs(handoffs: readonly ProjectHandoffProps[]): string {
   return handoffs
-    .map((handoff) => {
-      const approvalKind =
-        handoff.replyState === "awaiting_approval"
-          ? ("reply" as const)
-          : handoff.state === "awaiting_approval"
-            ? ("dispatch" as const)
-            : null;
-      const terminal =
-        handoff.state === "delivered" ||
-        handoff.state === "rejected" ||
-        handoff.state === "failed" ||
-        handoff.state === "expired" ||
-        handoff.state === "cancelled";
-      const replyWaiting =
-        handoff.replyState === "waiting_operator" ||
-        handoff.replyState === "failed" ||
-        handoff.replyState === "cancelled";
-      const replyCancellable =
-        handoff.state === "delivered" &&
-        (handoff.replyState === "pending" ||
-          handoff.replyState === "awaiting_approval" ||
-          handoff.replyState === "waiting_operator" ||
-          handoff.replyState === "failed");
-      return handoffDialog({
+    .map((handoff) =>
+      handoffDialog({
         id: handoff.id,
-        state: displayState(handoff),
-        from: appKeyFor(site, handoff.fromAppId),
-        to: appKeyFor(site, handoff.toAppId),
+        state: handoff.displayState,
+        from: handoff.fromAppKey,
+        to: handoff.toAppKey,
         summary: handoff.summary,
         spec: handoff.spec,
         attempts: handoff.attempts,
@@ -646,37 +542,29 @@ function handoffDialogs(handoffs: Handoff[], site: SiteModel, returnTo: string):
         outcome: handoff.outcome,
         createdAt: handoff.createdAt,
         updatedAt: handoff.updatedAt,
-        returnTo,
-        approvalKind,
+        returnTo: handoff.returnTo,
+        approvalKind: handoff.approvalKind,
         policyDispatchMode: handoff.policyDispatchMode,
         policyReplyMode: handoff.policyReplyMode,
         origin: handoff.origin,
         sourceSessionId: handoff.sourceSessionId,
-        sourceSessionHref: chatSessionHref(site, handoff.fromAppId, handoff.sourceSessionId),
-        sourceSessionDeleted: handoff.sourceSessionDeletedAt !== null,
+        sourceSessionHref: handoff.sourceSessionHref,
+        sourceSessionDeleted: handoff.sourceSessionDeleted,
         targetSessionId: handoff.targetSessionId,
-        targetSessionHref: chatSessionHref(site, handoff.toAppId, handoff.targetSessionId),
+        targetSessionHref: handoff.targetSessionHref,
         replyState: handoff.replyState,
         replyError: handoff.replyError,
         replyDeliveredSessionId: handoff.replyDeliveredSessionId,
         replyDeliveredAt: handoff.replyDeliveredAt,
-        replyDeliveredHref: chatSessionHref(
-          site,
-          handoff.fromAppId,
-          handoff.replyDeliveredSessionId,
-        ),
+        replyDeliveredHref: handoff.replyDeliveredHref,
         deliveredVia: handoff.deliveredVia,
         operatorNote: handoff.operatorNote,
-        canCancel: !terminal,
-        canRelaunch: handoff.result !== null && replyWaiting,
-        canRetryReply:
-          handoff.result !== null &&
-          (handoff.replyState === "waiting_operator" || handoff.replyState === "failed") &&
-          handoff.sourceSessionId !== null &&
-          handoff.sourceSessionDeletedAt === null,
-        canCancelReply: replyCancellable,
-      });
-    })
+        canCancel: handoff.canCancel,
+        canRelaunch: handoff.canRelaunch,
+        canRetryReply: handoff.canRetryReply,
+        canCancelReply: handoff.canCancelReply,
+      }),
+    )
     .join("");
 }
 
@@ -685,25 +573,24 @@ function handoffDialogs(handoffs: Handoff[], site: SiteModel, returnTo: string):
 /* ------------------------------------------------------------------------- */
 
 export function renderOverview(site: SiteModel, chrome: PageChrome): string {
-  const projects = [...operatorProjects(site)].sort((a, b) =>
-    projectLastActivity(b).localeCompare(projectLastActivity(a)),
-  );
-  const recent = sortedHandoffs(allHandoffs(site)).slice(0, 8);
-  const waiting = waitingHandoffs(site);
+  const props = buildOverviewProps(site);
 
   const header = pageHeader({
     overline: "Workbench",
     title: "Fleet overview",
     description: "Current state of every project, application, and handoff in this workspace.",
-    meta: [`${plural(projects.length, "project")}`, `${plural(site.appCount, "application")}`],
+    meta: [
+      `${plural(props.counts.projects, "project")}`,
+      `${plural(props.counts.applications, "application")}`,
+    ],
     actions:
-      projects.length === 0
+      props.counts.projects === 0
         ? undefined
         : `<button class="btn btn-primary" type="button" data-dialog-open="new-project">${icon("plus")}New project</button>`,
   });
 
   const empty =
-    projects.length === 0
+    props.counts.projects === 0
       ? `${emptyState({
           iconName: "folder",
           title: "No projects yet",
@@ -714,28 +601,27 @@ export function renderOverview(site: SiteModel, chrome: PageChrome): string {
       : "";
 
   const watch = `<div class="watch-strip watch-strip--4">
-    <div class="watch"><p class="watch__value">${projects.length}</p><p class="watch__label">Projects</p></div>
-    <div class="watch"><p class="watch__value">${site.appCount}</p><p class="watch__label">Applications</p></div>
-    <div class="watch"><p class="watch__value">${site.runningCount}</p><p class="watch__label">Agents running</p></div>
-    <div class="watch"><p class="watch__value">${site.pendingCount}</p><p class="watch__label">Handoffs waiting</p></div>
+    <div class="watch"><p class="watch__value">${props.counts.projects}</p><p class="watch__label">Projects</p></div>
+    <div class="watch"><p class="watch__value">${props.counts.applications}</p><p class="watch__label">Applications</p></div>
+    <div class="watch"><p class="watch__value">${props.counts.running}</p><p class="watch__label">Agents running</p></div>
+    <div class="watch"><p class="watch__value">${props.counts.handoffsWaiting}</p><p class="watch__label">Handoffs waiting</p></div>
   </div>`;
 
-  const projectRows = projects
+  const projectRows = props.projects
     .map((project) => {
-      const counts = handoffCounts(project.handoffs);
       return `<tr>
         <td data-label="Project"><div class="cluster"><a class="table__primary" href="/projects/${encodeURIComponent(project.id)}">${escapeHtml(project.name)}</a>${project.deleting ? deletionStatus() : ""}</div></td>
         <td data-label="Root path"><span class="mono">${escapeHtml(project.rootPath)}</span></td>
-        <td data-label="Apps" class="table__num">${project.apps.length}</td>
-        <td data-label="Waiting" class="table__num">${counts.waiting}</td>
-        <td data-label="Last activity"><span class="mono table__nowrap">${timeTag(projectLastActivity(project))}</span></td>
+        <td data-label="Apps" class="table__num">${project.appCount}</td>
+        <td data-label="Waiting" class="table__num">${project.waitingCount}</td>
+        <td data-label="Last activity"><span class="mono table__nowrap">${timeTag(project.lastActivity)}</span></td>
         <td data-label="Actions" class="table__actions"><a class="btn btn-ghost btn-icon btn-sm" href="/projects/${encodeURIComponent(project.id)}" aria-label="Open ${escapeHtml(project.name)}">${icon("chevron-right")}</a></td>
       </tr>`;
     })
     .join("");
 
   const projectLedger =
-    projects.length === 0
+    props.projects.length === 0
       ? ""
       : `<section class="card" aria-labelledby="project-ledger-title">
           <div class="card__head">
@@ -753,7 +639,7 @@ export function renderOverview(site: SiteModel, chrome: PageChrome): string {
         </section>`;
 
   const recentTable =
-    recent.length === 0
+    props.recentHandoffs.length === 0
       ? emptyState({
           iconName: "branch",
           title: "No handoffs yet",
@@ -763,14 +649,14 @@ export function renderOverview(site: SiteModel, chrome: PageChrome): string {
       : `<div class="table-wrap">
           <table class="table table--stack table--handoffs">
             <thead><tr><th scope="col">Route</th><th scope="col">Summary</th><th scope="col">State</th><th scope="col">Time</th><th scope="col"></th></tr></thead>
-            <tbody>${recent
+            <tbody>${props.recentHandoffs
               .map(
                 (handoff) => `<tr>
-                  <td data-label="Route">${routeText(appKeyFor(site, handoff.fromAppId), appKeyFor(site, handoff.toAppId))}</td>
+                  <td data-label="Route">${routeText(handoff.fromAppKey, handoff.toAppKey)}</td>
                   <td data-label="Summary"><span class="table__primary">${escapeHtml(handoff.summary)}</span></td>
                   <td data-label="State"><div class="cluster">${statusPill(handoff.state)}${replyPill(handoff.replyState)}</div></td>
                   <td data-label="Time"><span class="mono table__nowrap">${timeTag(handoff.updatedAt)}</span></td>
-                  <td data-label="Actions" class="table__actions"><a class="btn btn-ghost btn-sm" href="${reviewHref(handoff)}">Review</a></td>
+                  <td data-label="Actions" class="table__actions"><a class="btn btn-ghost btn-sm" href="${handoff.reviewHref}">Review</a></td>
                 </tr>`,
               )
               .join("")}</tbody>
@@ -778,28 +664,28 @@ export function renderOverview(site: SiteModel, chrome: PageChrome): string {
         </div>`;
 
   const waitingCards =
-    waiting.length === 0
+    props.waitingHandoffs.length === 0
       ? emptyState({
           iconName: "inbox",
           title: "No handoffs waiting",
           body: "Requests that require operator approval arrive here.",
           action: `<a class="btn btn-secondary btn-sm" href="/handoffs">Open inbox</a>`,
         })
-      : `<div class="stack">${waiting
+      : `<div class="stack">${props.waitingHandoffs
           .map((handoff) =>
             routeCard({
               id: handoff.id,
-              state: displayState(handoff),
-              from: appKeyFor(site, handoff.fromAppId),
-              to: appKeyFor(site, handoff.toAppId),
+              state: handoff.displayState,
+              from: handoff.fromAppKey,
+              to: handoff.toAppKey,
               summary: handoff.summary,
-              foot: `<span class="mono table__nowrap">${timeTag(handoff.updatedAt)}</span><a class="btn btn-ghost btn-sm" href="/handoffs?filter=waiting">Review ${icon("arrow-right")}</a>`,
+              foot: `<span class="mono table__nowrap">${timeTag(handoff.updatedAt)}</span><a class="btn btn-ghost btn-sm" href="${handoff.reviewHref}">Review ${icon("arrow-right")}</a>`,
             }),
           )
           .join("")}</div>`;
 
   const body =
-    projects.length === 0
+    props.counts.projects === 0
       ? `${empty}${newProjectDialog()}`
       : `${watch}
         <div class="workbench-grid section">
@@ -810,21 +696,21 @@ export function renderOverview(site: SiteModel, chrome: PageChrome): string {
                 <h2 class="card__title" id="recent-handoffs-title">Recent handoffs</h2>
                 <a class="btn btn-ghost btn-sm" href="/handoffs">Handoffs inbox ${icon("arrow-right")}</a>
               </div>
-              <div class="card__body${recent.length === 0 ? "" : " card__body--flush"}">${recentTable}</div>
+              <div class="card__body${props.recentHandoffs.length === 0 ? "" : " card__body--flush"}">${recentTable}</div>
             </section>
           </div>
           <aside class="rail-stack" aria-label="Attention and runtime">
             <section class="card" aria-labelledby="waiting-title">
-              <div class="card__head"><h2 class="card__title" id="waiting-title">Waiting for approval</h2><span class="mono">${waiting.length}</span></div>
+              <div class="card__head"><h2 class="card__title" id="waiting-title">Waiting for approval</h2><span class="mono">${props.waitingHandoffs.length}</span></div>
               <div class="card__body">${waitingCards}</div>
             </section>
             <section class="card" aria-labelledby="runtime-title">
-              <div class="card__head"><h2 class="card__title" id="runtime-title">Runtime</h2><span class="mono">${plural(site.appCount, "app")}</span></div>
+              <div class="card__head"><h2 class="card__title" id="runtime-title">Runtime</h2><span class="mono">${plural(props.counts.applications, "app")}</span></div>
               <div class="card__body stack--tight">
-                <div class="summary-row"><span class="small">Starting</span><span class="cluster">${runtimePill("starting")}<span class="mono">${site.startingCount}</span></span></div>
-                <div class="summary-row"><span class="small">Running</span><span class="cluster">${runtimePill("running")}<span class="mono">${site.runningCount}</span></span></div>
-                <div class="summary-row"><span class="small">Stopped</span><span class="cluster">${runtimePill("stopped")}<span class="mono">${site.stoppedCount}</span></span></div>
-                <div class="summary-row"><span class="small">Error</span><span class="cluster">${runtimePill("error")}<span class="mono">${site.errorCount}</span></span></div>
+                <div class="summary-row"><span class="small">Starting</span><span class="cluster">${runtimePill("starting")}<span class="mono">${props.counts.starting}</span></span></div>
+                <div class="summary-row"><span class="small">Running</span><span class="cluster">${runtimePill("running")}<span class="mono">${props.counts.running}</span></span></div>
+                <div class="summary-row"><span class="small">Stopped</span><span class="cluster">${runtimePill("stopped")}<span class="mono">${props.counts.stopped}</span></span></div>
+                <div class="summary-row"><span class="small">Error</span><span class="cluster">${runtimePill("error")}<span class="mono">${props.counts.error}</span></span></div>
               </div>
               <div class="card__foot"><a class="btn btn-ghost btn-sm" href="/projects">Inspect applications ${icon("arrow-right")}</a></div>
             </section>
@@ -850,27 +736,17 @@ export function renderProjects(
   site: SiteModel,
   options: { q?: string; chrome: PageChrome },
 ): string {
-  const query = (options.q ?? "").trim();
-  const needle = query.toLowerCase();
-  const operator = operatorProjects(site);
-  const filtered = operator.filter((project) => {
-    if (needle.length === 0) {
-      return true;
-    }
-    return (
-      project.name.toLowerCase().includes(needle) || project.rootPath.toLowerCase().includes(needle)
-    );
-  });
-  const sorted = [...filtered].sort((a, b) => a.name.localeCompare(b.name));
+  const props = buildProjectsProps(site, options.q);
+  const query = props.query;
 
   const header = pageHeader({
     overline: "Workbench",
     title: "Projects",
     description:
       "Every project discovered under the workspace root, with its applications and handoff activity.",
-    meta: [`${plural(operator.length, "project")}`, `${plural(site.appCount, "application")}`],
+    meta: [`${plural(props.projectCount, "project")}`, `${plural(props.appCount, "application")}`],
     actions:
-      operator.length === 0
+      props.projectCount === 0
         ? undefined
         : `<button class="btn btn-primary" type="button" data-dialog-open="new-project">${icon("plus")}New project</button>`,
   });
@@ -883,7 +759,7 @@ export function renderProjects(
   </form>`;
 
   let content: string;
-  if (operator.length === 0) {
+  if (props.projectCount === 0) {
     content = `${emptyState({
       iconName: "folder",
       title: "No projects yet",
@@ -891,7 +767,7 @@ export function renderProjects(
       action: `<button class="btn btn-primary btn-sm" type="button" data-dialog-open="new-project">${icon("plus")}New project</button>`,
     })}
     <p class="hint">A project is a folder with a manifest. Applications are repositories inside it, each with an isolated agent state.</p>`;
-  } else if (sorted.length === 0) {
+  } else if (props.matchedCount === 0) {
     content = emptyState({
       iconName: "search",
       title: "No matching projects",
@@ -899,22 +775,21 @@ export function renderProjects(
       action: `<a class="btn btn-secondary btn-sm" href="/projects">Clear search</a>`,
     });
   } else {
-    const rows = sorted
+    const rows = props.rows
       .map((project) => {
-        const counts = handoffCounts(project.handoffs);
         return `<tr>
           <td data-label="Project"><div class="cluster"><a class="table__primary" href="/projects/${encodeURIComponent(project.id)}">${escapeHtml(project.name)}</a>${project.deleting ? deletionStatus() : ""}</div></td>
           <td data-label="Root path"><span class="mono">${escapeHtml(project.rootPath)}</span></td>
-          <td data-label="Apps" class="table__num">${project.apps.length}</td>
-          <td data-label="Waiting" class="table__num">${counts.waiting}</td>
-          <td data-label="Updated"><span class="mono table__nowrap">${timeTag(projectLastActivity(project))}</span></td>
+          <td data-label="Apps" class="table__num">${project.appCount}</td>
+          <td data-label="Waiting" class="table__num">${project.waitingCount}</td>
+          <td data-label="Updated"><span class="mono table__nowrap">${timeTag(project.updatedAt)}</span></td>
           <td data-label="Actions" class="table__actions"><a class="btn btn-ghost btn-icon btn-sm" href="/projects/${encodeURIComponent(project.id)}" aria-label="Open ${escapeHtml(project.name)}">${icon("chevron-right")}</a></td>
         </tr>`;
       })
       .join("");
     content = `${search}
       <section class="card" aria-labelledby="projects-table-title">
-        <div class="card__head"><h2 class="card__title" id="projects-table-title">Project ledger</h2><span class="mono">${plural(sorted.length, "project")}</span></div>
+        <div class="card__head"><h2 class="card__title" id="projects-table-title">Project ledger</h2><span class="mono">${plural(props.matchedCount, "project")}</span></div>
         <div class="card__body card__body--flush">
           <div class="table-wrap">
             <table class="table table--stack">
@@ -945,35 +820,22 @@ export function renderProject(
   projectId: string,
   chrome: PageChrome,
 ): string | undefined {
-  const project = site.projects.find((candidate) => candidate.id === projectId);
-  if (project === undefined) {
+  const props = buildProjectProps(site, projectId);
+  if (props === undefined) {
     return undefined;
   }
-  if (project.builtin === true) {
-    const app = project.apps[0];
-    const runtime = app === undefined ? "stopped" : (site.runtime.get(app.id) ?? "stopped");
-    const chatHref =
-      app === undefined
-        ? masterChatHref()
-        : `/chat?app=${encodeURIComponent(app.appKey)}&project=${encodeURIComponent(project.id)}`;
-    const appSettingsHref =
-      app === undefined
-        ? `/projects/${encodeURIComponent(project.id)}/settings`
-        : `/projects/${encodeURIComponent(project.id)}/apps/${encodeURIComponent(app.appKey)}/settings`;
-    const appSkillsHref =
-      app === undefined
-        ? `/projects/${encodeURIComponent(project.id)}/skills`
-        : `/projects/${encodeURIComponent(project.id)}/apps/${encodeURIComponent(app.appKey)}/skills`;
+  const master = props.masterSummary;
+  if (master !== null) {
     const header = pageHeader({
       overline: "Master",
       title: "Hanse master",
       description: "Built-in assistant that configures and operates this Hanse instance.",
-      meta: [runtime, app?.path ?? project.rootPath],
-      actions: `<a class="btn btn-primary" href="${escapeHtml(chatHref)}">${icon("message")}Open chat</a><a class="btn btn-secondary" href="${escapeHtml(appSettingsHref)}">${icon("settings")}Settings</a>`,
+      meta: [master.runtime, master.path],
+      actions: `<a class="btn btn-primary" href="${escapeHtml(master.chatHref)}">${icon("message")}Open chat</a><a class="btn btn-secondary" href="${escapeHtml(master.settingsHref)}">${icon("settings")}Settings</a>`,
     });
     const body = `<div class="watch-strip watch-strip--2">
-      <div class="watch"><p class="watch__value">${runtimePill(runtime)}</p><p class="watch__label">Runtime</p></div>
-      <div class="watch"><p class="watch__value">${escapeHtml(app?.kind ?? "master")}</p><p class="watch__label">Kind</p></div>
+      <div class="watch"><p class="watch__value">${runtimePill(master.runtime)}</p><p class="watch__label">Runtime</p></div>
+      <div class="watch"><p class="watch__value">${escapeHtml(master.kind)}</p><p class="watch__label">Kind</p></div>
     </div>
     <section class="card section" aria-labelledby="master-card-title">
       <div class="card__head"><h2 class="card__title" id="master-card-title">Master agent</h2><span class="badge badge--mono">system</span></div>
@@ -982,29 +844,20 @@ export function renderProject(
         <p class="small">Its own directory is coordinator-managed and read-only inside its container. Its instructions are rewritten from the coordinator on every start.</p>
         <p class="small">Skills can be created, inspected, updated, enabled/disabled, and overridden from the master chat; deleting or renaming them stays operator-only. Provider keys, git credentials, image builds, and project deletion are operator-only UI actions.</p>
       </div>
-      <div class="card__foot"><a class="btn btn-secondary btn-sm" href="${escapeHtml(chatHref)}">${icon("message")}Open chat</a><a class="btn btn-ghost btn-sm" href="${escapeHtml(appSettingsHref)}">${icon("settings")}Application settings</a><a class="btn btn-ghost btn-sm" href="${escapeHtml(appSkillsHref)}">${icon("code")}Skills</a></div>
+      <div class="card__foot"><a class="btn btn-secondary btn-sm" href="${escapeHtml(master.chatHref)}">${icon("message")}Open chat</a><a class="btn btn-ghost btn-sm" href="${escapeHtml(master.settingsHref)}">${icon("settings")}Application settings</a><a class="btn btn-ghost btn-sm" href="${escapeHtml(master.skillsHref)}">${icon("code")}Skills</a></div>
     </section>`;
     return shell(site, chrome, {
       title: "Hanse master",
       active: "project",
-      activeProjectId: project.id,
+      activeProjectId: props.project.id,
       breadcrumb: [{ label: "Workbench", href: "/" }, { label: "Master" }],
       header,
       body,
-      settingsHref: appSettingsHref,
-      skillsHref: appSkillsHref,
+      settingsHref: master.settingsHref,
+      skillsHref: master.skillsHref,
     });
   }
-  const counts = handoffCounts(project.handoffs);
-  const waiting = sortedHandoffs(
-    project.handoffs.filter(
-      (handoff) =>
-        handoff.state === "awaiting_approval" || handoff.replyState === "awaiting_approval",
-    ),
-  );
-  const running = project.apps.filter(
-    (app) => (site.runtime.get(app.id) ?? "stopped") === "running",
-  ).length;
+  const project = props.project;
 
   const header = pageHeader({
     overline: "Project",
@@ -1013,37 +866,34 @@ export function renderProject(
     meta: [
       project.rootPath,
       `base ${project.baseBranch}`,
-      plural(project.apps.length, "application"),
-      `${counts.waiting} waiting`,
+      plural(props.apps.length, "application"),
+      `${props.counts.waiting} waiting`,
     ],
-    actions: `<a class="btn btn-secondary" href="/projects/${encodeURIComponent(project.id)}/settings">${icon("settings")}Settings</a><a class="btn btn-secondary" href="${escapeHtml(ideFolderUrl(project.rootPath))}" target="_blank" rel="noreferrer">${icon("external")}Open IDE</a><button class="btn btn-primary" type="button" data-dialog-open="new-handoff">${icon("branch")}New handoff</button>`,
+    actions: `<a class="btn btn-secondary" href="${escapeHtml(props.hrefs.settings)}">${icon("settings")}Settings</a><a class="btn btn-secondary" href="${escapeHtml(props.hrefs.ide)}" target="_blank" rel="noreferrer">${icon("external")}Open IDE</a><button class="btn btn-primary" type="button" data-dialog-open="new-handoff">${icon("branch")}New handoff</button>`,
   });
 
-  const appRows = project.apps
+  const appRows = props.apps
     .map((app) => {
-      const runtime = site.runtime.get(app.id) ?? "stopped";
-      const pending = site.pendingRestart.get(app.id) ?? false;
-      const appHref = `/projects/${encodeURIComponent(project.id)}/apps/${encodeURIComponent(app.appKey)}`;
       const chatLink =
-        app.deleting || project.deleting
+        app.chatHref === null
           ? ""
-          : `<a class="btn btn-ghost btn-sm" href="${escapeHtml(`/chat?app=${encodeURIComponent(app.appKey)}&project=${encodeURIComponent(project.id)}`)}">${icon("message")}Chat</a>`;
+          : `<a class="btn btn-ghost btn-sm" href="${escapeHtml(app.chatHref)}">${icon("message")}Chat</a>`;
       return `<tr>
-        <td data-label="Application"><div class="cluster"><strong class="table__primary"><a href="${escapeHtml(appHref)}">${escapeHtml(app.appKey)}</a></strong>${app.deleting ? deletionStatus() : ""}</div></td>
-        <td data-label="Kind"><span class="badge badge--mono">${escapeHtml(app.kind ?? "app")}</span></td>
+        <td data-label="Application"><div class="cluster"><strong class="table__primary"><a href="${escapeHtml(app.href)}">${escapeHtml(app.appKey)}</a></strong>${app.deleting ? deletionStatus() : ""}</div></td>
+        <td data-label="Kind"><span class="badge badge--mono">${escapeHtml(app.kind)}</span></td>
         <td data-label="Path"><span class="mono">${escapeHtml(app.path)}</span></td>
-        <td data-label="Runtime"><div class="cluster">${runtimePill(runtime)}${pending ? `<a class="badge badge-warning" href="${escapeHtml(`/projects/${encodeURIComponent(project.id)}/apps/${encodeURIComponent(app.appKey)}/settings`)}">Restart required</a>` : ""}</div></td>
+        <td data-label="Runtime"><div class="cluster">${runtimePill(app.runtime)}${app.pendingRestart ? `<a class="badge badge-warning" href="${escapeHtml(app.restartHref)}">Restart required</a>` : ""}</div></td>
         <td data-label="Actions" class="table__actions"><div class="table__action-group">
           ${chatLink}
-          <a class="btn btn-ghost btn-icon btn-sm" href="${escapeHtml(ideFolderUrl(appDir(project, app)))}" target="_blank" rel="noreferrer" aria-label="Open ${escapeHtml(app.appKey)} in IDE" title="Open in IDE">${icon("external")}</a>
-          <a class="btn btn-ghost btn-icon btn-sm" href="${escapeHtml(appHref)}" aria-label="Open ${escapeHtml(app.appKey)} application" title="Open application">${icon("chevron-right")}</a>
+          <a class="btn btn-ghost btn-icon btn-sm" href="${escapeHtml(app.ideHref)}" target="_blank" rel="noreferrer" aria-label="Open ${escapeHtml(app.appKey)} in IDE" title="Open in IDE">${icon("external")}</a>
+          <a class="btn btn-ghost btn-icon btn-sm" href="${escapeHtml(app.href)}" aria-label="Open ${escapeHtml(app.appKey)} application" title="Open application">${icon("chevron-right")}</a>
         </div></td>
       </tr>`;
     })
     .join("");
 
   const appsContent =
-    project.apps.length === 0
+    props.apps.length === 0
       ? emptyState({
           iconName: "folder",
           title: "No applications",
@@ -1058,7 +908,7 @@ export function renderProject(
         </div>`;
 
   const handoffsContent =
-    project.handoffs.length === 0
+    props.handoffs.length === 0
       ? emptyState({
           iconName: "branch",
           title: "No handoffs yet",
@@ -1068,25 +918,25 @@ export function renderProject(
       : `<div class="table-wrap">
           <table class="table table--stack table--handoffs">
             <thead><tr><th scope="col">Route</th><th scope="col">State</th><th scope="col">Summary</th><th scope="col">Updated</th><th scope="col"></th></tr></thead>
-            <tbody>${projectHandoffRows(site, project)}</tbody>
+            <tbody>${projectHandoffRows(sortedHandoffs(props.handoffs))}</tbody>
           </table>
         </div>`;
 
   const waitingCards =
-    waiting.length === 0
+    props.waitingHandoffs.length === 0
       ? emptyState({
           iconName: "inbox",
           title: "Nothing waiting",
           body: "Approval requests from this project appear here.",
           action: `<a class="btn btn-secondary btn-sm" href="/handoffs?filter=waiting">Open inbox</a>`,
         })
-      : `<div class="stack">${waiting
+      : `<div class="stack">${props.waitingHandoffs
           .map((handoff) =>
             routeCard({
               id: handoff.id,
-              state: displayState(handoff),
-              from: appKeyFor(site, handoff.fromAppId),
-              to: appKeyFor(site, handoff.toAppId),
+              state: handoff.displayState,
+              from: handoff.fromAppKey,
+              to: handoff.toAppKey,
               summary: handoff.summary,
               foot: `<span class="mono table__nowrap">${timeTag(handoff.updatedAt)}</span><button class="btn btn-ghost btn-sm" type="button" data-dialog-open="h-${escapeHtml(handoff.id)}">Review ${icon("arrow-right")}</button>`,
             }),
@@ -1098,63 +948,63 @@ export function renderProject(
     <div class="card__body stack--tight">
       <div class="stack--tight"><span class="overline">Manifest</span><span class="mono">.hanse/project.yaml</span></div>
       <div class="stack--tight"><span class="overline">Base branch</span><span class="mono">${escapeHtml(project.baseBranch)}</span></div>
-      <div class="stack--tight"><span class="overline">Applications</span><span class="mono">${project.apps.length}</span></div>
+      <div class="stack--tight"><span class="overline">Applications</span><span class="mono">${props.apps.length}</span></div>
       <div class="stack--tight"><span class="overline">Root path</span><span class="mono">${escapeHtml(project.rootPath)}</span></div>
     </div>
-    <div class="card__foot"><a class="btn btn-ghost btn-sm" href="${escapeHtml(ideFolderUrl(project.rootPath))}" target="_blank" rel="noreferrer">${icon("external")}Open IDE</a></div>
+    <div class="card__foot"><a class="btn btn-ghost btn-sm" href="${escapeHtml(props.hrefs.ide)}" target="_blank" rel="noreferrer">${icon("external")}Open IDE</a></div>
   </section>`;
 
   const dangerZone = `<section class="card section" id="danger-zone" aria-labelledby="danger-zone-title">
     <div class="card__head">
       <h2 class="card__title" id="danger-zone-title">Danger zone</h2>
-      ${project.deleting ? deletionStatus() : '<span class="badge">Destructive</span>'}
+      ${props.deletion.deleting ? deletionStatus() : '<span class="badge">Destructive</span>'}
     </div>
     <div class="card__body stack--tight">
       ${
-        project.deleting
+        props.deletion.deleting
           ? `<p class="small">A previous deletion did not finish. Retry to remove the remaining applications, records, and runtime resources. Chat and start stay disabled until deletion completes.</p>`
           : `<p class="small">Deleting this project removes every application, session, handoff, credential, and managed image. Source files are kept unless you choose to delete them too.</p>`
       }
     </div>
     <div class="card__foot">
-      <button class="btn btn-danger" type="button" data-dialog-open="project-delete-dialog">${icon("trash")}${project.deleting ? "Retry deletion" : "Delete project"}</button>
+      <button class="btn btn-danger" type="button" data-dialog-open="project-delete-dialog">${icon("trash")}${props.deletion.deleting ? "Retry deletion" : "Delete project"}</button>
     </div>
   </section>`;
 
   const body = `<div class="watch-strip watch-strip--4">
-      <div class="watch"><p class="watch__value">${project.apps.length}</p><p class="watch__label">Applications</p></div>
-      <div class="watch"><p class="watch__value">${running}</p><p class="watch__label">Running</p></div>
-      <div class="watch"><p class="watch__value">${counts.waiting}</p><p class="watch__label">Waiting</p></div>
-      <div class="watch"><p class="watch__value">${escapeHtml(shortTime(projectLastActivity(project)))}</p><p class="watch__label">Last activity</p></div>
+      <div class="watch"><p class="watch__value">${props.apps.length}</p><p class="watch__label">Applications</p></div>
+      <div class="watch"><p class="watch__value">${props.counts.running}</p><p class="watch__label">Running</p></div>
+      <div class="watch"><p class="watch__value">${props.counts.waiting}</p><p class="watch__label">Waiting</p></div>
+      <div class="watch"><p class="watch__value">${escapeHtml(timeAgo(props.lastActivity))}</p><p class="watch__label">Last activity</p></div>
     </div>
     <div class="workbench-grid workbench-grid--detail section">
       <div class="stack">
         <section class="card" aria-labelledby="apps-title">
           <div class="card__head">
             <h2 class="card__title" id="apps-title">Applications</h2>
-            <div class="cluster"><span class="badge">${plural(project.apps.length, "app")}</span><button class="btn btn-ghost btn-sm" type="button" data-dialog-open="add-app">${icon("plus")}Add app</button></div>
+            <div class="cluster"><span class="badge">${plural(props.apps.length, "app")}</span><button class="btn btn-ghost btn-sm" type="button" data-dialog-open="add-app">${icon("plus")}Add app</button></div>
           </div>
-          <div class="card__body${project.apps.length === 0 ? "" : " card__body--flush"}">${appsContent}</div>
+          <div class="card__body${props.apps.length === 0 ? "" : " card__body--flush"}">${appsContent}</div>
         </section>
         <section class="card" aria-labelledby="project-handoffs-title">
-          <div class="card__head"><h2 class="card__title" id="project-handoffs-title">Handoffs</h2><span class="mono">${counts.all}</span></div>
-          <div class="card__body${project.handoffs.length === 0 ? "" : " card__body--flush"}">${handoffsContent}</div>
+          <div class="card__head"><h2 class="card__title" id="project-handoffs-title">Handoffs</h2><span class="mono">${props.counts.handoffs}</span></div>
+          <div class="card__body${props.handoffs.length === 0 ? "" : " card__body--flush"}">${handoffsContent}</div>
         </section>
-        ${handoffPolicyCard(project)}
+        ${handoffPolicyCard(project.id, props.policy)}
       </div>
       <aside class="rail-stack" aria-label="Project attention">
         <section class="card" aria-labelledby="project-waiting-title">
-          <div class="card__head"><h2 class="card__title" id="project-waiting-title">Waiting for approval</h2><span class="mono">${waiting.length}</span></div>
+          <div class="card__head"><h2 class="card__title" id="project-waiting-title">Waiting for approval</h2><span class="mono">${props.waitingHandoffs.length}</span></div>
           <div class="card__body">${waitingCards}</div>
         </section>
         ${manifest}
       </aside>
     </div>
     ${dangerZone}
-    ${addAppDialog(project)}
-    ${projectDeleteDialog(project)}
-    ${newHandoffDialog(project)}
-    ${handoffDialogs(project.handoffs, site, `/projects/${project.id}`)}`;
+    ${addAppDialog(props.dialogs.addApp)}
+    ${projectDeleteDialog(props.dialogs.delete)}
+    ${newHandoffDialog(props.dialogs.newHandoff)}
+    ${handoffDialogs(props.handoffs)}`;
 
   return shell(site, chrome, {
     title: project.name,
@@ -1163,8 +1013,8 @@ export function renderProject(
     breadcrumb: [{ label: "Projects", href: "/projects" }, { label: project.name }],
     header,
     body,
-    settingsHref: `/projects/${encodeURIComponent(project.id)}/settings`,
-    skillsHref: `/projects/${encodeURIComponent(project.id)}/skills`,
+    settingsHref: props.hrefs.settings,
+    skillsHref: props.hrefs.skills,
     moduleScripts: ["/assets/handoff.js"],
   });
 }
@@ -1218,10 +1068,10 @@ export function renderHandoffs(
       ) {
         return false;
       }
-      if (filter === "active" && !ACTIVE_STATES.includes(handoff.state)) {
+      if (filter === "active" && !ACTIVE_HANDOFF_STATES.includes(handoff.state)) {
         return false;
       }
-      if (filter === "closed" && !CLOSED_STATES.includes(handoff.state)) {
+      if (filter === "closed" && !CLOSED_HANDOFF_STATES.includes(handoff.state)) {
         return false;
       }
       if (
@@ -1340,7 +1190,9 @@ export function renderHandoffs(
           </div>
         </div>
       </section>
-      ${handoffDialogs(filtered, site, filterHref(filter, ""))}`;
+      ${handoffDialogs(
+        filtered.map((handoff) => buildProjectHandoffProps(site, handoff, filterHref(filter, ""))),
+      )}`;
   }
 
   return shell(site, options.chrome, {

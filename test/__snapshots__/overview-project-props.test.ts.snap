@@ -1,0 +1,810 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`overview page props > keeps the legacy overview HTML deriving from the same props 1`] = `
+"<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark light" />
+    <title>Fleet overview - hanse</title>
+    <script>
+      (function () {
+        try {
+          var saved = localStorage.getItem("hanse-theme");
+          if (saved === "light" || saved === "dark") {
+            document.documentElement.dataset.theme = saved;
+          }
+        } catch (error) {}
+      })();
+    </script>
+    <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml" />
+    
+    <link rel="stylesheet" href="/assets/app.css" />
+    <script src="/assets/app.js" defer></script>
+    <script src="/assets/app-content.js" defer></script>
+    
+    
+  </head>
+  <body class="app-body">
+    <svg class="sr-only" aria-hidden="true" focusable="false"><symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16" /></symbol><symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12" /></symbol><symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5" /></symbol><symbol id="i-chevron-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6" /></symbol><symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6" /></symbol><symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></symbol><symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8" /><path d="m21 21-4.3-4.3" /></symbol><symbol id="i-folder" viewBox="0 0 24 24"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" /></symbol><symbol id="i-dashboard" viewBox="0 0 24 24"><rect width="7" height="9" x="3" y="3" rx="1" /><rect width="7" height="5" x="14" y="3" rx="1" /><rect width="7" height="9" x="14" y="12" rx="1" /><rect width="7" height="5" x="3" y="16" rx="1" /></symbol><symbol id="i-branch" viewBox="0 0 24 24"><line x1="6" x2="6" y1="3" y2="15" /><circle cx="18" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M18 9a9 9 0 0 1-9 9" /></symbol><symbol id="i-layers" viewBox="0 0 24 24"><path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z" /><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65" /><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65" /></symbol><symbol id="i-message" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></symbol><symbol id="i-panel-left" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2" /><path d="M9 3v18" /></symbol><symbol id="i-panel-right" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2" /><path d="M15 3v18" /></symbol><symbol id="i-settings" viewBox="0 0 24 24"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" /><circle cx="12" cy="12" r="3" /></symbol><symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41" /></symbol><symbol id="i-moon" viewBox="0 0 24 24"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" /></symbol><symbol id="i-external" viewBox="0 0 24 24"><path d="M15 3h6v6" /><path d="M10 14 21 3" /><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /></symbol><symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></symbol><symbol id="i-stamp" viewBox="0 0 24 24"><path d="M5 22h14" /><path d="M19.27 13.73A2.5 2.5 0 0 0 17.5 13h-11A2.5 2.5 0 0 0 4 15.5V17a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-1.5c0-.66-.26-1.3-.73-1.77Z" /><path d="M14 13V8.5C14 7 15 7 15 5a3 3 0 0 0-6 0c0 2 1 2 1 3.5V13" /></symbol><symbol id="i-send" viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4Z" /><path d="M22 2 11 13" /></symbol><symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1" /></symbol><symbol id="i-activity" viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2" /></symbol><symbol id="i-gauge" viewBox="0 0 24 24"><path d="m12 14 4-4" /><path d="M3.34 19a10 10 0 1 1 17.32 0" /></symbol><symbol id="i-hourglass" viewBox="0 0 24 24"><path d="M5 22h14M5 2h14" /><path d="M17 22v-4.172a2 2 0 0 0-.586-1.414L12 12l-4.414 4.414A2 2 0 0 0 7 17.828V22" /><path d="M7 2v4.172a2 2 0 0 0 .586 1.414L12 12l4.414-4.414A2 2 0 0 0 17 6.172V2" /></symbol><symbol id="i-alert-triangle" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" /><path d="M12 9v4M12 17h.01" /></symbol><symbol id="i-alert-circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /><line x1="12" x2="12" y1="8" y2="12" /><line x1="12" x2="12.01" y1="16" y2="16" /></symbol><symbol id="i-slash" viewBox="0 0 24 24"><path d="M22 2 2 22" /></symbol><symbol id="i-inbox" viewBox="0 0 24 24"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12" /><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" /></symbol><symbol id="i-copy" viewBox="0 0 24 24"><rect width="14" height="14" x="8" y="8" rx="2" /><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" /></symbol><symbol id="i-terminal" viewBox="0 0 24 24"><polyline points="4 17 10 11 4 5" /><line x1="12" x2="20" y1="19" y2="19" /></symbol><symbol id="i-code" viewBox="0 0 24 24"><polyline points="16 18 22 12 16 6" /><polyline points="8 6 2 12 8 18" /></symbol><symbol id="i-arrow-right" viewBox="0 0 24 24"><path d="M5 12h14" /><path d="m12 5 7 7-7 7" /></symbol><symbol id="i-refresh" viewBox="0 0 24 24"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" /><path d="M21 3v5h-5" /><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" /><path d="M8 16H3v5" /></symbol><symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" /><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /><line x1="10" x2="10" y1="11" y2="17" /><line x1="14" x2="14" y1="11" y2="17" /></symbol><symbol id="i-lock" viewBox="0 0 24 24"><rect width="18" height="11" x="3" y="11" rx="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></symbol><symbol id="i-log-out" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" x2="9" y1="12" y2="12" /></symbol><symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0" /><circle cx="12" cy="12" r="3" /></symbol><symbol id="i-eye-off" viewBox="0 0 24 24"><path d="M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49" /><path d="M14.084 14.158a3 3 0 0 1-4.242-4.242" /><path d="M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143" /><path d="m2 2 20 20" /></symbol><symbol id="i-loader" viewBox="0 0 24 24"><line x1="12" x2="12" y1="2" y2="6" /><line x1="12" x2="12" y1="18" y2="22" /><line x1="4.93" x2="7.76" y1="4.93" y2="7.76" /><line x1="16.24" x2="19.07" y1="16.24" y2="19.07" /><line x1="2" x2="6" y1="12" y2="12" /><line x1="18" x2="22" y1="12" y2="12" /><line x1="4.93" x2="7.76" y1="19.07" y2="16.24" /><line x1="16.24" x2="19.07" y1="7.76" y2="4.93" /></symbol><symbol id="i-more" viewBox="0 0 24 24"><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /><circle cx="5" cy="12" r="1" /></symbol></svg>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <div class="sr-only" id="route-announcer" aria-live="polite" aria-atomic="true"></div>
+    <div class="app-shell" data-nav="closed" id="shell" data-nav-id="overview">
+      <aside class="sidebar" id="sidebar" aria-label="Primary">
+    <div class="sidebar__head">
+      <a class="wordmark" href="/">hanse</a>
+      <span class="sidebar__kicker">coordinator</span>
+      <button class="btn btn-ghost btn-icon btn-sm sidebar__close" type="button" data-nav-close aria-label="Close navigation"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-x" /></svg></button>
+    </div>
+    <nav class="sidebar__nav" id="sidebar-nav" aria-label="Workspace" data-nav-id="overview">
+      <p class="nav-label">Workbench</p><a class="nav-item is-active" href="/" data-nav-id="overview" aria-current="page"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-dashboard" /></svg><span class="nav-item__label">Overview</span><span class="nav-item__mark"><svg class="icon icon--sm" aria-hidden="true" focusable="false"><use href="#i-check" /></svg></span></a><a class="nav-item" href="/projects" data-nav-id="projects"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-folder" /></svg><span class="nav-item__label">Projects</span></a><a class="nav-item" href="/chat?app=master&amp;project=hanse-master" data-nav-id="master"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-gauge" /></svg><span class="nav-item__label">Master</span></a><a class="nav-item" href="/handoffs" data-nav-id="handoffs"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-branch" /></svg><span class="nav-item__label">Handoffs</span><span class="nav-item__count">2</span></a><a class="nav-item" href="/skills" data-nav-id="skills"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-code" /></svg><span class="nav-item__label">Skills</span></a><a class="nav-item" href="/settings" data-nav-id="settings"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-settings" /></svg><span class="nav-item__label">Settings</span></a><a class="nav-item" href="/ssh" data-nav-id="ssh"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-terminal" /></svg><span class="nav-item__label">SSH</span></a><p class="nav-label">Projects</p><a class="nav-item" href="/projects/p" data-project-id="p"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-folder" /></svg><span class="nav-item__label">Demo</span><span class="nav-item__count">2</span></a><a class="nav-item" href="/projects" data-nav-id="projects"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-layers" /></svg><span class="nav-item__label">All projects</span></a>
+    </nav>
+    <div class="sidebar__foot">
+      <span class="avatar avatar--sm">OP</span>
+      <span class="sidebar__operator">operator</span>
+      <button class="btn btn-ghost btn-sm theme-toggle" type="button" data-theme-toggle aria-label="Switch to light theme" title="Switch theme">
+        <span class="theme-toggle__icon" data-theme-icon="light"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-sun" /></svg></span>
+        <span class="theme-toggle__icon" data-theme-icon="dark"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-moon" /></svg></span>
+        <span data-theme-label>Light</span>
+      </button>
+      <form method="post" action="/logout">
+        <button class="btn btn-ghost btn-icon btn-sm" type="submit" aria-label="Sign out" title="Sign out"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-log-out" /></svg></button>
+      </form>
+    </div>
+  </aside>
+      <div class="shell-main">
+        <header class="topbar">
+          <button class="btn btn-ghost btn-icon nav-toggle" type="button" data-nav-toggle aria-expanded="false" aria-controls="sidebar" aria-label="Open navigation"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-menu" /></svg></button>
+          <a class="topbar__brand" href="/">hanse</a>
+          <nav class="breadcrumb" id="breadcrumb-host" aria-label="Breadcrumb" data-nav-id="overview"><a href="/">Workbench</a><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-chevron-right" /></svg><span aria-current="page">Overview</span></nav>
+          <div class="topbar__actions"><a class="btn btn-ghost btn-icon" href="/ide/" target="_blank" rel="noreferrer" aria-label="Open IDE in a new tab" title="Open IDE"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-external" /></svg></a></div>
+        </header>
+        <main class="page" id="main" tabindex="-1">
+          <header class="page-header">
+    <div class="page-header__main">
+      <p class="overline">Workbench</p>
+      <h1 class="page-title">Fleet overview</h1>
+      <p class="page-description">Current state of every project, application, and handoff in this workspace.</p>
+      <div class="page-meta"><span class="mono">1 project</span><span class="mono">2 applications</span></div>
+    </div>
+    <div class="page-header__actions"><button class="btn btn-primary" type="button" data-dialog-open="new-project"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-plus" /></svg>New project</button></div>
+  </header>
+          <div class="page__body"><div class="watch-strip watch-strip--4">
+    <div class="watch"><p class="watch__value">1</p><p class="watch__label">Projects</p></div>
+    <div class="watch"><p class="watch__value">2</p><p class="watch__label">Applications</p></div>
+    <div class="watch"><p class="watch__value">1</p><p class="watch__label">Agents running</p></div>
+    <div class="watch"><p class="watch__value">2</p><p class="watch__label">Handoffs waiting</p></div>
+  </div>
+        <div class="workbench-grid section">
+          <div class="stack">
+            <section class="card" aria-labelledby="project-ledger-title">
+          <div class="card__head">
+            <h2 class="card__title" id="project-ledger-title">Project ledger</h2>
+            <a class="btn btn-ghost btn-sm" href="/projects">All projects <svg class="icon" aria-hidden="true" focusable="false"><use href="#i-arrow-right" /></svg></a>
+          </div>
+          <div class="card__body card__body--flush">
+            <div class="table-wrap">
+              <table class="table table--stack">
+                <thead><tr><th scope="col">Project</th><th scope="col">Root path</th><th scope="col">Apps</th><th scope="col">Waiting</th><th scope="col">Last activity</th><th scope="col"></th></tr></thead>
+                <tbody><tr>
+        <td data-label="Project"><div class="cluster"><a class="table__primary" href="/projects/p">Demo</a></div></td>
+        <td data-label="Root path"><span class="mono">/workspace/demo</span></td>
+        <td data-label="Apps" class="table__num">2</td>
+        <td data-label="Waiting" class="table__num">2</td>
+        <td data-label="Last activity"><span class="mono table__nowrap"><time datetime="2026-01-02T12:00:00.000Z" title="2 Jan 2026, 12:00">just now</time></span></td>
+        <td data-label="Actions" class="table__actions"><a class="btn btn-ghost btn-icon btn-sm" href="/projects/p" aria-label="Open Demo"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-chevron-right" /></svg></a></td>
+      </tr></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+            <section class="card" aria-labelledby="recent-handoffs-title">
+              <div class="card__head">
+                <h2 class="card__title" id="recent-handoffs-title">Recent handoffs</h2>
+                <a class="btn btn-ghost btn-sm" href="/handoffs">Handoffs inbox <svg class="icon" aria-hidden="true" focusable="false"><use href="#i-arrow-right" /></svg></a>
+              </div>
+              <div class="card__body card__body--flush"><div class="table-wrap">
+          <table class="table table--stack table--handoffs">
+            <thead><tr><th scope="col">Route</th><th scope="col">Summary</th><th scope="col">State</th><th scope="col">Time</th><th scope="col"></th></tr></thead>
+            <tbody><tr>
+                  <td data-label="Route"><span class="table__route"><span class="mono">a</span><svg class="icon icon--sm" aria-hidden="true" focusable="false"><use href="#i-arrow-right" /></svg><span class="mono">b</span></span></td>
+                  <td data-label="Summary"><span class="table__primary">Ship the change</span></td>
+                  <td data-label="State"><div class="cluster"><span class="status" data-state="delivered"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-check" /></svg>Delivered</span><span class="badge"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-stamp" /></svg>Reply approval</span></div></td>
+                  <td data-label="Time"><span class="mono table__nowrap"><time datetime="2026-01-02T12:00:00.000Z" title="2 Jan 2026, 12:00">just now</time></span></td>
+                  <td data-label="Actions" class="table__actions"><a class="btn btn-ghost btn-sm" href="/handoffs?q=h-done">Review</a></td>
+                </tr><tr>
+                  <td data-label="Route"><span class="table__route"><span class="mono">a</span><svg class="icon icon--sm" aria-hidden="true" focusable="false"><use href="#i-arrow-right" /></svg><span class="mono">b</span></span></td>
+                  <td data-label="Summary"><span class="table__primary">Wait for review</span></td>
+                  <td data-label="State"><div class="cluster"><span class="status" data-state="awaiting_approval"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-stamp" /></svg>Awaiting approval</span></div></td>
+                  <td data-label="Time"><span class="mono table__nowrap"><time datetime="2026-01-02T12:00:00.000Z" title="2 Jan 2026, 12:00">just now</time></span></td>
+                  <td data-label="Actions" class="table__actions"><a class="btn btn-ghost btn-sm" href="/handoffs?q=h-wait">Review</a></td>
+                </tr></tbody>
+          </table>
+        </div></div>
+            </section>
+          </div>
+          <aside class="rail-stack" aria-label="Attention and runtime">
+            <section class="card" aria-labelledby="waiting-title">
+              <div class="card__head"><h2 class="card__title" id="waiting-title">Waiting for approval</h2><span class="mono">2</span></div>
+              <div class="card__body"><div class="stack"><article class="route-card" data-state="awaiting_approval">
+    <div class="route-card__head">
+      <span class="mono table__nowrap">h-done</span>
+      <span class="status" data-state="awaiting_approval"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-stamp" /></svg>Awaiting approval</span>
+    </div>
+    <div class="route" aria-label="Handoff from a to b">
+      <span class="route__end">
+        <span class="route__app">a</span>
+        <span class="route__meta">origin</span>
+      </span>
+      <span class="route__track" aria-hidden="true">
+        <span class="route__node"></span>
+        <span class="route__seal"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-stamp" /></svg></span>
+        <span class="route__node"></span>
+      </span>
+      <span class="route__end route__end--to">
+        <span class="route__app">b</span>
+        <span class="route__meta">target</span>
+      </span>
+    </div>
+    <p class="route-card__summary">Ship the change</p>
+    <div class="route-card__foot"><span class="mono table__nowrap"><time datetime="2026-01-02T12:00:00.000Z" title="2 Jan 2026, 12:00">just now</time></span><a class="btn btn-ghost btn-sm" href="/handoffs?filter=waiting">Review <svg class="icon" aria-hidden="true" focusable="false"><use href="#i-arrow-right" /></svg></a></div>
+  </article><article class="route-card" data-state="awaiting_approval">
+    <div class="route-card__head">
+      <span class="mono table__nowrap">h-wait</span>
+      <span class="status" data-state="awaiting_approval"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-stamp" /></svg>Awaiting approval</span>
+    </div>
+    <div class="route" aria-label="Handoff from a to b">
+      <span class="route__end">
+        <span class="route__app">a</span>
+        <span class="route__meta">origin</span>
+      </span>
+      <span class="route__track" aria-hidden="true">
+        <span class="route__node"></span>
+        <span class="route__seal"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-stamp" /></svg></span>
+        <span class="route__node"></span>
+      </span>
+      <span class="route__end route__end--to">
+        <span class="route__app">b</span>
+        <span class="route__meta">target</span>
+      </span>
+    </div>
+    <p class="route-card__summary">Wait for review</p>
+    <div class="route-card__foot"><span class="mono table__nowrap"><time datetime="2026-01-02T12:00:00.000Z" title="2 Jan 2026, 12:00">just now</time></span><a class="btn btn-ghost btn-sm" href="/handoffs?filter=waiting">Review <svg class="icon" aria-hidden="true" focusable="false"><use href="#i-arrow-right" /></svg></a></div>
+  </article></div></div>
+            </section>
+            <section class="card" aria-labelledby="runtime-title">
+              <div class="card__head"><h2 class="card__title" id="runtime-title">Runtime</h2><span class="mono">2 apps</span></div>
+              <div class="card__body stack--tight">
+                <div class="summary-row"><span class="small">Starting</span><span class="cluster"><span class="status" data-state="dispatching"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-loader" /></svg>Starting</span><span class="mono">0</span></span></div>
+                <div class="summary-row"><span class="small">Running</span><span class="cluster"><span class="status" data-state="in_progress"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-activity" /></svg>Running</span><span class="mono">1</span></span></div>
+                <div class="summary-row"><span class="small">Stopped</span><span class="cluster"><span class="status" data-state="queued"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-clock" /></svg>Stopped</span><span class="mono">1</span></span></div>
+                <div class="summary-row"><span class="small">Error</span><span class="cluster"><span class="status" data-state="failed"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-alert-triangle" /></svg>Error</span><span class="mono">0</span></span></div>
+              </div>
+              <div class="card__foot"><a class="btn btn-ghost btn-sm" href="/projects">Inspect applications <svg class="icon" aria-hidden="true" focusable="false"><use href="#i-arrow-right" /></svg></a></div>
+            </section>
+          </aside>
+        </div>
+        <dialog class="dialog" id="new-project" aria-labelledby="new-project-title">
+    <div class="dialog__frame">
+      <header class="dialog__head">
+        <h2 class="dialog__title" id="new-project-title">New project</h2>
+        <p class="dialog__meta">Creates a project manifest in the workspace</p>
+      </header>
+      <form class="dialog__form" method="post" action="/api/projects">
+        <div class="dialog__body">
+          <div class="field">
+            <label class="label" for="new-project-name">Project name (required)</label>
+            <input class="input" id="new-project-name" name="name" required autocomplete="off" placeholder="northbank" aria-describedby="new-project-hint" />
+            <p class="hint" id="new-project-hint">A slugged folder with .hanse/project.yaml is created under the workspace root.</p>
+          </div>
+        </div>
+        <footer class="dialog__foot">
+          <button class="btn btn-ghost" type="button" data-dialog-close>Cancel</button>
+          <button class="btn btn-primary" type="submit">Create project</button>
+        </footer>
+      </form>
+    </div>
+  </dialog></div>
+        </main>
+      </div>
+      <div class="scrim" data-nav-close></div>
+    </div>
+    <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="false"></div>
+    
+  </body>
+</html>"
+`;
+
+exports[`project page props > keeps the legacy project HTML deriving from the same props 1`] = `
+"<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark light" />
+    <title>Demo - hanse</title>
+    <script>
+      (function () {
+        try {
+          var saved = localStorage.getItem("hanse-theme");
+          if (saved === "light" || saved === "dark") {
+            document.documentElement.dataset.theme = saved;
+          }
+        } catch (error) {}
+      })();
+    </script>
+    <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml" />
+    
+    <link rel="stylesheet" href="/assets/app.css" />
+    <script src="/assets/app.js" defer></script>
+    <script src="/assets/app-content.js" defer></script>
+    
+    <script type="module" src="/assets/handoff.js"></script>
+  </head>
+  <body class="app-body">
+    <svg class="sr-only" aria-hidden="true" focusable="false"><symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16" /></symbol><symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12" /></symbol><symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5" /></symbol><symbol id="i-chevron-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6" /></symbol><symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6" /></symbol><symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></symbol><symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8" /><path d="m21 21-4.3-4.3" /></symbol><symbol id="i-folder" viewBox="0 0 24 24"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" /></symbol><symbol id="i-dashboard" viewBox="0 0 24 24"><rect width="7" height="9" x="3" y="3" rx="1" /><rect width="7" height="5" x="14" y="3" rx="1" /><rect width="7" height="9" x="14" y="12" rx="1" /><rect width="7" height="5" x="3" y="16" rx="1" /></symbol><symbol id="i-branch" viewBox="0 0 24 24"><line x1="6" x2="6" y1="3" y2="15" /><circle cx="18" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M18 9a9 9 0 0 1-9 9" /></symbol><symbol id="i-layers" viewBox="0 0 24 24"><path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z" /><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65" /><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65" /></symbol><symbol id="i-message" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></symbol><symbol id="i-panel-left" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2" /><path d="M9 3v18" /></symbol><symbol id="i-panel-right" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2" /><path d="M15 3v18" /></symbol><symbol id="i-settings" viewBox="0 0 24 24"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" /><circle cx="12" cy="12" r="3" /></symbol><symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41" /></symbol><symbol id="i-moon" viewBox="0 0 24 24"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" /></symbol><symbol id="i-external" viewBox="0 0 24 24"><path d="M15 3h6v6" /><path d="M10 14 21 3" /><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /></symbol><symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></symbol><symbol id="i-stamp" viewBox="0 0 24 24"><path d="M5 22h14" /><path d="M19.27 13.73A2.5 2.5 0 0 0 17.5 13h-11A2.5 2.5 0 0 0 4 15.5V17a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-1.5c0-.66-.26-1.3-.73-1.77Z" /><path d="M14 13V8.5C14 7 15 7 15 5a3 3 0 0 0-6 0c0 2 1 2 1 3.5V13" /></symbol><symbol id="i-send" viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4Z" /><path d="M22 2 11 13" /></symbol><symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1" /></symbol><symbol id="i-activity" viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2" /></symbol><symbol id="i-gauge" viewBox="0 0 24 24"><path d="m12 14 4-4" /><path d="M3.34 19a10 10 0 1 1 17.32 0" /></symbol><symbol id="i-hourglass" viewBox="0 0 24 24"><path d="M5 22h14M5 2h14" /><path d="M17 22v-4.172a2 2 0 0 0-.586-1.414L12 12l-4.414 4.414A2 2 0 0 0 7 17.828V22" /><path d="M7 2v4.172a2 2 0 0 0 .586 1.414L12 12l4.414-4.414A2 2 0 0 0 17 6.172V2" /></symbol><symbol id="i-alert-triangle" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" /><path d="M12 9v4M12 17h.01" /></symbol><symbol id="i-alert-circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /><line x1="12" x2="12" y1="8" y2="12" /><line x1="12" x2="12.01" y1="16" y2="16" /></symbol><symbol id="i-slash" viewBox="0 0 24 24"><path d="M22 2 2 22" /></symbol><symbol id="i-inbox" viewBox="0 0 24 24"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12" /><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" /></symbol><symbol id="i-copy" viewBox="0 0 24 24"><rect width="14" height="14" x="8" y="8" rx="2" /><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" /></symbol><symbol id="i-terminal" viewBox="0 0 24 24"><polyline points="4 17 10 11 4 5" /><line x1="12" x2="20" y1="19" y2="19" /></symbol><symbol id="i-code" viewBox="0 0 24 24"><polyline points="16 18 22 12 16 6" /><polyline points="8 6 2 12 8 18" /></symbol><symbol id="i-arrow-right" viewBox="0 0 24 24"><path d="M5 12h14" /><path d="m12 5 7 7-7 7" /></symbol><symbol id="i-refresh" viewBox="0 0 24 24"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" /><path d="M21 3v5h-5" /><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" /><path d="M8 16H3v5" /></symbol><symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" /><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /><line x1="10" x2="10" y1="11" y2="17" /><line x1="14" x2="14" y1="11" y2="17" /></symbol><symbol id="i-lock" viewBox="0 0 24 24"><rect width="18" height="11" x="3" y="11" rx="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></symbol><symbol id="i-log-out" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" x2="9" y1="12" y2="12" /></symbol><symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0" /><circle cx="12" cy="12" r="3" /></symbol><symbol id="i-eye-off" viewBox="0 0 24 24"><path d="M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49" /><path d="M14.084 14.158a3 3 0 0 1-4.242-4.242" /><path d="M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143" /><path d="m2 2 20 20" /></symbol><symbol id="i-loader" viewBox="0 0 24 24"><line x1="12" x2="12" y1="2" y2="6" /><line x1="12" x2="12" y1="18" y2="22" /><line x1="4.93" x2="7.76" y1="4.93" y2="7.76" /><line x1="16.24" x2="19.07" y1="16.24" y2="19.07" /><line x1="2" x2="6" y1="12" y2="12" /><line x1="18" x2="22" y1="12" y2="12" /><line x1="4.93" x2="7.76" y1="19.07" y2="16.24" /><line x1="16.24" x2="19.07" y1="7.76" y2="4.93" /></symbol><symbol id="i-more" viewBox="0 0 24 24"><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /><circle cx="5" cy="12" r="1" /></symbol></svg>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <div class="sr-only" id="route-announcer" aria-live="polite" aria-atomic="true"></div>
+    <div class="app-shell" data-nav="closed" id="shell" data-nav-id="project" data-project-id="p">
+      <aside class="sidebar" id="sidebar" aria-label="Primary">
+    <div class="sidebar__head">
+      <a class="wordmark" href="/">hanse</a>
+      <span class="sidebar__kicker">coordinator</span>
+      <button class="btn btn-ghost btn-icon btn-sm sidebar__close" type="button" data-nav-close aria-label="Close navigation"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-x" /></svg></button>
+    </div>
+    <nav class="sidebar__nav" id="sidebar-nav" aria-label="Workspace" data-nav-id="project" data-project-id="p">
+      <p class="nav-label">Workbench</p><a class="nav-item" href="/" data-nav-id="overview"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-dashboard" /></svg><span class="nav-item__label">Overview</span></a><a class="nav-item" href="/projects" data-nav-id="projects"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-folder" /></svg><span class="nav-item__label">Projects</span></a><a class="nav-item" href="/chat?app=master&amp;project=hanse-master" data-nav-id="master"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-gauge" /></svg><span class="nav-item__label">Master</span></a><a class="nav-item" href="/handoffs" data-nav-id="handoffs"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-branch" /></svg><span class="nav-item__label">Handoffs</span><span class="nav-item__count">2</span></a><a class="nav-item" href="/projects/p/skills" data-nav-id="skills"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-code" /></svg><span class="nav-item__label">Skills</span></a><a class="nav-item" href="/projects/p/settings" data-nav-id="settings"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-settings" /></svg><span class="nav-item__label">Settings</span></a><a class="nav-item" href="/ssh" data-nav-id="ssh"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-terminal" /></svg><span class="nav-item__label">SSH</span></a><p class="nav-label">Projects</p><a class="nav-item is-active" href="/projects/p" data-project-id="p" aria-current="page"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-folder" /></svg><span class="nav-item__label">Demo</span><span class="nav-item__mark"><svg class="icon icon--sm" aria-hidden="true" focusable="false"><use href="#i-check" /></svg></span><span class="nav-item__count">2</span></a><a class="nav-item" href="/projects" data-nav-id="projects"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-layers" /></svg><span class="nav-item__label">All projects</span></a>
+    </nav>
+    <div class="sidebar__foot">
+      <span class="avatar avatar--sm">OP</span>
+      <span class="sidebar__operator">operator</span>
+      <button class="btn btn-ghost btn-sm theme-toggle" type="button" data-theme-toggle aria-label="Switch to light theme" title="Switch theme">
+        <span class="theme-toggle__icon" data-theme-icon="light"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-sun" /></svg></span>
+        <span class="theme-toggle__icon" data-theme-icon="dark"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-moon" /></svg></span>
+        <span data-theme-label>Light</span>
+      </button>
+      <form method="post" action="/logout">
+        <button class="btn btn-ghost btn-icon btn-sm" type="submit" aria-label="Sign out" title="Sign out"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-log-out" /></svg></button>
+      </form>
+    </div>
+  </aside>
+      <div class="shell-main">
+        <header class="topbar">
+          <button class="btn btn-ghost btn-icon nav-toggle" type="button" data-nav-toggle aria-expanded="false" aria-controls="sidebar" aria-label="Open navigation"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-menu" /></svg></button>
+          <a class="topbar__brand" href="/">hanse</a>
+          <nav class="breadcrumb" id="breadcrumb-host" aria-label="Breadcrumb" data-nav-id="project"><a href="/projects">Projects</a><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-chevron-right" /></svg><span aria-current="page">Demo</span></nav>
+          <div class="topbar__actions"><a class="btn btn-ghost btn-icon" href="/ide/" target="_blank" rel="noreferrer" aria-label="Open IDE in a new tab" title="Open IDE"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-external" /></svg></a></div>
+        </header>
+        <main class="page" id="main" tabindex="-1">
+          <header class="page-header">
+    <div class="page-header__main">
+      <p class="overline">Project</p>
+      <h1 class="page-title">Demo</h1>
+      <p class="page-description">Applications, handoff routes, and runtime state for this project.</p>
+      <div class="page-meta"><span class="mono">/workspace/demo</span><span class="mono">base main</span><span class="mono">2 applications</span><span class="mono">2 waiting</span></div>
+    </div>
+    <div class="page-header__actions"><a class="btn btn-secondary" href="/projects/p/settings"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-settings" /></svg>Settings</a><a class="btn btn-secondary" href="/ide/?folder=%2Fworkspace%2Fdemo" target="_blank" rel="noreferrer"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-external" /></svg>Open IDE</a><button class="btn btn-primary" type="button" data-dialog-open="new-handoff"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-branch" /></svg>New handoff</button></div>
+  </header>
+          <div class="page__body"><div class="watch-strip watch-strip--4">
+      <div class="watch"><p class="watch__value">2</p><p class="watch__label">Applications</p></div>
+      <div class="watch"><p class="watch__value">1</p><p class="watch__label">Running</p></div>
+      <div class="watch"><p class="watch__value">2</p><p class="watch__label">Waiting</p></div>
+      <div class="watch"><p class="watch__value">just now</p><p class="watch__label">Last activity</p></div>
+    </div>
+    <div class="workbench-grid workbench-grid--detail section">
+      <div class="stack">
+        <section class="card" aria-labelledby="apps-title">
+          <div class="card__head">
+            <h2 class="card__title" id="apps-title">Applications</h2>
+            <div class="cluster"><span class="badge">2 apps</span><button class="btn btn-ghost btn-sm" type="button" data-dialog-open="add-app"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-plus" /></svg>Add app</button></div>
+          </div>
+          <div class="card__body card__body--flush"><div class="table-wrap">
+          <table class="table table--stack">
+            <thead><tr><th scope="col">Application</th><th scope="col">Kind</th><th scope="col">Path</th><th scope="col">Runtime</th><th scope="col"></th></tr></thead>
+            <tbody><tr>
+        <td data-label="Application"><div class="cluster"><strong class="table__primary"><a href="/projects/p/apps/a">a</a></strong></div></td>
+        <td data-label="Kind"><span class="badge badge--mono">app</span></td>
+        <td data-label="Path"><span class="mono">apps/a</span></td>
+        <td data-label="Runtime"><div class="cluster"><span class="status" data-state="in_progress"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-activity" /></svg>Running</span></div></td>
+        <td data-label="Actions" class="table__actions"><div class="table__action-group">
+          <a class="btn btn-ghost btn-sm" href="/chat?app=a&amp;project=p"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-message" /></svg>Chat</a>
+          <a class="btn btn-ghost btn-icon btn-sm" href="/ide/?folder=%2Fworkspace%2Fdemo%2Fapps%2Fa" target="_blank" rel="noreferrer" aria-label="Open a in IDE" title="Open in IDE"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-external" /></svg></a>
+          <a class="btn btn-ghost btn-icon btn-sm" href="/projects/p/apps/a" aria-label="Open a application" title="Open application"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-chevron-right" /></svg></a>
+        </div></td>
+      </tr><tr>
+        <td data-label="Application"><div class="cluster"><strong class="table__primary"><a href="/projects/p/apps/b">b</a></strong></div></td>
+        <td data-label="Kind"><span class="badge badge--mono">app</span></td>
+        <td data-label="Path"><span class="mono">apps/b</span></td>
+        <td data-label="Runtime"><div class="cluster"><span class="status" data-state="queued"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-clock" /></svg>Stopped</span></div></td>
+        <td data-label="Actions" class="table__actions"><div class="table__action-group">
+          <a class="btn btn-ghost btn-sm" href="/chat?app=b&amp;project=p"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-message" /></svg>Chat</a>
+          <a class="btn btn-ghost btn-icon btn-sm" href="/ide/?folder=%2Fworkspace%2Fdemo%2Fapps%2Fb" target="_blank" rel="noreferrer" aria-label="Open b in IDE" title="Open in IDE"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-external" /></svg></a>
+          <a class="btn btn-ghost btn-icon btn-sm" href="/projects/p/apps/b" aria-label="Open b application" title="Open application"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-chevron-right" /></svg></a>
+        </div></td>
+      </tr></tbody>
+          </table>
+        </div></div>
+        </section>
+        <section class="card" aria-labelledby="project-handoffs-title">
+          <div class="card__head"><h2 class="card__title" id="project-handoffs-title">Handoffs</h2><span class="mono">2</span></div>
+          <div class="card__body card__body--flush"><div class="table-wrap">
+          <table class="table table--stack table--handoffs">
+            <thead><tr><th scope="col">Route</th><th scope="col">State</th><th scope="col">Summary</th><th scope="col">Updated</th><th scope="col"></th></tr></thead>
+            <tbody><tr id="handoff-h-done">
+        <td data-label="Route"><span class="table__route"><span class="mono">a</span><svg class="icon icon--sm" aria-hidden="true" focusable="false"><use href="#i-arrow-right" /></svg><span class="mono">b</span></span></td>
+        <td data-label="State"><div class="cluster"><span class="status" data-state="delivered"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-check" /></svg>Delivered</span><span class="badge"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-stamp" /></svg>Reply approval</span></div></td>
+        <td data-label="Summary"><span class="table__primary">Ship the change</span></td>
+        <td data-label="Updated"><span class="mono table__nowrap"><time datetime="2026-01-02T12:00:00.000Z" title="2 Jan 2026, 12:00">just now</time></span></td>
+        <td data-label="Actions" class="table__actions"><button class="btn btn-ghost btn-sm" type="button" data-dialog-open="h-h-done">Review</button></td>
+      </tr><tr id="handoff-h-wait">
+        <td data-label="Route"><span class="table__route"><span class="mono">a</span><svg class="icon icon--sm" aria-hidden="true" focusable="false"><use href="#i-arrow-right" /></svg><span class="mono">b</span></span></td>
+        <td data-label="State"><div class="cluster"><span class="status" data-state="awaiting_approval"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-stamp" /></svg>Awaiting approval</span></div></td>
+        <td data-label="Summary"><span class="table__primary">Wait for review</span></td>
+        <td data-label="Updated"><span class="mono table__nowrap"><time datetime="2026-01-02T12:00:00.000Z" title="2 Jan 2026, 12:00">just now</time></span></td>
+        <td data-label="Actions" class="table__actions"><button class="btn btn-ghost btn-sm" type="button" data-dialog-open="h-h-wait">Review</button></td>
+      </tr></tbody>
+          </table>
+        </div></div>
+        </section>
+        <section class="card" aria-labelledby="handoff-policy-title">
+    <div class="card__head"><h2 class="card__title" id="handoff-policy-title">Handoff policy</h2><span class="badge">1 rules</span></div>
+    <div class="card__body stack--tight">
+      <p class="small">The most specific rule wins: exact pair, then one wildcard (a from-specific rule wins a tie), then the project default. No matching rule means <span class="mono">auto</span> dispatch and <span class="mono">auto</span> reply.</p>
+      <div class="table-wrap"><table class="table table--stack">
+          <thead><tr><th scope="col">From</th><th scope="col">To</th><th scope="col">Dispatch</th><th scope="col">Reply</th><th scope="col"></th></tr></thead>
+          <tbody><tr>
+                <td data-label="From"><span class="mono">a</span></td>
+                <td data-label="To"><span class="mono">b</span></td>
+                <td data-label="Dispatch"><span class="mono">approve</span></td>
+                <td data-label="Reply"><span class="mono">approve</span></td>
+                <td data-label="" class="table__actions"><form method="post" action="/api/projects/p/handoff-policy/delete">
+                  <input type="hidden" name="from" value="a" />
+                  <input type="hidden" name="to" value="b" />
+                  <input type="hidden" name="return_to" value="/projects/p" />
+                  <button class="btn btn-ghost btn-sm" type="submit">Delete</button>
+                </form></td>
+              </tr></tbody>
+        </table></div>
+      <form class="stack--tight" method="post" action="/api/projects/p/handoff-policy">
+        <div class="cluster">
+          <div class="field"><label class="label" for="handoff-policy-from">From</label><div class="select-wrap"><select class="select" id="handoff-policy-from" name="from"><option value="*">Any application</option><option value="a">a</option><option value="b">b</option></select><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-chevron-down" /></svg></div></div>
+          <div class="field"><label class="label" for="handoff-policy-to">To</label><div class="select-wrap"><select class="select" id="handoff-policy-to" name="to"><option value="*">Any application</option><option value="a">a</option><option value="b">b</option></select><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-chevron-down" /></svg></div></div>
+          <div class="field"><label class="label" for="handoff-policy-dispatch">Dispatch</label><div class="select-wrap"><select class="select" id="handoff-policy-dispatch" name="dispatch_mode"><option value="auto">Auto</option><option value="approve">Approve</option><option value="deny">Deny</option></select><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-chevron-down" /></svg></div></div>
+          <div class="field"><label class="label" for="handoff-policy-reply">Reply</label><div class="select-wrap"><select class="select" id="handoff-policy-reply" name="reply_mode"><option value="auto">Auto</option><option value="approve">Approve</option></select><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-chevron-down" /></svg></div></div>
+        </div>
+        <input type="hidden" name="return_to" value="/projects/p" />
+        <div class="cluster"><button class="btn btn-secondary btn-sm" type="submit">Save rule</button></div>
+      </form>
+    </div>
+  </section>
+      </div>
+      <aside class="rail-stack" aria-label="Project attention">
+        <section class="card" aria-labelledby="project-waiting-title">
+          <div class="card__head"><h2 class="card__title" id="project-waiting-title">Waiting for approval</h2><span class="mono">2</span></div>
+          <div class="card__body"><div class="stack"><article class="route-card" data-state="awaiting_approval">
+    <div class="route-card__head">
+      <span class="mono table__nowrap">h-done</span>
+      <span class="status" data-state="awaiting_approval"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-stamp" /></svg>Awaiting approval</span>
+    </div>
+    <div class="route" aria-label="Handoff from a to b">
+      <span class="route__end">
+        <span class="route__app">a</span>
+        <span class="route__meta">origin</span>
+      </span>
+      <span class="route__track" aria-hidden="true">
+        <span class="route__node"></span>
+        <span class="route__seal"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-stamp" /></svg></span>
+        <span class="route__node"></span>
+      </span>
+      <span class="route__end route__end--to">
+        <span class="route__app">b</span>
+        <span class="route__meta">target</span>
+      </span>
+    </div>
+    <p class="route-card__summary">Ship the change</p>
+    <div class="route-card__foot"><span class="mono table__nowrap"><time datetime="2026-01-02T12:00:00.000Z" title="2 Jan 2026, 12:00">just now</time></span><button class="btn btn-ghost btn-sm" type="button" data-dialog-open="h-h-done">Review <svg class="icon" aria-hidden="true" focusable="false"><use href="#i-arrow-right" /></svg></button></div>
+  </article><article class="route-card" data-state="awaiting_approval">
+    <div class="route-card__head">
+      <span class="mono table__nowrap">h-wait</span>
+      <span class="status" data-state="awaiting_approval"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-stamp" /></svg>Awaiting approval</span>
+    </div>
+    <div class="route" aria-label="Handoff from a to b">
+      <span class="route__end">
+        <span class="route__app">a</span>
+        <span class="route__meta">origin</span>
+      </span>
+      <span class="route__track" aria-hidden="true">
+        <span class="route__node"></span>
+        <span class="route__seal"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-stamp" /></svg></span>
+        <span class="route__node"></span>
+      </span>
+      <span class="route__end route__end--to">
+        <span class="route__app">b</span>
+        <span class="route__meta">target</span>
+      </span>
+    </div>
+    <p class="route-card__summary">Wait for review</p>
+    <div class="route-card__foot"><span class="mono table__nowrap"><time datetime="2026-01-02T12:00:00.000Z" title="2 Jan 2026, 12:00">just now</time></span><button class="btn btn-ghost btn-sm" type="button" data-dialog-open="h-h-wait">Review <svg class="icon" aria-hidden="true" focusable="false"><use href="#i-arrow-right" /></svg></button></div>
+  </article></div></div>
+        </section>
+        <section class="card" aria-labelledby="manifest-title">
+    <div class="card__head"><h2 class="card__title" id="manifest-title">Manifest</h2><span class="badge badge--mono">project</span></div>
+    <div class="card__body stack--tight">
+      <div class="stack--tight"><span class="overline">Manifest</span><span class="mono">.hanse/project.yaml</span></div>
+      <div class="stack--tight"><span class="overline">Base branch</span><span class="mono">main</span></div>
+      <div class="stack--tight"><span class="overline">Applications</span><span class="mono">2</span></div>
+      <div class="stack--tight"><span class="overline">Root path</span><span class="mono">/workspace/demo</span></div>
+    </div>
+    <div class="card__foot"><a class="btn btn-ghost btn-sm" href="/ide/?folder=%2Fworkspace%2Fdemo" target="_blank" rel="noreferrer"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-external" /></svg>Open IDE</a></div>
+  </section>
+      </aside>
+    </div>
+    <section class="card section" id="danger-zone" aria-labelledby="danger-zone-title">
+    <div class="card__head">
+      <h2 class="card__title" id="danger-zone-title">Danger zone</h2>
+      <span class="badge">Destructive</span>
+    </div>
+    <div class="card__body stack--tight">
+      <p class="small">Deleting this project removes every application, session, handoff, credential, and managed image. Source files are kept unless you choose to delete them too.</p>
+    </div>
+    <div class="card__foot">
+      <button class="btn btn-danger" type="button" data-dialog-open="project-delete-dialog"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-trash" /></svg>Delete project</button>
+    </div>
+  </section>
+    <dialog class="dialog" id="add-app" aria-labelledby="add-app-title">
+    <div class="dialog__frame">
+      <header class="dialog__head">
+        <h2 class="dialog__title" id="add-app-title">Add application</h2>
+        <p class="dialog__meta">Demo / /workspace/demo</p>
+      </header>
+      <form class="dialog__form" method="post" action="/api/projects/p/apps">
+        <div class="dialog__body">
+          <div class="field">
+            <label class="label" for="add-app-name">Application name (required)</label>
+            <input class="input" id="add-app-name" name="name" required autocomplete="off" placeholder="gateway" aria-describedby="add-app-name-hint" />
+            <p class="hint" id="add-app-name-hint">Used as the app key in routes and handoffs.</p>
+          </div>
+          <div class="field">
+            <label class="label" for="add-app-path">Path, optional</label>
+            <input class="input" id="add-app-path" name="path" autocomplete="off" placeholder="apps/gateway" aria-describedby="add-app-path-hint" />
+            <p class="hint" id="add-app-path-hint">Relative to the project root. Defaults to apps/&lt;slug&gt;.</p>
+          </div>
+          <div class="field">
+            <label class="label" for="add-app-remote">Git remote, optional</label>
+            <input class="input" id="add-app-remote" name="remote" autocomplete="off" placeholder="git@github.com:org/gateway.git" aria-describedby="add-app-remote-hint" />
+            <p class="hint" id="add-app-remote-hint">Clones the repository into the path when provided.</p>
+          </div>
+          <input type="hidden" name="return_to" value="/projects/p" />
+        </div>
+        <footer class="dialog__foot">
+          <button class="btn btn-ghost" type="button" data-dialog-close>Cancel</button>
+          <button class="btn btn-primary" type="submit">Add application</button>
+        </footer>
+      </form>
+    </div>
+  </dialog>
+    <dialog class="dialog" id="project-delete-dialog" aria-labelledby="project-delete-title">
+    <div class="dialog__frame">
+      <header class="dialog__head">
+        <h2 class="dialog__title" id="project-delete-title">Delete project?</h2>
+        <p class="dialog__meta">Demo / 2 applications</p>
+      </header>
+      <form class="dialog__form" method="post" action="/api/projects/p/delete">
+        <div class="dialog__body">
+          <p class="body">This removes every application in the project, including their sessions, handoffs, credentials, and managed images. Checking <strong>Delete files too</strong> also deletes the project and application source files on disk.</p>
+          <div class="field">
+            <label class="label" for="project-delete-confirm">Type Demo to confirm (required)</label>
+            <input class="input" id="project-delete-confirm" name="confirm" required autocomplete="off" spellcheck="false" aria-describedby="project-delete-confirm-hint" />
+            <p class="hint" id="project-delete-confirm-hint">The project name must match exactly.</p>
+          </div>
+          <label class="check">
+            <input class="checkbox" type="checkbox" name="deleteFiles" value="true" />
+            <span>Delete files too</span>
+          </label>
+          <input type="hidden" name="return_to" value="/projects/p" />
+        </div>
+        <footer class="dialog__foot">
+          <button class="btn btn-ghost" type="button" data-dialog-close>Cancel</button>
+          <button class="btn btn-danger" type="submit">Delete project</button>
+        </footer>
+      </form>
+    </div>
+  </dialog>
+    <dialog class="dialog" id="new-handoff" aria-labelledby="new-handoff-title">
+    <div class="dialog__frame">
+      <header class="dialog__head">
+        <h2 class="dialog__title" id="new-handoff-title">New handoff</h2>
+        <p class="dialog__meta">Demo / 2 applications</p>
+      </header>
+      <form class="dialog__form" method="post" action="/api/handoffs">
+        <div class="dialog__body">
+          <div class="field">
+            <label class="label" for="handoff-summary">Summary (required)</label>
+            <input class="input" id="handoff-summary" name="summary" required autocomplete="off" placeholder="Add an idempotency key to invoice sync" aria-describedby="handoff-summary-hint" />
+            <p class="hint" id="handoff-summary-hint">The receiving agent sees this first.</p>
+          </div>
+          <div class="field">
+            <label class="label" for="handoff-from">From application</label>
+            <div class="select-wrap">
+              <select class="select" id="handoff-from" name="from"><option value="a" selected>a</option><option value="b">b</option></select>
+              <svg class="icon" aria-hidden="true" focusable="false"><use href="#i-chevron-down" /></svg>
+            </div>
+          </div>
+          <div class="field">
+            <label class="label" for="handoff-to">To application</label>
+            <div class="select-wrap">
+              <select class="select" id="handoff-to" name="to"><option value="a">a</option><option value="b" selected>b</option></select>
+              <svg class="icon" aria-hidden="true" focusable="false"><use href="#i-chevron-down" /></svg>
+            </div>
+          </div>
+          <div class="field">
+            <label class="label" for="handoff-spec">Specification</label>
+            <textarea class="textarea" id="handoff-spec" name="spec" placeholder="Describe the change, constraints, and expected result" aria-describedby="handoff-spec-hint"></textarea>
+            <p class="hint" id="handoff-spec-hint">Plain text. The target agent reads this as the task contract.</p>
+          </div>
+          <label class="check">
+            <input class="checkbox" type="checkbox" name="requires_approval" value="1" checked />
+            <span>Require operator approval for this handoff</span>
+          </label>
+          
+          <input type="hidden" name="project" value="p" />
+          <input type="hidden" name="return_to" value="/projects/p" />
+        </div>
+        <footer class="dialog__foot">
+          <button class="btn btn-ghost" type="button" data-dialog-close>Cancel</button>
+          <button class="btn btn-primary" type="submit">Create handoff</button>
+        </footer>
+      </form>
+    </div>
+  </dialog>
+    <dialog class="dialog dialog--wide handoff-dialog" id="h-h-done" aria-labelledby="h-h-done-title">
+      <div class="dialog__frame">
+        <header class="dialog__head">
+          <h2 class="dialog__title" id="h-h-done-title">Review reply</h2>
+          <p class="dialog__meta">h-done / a to b</p>
+        </header>
+        <form class="dialog__form" method="post" action="/api/handoffs/h-done/decision">
+          <div class="dialog__body">
+            <article class="route-card" data-state="awaiting_approval">
+    <div class="route-card__head">
+      <span class="mono table__nowrap">h-done</span>
+      <span class="status" data-state="awaiting_approval"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-stamp" /></svg>Awaiting approval</span>
+    </div>
+    <div class="route" aria-label="Handoff from a to b">
+      <span class="route__end">
+        <span class="route__app">a</span>
+        <span class="route__meta">origin</span>
+      </span>
+      <span class="route__track" aria-hidden="true">
+        <span class="route__node"></span>
+        <span class="route__seal"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-stamp" /></svg></span>
+        <span class="route__node"></span>
+      </span>
+      <span class="route__end route__end--to">
+        <span class="route__app">b</span>
+        <span class="route__meta">target</span>
+      </span>
+    </div>
+    <p class="route-card__summary">Ship the change</p>
+    
+  </article>
+    <div class="stack--tight">
+      <p class="overline">Policy</p>
+      <p class="small">Dispatch: <span class="mono">auto</span> · Reply: <span class="mono">auto</span> · Origin: <span class="mono">agent</span></p>
+    </div>
+    <div class="stack--tight">
+      <p class="overline">Sessions</p>
+      <p class="small">Source: <span class="small">Not bound to a session yet</span></p>
+      <p class="small">Target: <span class="small">Not dispatched yet</span></p>
+      
+    </div>
+    <div class="stack--tight">
+      <p class="overline">Specification</p>
+      <div class="prose handoff-md" data-markdown>Deliver it.</div>
+    </div>
+    <div class="stack--tight">
+      <p class="overline">Attempts</p>
+      <p class="mono">1</p>
+      <p class="mono">created 2 Jan 2026, 12:00</p>
+      <p class="mono">updated 2 Jan 2026, 12:00</p>
+    </div>
+    
+    <div class="stack--tight">
+          <p class="overline">Result (completed)</p>
+          <div class="prose handoff-md" data-markdown>Done.</div>
+        </div>
+    <div class="stack--tight">
+          <p class="overline">Reply</p>
+          <div class="cluster"><span class="badge"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-stamp" /></svg>Reply approval</span></div>
+          
+          
+          
+        </div>
+            <div class="field">
+          <label class="label" for="h-h-done-reason">Reason, optional</label>
+          <textarea class="textarea" id="h-h-done-reason" name="reason" placeholder="Record why this is approved or rejected" aria-describedby="h-h-done-reason-hint"></textarea>
+          <p class="hint" id="h-h-done-reason-hint">The reason is written to the handoff audit trail.</p>
+        </div>
+            <input type="hidden" name="approval_kind" value="reply" />
+            <input type="hidden" name="return_to" value="/projects/p" />
+          </div>
+          <footer class="dialog__foot">
+            <button class="btn btn-ghost" type="button" data-dialog-close>Cancel</button>
+            <button class="btn btn-primary" type="submit" name="decision" value="approved">Approve reply</button>
+            <button class="btn btn-danger" type="submit" name="decision" value="rejected">Reject reply</button>
+          </footer>
+        </form>
+      </div>
+    </dialog><dialog class="dialog dialog--wide handoff-dialog" id="h-h-wait" aria-labelledby="h-h-wait-title">
+      <div class="dialog__frame">
+        <header class="dialog__head">
+          <h2 class="dialog__title" id="h-h-wait-title">Review handoff</h2>
+          <p class="dialog__meta">h-wait / a to b</p>
+        </header>
+        <form class="dialog__form" method="post" action="/api/handoffs/h-wait/decision">
+          <div class="dialog__body">
+            <article class="route-card" data-state="awaiting_approval">
+    <div class="route-card__head">
+      <span class="mono table__nowrap">h-wait</span>
+      <span class="status" data-state="awaiting_approval"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-stamp" /></svg>Awaiting approval</span>
+    </div>
+    <div class="route" aria-label="Handoff from a to b">
+      <span class="route__end">
+        <span class="route__app">a</span>
+        <span class="route__meta">origin</span>
+      </span>
+      <span class="route__track" aria-hidden="true">
+        <span class="route__node"></span>
+        <span class="route__seal"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-stamp" /></svg></span>
+        <span class="route__node"></span>
+      </span>
+      <span class="route__end route__end--to">
+        <span class="route__app">b</span>
+        <span class="route__meta">target</span>
+      </span>
+    </div>
+    <p class="route-card__summary">Wait for review</p>
+    
+  </article>
+    <div class="stack--tight">
+      <p class="overline">Policy</p>
+      <p class="small">Dispatch: <span class="mono">approve</span> · Reply: <span class="mono">auto</span> · Origin: <span class="mono">agent</span></p>
+    </div>
+    <div class="stack--tight">
+      <p class="overline">Sessions</p>
+      <p class="small">Source: <span class="small">Not bound to a session yet</span></p>
+      <p class="small">Target: <span class="small">Not dispatched yet</span></p>
+      
+    </div>
+    <div class="stack--tight">
+      <p class="overline">Specification</p>
+      <div class="prose handoff-md" data-markdown>Review it.</div>
+    </div>
+    <div class="stack--tight">
+      <p class="overline">Attempts</p>
+      <p class="mono">0</p>
+      <p class="mono">created 2 Jan 2026, 12:00</p>
+      <p class="mono">updated 2 Jan 2026, 12:00</p>
+    </div>
+    
+    
+    
+            <div class="field">
+          <label class="label" for="h-h-wait-reason">Reason, optional</label>
+          <textarea class="textarea" id="h-h-wait-reason" name="reason" placeholder="Record why this is approved or rejected" aria-describedby="h-h-wait-reason-hint"></textarea>
+          <p class="hint" id="h-h-wait-reason-hint">The reason is written to the handoff audit trail.</p>
+        </div>
+            <input type="hidden" name="approval_kind" value="dispatch" />
+            <input type="hidden" name="return_to" value="/projects/p" />
+          </div>
+          <footer class="dialog__foot">
+            <button class="btn btn-ghost" type="button" data-dialog-close>Cancel</button>
+            <button class="btn btn-primary" type="submit" name="decision" value="approved">Approve handoff</button>
+            <button class="btn btn-danger" type="submit" name="decision" value="rejected">Reject handoff</button>
+          </footer>
+        </form>
+      </div>
+    </dialog></div>
+        </main>
+      </div>
+      <div class="scrim" data-nav-close></div>
+    </div>
+    <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="false"></div>
+    
+  </body>
+</html>"
+`;
+
+exports[`project page props > returns the master variant without mutating actions 1`] = `
+"<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark light" />
+    <title>Hanse master - hanse</title>
+    <script>
+      (function () {
+        try {
+          var saved = localStorage.getItem("hanse-theme");
+          if (saved === "light" || saved === "dark") {
+            document.documentElement.dataset.theme = saved;
+          }
+        } catch (error) {}
+      })();
+    </script>
+    <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml" />
+    
+    <link rel="stylesheet" href="/assets/app.css" />
+    <script src="/assets/app.js" defer></script>
+    <script src="/assets/app-content.js" defer></script>
+    
+    
+  </head>
+  <body class="app-body">
+    <svg class="sr-only" aria-hidden="true" focusable="false"><symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16" /></symbol><symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12" /></symbol><symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5" /></symbol><symbol id="i-chevron-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6" /></symbol><symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6" /></symbol><symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></symbol><symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8" /><path d="m21 21-4.3-4.3" /></symbol><symbol id="i-folder" viewBox="0 0 24 24"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" /></symbol><symbol id="i-dashboard" viewBox="0 0 24 24"><rect width="7" height="9" x="3" y="3" rx="1" /><rect width="7" height="5" x="14" y="3" rx="1" /><rect width="7" height="9" x="14" y="12" rx="1" /><rect width="7" height="5" x="3" y="16" rx="1" /></symbol><symbol id="i-branch" viewBox="0 0 24 24"><line x1="6" x2="6" y1="3" y2="15" /><circle cx="18" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M18 9a9 9 0 0 1-9 9" /></symbol><symbol id="i-layers" viewBox="0 0 24 24"><path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z" /><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65" /><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65" /></symbol><symbol id="i-message" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></symbol><symbol id="i-panel-left" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2" /><path d="M9 3v18" /></symbol><symbol id="i-panel-right" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2" /><path d="M15 3v18" /></symbol><symbol id="i-settings" viewBox="0 0 24 24"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" /><circle cx="12" cy="12" r="3" /></symbol><symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41" /></symbol><symbol id="i-moon" viewBox="0 0 24 24"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" /></symbol><symbol id="i-external" viewBox="0 0 24 24"><path d="M15 3h6v6" /><path d="M10 14 21 3" /><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /></symbol><symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></symbol><symbol id="i-stamp" viewBox="0 0 24 24"><path d="M5 22h14" /><path d="M19.27 13.73A2.5 2.5 0 0 0 17.5 13h-11A2.5 2.5 0 0 0 4 15.5V17a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-1.5c0-.66-.26-1.3-.73-1.77Z" /><path d="M14 13V8.5C14 7 15 7 15 5a3 3 0 0 0-6 0c0 2 1 2 1 3.5V13" /></symbol><symbol id="i-send" viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4Z" /><path d="M22 2 11 13" /></symbol><symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1" /></symbol><symbol id="i-activity" viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2" /></symbol><symbol id="i-gauge" viewBox="0 0 24 24"><path d="m12 14 4-4" /><path d="M3.34 19a10 10 0 1 1 17.32 0" /></symbol><symbol id="i-hourglass" viewBox="0 0 24 24"><path d="M5 22h14M5 2h14" /><path d="M17 22v-4.172a2 2 0 0 0-.586-1.414L12 12l-4.414 4.414A2 2 0 0 0 7 17.828V22" /><path d="M7 2v4.172a2 2 0 0 0 .586 1.414L12 12l4.414-4.414A2 2 0 0 0 17 6.172V2" /></symbol><symbol id="i-alert-triangle" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" /><path d="M12 9v4M12 17h.01" /></symbol><symbol id="i-alert-circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /><line x1="12" x2="12" y1="8" y2="12" /><line x1="12" x2="12.01" y1="16" y2="16" /></symbol><symbol id="i-slash" viewBox="0 0 24 24"><path d="M22 2 2 22" /></symbol><symbol id="i-inbox" viewBox="0 0 24 24"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12" /><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" /></symbol><symbol id="i-copy" viewBox="0 0 24 24"><rect width="14" height="14" x="8" y="8" rx="2" /><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" /></symbol><symbol id="i-terminal" viewBox="0 0 24 24"><polyline points="4 17 10 11 4 5" /><line x1="12" x2="20" y1="19" y2="19" /></symbol><symbol id="i-code" viewBox="0 0 24 24"><polyline points="16 18 22 12 16 6" /><polyline points="8 6 2 12 8 18" /></symbol><symbol id="i-arrow-right" viewBox="0 0 24 24"><path d="M5 12h14" /><path d="m12 5 7 7-7 7" /></symbol><symbol id="i-refresh" viewBox="0 0 24 24"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" /><path d="M21 3v5h-5" /><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" /><path d="M8 16H3v5" /></symbol><symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" /><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /><line x1="10" x2="10" y1="11" y2="17" /><line x1="14" x2="14" y1="11" y2="17" /></symbol><symbol id="i-lock" viewBox="0 0 24 24"><rect width="18" height="11" x="3" y="11" rx="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></symbol><symbol id="i-log-out" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" x2="9" y1="12" y2="12" /></symbol><symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0" /><circle cx="12" cy="12" r="3" /></symbol><symbol id="i-eye-off" viewBox="0 0 24 24"><path d="M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49" /><path d="M14.084 14.158a3 3 0 0 1-4.242-4.242" /><path d="M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143" /><path d="m2 2 20 20" /></symbol><symbol id="i-loader" viewBox="0 0 24 24"><line x1="12" x2="12" y1="2" y2="6" /><line x1="12" x2="12" y1="18" y2="22" /><line x1="4.93" x2="7.76" y1="4.93" y2="7.76" /><line x1="16.24" x2="19.07" y1="16.24" y2="19.07" /><line x1="2" x2="6" y1="12" y2="12" /><line x1="18" x2="22" y1="12" y2="12" /><line x1="4.93" x2="7.76" y1="19.07" y2="16.24" /><line x1="16.24" x2="19.07" y1="7.76" y2="4.93" /></symbol><symbol id="i-more" viewBox="0 0 24 24"><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /><circle cx="5" cy="12" r="1" /></symbol></svg>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <div class="sr-only" id="route-announcer" aria-live="polite" aria-atomic="true"></div>
+    <div class="app-shell" data-nav="closed" id="shell" data-nav-id="project" data-project-id="hanse-master">
+      <aside class="sidebar" id="sidebar" aria-label="Primary">
+    <div class="sidebar__head">
+      <a class="wordmark" href="/">hanse</a>
+      <span class="sidebar__kicker">coordinator</span>
+      <button class="btn btn-ghost btn-icon btn-sm sidebar__close" type="button" data-nav-close aria-label="Close navigation"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-x" /></svg></button>
+    </div>
+    <nav class="sidebar__nav" id="sidebar-nav" aria-label="Workspace" data-nav-id="project" data-project-id="hanse-master">
+      <p class="nav-label">Workbench</p><a class="nav-item" href="/" data-nav-id="overview"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-dashboard" /></svg><span class="nav-item__label">Overview</span></a><a class="nav-item" href="/projects" data-nav-id="projects"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-folder" /></svg><span class="nav-item__label">Projects</span></a><a class="nav-item" href="/chat?app=master&amp;project=hanse-master" data-nav-id="master"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-gauge" /></svg><span class="nav-item__label">Master</span></a><a class="nav-item" href="/handoffs" data-nav-id="handoffs"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-branch" /></svg><span class="nav-item__label">Handoffs</span><span class="nav-item__count">2</span></a><a class="nav-item" href="/projects/hanse-master/apps/master/skills" data-nav-id="skills"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-code" /></svg><span class="nav-item__label">Skills</span></a><a class="nav-item" href="/projects/hanse-master/apps/master/settings" data-nav-id="settings"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-settings" /></svg><span class="nav-item__label">Settings</span></a><a class="nav-item" href="/ssh" data-nav-id="ssh"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-terminal" /></svg><span class="nav-item__label">SSH</span></a><p class="nav-label">Projects</p><a class="nav-item" href="/projects/p" data-project-id="p"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-folder" /></svg><span class="nav-item__label">Demo</span><span class="nav-item__count">2</span></a><a class="nav-item" href="/projects" data-nav-id="projects"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-layers" /></svg><span class="nav-item__label">All projects</span></a>
+    </nav>
+    <div class="sidebar__foot">
+      <span class="avatar avatar--sm">OP</span>
+      <span class="sidebar__operator">operator</span>
+      <button class="btn btn-ghost btn-sm theme-toggle" type="button" data-theme-toggle aria-label="Switch to light theme" title="Switch theme">
+        <span class="theme-toggle__icon" data-theme-icon="light"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-sun" /></svg></span>
+        <span class="theme-toggle__icon" data-theme-icon="dark"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-moon" /></svg></span>
+        <span data-theme-label>Light</span>
+      </button>
+      <form method="post" action="/logout">
+        <button class="btn btn-ghost btn-icon btn-sm" type="submit" aria-label="Sign out" title="Sign out"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-log-out" /></svg></button>
+      </form>
+    </div>
+  </aside>
+      <div class="shell-main">
+        <header class="topbar">
+          <button class="btn btn-ghost btn-icon nav-toggle" type="button" data-nav-toggle aria-expanded="false" aria-controls="sidebar" aria-label="Open navigation"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-menu" /></svg></button>
+          <a class="topbar__brand" href="/">hanse</a>
+          <nav class="breadcrumb" id="breadcrumb-host" aria-label="Breadcrumb" data-nav-id="project"><a href="/">Workbench</a><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-chevron-right" /></svg><span aria-current="page">Master</span></nav>
+          <div class="topbar__actions"><a class="btn btn-ghost btn-icon" href="/ide/" target="_blank" rel="noreferrer" aria-label="Open IDE in a new tab" title="Open IDE"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-external" /></svg></a></div>
+        </header>
+        <main class="page" id="main" tabindex="-1">
+          <header class="page-header">
+    <div class="page-header__main">
+      <p class="overline">Master</p>
+      <h1 class="page-title">Hanse master</h1>
+      <p class="page-description">Built-in assistant that configures and operates this Hanse instance.</p>
+      <div class="page-meta"><span class="mono">stopped</span><span class="mono">apps/master</span></div>
+    </div>
+    <div class="page-header__actions"><a class="btn btn-primary" href="/chat?app=master&amp;project=hanse-master"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-message" /></svg>Open chat</a><a class="btn btn-secondary" href="/projects/hanse-master/apps/master/settings"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-settings" /></svg>Settings</a></div>
+  </header>
+          <div class="page__body"><div class="watch-strip watch-strip--2">
+      <div class="watch"><p class="watch__value"><span class="status" data-state="queued"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-clock" /></svg>Stopped</span></p><p class="watch__label">Runtime</p></div>
+      <div class="watch"><p class="watch__value">app</p><p class="watch__label">Kind</p></div>
+    </div>
+    <section class="card section" aria-labelledby="master-card-title">
+      <div class="card__head"><h2 class="card__title" id="master-card-title">Master agent</h2><span class="badge badge--mono">system</span></div>
+      <div class="card__body stack--tight">
+        <p class="small">The master runs as an isolated agent. It creates projects and applications, writes their instructions, changes non-secret settings, and starts or restarts application agents through its Hanse tools.</p>
+        <p class="small">Its own directory is coordinator-managed and read-only inside its container. Its instructions are rewritten from the coordinator on every start.</p>
+        <p class="small">Skills can be created, inspected, updated, enabled/disabled, and overridden from the master chat; deleting or renaming them stays operator-only. Provider keys, git credentials, image builds, and project deletion are operator-only UI actions.</p>
+      </div>
+      <div class="card__foot"><a class="btn btn-secondary btn-sm" href="/chat?app=master&amp;project=hanse-master"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-message" /></svg>Open chat</a><a class="btn btn-ghost btn-sm" href="/projects/hanse-master/apps/master/settings"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-settings" /></svg>Application settings</a><a class="btn btn-ghost btn-sm" href="/projects/hanse-master/apps/master/skills"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-code" /></svg>Skills</a></div>
+    </section></div>
+        </main>
+      </div>
+      <div class="scrim" data-nav-close></div>
+    </div>
+    <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="false"></div>
+    
+  </body>
+</html>"
+`;

@@ -105,7 +105,7 @@ Only the coordinator publishes a port (`127.0.0.1:8787` by default). The IDE, pr
 terminals are proxied through it. Set `HANSE_BIND=0.0.0.0` only on a trusted LAN; terminate TLS in a
 reverse proxy for anything beyond that.
 
-Development without Docker needs Node.js >= 20 (CI and the images use Node 22) and npm.
+Development without Docker needs Node.js >= 20.19.0 (CI and the images use Node 22) and npm.
 
 The full deployment guide, including LAN/TLS exposure, backups, and upgrades, is in
 [`docs/deployment.md`](docs/deployment.md).
@@ -154,16 +154,24 @@ source builds, image publishing, and troubleshooting: [`docs/deployment.md`](doc
 
 ## Development
 
-Requires Node.js >= 20 (the image and CI use Node 22).
+Requires Node.js >= 20.19.0 (the image and CI use Node 22).
 
 ```bash
 npm install
 npm run typecheck
 npm test
 npm run lint
-npm run build        # tsc + Tailwind CSS -> dist/ and assets/app.css
+npm run build        # tsc + Tailwind CSS + Vite UI -> dist/, assets/app.css, assets/ui/
 node dist/index.js --help
 ```
+
+`/projects` is the first route served by the Vue/Vite client, which lives under `ui/` and builds into
+`assets/ui/`; every other page still renders a legacy document. The coordinator chooses the renderer
+through the shared registry and `HANSE_UI_SPA_ROUTES`; `HANSE_UI_LEGACY=1` (or `?legacy=1` on a page)
+forces the legacy renderer. Run the client dev server with `npm run dev:ui` and the coordinator with
+`HANSE_UI_DEV_URL=http://127.0.0.1:5173` to load Vite modules from the dev server;
+`npm run check:ui-dev` is an optional Vite-entry smoke that is not part of CI. See
+[`docs/deployment.md`](docs/deployment.md) and [`docs/current-state.md`](docs/current-state.md).
 
 Build the image from source with the Compose overlay:
 

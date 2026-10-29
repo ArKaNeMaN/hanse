@@ -38,8 +38,11 @@ Every stage must leave these green:
 ```bash
 npm run lint
 npm run typecheck
+npm run typecheck:ui
 npm test
 npm run build
+npm run check:sensitive
+npm run test:e2e        # stages that change a rendered route
 ```
 
 ## Commit policy

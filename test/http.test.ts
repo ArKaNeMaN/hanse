@@ -924,7 +924,17 @@ describe("http API and assets", () => {
     const response = handleRequest(deps(f), request);
     expect(response.status).toBe(200);
     expect(response.contentType).toContain("text/javascript");
-    expect(response.body).toContain("data-dialog-open");
+    expect(response.body).toContain("data-nav-toggle");
+    expect(response.body).not.toContain("data-dialog-open");
+
+    const contentScript = handleRequest(deps(f), {
+      method: "GET",
+      path: "/assets/app-content.js",
+      headers: {},
+    });
+    expect(contentScript.status).toBe(200);
+    expect(contentScript.contentType).toContain("text/javascript");
+    expect(contentScript.body).toContain("data-dialog-open");
 
     const favicon = handleRequest(deps(f), {
       method: "GET",
@@ -966,6 +976,57 @@ describe("http API and assets", () => {
       headers: {},
     });
     expect(missing.status).toBe(404);
+  });
+
+  it("serves built SPA assets with immutable caching and rejects traversal", () => {
+    const f = fixture();
+    const assets = mkdtempSync(path.join(tmpdir(), "hanse-ui-assets-"));
+    dirs.push(assets);
+    mkdirSync(path.join(assets, "ui", "nested"), { recursive: true });
+    writeFileSync(path.join(assets, "ui", "main-test.js"), "export const x = 1;\n", "utf8");
+    writeFileSync(path.join(assets, "ui", "app-test.css"), ".x{color:red}\n", "utf8");
+
+    const previous = process.env.HANSE_ASSETS;
+    process.env.HANSE_ASSETS = assets;
+    try {
+      const script = handleRequest(deps(f), {
+        method: "GET",
+        path: "/assets/ui/main-test.js",
+        headers: {},
+      });
+      expect(script.status).toBe(200);
+      expect(script.contentType).toContain("text/javascript");
+      expect(script.headers?.["cache-control"]).toContain("immutable");
+      expect(script.body).toContain("export const x");
+
+      const style = handleRequest(deps(f), {
+        method: "GET",
+        path: "/assets/ui/app-test.css",
+        headers: {},
+      });
+      expect(style.status).toBe(200);
+      expect(style.contentType).toContain("text/css");
+
+      const missing = handleRequest(deps(f), {
+        method: "GET",
+        path: "/assets/ui/missing.js",
+        headers: {},
+      });
+      expect(missing.status).toBe(404);
+
+      const traversal = handleRequest(deps(f), {
+        method: "GET",
+        path: "/assets/ui/../../../etc/passwd",
+        headers: {},
+      });
+      expect(traversal.status).toBe(404);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.HANSE_ASSETS;
+      } else {
+        process.env.HANSE_ASSETS = previous;
+      }
+    }
   });
 
   it("serves the diff and highlight assets and rejects unknown worker paths", () => {

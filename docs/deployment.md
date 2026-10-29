@@ -233,6 +233,9 @@ Compose reads `.env` in the directory containing `compose.yaml`.
 | `HANSE_IDE_BUILD_IMAGE` | `hanse-agent-ide:dev` | Local IDE tag used by the source-build overlay. |
 | `HANSE_RUNNER_BUILD_IMAGE` | `hanse-runner:dev` | Local runner tag used by the source-build overlay. |
 | `HANSE_HOST_AUTH_FILE` | - | Required only by `compose.host-auth.yaml`; path to a host `auth.json`. |
+| `HANSE_UI_LEGACY` | unset | `1` forces every page to the legacy renderer; takes precedence over the allowlist and registry flags. Restart required. |
+| `HANSE_UI_SPA_ROUTES` | unset | Comma-separated route ids served by the SPA. Unset uses the registry flags; an empty string disables every SPA route. Restart required. |
+| `HANSE_UI_DEV_URL` | unset | Development only: Vite origin (for example `http://127.0.0.1:5173`). The coordinator emits Vite client/entry module URLs instead of the built manifest. |
 
 `HANSE_IMAGE`, `HANSE_AGENT_IMAGE`, `HANSE_IDE_IMAGE`, and `HANSE_RUNNER_IMAGE` are repository values,
 not full references or digests: Compose always appends `:${tag}`. A full reference or digest in one of
@@ -246,6 +249,25 @@ The coordinator also receives `HANSE_STATE_HOME=/data/state`, `HANSE_AGENTS_HOME
 `HANSE_RUNNER_URL=http://runner:8790`, `HANSE_AGENT_API_BASE=http://hanse:8787`, `HANSE_IDE_URL=/ide/`,
 and the proxy target for the IDE service. These are internal to the Compose file and normally do not
 need to be overridden.
+
+### UI rendering modes and rollback
+
+The authenticated UI has two renderers in one coordinator: the existing server-rendered documents and
+the incremental Vue client under `ui/` (built into `assets/ui/`). `/projects` is the only registry
+route with `spa: true`; every other route (including `/projects/:id`) serves the legacy UI.
+
+- **Global rollback:** `HANSE_UI_LEGACY=1` serves every page from the legacy renderer. Restart the
+  coordinator after changing it.
+- **Per-route rollback:** `HANSE_UI_SPA_ROUTES` is a comma-separated list of route ids. An empty
+  string disables every SPA route; unset falls back to the registry flags. Unknown ids log
+  `ui.unknown_route` and are ignored. Restart after changing it.
+- **Single request:** append `?legacy=1` to any page URL. Other query parameters are preserved.
+- A missing, invalid, or partial `assets/ui/.vite/manifest.json` logs `ui.manifest_invalid` once and
+  serves legacy for every route, so a checkout without a UI build still works.
+- **Development:** run `npm run dev:ui`, then start the coordinator with
+  `HANSE_UI_DEV_URL=http://127.0.0.1:5173`. The document, cookies, and `/api/ui/*` stay on the
+  coordinator origin; the browser loads modules from Vite. HMR works cross-origin for localhost. A
+  non-localhost page host needs Vite `server.cors.origin`/`server.allowedHosts` adjustments.
 
 ### Volumes and permissions
 
@@ -467,9 +489,10 @@ explicitly when you need a local default agent image:
 docker build --target agent-default -t hanse-agent-default:dev .
 ```
 
-The build needs network access and several GB of disk. It compiles TypeScript and Tailwind, installs
-production dependencies for the target architecture, then installs `opencode`, the OMO baseline,
-CodeGraph, Python, PHP, and the code-server IDE layer. PHP 8.3 and its extensions come from prebuilt
+The build needs network access and several GB of disk. It compiles TypeScript, Tailwind, and the Vite
+client, installs production dependencies for the target architecture, then installs `opencode`, the
+OMO baseline, CodeGraph, Python, PHP, and the code-server IDE layer. Source development needs Node
+`>=20.19.0` (Vite 7); the runtime images use Node 22. PHP 8.3 and its extensions come from prebuilt
 [`packages.sury.org`](https://packages.sury.org/php/) Debian packages rather than compiling
 extensions from source.
 
@@ -479,8 +502,10 @@ Run the repository gates before building:
 npm ci
 npm run lint
 npm run typecheck
+npm run typecheck:ui
 npm test
 npm run build
+npm run check:ui
 ```
 
 ### Image build arguments

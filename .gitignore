@@ -7,8 +7,13 @@ coverage/
 !.env.example
 .hanse-runtime/
 assets/app.css
+assets/ui/
 .omo/
 .DS_Store
 docs/deploy/
 compose.override.yaml
 *.tgz
+
+test-results/
+playwright-report/
+blob-report/

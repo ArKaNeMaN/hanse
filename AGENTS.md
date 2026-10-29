@@ -24,18 +24,22 @@ scope and limitations.
 
 ## Build and verify
 
-Requires Node.js >= 20.
+Requires Node.js >= 20.19.0.
 
 ```bash
 npm install
 npm run typecheck   # tsc --noEmit
-npm test            # vitest
+npm run typecheck:ui # vue-tsc for ui/ and src/shared/routes.ts
+npm test            # vitest (server + jsdom UI projects)
 npm run lint        # biome
-npm run build       # tsc + Tailwind CSS -> dist/ and assets/app.css
+npm run build       # tsc + Tailwind CSS + Vite UI -> dist/, assets/app.css, assets/ui/
+npm run check:ui    # no SFC <style>, built CSS contains the UI sentinel
+npm run check:ui-dev # optional: start Vite and fetch the dev entry (not in CI)
 ```
 
 All gates must pass before a change is considered done. The CSS is built by
-`npm run build:css` (Tailwind CSS) into `assets/app.css`.
+`npm run build:css` (Tailwind CSS) into `assets/app.css`; the Vue client is built by
+`npm run build:ui` (Vite) into `assets/ui/`. `assets/ui/` and `assets/app.css` are git-ignored.
 
 ## Browser testing (this application image)
 
@@ -60,6 +64,12 @@ be restarted after the build to pick it up.
 ## Conventions
 
 - TypeScript, ESM, `moduleResolution: NodeNext`. Relative imports use `.js` extensions.
+- The Vue client lives in `ui/` with its own `tsconfig.ui.json` (`moduleResolution: Bundler`). It
+  imports the pure `src/shared/routes.ts` only; do not add `node:*` imports there. No SFC `<style>`
+  blocks or `v-html`; use the existing Tailwind classes and `DESIGN.md` tokens.
+- Only routes whose registry `spa` flag is true are served by the Vite client; `/projects` is the
+  current cutover. Every other route stays legacy; `/api/ui/*` and SPA documents are cookie-only.
+  Legacy pages load `app.js` + `app-content.js`; SPA documents load only the shell `app.js`.
 - Node-compatible only: do not use Bun or other runtime-specific APIs.
 - `.hanse/project.yaml` and `.hanse/app.yaml` schemas (in `src/schema/`) are the source of truth;
   keep docs and code in sync.

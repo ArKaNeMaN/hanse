@@ -4,6 +4,7 @@ import { type ApprovalKind, decideApproval, getPendingApproval } from "../coordi
 import type { DeletionService } from "../coordinator/deletion.js";
 import type { DeploymentLock } from "../coordinator/deployment-lock.js";
 import type { HandoffDispatcher } from "../coordinator/dispatcher.js";
+import { getHandoff } from "../coordinator/handoff.js";
 import type { LifecycleActivity } from "../coordinator/lifecycle-activity.js";
 import {
   addApplication,
@@ -100,6 +101,10 @@ const COOKIE_MAX_AGE = 30 * 24 * 60 * 60;
 const ASSETS: Record<string, { file: string; contentType: string }> = {
   "/assets/app.css": { file: "app.css", contentType: "text/css; charset=utf-8" },
   "/assets/app.js": { file: "app.js", contentType: "text/javascript; charset=utf-8" },
+  "/assets/app-content.js": {
+    file: "app-content.js",
+    contentType: "text/javascript; charset=utf-8",
+  },
   "/assets/chat.js": { file: "chat.js", contentType: "text/javascript; charset=utf-8" },
   "/assets/chat-core.js": {
     file: "chat-core.js",
@@ -307,7 +312,48 @@ function deletionConflict(
   return json(409, { error: message, code });
 }
 
+const UI_ASSET_PREFIX = "/assets/ui/";
+const UI_ASSET_TYPES: Record<string, string> = {
+  ".js": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".map": "application/json; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".woff2": "font/woff2",
+};
+
+/**
+ * Vite-built client assets are hashed and immutable. They live under `assets/ui/` and are served
+ * outside the fixed allowlist so a new build does not require a handler change.
+ */
+function uiAsset(request: HttpRequest): HttpResponse | undefined {
+  if (!request.path.startsWith(UI_ASSET_PREFIX)) {
+    return undefined;
+  }
+  const relative = request.path.slice(UI_ASSET_PREFIX.length);
+  const root = path.resolve(process.env.HANSE_ASSETS ?? path.join(process.cwd(), "assets"), "ui");
+  const resolved = path.resolve(root, relative);
+  if (relative.length === 0 || (resolved !== root && !resolved.startsWith(`${root}${path.sep}`))) {
+    return json(404, { error: "not found" });
+  }
+  try {
+    return {
+      status: 200,
+      contentType:
+        UI_ASSET_TYPES[path.extname(resolved).toLowerCase()] ?? "application/octet-stream",
+      body: readFileSync(resolved, "utf8"),
+      headers: { "cache-control": "public, max-age=31536000, immutable" },
+    };
+  } catch {
+    return json(404, { error: "not found" });
+  }
+}
+
 function asset(request: HttpRequest): HttpResponse | undefined {
+  const ui = uiAsset(request);
+  if (ui !== undefined) {
+    return ui;
+  }
   const entry = ASSETS[request.path];
   if (entry === undefined) {
     return undefined;
@@ -367,10 +413,93 @@ function decisionFor(
   };
 }
 
+interface DecisionAttempt {
+  readonly decision: "approved" | "rejected";
+  readonly message: string;
+}
+
+type DecisionAttemptResult =
+  | { readonly ok: true; readonly outcome: DecisionAttempt }
+  | { readonly ok: false; readonly status: number; readonly message: string };
+
+function attemptDecision(
+  deps: HttpDeps,
+  parsed: { handoffId: string; decision: "approved" | "rejected" },
+  fields: Record<string, string>,
+  explicitPath: boolean,
+  principal: Principal,
+): DecisionAttemptResult {
+  const explicitDecision = fields.decision;
+  if (explicitPath && explicitDecision !== "approved" && explicitDecision !== "rejected") {
+    return { ok: false, status: 400, message: "Decision must be approved or rejected." };
+  }
+  const decision: "approved" | "rejected" = explicitPath
+    ? explicitDecision === "rejected"
+      ? "rejected"
+      : "approved"
+    : parsed.decision;
+  const reason = fields.reason?.trim();
+  const approvalKind: ApprovalKind | undefined =
+    fields.approval_kind === "reply"
+      ? "reply"
+      : fields.approval_kind === "dispatch"
+        ? "dispatch"
+        : undefined;
+
+  const approvalId = pendingApprovalId(deps.db, parsed.handoffId, approvalKind);
+  if (approvalId === undefined) {
+    return { ok: false, status: 409, message: "No pending approval for this handoff." };
+  }
+  try {
+    decideApproval(deps.db, approvalId, principal, decision, reason);
+  } catch (error) {
+    return {
+      ok: false,
+      status: 409,
+      message: error instanceof Error ? error.message : String(error),
+    };
+  }
+  const message =
+    approvalKind === "reply"
+      ? decision === "approved"
+        ? "Reply approved."
+        : "Reply rejected."
+      : decision === "approved"
+        ? "Handoff approved."
+        : "Handoff rejected.";
+  return { ok: true, outcome: { decision, message } };
+}
+
+function spaDecision(
+  deps: HttpDeps,
+  request: HttpRequest,
+  parsed: { handoffId: string; decision: "approved" | "rejected" },
+): HttpResponse {
+  const guard = guardSpaMutation(deps, request);
+  if (!guard.ok) {
+    return guard.response;
+  }
+  if (guard.principal.kind !== "human") {
+    return json(
+      403,
+      { error: "only a human principal may decide an approval" },
+      SPA_MUTATION_HEADERS,
+    );
+  }
+  const result = attemptDecision(deps, parsed, guard.fields, true, guard.principal);
+  if (!result.ok) {
+    return json(result.status, { error: result.message }, SPA_MUTATION_HEADERS);
+  }
+  return json(200, { ok: true, decision: result.outcome.decision }, SPA_MUTATION_HEADERS);
+}
+
 function routeDecision(deps: HttpDeps, request: HttpRequest): HttpResponse {
   const parsed = decisionFor(request.method, request.path);
   if (parsed === undefined) {
     return json(404, { error: "not found" });
+  }
+  if (isSpaMutation(request) && request.path.endsWith("/decision")) {
+    return spaDecision(deps, request, parsed);
   }
   const fields = parseForm(request.body);
   const browser = wantsHtml(request);
@@ -387,45 +516,21 @@ function routeDecision(deps: HttpDeps, request: HttpRequest): HttpResponse {
     return json(403, { error: "only a human principal may decide an approval" });
   }
 
-  const explicitDecision = fields.decision;
-  if (request.path.endsWith("/decision")) {
-    if (explicitDecision !== "approved" && explicitDecision !== "rejected") {
-      return browserError(request, returnTo, "Decision must be approved or rejected.");
-    }
+  const result = attemptDecision(
+    deps,
+    parsed,
+    fields,
+    request.path.endsWith("/decision"),
+    principal,
+  );
+  if (!result.ok) {
+    return browser
+      ? redirectWithNotice(returnTo, result.message, "error")
+      : json(result.status, { error: result.message });
   }
-  const decision: "approved" | "rejected" = request.path.endsWith("/decision")
-    ? explicitDecision === "rejected"
-      ? "rejected"
-      : "approved"
-    : parsed.decision;
-  const reason = fields.reason?.trim();
-  const approvalKind: ApprovalKind | undefined =
-    fields.approval_kind === "reply"
-      ? "reply"
-      : fields.approval_kind === "dispatch"
-        ? "dispatch"
-        : undefined;
-
-  const approvalId = pendingApprovalId(deps.db, parsed.handoffId, approvalKind);
-  if (approvalId === undefined) {
-    const message = "No pending approval for this handoff.";
-    return browser ? redirectWithNotice(returnTo, message, "error") : json(409, { error: message });
-  }
-  try {
-    decideApproval(deps.db, approvalId, principal, decision, reason);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return browser ? redirectWithNotice(returnTo, message, "error") : json(409, { error: message });
-  }
-  const message =
-    approvalKind === "reply"
-      ? decision === "approved"
-        ? "Reply approved."
-        : "Reply rejected."
-      : decision === "approved"
-        ? "Handoff approved."
-        : "Handoff rejected.";
-  return browser ? redirectWithNotice(returnTo, message, "success") : redirect(returnTo);
+  return browser
+    ? redirectWithNotice(returnTo, result.outcome.message, "success")
+    : redirect(returnTo);
 }
 
 function routeMutation(
@@ -443,6 +548,242 @@ function routeMutation(
     return loginRedirectTo(safeLocalPath(fields.return_to, fallback));
   }
   return action(fields);
+}
+
+const SPA_MUTATION_HEADERS = { "cache-control": "no-store" };
+
+/** The SPA asks for JSON explicitly; `Accept` alone keeps the legacy redirect behavior. */
+function isSpaMutation(request: HttpRequest): boolean {
+  return request.headers["x-hanse-client"] === "spa";
+}
+
+/** `Content-Type` media type only; parameters such as `charset` are ignored. */
+function isFormEncoded(request: HttpRequest): boolean {
+  const contentType = request.headers["content-type"] ?? "";
+  return contentType.split(";")[0]?.trim().toLowerCase() === "application/x-www-form-urlencoded";
+}
+
+/** An absent `Origin` is allowed; a present one must parse and match the request host exactly. */
+function isSameOrigin(request: HttpRequest): boolean {
+  const origin = request.origin ?? request.headers.origin;
+  if (origin === undefined) {
+    return true;
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(origin);
+  } catch {
+    return false;
+  }
+  const host = request.host ?? request.headers.host;
+  return host !== undefined && parsed.host.toLowerCase() === host.toLowerCase();
+}
+
+type SpaMutationGuard =
+  | { readonly ok: true; readonly fields: Record<string, string>; readonly principal: Principal }
+  | { readonly ok: false; readonly response: HttpResponse };
+
+/** Shared SPA mutation gate: form-encoded body, same-origin, then authentication. */
+function guardSpaMutation(deps: HttpDeps, request: HttpRequest): SpaMutationGuard {
+  if (!isFormEncoded(request)) {
+    return {
+      ok: false,
+      response: json(
+        415,
+        { error: "unsupported content type", code: "content_type" },
+        SPA_MUTATION_HEADERS,
+      ),
+    };
+  }
+  if (!isSameOrigin(request)) {
+    return {
+      ok: false,
+      response: json(
+        403,
+        { error: "cross-site request rejected", code: "origin" },
+        SPA_MUTATION_HEADERS,
+      ),
+    };
+  }
+  const principal = principalFrom(deps, request);
+  if (principal === undefined) {
+    return {
+      ok: false,
+      response: json(401, { error: "sign in required" }, SPA_MUTATION_HEADERS),
+    };
+  }
+  return { ok: true, fields: parseForm(request.body), principal };
+}
+
+function spaProjectCreate(deps: HttpDeps, request: HttpRequest): HttpResponse {
+  const guard = guardSpaMutation(deps, request);
+  if (!guard.ok) {
+    return guard.response;
+  }
+  const fields = guard.fields;
+  const name = (fields.name ?? "").trim();
+  if (name.length === 0) {
+    return json(400, { error: "Project name is required." }, SPA_MUTATION_HEADERS);
+  }
+  try {
+    const project = createProject(provisioningDeps(deps), { name });
+    return json(200, { ok: true, project }, SPA_MUTATION_HEADERS);
+  } catch (error) {
+    if (error instanceof ProvisioningError) {
+      if (error.code === "deletion_in_progress") {
+        return json(
+          409,
+          {
+            error: "A deletion is in progress for this location; try again when it finishes.",
+            code: "deletion_in_progress",
+          },
+          SPA_MUTATION_HEADERS,
+        );
+      }
+      const message = error.code === "project_exists" ? "Project already exists." : error.message;
+      return json(error.status, { error: message, code: error.code }, SPA_MUTATION_HEADERS);
+    }
+    throw error;
+  }
+}
+
+function spaAddApplication(deps: HttpDeps, request: HttpRequest, projectId: string): HttpResponse {
+  const guard = guardSpaMutation(deps, request);
+  if (!guard.ok) {
+    return guard.response;
+  }
+  const fields = guard.fields;
+  const project = deps.getProjects().find((candidate) => candidate.id === projectId);
+  if (project === undefined) {
+    return json(400, { error: "Project not found." }, SPA_MUTATION_HEADERS);
+  }
+  const name = (fields.name ?? "").trim();
+  if (name.length === 0) {
+    return json(400, { error: "Application name is required." }, SPA_MUTATION_HEADERS);
+  }
+  const projectRow = deps.db
+    .prepare("SELECT deleting FROM projects WHERE id = ?")
+    .get(project.id) as { deleting: number } | undefined;
+  if (project.deleting === true || projectRow?.deleting === 1) {
+    return json(
+      409,
+      {
+        error: "This project is being deleted; finish the deletion first.",
+        code: "deletion_incomplete",
+      },
+      SPA_MUTATION_HEADERS,
+    );
+  }
+  try {
+    const app = addApplication(provisioningDeps(deps), {
+      projectId: project.id,
+      name,
+      ...((fields.path ?? "").trim().length === 0 ? {} : { path: (fields.path ?? "").trim() }),
+      ...((fields.remote ?? "").trim().length === 0
+        ? {}
+        : { remote: (fields.remote ?? "").trim() }),
+    });
+    return json(200, { ok: true, app }, SPA_MUTATION_HEADERS);
+  } catch (error) {
+    if (error instanceof ProvisioningError) {
+      if (error.code === "deletion_in_progress") {
+        return json(
+          409,
+          {
+            error: "A deletion is in progress for this application; try again when it finishes.",
+            code: "deletion_in_progress",
+          },
+          SPA_MUTATION_HEADERS,
+        );
+      }
+      if (error.status === 400 && error.configCode !== undefined) {
+        return json(400, { error: error.message, code: error.configCode }, SPA_MUTATION_HEADERS);
+      }
+      return json(error.status, { error: error.message, code: error.code }, SPA_MUTATION_HEADERS);
+    }
+    throw error;
+  }
+}
+
+function spaHandoffCreate(deps: HttpDeps, request: HttpRequest): HttpResponse {
+  const guard = guardSpaMutation(deps, request);
+  if (!guard.ok) {
+    return guard.response;
+  }
+  const fields = guard.fields;
+  const candidates = deps.getProjects();
+  const requested = fields.project;
+  const project =
+    requested === undefined || requested.length === 0
+      ? candidates[0]
+      : candidates.find((candidate) => candidate.id === requested);
+  if (project === undefined) {
+    return json(400, { error: "Project not found." }, SPA_MUTATION_HEADERS);
+  }
+  const summary = fields.summary?.trim() ?? "";
+  if (summary.length === 0) {
+    return json(
+      400,
+      { error: "Summary is required.", code: "summary_required" },
+      SPA_MUTATION_HEADERS,
+    );
+  }
+  try {
+    const result = project.service.requestSiblingChange({
+      fromAppKey: fields.from ?? "",
+      toAppKey: fields.to ?? "",
+      summary,
+      spec: fields.spec ?? "",
+      requiresApproval: fields.requires_approval === "1",
+      origin: "operator",
+    });
+    const handoff = getHandoff(deps.db, result.handoffId);
+    if (result.status === "denied") {
+      return json(
+        403,
+        {
+          ok: false,
+          error: "Handoff denied by project policy.",
+          code: "handoff_denied",
+          status: "denied",
+        },
+        SPA_MUTATION_HEADERS,
+      );
+    }
+    if (result.status === "existing") {
+      return json(
+        409,
+        {
+          ok: false,
+          error: "Handoff already exists.",
+          code: "handoff_exists",
+          handoffId: result.handoffId,
+          status: "existing",
+          state: result.state,
+          ...(handoff === undefined ? {} : { handoff }),
+        },
+        SPA_MUTATION_HEADERS,
+      );
+    }
+    const status = result.status === "queued" ? 201 : 202;
+    return json(
+      status,
+      {
+        ok: true,
+        handoffId: result.handoffId,
+        status: result.status,
+        state: result.state,
+        ...(handoff === undefined ? {} : { handoff }),
+      },
+      SPA_MUTATION_HEADERS,
+    );
+  } catch (error) {
+    return json(
+      400,
+      { error: error instanceof Error ? error.message : String(error) },
+      SPA_MUTATION_HEADERS,
+    );
+  }
 }
 
 function routeRuntimeStatus(deps: HttpDeps, request: HttpRequest): HttpResponse | undefined {
@@ -620,6 +961,9 @@ function route(deps: HttpDeps, request: HttpRequest): HttpResponse {
   }
 
   if (request.method === "POST" && request.path === "/api/handoffs") {
+    if (isSpaMutation(request)) {
+      return spaHandoffCreate(deps, request);
+    }
     return routeMutation(deps, request, (fields) => {
       const browser = wantsHtml(request);
       const returnTo = safeLocalPath(fields.return_to, "/");
@@ -676,6 +1020,9 @@ function route(deps: HttpDeps, request: HttpRequest): HttpResponse {
   }
 
   if (request.method === "POST" && request.path === "/api/projects") {
+    if (isSpaMutation(request)) {
+      return spaProjectCreate(deps, request);
+    }
     return routeMutation(deps, request, (fields) => {
       const browser = wantsHtml(request);
       const name = (fields.name ?? "").trim();
@@ -711,6 +1058,9 @@ function route(deps: HttpDeps, request: HttpRequest): HttpResponse {
 
   const addAppMatch = /^\/api\/projects\/([^/]+)\/apps$/.exec(request.path);
   if (request.method === "POST" && addAppMatch !== null) {
+    if (isSpaMutation(request)) {
+      return spaAddApplication(deps, request, safeDecode(addAppMatch[1] ?? ""));
+    }
     return routeMutation(deps, request, (fields) => {
       const browser = wantsHtml(request);
       const projectId = safeDecode(addAppMatch[1] ?? "");

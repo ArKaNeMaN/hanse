@@ -5,7 +5,7 @@
   "type": "module",
   "license": "SEE LICENSE IN LICENSE",
   "engines": {
-    "node": ">=20"
+    "node": ">=20.19.0"
   },
   "bin": {
     "hanse": "./dist/index.js"
@@ -15,14 +15,23 @@
   ],
   "scripts": {
     "dev": "tsx src/index.ts",
-    "build": "tsc && npm run build:css",
+    "build": "tsc && npm run build:css && npm run build:ui",
     "build:css": "npx @tailwindcss/cli -i src/http/styles.css -o assets/app.css --minify",
+    "build:ui": "vite build",
+    "dev:ui": "vite",
+    "dev:css": "npx @tailwindcss/cli -i src/http/styles.css -o assets/app.css --watch",
     "design:showcase": "python3 -m http.server 4173",
     "design:capture": "node docs/design/capture.mjs",
     "typecheck": "tsc --noEmit",
+    "typecheck:ui": "vue-tsc -p tsconfig.ui.json --noEmit",
+    "typecheck:e2e": "tsc --noEmit -p tsconfig.e2e.json",
     "test": "vitest run",
+    "test:ui": "vitest run --project ui",
+    "test:e2e": "npm run build && playwright test",
     "lint": "biome check .",
     "check:sensitive": "bash scripts/check-sensitive.sh",
+    "check:ui": "node scripts/check-ui.mjs",
+    "check:ui-dev": "node scripts/check-ui-dev.mjs",
     "format": "biome format --write .",
     "start": "node dist/index.js"
   },
@@ -33,15 +42,25 @@
     "zod": "^3.23.0"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.0.0",
+    "@biomejs/biome": "^2.6.3",
+    "@playwright/test": "^1.64.1",
     "@tailwindcss/cli": "^4.3.3",
+    "@tanstack/vue-query": "^5.105.0",
     "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^22.0.0",
     "@types/ssh2": "^1.15.6",
+    "@vitejs/plugin-vue": "^6.0.10",
+    "@vue/test-utils": "^2.5.1",
     "daisyui": "^5.7.50",
+    "jsdom": "^26.1.0",
+    "pinia": "^3.0.4",
     "tailwindcss": "^4.3.3",
     "tsx": "^4.19.0",
-    "typescript": "^5.4.0",
-    "vitest": "^3.0.0"
+    "typescript": "^5.9.3",
+    "vite": "^7.3.7",
+    "vitest": "^3.2.7",
+    "vue": "^3.5.44",
+    "vue-router": "^4.6.4",
+    "vue-tsc": "^3.3.13"
   }
 }

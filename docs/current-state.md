@@ -1,6 +1,6 @@
 # Hanse - Current State (read this first)
 
-> Last updated: 2026-10-27. This is the canonical description of what is **implemented right now**.
+> Last updated: 2026-10-28. This is the canonical description of what is **implemented right now**.
 > If this document and the code disagree, the code wins - update this document.
 > History and rationale: `docs/design/overview.md`, `docs/plans/0001-core.md`,
 > `docs/journal/0001-core.md`. Deployment: `docs/deployment.md`.
@@ -14,8 +14,9 @@ coordinator. The product surface is one web UI (dashboard + chat + handoffs) plu
 ## Stack and repository
 
 - Repository: `github.com/ArKaNeMaN/hanse` (branch `main`). Local checkout: `dev/hanse`.
-- TypeScript, ESM, Node >= 20, npm.
-- Build: `tsc` plus Tailwind CSS (`npm run build:css` -> `assets/app.css`). Tests: vitest. Lint/format:
+- TypeScript, ESM, Node >= 20.19.0, npm.
+- Build: `tsc`, Tailwind CSS (`npm run build:css` -> `assets/app.css`), and Vite
+  (`npm run build:ui` -> `assets/ui/`). Tests: vitest (server + jsdom UI projects). Lint/format:
   Biome. Schemas: zod. YAML: `yaml`. Database: `better-sqlite3`.
 - Public OSS; license not chosen yet.
 
@@ -267,17 +268,47 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   `/assets/vendor/xterm/addon-fit-0.11.0.js`,
   `/assets/vendor/xterm/addon-unicode11-0.9.0.js`,
   `/assets/vendor/xterm/addon-unicode-graphemes-0.4.0.js`, and `/assets/favicon.svg`.
-- `assets/app.js` adds shell drawer, native-dialog, theme, toast, password-visibility, and
-  submit-busy behavior. `assets/chat.js` is an ESM module that owns the chat workspace (sessions,
+- `assets/app.js` owns shell behavior (drawer, theme, nav); `assets/app-content.js` owns dialogs,
+  menus, segmented controls, toast close/autodismiss, password visibility, and submit-busy behavior.
+  Legacy pages load both; SPA documents load only `app.js`. `assets/chat.js` is an ESM module that owns the chat workspace (sessions,
   messages, typed SSE, composer, queue, questions, OMO cards, safe markdown/tables, syntax-highlighted
   diffs/write content) and imports the pure helpers in `assets/chat-core.js`,
   `assets/chat-commands.js`, `assets/chat-diff.js`, and the lazy worker controller in
   `assets/chat-highlight.js`. `assets/git.js` hydrates the
-  application git panel. Pages remain server-rendered; no bundler or client framework is used.
+  application git panel. All routes except `/projects` remain server-rendered by default; the
+  Vue/Vite client has cut over `/projects` and is scaffolded for later routes (see **UI rendering
+  modes**).
 - The chat workspace is the stage-3 three-pane surface: sessions rail, thread, and context rail.
   Below 1360 the context pane is a drawer; below 768 both rails are drawers. The thread is the only
   scroll owner. `session` is mirrored to the URL, and the optional `project` query disambiguates
   duplicate app keys across projects.
+
+## UI rendering modes (Phase 1B)
+
+- `/projects` is the first and only SPA route: the shared registry (`src/shared/routes.ts`) has
+  `spa: true` for `projects` and `spa: false` for every other page, and `/projects/:id` stays a
+  legacy document. The page dispatcher is the only place that chooses a renderer:
+  `HANSE_UI_LEGACY=1` > `?legacy=1` > `HANSE_UI_SPA_ROUTES` > the registry flag. A missing, invalid,
+  or partial `assets/ui/.vite/manifest.json` also falls back to legacy and logs
+  `ui.manifest_invalid`.
+- The Vue 3 + Vue Router + Pinia + Vue Query client lives in `ui/`, builds into `assets/ui/`
+  (`npm run build:ui`), and mounts into the existing server shell `<main id="main">` (no second
+  wrapper). Server-rendered chrome is refreshed through `GET /api/ui/chrome?path=`, and page data
+  comes from boot JSON plus per-route `/api/ui/*` endpoints. `/projects` renders the legacy header,
+  six-column ledger, search, empty states, deletion status, and create dialog in Vue; navigating to
+  a project crosses a full document boundary to the legacy detail page.
+- Built client assets are served from `/assets/ui/*` with immutable caching; compressible responses
+  are gzip-encoded when the client offers it (the `/projects` first load measures ~137 KiB on the
+  deterministic fixture).
+- SPA documents and `/api/ui/*` are cookie-only. `/api/ui/*` returns `401` without a human cookie,
+  `403 cookie_required` for a human bearer without a cookie, and `403` for agent tokens; responses are
+  `no-store`.
+- Script split: legacy pages and `/login` load `app.js` + `app-content.js`; SPA documents load only
+  the shell `app.js`. SPA toasts are owned by the Vue `ToastHost`, not `app-content.js`. SPA
+  mutations send `X-Hanse-Client: spa`; `POST /api/projects` then answers `200 {ok:true, project}`,
+  while the legacy form path keeps its `303` + notice.
+- `#ui-fallback` stays hidden, then reveals after 4 s only if the client did not mount;
+  `vite:preloadError` reloads once and then renders a safe `?legacy=1` fallback.
 
 ## Git workbench
 
@@ -1128,7 +1159,10 @@ Host `./agents` is mounted at `/data/agents` read-write in `hanse` and read-only
 | `HANSE_IDE=0` | serve | do not spawn code-server in the coordinator |
 | `HANSE_IDE_HOST` / `HANSE_IDE_PORT` | serve | proxy target for `/ide` (default `127.0.0.1:8080`) |
 | `HANSE_IDE_BIN` | serve | code-server binary |
-| `HANSE_ASSETS` | serve | directory for `app.css`, `app.js`, `chat.js`, `chat-core.js`, `chat-diff.js`, `chat-highlight.js`, `chat-highlight-worker.js`, `git.js`, `git-settings.js`, `handoff.js`, `settings.js`, `skill-detail.js`, `markdown.js`, `vendor/prism/prism-1.30.0.min.js`, and `favicon.svg` |
+| `HANSE_ASSETS` | serve | directory for `app.css`, `app.js`, `app-content.js`, the built client assets under `assets/ui/`, `chat.js`, `chat-core.js`, `chat-diff.js`, `chat-highlight.js`, `chat-highlight-worker.js`, `git.js`, `git-settings.js`, `handoff.js`, `settings.js`, `skill-detail.js`, `markdown.js`, `vendor/prism/prism-1.30.0.min.js`, and `favicon.svg` |
+| `HANSE_UI_LEGACY` | serve | `1` forces every page to the legacy renderer (restart required); `?legacy=1` forces one request |
+| `HANSE_UI_SPA_ROUTES` | serve | comma-separated route ids to serve as SPA; unset uses the registry flags, empty string disables all SPA routes |
+| `HANSE_UI_DEV_URL` | serve, dev | Vite dev origin (for example `http://127.0.0.1:5173`); the server emits `<url>/assets/ui/@vite/client` and `<url>/assets/ui/main.ts` instead of the built manifest |
 | `HANSE_DB` / `HANSE_PROJECT_ID` / `HANSE_APP_KEY` | `hanse mcp` | MCP server binding |
 | `HANSE_API_BASE` | extension | coordinator base URL (`http://hanse:8787`) |
 
@@ -1144,8 +1178,9 @@ coordinator; operators do not set them.
 
 ## Verification
 
-`npm run lint && npm run typecheck && npm test && npm run build` (all green; 2518 tests in 130
-files). The UX polish pass deployed as `sha-88faab7`; the settings live-save follow-up deployed as
+`npm run lint && npm run typecheck && npm run typecheck:ui && npm test && npm run build &&
+npm run check:ui` (all green; 2758 tests in 148 files; the suite includes the jsdom UI project).
+The UX polish pass deployed as `sha-88faab7`; the settings live-save follow-up deployed as
 `sha-d2fcc3b`; the runtime-state reconciliation fix deployed as coordinator `sha-98033f5` on
 2026-10-21. The project/application deletion stage is verified by the four gates; it has not been
 deployed or live-smoked from this checkout. The global custom model provider stage is verified by

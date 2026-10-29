@@ -290,6 +290,8 @@ export function documentPage(options: {
   styles?: string[];
   moduleScripts?: string[];
   viewport?: string;
+  contentScript?: boolean;
+  bootJson?: string;
 }): string {
   return `<!doctype html>
 <html lang="en" data-theme="dark">
@@ -312,12 +314,14 @@ export function documentPage(options: {
     ${(options.styles ?? []).map((style) => `<link rel="stylesheet" href="${escapeHtml(style)}" />`).join("")}
     <link rel="stylesheet" href="/assets/app.css" />
     <script src="/assets/app.js" defer></script>
+    ${options.contentScript === false ? "" : '<script src="/assets/app-content.js" defer></script>'}
     ${(options.scripts ?? []).map((script) => `<script src="${escapeHtml(script)}" defer></script>`).join("")}
     ${(options.moduleScripts ?? []).map((script) => `<script type="module" src="${escapeHtml(script)}"></script>`).join("")}
   </head>
   <body class="app-body">
     ${iconSprite()}
     ${options.body}
+    ${options.bootJson ?? ""}
   </body>
 </html>`;
 }
@@ -354,13 +358,26 @@ export interface ShellOptions {
   topbarActions?: string;
   settingsHref?: string;
   skillsHref?: string;
+  contentScript?: boolean;
+  bootJson?: string;
+}
+
+export interface SidebarNavOptions {
+  active: ShellOptions["active"];
+  activeProjectId?: string;
+  projects: NavProject[];
+  pendingCount: number;
+  sshPendingCount?: number;
+  settingsHref?: string;
+  skillsHref?: string;
 }
 
 function pageClasses(base: string, extra: string | undefined): string {
   return extra === undefined || extra.length === 0 ? base : `${base} ${extra}`;
 }
 
-function breadcrumbHtml(crumbs: Crumb[]): string {
+/** Inner HTML of `#breadcrumb-host`; the caller owns the single surrounding `<nav>`. */
+export function renderBreadcrumbInner(crumbs: Crumb[]): string {
   const parts: string[] = [];
   crumbs.forEach((crumb, index) => {
     const current = index === crumbs.length - 1;
@@ -375,7 +392,7 @@ function breadcrumbHtml(crumbs: Crumb[]): string {
     parts.push(`<a href="${escapeHtml(crumb.href)}">${escapeHtml(crumb.label)}</a>`);
     parts.push(icon("chevron-right"));
   });
-  return `<nav class="breadcrumb" aria-label="Breadcrumb">${parts.join("")}</nav>`;
+  return parts.join("");
 }
 
 function navItem(options: {
@@ -384,6 +401,8 @@ function navItem(options: {
   iconName: IconName;
   active: boolean;
   count?: number;
+  navId?: string;
+  projectId?: string;
 }): string {
   const current = options.active ? ' aria-current="page"' : "";
   const count =
@@ -391,10 +410,13 @@ function navItem(options: {
   const mark = options.active
     ? `<span class="nav-item__mark">${icon("check", "icon--sm")}</span>`
     : "";
-  return `<a class="nav-item${options.active ? " is-active" : ""}" href="${escapeHtml(options.href)}"${current}>${icon(options.iconName)}<span class="nav-item__label">${escapeHtml(options.label)}</span>${mark}${count}</a>`;
+  const navAttr = options.navId === undefined ? "" : ` data-nav-id="${escapeHtml(options.navId)}"`;
+  const projectAttr =
+    options.projectId === undefined ? "" : ` data-project-id="${escapeHtml(options.projectId)}"`;
+  return `<a class="nav-item${options.active ? " is-active" : ""}" href="${escapeHtml(options.href)}"${navAttr}${projectAttr}${current}>${icon(options.iconName)}<span class="nav-item__label">${escapeHtml(options.label)}</span>${mark}${count}</a>`;
 }
 
-function sidebarProjects(options: ShellOptions): string {
+function sidebarProjects(options: SidebarNavOptions): string {
   const all = options.projects.filter((project) => !isMasterProject(project.id));
   let shown = all.slice(0, 6);
   if (
@@ -413,31 +435,36 @@ function sidebarProjects(options: ShellOptions): string {
         iconName: "folder",
         active: options.activeProjectId === project.id,
         count: project.appCount,
+        projectId: project.id,
       }),
     )
     .join("");
-  return `<p class="nav-label">Projects</p>${links}<a class="nav-item" href="/projects">${icon("layers")}<span class="nav-item__label">All projects</span></a>`;
+  return `<p class="nav-label">Projects</p>${links}<a class="nav-item" href="/projects" data-nav-id="projects">${icon("layers")}<span class="nav-item__label">All projects</span></a>`;
 }
 
-function sidebar(options: ShellOptions): string {
+/** Inner HTML of `#sidebar-nav`; the caller owns the single surrounding `<nav>`. */
+export function renderSidebarNavInner(options: SidebarNavOptions): string {
   const workbench =
     navItem({
       href: "/",
       label: "Overview",
       iconName: "dashboard",
       active: options.active === "overview",
+      navId: "overview",
     }) +
     navItem({
       href: "/projects",
       label: "Projects",
       iconName: "folder",
       active: options.active === "projects",
+      navId: "projects",
     }) +
     navItem({
       href: masterChatHref(),
       label: "Master",
       iconName: "gauge",
       active: false,
+      navId: "master",
     }) +
     navItem({
       href: "/handoffs",
@@ -445,37 +472,47 @@ function sidebar(options: ShellOptions): string {
       iconName: "branch",
       active: options.active === "handoffs",
       count: options.pendingCount,
+      navId: "handoffs",
     }) +
     navItem({
       href: options.skillsHref ?? "/skills",
       label: "Skills",
       iconName: "code",
       active: options.active === "skills",
+      navId: "skills",
     }) +
     navItem({
       href: options.settingsHref ?? "/settings",
       label: "Settings",
       iconName: "settings",
       active: options.active === "settings",
+      navId: "settings",
     }) +
     navItem({
       href: "/ssh",
       label: "SSH",
       iconName: "terminal",
       active: options.active === "ssh",
+      navId: "ssh",
       ...(options.sshPendingCount === undefined ? {} : { count: options.sshPendingCount }),
     });
 
+  return `<p class="nav-label">Workbench</p>${workbench}${sidebarProjects(options)}`;
+}
+
+function sidebar(options: ShellOptions): string {
+  const projectAttr =
+    options.activeProjectId === undefined
+      ? ""
+      : ` data-project-id="${escapeHtml(options.activeProjectId)}"`;
   return `<aside class="sidebar" id="sidebar" aria-label="Primary">
     <div class="sidebar__head">
       <a class="wordmark" href="/">hanse</a>
       <span class="sidebar__kicker">coordinator</span>
       <button class="btn btn-ghost btn-icon btn-sm sidebar__close" type="button" data-nav-close aria-label="Close navigation">${icon("x")}</button>
     </div>
-    <nav class="sidebar__nav" aria-label="Workspace">
-      <p class="nav-label">Workbench</p>
-      ${workbench}
-      ${sidebarProjects(options)}
+    <nav class="sidebar__nav" id="sidebar-nav" aria-label="Workspace" data-nav-id="${escapeHtml(options.active)}"${projectAttr}>
+      ${renderSidebarNavInner(options)}
     </nav>
     <div class="sidebar__foot">
       <span class="avatar avatar--sm">${escapeHtml(initials(options.operatorName))}</span>
@@ -498,20 +535,27 @@ export function appShell(options: ShellOptions): string {
     `<a class="btn btn-ghost btn-icon" href="${escapeHtml(ideBase())}" target="_blank" rel="noreferrer" aria-label="Open IDE in a new tab" title="Open IDE">${icon("external")}</a>`;
 
   const header = options.header.trim().length === 0 ? "" : options.header;
+  const projectAttr =
+    options.activeProjectId === undefined
+      ? ""
+      : ` data-project-id="${escapeHtml(options.activeProjectId)}"`;
   return documentPage({
     title: `${options.title} - hanse`,
     scripts: options.scripts,
     styles: options.styles,
     moduleScripts: options.moduleScripts,
     viewport: options.viewport,
+    contentScript: options.contentScript,
+    bootJson: options.bootJson,
     body: `<a class="skip-link" href="#main">Skip to content</a>
-    <div class="app-shell" data-nav="closed" id="shell">
+    <div class="sr-only" id="route-announcer" aria-live="polite" aria-atomic="true"></div>
+    <div class="app-shell" data-nav="closed" id="shell" data-nav-id="${escapeHtml(options.active)}"${projectAttr}>
       ${sidebar(options)}
       <div class="shell-main">
         <header class="topbar">
           <button class="btn btn-ghost btn-icon nav-toggle" type="button" data-nav-toggle aria-expanded="false" aria-controls="sidebar" aria-label="Open navigation">${icon("menu")}</button>
           <a class="topbar__brand" href="/">hanse</a>
-          ${breadcrumbHtml(options.breadcrumb)}
+          <nav class="breadcrumb" id="breadcrumb-host" aria-label="Breadcrumb" data-nav-id="${escapeHtml(options.active)}">${renderBreadcrumbInner(options.breadcrumb)}</nav>
           <div class="topbar__actions">${topbarActions}</div>
         </header>
         <main class="${pageClasses("page", options.pageClass)}" id="main" tabindex="-1">

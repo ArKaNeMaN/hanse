@@ -1,5 +1,8 @@
 @import "tailwindcss";
 
+/* Tailwind scans the Vue application for utility classes. */
+@source "../../ui";
+
 /*
  * hanse design system - The Chart Room
  * Contract: DESIGN.md. Every visual value below traces to a token defined in :root.
@@ -9701,4 +9704,51 @@
   .command-palette {
     animation: hns-command-palette-fade var(--dur-micro) linear;
   }
+}
+
+
+/* ------------------------------------------------------------------ */
+/* SPA shell                                                          */
+/* ------------------------------------------------------------------ */
+
+/*
+ * The server renders this fallback into `<main>` and hides it until the client has had four
+ * seconds to mount. A successful Vue mount replaces `<main>`'s contents, so the block never shows.
+ * A runtime fallback rendered by `ui/main.ts` opts out of the delay with `--instant`.
+ */
+#ui-fallback {
+  visibility: hidden;
+  opacity: 0;
+  animation: hns-ui-fallback-reveal var(--dur-standard) var(--ease-standard) 4s forwards;
+}
+
+#ui-fallback.ui-fallback--instant {
+  visibility: visible;
+  opacity: 1;
+  animation: none;
+}
+
+@keyframes hns-ui-fallback-reveal {
+  from {
+    visibility: hidden;
+    opacity: 0;
+  }
+  to {
+    visibility: visible;
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #ui-fallback {
+    animation: hns-ui-fallback-reveal 0ms linear 4s forwards;
+  }
+
+  #ui-fallback.ui-fallback--instant {
+    animation: none;
+  }
+}
+
+.hanse-ui-sentinel {
+  display: none;
 }

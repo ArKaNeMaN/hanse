@@ -7,6 +7,7 @@ import http, {
 import net from "node:net";
 import path from "node:path";
 import type { Duplex } from "node:stream";
+import { gzipSync } from "node:zlib";
 import { findApp } from "./apps.js";
 import { isHumanCookie } from "./auth.js";
 import {
@@ -21,7 +22,7 @@ import { handleCommands, isCommandsRoute } from "./commands.js";
 import { handleContext, isContextRoute } from "./context.js";
 import { handleDeletion, isDeletionRoute } from "./deletion.js";
 import { handleGit } from "./git.js";
-import { type HttpDeps, handleRequest } from "./handler.js";
+import { type HttpDeps, type HttpRequest, type HttpResponse, handleRequest } from "./handler.js";
 import { handleHandoffHttp } from "./handoff.js";
 import { handleImages } from "./images.js";
 import { handleInternalMcp } from "./internal-mcp.js";
@@ -35,6 +36,7 @@ import { handlePreviews, isPreviewsRoute } from "./previews.js";
 import { handlePrompts, streamAppEvents } from "./prompts.js";
 import { handleSettings, isSettingsRoute } from "./settings.js";
 import { handleSkills, isSkillsRoute } from "./skills.js";
+import { handleUiApi, maybeServeSpa } from "./spa.js";
 import { handleSsh, isSshRoute } from "./ssh.js";
 import { proxyTerminalUpgrade } from "./terminal.js";
 
@@ -115,6 +117,82 @@ function readBody(request: IncomingMessage, maxBytes: number): Promise<string> {
       }
     });
   });
+}
+
+function httpRequestFor(request: IncomingMessage, url: URL, body: string): HttpRequest {
+  return {
+    method: request.method ?? "GET",
+    path: url.pathname,
+    query: Object.fromEntries(url.searchParams),
+    headers: {
+      authorization: request.headers.authorization,
+      cookie: request.headers.cookie,
+      accept: request.headers.accept,
+      "content-type": request.headers["content-type"],
+      "x-hanse-fragment": Array.isArray(request.headers["x-hanse-fragment"])
+        ? request.headers["x-hanse-fragment"][0]
+        : request.headers["x-hanse-fragment"],
+      "x-hanse-client": Array.isArray(request.headers["x-hanse-client"])
+        ? request.headers["x-hanse-client"][0]
+        : request.headers["x-hanse-client"],
+    },
+    body,
+    origin: request.headers.origin,
+    host: request.headers.host,
+  };
+}
+
+function acceptsGzip(request: IncomingMessage): boolean {
+  return (request.headers["accept-encoding"] ?? "").split(",").some((value) => {
+    const [encoding, ...parameters] = value.trim().toLowerCase().split(";");
+    if (encoding !== "gzip" && encoding !== "*") {
+      return false;
+    }
+    return !parameters.some((parameter) => parameter.trim() === "q=0");
+  });
+}
+
+function isCompressible(contentType: string): boolean {
+  const mediaType = contentType.split(";")[0]?.trim().toLowerCase() ?? "";
+  if (mediaType === "text/event-stream") {
+    return false;
+  }
+  return (
+    mediaType.startsWith("text/") ||
+    mediaType === "application/json" ||
+    mediaType === "application/javascript" ||
+    mediaType === "application/xml" ||
+    mediaType === "image/svg+xml"
+  );
+}
+
+/**
+ * The `/projects` first-load budget (S16) is measured from browser transfer bytes, so server
+ * responses are gzip-compressed when the caller offers it. Small bodies stay uncompressed because
+ * the gzip frame costs more than it saves.
+ */
+function writeHttpResponse(
+  request: IncomingMessage,
+  response: ServerResponse,
+  result: HttpResponse,
+): void {
+  const headers: Record<string, string> = {
+    "content-type": result.contentType,
+    ...(result.headers ?? {}),
+  };
+  let body: string | Buffer = result.body;
+  if (
+    result.body.length > 1024 &&
+    result.headers?.["content-encoding"] === undefined &&
+    isCompressible(result.contentType) &&
+    acceptsGzip(request)
+  ) {
+    body = gzipSync(result.body);
+    headers["content-encoding"] = "gzip";
+    headers.vary = "accept-encoding";
+  }
+  response.writeHead(result.status, headers);
+  response.end(body);
 }
 
 function proxyHttp(
@@ -245,25 +323,23 @@ export function createHttpServer(deps: HttpDeps): Server {
       return;
     }
 
+    const pageRequest = httpRequestFor(request, url, "");
+    const spaResponse = maybeServeSpa(deps, pageRequest);
+    if (spaResponse !== undefined) {
+      writeHttpResponse(request, response, spaResponse);
+      return;
+    }
+    if (url.pathname === "/api/ui" || url.pathname.startsWith("/api/ui/")) {
+      const uiResponse = handleUiApi(deps, pageRequest);
+      if (uiResponse !== undefined) {
+        writeHttpResponse(request, response, uiResponse);
+        return;
+      }
+    }
+
     void readBody(request, bodyLimitFor(request.url ?? ""))
       .then(async (body) => {
-        const httpRequest = {
-          method: request.method ?? "GET",
-          path: url.pathname,
-          query: Object.fromEntries(url.searchParams),
-          headers: {
-            authorization: request.headers.authorization,
-            cookie: request.headers.cookie,
-            accept: request.headers.accept,
-            "content-type": request.headers["content-type"],
-            "x-hanse-fragment": Array.isArray(request.headers["x-hanse-fragment"])
-              ? request.headers["x-hanse-fragment"][0]
-              : request.headers["x-hanse-fragment"],
-          },
-          body,
-          origin: request.headers.origin,
-          host: request.headers.host,
-        };
+        const httpRequest = httpRequestFor(request, url, body);
         const handoffResult = await handleHandoffHttp(deps, httpRequest);
         if (handoffResult !== undefined) {
           response.writeHead(handoffResult.status, {
@@ -340,11 +416,7 @@ export function createHttpServer(deps: HttpDeps): Server {
                               : isChat
                                 ? await handleChat(deps, httpRequest)
                                 : handleRequest(deps, httpRequest);
-        response.writeHead(result.status, {
-          "content-type": result.contentType,
-          ...(result.headers ?? {}),
-        });
-        response.end(result.body);
+        writeHttpResponse(request, response, result);
       })
       .catch((error: unknown) => {
         if (error instanceof PayloadTooLargeError) {
