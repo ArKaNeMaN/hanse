@@ -1,15 +1,20 @@
 import type { Principal } from "../identity/principals.js";
 import { verifyAgentToken } from "../mcp/agent-tokens.js";
-import {
-  type SshAuditEntry,
-  SshError,
-  type SshHostView,
-  type SshTestResult,
-} from "../ssh/types.js";
+import { SshError, type SshHostView } from "../ssh/types.js";
 import { findApp } from "./apps.js";
 import { principalFrom } from "./auth.js";
 import { buildSite, type PageChrome } from "./dashboard.js";
 import type { HttpDeps, HttpRequest, HttpResponse } from "./handler.js";
+import {
+  buildSshProps,
+  resolveSshScope,
+  type SshAuditProps,
+  type SshGrantProps,
+  type SshHostProps,
+  type SshPageExtra,
+  type SshTestProps,
+  sshScopePath,
+} from "./props/ssh.js";
 import {
   absoluteTime,
   appShell,
@@ -115,48 +120,6 @@ function noticeFrom(request: HttpRequest): PageChrome["notice"] {
   };
 }
 
-interface SshPageExtra {
-  test?: SshTestResult & {
-    hostId: string;
-    hostName: string;
-    prepareRePin?: boolean;
-  };
-  error?: { message: string; target: string; values?: Record<string, string> };
-  openAdd?: boolean;
-}
-
-const IDLE_OPTIONS = [300, 900, 1800, 3600, 7200] as const;
-
-function scopePath(projectId: string, appKey: string, hash?: string): string {
-  const base =
-    projectId.length > 0 && appKey.length > 0
-      ? `/ssh?target=${encodeURIComponent(`${projectId}:${appKey}`)}`
-      : "/ssh";
-  return hash === undefined ? base : `${base}${hash}`;
-}
-
-function resolveScope(
-  deps: HttpDeps,
-  request: HttpRequest,
-): { projectId: string; appKey: string; found: ReturnType<typeof findApp> } {
-  const target = request.query?.target ?? "";
-  let projectId = request.query?.project ?? "";
-  let appKey = request.query?.app ?? "";
-  if (target.length > 0) {
-    const separator = target.indexOf(":");
-    if (separator > 0) {
-      projectId = target.slice(0, separator);
-      appKey = target.slice(separator + 1);
-    }
-  }
-  const found =
-    projectId.length > 0 && appKey.length > 0 ? findApp(deps, projectId, appKey) : undefined;
-  if (found === undefined) {
-    return { projectId: "", appKey: "", found: undefined };
-  }
-  return { projectId: found.project.id, appKey: found.app.appKey, found };
-}
-
 function formValues(fields: URLSearchParams): Record<string, string> {
   const values: Record<string, string> = {};
   for (const key of [
@@ -203,8 +166,8 @@ function expiryTag(iso: string): string {
   return `<time datetime="${escapeHtml(iso)}" title="${escapeHtml(absoluteTime(iso))}">${escapeHtml(timeUntil(iso))}</time>`;
 }
 
-function idleOptions(selected: number): string {
-  const options: number[] = [...IDLE_OPTIONS];
+function idleOptions(selected: number, idleOptions: readonly number[]): string {
+  const options: number[] = [...idleOptions];
   if (Number.isFinite(selected) && !options.includes(selected)) {
     options.push(selected);
     options.sort((left, right) => left - right);
@@ -217,13 +180,8 @@ function idleOptions(selected: number): string {
     .join("");
 }
 
-function hostPinState(host: SshHostView): "pinned" | "unpinned" | "mismatch" {
-  if (host.hostKeyMismatchAt !== null) return "mismatch";
-  return host.hostKeyFingerprint === null ? "unpinned" : "pinned";
-}
-
-function hostPinPill(host: SshHostView): string {
-  const state = hostPinState(host);
+function hostPinPill(host: SshHostProps): string {
+  const state = host.pinState;
   if (state === "mismatch") {
     return `<span class="status" data-state="failed">${icon("alert-triangle")}Host key changed</span>`;
   }
@@ -233,33 +191,33 @@ function hostPinPill(host: SshHostView): string {
   return `<span class="status" data-state="delivered">${icon("check")}Pinned</span>`;
 }
 
-function grantStatePill(grant: NonNullable<SshHostView["grant"]>, nowMs: number): string {
-  if (grant.revokedAt !== null) {
+function grantStatePill(grant: SshGrantProps): string {
+  if (grant.state === "revoked") {
     return `<span class="status" data-state="cancelled">${icon("slash")}Revoked</span>`;
   }
-  if (Date.parse(grant.idleExpiresAt) <= nowMs || Date.parse(grant.absoluteExpiresAt) <= nowMs) {
+  if (grant.state === "expired") {
     return `<span class="status" data-state="expired">${icon("hourglass")}Expired</span>`;
   }
   return `<span class="status" data-state="delivered">${icon("check")}Active</span>`;
 }
 
-function auditResult(entry: SshAuditEntry): string {
-  if (entry.finishedAt === null) {
+function auditResult(entry: SshAuditProps): string {
+  if (entry.outcome === "running") {
     return `<span class="badge badge-info">${icon("activity", "icon--sm")}running</span>`;
   }
-  if (entry.errorCode !== null) {
-    return `<span class="badge badge-error">${icon("alert-triangle", "icon--sm")}${escapeHtml(entry.errorCode)}</span>`;
+  if (entry.outcome === "error") {
+    return `<span class="badge badge-error">${icon("alert-triangle", "icon--sm")}${escapeHtml(entry.errorCode ?? "")}</span>`;
   }
-  if (entry.exitCode === 0) {
+  if (entry.outcome === "ok") {
     return `<span class="badge badge-success">${icon("check", "icon--sm")}ok</span>`;
   }
-  if (entry.exitCode !== null) {
+  if (entry.outcome === "exit") {
     return `<span class="badge badge-error">${icon("alert-triangle", "icon--sm")}exit ${entry.exitCode}</span>`;
   }
   return `<span class="badge badge-ghost">recorded</span>`;
 }
 
-function testPanel(test: NonNullable<SshPageExtra["test"]>): string {
+function testPanel(test: SshTestProps): string {
   const tone = test.ok ? "success" : "failed";
   const rows: string[] = [];
   if (test.fingerprint !== undefined) {
@@ -296,17 +254,16 @@ function testPanel(test: NonNullable<SshPageExtra["test"]>): string {
 }
 
 function hostCard(
-  host: SshHostView,
+  host: SshHostProps,
   options: {
     scoped: boolean;
-    scopeHref: string;
-    test?: NonNullable<SshPageExtra["test"]>;
-    error?: SshPageExtra["error"];
+    test: SshTestProps | null;
+    error: SshPageExtra["error"];
   },
 ): string {
-  const pinState = hostPinState(host);
-  const anchor = `ssh-host-${host.id}`;
-  const returnTo = escapeHtml(`${options.scopeHref}#${anchor}`);
+  const pinState = host.pinState;
+  const anchor = host.anchor;
+  const returnTo = escapeHtml(host.returnTo);
   const hostKey = host.hostKeyFingerprint;
   const clientKey = host.credential?.fingerprint ?? null;
   const isTestTarget = options.test?.hostId === host.id;
@@ -350,7 +307,7 @@ function hostCard(
       </dl>
       ${access}
       ${isErrorTarget ? `<p class="field-error" role="alert">${icon("alert-triangle")}${escapeHtml(options.error?.message ?? "The action failed.")}</p>` : ""}
-      ${isTestTarget && options.test !== undefined ? testPanel(options.test) : ""}
+      ${isTestTarget && options.test !== null ? testPanel(options.test) : ""}
       <details class="disclosure ssh-host__key"${keyOpen ? " open" : ""}>
         <summary><span class="cluster">Host key <span class="mono">${escapeHtml(shortFingerprint(hostKey))}</span></span>${icon("chevron-down", "disclosure__chevron")}</summary>
         <div class="stack--tight">
@@ -360,12 +317,12 @@ function hostCard(
           </div>
           <p class="hint">${pinPinnedAt}</p>
           ${mismatchNote}
-          <form method="post" action="/ssh/hosts/${encodeURIComponent(host.id)}/test">
+          <form method="post" action="${escapeHtml(host.actions.form.test)}">
             <input type="hidden" name="return_to" value="${returnTo}" />
             <input type="hidden" name="ignorePin" value="1" />
             <button class="btn btn-secondary btn-sm" type="submit">${icon("refresh")}Prepare re-pin</button>
           </form>
-          <form class="stack--tight" method="post" action="/ssh/hosts/${encodeURIComponent(host.id)}/re-pin">
+          <form class="stack--tight" method="post" action="${escapeHtml(host.actions.form.rePin)}">
             <input type="hidden" name="return_to" value="${returnTo}" />
             <div class="field">
               <label class="label" for="ssh-repin-${escapeHtml(host.id)}">Observed fingerprint</label>
@@ -377,7 +334,7 @@ function hostCard(
         </div>
       </details>
       <div class="ssh-host__actions">
-        <form method="post" action="/ssh/hosts/${encodeURIComponent(host.id)}/test">
+        <form method="post" action="${escapeHtml(host.actions.form.test)}">
           <input type="hidden" name="return_to" value="${returnTo}" />
           <button class="btn btn-secondary btn-sm" type="submit">${icon("activity")}Test connection</button>
         </form>
@@ -392,6 +349,8 @@ function addHostDialog(options: {
   values: Record<string, string>;
   error?: string;
   returnTo: string;
+  action: string;
+  idleOptions: readonly number[];
 }): string {
   const values = options.values;
   const requireApproval = values.requireApproval !== "0";
@@ -402,7 +361,7 @@ function addHostDialog(options: {
       : `<p class="field-error" role="alert">${icon("alert-triangle")}${escapeHtml(options.error)}</p>`;
   return `<dialog class="dialog ssh-dialog" id="ssh-add-dialog" aria-labelledby="ssh-add-title"${options.open ? " open" : ""}>
     <div class="dialog__frame">
-      <form class="dialog__form" method="post" action="/ssh/hosts">
+      <form class="dialog__form" method="post" action="${escapeHtml(options.action)}">
         <header class="dialog__head">
           <h2 class="dialog__title" id="ssh-add-title">Add SSH host</h2>
           <p class="dialog__meta">Coordinator-held key · per-application access</p>
@@ -457,7 +416,7 @@ function addHostDialog(options: {
             <input type="hidden" name="requireApproval" value="0" />
             <div class="field">
               <label class="label" for="ssh-add-idle">Idle grant</label>
-              <select class="select" id="ssh-add-idle" name="approvalIdleSec" aria-describedby="ssh-add-idle-hint">${idleOptions(idle)}</select>
+              <select class="select" id="ssh-add-idle" name="approvalIdleSec" aria-describedby="ssh-add-idle-hint">${idleOptions(idle, options.idleOptions)}</select>
               <p class="hint" id="ssh-add-idle-hint">How long an approved session stays usable without another request. The absolute cap is 8 hours.</p>
             </div>
           </fieldset>
@@ -472,12 +431,13 @@ function addHostDialog(options: {
 }
 
 function editHostDialog(
-  host: SshHostView,
+  host: SshHostProps,
   options: {
     open: boolean;
     values: Record<string, string>;
     error?: string;
     returnTo: string;
+    idleOptions: readonly number[];
   },
 ): string {
   const id = escapeHtml(host.id);
@@ -512,7 +472,7 @@ function editHostDialog(
       : `Pinned ${absoluteTime(host.hostKeyPinnedAt)}`;
   return `<dialog class="dialog ssh-dialog" id="ssh-edit-${id}" aria-labelledby="ssh-edit-${id}-title"${options.open ? " open" : ""}>
     <div class="dialog__frame">
-      <form class="dialog__form" method="post" action="/ssh/hosts/${encodeURIComponent(host.id)}/update">
+      <form class="dialog__form" method="post" action="${escapeHtml(host.actions.form.update)}">
         <header class="dialog__head">
           <h2 class="dialog__title" id="ssh-edit-${id}-title">Edit ${escapeHtml(host.name)}</h2>
           <p class="dialog__meta">${escapeHtml(host.username)}@${escapeHtml(host.address)}:${host.port}</p>
@@ -565,7 +525,7 @@ function editHostDialog(
             <input type="hidden" name="requireApproval" value="0" />
             <div class="field">
               <label class="label" for="ssh-edit-${id}-idle">Idle grant</label>
-              <select class="select" id="ssh-edit-${id}-idle" name="approvalIdleSec" aria-describedby="ssh-edit-${id}-idle-hint">${idleOptions(idle)}</select>
+              <select class="select" id="ssh-edit-${id}-idle" name="approvalIdleSec" aria-describedby="ssh-edit-${id}-idle-hint">${idleOptions(idle, options.idleOptions)}</select>
               <p class="hint" id="ssh-edit-${id}-idle-hint">Applies to newly approved sessions. The absolute cap is 8 hours.</p>
             </div>
           </fieldset>
@@ -592,7 +552,7 @@ function editHostDialog(
           <button class="btn btn-primary" type="submit">Save host</button>
         </footer>
       </form>
-      <form id="ssh-delete-${id}" method="post" action="/ssh/hosts/${encodeURIComponent(host.id)}/delete" data-ssh-confirm="Delete this SSH host? Its sealed key and every application grant are removed.">
+      <form id="ssh-delete-${id}" method="post" action="${escapeHtml(host.actions.form.delete)}" data-ssh-confirm="Delete this SSH host? Its sealed key and every application grant are removed.">
         <input type="hidden" name="return_to" value="${escapeHtml(`${scopePathFromReturn(options.returnTo)}#ssh-hosts`)}" />
       </form>
     </div>
@@ -613,76 +573,52 @@ function renderPage(
   const ssh = deps.ssh;
   if (ssh === undefined) return html(503, "SSH is not configured");
   const site = buildSite(deps);
-  const scope = resolveScope(deps, request);
-  const found = scope.found;
-  const agent =
-    found === undefined
-      ? undefined
-      : { appId: found.app.id, projectId: found.project.id, appKey: found.app.appKey };
-  const hosts = ssh.listAllHosts();
-  const views = agent === undefined ? [] : ssh.listHosts(agent);
-  const viewById = new Map(views.map((view) => [view.id, view]));
-  const allowed = new Set(views.map((view) => view.id));
-  const grants = found === undefined ? [] : ssh.listGrants(found.app.id);
-  const pending = ssh.listPending(found?.app.id);
-  const audit = ssh.listAudit(found?.app.id, 30);
-  const nowMs = Date.now();
-  const scoped = found !== undefined;
-  const scopeHref = scopePath(scope.projectId, scope.appKey);
-  const hostsHref = `${scopeHref}#ssh-hosts`;
-  const accessHref = `${scopeHref}#ssh-access`;
-  const approvalsHref = `${scopeHref}#ssh-approvals`;
-  const auditHref = `${scopeHref}#ssh-audit`;
-  const hostViews: SshHostView[] = hosts.map(({ host, credential }) => {
-    const view = viewById.get(host.id);
-    return {
-      ...host,
-      credential,
-      allowed: scoped ? allowed.has(host.id) : false,
-      grant: view?.grant ?? null,
-      pendingApprovals: view?.pendingApprovals ?? 0,
-    };
+  const props = buildSshProps({
+    ssh,
+    site,
+    scope: resolveSshScope(deps, request.query),
+    ...(extra?.test === undefined ? {} : { test: extra.test }),
+    ...(extra?.error === undefined ? {} : { error: extra.error }),
+    ...(extra?.openAdd === undefined ? {} : { openAdd: extra.openAdd }),
   });
-  const hostNames = new Map(hosts.map(({ host }) => [host.id, host.name]));
-  const pinnedCount = hostViews.filter(
-    (host) => host.hostKeyFingerprint !== null && host.hostKeyMismatchAt === null,
-  ).length;
-  const unpinnedCount = hostViews.filter((host) => host.hostKeyFingerprint === null).length;
-  const mismatchCount = hostViews.filter((host) => host.hostKeyMismatchAt !== null).length;
-  const activeGrants = grants.filter(
-    (grant) =>
-      grant.revokedAt === null &&
-      Date.parse(grant.idleExpiresAt) > nowMs &&
-      Date.parse(grant.absoluteExpiresAt) > nowMs,
-  );
+  const scope = props.scope;
+  const scoped = scope.scoped;
+  const scopeHref = scope.href;
+  const hostsHref = scope.hostsHref;
+  const accessHref = scope.accessHref;
+  const approvalsHref = scope.approvalsHref;
+  const auditHref = scope.auditHref;
+  const hostViews = props.hosts;
+  const grants = props.grants;
+  const pending = props.approvals;
+  const audit = props.audit;
+  const counts = props.counts;
+  const pageTest = props.test;
+  const pageError = props.error;
   const scopeOptions =
-    '<option value="">All applications</option>' +
-    deps
-      .getProjects()
-      .map((project) => {
-        const apps = project.service.listApps();
-        if (apps.length === 0) return "";
-        const options = apps
-          .map((app) => {
-            const value = `${project.id}:${app.appKey}`;
-            const selected = found?.project.id === project.id && found.app.appKey === app.appKey;
-            return `<option value="${escapeHtml(value)}"${selected ? " selected" : ""}>${escapeHtml(`${project.name} / ${app.appKey}`)}</option>`;
-          })
-          .join("");
-        return `<optgroup label="${escapeHtml(project.name)}">${options}</optgroup>`;
-      })
+    `<option value="">${escapeHtml(props.labels.nav.allApplications)}</option>` +
+    scope.options
+      .map(
+        (group) =>
+          `<optgroup label="${escapeHtml(group.label)}">${group.options
+            .map(
+              (option) =>
+                `<option value="${escapeHtml(option.value)}"${option.selected ? " selected" : ""}>${escapeHtml(option.label)}</option>`,
+            )
+            .join("")}</optgroup>`,
+      )
       .join("");
   const pinWarning =
-    mismatchCount > 0
-      ? `<span class="badge badge-warning">${mismatchCount} mismatch</span>`
-      : unpinnedCount > 0
-        ? `<span class="badge">${unpinnedCount} unpinned</span>`
+    counts.mismatch > 0
+      ? `<span class="badge badge-warning">${counts.mismatch} mismatch</span>`
+      : counts.unpinned > 0
+        ? `<span class="badge">${counts.unpinned} unpinned</span>`
         : "";
   const nav = `<nav class="settings-nav ssh-nav" aria-label="SSH console">
     <div class="settings-nav__sections" aria-label="SSH sections">
       <a class="settings-nav__link" href="${escapeHtml(hostsHref)}">Hosts</a>
       <a class="settings-nav__link" href="${escapeHtml(accessHref)}">Access</a>
-      <a class="settings-nav__link" href="${escapeHtml(approvalsHref)}">Approvals (${pending.length})</a>
+      <a class="settings-nav__link" href="${escapeHtml(approvalsHref)}">Approvals (${counts.pendingApprovals})</a>
       <a class="settings-nav__link" href="${escapeHtml(auditHref)}">Audit</a>
     </div>
     <form class="ssh-nav__scope" method="get" action="/ssh">
@@ -694,23 +630,22 @@ function renderPage(
     </form>
   </nav>`;
   const watch = `<div class="watch-strip watch-strip--4 ssh-watch">
-    <div class="watch"><p class="watch__value">${hostViews.length}</p><p class="watch__label">Hosts</p></div>
-    <div class="watch"><p class="watch__value">${pinnedCount} / ${hostViews.length}</p><p class="watch__label">Host keys pinned</p>${pinWarning}</div>
-    <div class="watch"><p class="watch__value">${pending.length}</p><p class="watch__label">Pending approvals</p></div>
-    <div class="watch"><p class="watch__value">${scoped ? activeGrants.length : "&mdash;"}</p><p class="watch__label">Active grants${scoped ? "" : " (choose a scope)"}</p></div>
+    <div class="watch"><p class="watch__value">${counts.hosts}</p><p class="watch__label">Hosts</p></div>
+    <div class="watch"><p class="watch__value">${counts.pinned} / ${counts.hosts}</p><p class="watch__label">Host keys pinned</p>${pinWarning}</div>
+    <div class="watch"><p class="watch__value">${counts.pendingApprovals}</p><p class="watch__label">Pending approvals</p></div>
+    <div class="watch"><p class="watch__value">${scoped ? counts.activeGrants : "&mdash;"}</p><p class="watch__label">Active grants${scoped ? "" : " (choose a scope)"}</p></div>
   </div>`;
   const hostCards = hostViews
     .map((host) =>
       hostCard(host, {
         scoped,
-        scopeHref,
-        ...(extra?.test === undefined ? {} : { test: extra.test }),
-        ...(extra?.error === undefined ? {} : { error: extra.error }),
+        test: pageTest,
+        error: pageError ?? undefined,
       }),
     )
     .join("");
   const hostsContent =
-    hostViews.length === 0
+    counts.hosts === 0
       ? emptyState({
           iconName: "terminal",
           title: "No SSH hosts yet",
@@ -719,24 +654,24 @@ function renderPage(
         })
       : `<div class="ssh-grid">${hostCards}</div>`;
   const allowlist =
-    hostViews.length === 0
+    counts.hosts === 0
       ? `<p class="hint">No hosts are configured. Add a host before granting access.</p>`
       : `<div class="ssh-allowlist">${hostViews
           .map(
             (host) =>
-              `<label class="check"><input class="checkbox" type="checkbox" name="hostIds" value="${escapeHtml(host.id)}"${allowed.has(host.id) ? " checked" : ""} /><span><strong>${escapeHtml(host.name)}</strong> <span class="mono">${escapeHtml(host.address)}</span> ${hostPinPill(host)}</span></label>`,
+              `<label class="check"><input class="checkbox" type="checkbox" name="hostIds" value="${escapeHtml(host.id)}"${host.allowed ? " checked" : ""} /><span><strong>${escapeHtml(host.name)}</strong> <span class="mono">${escapeHtml(host.address)}</span> ${hostPinPill(host)}</span></label>`,
           )
           .join("")}</div>`;
   const accessBody = scoped
     ? `<div class="ssh-panel stack">
         ${
-          extra?.error?.target === "access"
-            ? `<p class="field-error" role="alert">${icon("alert-triangle")}${escapeHtml(extra.error.message)}</p>`
+          pageError?.target === "access"
+            ? `<p class="field-error" role="alert">${icon("alert-triangle")}${escapeHtml(pageError.message)}</p>`
             : ""
         }
-        <form class="stack" method="post" action="/ssh/grants">
-          <input type="hidden" name="project" value="${escapeHtml(found.project.id)}" />
-          <input type="hidden" name="app" value="${escapeHtml(found.app.appKey)}" />
+        <form class="stack" method="post" action="${escapeHtml(props.actions.form.saveGrants)}">
+          <input type="hidden" name="project" value="${escapeHtml(scope.projectId)}" />
+          <input type="hidden" name="app" value="${escapeHtml(scope.appKey)}" />
           <input type="hidden" name="return_to" value="${escapeHtml(accessHref)}" />
           ${allowlist}
           <p class="hint">Unchecking a host removes the application's access and revokes any active grant for that host.</p>
@@ -751,20 +686,18 @@ function renderPage(
                 <thead><tr><th scope="col">Host</th><th scope="col">Granted by</th><th scope="col">Idle expires</th><th scope="col">State</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
                 <tbody>${grants
                   .map((grant) => {
-                    const hostName = hostNames.get(grant.hostId) ?? "Unknown host";
-                    const revoke =
-                      grant.revokedAt === null
-                        ? `<form method="post" action="/ssh/grants/${encodeURIComponent(grant.id)}/revoke">
+                    const revoke = grant.canRevoke
+                      ? `<form method="post" action="${escapeHtml(grant.actions.form.revoke)}">
                             <input type="hidden" name="appId" value="${escapeHtml(grant.appId)}" />
                             <input type="hidden" name="return_to" value="${escapeHtml(accessHref)}" />
                             <button class="btn btn-danger btn-sm" type="submit">Revoke</button>
                           </form>`
-                        : "";
+                      : "";
                     return `<tr>
-                      <td data-label="Host"><span class="mono">${escapeHtml(hostName)}</span></td>
+                      <td data-label="Host"><span class="mono">${escapeHtml(grant.hostName)}</span></td>
                       <td data-label="Granted by">${escapeHtml(grant.grantedBy)}</td>
                       <td data-label="Idle expires">${expiryTag(grant.idleExpiresAt)}</td>
-                      <td data-label="State">${grantStatePill(grant, nowMs)}</td>
+                      <td data-label="State">${grantStatePill(grant)}</td>
                       <td class="table__actions">${revoke}</td>
                     </tr>`;
                   })
@@ -779,8 +712,8 @@ function renderPage(
       });
   const accessSection = `<section class="section ssh-section" id="ssh-access" aria-labelledby="ssh-access-title">
     <div class="section__head">
-      <h2 class="section__title" id="ssh-access-title">${scoped ? `Access for ${escapeHtml(found.project.name)} / ${escapeHtml(found.app.appKey)}` : "Application access"}</h2>
-      <p class="section__note">${scoped ? `${allowed.size} of ${hostViews.length} hosts allowed` : "Per-application allowlists and grants."}</p>
+      <h2 class="section__title" id="ssh-access-title">${scoped ? `Access for ${escapeHtml(scope.projectName ?? "")} / ${escapeHtml(scope.appKey)}` : "Application access"}</h2>
+      <p class="section__note">${scoped ? `${counts.allowedHosts} of ${counts.hosts} hosts allowed` : "Per-application allowlists and grants."}</p>
     </div>
     ${accessBody}
   </section>`;
@@ -798,16 +731,16 @@ function renderPage(
         <div class="ssh-approval__foot">
           <p class="hint">Approving creates an idle grant for this host.</p>
           <div class="cluster">
-            <form method="post" action="/ssh/approvals/${encodeURIComponent(approval.id)}/decision">
+            <form method="post" action="${escapeHtml(approval.actions.form.approve)}">
               <input type="hidden" name="appId" value="${escapeHtml(approval.appId)}" />
               <input type="hidden" name="decision" value="approve" />
-              <input type="hidden" name="return_to" value="${escapeHtml(approvalsHref)}" />
+              <input type="hidden" name="return_to" value="${escapeHtml(approval.actions.returnTo)}" />
               <button class="btn btn-primary btn-sm" type="submit">Approve</button>
             </form>
-            <form method="post" action="/ssh/approvals/${encodeURIComponent(approval.id)}/decision">
+            <form method="post" action="${escapeHtml(approval.actions.form.reject)}">
               <input type="hidden" name="appId" value="${escapeHtml(approval.appId)}" />
               <input type="hidden" name="decision" value="reject" />
-              <input type="hidden" name="return_to" value="${escapeHtml(approvalsHref)}" />
+              <input type="hidden" name="return_to" value="${escapeHtml(approval.actions.returnTo)}" />
               <button class="btn btn-danger btn-sm" type="submit">Reject</button>
             </form>
           </div>
@@ -816,7 +749,7 @@ function renderPage(
     )
     .join("");
   const approvalsContent =
-    pending.length === 0
+    counts.pendingApprovals === 0
       ? emptyState({
           iconName: "inbox",
           title: "No pending approvals",
@@ -826,11 +759,11 @@ function renderPage(
   const approvalsSection = `<section class="section ssh-section" id="ssh-approvals" aria-labelledby="ssh-approvals-title">
     <div class="section__head">
       <h2 class="section__title" id="ssh-approvals-title">Pending approvals</h2>
-      <p class="section__note">${scoped ? `Scoped to ${escapeHtml(found.project.name)} / ${escapeHtml(found.app.appKey)}` : "All applications"}</p>
+      <p class="section__note">${scoped ? `Scoped to ${escapeHtml(scope.projectName ?? "")} / ${escapeHtml(scope.appKey)}` : "All applications"}</p>
     </div>
     ${
-      extra?.error?.target === "approvals"
-        ? `<p class="field-error" role="alert">${icon("alert-triangle")}${escapeHtml(extra.error.message)}</p>`
+      pageError?.target === "approvals"
+        ? `<p class="field-error" role="alert">${icon("alert-triangle")}${escapeHtml(pageError.message)}</p>`
         : ""
     }
     ${approvalsContent}
@@ -862,30 +795,28 @@ function renderPage(
   const auditSection = `<section class="section ssh-section" id="ssh-audit" aria-labelledby="ssh-audit-title">
     <div class="section__head">
       <h2 class="section__title" id="ssh-audit-title">Audit</h2>
-      <p class="section__note">${scoped ? `Scoped to ${escapeHtml(found.project.name)} / ${escapeHtml(found.app.appKey)}` : "All applications"}</p>
+      <p class="section__note">${scoped ? `Scoped to ${escapeHtml(scope.projectName ?? "")} / ${escapeHtml(scope.appKey)}` : "All applications"}</p>
     </div>
     ${auditContent}
   </section>`;
-  const addOpen = extra?.openAdd === true || extra?.error?.target === "add";
-  const addValues = extra?.error?.target === "add" ? (extra.error.values ?? {}) : {};
-  const editDialogs = hostViews
-    .map((host) => {
-      const target = `edit:${host.id}`;
-      const isError = extra?.error?.target === target;
+  const editDialogs = props.dialogs.edits
+    .map((dialog) => {
+      const host = hostViews.find((candidate) => candidate.id === dialog.hostId);
+      if (host === undefined) return "";
       return editHostDialog(host, {
-        open: isError,
-        values: isError ? (extra?.error?.values ?? {}) : {},
-        ...(isError && extra?.error !== undefined ? { error: extra.error.message } : {}),
-        returnTo: `${scopeHref}#ssh-host-${host.id}`,
+        open: dialog.open,
+        values: dialog.values,
+        ...(dialog.error === null ? {} : { error: dialog.error }),
+        returnTo: dialog.returnTo,
+        idleOptions: props.policy.idleOptions,
       });
     })
     .join("");
   const header = pageHeader({
     overline: "Access",
-    title: "SSH hosts",
-    description:
-      "Coordinator-held keys, host-key pinning, per-application grants, approvals, and audit.",
-    actions: `<a class="btn btn-secondary" href="${escapeHtml(scopeHref)}">${icon("refresh")}Refresh</a><button class="btn btn-primary" type="button" data-dialog-open="ssh-add-dialog">${icon("plus")}Add host</button>`,
+    title: props.labels.title,
+    description: props.labels.description,
+    actions: `<a class="btn btn-secondary" href="${escapeHtml(scopeHref)}">${icon("refresh")}${props.labels.actions.refresh}</a><button class="btn btn-primary" type="button" data-dialog-open="ssh-add-dialog">${icon("plus")}${props.labels.actions.addHost}</button>`,
   });
   const hostsSection = `<section class="section ssh-section" id="ssh-hosts" aria-labelledby="ssh-hosts-title">
     <div class="section__head">
@@ -901,7 +832,14 @@ function renderPage(
     ${accessSection}
     ${approvalsSection}
     ${auditSection}
-    ${addHostDialog({ open: addOpen, values: addValues, ...(extra?.error?.target === "add" ? { error: extra.error.message } : {}), returnTo: hostsHref })}
+    ${addHostDialog({
+      open: props.dialogs.add.open,
+      values: props.dialogs.add.values,
+      ...(props.dialogs.add.error === null ? {} : { error: props.dialogs.add.error }),
+      returnTo: props.dialogs.add.returnTo,
+      action: props.actions.form.createHost,
+      idleOptions: props.policy.idleOptions,
+    })}
     ${editDialogs}`;
   return html(
     200,
@@ -921,10 +859,7 @@ function renderPage(
       header: "",
       scripts: ["/assets/ssh.js"],
       body,
-      settingsHref:
-        found === undefined
-          ? "/settings"
-          : `/projects/${encodeURIComponent(found.project.id)}/apps/${encodeURIComponent(found.app.appKey)}/settings`,
+      settingsHref: scope.settingsHref,
     }),
   );
 }
@@ -1200,7 +1135,7 @@ export async function handleSsh(deps: HttpDeps, request: HttpRequest): Promise<H
     const hostId = decodeURIComponent(pageAction[1] as string);
     const action = pageAction[2];
     const fields = form(request.body);
-    const fallback = scopePath("", "");
+    const fallback = sshScopePath("", "");
     const returnTo = safeLocalPath(fields.get("return_to") ?? fallback, fallback);
     try {
       if (action === "test") {
@@ -1269,7 +1204,7 @@ export async function handleSsh(deps: HttpDeps, request: HttpRequest): Promise<H
 
   if (request.method === "POST" && request.path === "/ssh/hosts") {
     const fields = form(request.body);
-    const fallback = scopePath("", "");
+    const fallback = sshScopePath("", "");
     const returnTo = safeLocalPath(fields.get("return_to") ?? fallback, fallback);
     try {
       ssh.createHost(
@@ -1301,7 +1236,7 @@ export async function handleSsh(deps: HttpDeps, request: HttpRequest): Promise<H
 
   if (request.method === "POST" && request.path === "/ssh/grants") {
     const fields = form(request.body);
-    const fallback = scopePath("", "");
+    const fallback = sshScopePath("", "");
     const returnTo = safeLocalPath(fields.get("return_to") ?? fallback, fallback);
     const found = findApp(deps, fields.get("project") ?? undefined, fields.get("app") ?? "");
     if (found === undefined)
@@ -1311,7 +1246,7 @@ export async function handleSsh(deps: HttpDeps, request: HttpRequest): Promise<H
     try {
       ssh.replaceAppHosts(found.app.id, fields.getAll("hostIds"), principal.name);
       return redirect(
-        `${scopePath(found.project.id, found.app.appKey)}#ssh-access`,
+        `${sshScopePath(found.project.id, found.app.appKey)}#ssh-access`,
         "Allowlist saved",
       );
     } catch (error) {
@@ -1328,7 +1263,7 @@ export async function handleSsh(deps: HttpDeps, request: HttpRequest): Promise<H
     const match = /^\/ssh\/grants\/([^/]+)\/revoke$/.exec(request.path);
     if (match !== null) {
       const fields = form(request.body);
-      const fallback = scopePath("", "");
+      const fallback = sshScopePath("", "");
       const returnTo = safeLocalPath(fields.get("return_to") ?? fallback, fallback);
       try {
         ssh.revokeGrant(decodeURIComponent(match[1] as string), principal.name);
@@ -1348,7 +1283,7 @@ export async function handleSsh(deps: HttpDeps, request: HttpRequest): Promise<H
     const match = /^\/ssh\/approvals\/([^/]+)\/decision$/.exec(request.path);
     if (match !== null) {
       const fields = form(request.body);
-      const fallback = scopePath("", "");
+      const fallback = sshScopePath("", "");
       const returnTo = safeLocalPath(fields.get("return_to") ?? fallback, fallback);
       try {
         ssh.decideApproval(

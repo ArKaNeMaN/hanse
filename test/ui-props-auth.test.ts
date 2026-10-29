@@ -240,7 +240,12 @@ describe("/api/ui auth and props", () => {
 
   it("applies the cookie-only auth envelope to every read endpoint", () => {
     const f = fixture();
-    for (const pathname of ["/api/ui/overview", "/api/ui/handoffs", "/api/ui/projects/p"]) {
+    for (const pathname of [
+      "/api/ui/overview",
+      "/api/ui/handoffs",
+      "/api/ui/projects/p",
+      "/api/ui/ssh",
+    ]) {
       const anonymous = handleUiApi(f.deps, request(pathname, {}));
       expect(anonymous?.status, pathname).toBe(401);
       expect(anonymous?.headers?.["cache-control"], pathname).toBe("no-store");

@@ -22,6 +22,7 @@ import { buildHandoffsProps } from "./props/handoffs.js";
 import { buildOverviewProps } from "./props/overview.js";
 import { buildProjectProps } from "./props/project.js";
 import { buildProjectsProps } from "./props/projects.js";
+import { buildSshProps, resolveSshScope } from "./props/ssh.js";
 import {
   appShell,
   type Crumb,
@@ -522,7 +523,12 @@ function logUnknownRoutes(deps: HttpDeps): void {
   }
 }
 
-function pagePropsFor(site: SiteModel, match: PageMatch, request: HttpRequest): unknown {
+function pagePropsFor(
+  deps: HttpDeps,
+  site: SiteModel,
+  match: PageMatch,
+  request: HttpRequest,
+): unknown {
   if (match.id === "projects") {
     return buildProjectsProps(site, request.query?.q);
   }
@@ -534,6 +540,16 @@ function pagePropsFor(site: SiteModel, match: PageMatch, request: HttpRequest): 
   }
   if (match.id === "handoffs") {
     return buildHandoffsProps(site, request.query?.filter, request.query?.q);
+  }
+  if (match.id === "ssh") {
+    if (deps.ssh === undefined) {
+      return {};
+    }
+    return buildSshProps({
+      ssh: deps.ssh,
+      site,
+      scope: resolveSshScope(deps, request.query),
+    });
   }
   return {};
 }
@@ -604,7 +620,7 @@ export function maybeServeSpa(deps: HttpDeps, request: HttpRequest): HttpRespons
       ...(data.settingsHref === undefined ? {} : { settingsHref: data.settingsHref }),
       ...(data.skillsHref === undefined ? {} : { skillsHref: data.skillsHref }),
       route: match,
-      props: pagePropsFor(site, match, request),
+      props: pagePropsFor(deps, site, match, request),
       chrome: data.chrome,
       ...(notice === undefined ? {} : { notice }),
       ...(devUrl === undefined ? {} : { devUrl }),
@@ -618,6 +634,7 @@ const UI_API_PATHS = new Set([
   "/api/ui/chrome",
   "/api/ui/overview",
   "/api/ui/handoffs",
+  "/api/ui/ssh",
 ]);
 const UI_PROJECT_PATH = /^\/api\/ui\/projects\/([^/]+)$/;
 
@@ -691,6 +708,25 @@ export function handleUiApi(deps: HttpDeps, request: HttpRequest): HttpResponse 
       200,
       {
         ...buildHandoffsProps(site, request.query?.filter, request.query?.q),
+        chrome: chromeFor(site, match).chrome,
+      },
+      { "cache-control": "no-store" },
+    );
+  }
+
+  if (request.path === "/api/ui/ssh") {
+    if (deps.ssh === undefined) {
+      return jsonResponse(503, { error: "ssh_unavailable" }, { "cache-control": "no-store" });
+    }
+    const match: PageMatch = { id: "ssh", params: {} };
+    return jsonResponse(
+      200,
+      {
+        ...buildSshProps({
+          ssh: deps.ssh,
+          site,
+          scope: resolveSshScope(deps, request.query),
+        }),
         chrome: chromeFor(site, match).chrome,
       },
       { "cache-control": "no-store" },
