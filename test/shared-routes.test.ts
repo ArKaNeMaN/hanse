@@ -19,7 +19,7 @@ describe("shared route manifest", () => {
     expect(source).not.toMatch(/require\(["']node:/);
   });
 
-  it("publishes the complete route table and cuts projects, overview, project, and handoffs over", () => {
+  it("publishes the complete route table and cuts projects, overview, handoffs, ssh, and project over", () => {
     expect(ROUTES.map((route) => [route.id, route.path, route.nav])).toEqual([
       ["projects", "/projects", "projects"],
       ["overview", "/", "overview"],
@@ -40,6 +40,7 @@ describe("shared route manifest", () => {
       "projects",
       "overview",
       "handoffs",
+      "ssh",
       "project",
     ]);
   });
@@ -114,7 +115,8 @@ describe("shared route manifest", () => {
         route.id === "projects" ||
         route.id === "overview" ||
         route.id === "project" ||
-        route.id === "handoffs";
+        route.id === "handoffs" ||
+        route.id === "ssh";
       expect(isSpaRoute(route.id, { env: {} }), route.id).toBe(migrated);
     }
     expect(isSpaPath("/projects", { env: {} })).toBe(true);
@@ -122,6 +124,7 @@ describe("shared route manifest", () => {
     expect(isSpaPath("/projects/alpha", { env: {} })).toBe(true);
     expect(isSpaPath("/projects/alpha/apps/web", { env: {} })).toBe(false);
     expect(isSpaPath("/handoffs", { env: {} })).toBe(true);
+    expect(isSpaPath("/ssh", { env: {} })).toBe(true);
   });
 
   it("applies HANSE_UI_LEGACY and manifest validity before the allowlist", () => {

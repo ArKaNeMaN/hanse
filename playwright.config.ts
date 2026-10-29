@@ -59,6 +59,8 @@ export default defineConfig({
         "**/spa-project.spec.ts",
         "**/handoffs.spec.ts",
         "**/spa-handoffs.spec.ts",
+        "**/ssh.spec.ts",
+        "**/spa-ssh.spec.ts",
       ],
       use: { baseURL: "http://127.0.0.1:4310" },
     },
@@ -69,7 +71,12 @@ export default defineConfig({
     },
     {
       name: "allowlist-empty",
-      testMatch: ["**/overview.spec.ts", "**/projects.spec.ts", "**/handoffs.spec.ts"],
+      testMatch: [
+        "**/overview.spec.ts",
+        "**/projects.spec.ts",
+        "**/handoffs.spec.ts",
+        "**/ssh.spec.ts",
+      ],
       use: { baseURL: "http://127.0.0.1:4312" },
     },
   ],

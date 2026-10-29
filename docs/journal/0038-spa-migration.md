@@ -373,8 +373,74 @@ nodes exactly once after hydration. Structural deltas remain the hidden `#hanse-
 Vue sentinel; no SFC `<style>` exists. Screenshots were captured to the untracked workspace
 evidence directory but are not checked in.
 
+## Phase 4B implementation - `/ssh` cutover (2026-10-29)
+
+Phase 4B finishes Phase 4: `overview`, `projects`, `project`, `handoffs`, and `ssh` are the only
+registry routes with `spa: true`. Settings, skills, app detail, chat, and terminal stay legacy.
+
+- **Page.** `ui/pages/SshPage.vue` mirrors `renderPage`: the Access header with scope counts, the
+  SSH section nav, the `?target=<project>:<app>` picker, the four-cell watch strip, host cards with
+  pin/approval state and host-key details, the per-application allowlist and grants table, pending
+  approve/reject cards, and the read-only audit table. Boot props are trusted only when
+  `boot.route.id === "ssh"` and the selected target matches the route; otherwise the page fetches
+  `/api/ui/ssh?target=...` with Vue Query. Scope changes use `router.push`; loading, generic error,
+  Retry, `?legacy=1`, empty states, and the rollback servers match the other SPA pages.
+- **Host dialogs.** `ui/components/SshHostDialog.vue` carries the legacy connection, private-key,
+  access-policy, host-key, and danger-zone fields for add/edit/delete. The private key is read from
+  the form element at submit time, never enters page props or boot JSON, and is cleared on close;
+  only the derived public key, fingerprint, and key type are rendered. Add/update/delete call the
+  existing `/api/ssh/hosts` JSON handlers (`POST`/`PATCH`/`DELETE`); `apiMutation` gained an explicit
+  method override and keeps `POST` as the default.
+- **Actions.** Test connection, Prepare re-pin, and Re-pin use `/api/ssh/hosts/:id/test` and
+  `/re-pin`; allowlist save and grant revoke use the project SSH API; approve/reject use the app
+  approvals decision API. Success refreshes `/api/ui/ssh` and its chrome fragment; failure keeps the
+  dialog open and raises an error toast. No parallel write path and no other backend route flag
+  changed.
+- **Routing.** `src/shared/routes.ts` flips only `ssh` to `spa: true`; `ui/router.ts` registers
+  `/ssh`. `SmartLink` stays out of the section nav (plain hash anchors); the scope picker navigates
+  through the router. Chrome, title, breadcrumb, and `data-nav-id="ssh"` swap through the existing
+  shell path.
+- **Tests.** New `SshPage` component tests cover boot scoped/unscoped rendering, scope navigation,
+  cross-route boot fetch, empty/loading/error/retry, add/edit/delete, test success/failure,
+  prepare/re-pin, allowlist/revoke, approve/reject, no secret key in output, and no `<style>`.
+  `e2e/ssh.spec.ts` now runs in `spa`, `legacy`, and `allowlist-empty` and covers the boot marker,
+  scope/target queries, hosts/grants/approvals/audit, create/edit/delete, test success/failure,
+  re-pin, grant/revoke, approve/reject, the legacy `303` path, and absent key material.
+  `e2e/spa-ssh.spec.ts` covers deep links, target queries, refresh, back/forward, chrome/title/
+  active nav, `?legacy=1`, both rollback servers, no fallback flash, and console/page errors.
+  `shared-routes` and the SSH boot assertion now expect `spa: true`; the legacy SSH smoke and API
+  tests remain.
+- **Fixture.** `e2e/support/seed.ts` adds two pending approvals (approval supersedes the other
+  pending request for the same app/host, so the test rejects before approving).
+  `e2e/support/server.ts` wraps `testHost`: an address starting with `fail.` times out; every other
+  host authenticates and pins `SHA256:e2e-fixture-fingerprint`; Prepare re-pin records the pending
+  observation and the real service performs the re-pin. No network or real key is used.
+- **Visual QA.** Browser measurements at 1440 and 390 matched the watch strip, host card, access/
+  grants, approvals, and audit-table boxes, with zero document/page horizontal overflow. The SPA
+  header is full-bleed like the other SPA pages and adds scope counts, so its outer width/height
+  differ from the legacy header; body sections match. Structural deltas are the hidden
+  `#hanse-boot` marker, the Vue sentinel, and the edit dialog not being mounted until opened.
+
+### Phase 4B verification
+
+Commands ran with `NODE_ENV=development` and `PLAYWRIGHT_CHROMIUM=/usr/bin/chromium`.
+
+| Command | Result |
+| --- | --- |
+| `npm run lint` | 572 files, exit 0 (18 pre-existing warnings) |
+| `npm run typecheck` | exit 0 |
+| `npm run typecheck:ui` | exit 0 |
+| `npm run typecheck:e2e` | exit 0 |
+| `npm test` | 156 files / 2849 tests, exit 0 |
+| `npm run build` | exit 0; SSH chunk `SshPage-CoaV1D0T.js` (41.8 kB) |
+| `npm run check:sensitive` | exit 0 |
+| `npm run check:ui` | exit 0 (22 SFCs, sentinel present) |
+| `npm run test:e2e` | 82 passed, exit 0 (spa 48, legacy 21, allowlist-empty 13) |
+
+No transfer budget was assigned for `/ssh`; `/projects` remains the S16 budget route.
+
 ## Next
 
-Phase 4: cut over `/ssh` (hosts, test/re-pin, grants, approvals, audit), reusing the existing
-`/api/ssh/*` and `/api/apps/:app/ssh/*` handlers and keeping the legacy rollback page.
+Phase 5: cut over the three `/settings` routes, keeping the masked-value contract and the existing
+settings/provider/model-provider/git handlers.
 

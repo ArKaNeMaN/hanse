@@ -444,10 +444,10 @@ describe("GET /api/ui/ssh", () => {
 });
 
 describe("SSH route boot", () => {
-  it("boots SSH page props for an allowlisted document without flipping the registry flag", () => {
+  it("boots SSH page props for an enabled document", () => {
     const f = fixture();
     const sshRoute = ROUTES.find((route) => route.id === "ssh");
-    expect(sshRoute?.spa).toBe(false);
+    expect(sshRoute?.spa).toBe(true);
     enableSshRoute();
     const response = maybeServeSpa(
       f.deps,

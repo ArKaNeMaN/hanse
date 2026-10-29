@@ -15,6 +15,11 @@ export type ApiMutationBody =
   | { readonly form: Record<string, string> }
   | { readonly json: unknown };
 
+export interface ApiMutationOptions extends ApiRequestOptions {
+  /** Defaults to `POST`; the SSH host API uses `PATCH` for updates and `DELETE` for removal. */
+  readonly method?: "POST" | "PATCH" | "DELETE";
+}
+
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string | undefined;
@@ -93,13 +98,13 @@ export async function apiQuery<T>(path: string, options: ApiRequestOptions = {})
 }
 
 /**
- * `POST` a form-encoded or JSON body. The header is mandatory: without it the coordinator keeps
- * the legacy `303` success path.
+ * Write a form-encoded or JSON body (`POST` by default, or an explicit `PATCH`/`DELETE`). The
+ * header is mandatory: without it the coordinator keeps the legacy `303` success path.
  */
 export async function apiMutation<T>(
   path: string,
   body: ApiMutationBody,
-  options: ApiRequestOptions = {},
+  options: ApiMutationOptions = {},
 ): Promise<T> {
   const headers: Record<string, string> = {
     accept: "application/json",
@@ -114,11 +119,12 @@ export async function apiMutation<T>(
     payload = JSON.stringify(body.json);
   }
 
+  const { method = "POST", ...requestOptions } = options;
   const response = await fetch(path, {
-    method: "POST",
+    method,
     credentials: "same-origin",
     headers,
     body: payload,
   });
-  return parse<T>(response, options);
+  return parse<T>(response, requestOptions);
 }

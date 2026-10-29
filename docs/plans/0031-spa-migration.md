@@ -7,7 +7,9 @@ complete (2026-10-28; `/projects` is the first cutover, all gates green); Phase 
 `/` cut over); Phase 2C complete (2026-10-29; `/projects/:id` cut over, Phase 2 complete - `/`,
 `/projects`, and `/projects/:id` are SPA, app detail and every later route stay legacy); Phase 3B
 complete (2026-10-29; `/handoffs` cut over, Phase 3 complete - `/`, `/projects`, `/projects/:id`,
-and `/handoffs` are SPA, SSH and every later route stay legacy).
+and `/handoffs` are SPA); Phase 4B complete (2026-10-29; `/ssh` cut over, Phase 4 complete - `/`,
+`/projects`, `/projects/:id`, `/handoffs`, and `/ssh` are SPA, settings/skills/app detail and every
+later route stay legacy).
 Design: [Incremental SPA migration](../design/spa-migration.md) (approved, `oracle` round 5 PASS;
 flag/test-glob/no-JS clarifications recorded in revision 6).
 Owner decisions: [open questions](../open-questions.md), 2026-10-28.
@@ -741,6 +743,56 @@ Keep `test/ssh-http.test.ts` `is human-only, renders the page, and never returns
 the legacy smoke and `serves host, grant, approval, audit, and count routes` as API coverage. Keep
 `test/application-ssh.test.ts` (app-page SSH panel) until Phase 7. Add component/E2E tests for the
 SSH page.
+
+### Completion record - Phase 4B (2026-10-29)
+
+Phase 4B finishes Phase 4: the registry has `spa: true` for `overview`, `projects`, `project`,
+`handoffs`, and `ssh`; settings, skills, app detail, chat, and terminal stay `spa: false`.
+
+- **Page.** `ui/pages/SshPage.vue` reproduces the legacy Access header, title/description, scope
+  counts, section nav, `?target=<project>:<app>` picker, four-cell watch strip, host cards with
+  pin/approval state and host-key details, the per-application allowlist and grants table, pending
+  approve/reject cards, and the read-only audit table. `SshHostDialog.vue` provides add/edit/delete
+  with the legacy connection, key, access-policy, host-key, and danger-zone fields. The private key
+  is read from the form element at submit time, never stored in boot/props, and cleared on close;
+  only the derived public key, fingerprint, and key type are rendered.
+- **Actions.** Test connection, Prepare re-pin, and Re-pin call the existing
+  `/api/ssh/hosts/:id/test` and `/re-pin` JSON handlers. Add/update/delete use `/api/ssh/hosts`
+  (`POST`/`PATCH`/`DELETE`); `apiMutation` gained an explicit method override with the default still
+  `POST`. Allowlist save and grant revoke use the project SSH API; approve/reject use the app
+  approvals decision API. Every successful action refetches `/api/ui/ssh` and applies its chrome
+  fragment; failures keep the dialog open and raise an error toast. No parallel write path or
+  backend route flag changed.
+- **Boot/query.** Boot props are trusted only when `boot.route.id === "ssh"` and the selected
+  target matches the route; otherwise the page fetches `/api/ui/ssh?target=...` with Vue Query.
+  Scope changes use `router.push`, refresh/history work, and `?legacy=1` plus both rollback servers
+  still serve the legacy document.
+- **Tests.** `SshPage` component tests cover boot scoped/unscoped rendering, scope navigation,
+  cross-route boot fetch, empty/loading/error/retry, add/edit/delete, test success/failure,
+  prepare/re-pin, allowlist/revoke, approve/reject, no secret key in output, and no `<style>`.
+  `ssh.spec.ts` runs in `spa`, `legacy`, and `allowlist-empty` and covers the boot marker,
+  scope/target queries, hosts/grants/approvals/audit, create/edit/delete, test success/failure,
+  re-pin, grant/revoke, approve/reject, the legacy `303` path, and absent key material.
+  `spa-ssh.spec.ts` covers deep links, target queries, refresh, back/forward, chrome/title/active
+  nav, `?legacy=1`, both rollback servers, no fallback flash, and console/page errors.
+  `shared-routes` and the SSH boot assertion now expect `spa: true`.
+- **Fixture.** The deterministic seed adds two pending approvals for the alpha grant flow (approval
+  supersedes the other pending request for the same app/host, so the tests reject before approving).
+  `e2e/support/server.ts` wraps `testHost` with a deterministic transport: an address starting with
+  `fail.` times out; every other host authenticates and pins `SHA256:e2e-fixture-fingerprint`;
+  Prepare re-pin records the pending observation and the real service performs the re-pin. No
+  network or real key is used.
+- **Visual QA.** Browser measurements at 1440 and 390 showed matching watch strip, host card,
+  access/grants, approvals, and audit-table boxes, with zero document/page horizontal overflow. The
+  SPA header is full-bleed like the other SPA pages and adds scope counts, so its outer width and
+  height differ from the legacy header; body sections match. The only structural deltas are the
+  hidden boot marker, the Vue sentinel, and the unmounted edit dialog before it is opened.
+- **Not done.** No transfer budget was assigned for `/ssh`; settings, skills, app detail, chat, and
+  terminal remain legacy for later phases.
+
+### Verification
+
+Same gate commands + the SSH E2E specs (SPA, legacy, empty allowlist).
 
 ## Phase 5 - `/settings` (three scopes)
 

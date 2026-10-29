@@ -83,7 +83,7 @@ const ROUTE_DEFINITIONS: readonly RouteDefinition[] = [
     path: "/ssh",
     nav: "ssh",
     label: "SSH",
-    spa: false,
+    spa: true,
   },
   {
     id: "settings-global",

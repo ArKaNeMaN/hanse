@@ -283,13 +283,14 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   scroll owner. `session` is mirrored to the URL, and the optional `project` query disambiguates
   duplicate app keys across projects.
 
-## UI rendering modes (Phase 3B)
+## UI rendering modes (Phase 4B)
 
-- `/` (fleet overview), `/projects`, `/projects/:id` (project detail), and `/handoffs` (handoff
-  inbox) are SPA routes: the shared registry (`src/shared/routes.ts`) has `spa: true` for
-  `overview`, `projects`, `project`, and `handoffs`, and `spa: false` for every other page. The
-  application detail (`/projects/:id/apps/:app`), SSH, settings, skills, chat, and terminal stay
-  legacy documents, so the project-to-application hop is a full document load. The page dispatcher
+- `/` (fleet overview), `/projects`, `/projects/:id` (project detail), `/handoffs` (handoff
+  inbox), and `/ssh` (SSH console) are SPA routes: the shared registry (`src/shared/routes.ts`) has
+  `spa: true` for `overview`, `projects`, `project`, `handoffs`, and `ssh`, and `spa: false` for
+  every other page. The application detail (`/projects/:id/apps/:app`), settings, skills, chat, and
+  terminal stay legacy documents, so the project-to-application hop is a full document load. The
+  page dispatcher
   is the only place that chooses a renderer:
   `HANSE_UI_LEGACY=1` > `?legacy=1` > `HANSE_UI_SPA_ROUTES` > the registry flag. A missing, invalid,
   or partial `assets/ui/.vite/manifest.json` also falls back to legacy and logs
@@ -310,13 +311,19 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   State/Summary/Updated/Actions inbox table, inline approve/reject, review dialogs, and its empty,
   loading, error, and retry states. The dialog renders specification, result, and operator note
   through the shared `SafeMarkdown` component, which clears its container and reuses
-  `assets/markdown.js` on every text change. Application, settings, skills, chat, terminal, and
-  session links remain plain anchors; the overview/projects/project/handoffs links client-navigate,
-  and the native new-project dialog is a shared Vue component used by the overview and projects
-  pages.
+  `assets/markdown.js` on every text change. `/ssh` renders the legacy Access header and scope
+  counts, the section nav and `?target=<project>:<app>` picker, the four-cell watch strip, host
+  cards with pin/approval state, host-key details, test/prepare-re-pin/re-pin actions, add/edit/
+  delete dialogs, the per-application allowlist and grant table, pending approve/reject cards, and
+  the read-only audit table, with loading/error/retry/`?legacy=1` states. SSH host private keys stay
+  write-only: page props, boot JSON, toasts, and rendered output contain only the derived public
+  key, fingerprint, and key type. Application, settings, skills, chat, terminal, and session links
+  remain plain anchors; the overview/projects/project/handoffs links client-navigate, and the
+  native new-project dialog is a shared Vue component used by the overview and projects pages.
 - Built client assets are served from `/assets/ui/*` with immutable caching; compressible responses
   are gzip-encoded when the client offers it (first loads measure ~136 KiB for `/projects`,
-  ~134 KiB for `/`, and ~146 KiB for `/projects/:id` on the deterministic fixture).
+  ~134 KiB for `/`, and ~146 KiB for `/projects/:id` on the deterministic fixture). `/ssh` is a
+  lazy route chunk; no new transfer budget was assigned.
 - SPA documents and `/api/ui/*` are cookie-only. `/api/ui/*` returns `401` without a human cookie,
   `403 cookie_required` for a human bearer without a cookie, and `403` for agent tokens; responses are
   `no-store`.

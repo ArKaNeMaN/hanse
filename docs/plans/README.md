@@ -42,4 +42,6 @@
   complete (2026-10-29; `/` cut over); Phase 2C complete (2026-10-29; `/projects/:id` cut over,
   Phase 2 complete - `/`, `/projects`, and `/projects/:id` are SPA; app detail stays legacy);
   Phase 3B complete (2026-10-29; `/handoffs` cut over, Phase 3 complete - `/`, `/projects`,
-  `/projects/:id`, and `/handoffs` are SPA; SSH and every later route stay legacy).
+  `/projects/:id`, and `/handoffs` are SPA); Phase 4B complete (2026-10-29; `/ssh` cut over,
+  Phase 4 complete - `/`, `/projects`, `/projects/:id`, `/handoffs`, and `/ssh` are SPA; settings,
+  skills, app detail, chat, and terminal stay legacy).

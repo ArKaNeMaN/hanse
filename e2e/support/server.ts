@@ -32,6 +32,93 @@ const services = new Map(
   fixture.projects.map((project) => [project.id, new CoordinatorService(fixture.db, project.id)]),
 );
 
+const FIXTURE_FINGERPRINT = "SHA256:e2e-fixture-fingerprint";
+
+/**
+ * Deterministic stand-in for the SSH transport. Hosts whose address starts with `fail.` always
+ * time out; every other host authenticates and pins the fixture fingerprint. Re-pin uses the real
+ * service after Prepare re-pin writes the pending observation. No network or real key is used.
+ */
+async function fixtureTestHost(
+  hostId: string,
+  options: { ignorePin?: boolean } = {},
+): Promise<{
+  ok: boolean;
+  authOk: boolean;
+  code?: "ssh_connect_timeout";
+  message?: string;
+  fingerprint?: string;
+  previousFingerprint?: string | null;
+  mismatch?: boolean;
+}> {
+  const row = fixture.db
+    .prepare(
+      "SELECT name, address, host_key_fingerprint AS fingerprint FROM ssh_hosts WHERE id = ?",
+    )
+    .get(hostId) as { name: string; address: string; fingerprint: string | null } | undefined;
+  if (row === undefined) {
+    throw new Error("Host not found");
+  }
+  if (row.address.startsWith("fail.")) {
+    return {
+      ok: false,
+      authOk: false,
+      code: "ssh_connect_timeout",
+      message: "Timed out while connecting to the test host.",
+      previousFingerprint: row.fingerprint,
+    };
+  }
+  const now = new Date().toISOString();
+  if (options.ignorePin === true) {
+    fixture.db
+      .prepare(
+        `UPDATE ssh_hosts SET pending_host_key = ?, pending_host_key_type = ?,
+         pending_host_key_fingerprint = ?, pending_host_key_at = ?, updated_at = ? WHERE id = ?`,
+      )
+      .run(
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEUyRUZpeHR1cmU e2e@example.test",
+        "ssh-ed25519",
+        FIXTURE_FINGERPRINT,
+        now,
+        now,
+        hostId,
+      );
+  } else {
+    fixture.db
+      .prepare(
+        `UPDATE ssh_hosts SET host_key = ?, host_key_type = ?, host_key_bits = ?,
+         host_key_fingerprint = ?, host_key_pinned_at = ?, host_key_mismatch_at = NULL,
+         updated_at = ? WHERE id = ?`,
+      )
+      .run(
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEUyRUZpeHR1cmU e2e@example.test",
+        "ssh-ed25519",
+        256,
+        FIXTURE_FINGERPRINT,
+        now,
+        now,
+        hostId,
+      );
+  }
+  return {
+    ok: true,
+    authOk: true,
+    fingerprint: FIXTURE_FINGERPRINT,
+    previousFingerprint: row.fingerprint,
+    mismatch: false,
+  };
+}
+
+const ssh = new Proxy(fixture.ssh, {
+  get(target, property) {
+    if (property === "testHost") {
+      return fixtureTestHost;
+    }
+    const value = Reflect.get(target, property) as unknown;
+    return typeof value === "function" ? value.bind(target) : value;
+  },
+});
+
 function projectService(projectId: string): CoordinatorService {
   const existing = services.get(projectId);
   if (existing !== undefined) {
@@ -182,7 +269,7 @@ const deps: HttpDeps = {
   git: new GitService({ workspaceRoot: fixture.workspaceRoot }),
   manager,
   settings: fixture.settings,
-  ssh: fixture.ssh,
+  ssh,
   skills: fixture.skills,
   images,
   dispatcher,

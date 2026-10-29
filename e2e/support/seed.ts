@@ -316,6 +316,28 @@ export function seed(options: SeedOptions = {}): SeedResult {
   );
   ssh.decideApproval(approvalId, `${PROJECT_ONE}:alpha`, "approve", E2E_OPERATOR);
 
+  const pendingApproval = db.prepare(
+    `INSERT INTO ssh_approvals
+       (id, app_id, host_id, action, command_hash, command_preview, command_bytes, status,
+        requested_at, expires_at)
+     VALUES (?, ?, ?, 'exec', ?, ?, ?, 'pending', ?, ?)`,
+  );
+  for (const [id, preview] of [
+    ["e2e-ssh-approval-approve", "echo approve e2e"],
+    ["e2e-ssh-approval-reject", "echo reject e2e"],
+  ] as const) {
+    pendingApproval.run(
+      id,
+      `${PROJECT_ONE}:alpha`,
+      host.id,
+      `e2e-${id}-hash`,
+      preview,
+      preview.length,
+      requestedAt.toISOString(),
+      "2099-01-01T00:00:00.000Z",
+    );
+  }
+
   const projectOne = new CoordinatorService(db, PROJECT_ONE);
   const { handoffId } = projectOne.requestSiblingChange({
     fromAppKey: "alpha",

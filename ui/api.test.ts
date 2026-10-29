@@ -70,6 +70,28 @@ describe("api helpers", () => {
     expect(init?.body).toBe(JSON.stringify({ key: "llm.model", value: "x" }));
   });
 
+  it("uses an explicit PATCH method for the SSH host update API", async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ host: { id: "host-1" } }));
+    await apiMutation("/api/ssh/hosts/host-1", { json: { name: "Renamed" } }, { method: "PATCH" });
+
+    const [, init] = fetchMock.mock.calls[0] ?? [];
+    expect(init).toMatchObject({
+      method: "PATCH",
+      headers: {
+        "content-type": "application/json",
+        "x-hanse-client": "spa",
+      },
+    });
+  });
+
+  it("uses an explicit DELETE method with an empty JSON body", async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ deleted: true }));
+    await apiMutation("/api/ssh/hosts/host-1", { json: {} }, { method: "DELETE" });
+
+    const [, init] = fetchMock.mock.calls[0] ?? [];
+    expect(init).toMatchObject({ method: "DELETE", body: "{}" });
+  });
+
   it("maps an error envelope to a typed ApiError", async () => {
     fetchMock.mockResolvedValue(
       jsonResponse({ error: "Project already exists.", code: "project_exists" }, 409),
