@@ -36,7 +36,7 @@ import { handlePreviews, isPreviewsRoute } from "./previews.js";
 import { handlePrompts, streamAppEvents } from "./prompts.js";
 import { handleSettings, isSettingsRoute } from "./settings.js";
 import { handleSkills, isSkillsRoute } from "./skills.js";
-import { handleUiApi, maybeServeSpa } from "./spa.js";
+import { handleAppUiApi, handleUiApi, isAppUiPath, maybeServeSpa } from "./spa.js";
 import { handleSsh, isSshRoute } from "./ssh.js";
 import { proxyTerminalUpgrade } from "./terminal.js";
 
@@ -330,6 +330,27 @@ export function createHttpServer(deps: HttpDeps): Server {
       return;
     }
     if (url.pathname === "/api/ui" || url.pathname.startsWith("/api/ui/")) {
+      if (isAppUiPath(url.pathname)) {
+        const appUi = handleAppUiApi(deps, pageRequest);
+        void appUi
+          .then((uiResponse) => {
+            if (uiResponse === undefined) {
+              response.writeHead(404, { "content-type": "application/json; charset=utf-8" });
+              response.end(JSON.stringify({ error: "not found" }));
+              return;
+            }
+            writeHttpResponse(request, response, uiResponse);
+          })
+          .catch(() => {
+            if (!response.headersSent) {
+              response.writeHead(500, { "content-type": "application/json; charset=utf-8" });
+              response.end(JSON.stringify({ error: "request failed" }));
+            } else {
+              response.end();
+            }
+          });
+        return;
+      }
       const uiResponse = handleUiApi(deps, pageRequest);
       if (uiResponse !== undefined) {
         writeHttpResponse(request, response, uiResponse);

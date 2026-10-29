@@ -1,5 +1,6 @@
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
+import type { GitStatus } from "../git/service.js";
 import { verifyAgentToken } from "../mcp/agent-tokens.js";
 import { SettingsValidationError } from "../settings/index.js";
 import type { SettingsScope, SettingsTarget } from "../settings/types.js";
@@ -21,6 +22,7 @@ import {
   type HttpResponse,
   safeDecode,
 } from "./handler.js";
+import { buildAppProps } from "./props/app.js";
 import { buildHandoffsProps } from "./props/handoffs.js";
 import { buildOverviewProps } from "./props/overview.js";
 import { buildProjectProps } from "./props/project.js";
@@ -736,6 +738,24 @@ function pagePropsFor(
   if (match.id === "project") {
     return buildProjectProps(site, match.params.id ?? "") ?? null;
   }
+  if (match.id === "app") {
+    return (
+      buildAppProps({
+        site,
+        projectId: match.params.id ?? "",
+        appKey: match.params.app ?? "",
+        runtimeConfigured: deps.manager !== undefined,
+        ...(deps.ssh === undefined ? {} : { ssh: deps.ssh }),
+        ...(deps.manager === undefined
+          ? {}
+          : {
+              profileWarnings: deps.manager.profileWarnings(
+                `${match.params.id ?? ""}:${match.params.app ?? ""}`,
+              ),
+            }),
+      }) ?? null
+    );
+  }
   if (match.id === "handoffs") {
     return buildHandoffsProps(site, request.query?.filter, request.query?.q);
   }
@@ -856,6 +876,7 @@ const UI_API_PATHS = new Set([
 ]);
 const UI_SKILL_PATH = /^\/api\/ui\/skills\/([^/]+)$/;
 const UI_PROJECT_PATH = /^\/api\/ui\/projects\/([^/]+)$/;
+const UI_APP_PATH = /^\/api\/ui\/apps\/([^/]+)$/;
 
 function uiProjectId(pathname: string): string | undefined {
   const match = UI_PROJECT_PATH.exec(pathname);
@@ -869,6 +890,45 @@ function uiSkillPath(pathname: string): string | undefined {
   return raw === undefined ? undefined : safeDecode(raw);
 }
 
+function uiAppKey(pathname: string): string | undefined {
+  const match = UI_APP_PATH.exec(pathname);
+  const raw = match?.[1];
+  return raw === undefined ? undefined : safeDecode(raw);
+}
+
+/** True for the async application-detail endpoint so the server can await it separately. */
+export function isAppUiPath(pathname: string): boolean {
+  return UI_APP_PATH.test(pathname);
+}
+
+/** Shared cookie-only auth envelope for `/api/ui/*`: agent tokens and human bearers are rejected. */
+function authorizeUiRead(deps: HttpDeps, request: HttpRequest): HttpResponse | undefined {
+  const presented = agentTokenFor(request);
+  if (presented !== undefined && verifyAgentToken(deps.db, presented) !== undefined) {
+    return agentForbidden();
+  }
+  if (humanFromCookie(deps, request) !== undefined) {
+    return undefined;
+  }
+  const authorization = request.headers.authorization?.trim();
+  if (authorization !== undefined && authorization.length > 0) {
+    return jsonResponse(
+      403,
+      { error: "cookie sign-in required", code: "cookie_required" },
+      {
+        "cache-control": "no-store",
+      },
+    );
+  }
+  return jsonResponse(
+    401,
+    { error: "sign in required", code: "unauthenticated" },
+    {
+      "cache-control": "no-store",
+    },
+  );
+}
+
 /** Cookie-only `/api/ui/*` JSON endpoints. Agent bearer tokens and human bearers are rejected. */
 export function handleUiApi(deps: HttpDeps, request: HttpRequest): HttpResponse | undefined {
   if (request.method !== "GET") {
@@ -879,30 +939,9 @@ export function handleUiApi(deps: HttpDeps, request: HttpRequest): HttpResponse 
   if (!UI_API_PATHS.has(request.path) && projectId === undefined && skillPath === undefined) {
     return undefined;
   }
-  const presented = agentTokenFor(request);
-  if (presented !== undefined && verifyAgentToken(deps.db, presented) !== undefined) {
-    return agentForbidden();
-  }
-
-  const principal = humanFromCookie(deps, request);
-  if (principal === undefined) {
-    const authorization = request.headers.authorization?.trim();
-    if (authorization !== undefined && authorization.length > 0) {
-      return jsonResponse(
-        403,
-        { error: "cookie sign-in required", code: "cookie_required" },
-        {
-          "cache-control": "no-store",
-        },
-      );
-    }
-    return jsonResponse(
-      401,
-      { error: "sign in required", code: "unauthenticated" },
-      {
-        "cache-control": "no-store",
-      },
-    );
+  const authFailure = authorizeUiRead(deps, request);
+  if (authFailure !== undefined) {
+    return authFailure;
   }
 
   logUnknownRoutes(deps);
@@ -1113,6 +1152,70 @@ export function handleUiApi(deps: HttpDeps, request: HttpRequest): HttpResponse 
   return jsonResponse(
     200,
     { ...buildProjectsProps(site, request.query?.q), chrome },
+    { "cache-control": "no-store" },
+  );
+}
+
+/**
+ * `GET /api/ui/apps/:app?project=` - cookie-only application detail read endpoint.
+ *
+ * The legacy page hydrates git through `git.js`; the SPA endpoint reads the same status once on
+ * the server so boot props and a refresh return one shape. This is a read: it never fetches,
+ * commits, pushes, builds, restarts, or writes anything.
+ */
+export async function handleAppUiApi(
+  deps: HttpDeps,
+  request: HttpRequest,
+): Promise<HttpResponse | undefined> {
+  if (request.method !== "GET") {
+    return undefined;
+  }
+  const appKey = uiAppKey(request.path);
+  if (appKey === undefined) {
+    return undefined;
+  }
+  const authFailure = authorizeUiRead(deps, request);
+  if (authFailure !== undefined) {
+    return authFailure;
+  }
+
+  logUnknownRoutes(deps);
+  const site = buildSite(deps);
+  const projectId = request.query?.project ?? "";
+  const input = {
+    site,
+    projectId,
+    appKey,
+    runtimeConfigured: deps.manager !== undefined,
+    ...(deps.ssh === undefined ? {} : { ssh: deps.ssh }),
+    ...(deps.manager === undefined
+      ? {}
+      : { profileWarnings: deps.manager.profileWarnings(`${projectId}:${appKey}`) }),
+  };
+  const base = buildAppProps(input);
+  if (base === undefined) {
+    return jsonResponse(404, { error: "not found" }, { "cache-control": "no-store" });
+  }
+
+  let gitStatus: GitStatus | null = null;
+  let gitError: string | null = null;
+  try {
+    gitStatus = await deps.git.statusFor(
+      base.identity.rootPath,
+      base.identity.folder,
+      base.identity.id,
+    );
+  } catch (error) {
+    gitError =
+      error instanceof Error && "code" in error && typeof error.code === "string"
+        ? error.message
+        : "Repository status is unavailable.";
+  }
+  const props = buildAppProps({ ...input, gitStatus, gitError }) ?? base;
+  const match: PageMatch = { id: "app", params: { id: projectId, app: appKey } };
+  return jsonResponse(
+    200,
+    { ...props, chrome: chromeFor(site, match).chrome },
     { "cache-control": "no-store" },
   );
 }
