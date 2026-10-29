@@ -18,6 +18,16 @@
    surface. Legacy pages keep their current behavior. This is an intentional hardening recorded in
    design S7; a bearer-only client cannot open the SPA and then read page props.
 
+### Gate D1 - chat and terminal (2026-10-29)
+
+- **Decision:** keep `/chat` and `/terminal` as legacy documents for now; they are not migrated in
+  plan 0031. Migrating either requires a new design and a new Oracle review.
+- **Evidence:** no retained 7-day access-log extract or operator feedback is available in the
+  workspace; the design records `chat.js` at 14,362 lines, so a mount/lifecycle estimate is a
+  separate design task rather than a mechanical port.
+- **Phase 8:** cleanup is deferred until a rollback soak; the legacy renderers and scripts remain
+  intentionally available for `HANSE_UI_LEGACY=1` and `?legacy=1`.
+
 > Stage: `0030-agent-process-protection`. Owner decisions were collected on 2026-10-27, after the
 > design review PASS. There are no open items for this stage.
 

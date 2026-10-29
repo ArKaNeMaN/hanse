@@ -18,7 +18,8 @@ registry keeps `app` legacy); Phase 7B complete (2026-10-29; the git workbench s
 fetch/update/push/commit-all/branch-switch flow and remotes are ported onto the existing git JSON
 handlers; the registry kept `app` legacy). Phase 7C complete (2026-10-29; image build/rollback/
 check/logs/poll, app-scoped SSH allowlist/grant/revoke/approve/reject/audit, and exact-name deletion
-are ported; `app` is now `spa: true`, and only chat/terminal remain legacy).
+are ported; `app` is now `spa: true`, and only chat/terminal remain legacy). Gate D1 default (2026-10-29): keep chat/terminal legacy;
+Phase 8 cleanup deferred until a rollback soak.
 Design: [Incremental SPA migration](../design/spa-migration.md) (approved, `oracle` round 5 PASS;
 flag/test-glob/no-JS clarifications recorded in revision 6).
 Owner decisions: [open questions](../open-questions.md), 2026-10-28.

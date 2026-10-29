@@ -55,3 +55,4 @@
   app-scoped SSH allowlist/grant/revoke/approve/reject/audit, and exact-name deletion are ported;
   `app` is `spa: true`, so every page route except chat and terminal is SPA). Gate D1 (chat/
   terminal decision) and Phase 8 (cleanup) remain.
+  Gate D1 default: keep chat/terminal legacy; Phase 8 cleanup deferred until a rollback soak.
