@@ -610,9 +610,65 @@ No transfer budget was assigned for the app preview; `/projects` remains the S16
 deliberate restart-failure E2E injects a 503, so that one test asserts app-level error handling
 without claiming a clean browser console; the read/success tests assert no console or page errors.
 
+## Phase 7B implementation - git workbench (2026-10-29)
+
+Phase 7B ports the application git workbench into the SPA preview. `src/shared/routes.ts` still has
+`spa: false` for `app` (and every later route); the page is reachable only through
+`HANSE_UI_SPA_ROUTES=app`, `?legacy=1` still serves the legacy document, and Phase 7 is **not**
+complete.
+
+- **Contract/rules.** `ui/git-types.ts` mirrors the existing `GitStatus`/`GitActionResult` JSON
+  contract and the legacy presentation rules: `controlState`, action hints, push/action labels,
+  fallback messages, non-ok repository states, file-status text, and the full error-code title/copy
+  mapping from `git.js`.
+- **State/actions.** `ui/composables/useAppGit.ts` owns the workbench state. It reads
+  `/git/status` once on route entry, on manual refresh, and after an action only when the response
+  carries no status - no new polling. Fetch, update, push, commit-all, and branch switch reuse
+  `/api/projects/:id/apps/:app/git/{fetch,update,push,commit,branches/switch}`. Commit validates a
+  trimmed message and control characters client-side; switch warns on an empty choice or the current
+  branch. Success updates the returned status, clears the commit draft, raises the legacy notice and
+  a toast, and asks `AppPage` to refresh props/chrome. Failures keep the page intact and map the
+  coordinator code to the legacy title/message plus a toast.
+- **UI.** `AppGitPanel.vue` now renders branch/upstream/HEAD, the clean/dirty/detached/conflicted/
+  operation pill, fetch/update/push with busy labels and disabled reasons, notices, the branch
+  switch form, file groups, and the commit-all form with its inline error. `AppGitRemotes.vue`
+  restores the rail Remotes card. `AppPage.vue` keeps the live last commit and passes the workbench
+  state through. The SPA route still loads no `git.js`, `images.js`, or `ssh.js`.
+- **Test connection.** The legacy workbench never had a Test connection control; it belongs to the
+  application settings page and already reuses `/git/test` through `SettingsGitSection.vue`. 7B
+  leaves that contract unchanged and keeps its existing component/three-mode E2E coverage rather
+  than adding a second credential-entry surface to the application page.
+- **E2E fixture.** The alpha fixture repository gains a deterministic local bare `origin`, an
+  upstream `main`, and a `feature` branch. The app-preview server publishes its repo map under a
+  per-port temp file so `e2e/spa-app.spec.ts` prepares clean, dirty, detached, conflicted, ahead,
+  behind, and diverged states with local git only. The spec covers the state matrix, on-demand
+  refresh, commit-all, fetch/update/push/switch, commit validation, current-branch warnings, disabled
+  states, and the push-rejected/diverged/status-load error mappings. The registry flag stays false.
+- **Tests.** New `AppGitPanel` component tests (8) cover state/control matrices, busy labels,
+  notices, load failures, and non-git states. `AppPage` tests grew to 36 with commit,
+  fetch/update/push, switch, error mapping, validation, busy, and status-retry coverage.
+
+### Phase 7B verification
+
+Commands ran with `NODE_ENV=development` and `PLAYWRIGHT_CHROMIUM=/usr/bin/chromium`.
+
+| Command | Result |
+| --- | --- |
+| `npm run lint` | 612 files, exit 0 (18 pre-existing warnings) |
+| `npm run typecheck` | exit 0 |
+| `npm run typecheck:ui` | exit 0 |
+| `npm run typecheck:e2e` | exit 0 |
+| `npm test` | 165 files / 2967 tests, exit 0 |
+| `npm run build` | exit 0; `AppPage` 59.1 kB / 16.79 kB gzip |
+| `npm run check:sensitive` | exit 0 |
+| `npm run check:ui` | exit 0 (40 SFCs, sentinel present) |
+| `npm run test:e2e` | 134 passed, 1 skipped, exit 0 |
+
+No transfer budget was re-assigned for the app preview; `/projects` remains the S16 route.
+
 ## Next
 
-Phase 7B: port the `assets/git.js` status/fetch/update/push/commit/branch-switch/test behavior into
-the application-detail route while keeping the existing JSON contracts and the `app` registry flag
-false. Phase 7C then ports image/SSH/delete and performs the one cutover.
+Phase 7C: port `images.js` (build/rollback/check/logs/poll), the app SSH panel, and delete with the
+exact-name confirmation; then perform the single application-detail cutover and remove the legacy
+island scripts from the SPA document. The `app` registry flag stays false until that cutover.
 

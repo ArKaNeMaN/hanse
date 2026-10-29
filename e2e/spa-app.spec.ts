@@ -3,11 +3,19 @@ import {
   collectPageErrors,
   expectNoPageErrors,
   PROJECT_ONE,
+  PROJECT_TWO,
+  prepareGitState,
   settle,
   signIn,
 } from "./support/helpers.js";
 
 const APP_PATH = `/projects/${PROJECT_ONE}/apps/alpha`;
+const BETA_PATH = `/projects/${PROJECT_ONE}/apps/beta`;
+const GAMMA_PATH = `/projects/${PROJECT_TWO}/apps/gamma`;
+
+function toast(page: Parameters<typeof signIn>[0], text: string) {
+  return page.locator("#toast-region .toast", { hasText: text });
+}
 
 async function openApp(page: Parameters<typeof signIn>[0]): Promise<void> {
   await signIn(page, APP_PATH);
@@ -18,6 +26,7 @@ test("deep links, refreshes, and renders the read-only runtime, image, git, and 
   page,
 }) => {
   const errors = collectPageErrors(page);
+  prepareGitState(PROJECT_ONE, "alpha", "clean");
   await openApp(page);
 
   await expect(page.locator("#hanse-boot")).toHaveCount(1);
@@ -33,10 +42,14 @@ test("deep links, refreshes, and renders the read-only runtime, image, git, and 
   await expect(page.getByRole("heading", { name: "Repository" })).toBeVisible();
   await expect(page.locator("#git-refreshed")).toContainText("Refreshed", { timeout: 15_000 });
   await expect(page.locator("#git-branch")).toContainText("main");
-  await expect(page.locator("#git-upstream")).toContainText("No upstream");
+  await expect(page.locator("#git-upstream")).toContainText("origin/main");
   await expect(page.locator("#repository-card")).toContainText("Clean");
   await expect(page.locator("#git-clean")).toContainText("Working tree clean");
   await expect(page.locator("#last-commit-card")).toContainText("fixture commit");
+  await expect(page.locator("#remotes-card")).toContainText("origin");
+  await expect(page.locator("#git-fetch")).toBeEnabled();
+  await expect(page.locator("#git-update")).toBeEnabled();
+  await expect(page.locator("#git-push")).toBeEnabled();
 
   await expect(page.locator("#ssh-panel-title")).toHaveText("SSH access");
   await expect(page.locator("#ssh-panel")).toContainText("1 allowed host");
@@ -163,4 +176,192 @@ test("mounts without a fallback flash or console errors", async ({ page }) => {
 
   await settle(page);
   expectNoPageErrors(errors);
+});
+
+test("renders clean, dirty, detached, and conflicted git states", async ({ page }) => {
+  const errors = collectPageErrors(page);
+  prepareGitState(PROJECT_ONE, "alpha", "clean");
+  await openApp(page);
+  await expect(page.locator("#repository-card").getByText("Clean", { exact: true })).toBeVisible();
+  await expect(page.locator("#remotes-card")).toContainText("origin");
+
+  prepareGitState(PROJECT_ONE, "beta", "dirty");
+  await page.goto(BETA_PATH);
+  await expect(page.getByRole("heading", { name: "beta", exact: true })).toBeVisible();
+  await expect(page.locator("#repository-card")).toContainText("Changes");
+  await expect(page.locator("#git-change-counts")).toContainText("Staged 1");
+  await expect(page.locator("#git-change-counts")).toContainText("Unstaged 1");
+  await expect(page.locator("#git-change-counts")).toContainText("Untracked 1");
+  await expect(page.locator("#git-changes-body")).toContainText("staged.txt");
+  await expect(page.locator("#git-changes-body")).toContainText("untracked.txt");
+  await expect(page.locator("#git-commit-form")).toBeVisible();
+
+  prepareGitState(PROJECT_TWO, "gamma", "detached");
+  await page.goto(GAMMA_PATH);
+  await expect(page.getByRole("heading", { name: "gamma", exact: true })).toBeVisible();
+  await expect(page.locator("#git-branch")).toContainText("Detached HEAD");
+  await expect(page.locator("#repository-card")).toContainText("Detached");
+  await expect(page.locator("#git-branch-select")).toContainText("Choose a branch");
+  await expect(page.locator("#git-update")).toBeDisabled();
+  await expect(page.locator("#git-push")).toBeDisabled();
+  await expect(page.locator("#git-commit")).toHaveCount(0);
+
+  prepareGitState(PROJECT_ONE, "beta", "conflicted");
+  await page.goto(BETA_PATH);
+  await expect(page.locator("#repository-card")).toContainText("Conflicts");
+  await expect(page.locator("#git-change-counts")).toContainText("Conflicted 1");
+  await expect(page.locator("#git-commit")).toBeDisabled();
+  await expect(page.locator("#git-switch")).toBeDisabled();
+  await expect(page.locator("#git-commit-hint")).toContainText("Resolve conflicts");
+
+  await settle(page);
+  expectNoPageErrors(errors);
+});
+
+test("refreshes status on demand and renders ahead and behind counts", async ({ page }) => {
+  const errors = collectPageErrors(page);
+  prepareGitState(PROJECT_ONE, "alpha", "ahead");
+  await openApp(page);
+  await expect(page.locator("#git-upstream")).toContainText("1 ahead");
+
+  prepareGitState(PROJECT_ONE, "alpha", "behind");
+  await page.locator("#git-refresh").click();
+  await expect(page.locator("#git-upstream")).toContainText("1 behind");
+
+  prepareGitState(PROJECT_ONE, "alpha", "clean");
+  await page.locator("#git-refresh").click();
+  await expect(page.locator("#git-upstream")).toContainText("origin/main");
+  await expect(page.locator("#git-upstream")).not.toContainText("behind");
+  await expect(page.locator("#git-upstream")).not.toContainText("ahead");
+
+  await settle(page);
+  expectNoPageErrors(errors);
+});
+
+test("commits every change group and updates the last commit", async ({ page }) => {
+  const errors = collectPageErrors(page);
+  prepareGitState(PROJECT_ONE, "beta", "dirty");
+  await signIn(page, BETA_PATH);
+  await expect(page.getByRole("heading", { name: "beta", exact: true })).toBeVisible();
+
+  await page.locator("#git-commit-message").fill("E2E commit from SPA");
+  await page.locator("#git-commit").click();
+
+  await expect(toast(page, "Committed as")).toBeVisible();
+  await expect(page.locator("#repository-card")).toContainText("Clean");
+  await expect(page.locator("#git-clean")).toContainText("Working tree clean");
+  await expect(page.locator("#git-commit-form")).toHaveCount(0);
+  await expect(page.locator("#last-commit-card")).toContainText("E2E commit from SPA");
+
+  await settle(page);
+  expectNoPageErrors(errors);
+});
+
+test("fetches, updates, pushes, and switches branches", async ({ page }) => {
+  const errors = collectPageErrors(page);
+  prepareGitState(PROJECT_ONE, "alpha", "behind");
+  await openApp(page);
+  await expect(page.locator("#git-upstream")).toContainText("1 behind");
+
+  await page.locator("#git-fetch").click();
+  await expect(toast(page, "Fetched all remotes.")).toBeVisible();
+  await expect(page.locator("#git-upstream")).toContainText("1 behind");
+
+  await page.locator("#git-update").click();
+  await expect(toast(page, "Branch updated to")).toBeVisible();
+  await expect(page.locator("#git-upstream")).not.toContainText("behind");
+  await expect(page.locator("#repository-card")).toContainText("Clean");
+
+  prepareGitState(PROJECT_ONE, "alpha", "ahead");
+  await page.locator("#git-refresh").click();
+  await expect(page.locator("#git-upstream")).toContainText("1 ahead");
+  await page.locator("#git-push").click();
+  await expect(toast(page, "Pushed to origin/main.")).toBeVisible();
+  await expect(page.locator("#git-upstream")).not.toContainText("ahead");
+
+  await page.locator("#git-branch-select").selectOption("feature");
+  await page.locator("#git-switch").click();
+  await expect(toast(page, "Switched to feature.")).toBeVisible();
+  await expect(page.locator("#git-branch")).toContainText("feature");
+
+  await page.locator("#git-switch").click();
+  await expect(page.locator("#git-notice")).toContainText("You are already on feature.");
+
+  await settle(page);
+  expectNoPageErrors(errors);
+});
+
+test("maps git action and status failures to the legacy messages", async ({ page }) => {
+  prepareGitState(PROJECT_ONE, "alpha", "clean");
+  await openApp(page);
+
+  await page.route(/\/git\/push$/, (route) =>
+    route.fulfill({
+      status: 409,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "push rejected upstream", code: "push_rejected" }),
+    }),
+  );
+  await page.locator("#git-push").click();
+  await expect(
+    toast(
+      page,
+      "The remote has commits you do not have. Fetch and update the branch, then try again.",
+    ),
+  ).toBeVisible();
+  await expect(page.locator("#git-notice")).toContainText("Push rejected");
+  await page.unroute(/\/git\/push$/);
+
+  await page.route(/\/git\/update$/, (route) =>
+    route.fulfill({
+      status: 409,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "diverged", code: "diverged" }),
+    }),
+  );
+  await page.locator("#git-update").click();
+  await expect(
+    toast(page, "The branch has diverged from its upstream. Reconcile it in the IDE."),
+  ).toBeVisible();
+  await expect(page.locator("#git-notice")).toContainText("Update stopped");
+  await page.unroute(/\/git\/update$/);
+
+  await page.route(/\/git\/status$/, (route) =>
+    route.fulfill({
+      status: 500,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "coordinator unavailable", code: "git_failed" }),
+    }),
+  );
+  await page.locator("#git-refresh").click();
+  await expect(page.locator("#repository-card")).toContainText("Repository status unavailable");
+  await expect(page.locator("#repository-card")).toContainText("coordinator unavailable");
+  await page.unroute(/\/git\/status$/);
+  await page.locator("#repository-card").getByRole("button", { name: "Retry" }).click();
+  await expect(page.locator("#repository-card")).toContainText("Clean");
+});
+
+test("validates the commit message and warns before switching to the current branch", async ({
+  page,
+}) => {
+  prepareGitState(PROJECT_ONE, "beta", "dirty");
+  await signIn(page, BETA_PATH);
+  await expect(page.getByRole("heading", { name: "beta", exact: true })).toBeVisible();
+
+  let commits = 0;
+  page.on("request", (request) => {
+    if (request.url().endsWith("/git/commit")) {
+      commits += 1;
+    }
+  });
+  await page.locator("#git-commit").click();
+  await expect(page.locator("#git-commit-error")).toContainText("A message is required");
+  expect(commits).toBe(0);
+
+  prepareGitState(PROJECT_ONE, "alpha", "clean");
+  await page.goto(APP_PATH);
+  await expect(page.getByRole("heading", { name: "alpha", exact: true })).toBeVisible();
+  await page.locator("#git-branch-select").selectOption("main");
+  await page.locator("#git-switch").click();
+  await expect(page.locator("#git-notice")).toContainText("You are already on main.");
 });

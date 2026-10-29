@@ -6,11 +6,13 @@ import { ApiError, apiMutation, apiQuery } from "../api.js";
 import type { AppImageLive, AppProps, AppResponse, AppRuntimeLive } from "../app-types.js";
 import type { BootPayload } from "../boot.js";
 import AppGitPanel from "../components/AppGitPanel.vue";
+import AppGitRemotes from "../components/AppGitRemotes.vue";
 import AppIcon from "../components/AppIcon.vue";
 import AppImagePanel from "../components/AppImagePanel.vue";
 import AppRestartDialog from "../components/AppRestartDialog.vue";
 import AppSshPanel from "../components/AppSshPanel.vue";
 import AppStateStrip from "../components/AppStateStrip.vue";
+import { useAppGit } from "../composables/useAppGit.js";
 import { applyChrome } from "../composables/useChrome.js";
 import { absoluteTime, timeAgo } from "../format.js";
 import type { RuntimeState } from "../status.js";
@@ -83,6 +85,41 @@ watch(
     }
   },
   { immediate: true },
+);
+
+const projectHref = computed(() =>
+  view.value === undefined ? "" : `/projects/${encodeURIComponent(view.value.identity.projectId)}`,
+);
+
+const {
+  gitStatus,
+  summary: gitSummary,
+  rules: gitRules,
+  hint: gitHint,
+  loading: gitLoading,
+  busyAction: gitBusyAction,
+  failure: gitFailure,
+  notice: gitNotice,
+  commitDraft: gitCommitDraft,
+  commitError: gitCommitError,
+  needsRefresh: gitNeedsRefresh,
+  liveMessage: gitLiveMessage,
+  refreshedLabel: gitRefreshedLabel,
+  loadStatus: refreshGit,
+  runAction: runGitAction,
+  submitCommit: submitGitCommit,
+  requestSwitch: requestGitSwitch,
+} = useAppGit(
+  computed(() => view.value?.git),
+  {
+    onChanged: () => {
+      void refreshApp();
+    },
+  },
+);
+
+const gitUnavailable = computed(
+  () => gitFailure.value !== null || (gitStatus.value !== null && gitStatus.value.state !== "ok"),
 );
 
 function isRuntimeState(value: unknown): value is RuntimeState {
@@ -197,38 +234,6 @@ onUnmounted(() => {
   stopImagePoll();
 });
 
-const refreshedAt = ref(0);
-const nowTick = ref(Date.now());
-let labelTimer: ReturnType<typeof setInterval> | undefined;
-watch(
-  () => view.value?.git.summary.loaded,
-  (loaded) => {
-    if (loaded === true) {
-      refreshedAt.value = Date.now();
-      nowTick.value = Date.now();
-    }
-  },
-  { immediate: true },
-);
-onMounted(() => {
-  labelTimer = setInterval(() => {
-    nowTick.value = Date.now();
-  }, 30_000);
-});
-onUnmounted(() => {
-  if (labelTimer !== undefined) {
-    clearInterval(labelTimer);
-  }
-});
-
-const refreshedLabel = computed(() => {
-  if (view.value === undefined) return "Loading status";
-  if (!view.value.git.summary.loaded) return "Status unavailable";
-  if (refreshedAt.value === 0) return "Loading status";
-  const minutes = Math.floor((nowTick.value - refreshedAt.value) / 60_000);
-  return minutes < 1 ? "Refreshed just now" : `Refreshed ${minutes}m ago`;
-});
-
 const canRestart = computed(() => {
   const current = view.value;
   if (current === undefined) return false;
@@ -236,7 +241,7 @@ const canRestart = computed(() => {
   return runtimeState.value === "running" || runtimeState.value === "starting";
 });
 
-const lastCommit = computed(() => view.value?.git.summary.lastCommit ?? null);
+const lastCommit = computed(() => gitSummary.value.lastCommit ?? null);
 const deletionPending = computed(() => view.value?.delete.pending === true);
 const deletionBanner = computed(() => view.value?.delete.banner ?? null);
 
@@ -460,19 +465,39 @@ async function restartAgent(): Promise<void> {
       <div id="git-panel">
         <div class="workbench-grid workbench-grid--detail section">
           <AppGitPanel
-            :summary="view.git.summary"
-            :refreshed-label="refreshedLabel"
-            :refreshing="loading"
-            @refresh="refreshApp"
+            v-model:commit-draft="gitCommitDraft"
+            :summary="gitSummary"
+            :status="gitStatus"
+            :rules="gitRules"
+            :hint="gitHint"
+            :loading="gitLoading"
+            :busy-action="gitBusyAction"
+            :failure="gitFailure"
+            :notice="gitNotice"
+            :commit-error="gitCommitError"
+            :needs-refresh="gitNeedsRefresh"
+            :refreshed-label="gitRefreshedLabel"
+            :ide-href="view.links.ide"
+            :project-href="projectHref"
+            :live-message="gitLiveMessage"
+            @refresh="refreshGit"
+            @action="runGitAction"
+            @commit="submitGitCommit"
+            @switch="requestGitSwitch"
           />
           <aside class="rail-stack" aria-label="Application details">
             <AppImagePanel :image="view.image" :live="imageLive" :live-error="imageLiveError" />
+            <AppGitRemotes
+              :status="gitStatus"
+              :failure="gitFailure !== null"
+              :loaded="gitSummary.loaded"
+            />
             <section class="card" id="last-commit-card" aria-labelledby="last-commit-title">
               <div class="card__head">
                 <h2 class="card__title" id="last-commit-title">Last commit</h2>
               </div>
               <div class="card__body stack--tight">
-                <p v-if="!view.git.summary.loaded" class="hint">
+                <p v-if="gitUnavailable || !gitSummary.loaded" class="hint">
                   Commit history is unavailable for this repository.
                 </p>
                 <div v-else-if="lastCommit === null" class="empty-state">

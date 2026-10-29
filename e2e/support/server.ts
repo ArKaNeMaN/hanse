@@ -1,4 +1,5 @@
 import { type ChildProcess, spawn } from "node:child_process";
+import { rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -30,6 +31,20 @@ const fixture = seed({
 });
 const services = new Map(
   fixture.projects.map((project) => [project.id, new CoordinatorService(fixture.db, project.id)]),
+);
+
+const fixtureReposPath = path.join(tmpdir(), `hanse-e2e-repos-${port}.json`);
+const appRepos = Object.fromEntries(
+  fixture.projects.flatMap((project) =>
+    project.appKeys.map((appKey) => [
+      `${project.id}:${appKey}`,
+      path.join(fixture.projectRoots[project.id] ?? "", "apps", appKey),
+    ]),
+  ),
+);
+writeFileSync(
+  fixtureReposPath,
+  JSON.stringify({ workspaceRoot: fixture.workspaceRoot, apps: appRepos }),
 );
 
 const FIXTURE_FINGERPRINT = "SHA256:e2e-fixture-fingerprint";
@@ -338,6 +353,7 @@ const server = createHttpServer(deps);
 function shutdown(): void {
   gitDaemon?.kill("SIGTERM");
   server.close(() => {
+    rmSync(fixtureReposPath, { force: true });
     fixture.cleanup();
     process.exit(0);
   });
@@ -348,6 +364,7 @@ process.on("SIGTERM", shutdown);
 server.on("error", (error) => {
   process.stderr.write(`e2e fixture server error: ${error.message}\n`);
   gitDaemon?.kill("SIGTERM");
+  rmSync(fixtureReposPath, { force: true });
   fixture.cleanup();
   process.exit(1);
 });

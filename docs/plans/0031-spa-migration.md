@@ -14,7 +14,9 @@ complete - `/`, `/projects`, `/projects/:id`, `/handoffs`, `/ssh`, and settings 
 complete (2026-10-29; the five skills routes cut over, Phase 6 complete - skills are SPA; app
 detail, chat, and terminal stay legacy); Phase 7A complete (2026-10-29; the read-only
 application-detail SPA shell and restart are previewable with `HANSE_UI_SPA_ROUTES=app`; the
-registry keeps `app` legacy; 7B git and 7C image/SSH/delete/cutover remain).
+registry keeps `app` legacy); Phase 7B complete (2026-10-29; the git workbench status/refresh,
+fetch/update/push/commit-all/branch-switch flow and remotes are ported onto the existing git JSON
+handlers; the registry keeps `app` legacy; 7C image/SSH/delete/cutover remain).
 Design: [Incremental SPA migration](../design/spa-migration.md) (approved, `oracle` round 5 PASS;
 flag/test-glob/no-JS clarifications recorded in revision 6).
 Owner decisions: [open questions](../open-questions.md), 2026-10-28.
@@ -1078,6 +1080,42 @@ complete.
 - **Not done.** 7B git actions, 7C image/SSH/delete actions and the registry cutover, legacy-script
   removal, and the full visual-QA/transfer budget remain. Application detail is still legacy by
   default.
+
+### Completion record - Phase 7B (2026-10-29)
+
+Phase 7B ports the application git workbench into the SPA preview. `src/shared/routes.ts` still has
+`spa: false` for `app`; the page is reachable only with `HANSE_UI_SPA_ROUTES=app`, and Phase 7 is
+**not** complete.
+
+- **Contract/hook.** `ui/git-types.ts` mirrors the existing `GitStatus`/`GitActionResult` JSON
+  contract and the legacy presentation rules (`controlState`, action hints, labels, fallback
+  messages, and the full error-code copy). `ui/composables/useAppGit.ts` owns one status read on
+  entry, on-demand refresh, one mutation at a time, status consumption from the action response,
+  commit-message and current-branch validation, notices/error toasts, and a props/chrome refresh on
+  success. No polling was added and no parallel write path exists.
+- **UI.** `AppGitPanel.vue` renders the Repository/Changes cards with branch/upstream/HEAD, the
+  status pill, fetch/update/push, the disabled reasons, success/warning/error notices, branch
+  switch, file groups, and the commit-all form. `AppGitRemotes.vue` restores the rail Remotes card.
+  `AppPage.vue` wires the workbench, keeps the live last commit, and refreshes app props/chrome after
+  a successful action. The SPA route still loads no `git.js`, `images.js`, or `ssh.js`.
+- **Test connection.** The legacy workbench never had a Test connection control; the app settings
+  page owns it and it already reuses `/git/test` in `SettingsGitSection.vue`. 7B leaves that contract
+  unchanged and covers it through the existing settings component and three-mode E2E specs rather
+  than adding a second credential-entry surface to the application page.
+- **E2E fixture.** The alpha fixture repository now has a deterministic local bare `origin` and an
+  upstream `main`, plus a `feature` branch. The app-preview server publishes its repo map under a
+  per-port temp file so `e2e/spa-app.spec.ts` can prepare clean, dirty, detached, conflicted, ahead,
+  behind, and diverged states with local git only. The spec covers state rendering, on-demand
+  refresh, commit-all, fetch/update/push/switch, commit validation, current-branch warnings, disabled
+  states, and the push-rejected/diverged/status-load error mappings. The registry flag stays false.
+- **Tests/gates.** New `AppGitPanel` component tests (8) cover the state/control matrices, busy
+  labels, notices, load failures, and non-git states; `AppPage` tests grew to 36 with commit,
+  fetch/update/push, switch, error mapping, validation, busy, and status-retry coverage. `lint` 612
+  files exit 0 (18 pre-existing warnings); `typecheck`, `typecheck:ui`, `typecheck:e2e` exit 0;
+  `test` 165 files / 2967 tests; `build` exit 0 (`AppPage` 59.1 kB / 16.79 kB gzip);
+  `check:sensitive` and `check:ui` (40 SFCs) pass; `test:e2e` 134 passed, 1 skipped.
+- **Not done.** 7C image/SSH/delete actions, the one registry cutover, legacy-script removal, and
+  the full visual-QA pass remain. Application detail is still legacy by default.
 
 ### Acceptance criteria
 

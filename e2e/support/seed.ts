@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { transitionHandoff, updateHandoff } from "../../src/coordinator/handoff.js";
 import { CoordinatorService } from "../../src/coordinator/service.js";
 import type { RunSshKeygen } from "../../src/git/credentials.js";
@@ -115,12 +116,43 @@ function initFixtureRepo(directory: string): void {
   writeFileSync(path.join(directory, "README.md"), "# E2E fixture application\n", "utf8");
   const env = gitEnv();
   execFileSync("git", ["init", "-q", "-b", "main"], { cwd: directory, env, stdio: "ignore" });
+  execFileSync("git", ["config", "user.name", "E2E Fixture"], {
+    cwd: directory,
+    env,
+    stdio: "ignore",
+  });
+  execFileSync("git", ["config", "user.email", "e2e@example.test"], {
+    cwd: directory,
+    env,
+    stdio: "ignore",
+  });
   execFileSync("git", ["add", "README.md"], { cwd: directory, env, stdio: "ignore" });
   execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-q", "-m", "fixture commit"], {
     cwd: directory,
     env,
     stdio: "ignore",
   });
+}
+
+/**
+ * Give the alpha application a deterministic local remote and upstream. The bare repository lives
+ * inside `.git`, so it never appears in the working tree and needs no network or credentials.
+ */
+function addFixtureOrigin(directory: string): void {
+  const env = gitEnv();
+  const bare = path.join(directory, ".git", "e2e-remote.git");
+  execFileSync("git", ["init", "--bare", "-q", "-b", "main", bare], { env, stdio: "ignore" });
+  execFileSync("git", ["remote", "add", "origin", pathToFileURL(bare).href], {
+    cwd: directory,
+    env,
+    stdio: "ignore",
+  });
+  execFileSync("git", ["push", "-q", "-u", "origin", "main"], {
+    cwd: directory,
+    env,
+    stdio: "ignore",
+  });
+  execFileSync("git", ["branch", "feature"], { cwd: directory, env, stdio: "ignore" });
 }
 
 /** Create a bare repository with one commit so add-app clone has a deterministic remote. */
@@ -225,7 +257,11 @@ export function seed(options: SeedOptions = {}): SeedResult {
     for (const appKey of project.appKeys) {
       const appId = `${project.id}:${appKey}`;
       const appPath = `apps/${appKey}`;
-      initFixtureRepo(path.join(project.rootPath, appPath));
+      const directory = path.join(project.rootPath, appPath);
+      initFixtureRepo(directory);
+      if (project.id === PROJECT_ONE && appKey === "alpha") {
+        addFixtureOrigin(directory);
+      }
       insertApp.run(appId, project.id, appKey, appPath, "service", now);
     }
   }

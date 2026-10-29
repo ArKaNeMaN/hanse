@@ -2,6 +2,7 @@ import { QueryClient, VueQueryPlugin } from "@tanstack/vue-query";
 import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { nextTick } from "vue";
 import { createMemoryHistory, createRouter, type Router } from "vue-router";
 import { ApiError } from "../api.js";
 import type {
@@ -12,6 +13,7 @@ import type {
   AppSshProps,
 } from "../app-types.js";
 import type { BootPayload } from "../boot.js";
+import type { GitFile, GitOperation, GitStatus } from "../git-types.js";
 import { useToastStore } from "../stores/toasts.js";
 import AppPage from "./AppPage.vue";
 
@@ -95,6 +97,53 @@ const GIT: AppGitSummaryProps = {
     committedAt: "2026-10-20T10:00:00.000Z",
   },
 };
+
+function fullStatus(overrides: Partial<GitStatus> = {}): GitStatus {
+  return {
+    state: "ok",
+    root: "/workspace/p/apps/alpha",
+    branch: { name: "main", detached: false, head: "abcdef1234567890" },
+    upstream: null,
+    clean: true,
+    files: [],
+    branches: ["main", "feature"],
+    remotes: [],
+    lastCommit: GIT.lastCommit,
+    operation: null,
+    conflicted: false,
+    identity: { configured: true },
+    ...overrides,
+  };
+}
+
+function statusForSummary(summary: AppGitSummaryProps): GitStatus {
+  const files: GitFile[] = [];
+  for (const group of ["staged", "unstaged", "untracked", "conflicted"] as const) {
+    for (let index = 0; index < summary.counts[group]; index += 1) {
+      files.push({ path: `${group}-${index}.txt`, code: "M", group });
+    }
+  }
+  const branch = summary.branch ?? { name: null, detached: summary.detached, head: null };
+  const operation: GitOperation | null =
+    summary.operation === null ? null : (summary.operation as GitOperation);
+  return {
+    state: "ok",
+    root: "/workspace/p/apps/alpha",
+    branch,
+    upstream: summary.upstream,
+    clean: summary.clean,
+    files,
+    branches: summary.detached ? ["main"] : [branch.name ?? "main", "feature"],
+    remotes:
+      summary.upstream === null
+        ? []
+        : [{ name: "origin", url: "file:///workspace/p/apps/alpha/.git/e2e-remote.git" }],
+    lastCommit: summary.lastCommit,
+    operation,
+    conflicted: summary.conflicted,
+    identity: { configured: true },
+  };
+}
 
 const SSH: AppSshProps = {
   href: "/ssh?project=p&app=alpha",
@@ -343,10 +392,21 @@ function testRouter(): Router {
   });
 }
 
-function installQueries(appProps: AppProps, live: { image?: unknown; runtime?: unknown } = {}) {
+function installQueries(
+  appProps: AppProps,
+  live: { image?: unknown; runtime?: unknown; git?: GitStatus | null; gitError?: unknown } = {},
+) {
   mocks.apiQuery.mockImplementation((path: string) => {
     if (path.startsWith("/api/ui/apps/")) {
       return Promise.resolve({ ...appProps, chrome: CHROME });
+    }
+    if (path.endsWith("/git/status")) {
+      if (live.gitError !== undefined) {
+        return Promise.reject(live.gitError);
+      }
+      return Promise.resolve({
+        status: live.git === undefined ? statusForSummary(appProps.git.summary) : live.git,
+      });
     }
     if (path.includes("/image")) {
       return Promise.resolve(
@@ -614,6 +674,9 @@ describe("AppPage", () => {
     expect(dirty.get("#changes-card").text()).toContain("Staged 1");
     expect(dirty.get("#changes-card").text()).toContain("Unstaged 2");
     expect(dirty.get("#changes-card").text()).toContain("Untracked 3");
+    expect(dirty.get("#git-commit").attributes("disabled")).toBeUndefined();
+    expect(dirty.get("#git-fetch").attributes("disabled")).toBeDefined();
+    expect(dirty.get("#git-push").attributes("disabled")).toBeDefined();
 
     const conflictedProps = props({
       git: {
@@ -632,6 +695,9 @@ describe("AppPage", () => {
     const conflicted = await mountPage(boot(conflictedProps));
     expect(conflicted.get("#repository-card").text()).toContain("Conflicts");
     expect(conflicted.get("#changes-card").text()).toContain("Conflicted 1");
+    expect(conflicted.get("#git-commit").attributes("disabled")).toBeDefined();
+    expect(conflicted.get("#git-switch").attributes("disabled")).toBeDefined();
+    expect(conflicted.get("#git-commit-hint").text()).toContain("Resolve conflicts");
   });
 
   it("renders detached git state and an unavailable summary", async () => {
@@ -651,6 +717,9 @@ describe("AppPage", () => {
     const detached = await mountPage(boot(detachedProps));
     expect(detached.get("#git-branch").text()).toContain("Detached HEAD");
     expect(detached.get("#repository-card").text()).toContain("Detached");
+    expect(detached.get("#git-update").attributes("disabled")).toBeDefined();
+    expect(detached.get("#git-push").attributes("disabled")).toBeDefined();
+    expect(detached.find("#git-commit").exists()).toBe(false);
 
     const unavailable = props({
       git: {
@@ -668,7 +737,9 @@ describe("AppPage", () => {
       },
     });
     mocks.apiQuery.mockReset();
-    installQueries(unavailable);
+    installQueries(unavailable, {
+      gitError: new ApiError("Repository status is unavailable.", 500),
+    });
     const wrapper = await mountPage(boot(unavailable));
     expect(wrapper.get("#repository-card").text()).toContain("Repository status is unavailable.");
     expect(wrapper.get("#git-refreshed").text()).toBe("Status unavailable");
@@ -859,5 +930,202 @@ describe("AppPage", () => {
     expect(wrapper.find("button.btn-danger").exists()).toBe(false);
     expect(wrapper.text()).not.toContain("Delete application");
     expect(wrapper.find("#app-restart").exists()).toBe(false);
+  });
+
+  it("commits every change group, clears the draft, and refreshes the page props", async () => {
+    const dirtySummary: AppGitSummaryProps = {
+      ...GIT,
+      clean: false,
+      dirty: true,
+      counts: { staged: 1, unstaged: 1, untracked: 1, conflicted: 0 },
+    };
+    const appProps = props({ git: { ...props().git, summary: dirtySummary } });
+    installQueries(appProps, { git: statusForSummary(dirtySummary) });
+    mocks.apiMutation.mockResolvedValue({
+      status: fullStatus(),
+      message: "Committed as abc1234.",
+    });
+    const wrapper = await mountPage(boot(appProps));
+
+    await wrapper.get("#git-commit-message").setValue("  E2E commit  ");
+    await wrapper.get("#git-commit-form").trigger("submit");
+    await flushPromises();
+
+    expect(mocks.apiMutation).toHaveBeenCalledWith("/api/projects/p/apps/alpha/git/commit", {
+      json: { message: "E2E commit" },
+    });
+    expect(toasts().map((toast) => toast.message)).toContain("Committed as abc1234.");
+    expect(wrapper.get("#repository-card").text()).toContain("Clean");
+    expect(wrapper.find("#git-commit-message").exists()).toBe(false);
+    expect(wrapper.get("#last-commit-card").text()).toContain("fixture commit");
+  });
+
+  it("runs fetch, update, and push through the existing git endpoints", async () => {
+    const appProps = props();
+    installQueries(appProps, {
+      git: fullStatus({
+        upstream: { name: "origin/main", ahead: 1, behind: 1 },
+        remotes: [{ name: "origin", url: "file:///workspace/p/apps/alpha/.git/e2e-remote.git" }],
+      }),
+    });
+    const connected = fullStatus({
+      upstream: { name: "origin/main", ahead: 1, behind: 1 },
+      remotes: [{ name: "origin", url: "file:///workspace/p/apps/alpha/.git/e2e-remote.git" }],
+    });
+    mocks.apiMutation
+      .mockResolvedValueOnce({ status: connected, message: "Fetched all remotes." })
+      .mockResolvedValueOnce({
+        status: { ...connected, branch: { name: "main", detached: false, head: "1234567890ab" } },
+        message: "Branch updated to 1234567.",
+      })
+      .mockResolvedValueOnce({ status: connected, message: "Pushed to origin/main." });
+    const wrapper = await mountPage(boot(appProps));
+
+    await wrapper.get("#git-fetch").trigger("click");
+    await flushPromises();
+    await wrapper.get("#git-update").trigger("click");
+    await flushPromises();
+    await wrapper.get("#git-push").trigger("click");
+    await flushPromises();
+
+    expect(mocks.apiMutation).toHaveBeenNthCalledWith(1, "/api/projects/p/apps/alpha/git/fetch", {
+      json: {},
+    });
+    expect(mocks.apiMutation).toHaveBeenNthCalledWith(2, "/api/projects/p/apps/alpha/git/update", {
+      json: {},
+    });
+    expect(mocks.apiMutation).toHaveBeenNthCalledWith(3, "/api/projects/p/apps/alpha/git/push", {
+      json: {},
+    });
+    expect(toasts().map((toast) => toast.message)).toEqual(
+      expect.arrayContaining([
+        "Fetched all remotes.",
+        "Branch updated to 1234567.",
+        "Pushed to origin/main.",
+      ]),
+    );
+  });
+
+  it("switches branches and warns before switching to the current branch", async () => {
+    const appProps = props();
+    installQueries(appProps);
+    const wrapper = await mountPage(boot(appProps));
+
+    await wrapper.get("#git-branch-select").setValue("main");
+    await wrapper.get("#git-switch-form").trigger("submit");
+    await flushPromises();
+    expect(mocks.apiMutation).not.toHaveBeenCalled();
+    expect(wrapper.get("#git-notice").text()).toContain("You are already on main.");
+
+    mocks.apiMutation.mockResolvedValue({
+      status: fullStatus({
+        branch: { name: "feature", detached: false, head: "abcdef1234567890" },
+      }),
+      message: "Switched to feature.",
+    });
+    await wrapper.get("#git-branch-select").setValue("feature");
+    await wrapper.get("#git-switch-form").trigger("submit");
+    await flushPromises();
+
+    expect(mocks.apiMutation).toHaveBeenCalledWith(
+      "/api/projects/p/apps/alpha/git/branches/switch",
+      { json: { branch: "feature" } },
+    );
+    expect(toasts().map((toast) => toast.message)).toContain("Switched to feature.");
+    expect(wrapper.get("#git-branch").text()).toContain("feature");
+  });
+
+  it("maps push errors to the legacy title and message", async () => {
+    const appProps = props();
+    installQueries(appProps, {
+      git: fullStatus({
+        upstream: { name: "origin/main", ahead: 1, behind: 0 },
+        remotes: [{ name: "origin", url: "file:///workspace/p/apps/alpha/.git/e2e-remote.git" }],
+      }),
+    });
+    mocks.apiMutation.mockRejectedValue(new ApiError("server said no", 409, "push_rejected"));
+    const wrapper = await mountPage(boot(appProps));
+
+    await wrapper.get("#git-push").trigger("click");
+    await flushPromises();
+
+    expect(wrapper.get("#git-notice").text()).toContain("Push rejected");
+    expect(wrapper.get("#git-notice").text()).toContain(
+      "The remote has commits you do not have. Fetch and update the branch, then try again.",
+    );
+    expect(toasts().map((toast) => toast.message)).toContain(
+      "The remote has commits you do not have. Fetch and update the branch, then try again.",
+    );
+  });
+
+  it("validates the commit message without calling the server", async () => {
+    const dirtySummary: AppGitSummaryProps = {
+      ...GIT,
+      clean: false,
+      dirty: true,
+      counts: { staged: 1, unstaged: 0, untracked: 0, conflicted: 0 },
+    };
+    const appProps = props({ git: { ...props().git, summary: dirtySummary } });
+    installQueries(appProps, { git: statusForSummary(dirtySummary) });
+    const wrapper = await mountPage(boot(appProps));
+
+    await wrapper.get("#git-commit-form").trigger("submit");
+    await flushPromises();
+
+    expect(mocks.apiMutation).not.toHaveBeenCalled();
+    expect(wrapper.get("#git-commit-error").text()).toContain("A message is required");
+  });
+
+  it("disables the workbench while an action is in flight", async () => {
+    const dirtySummary: AppGitSummaryProps = {
+      ...GIT,
+      clean: false,
+      dirty: true,
+      counts: { staged: 1, unstaged: 0, untracked: 0, conflicted: 0 },
+    };
+    const appProps = props({ git: { ...props().git, summary: dirtySummary } });
+    installQueries(appProps, { git: statusForSummary(dirtySummary) });
+    let finish: (value: unknown) => void = () => {};
+    mocks.apiMutation.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const wrapper = await mountPage(boot(appProps));
+
+    await wrapper.get("#git-commit-message").setValue("Busy commit");
+    await wrapper.get("#git-commit-form").trigger("submit");
+    await nextTick();
+
+    expect(wrapper.get("#git-commit").text()).toContain("Committing");
+    expect(wrapper.get("#git-commit").attributes("disabled")).toBeDefined();
+    expect(wrapper.get("#git-fetch").attributes("disabled")).toBeDefined();
+    expect(wrapper.get("#git-refresh").attributes("disabled")).toBeDefined();
+
+    finish({ status: fullStatus(), message: "Committed as abc1234." });
+    await flushPromises();
+    expect(toasts().map((toast) => toast.message)).toContain("Committed as abc1234.");
+  });
+
+  it("shows a status load error with retry and recovers on refresh", async () => {
+    const appProps = props();
+    installQueries(appProps);
+    const wrapper = await mountPage(boot(appProps));
+
+    mocks.apiQuery.mockRejectedValueOnce(new ApiError("coordinator unavailable", 503));
+    await wrapper.get("#git-refresh").trigger("click");
+    await flushPromises();
+    expect(wrapper.get("#repository-card").text()).toContain("Repository status unavailable");
+    expect(wrapper.get("#repository-card").text()).toContain("coordinator unavailable");
+
+    const retry = wrapper
+      .findAll("#repository-card button")
+      .find((button) => button.text() === "Retry");
+    expect(retry).toBeDefined();
+    await retry?.trigger("click");
+    await flushPromises();
+    expect(wrapper.get("#repository-card").text()).toContain("Clean");
+    expect(wrapper.get("#git-refreshed").text()).toContain("Refreshed");
   });
 });

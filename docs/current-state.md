@@ -285,7 +285,7 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   scroll owner. `session` is mirrored to the URL, and the optional `project` query disambiguates
   duplicate app keys across projects.
 
-## UI rendering modes (Phase 7A preview)
+## UI rendering modes (Phase 7B preview)
 
 - `/` (fleet overview), `/projects`, `/projects/:id` (project detail), `/handoffs` (handoff
   inbox), `/ssh` (SSH console), the three settings scopes (`/settings`,
@@ -340,11 +340,14 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   otherwise fetches `/api/ui/apps/:app?project=`, whose response also carries the live git read
   summary (boot props load it as `git.summary.loaded=false`). It renders the application header and
   links, the Runtime/Settings state strip, the read-only image rail (state, ref, hash, base, drift,
-  blocked/usable, rollback availability), the read-only Repository/Changes/Last-commit workbench,
+  blocked/usable, rollback availability), the Repository/Changes/Remotes/Last-commit git workbench,
   the app-scoped SSH grants/approvals/audit panels, and the master variant. Runtime and image are
-  polled at the existing cadence (runtime 10 s, image 3 s while building); git is refreshed through
-  the app endpoint. Restart is the only mutation in this preview and reuses
-  `/api/apps/:app/restart?project=`; git, image, SSH, and delete actions stay disabled until 7B/7C.
+  polled at the existing cadence (runtime 10 s, image 3 s while building). Git status loads from
+  `/api/projects/:id/apps/:app/git/status` on entry, on demand, and after an action only when the
+  action response carries no status; fetch, update, push, commit-all, and branch switch reuse the
+  existing git JSON handlers, preserve the clean/dirty/detached/conflicted/upstream/ahead/behind
+  vocabulary, and map failures to the legacy title/message copy. Restart and the git workbench are
+  the mutations in this preview; image, SSH, and delete actions stay disabled until 7C.
   Application, chat, terminal, settings, skills, and session links remain plain anchors;
   the overview/projects/project/handoffs/settings/skills links client-navigate, and the native
   new-project dialog is a shared Vue component used by the overview and projects pages.
@@ -352,7 +355,7 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   are gzip-encoded when the client offers it (first loads measure ~136 KiB for `/projects`,
   ~134 KiB for `/`, and ~146 KiB for `/projects/:id` on the deterministic fixture). `/ssh`, the
   settings scopes, and the skills pages are lazy route chunks (skills inventory ~18.8 kB, detail
-  ~16.1 kB, application-detail preview ~36.3 kB before gzip); no new transfer budget was assigned.
+  ~16.1 kB, application-detail preview ~59.1 kB before gzip); no new transfer budget was assigned.
 - SPA documents and `/api/ui/*` are cookie-only. `/api/ui/*` returns `401` without a human cookie,
   `403 cookie_required` for a human bearer without a cookie, and `403` for agent tokens; responses are
   `no-store`.
@@ -374,9 +377,13 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   state strip (`Runtime`, `Settings`) precedes the git workbench. Repository and Changes occupy the
   main column; the rail holds Image, SSH access, Remotes, and Last commit. The page's only brass
   action is `Commit all`. It is linked from the project application table, the chat context rail,
-  and the chat breadcrumb. The Phase 7A SPA preview renders the same read state from
-  `/api/ui/apps/:app?project=` with no git actions, no legacy island scripts, and restart as its only
-  mutation; the legacy renderer and its scripts remain the default and rollback path.
+  and the chat breadcrumb. The Phase 7B SPA preview renders the same read state from
+  `/api/ui/apps/:app?project=` and ports status refresh, fetch, update, push, commit-all, branch
+  switch, and the remotes card onto the existing git JSON handlers with no legacy island scripts.
+  Busy/disabled reasons, confirmation-free branch switching, commit-message validation, warnings,
+  toasts, and the legacy error mapping are preserved. Restart and git are its mutations; image,
+  SSH, and delete stay out until 7C, and the legacy renderer and its scripts remain the default and
+  rollback path.
 - Runtime state uses one vocabulary from the runner: `starting`, `running`, `stopped`, `error`
   (legacy `failed` normalizes to `error`). The overview shows all four counts; the app, chat, and
   terminal surfaces use the same pill mapping. `POST /api/apps/:app/restart` calls
