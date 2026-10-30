@@ -19,10 +19,69 @@ import { SettingsService } from "../../src/settings/index.js";
 import { SkillService } from "../../src/skills/index.js";
 import { SshService } from "../../src/ssh/service.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../../src/store/index.js";
+import type { FixtureMessage, FixtureSession } from "./opencode-upstream.js";
 
 /** Obvious test literal; never a deployment credential. */
 export const E2E_TOKEN = "test-operator-token";
 export const E2E_OPERATOR = "test-operator";
+
+/** Deterministic chat identities served by the fake opencode upstream. Synthetic only. */
+export const E2E_CHAT_SESSION_ID = "ses_e2e_alpha";
+export const E2E_CHAT_CHILD_SESSION_ID = "ses_e2e_child";
+export const E2E_CHAT_SESSIONS: readonly FixtureSession[] = [
+  {
+    id: E2E_CHAT_SESSION_ID,
+    title: "E2E alpha session",
+    time: { created: 1_760_000_000_000, updated: 1_760_000_005_000 },
+  },
+  {
+    id: E2E_CHAT_CHILD_SESSION_ID,
+    title: "E2E child session",
+    parentID: E2E_CHAT_SESSION_ID,
+    time: { created: 1_760_000_001_000, updated: 1_760_000_004_000 },
+  },
+];
+export const E2E_CHAT_MESSAGES: Readonly<Record<string, readonly FixtureMessage[]>> = {
+  [E2E_CHAT_SESSION_ID]: [
+    {
+      info: {
+        id: "msg_e2e_user",
+        sessionID: E2E_CHAT_SESSION_ID,
+        role: "user",
+        time: { created: 1_760_000_001_000 },
+      },
+      parts: [
+        {
+          id: "prt_e2e_user_text",
+          sessionID: E2E_CHAT_SESSION_ID,
+          messageID: "msg_e2e_user",
+          type: "text",
+          text: "Hello from the synthetic E2E fixture.",
+        },
+      ],
+    },
+    {
+      info: {
+        id: "msg_e2e_assistant",
+        sessionID: E2E_CHAT_SESSION_ID,
+        role: "assistant",
+        parentID: "msg_e2e_user",
+        finish: "stop",
+        time: { created: 1_760_000_002_000, completed: 1_760_000_003_000 },
+      },
+      parts: [
+        {
+          id: "prt_e2e_assistant_text",
+          sessionID: E2E_CHAT_SESSION_ID,
+          messageID: "msg_e2e_assistant",
+          type: "text",
+          text: "Synthetic assistant reply.",
+        },
+      ],
+    },
+  ],
+  [E2E_CHAT_CHILD_SESSION_ID]: [],
+};
 
 const PROJECT_ONE = "e2e-project-one";
 const PROJECT_TWO = "e2e-project-two";

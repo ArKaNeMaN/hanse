@@ -1,0 +1,381 @@
+{
+  "note": "Synthetic legacy chat-core characterization fixture. Generated from assets/chat-core.js with test-only ids; no real project, session, or message data.",
+  "snapshot": {
+    "base": {
+      "sessionID": null,
+      "lastSeqByStream": {
+        "stream-e2e": 7
+      },
+      "currentStreamID": "stream-e2e",
+      "turnGeneration": 2,
+      "agentStatus": {
+        "type": "busy"
+      }
+    },
+    "messages": [
+      {
+        "info": {
+          "id": "msg_u1",
+          "role": "user",
+          "time": {
+            "created": 1000
+          }
+        },
+        "parts": [
+          {
+            "id": "prt_u1",
+            "type": "text",
+            "text": "first"
+          }
+        ]
+      },
+      {
+        "info": {
+          "id": "msg_a1",
+          "role": "assistant",
+          "parentID": "msg_u1",
+          "finish": "stop",
+          "time": {
+            "created": 2000,
+            "completed": 3000
+          }
+        },
+        "parts": [
+          {
+            "id": "prt_a1",
+            "type": "text",
+            "text": "reply"
+          }
+        ]
+      },
+      {
+        "info": {
+          "id": "msg_u2",
+          "role": "user",
+          "time": {
+            "created": 4000
+          }
+        },
+        "parts": [
+          {
+            "id": "prt_u2",
+            "type": "text",
+            "text": "second"
+          }
+        ]
+      }
+    ],
+    "options": {
+      "sessionID": "ses_char",
+      "sessionStatusType": "busy"
+    },
+    "expected": {
+      "contentDiscarded": false,
+      "turnChanged": false,
+      "store": {
+        "sessionID": "ses_char",
+        "generation": 1,
+        "turnGeneration": 2,
+        "order": ["msg_u1", "msg_a1", "msg_u2"],
+        "queue": [],
+        "activePromptID": "msg_u2",
+        "lastSeqByStream": {
+          "stream-e2e": 7
+        },
+        "currentStreamID": "stream-e2e",
+        "messages": [
+          {
+            "id": "msg_u1",
+            "role": "user",
+            "parentID": null,
+            "finish": null,
+            "optimistic": null,
+            "time": {
+              "created": 1000,
+              "completed": null
+            },
+            "partOrder": ["prt_u1"],
+            "parts": [
+              {
+                "id": "prt_u1",
+                "type": "text",
+                "text": "first",
+                "sealed": true,
+                "provisional": false
+              }
+            ]
+          },
+          {
+            "id": "msg_a1",
+            "role": "assistant",
+            "parentID": "msg_u1",
+            "finish": "stop",
+            "optimistic": null,
+            "time": {
+              "created": 2000,
+              "completed": 3000
+            },
+            "partOrder": ["prt_a1"],
+            "parts": [
+              {
+                "id": "prt_a1",
+                "type": "text",
+                "text": "reply",
+                "sealed": true,
+                "provisional": false
+              }
+            ]
+          },
+          {
+            "id": "msg_u2",
+            "role": "user",
+            "parentID": null,
+            "finish": null,
+            "optimistic": null,
+            "time": {
+              "created": 4000,
+              "completed": null
+            },
+            "partOrder": ["prt_u2"],
+            "parts": [
+              {
+                "id": "prt_u2",
+                "type": "text",
+                "text": "second",
+                "sealed": true,
+                "provisional": false
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "rekey": {
+    "store": {
+      "sessionID": "ses_char",
+      "order": ["msg_u1", "local_pending"],
+      "messages": [
+        {
+          "id": "msg_u1",
+          "role": "user",
+          "time": {
+            "created": 1000
+          },
+          "partOrder": ["prt_u1"],
+          "parts": [
+            {
+              "id": "prt_u1",
+              "type": "text",
+              "data": {
+                "id": "prt_u1",
+                "sessionID": "ses_char",
+                "messageID": "msg_u1",
+                "type": "text",
+                "text": "first"
+              },
+              "provisional": false,
+              "sealed": true,
+              "version": 1
+            }
+          ]
+        },
+        {
+          "id": "local_pending",
+          "role": "user",
+          "optimistic": "sending",
+          "time": {
+            "created": 5000
+          },
+          "partOrder": ["prt_pending"],
+          "parts": [
+            {
+              "id": "prt_pending",
+              "type": "text",
+              "data": {
+                "id": "prt_pending",
+                "sessionID": "ses_char",
+                "messageID": "local_pending",
+                "type": "text",
+                "text": "optimistic",
+                "provisional": true
+              },
+              "provisional": true,
+              "sealed": false,
+              "version": 1
+            }
+          ]
+        }
+      ],
+      "lastSeqByStream": {
+        "stream-e2e": 9
+      },
+      "currentStreamID": "stream-e2e",
+      "turnGeneration": 2,
+      "agentStatus": {
+        "type": "busy"
+      }
+    },
+    "options": {
+      "tempID": "local_pending",
+      "serverID": "msg_u2",
+      "sessionStatusType": "busy"
+    },
+    "expected": {
+      "consumed": false,
+      "store": {
+        "sessionID": "ses_char",
+        "generation": 0,
+        "turnGeneration": 2,
+        "order": ["msg_u1", "msg_u2"],
+        "queue": ["msg_u2"],
+        "activePromptID": "msg_u1",
+        "lastSeqByStream": {
+          "stream-e2e": 9
+        },
+        "currentStreamID": "stream-e2e",
+        "messages": [
+          {
+            "id": "msg_u1",
+            "role": "user",
+            "parentID": null,
+            "finish": null,
+            "optimistic": null,
+            "time": {
+              "created": 1000,
+              "completed": null
+            },
+            "partOrder": ["prt_u1"],
+            "parts": [
+              {
+                "id": "prt_u1",
+                "type": "text",
+                "text": "first",
+                "sealed": true,
+                "provisional": false
+              }
+            ]
+          },
+          {
+            "id": "msg_u2",
+            "role": "user",
+            "parentID": null,
+            "finish": null,
+            "optimistic": "queued",
+            "time": {
+              "created": 5000,
+              "completed": null
+            },
+            "partOrder": ["prt_pending"],
+            "parts": [
+              {
+                "id": "prt_pending",
+                "type": "text",
+                "text": "optimistic",
+                "sealed": false,
+                "provisional": true
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "queue": {
+    "store": {
+      "sessionID": "ses_char",
+      "order": ["msg_u1", "msg_a1", "msg_u2", "msg_u3"],
+      "messages": [
+        {
+          "id": "msg_u1",
+          "role": "user",
+          "time": {
+            "created": 1000
+          },
+          "partOrder": ["prt_u1"],
+          "parts": [
+            {
+              "id": "prt_u1",
+              "type": "text",
+              "data": {
+                "id": "prt_u1",
+                "text": "first"
+              },
+              "version": 1
+            }
+          ]
+        },
+        {
+          "id": "msg_a1",
+          "role": "assistant",
+          "parentID": "msg_u1",
+          "time": {
+            "created": 2000,
+            "completed": 3000
+          },
+          "partOrder": ["prt_a1"],
+          "parts": [
+            {
+              "id": "prt_a1",
+              "type": "text",
+              "data": {
+                "id": "prt_a1",
+                "text": "reply"
+              },
+              "version": 1
+            }
+          ]
+        },
+        {
+          "id": "msg_u2",
+          "role": "user",
+          "time": {
+            "created": 4000
+          },
+          "partOrder": ["prt_u2"],
+          "parts": [
+            {
+              "id": "prt_u2",
+              "type": "text",
+              "data": {
+                "id": "prt_u2",
+                "text": "second"
+              },
+              "version": 1
+            }
+          ]
+        },
+        {
+          "id": "msg_u3",
+          "role": "user",
+          "time": {
+            "created": 5000
+          },
+          "partOrder": ["prt_u3"],
+          "parts": [
+            {
+              "id": "prt_u3",
+              "type": "text",
+              "data": {
+                "id": "prt_u3",
+                "text": "third"
+              },
+              "version": 1
+            }
+          ]
+        }
+      ],
+      "turnGeneration": 2,
+      "agentStatus": {
+        "type": "busy"
+      }
+    },
+    "status": "busy",
+    "expected": {
+      "activeID": "msg_u2",
+      "queuedIDs": ["msg_u3"],
+      "turnContinues": false,
+      "nextActivePromptID": "msg_u2"
+    }
+  }
+}

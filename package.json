@@ -31,6 +31,7 @@
     "lint": "biome check .",
     "check:sensitive": "bash scripts/check-sensitive.sh",
     "check:ui": "node scripts/check-ui.mjs",
+    "check:chat-worker": "node scripts/check-chat-worker.mjs",
     "check:ui-dev": "node scripts/check-ui-dev.mjs",
     "format": "biome format --write .",
     "start": "node dist/index.js"

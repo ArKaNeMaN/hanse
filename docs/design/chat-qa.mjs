@@ -35,6 +35,47 @@ const PROJECT_ID = process.env.CHAT_QA_PROJECT ?? DEFAULT_PROJECT_ID;
 const APP = path.basename(process.env.CHAT_QA_APP ?? DEFAULT_APP);
 const CUSTOM_APP = "image-custom";
 const LIVE = process.argv.includes("--live");
+const CHAT_QA_ROUTE = "/chat";
+/** The default SPA set at Stage 0; chat/terminal are added only by their cutover stages. */
+const DEFAULT_SPA_ROUTE_IDS = [
+  "projects",
+  "overview",
+  "handoffs",
+  "ssh",
+  "settings-global",
+  "skills-global",
+  "skills-new",
+  "skills-detail",
+  "settings-project",
+  "settings-app",
+  "skills-project",
+  "skills-app",
+  "app",
+  "project",
+];
+const CHAT_QA_MODE = process.env.CHAT_QA_MODE === "spa" ? "spa" : "legacy";
+const CHAT_QA_SPA_ROUTES = (
+  process.env.CHAT_QA_SPA_ROUTES ?? [...DEFAULT_SPA_ROUTE_IDS, "chat"].join(",")
+).trim();
+
+function assertSpaRouteSet(value) {
+  const ids = new Set(
+    value
+      .split(",")
+      .map((id) => id.trim())
+      .filter((id) => id.length > 0),
+  );
+  const required = [...DEFAULT_SPA_ROUTE_IDS, "chat"];
+  const missing = required.filter((id) => !ids.has(id));
+  if (missing.length > 0) {
+    throw new Error(
+      `chat-qa: CHAT_QA_SPA_ROUTES must contain the full default SPA set plus the chat route. ` +
+        `Missing: ${missing.join(",")}`,
+    );
+  }
+}
+
+if (!LIVE && CHAT_QA_MODE === "spa") assertSpaRouteSet(CHAT_QA_SPA_ROUTES);
 const CHAT_QA_ONLY = (process.env.CHAT_QA_ONLY ?? "")
   .split(",")
   .map((name) => name.trim())
@@ -105,7 +146,10 @@ const { chromium } = await import(`file://${modulePath}`);
 
 const report = {
   tool: "chat-qa",
-  mode: LIVE ? "live" : "deterministic",
+  mode: LIVE ? "live" : CHAT_QA_MODE,
+  harness: LIVE ? "live" : "deterministic",
+  route: CHAT_QA_ROUTE,
+  spaRoutes: CHAT_QA_MODE === "spa" && !LIVE ? CHAT_QA_SPA_ROUTES : null,
   startedAt: new Date().toISOString(),
   status: "PASS",
   baseUrl: null,
@@ -307,6 +351,7 @@ async function startServer() {
     HANSE_IDE: "0",
     HANSE_ASSETS: path.join(ROOT, "assets"),
   };
+  if (CHAT_QA_MODE === "spa") env.HANSE_UI_SPA_ROUTES = CHAT_QA_SPA_ROUTES;
   const auth = authFile();
   if (auth !== undefined) env.HANSE_AUTH_FILE = auth;
 
@@ -579,7 +624,7 @@ async function waitForStableMessageGets(routeState, quietMs = 1000, timeout = 10
 async function gotoChat(page, target, sessionId, waitUntil = "networkidle") {
   const query = new URLSearchParams({ app: APP, project: PROJECT_ID });
   if (sessionId) query.set("session", sessionId);
-  await page.goto(`${target.baseUrl}/chat?${query.toString()}`, { waitUntil });
+  await page.goto(`${target.baseUrl}${CHAT_QA_ROUTE}?${query.toString()}`, { waitUntil });
 }
 
 async function installRoutes(page, config) {

@@ -19,7 +19,8 @@ import {
   type ImageStateView,
 } from "../../src/images/service.js";
 import type { InstanceManager } from "../../src/opencode/manager.js";
-import { seed } from "./seed.js";
+import { startOpencodeUpstream } from "./opencode-upstream.js";
+import { E2E_CHAT_MESSAGES, E2E_CHAT_SESSIONS, seed } from "./seed.js";
 
 const port = Number(process.env.HANSE_E2E_PORT ?? 4310);
 const mode = process.env.HANSE_E2E_MODE === "legacy" ? "legacy" : "spa";
@@ -154,9 +155,42 @@ function projectService(projectId: string): CoordinatorService {
  * `startChatMaintenance`; the remaining methods keep page rendering deterministic.
  */
 let alphaRestartPending = true;
+let chatEndpoint: string | undefined;
+const chatContextListeners = new Map<string, Set<(snapshot: unknown) => void>>();
+const chatNoticeListeners = new Map<string, Set<(notice: unknown) => void>>();
+
+function subscribe(
+  map: Map<string, Set<(value: unknown) => void>>,
+  appId: string,
+  listener: (value: unknown) => void,
+): () => void {
+  let listeners = map.get(appId);
+  if (listeners === undefined) {
+    listeners = new Set();
+    map.set(appId, listeners);
+  }
+  listeners.add(listener);
+  return () => {
+    listeners?.delete(listener);
+  };
+}
+
+function fanOut(
+  map: Map<string, Set<(value: unknown) => void>>,
+  appId: string,
+  value: unknown,
+): void {
+  for (const listener of map.get(appId) ?? []) listener(value);
+}
 
 const manager = {
   startChatMaintenance() {},
+  endpointFor: (appId: string) => (appId === FIXTURE_ALPHA_APP ? chatEndpoint : undefined),
+  ensure: async (app: { id?: string }) => (app.id === FIXTURE_ALPHA_APP ? chatEndpoint : undefined),
+  subscribeContext: (appId: string, listener: (snapshot: unknown) => void) =>
+    subscribe(chatContextListeners, appId, listener),
+  subscribeNotices: (appId: string, listener: (notice: unknown) => void) =>
+    subscribe(chatNoticeListeners, appId, listener),
   pendingRestart: (appId: string) =>
     appId === FIXTURE_ALPHA_APP && alphaRestartPending
       ? { pending: true, reasons: ["settings_changed"] }
@@ -174,6 +208,39 @@ const manager = {
     return { accepted: true, completion: Promise.resolve(true) };
   },
 } as unknown as InstanceManager;
+
+/**
+ * Loopback opencode/runner stand-in. The control endpoint (`/__control`) advances scripted SSE
+ * frames; `context.updated`/`notice.created` controls fan out through the manager subscriptions
+ * because the coordinator sources those events from the manager, not the upstream feed.
+ */
+const upstream = await startOpencodeUpstream({
+  appId: FIXTURE_ALPHA_APP,
+  sessions: E2E_CHAT_SESSIONS,
+  messages: E2E_CHAT_MESSAGES,
+  onControl: (event) => {
+    const properties =
+      typeof event.properties === "object" && event.properties !== null
+        ? (event.properties as Record<string, unknown>)
+        : undefined;
+    if (event.type === "context.updated") {
+      const context = event.context ?? properties?.context;
+      if (context !== undefined) {
+        fanOut(chatContextListeners, FIXTURE_ALPHA_APP, context);
+      }
+      return true;
+    }
+    if (event.type === "notice.created") {
+      const notice = event.notice ?? properties?.notice;
+      if (notice !== undefined) {
+        fanOut(chatNoticeListeners, FIXTURE_ALPHA_APP, notice);
+      }
+      return true;
+    }
+    return false;
+  },
+});
+chatEndpoint = upstream.url;
 
 /** Deterministic git remote check; no network, runner, or credential material is used. */
 const git = new Proxy(new GitService({ workspaceRoot: fixture.workspaceRoot }), {
@@ -477,7 +544,7 @@ const deps: HttpDeps = {
     }));
   },
   git,
-  runner: { url: "http://127.0.0.1:1", token: "e2e-fixture" },
+  runner: { url: upstream.runnerUrl, token: upstream.token },
   manager,
   settings: fixture.settings,
   modelProviders: fixture.modelProviders,
@@ -518,6 +585,7 @@ const server = createHttpServer(deps);
 
 function shutdown(): void {
   gitDaemon?.kill("SIGTERM");
+  void upstream.stop();
   server.close(() => {
     rmSync(fixtureReposPath, { force: true });
     fixture.cleanup();
@@ -530,6 +598,7 @@ process.on("SIGTERM", shutdown);
 server.on("error", (error) => {
   process.stderr.write(`e2e fixture server error: ${error.message}\n`);
   gitDaemon?.kill("SIGTERM");
+  void upstream.stop();
   rmSync(fixtureReposPath, { force: true });
   fixture.cleanup();
   process.exit(1);

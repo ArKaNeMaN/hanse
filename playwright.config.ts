@@ -1,4 +1,5 @@
 import { defineConfig } from "@playwright/test";
+import { SPA_E2E_ROUTE_IDS } from "./e2e/support/route-ids.js";
 
 const baseEnv = Object.fromEntries(
   Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
@@ -94,7 +95,7 @@ export default defineConfig({
       url: "http://127.0.0.1:4310/healthz",
       reuseExistingServer,
       timeout: 60_000,
-      env: fixtureEnv(4310, "spa", { HANSE_UI_LEGACY: "" }),
+      env: fixtureEnv(4310, "spa", { HANSE_UI_LEGACY: "", HANSE_UI_SPA_ROUTES: SPA_E2E_ROUTE_IDS }),
     },
     {
       command: "node --import tsx e2e/support/server.ts",

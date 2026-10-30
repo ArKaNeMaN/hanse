@@ -697,3 +697,51 @@ Plus, per stage:
   page. No architecture change; the round 5 PASS stands.
 - 2026-10-28 - plan `0031-spa-migration.md` authored; plan review (`momus`) round 3 **PASS**.
   Implementation starts at Phase 0.
+
+## 15. Amendments from the chat/terminal migration design (2026-10-30)
+
+Approved design: [`chat-terminal-migration.md`](./chat-terminal-migration.md) §1.5. The following
+items are recorded verbatim. They amend the invariants above for `/chat` and `/terminal` only; every
+other invariant and wording stays unchanged.
+
+1. **Route registry matching.** `matchPage` gains the `chat` and `terminal` ids and therefore matches
+   `/chat` and `/terminal` as page routes. The old statement "never matches `/chat` or `/terminal`"
+   is superseded. `/api/*`, `/ide`, `/preview`, `/assets/*`, and terminal upgrades remain unmatched.
+   The client router records for both ids are **not** covered by this amendment; they are design work
+   in §4.1/Stage 1-3B.
+2. **No default-enabled legacy island.** A temporary legacy island is forbidden on a
+   default-enabled SPA route. A test-only/internal allowlist containing the full default SPA set
+   plus the route under test is used while a registry flag is still `false`; a bare `=chat` or
+   `=terminal` is forbidden because it replaces the whole set. Any temporary scaffold is removed
+   before that route's default cutover. Stage 9 is a real DOM/state migration, not an island kept
+   alive.
+3. **Vendored xterm CSS exception.** The terminal keeps the existing vendored xterm stylesheet as a
+   same-origin asset. It is an explicit exception to "`assets/app.css` is the single stylesheet";
+   the exception is limited to the terminal route and has exactly one loader owner (§4.7). Prism
+   stays behind the existing worker; no new dependency is added. Q6 means "no new dependency", not
+   "no Vite bundling": Vite may bundle the existing Prism worker/assets (§4.10, §11.1 Q6).
+4. **S4 has no workspace exception.** Entering/leaving chat and terminal is client-side like any
+   other migrated route. A future full-document boundary would be a new S4 amendment, not a
+   per-route Q.
+5. **Shared modules are not legacy scripts.** `assets/markdown.js`, `assets/chat-core.js`,
+   `assets/chat-commands.js`, `assets/chat-diff.js`, `assets/chat-highlight.js`, and
+   `assets/chat-highlight-worker.js` stay in place as shared libraries through this migration (§11.1
+   Q3). Only `assets/chat.js` and `assets/terminal.js` are page clients to be deleted. The new
+   `assets/chat-feed-store.js` copy is an additional UI-owned module, not a move of any of the six.
+6. **S9/S12 rollback/checkout lifecycle narrowed after cleanup.** S9/S12 hold through the operator
+   gate: the legacy document and runtime flags remain a valid rollback, and a checkout without a UI
+   build can still serve legacy chat/terminal. Stage 9 deliberately retires that for these two
+   routes: they become `legacyRetired`, so `HANSE_UI_LEGACY=1`, `?legacy=1`, and
+   `HANSE_UI_SPA_ROUTES` removal are ignored for them and the SPA is served (or a 503 HTML when the
+   UI manifest is missing) instead of `undefined`/JSON 404. Afterwards the invariant reads "image
+   rollback + mandatory UI build/deploy check" (§4.13), not "flag rollback". This is an intentional
+   post-cleanup contract change, not a regression.
+7. **S10 scope narrowed.** S10's "`/chat`, `/terminal`, `/ide`, and demo previews are untouched by
+   this program" is superseded for `/chat` and `/terminal` only. Both are explicitly in this
+   program's scope; `/ide` and demo previews remain untouched (S6 still protects their contracts).
+8. **S13 page-HTML test lifecycle changed for chat/terminal.** S13's "page-HTML tests are replaced at
+   a route's cutover" is narrowed: for chat and terminal the legacy page-HTML tests keep guarding
+   the rollback renderer through the Stage 8 operator gate and are deleted with the legacy renderer
+   at Stage 9, not at cutover. Every other migrated route keeps the S13 behavior. The legacy
+   rollback smoke test is likewise retired at Stage 9, when post-cleanup rollback becomes image
+   rollback + the §4.13 deploy check.
