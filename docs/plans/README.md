@@ -56,3 +56,10 @@
   `app` is `spa: true`, so every page route except chat and terminal is SPA). Gate D1 (chat/
   terminal decision) and Phase 8 (cleanup) remain.
   Gate D1 default: keep chat/terminal legacy; Phase 8 cleanup deferred until a rollback soak.
+- [0032 - Chat and terminal SPA migration](./0032-chat-terminal-migration.md) - migrates `/chat`
+  and `/terminal` to the Vue SPA in ten stages: deterministic opencode/runner harness and event
+  inventory, workspace shell/boot route set/props, terminal port and cutover, copy-first chat feed
+  store and event reducer, vertical chat slices (read-only, composer/send/queue, feed rendering,
+  prompts/context, attachments/commands), full chat cutover, deployment-host operator verification,
+  and post-verification legacy cleanup with `legacyRetired` and image rollback. Status: draft;
+  design approved (`oracle` round 5 PASS); awaiting `momus` plan review; no implementation started.
