@@ -86,6 +86,7 @@ export function mergeFeedOrder(
 export function buildSessionTree(sessions: readonly unknown[]): SessionTree;
 export function firstRootId(tree: SessionTree | null | undefined): string | null;
 export function ancestorIds(tree: SessionTree | null | undefined, id: unknown): string[];
+export function collectSubtreeIds(tree: SessionTree | null | undefined, id: unknown): string[];
 export function classifyOmo(message: unknown): OmoSystemMeta | null;
 
 export function applyOmittedPart(

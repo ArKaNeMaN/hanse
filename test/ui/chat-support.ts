@@ -58,14 +58,24 @@ export const CHAT_PROPS: ChatResponse = {
 };
 
 export interface ChatFixture {
-  readonly sessions?: readonly { id: string; title?: string }[];
+  readonly sessions?: readonly { id: string; title?: string; parentID?: string }[];
   readonly sessionsStatus?: number;
   readonly sessionsCode?: string;
   readonly messages?: readonly unknown[];
   readonly olderMessages?: readonly unknown[];
   readonly nextCursor?: string | null;
+  readonly messagePages?: readonly {
+    readonly before: string | null;
+    readonly messages: readonly unknown[];
+    readonly nextCursor: string | null;
+  }[];
+  readonly olderStatus?: number;
+  readonly olderCode?: string;
   readonly deletingPending?: boolean;
   readonly chatStatus?: number;
+  readonly createSessionID?: string;
+  readonly createSessionStatus?: number;
+  readonly deleteSessionStatus?: number;
 }
 
 export function boot(overrides: Partial<BootPayload> = {}): BootPayload {
@@ -175,6 +185,9 @@ export interface InstalledFetch {
 export function installFetch(fixture: ChatFixture = {}): InstalledFetch {
   FakeEventSource.instances = [];
   const requests: Array<{ method: string; url: string }> = [];
+  let sessions = (fixture.sessions ?? [{ id: "s1", title: "Session one" }]).map((session) => ({
+    ...session,
+  }));
   const mock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
     const method = init?.method ?? "GET";
@@ -184,6 +197,19 @@ export function installFetch(fixture: ChatFixture = {}): InstalledFetch {
       return status === 200 ? json(200, props(fixture)) : json(status, { error: "not found" });
     }
     if (url.startsWith("/api/apps/alpha/sessions?") || url === "/api/apps/alpha/sessions") {
+      if (method === "POST") {
+        const status = fixture.createSessionStatus ?? 200;
+        if (status !== 200) {
+          return json(status, { error: "agent is stopped", code: "agent_stopped" });
+        }
+        const created = {
+          id: fixture.createSessionID ?? "s_new",
+          title: "New session",
+          time: { created: 1_760_000_010_000, updated: 1_760_000_010_000 },
+        };
+        sessions = [...sessions, created];
+        return json(200, created);
+      }
       const status = fixture.sessionsStatus ?? 200;
       if (status !== 200) {
         return json(status, {
@@ -191,11 +217,52 @@ export function installFetch(fixture: ChatFixture = {}): InstalledFetch {
           code: fixture.sessionsCode ?? "agent_stopped",
         });
       }
-      return json(200, { sessions: fixture.sessions ?? [{ id: "s1", title: "Session one" }] });
+      return json(200, { sessions });
+    }
+    const deleteMatch = /^\/api\/apps\/alpha\/sessions\/([^/?]+)(?:\?.*)?$/.exec(url);
+    if (deleteMatch !== null && method === "DELETE") {
+      const status = fixture.deleteSessionStatus ?? 200;
+      if (status !== 200) {
+        return json(status, { error: "session could not be deleted", code: "delete_failed" });
+      }
+      const target = decodeURIComponent(deleteMatch[1] ?? "");
+      const removed = new Set([target]);
+      let changed = true;
+      while (changed) {
+        changed = false;
+        for (const session of sessions) {
+          if (
+            session.parentID !== undefined &&
+            removed.has(session.parentID) &&
+            !removed.has(session.id)
+          ) {
+            removed.add(session.id);
+            changed = true;
+          }
+        }
+      }
+      sessions = sessions.filter((session) => !removed.has(session.id));
+      return json(200, { deleted: true });
     }
     if (/\/sessions\/[^/]+\/messages/.test(url)) {
-      if (url.includes("before=")) {
+      const before = new URL(url, "http://localhost").searchParams.get("before");
+      if (before !== null) {
+        const status = fixture.olderStatus ?? 200;
+        if (status !== 200) {
+          return json(status, {
+            error: "invalid message cursor",
+            code: fixture.olderCode ?? "invalid_cursor",
+          });
+        }
+        const page = fixture.messagePages?.find((entry) => entry.before === before);
+        if (page !== undefined) {
+          return json(200, { messages: page.messages, nextCursor: page.nextCursor });
+        }
         return json(200, { messages: fixture.olderMessages ?? [], nextCursor: null });
+      }
+      const tail = fixture.messagePages?.find((entry) => entry.before === null);
+      if (tail !== undefined) {
+        return json(200, { messages: tail.messages, nextCursor: tail.nextCursor });
       }
       return json(200, {
         messages: fixture.messages ?? FIXTURE_MESSAGES,
@@ -258,11 +325,12 @@ export async function mountChat(
   await router.push(path);
   await router.isReady();
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const pinia = createPinia();
   const wrapper = mount(ChatPage, {
     props: { boot: boot() },
     attachTo: document.getElementById("main") ?? document.body,
-    global: { plugins: [createPinia(), [VueQueryPlugin, { queryClient }], router] },
+    global: { plugins: [pinia, [VueQueryPlugin, { queryClient }], router] },
   });
   await flushPromises();
-  return { wrapper, router, fetchState, queryClient };
+  return { wrapper, router, fetchState, queryClient, pinia };
 }

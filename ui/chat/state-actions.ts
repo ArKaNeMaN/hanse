@@ -194,7 +194,10 @@ export function applyChatActions(actions: readonly ChatAction[]): RenderIntent[]
         if (action.sessionID === activeSessionID) {
           feed.setAgentStatus(action.status);
           if (action.status.type === "idle") {
-            intents.push({ type: "reconcile", reason: "idle", delayMs: IDLE_RECONCILE_MS });
+            intents.push(
+              { type: "reconcile", reason: "idle", delayMs: IDLE_RECONCILE_MS },
+              { type: "refresh", targets: ["context"] },
+            );
           }
         }
         break;
@@ -229,8 +232,15 @@ export function applyChatActions(actions: readonly ChatAction[]): RenderIntent[]
         }
         break;
       }
-      case "prompt/upsert":
+      case "prompt/upsert": {
+        session.trackPromptPending(action.sessionID, action.request.key);
+        intents.push(applyPromptIntent(action, activeSessionID));
+        break;
+      }
       case "prompt/resolve": {
+        if (action.sessionID !== undefined) {
+          session.resolvePromptPending(action.sessionID, `${action.source}:${action.requestID}`);
+        }
         intents.push(applyPromptIntent(action, activeSessionID));
         break;
       }

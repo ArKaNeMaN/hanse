@@ -115,6 +115,30 @@ test("legacy chat remains the rollback document", async ({ page }) => {
   expectNoUnexpected(errors, [/50[023]/]);
 });
 
+test("legacy sessions rail keeps tree search and disclosure parity", async ({ page }) => {
+  test.skip(isSpa(), "legacy mode only");
+  const errors = collectPageErrors(page);
+  await signIn(page, CHAT_PATH);
+  await expect(page.locator("#chat-shell")).toHaveCount(1);
+
+  const search = page.locator("#session-search");
+  await search.fill("grandchild");
+  await expect(page.locator('.session-node[data-session-id="ses_e2egrandchild"]')).toBeVisible();
+  await expect(page.locator('.session-node[data-session-id="ses_e2ealpha"]')).toBeVisible();
+  await expect(
+    page.locator('.session-node[data-session-id="ses_e2ealpha"] .session-chevron').first(),
+  ).toHaveAttribute("aria-expanded", "true");
+  await search.fill("");
+  await page
+    .locator('.session-node[data-session-id="ses_e2ealpha"] .session-chevron')
+    .first()
+    .click();
+  await expect(page.locator('.session-node[data-session-id="ses_e2echild"]')).toBeVisible();
+
+  await page.waitForTimeout(400);
+  expectNoUnexpected(errors, [/50[023]/]);
+});
+
 test("SPA direct load renders the read-only chat shell, boot props, sessions, and messages", async ({
   page,
 }) => {

@@ -6,10 +6,11 @@ import type { FeedPartRecord as PartRecord } from "../../assets/chat-feed-store.
 import type { RuntimeState } from "../../src/http/ui.js";
 import type { ContextSnapshot } from "../../src/opencode/context.js";
 import type { NormalizedTodo } from "../../src/opencode/prompts.js";
-import { ApiError, apiQuery } from "../api.js";
+import { ApiError, apiMutation, apiQuery } from "../api.js";
 import type { BootPayload } from "../boot.js";
 import type { InboundChatEvent } from "../chat/event-reducer.js";
 import { reduceEvent } from "../chat/event-reducer.js";
+import { clearChatSessionState, clearChatWorkspaceState } from "../chat/session-storage.js";
 import { applyChatActions, type RenderIntent } from "../chat/state-actions.js";
 import type {
   ChatCommandsResponse,
@@ -22,7 +23,7 @@ import type {
   ChatSessionsResponse,
   ChatThreadItem,
 } from "../chat/types.js";
-import { useChatRouteState } from "../chat/useChatRouteState.js";
+import { normalizeChatQuery, useChatRouteState } from "../chat/useChatRouteState.js";
 import AppIcon from "../components/AppIcon.vue";
 import ChatComposer from "../components/chat/ChatComposer.vue";
 import ChatScrim from "../components/chat/ChatScrim.vue";
@@ -40,7 +41,14 @@ import { useToastStore } from "../stores/toasts.js";
 const props = defineProps<{ boot: BootPayload }>();
 const route = useRoute();
 const router = useRouter();
-const routeState = useChatRouteState(router, route);
+const routeState = useChatRouteState(router, route, {
+  onBeforeAppSwitch: () => {
+    const previous = normalizeChatQuery(route.query as Record<string, unknown>);
+    if (previous.app.length > 0) {
+      clearChatWorkspaceState({ app: previous.app, project: previous.project });
+    }
+  },
+});
 useWorkspaceShell(
   "page--chat",
   "width=device-width, initial-scale=1, interactive-widget=resizes-content",
@@ -51,6 +59,13 @@ const sessionStore = useChatSessionStore();
 const contextStore = useChatContextStore();
 const chatUi = useChatUiStore();
 const toasts = useToastStore();
+
+if (sessionStore.bindWorkspace(routeState.workspaceKey.value)) {
+  feed.reset(null);
+}
+// A keyed remount can arrive with a deep-linked session before any store data exists; mirror it so
+// the next `setSessions` still expands the target's ancestors.
+sessionStore.setActive(routeState.session.value);
 
 function encoded(value: string): string {
   return encodeURIComponent(value);
@@ -154,7 +169,7 @@ watch(
       return;
     }
     sessionStore.setSessions(data.sessions);
-    routeState.canonicalize(data.sessions);
+    routeState.canonicalize(data.sessions, { stopped: stopped.value });
   },
 );
 
@@ -186,12 +201,97 @@ const deletionPending = computed(
       sessionsQuery.error.value.code === "deletion_pending"),
 );
 
+const deleting = ref<ReadonlySet<string>>(new Set<string>());
+const creatingSession = ref(false);
+
+function errorText(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message.trim().length > 0 ? error.message : fallback;
+}
+
+function chatStorageScope(): { app: string; project: string } {
+  return { app: routeState.app.value, project: routeState.project.value };
+}
+
+async function createSession(): Promise<void> {
+  if (creatingSession.value || routeState.app.value.length === 0) {
+    return;
+  }
+  creatingSession.value = true;
+  try {
+    const created = await apiMutation<{ id?: unknown }>(withProject(`${apiBase.value}/sessions`), {
+      json: {},
+    });
+    const createdID = typeof created.id === "string" && created.id.length > 0 ? created.id : null;
+    await sessionsQuery.refetch();
+    await nextTick();
+    if (createdID !== null) {
+      routeState.selectSession(createdID);
+    }
+  } catch (error) {
+    toasts.push(errorText(error, "Could not create a session."), "error");
+  } finally {
+    creatingSession.value = false;
+  }
+}
+
+async function deleteSession(sessionID: string): Promise<void> {
+  const removed = sessionStore.subtreeIDs(sessionID);
+  const targets = removed.length === 0 ? [sessionID] : removed;
+  if (deleting.value.has(sessionID)) {
+    return;
+  }
+  const nextDeleting = new Set(deleting.value);
+  for (const id of targets) {
+    nextDeleting.add(id);
+  }
+  deleting.value = nextDeleting;
+  try {
+    await apiMutation<{ deleted?: boolean }>(
+      withProject(`${apiBase.value}/sessions/${encoded(sessionID)}`),
+      { form: {} },
+      { method: "DELETE" },
+    );
+    sessionStore.removeSessions(targets);
+    const scope = chatStorageScope();
+    for (const id of targets) {
+      clearChatSessionState(scope, id);
+    }
+    const activeRemoved =
+      routeState.session.value !== null && targets.includes(routeState.session.value);
+    await sessionsQuery.refetch();
+    await nextTick();
+    if (activeRemoved) {
+      const next = sessionStore.firstRoot() ?? sessionStore.sessions[0]?.id ?? null;
+      if (next !== null) {
+        routeState.selectSession(next);
+      } else {
+        await router.replace({
+          name: "chat",
+          query: {
+            app: routeState.app.value,
+            ...(routeState.project.value.length === 0 ? {} : { project: routeState.project.value }),
+          },
+        });
+      }
+    }
+  } catch (error) {
+    toasts.push(errorText(error, "Could not delete this session."), "error");
+  } finally {
+    const remaining = new Set(deleting.value);
+    for (const id of targets) {
+      remaining.delete(id);
+    }
+    deleting.value = remaining;
+  }
+}
+
 const messages = ref<readonly unknown[]>([]);
 const loadingMessages = ref(false);
 const messagesError = ref<string | null>(null);
 const loadingEarlier = ref(false);
 const historyError = ref<string | null>(null);
 const historyCursor = ref<string | null>(null);
+const historyExhausted = ref(false);
 const messageCount = ref(0);
 const threadRef = ref<InstanceType<typeof ChatThread> | null>(null);
 let loadGeneration = 0;
@@ -300,8 +400,11 @@ async function loadMessages(sessionID: string, reset: boolean): Promise<void> {
   loadingMessages.value = true;
   messagesError.value = null;
   historyError.value = null;
-  historyCursor.value = null;
+  const previousCursor = historyCursor.value;
   if (reset) {
+    historyCursor.value = null;
+    historyExhausted.value = false;
+    loadingEarlier.value = false;
     feed.reset(sessionID);
     messages.value = [];
     messageCount.value = 0;
@@ -314,7 +417,16 @@ async function loadMessages(sessionID: string, reset: boolean): Promise<void> {
       return;
     }
     feed.applySnapshot(data.messages, { position: reset ? "replace" : "tail", sessionID });
-    historyCursor.value = data.nextCursor ?? null;
+    // A tail refresh must not rewind paging to a cursor inside the already-loaded older prefix.
+    if (reset) {
+      historyCursor.value = data.nextCursor ?? null;
+      historyExhausted.value = historyCursor.value === null;
+    } else if (!historyExhausted.value && previousCursor === null) {
+      historyCursor.value = data.nextCursor ?? null;
+      historyExhausted.value = historyCursor.value === null;
+    } else {
+      historyCursor.value = previousCursor;
+    }
     messages.value = data.messages;
     messageCount.value = feed.thread.order.length;
     classifyUserMessages();
@@ -357,6 +469,7 @@ async function loadEarlier(): Promise<void> {
     }
     feed.applySnapshot(data.messages, { position: "older", sessionID });
     historyCursor.value = data.nextCursor ?? null;
+    historyExhausted.value = historyCursor.value === null;
     messageCount.value = feed.thread.order.length;
     classifyUserMessages();
     await nextTick();
@@ -409,7 +522,13 @@ function handleIntents(intents: readonly RenderIntent[]): void {
       const sessionID = routeState.session.value;
       if (sessionID !== null) {
         const generation = loadGeneration;
-        void loadSidecars(sessionID, generation);
+        if (intent.targets.includes("messages")) {
+          void loadMessages(sessionID, false);
+        }
+        const sidecars = intent.targets.some((target) => target !== "messages");
+        if (sidecars) {
+          void loadSidecars(sessionID, generation);
+        }
       }
     } else if (intent.type === "stream-paused") {
       feed.setStreamPaused(intent.message !== null);
@@ -581,6 +700,14 @@ onBeforeUnmount(() => {
     clearTimeout(reconcileTimer);
     reconcileTimer = undefined;
   }
+  const scope = chatStorageScope();
+  if (scope.app.length > 0) {
+    if (routeState.session.value !== null) {
+      clearChatSessionState(scope, routeState.session.value);
+    } else {
+      clearChatWorkspaceState(scope);
+    }
+  }
   chatUi.reset();
 });
 </script>
@@ -627,11 +754,18 @@ onBeforeUnmount(() => {
 
       <ChatSessionsRail
         :sessions="sessionStore.sessions"
+        :tree="sessionStore.tree"
         :active-session="routeState.session.value"
+        :expanded="sessionStore.expanded"
+        :waiting-counts="sessionStore.waitingCountBySession"
         :loading="sessionsQuery.isPending.value"
         :error="sessionsError"
         :stopped="stopped"
+        :deleting="deleting"
         @select="routeState.selectSession"
+        @toggle="sessionStore.toggleExpanded"
+        @delete="deleteSession"
+        @new="createSession"
         @close="chatUi.setSessionsOpen(false)"
       />
 
@@ -660,6 +794,8 @@ onBeforeUnmount(() => {
           ref="threadRef"
           :items="threadItems"
           :session-id="routeState.session.value"
+          :workspace-key="routeState.workspaceKey.value"
+          :revision="feed.revision"
           :loading="loadingMessages"
           :loading-earlier="loadingEarlier"
           :error="stopped ? null : (messagesError ?? historyError)"

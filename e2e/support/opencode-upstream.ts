@@ -661,7 +661,7 @@ export async function startOpencodeUpstream(
     }
     if (pathname === "/session" && method === "POST") {
       const parsed = safeJson(body) ?? {};
-      const id = `ses_e2e_${resolved.sessions.length + 1}`;
+      const id = `ses_e2ecreated${resolved.sessions.length + 1}`;
       const session: FixtureSession = {
         id,
         ...(typeof parsed.title === "string" ? { title: parsed.title } : {}),

@@ -47,7 +47,7 @@ describe("read-only chat lifecycle", () => {
     const historyReplace = vi.spyOn(window.history, "replaceState");
     const historyPush = vi.spyOn(window.history, "pushState");
 
-    await wrapper.find('[data-session-id="s2"]').trigger("click");
+    await wrapper.find('.session-item[data-session-id="s2"]').trigger("click");
     await flushPromises();
 
     expect(replace).toHaveBeenCalledTimes(1);
@@ -116,7 +116,7 @@ describe("read-only chat lifecycle", () => {
         { id: "s2", title: "Session two" },
       ],
     });
-    await wrapper.find('[data-session-id="s2"]').trigger("click");
+    await wrapper.find('.session-item[data-session-id="s2"]').trigger("click");
     await flushPromises();
 
     expect(fetchState.requests.length).toBeGreaterThan(0);

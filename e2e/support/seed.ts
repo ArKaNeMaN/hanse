@@ -28,6 +28,33 @@ export const E2E_OPERATOR = "test-operator";
 /** Deterministic chat identities served by the fake opencode upstream. Synthetic only. */
 export const E2E_CHAT_SESSION_ID = "ses_e2ealpha";
 export const E2E_CHAT_CHILD_SESSION_ID = "ses_e2echild";
+export const E2E_CHAT_GRANDCHILD_SESSION_ID = "ses_e2egrandchild";
+export const E2E_CHAT_HISTORY_SESSION_ID = "ses_e2ehistory";
+
+function historyMessages(): readonly FixtureMessage[] {
+  return Array.from({ length: 35 }, (_, index) => {
+    const number = index + 1;
+    const suffix = String(number).padStart(2, "0");
+    return {
+      info: {
+        id: `msg_e2e_history_${suffix}`,
+        sessionID: E2E_CHAT_HISTORY_SESSION_ID,
+        role: number % 2 === 0 ? "assistant" : "user",
+        time: { created: 1_760_000_100_000 + number },
+      },
+      parts: [
+        {
+          id: `prt_e2e_history_${suffix}`,
+          sessionID: E2E_CHAT_HISTORY_SESSION_ID,
+          messageID: `msg_e2e_history_${suffix}`,
+          type: "text",
+          text: `Synthetic history message ${number}.`,
+        },
+      ],
+    } satisfies FixtureMessage;
+  });
+}
+
 export const E2E_CHAT_SESSIONS: readonly FixtureSession[] = [
   {
     id: E2E_CHAT_SESSION_ID,
@@ -39,6 +66,17 @@ export const E2E_CHAT_SESSIONS: readonly FixtureSession[] = [
     title: "E2E child session",
     parentID: E2E_CHAT_SESSION_ID,
     time: { created: 1_760_000_001_000, updated: 1_760_000_004_000 },
+  },
+  {
+    id: E2E_CHAT_GRANDCHILD_SESSION_ID,
+    title: "E2E grandchild session",
+    parentID: E2E_CHAT_CHILD_SESSION_ID,
+    time: { created: 1_760_000_002_000, updated: 1_760_000_003_000 },
+  },
+  {
+    id: E2E_CHAT_HISTORY_SESSION_ID,
+    title: "E2E history session",
+    time: { created: 1_760_000_100_000, updated: 1_760_000_100_035 },
   },
 ];
 export const E2E_CHAT_MESSAGES: Readonly<Record<string, readonly FixtureMessage[]>> = {
@@ -81,6 +119,8 @@ export const E2E_CHAT_MESSAGES: Readonly<Record<string, readonly FixtureMessage[
     },
   ],
   [E2E_CHAT_CHILD_SESSION_ID]: [],
+  [E2E_CHAT_GRANDCHILD_SESSION_ID]: [],
+  [E2E_CHAT_HISTORY_SESSION_ID]: historyMessages(),
 };
 
 const PROJECT_ONE = "e2e-project-one";

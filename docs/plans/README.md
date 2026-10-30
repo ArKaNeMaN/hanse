@@ -62,5 +62,6 @@
   store and event reducer, vertical chat slices (read-only, composer/send/queue, feed rendering,
   prompts/context, attachments/commands), full chat cutover, deployment-host operator verification,
   and post-verification legacy cleanup with `legacyRetired` and image rollback. Status: in progress
-  (Stages 0-3B implemented; `/terminal` cut over with legacy rollback; read-only chat behind
-  allowlist); design approved (`oracle` round 5 PASS); plan review PASS (`momus`); Stage 3C is next.
+  (Stages 0-3C implemented; `/terminal` cut over with legacy rollback; read-only chat with
+  session tree/history behind allowlist); design approved (`oracle` round 5 PASS); plan review PASS
+  (`momus`); Stage 4 is next.

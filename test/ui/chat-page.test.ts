@@ -100,7 +100,7 @@ describe("ChatPage read-only shell", () => {
     wrapper.unmount();
   });
 
-  it("renders a read-only composer with no enabled mutation control", async () => {
+  it("keeps the composer read-only while exposing session navigation controls", async () => {
     const { wrapper, fetchState } = await mountChat();
     const textarea = wrapper.find("[data-chat-composer-input]");
     const send = wrapper.find("[data-chat-send]");
@@ -108,8 +108,91 @@ describe("ChatPage read-only shell", () => {
     expect(textarea.attributes("readonly")).toBeDefined();
     expect(send.attributes("disabled")).toBeDefined();
     expect(fetchState.requests.every((request) => request.method === "GET")).toBe(true);
-    expect(wrapper.find('button[aria-label*="Delete"]').exists()).toBe(false);
-    expect(wrapper.find('input[type="search"]').exists()).toBe(false);
+    expect(wrapper.find("[data-chat-session-search]").exists()).toBe(true);
+    expect(wrapper.find("[data-chat-new-session]").exists()).toBe(true);
+    expect(wrapper.find("[data-session-delete]").exists()).toBe(true);
+    expect(wrapper.find("[data-chat-abort]").exists()).toBe(false);
+    expect(wrapper.find("[data-chat-queue]").exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("refreshes context when the active session becomes idle", async () => {
+    const { wrapper, fetchState } = await mountChat();
+    const source = FakeEventSource.instances[0];
+    if (source === undefined) throw new Error("missing source");
+    source.open();
+    source.emit({ type: "stream.ready", seq: 0, streamID: "stream-idle" });
+    await flushPromises();
+    const before = fetchState.requests.filter((request) => request.url.includes("/context")).length;
+
+    source.emit({
+      type: "session.status",
+      seq: 1,
+      streamID: "stream-idle",
+      sessionID: "s1",
+      status: { type: "idle" },
+    });
+    await flushPromises();
+
+    const after = fetchState.requests.filter((request) => request.url.includes("/context")).length;
+    expect(after).toBeGreaterThan(before);
+    wrapper.unmount();
+  });
+
+  it("keeps the last selection when a stale message read resolves late", async () => {
+    const { wrapper, router, fetchState } = await mountChat(
+      "/chat?app=alpha&project=p&session=s1",
+      {
+        sessions: [
+          { id: "s1", title: "Session one" },
+          { id: "s2", title: "Session two" },
+          { id: "s3", title: "Session three" },
+        ],
+      },
+    );
+    const original = fetchState.mock.getMockImplementation();
+    if (original === undefined) throw new Error("missing fetch implementation");
+    const message = (id: string) => ({
+      info: { id: `msg_${id}`, sessionID: id, role: "user", time: { created: 1 } },
+      parts: [
+        {
+          id: `prt_${id}`,
+          sessionID: id,
+          messageID: `msg_${id}`,
+          type: "text",
+          text: `Message ${id}`,
+        },
+      ],
+    });
+    fetchState.mock.mockImplementation((input, init) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const delayed = /\/sessions\/(s2|s3)\/messages\?/.exec(url);
+      if (delayed !== null) {
+        const sessionID = delayed[1] ?? "";
+        const delay = sessionID === "s2" ? 40 : 0;
+        return new Promise((resolve) => {
+          setTimeout(() => {
+            resolve(
+              new Response(JSON.stringify({ messages: [message(sessionID)], nextCursor: null }), {
+                status: 200,
+                headers: { "content-type": "application/json" },
+              }),
+            );
+          }, delay);
+        });
+      }
+      return original(input, init);
+    });
+
+    await wrapper.find('.session-item[data-session-id="s2"]').trigger("click");
+    await flushPromises();
+    await wrapper.find('.session-item[data-session-id="s3"]').trigger("click");
+    await new Promise((resolve) => setTimeout(resolve, 70));
+    await flushPromises();
+
+    expect(router.currentRoute.value.query.session).toBe("s3");
+    expect(wrapper.text()).toContain("Message s3");
+    expect(wrapper.text()).not.toContain("Message s2");
     wrapper.unmount();
   });
 

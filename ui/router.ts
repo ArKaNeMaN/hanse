@@ -144,7 +144,11 @@ export function createSpaNavigationGuard(options: SpaGuardOptions = {}) {
 export const router = createRouter({
   history: createWebHistory(),
   routes,
-  scrollBehavior(_to, _from, savedPosition) {
+  scrollBehavior(to, _from, savedPosition) {
+    // Chat/terminal own their inner scroll container, so the router must not scroll `.page`.
+    if (to.meta.workspace === "chat" || to.meta.workspace === "terminal") {
+      return false;
+    }
     // `.page` is the scroll container, not the window.
     if (savedPosition !== null) {
       return { el: ".page", left: savedPosition.left, top: savedPosition.top };

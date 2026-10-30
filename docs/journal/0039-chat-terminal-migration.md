@@ -334,3 +334,66 @@ Limits: session tree/search/new/delete and the full read-only parity report are 
 send/queue are Stage 4; feed rendering depth is Stage 5; prompts/context rail is Stage 6; attachments/
 commands and the `chat.spa` cutover are Stage 7. Stage 3B checkpoint commit is created with this
 record.
+
+## Stage 3C - Session tree, history paging, and read-only parity
+
+Stage 3C completes the read-only chat navigation surface behind the same test-only allowlist. The
+registry flag stays `false`; `/chat` remains the legacy document by default, under `?legacy=1`,
+`HANSE_UI_LEGACY=1`, and when the allowlist omits `chat`. No composer, send, queue, abort, prompt,
+attachment, command, or cutover path was added; `assets/chat.js` and `assets/terminal.js` are
+unchanged.
+
+Implemented:
+- `ChatSessionsRail` + `ChatSessionNode` render the `buildSessionTree` tree with multi-level
+  disclosure, active-ancestor auto-expansion, title/id filtering, forced ancestor visibility while
+  searching, and a start/empty/error/skeleton matrix. New sessions use the existing
+  `POST /sessions`; delete confirms the subtree, calls the existing `DELETE /sessions/:id`, removes
+  every descendant locally, clears the active selection, and falls back to the first root (or drops
+  `session=` when the list becomes empty).
+- Prompt wait counts are tracked per session by stable prompt key and aggregated over descendants,
+  excluding the active session, matching the legacy parent-wait badge. Stage 6 can render the same
+  counts in the prompt dock without a second source.
+- History paging keeps `limit=30` and the opaque `before` cursor, triggers on scroll-top as well as
+  the explicit row, merges overlap through `applySnapshot({position:"older"})`, preserves the
+  prepend anchor, never rewinds a tail refresh behind the loaded older prefix, and shows the
+  start-of-history row only when the cursor is exhausted. Cursor errors keep the loaded tail.
+- Scroll ownership is component-local: `#chat-scroll` is the only chat scroller, the router no
+  longer scrolls `.page` for workspace routes, a constrained `.chat-main` grid makes the scroll
+  container actually scrollable, and follow-bottom/pause/new-messages/prepend-anchor/back-forward
+  restoration live in `ChatThread` plus `ui/chat/scroll-memory.ts`. Message and part keys remain
+  stable across deltas, so a delta does not replace the feed DOM.
+- `ui/chat/session-storage.ts` is the sole `sessionStorage` owner for queue-promotion suppression
+  and image intent, using the legacy keys and app/project namespace. It clears on session delete,
+  route leave, and app switch; successful-send clearing is wired for Stage 4.
+- Parity repairs: app switches clear the old workspace/session tree and feed before the keyed
+  remount paints, stale message reads are generation/abort guarded (last selection wins), stopped/
+  empty/deleted/back-forward states preserve accepted deep links, and `session.status` idle refreshes
+  context in addition to messages while status/context refresh remains read-only.
+
+Tests/evidence:
+- New `test/ui/chat-sessions.test.ts` (tree, disclosure, search, new, subtree delete, cancel, parent
+  wait aggregation), `chat-history.test.ts` (30-message tail, scroll-top paging, overlap de-dupe,
+  cursor error, keyed delta DOM identity, follow-bottom/new-messages), and
+  `chat-session-storage.test.ts` (namespace, legacy idle rule, clear paths, malformed intent).
+- Extended `chat-page.test.ts` (idle context refresh, stale-read last-wins, session controls vs
+  read-only composer), `chat-readonly.test.ts` (navigation stays read-only for messages), and E2E
+  `chat.spec.ts`/`spa-chat.spec.ts` (legacy+SPA tree/search/disclosure, new/delete, history paging
+  with anchor and new-messages, session switching with one EventSource and no duplicate messages,
+  and a read-only request assertion).
+- `NODE_ENV=development npm test`: **3171 passed** (196 files).
+- `npm run test:e2e`: **181 passed, 12 skipped** across the three modes (SPA, legacy,
+  allowlist-empty); the allowlist remains the full default set plus `chat,terminal` in the SPA
+  project.
+- `npm run lint`: pass (20 pre-existing warnings, no errors); `typecheck`, `typecheck:ui`,
+  `typecheck:e2e`, `build`, `check:ui` (54 SFCs), `check:chat-worker`, `check:sensitive`, and
+  `git diff --check`: pass.
+- Visual QA (untracked) at 390/768/1024/1440, dark/light for shell, full history, empty, and stopped:
+  32 captures and 16 geometry checks (one `#chat-shell`, one `#chat-scroll`, zero horizontal
+  overflow) under `docs/deploy/chat-terminal-stage3c/`; report written there, not in tracked docs.
+
+Limits and deferred debt: composer/send/queue/abort remain Stage 4; prompt docking and the context
+rail remain Stage 6; attachments, commands, feed-rendering depth, and the `chat.spa` cutover remain
+later stages. The Stage 0 `chat-qa` `main` queue-strip baseline assertion is **not exercised by Stage
+3C** because the queue strip does not exist in the read-only surface; it remains deferred to the
+Stage 4/7C queue work and was not hidden or changed to make the harness pass. Stage 3C checkpoint
+commit is created with this record.

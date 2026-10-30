@@ -3871,6 +3871,16 @@
     overflow: hidden;
   }
 
+  /* The page head, thread, and read-only composer share one constrained column so #chat-scroll is
+     the only scrolling element. Without the minmax row the thread grows with its content and the
+     scroll container silently becomes unscrollable. */
+  .chat-main {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    min-block-size: 0;
+    min-inline-size: 0;
+  }
+
   .chat-sessions__tools {
     padding: var(--space-2) var(--space-3);
     border-block-end: 1px solid var(--line);
@@ -3953,6 +3963,9 @@
     flex-direction: column;
     gap: var(--space-1);
     min-inline-size: 0;
+    margin: 0;
+    padding: 0;
+    border: 0;
   }
 
   .session-children[hidden] {
