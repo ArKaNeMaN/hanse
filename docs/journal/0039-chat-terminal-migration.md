@@ -249,3 +249,46 @@ Deviations and limits:
 - Stage 2 checkpoint commit is created with this record.
 
 Next stage: Stage 3A (chat feed store/reducer), not started.
+
+## Stage 3A - Chat feed store, event reducer, and state actions
+
+Stage 3A adds the pure chat data layer. There is no chat route, component, cutover, or allowlist
+entry; `/chat` remains the legacy document and `assets/chat.js` is still byte-frozen.
+
+Implemented:
+- `assets/chat-feed-store.js` is a plain-ESM **copy** of the legacy `createThreadStore` shape, with
+  no imports. `ui/chat/feed-store.ts` is the typed wrapper; `chat.js` was not edited or imported.
+- `ui/chat/event-reducer.ts` is a pure `HanseEvent` -> typed-action reducer covering every event in
+  `src/opencode/events.ts`, all twelve `PartType`s, unknown part types, unknown future events,
+  stream identity/reset, duplicate/gap sequence handling, and the legacy per-session filters.
+- `ui/chat/state-actions.ts` applies the actions to Pinia stores and returns render intents
+  (dirty message/part ids, scroll, notice/toast, reconcile, refresh, stream pause, prompt
+  upsert/resolve). Prompt intents are deferred to Stage 6A because the prompt store is not part of
+  3A.
+- `ui/stores/chat-feed.ts`, `chat-session.ts`, and `chat-context.ts` hold keyed messages/parts,
+  order, stream/sequence, notices/dirty flags, session list/tree/generation/status, and
+  session-keyed context/todos/plan plus previews/handoffs/runtime. Large maps use
+  `shallowRef`/`markRaw`; no store writes the URL.
+- Existing `chat-core.js` helpers are reused unchanged: `applySnapshot`, `deriveQueue`,
+  `rekeyOptimistic`, `mergeFeedOrder`, `buildSessionTree`, `firstRootId`, `ancestorIds`,
+  `classifyOmo`, `normalizeAttachments`, `normalizeHandoffMeta`, `provisionalPartType`, and
+  `applyOmittedPart`.
+- Freeze/drift proof: `test/fixtures/legacy-clients.sha256` pins `assets/chat.js` and
+  `assets/terminal.js`; `test/chat-legacy-freeze.test.ts` verifies both; `chat-feed-store.ts` has no
+  import from the legacy clients. `test/chat-feed-parity.test.ts` replays the Stage 0 fixture for
+  feed order, message/part maps, optimistic rekey, queue, stream ids, and active/queued prompt
+  relation through both the copy and the Pinia wrapper.
+
+Verification (all with `NODE_ENV=development`):
+- `npm test`: **3121 passed** (189 files).
+- `npm run lint`: pass (20 known warnings, 0 errors); `typecheck`, `typecheck:ui`, `typecheck:e2e`:
+  pass.
+- `npm run build`: pass; `check:ui`: pass (47 SFCs); `check:chat-worker`: pass.
+- `npm run test:e2e`: **165 passed, 3 skipped**.
+- `check:sensitive`: pass; `git diff --check`: pass.
+- The entry bundle is unchanged from Stage 2 because the new data layer is not imported by any
+  route yet.
+
+Limits: prompt upsert/resolve is represented as render intents until the Stage 6A prompt store;
+session-history paging and the read-only shell are Stage 3B/3C. The pre-existing `chat-qa` queue
+baseline debt is still recorded in Stage 0. Stage 3A checkpoint commit is created with this record.
