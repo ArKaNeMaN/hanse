@@ -61,5 +61,6 @@
   inventory, workspace shell/boot route set/props, terminal port and cutover, copy-first chat feed
   store and event reducer, vertical chat slices (read-only, composer/send/queue, feed rendering,
   prompts/context, attachments/commands), full chat cutover, deployment-host operator verification,
-  and post-verification legacy cleanup with `legacyRetired` and image rollback. Status: draft;
-  design approved (`oracle` round 5 PASS); awaiting `momus` plan review; no implementation started.
+  and post-verification legacy cleanup with `legacyRetired` and image rollback. Status: in progress
+  (Stages 0-2 implemented; `/terminal` cut over with legacy rollback); design approved (`oracle`
+  round 5 PASS); plan review PASS (`momus`); Stage 3 is next.

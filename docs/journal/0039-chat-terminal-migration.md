@@ -4,8 +4,8 @@ Plan: [`0032`](../plans/0032-chat-terminal-migration.md). Design:
 [`chat-terminal-migration.md`](../design/chat-terminal-migration.md). Governing design:
 [`spa-migration.md`](../design/spa-migration.md) plus the Stage 0 amendment record in §15.
 
-Status: **Stages 0-1 implemented**. No route cutover, no registry flag, no production behavior
-change. Stages 2-9 are not started.
+Status: **Stages 0-2 implemented**. `/terminal` is SPA by default with the legacy document and
+`assets/terminal.js` retained for rollback. `/chat` remains legacy. Stages 3-9 are not started.
 
 ## Stage 0 baseline
 
@@ -187,3 +187,65 @@ Verification:
 
 Known baseline debt remains: the pre-existing `chat-qa` `main` queue-strip expectation is still red
 on the unchanged legacy harness and must be reconciled in Stage 3B/7C; see Stage 0.
+
+
+## Stage 2 - Terminal full Vue port and cutover
+
+Stage 2 replaces the legacy `/terminal` document with `TerminalPage`/`TerminalView` and cuts the
+route over. `/chat`, `assets/chat.js`, `assets/terminal.js`, `renderTerminalPage`, the WS proxy/upgrade
+contract, and the runner are untouched.
+
+Implemented:
+- `ui/router.ts` registers the lazy `/terminal` record with `meta.workspace:"terminal"` and
+  `meta.legacyRetired:false`; `src/shared/routes.ts` flips `terminal.spa` to `true`. The application
+  page's Terminal links use `SmartLink`, so client navigation into `/terminal` is exercised.
+- `ui/pages/TerminalPage.vue` owns the runtime `.page__body page__body--terminal` root and `#terminal`
+  heading, consumes boot or `/api/ui/terminal` props on client navigation, applies chrome and the
+  workspace shell, and renders `TerminalToolbar`, `TerminalBanner`, `TerminalView`, and
+  `TerminalStoppedState`. There is no `.page-header`.
+- `ui/terminal/loader.ts` is the sole vendor loader: four scripts in order plus one
+  `/assets/vendor/xterm/xterm-6.0.0.css` link, promise-cached, idempotent across first load and
+  client navigation, retryable after a failed tag, and never fed by server styles.
+- `ui/terminal/socket.ts` + `ui/composables/useTerminalSocket.ts`: runtime preflight, generation
+  guard, normal close 1000/1001, failure 1011, stopped/error, input bytes, clamped resize JSON,
+  cookie-only auth probe (401/403 -> `/login?next=`, 200 -> continue, 5 s cooldown, never hidden),
+  dispose/stale-callback guarding, and pagehide/pageshow handling. Retries are exactly
+  `[1,2,4,8,15]s` for five automatic attempts and then manual only (recorded C9 deviation).
+- `TerminalView` instantiates xterm with the legacy token font/theme, scrollback, screen-reader mode,
+  and reduced-motion cursor blink; it owns `ResizeObserver`, window/visualViewport resize,
+  `document.fonts.ready` with a disposed guard, and the `data-theme` MutationObserver.
+- Server wiring uses the existing Stage 1 `/api/ui/terminal` props, terminal page/body classes,
+  default IDE topbar seed, and no `recordOperatorHost`. `?legacy=1`, `HANSE_UI_LEGACY=1`, and
+  allowlist omission still reach `renderTerminalPage`.
+
+Tests and evidence:
+- New `test/ui/terminal-loader.test.ts`, `terminal-socket.test.ts`, `terminal-page.test.ts`,
+  `terminal-route.test.ts`; updated `shared-routes`, `router-guard`, `boot`, `ui-legacy-bytes`, and
+  `ui-props-auth` for the cutover. The terminal HTTP/proxy/legacy-page tests are unchanged and green.
+- New `e2e/terminal.spec.ts` (legacy + SPA modes) and `e2e/spa-terminal.spec.ts`; the SPA project uses
+  `HANSE_UI_SPA_ROUTES=${SPA_E2E_ROUTE_IDS},terminal`. Coverage: direct load/deep link, client
+  navigation, stopped/error runtime, connect/input/output/resize, copy, manual close/reconnect,
+  normal 1000/1001 exit, 1011 retry, auth expiry, runner-unavailable, one vendor link/host, zero
+  console/page errors, and all three rollback paths.
+- Visual QA at 390/768/1024/1440 dark/light plus stopped state, theme switch, and reduced motion is
+  untracked at `docs/deploy/chat-terminal-stage2/evidence/` (`report.json`, 18 rows, PASS). CLS is
+  `0.00006`-`0.00047` across the 16 live/stopped captures; time-to-Live is about `1.4-1.5 s` on the
+  fixture. Toolbar height is `91.25 px` at 390 and `48 px` at 768/1024/1440; the host fills the
+  remaining viewport.
+
+Gate results (all with `NODE_ENV=development`):
+- `npm run lint`: pass (20 pre-existing/known warnings, 0 errors).
+- `npm run typecheck`, `typecheck:ui`, `typecheck:e2e`: pass.
+- `npm test`: **3072 passed**, 182 files.
+- `npm run build`: pass; terminal route chunk is lazy (`TerminalPage`, 24.33 kB raw / 8.74 kB gzip).
+- `npm run check:ui`: pass (47 SFCs); `check:sensitive`: pass; `check:chat-worker`: pass.
+- `npm run test:e2e`: **165 passed, 3 skipped**.
+- `git diff --check`: pass.
+
+Deviations and limits:
+- The recorded C9 bound replaces legacy's unlimited retry; this is the design's approved deviation.
+- The E2E copy interaction covers the SPA copy path; the legacy rollback client is unchanged/frozen
+  and is covered by its document/render smoke rather than a new copy test.
+- Stage 2 checkpoint commit is created with this record.
+
+Next stage: Stage 3A (chat feed store/reducer), not started.

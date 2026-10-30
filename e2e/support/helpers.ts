@@ -46,6 +46,19 @@ function runGit(cwd: string, args: readonly string[], allowFailure = false): str
   }
 }
 
+export interface E2EUpstreamInfo {
+  readonly url: string;
+  readonly port: number;
+  readonly streamID: string;
+}
+
+/** Read the loopback fake-upstream identity written by the fixture server for this port. */
+export function upstreamInfo(port = 4310): E2EUpstreamInfo {
+  return JSON.parse(
+    readFileSync(path.join(tmpdir(), `hanse-e2e-upstream-${port}.json`), "utf8"),
+  ) as E2EUpstreamInfo;
+}
+
 export function fixtureRepos(port = 4310): E2EFixtureRepos {
   return JSON.parse(
     readFileSync(path.join(tmpdir(), `hanse-e2e-repos-${port}.json`), "utf8"),

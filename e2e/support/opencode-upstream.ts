@@ -595,6 +595,16 @@ export async function startOpencodeUpstream(
 
     if (pathname === "/__control" && method === "POST") {
       const parsed = safeJson(body);
+      if (typeof parsed?.runnerClose === "number") {
+        runner.lastCloseCode = parsed.runnerClose;
+        for (const socket of runnerSockets) {
+          if (!socket.writable) continue;
+          socket.write(serverFrame(0x8, closePayload(parsed.runnerClose)));
+          socket.end();
+        }
+        writeJson(response, 200, { accepted: 1, runnerClose: parsed.runnerClose });
+        return;
+      }
       const frames = Array.isArray(parsed?.frames)
         ? parsed.frames
         : parsed?.event === undefined

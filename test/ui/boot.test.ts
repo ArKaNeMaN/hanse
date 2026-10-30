@@ -43,6 +43,17 @@ describe("readBoot route set and topbar", () => {
     expect(readBoot(document)?.spaRoutes).toEqual(["projects", "chat"]);
   });
 
+  it("accepts the terminal route when the server enables it", () => {
+    bootDocument(
+      validPayload({
+        route: { id: "terminal", params: {} },
+        spaRoutes: ["projects", "terminal"],
+      }),
+    );
+    expect(readBoot(document)?.route.id).toBe("terminal");
+    expect(readBoot(document)?.spaRoutes).toEqual(["projects", "terminal"]);
+  });
+
   it("rejects a boot route that is absent from the resolved set", () => {
     bootDocument(validPayload({ route: { id: "projects", params: {} }, spaRoutes: ["overview"] }));
     expect(readBoot(document)).toBeUndefined();

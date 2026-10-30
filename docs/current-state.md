@@ -275,13 +275,25 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   diffs/write content) and imports the pure helpers in `assets/chat-core.js`,
   `assets/chat-commands.js`, `assets/chat-diff.js`, and the lazy worker controller in
   `assets/chat-highlight.js`. `assets/git.js` hydrates the legacy rollback application git panel.
-  Every page route except `/chat` and `/terminal` is an SPA route by default; the legacy renderers
-  remain reachable through `HANSE_UI_LEGACY=1`, `?legacy=1`, or a `HANSE_UI_SPA_ROUTES` allowlist
-  (see **UI rendering modes**).
+  Every page route except `/chat` is an SPA route by default; `/terminal` runs in the Vue client.
+  The legacy chat and terminal renderers stay frozen as the rollback path and remain reachable
+  through `HANSE_UI_LEGACY=1`, `?legacy=1`, or a `HANSE_UI_SPA_ROUTES` allowlist (see
+  **UI rendering modes**).
 - The chat workspace is the stage-3 three-pane surface: sessions rail, thread, and context rail.
   Below 1360 the context pane is a drawer; below 768 both rails are drawers. The thread is the only
   scroll owner. `session` is mirrored to the URL, and the optional `project` query disambiguates
   duplicate app keys across projects.
+- The operator terminal (`/terminal?app=<key>&project=<id>`) is SPA-rendered by
+  `ui/pages/TerminalPage.vue` with `TerminalToolbar`, `TerminalBanner`, `TerminalView`, and
+  `TerminalStoppedState`. `TerminalView` is the sole owner of the vendored xterm scripts and the one
+  xterm stylesheet: it loads them on demand through `ui/terminal/loader.ts`, so a first document and
+  a client navigation share exactly one `<link>`. The socket adapter (`ui/terminal/socket.ts`) runs
+  the runtime preflight, uses a generation guard, sends input bytes and clamped resize JSON, and
+  reconnects with the recorded C9 bound - delays `[1,2,4,8,15]s`, exactly five automatic attempts,
+  then manual Reconnect. A failed upgrade probes the cookie-only `/api/ui/chrome?path=/terminal` at
+  most once per retry window (5 s cooldown, never while hidden); `401/403` redirects to
+  `/login?next=<fullPath>`. Runtime stopped/error links to chat. `/assets/terminal.js` and the
+  legacy terminal document remain the rollback until Stage 9.
 
 ## UI rendering modes (Phase 7 complete)
 
@@ -289,10 +301,10 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   inbox), `/ssh` (SSH console), the three settings scopes (`/settings`,
   `/projects/:id/settings`, `/projects/:id/apps/:app/settings`), and the five skills routes
   (`/skills`, `/projects/:id/skills`, `/projects/:id/apps/:app/skills`, `/skills/new`,
-  `/skills/:id`) are SPA routes: the shared registry (`src/shared/routes.ts`) has `spa: true` for
-  `overview`, `projects`, `project`, `handoffs`, `ssh`, `settings-global`, `settings-project`,
-  `settings-app`, `skills-global`, `skills-project`, `skills-app`, `skills-new`,
-  `skills-detail`, and `app`; only chat and terminal remain legacy documents. Application detail
+  `/skills/:id`) and `/terminal` are SPA routes: the shared registry (`src/shared/routes.ts`) has
+  `spa: true` for `overview`, `projects`, `project`, `handoffs`, `ssh`, `settings-global`,
+  `settings-project`, `settings-app`, `skills-global`, `skills-project`, `skills-app`, `skills-new`,
+  `skills-detail`, `app`, and `terminal`; only chat remains a legacy document. Application detail
   (`/projects/:id/apps/:app`) is the default SPA route, and its legacy rollback page still loads
   `git.js`, `images.js`, and `ssh.js`. The page dispatcher
   is the only place that chooses a renderer:
@@ -371,9 +383,10 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   notice. Reply, cancel, policy, and deletion requests reuse the existing JSON handlers.
 - `#ui-fallback` stays hidden, then reveals after 4 s only if the client did not mount;
   `vite:preloadError` reloads once and then renders a safe `?legacy=1` fallback.
-- D1 revised: `/chat` and `/terminal` are scheduled for a separate design/plan migration, after
-  which the operator verifies both before Phase 8 cleanup. They remain legacy for now;
-  `HANSE_UI_LEGACY=1` and `?legacy=1` remain the rollback path.
+- D1 revised: `/terminal` was cut over in Stage 2; `/chat` remains in the separate design/plan
+  migration. The operator verifies both before Phase 8 cleanup. The legacy terminal document and
+  `assets/terminal.js` remain the rollback path through `HANSE_UI_LEGACY=1`, `?legacy=1`, or an
+  allowlist omission until Stage 9.
 
 ## Git workbench
 

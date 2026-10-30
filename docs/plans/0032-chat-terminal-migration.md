@@ -1,7 +1,8 @@
 # Plan 0032 - Chat and terminal SPA migration
 
 Status: **approved** - `momus` plan review PASS (2026-10-30). Design is approved (`oracle` round 5
-PASS). Stages 0-1 are implemented; Stage 2 is the next action. No route cutover has occurred.
+PASS). Stages 0-2 are implemented; `/terminal` is SPA by default with the legacy rollback retained.
+Stage 3 is the next action.
 
 Design: [Chat and terminal SPA migration](../design/chat-terminal-migration.md) (approved).
 Governing design: [Incremental SPA migration](../design/spa-migration.md) plus the eight explicit

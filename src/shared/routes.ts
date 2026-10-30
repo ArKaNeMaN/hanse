@@ -165,7 +165,7 @@ const ROUTE_DEFINITIONS: readonly RouteDefinition[] = [
     path: "/terminal",
     nav: "project",
     label: "Terminal",
-    spa: false,
+    spa: true,
     legacyRetired: false,
   },
   {

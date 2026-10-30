@@ -581,7 +581,11 @@ describe("/api/ui auth and props", () => {
       const pathname = route.path.replace(":id", "p").replace(":app", "web");
       const page = maybeServeSpa(
         f.deps,
-        request(pathname, { ...cookie(f.humanToken), accept: "text/html" }),
+        request(
+          pathname,
+          { ...cookie(f.humanToken), accept: "text/html" },
+          route.id === "terminal" ? { app: "web", project: "p" } : undefined,
+        ),
       );
       expect(page?.status, route.id).toBe(200);
       expect(page?.body, route.id).not.toContain(providerSecret);

@@ -39,6 +39,7 @@ const services = new Map(
 );
 
 const fixtureReposPath = path.join(tmpdir(), `hanse-e2e-repos-${port}.json`);
+const upstreamInfoPath = path.join(tmpdir(), `hanse-e2e-upstream-${port}.json`);
 const appRepos = Object.fromEntries(
   fixture.projects.flatMap((project) =>
     project.appKeys.map((appKey) => [
@@ -241,6 +242,10 @@ const upstream = await startOpencodeUpstream({
   },
 });
 chatEndpoint = upstream.url;
+writeFileSync(
+  upstreamInfoPath,
+  JSON.stringify({ url: upstream.url, port: upstream.port, streamID: upstream.streamID }),
+);
 
 /** Deterministic git remote check; no network, runner, or credential material is used. */
 const git = new Proxy(new GitService({ workspaceRoot: fixture.workspaceRoot }), {
@@ -588,6 +593,7 @@ function shutdown(): void {
   void upstream.stop();
   server.close(() => {
     rmSync(fixtureReposPath, { force: true });
+    rmSync(upstreamInfoPath, { force: true });
     fixture.cleanup();
     process.exit(0);
   });
@@ -600,6 +606,7 @@ server.on("error", (error) => {
   gitDaemon?.kill("SIGTERM");
   void upstream.stop();
   rmSync(fixtureReposPath, { force: true });
+  rmSync(upstreamInfoPath, { force: true });
   fixture.cleanup();
   process.exit(1);
 });

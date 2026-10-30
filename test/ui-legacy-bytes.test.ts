@@ -103,9 +103,9 @@ function chrome(): PageChrome {
 }
 
 describe("legacy chat and terminal byte identity", () => {
-  it("keeps both registry flags off in Stage 1", () => {
+  it("keeps chat legacy and cuts terminal over in Stage 2", () => {
     expect(routeById("chat")?.spa).toBe(false);
-    expect(routeById("terminal")?.spa).toBe(false);
+    expect(routeById("terminal")?.spa).toBe(true);
     expect(routeById("chat")?.legacyRetired).toBe(false);
     expect(routeById("terminal")?.legacyRetired).toBe(false);
   });
@@ -136,22 +136,32 @@ describe("legacy chat and terminal byte identity", () => {
     expect(sha256(direct ?? "")).toBe(TERMINAL_SHA256);
   });
 
-  it("never serves /chat or /terminal as SPA without a cutover", () => {
+  it("serves terminal as SPA and keeps chat legacy, with ?legacy=1 still reaching the legacy terminal", () => {
     const f = fixture();
     delete process.env.HANSE_UI_LEGACY;
     process.env.HANSE_UI_SPA_ROUTES = ROUTES.filter((route) => route.spa)
       .map((route) => route.id)
       .join(",");
     process.env.HANSE_UI_DEV_URL = "http://127.0.0.1:5173";
-    for (const pathname of ["/chat", "/terminal"]) {
-      const response = maybeServeSpa(f.deps, {
-        ...request(pathname, f.token, { app: "web", project: "p" }),
-        headers: {
-          cookie: `hanse_token=${encodeURIComponent(f.token)}`,
-          accept: "text/html",
-        },
-      });
-      expect(response, pathname).toBeUndefined();
-    }
+    const headers = {
+      cookie: `hanse_token=${encodeURIComponent(f.token)}`,
+      accept: "text/html",
+    };
+    const chat = maybeServeSpa(f.deps, {
+      ...request("/chat", f.token, { app: "web", project: "p" }),
+      headers,
+    });
+    expect(chat).toBeUndefined();
+    const terminal = maybeServeSpa(f.deps, {
+      ...request("/terminal", f.token, { app: "web", project: "p" }),
+      headers,
+    });
+    expect(terminal?.status).toBe(200);
+    expect(terminal?.body).toContain('id="hanse-boot"');
+    const legacy = maybeServeSpa(f.deps, {
+      ...request("/terminal", f.token, { app: "web", project: "p", legacy: "1" }),
+      headers,
+    });
+    expect(legacy).toBeUndefined();
   });
 });

@@ -21,7 +21,7 @@ describe("shared route manifest", () => {
     expect(source).not.toMatch(/require\(["']node:/);
   });
 
-  it("publishes the complete route table and cuts projects, overview, handoffs, ssh, project, and settings over", () => {
+  it("publishes the complete route table and cuts every migrated route except chat over", () => {
     expect(ROUTES.map((route) => [route.id, route.path, route.nav])).toEqual([
       ["projects", "/projects", "projects"],
       ["overview", "/", "overview"],
@@ -55,6 +55,7 @@ describe("shared route manifest", () => {
       "skills-app",
       "app",
       "project",
+      "terminal",
     ]);
   });
 
@@ -141,7 +142,8 @@ describe("shared route manifest", () => {
         route.id === "skills-app" ||
         route.id === "skills-new" ||
         route.id === "skills-detail" ||
-        route.id === "app";
+        route.id === "app" ||
+        route.id === "terminal";
       expect(isSpaRoute(route.id, { env: {} }), route.id).toBe(migrated);
     }
     expect(isSpaPath("/projects", { env: {} })).toBe(true);
@@ -160,7 +162,7 @@ describe("shared route manifest", () => {
     expect(isSpaPath("/skills/42", { env: {} })).toBe(true);
     expect(isSpaPath("/projects/alpha/apps/web", { env: {} })).toBe(true);
     expect(isSpaPath("/chat", { env: {} })).toBe(false);
-    expect(isSpaPath("/terminal", { env: {} })).toBe(false);
+    expect(isSpaPath("/terminal", { env: {} })).toBe(true);
   });
 
   it("applies HANSE_UI_LEGACY and manifest validity before the allowlist", () => {
@@ -205,18 +207,18 @@ describe("shared route manifest", () => {
     expect(routeById("terminal")).toMatchObject({
       path: "/terminal",
       nav: "project",
-      spa: false,
+      spa: true,
       legacyRetired: false,
     });
     expect(routeById("nope" as never)).toBeUndefined();
   });
 
-  it("keeps chat and terminal out of the default boot set until their records land", () => {
+  it("keeps chat out of the default boot set while terminal is cut over", () => {
     const bootRoutes = ROUTES.filter((route) =>
       isSpaRoute(route.id, { env: {}, manifestValid: true }),
     ).map((route) => route.id);
     expect(bootRoutes).not.toContain("chat");
-    expect(bootRoutes).not.toContain("terminal");
+    expect(bootRoutes).toContain("terminal");
     expect(bootRoutes).toContain("projects");
   });
 

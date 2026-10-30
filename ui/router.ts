@@ -20,8 +20,9 @@ declare module "vue-router" {
  * Only routes whose registry `spa` flag is enabled are registered here. Phase 1B registered
  * `/projects`; Phase 2B adds the fleet overview at `/`; Phase 2C adds project detail at
  * `/projects/:id`; Phase 3B adds the handoff inbox at `/handoffs`; Phase 4B adds the SSH console
- * at `/ssh`; Phase 6B adds the five skills routes; Phase 7C registers the application-detail route.
- * Chat and terminal stay server-rendered documents and are reached with a full document load.
+ * at `/ssh`; Phase 6B adds the five skills routes; Phase 7C registers the application-detail route;
+ * Stage 2 of the chat/terminal migration registers `/terminal`. Chat stays a server-rendered
+ * document until its own cutover stage.
  */
 const routes: readonly RouteRecordRaw[] = [
   {
@@ -93,6 +94,12 @@ const routes: readonly RouteRecordRaw[] = [
     path: "/ssh",
     name: "ssh",
     component: () => import("./pages/SshPage.vue"),
+  },
+  {
+    path: "/terminal",
+    name: "terminal",
+    component: () => import("./pages/TerminalPage.vue"),
+    meta: { workspace: "terminal", legacyRetired: false },
   },
   {
     path: "/:pathMatch(.*)*",

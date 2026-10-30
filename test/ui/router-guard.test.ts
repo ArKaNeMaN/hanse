@@ -4,7 +4,7 @@ import { isLegacyRetired, ROUTES } from "../../src/shared/routes.js";
 import { router as appRouter, createSpaNavigationGuard } from "../../ui/router.js";
 import { installSpaRoutes } from "../../ui/spa-routes.js";
 
-function testRouter(guardLoad?: (path: string) => void) {
+function testRouter(guardLoad?: (path: string) => void, terminalRetired = false) {
   const router = createRouter({
     history: createMemoryHistory(),
     routes: [
@@ -20,7 +20,13 @@ function testRouter(guardLoad?: (path: string) => void) {
         path: "/terminal",
         name: "terminal",
         component: { template: "<div />" },
-        meta: { workspace: "terminal", legacyRetired: true },
+        meta: { workspace: "terminal", legacyRetired: terminalRetired },
+      },
+      {
+        path: "/retired",
+        name: "retired",
+        component: { template: "<div />" },
+        meta: { legacyRetired: true },
       },
       {
         path: "/:pathMatch(.*)*",
@@ -61,10 +67,18 @@ describe("SPA navigation guard", () => {
     expect(load).toHaveBeenCalledWith("/projects?legacy=1");
   });
 
-  it("allows an enabled route and ignores ?legacy=1 once retired", async () => {
+  it("full-document-loads ?legacy=1 for the non-retired terminal route", async () => {
     installSpaRoutes(["overview", "projects", "terminal"]);
     const load = vi.fn();
     const router = testRouter(load);
+    await router.push("/terminal?legacy=1");
+    expect(load).toHaveBeenCalledWith("/terminal?legacy=1");
+  });
+
+  it("allows an enabled terminal route and ignores ?legacy=1 once retired", async () => {
+    installSpaRoutes(["overview", "projects", "terminal"]);
+    const load = vi.fn();
+    const router = testRouter(load, true);
     await router.push("/terminal?legacy=1");
     expect(load).not.toHaveBeenCalled();
     expect(router.currentRoute.value.path).toBe("/terminal");
@@ -87,7 +101,9 @@ describe("SPA navigation guard", () => {
       expect(record?.meta.legacyRetired ?? false, id).toBe(isLegacyRetired(id));
     }
     expect(appRouter.hasRoute("chat")).toBe(false);
-    expect(appRouter.hasRoute("terminal")).toBe(false);
+    expect(appRouter.hasRoute("terminal")).toBe(true);
+    const terminalRecord = appRouter.getRoutes().find((route) => route.name === "terminal");
+    expect(terminalRecord?.meta.workspace).toBe("terminal");
     expect(isLegacyRetired("chat")).toBe(false);
     expect(isLegacyRetired("terminal")).toBe(false);
   });

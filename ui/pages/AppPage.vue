@@ -13,6 +13,7 @@ import AppImagePanel from "../components/AppImagePanel.vue";
 import AppRestartDialog from "../components/AppRestartDialog.vue";
 import AppSshPanel from "../components/AppSshPanel.vue";
 import AppStateStrip from "../components/AppStateStrip.vue";
+import SmartLink from "../components/SmartLink.vue";
 import { useAppGit } from "../composables/useAppGit.js";
 import { useAppImage } from "../composables/useAppImage.js";
 import { applyChrome } from "../composables/useChrome.js";
@@ -330,9 +331,9 @@ async function restartAgent(): Promise<void> {
         <a class="btn btn-secondary" :href="view.links.chat">
           <AppIcon name="message" />Open chat
         </a>
-        <a class="btn btn-secondary" :href="view.links.terminal">
+        <SmartLink class="btn btn-secondary" :to="view.links.terminal">
           <AppIcon name="terminal" />Terminal
-        </a>
+        </SmartLink>
         <a class="btn btn-secondary" :href="view.links.settings">
           <AppIcon name="settings" />Settings
         </a>
@@ -409,9 +410,9 @@ async function restartAgent(): Promise<void> {
           <a class="btn btn-secondary" :href="view.links.chat">
             <AppIcon name="message" />Open chat
           </a>
-          <a class="btn btn-secondary" :href="view.links.terminal">
+          <SmartLink class="btn btn-secondary" :to="view.links.terminal">
             <AppIcon name="terminal" />Terminal
-          </a>
+          </SmartLink>
         </template>
         <a class="btn btn-secondary" :href="view.links.settings">
           <AppIcon name="settings" />Settings

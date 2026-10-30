@@ -390,6 +390,7 @@ function testRouter(): Router {
       { path: "/projects/:id/apps/:app", component: { template: "<div />" } },
       { path: "/projects/:id/apps/:app/settings", component: { template: "<div />" } },
       { path: "/projects/:id/apps/:app/skills", component: { template: "<div />" } },
+      { path: "/terminal", component: { template: "<div />" } },
     ],
   });
 }
