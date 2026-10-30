@@ -8,18 +8,38 @@
 
 import { type ComputedRef, computed, nextTick, onBeforeUnmount, watch } from "vue";
 import {
+  type AttachmentView,
+  attachmentKindForMime,
+  attachmentModeValue,
+  attachmentSendPayload,
   canSendDraft,
   composerAction,
   draftAutoDeleteEligible,
   draftIsEmpty,
   draftTextForSave,
   isSlashCommandOnly,
+  normalizeAttachment,
+  normalizeAttachments,
   normalizePendingSends,
   type PendingSendView,
+  redeliveryAttachmentPayload,
 } from "../../assets/chat-core.js";
 import { type ApiRequestOptions, apiMutation, apiQuery } from "../api.js";
 import {
+  type AttachmentChip,
+  attachmentErrorMessage,
+  chipFromFile,
+  chipFromView,
+  contentDispositionFor,
+  localAttachmentKey,
+  MAX_ATTACHMENT_BYTES,
+  MAX_ATTACHMENTS,
+  MAX_CONCURRENT_UPLOADS,
+} from "../chat/attachments.js";
+import {
   abortUrl,
+  attachmentsUrl,
+  attachmentUrl,
   classifySendError,
   deleteIfEmptyUrl,
   draftUrl,
@@ -53,7 +73,9 @@ const SESSION_WAIT_MS = 300;
 
 interface DraftResponse {
   readonly text?: unknown;
+  readonly attachments?: unknown;
   readonly pendingSends?: unknown;
+  readonly quota?: { readonly percent?: unknown };
   readonly updatedAt?: unknown;
 }
 
@@ -84,6 +106,17 @@ export function useChatComposer(options: UseChatComposerOptions) {
   const pendingSends = computed(() => store.pendingSends);
   const abortPending = computed(() => store.abortPending);
   const acceptance = computed(() => store.acceptance);
+  const attachments = computed(() => store.attachments);
+  const attachmentQuota = computed(() => store.attachmentQuota);
+  const attachmentsBusy = computed(() =>
+    store.attachments.some((chip) => chip.status === "uploading"),
+  );
+  const attachmentsFailed = computed(() =>
+    store.attachments.some((chip) => chip.status === "error"),
+  );
+  const readyAttachments = computed(() =>
+    store.attachments.filter((chip) => chip.status === "ready" && chip.id.length > 0),
+  );
 
   store.bindWorkspace(`${options.app.value}:${options.project.value}`);
   let activeSession = options.sessionID.value;
@@ -100,6 +133,10 @@ export function useChatComposer(options: UseChatComposerOptions) {
   let loadSeq = 0;
   let saveChain: Promise<void> = Promise.resolve();
   let disposed = false;
+  let activeUploads = 0;
+  let preserveAttachmentsOnSwitch = false;
+  const xhrByKey = new Map<string, XMLHttpRequest>();
+  const cancelledUploads = new Set<string>();
   const suppressAbortUntil = new Map<string, number>();
   const cleanup: Array<() => void> = [];
 
@@ -127,7 +164,9 @@ export function useChatComposer(options: UseChatComposerOptions) {
     return type === "busy" || type === "retry";
   });
 
-  const hasDraft = computed(() => canSendDraft({ text: store.draft }));
+  const hasDraft = computed(() =>
+    canSendDraft({ text: store.draft, attachmentCount: readyAttachments.value.length }),
+  );
   const action = computed(() =>
     composerAction({
       turnActive: turnActive.value,
@@ -144,6 +183,8 @@ export function useChatComposer(options: UseChatComposerOptions) {
       composedDisabled.value ||
       store.delivery === "sending" ||
       store.delivery === "unknown" ||
+      attachmentsBusy.value ||
+      attachmentsFailed.value ||
       !hasDraft.value,
   );
   const stopDisabled = computed(() => composedDisabled.value || store.abortPending);
@@ -259,7 +300,7 @@ export function useChatComposer(options: UseChatComposerOptions) {
     if (
       !draftAutoDeleteEligible({
         text: store.draft,
-        attachmentCount: 0,
+        attachmentCount: store.attachments.length,
         hasPending: store.pendingSends.length > 0,
         acceptanceBusy: store.delivery === "sending" || store.delivery === "unknown",
         draftLoaded: true,
@@ -308,7 +349,7 @@ export function useChatComposer(options: UseChatComposerOptions) {
       cancelDraftTimer();
       return;
     }
-    if (draftIsEmpty({ text })) {
+    if (draftIsEmpty({ text, attachmentCount: store.attachments.length })) {
       cancelDraftTimer();
       cancelDeleteEmpty();
       void queueSave(session, "").then(() => maybeDeleteEmpty(session));
@@ -327,9 +368,304 @@ export function useChatComposer(options: UseChatComposerOptions) {
     void queueSave(session, text);
   }
 
+  function applyDraftQuota(quota: { readonly percent?: unknown } | undefined): void {
+    const percent = quota === undefined ? undefined : quota.percent;
+    store.setAttachmentQuota(
+      typeof percent === "number" && Number.isFinite(percent) ? percent : null,
+    );
+  }
+
+  function applyDraftAttachments(views: readonly AttachmentView[]): void {
+    const preserved = store.attachments.filter(
+      (chip) => chip.status === "uploading" || chip.status === "error",
+    );
+    const next: AttachmentChip[] = views.map((view) => chipFromView(view));
+    for (const chip of preserved) {
+      if (!next.some((candidate) => candidate.id.length > 0 && candidate.id === chip.id)) {
+        next.push(chip);
+      }
+    }
+    store.setAttachments(next);
+  }
+
+  function restoreAttachmentChips(views: readonly (AttachmentView | null)[]): void {
+    if (store.attachments.length > 0) {
+      return;
+    }
+    const restored: AttachmentChip[] = [];
+    for (const view of views) {
+      if (view !== null) restored.push(chipFromView(view));
+    }
+    store.setAttachments(restored);
+  }
+
+  function startPendingUploads(): void {
+    const pending = store.attachments.filter(
+      (chip) => chip.status === "uploading" && !chip.started,
+    );
+    for (const chip of pending) {
+      if (activeUploads >= MAX_CONCURRENT_UPLOADS) break;
+      store.updateAttachment(chip.key, { started: true });
+      activeUploads += 1;
+      void uploadAttachment(chip.key);
+    }
+  }
+
+  function uploadRequest(key: string, file: File, session: string): Promise<unknown> {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", attachmentsUrl(scope(), session));
+      xhr.setRequestHeader("Content-Disposition", contentDispositionFor(file.name));
+      if (file.type.length > 0) xhr.setRequestHeader("Content-Type", file.type);
+      xhrByKey.set(key, xhr);
+      xhr.upload.addEventListener("progress", (event) => {
+        if (!event.lengthComputable) return;
+        const progress = Math.min(99, Math.max(0, Math.round((event.loaded / event.total) * 100)));
+        store.updateAttachment(key, { progress });
+      });
+      xhr.addEventListener("load", () => {
+        xhrByKey.delete(key);
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(xhr.responseText) as unknown;
+        } catch {
+          parsed = undefined;
+        }
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve(parsed);
+          return;
+        }
+        const body =
+          typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>) : {};
+        const failure = new Error(
+          typeof body.error === "string" && body.error.length > 0
+            ? body.error
+            : `Upload failed (${xhr.status}).`,
+        ) as Error & { status?: number; code?: string };
+        failure.status = xhr.status;
+        if (typeof body.code === "string") failure.code = body.code;
+        reject(failure);
+      });
+      xhr.addEventListener("error", () => {
+        xhrByKey.delete(key);
+        reject(new Error("Upload failed."));
+      });
+      xhr.addEventListener("abort", () => {
+        xhrByKey.delete(key);
+        reject(new Error("Upload cancelled."));
+      });
+      xhr.send(file);
+    });
+  }
+
+  async function uploadAttachment(key: string): Promise<void> {
+    const chip = store.attachments.find((candidate) => candidate.key === key);
+    if (chip === undefined || chip.file === null) {
+      activeUploads = Math.max(0, activeUploads - 1);
+      return;
+    }
+    try {
+      let session = options.sessionID.value;
+      if (session === null) {
+        session = await createSession({
+          title: store.draft.trim().length === 0 ? "Attachment" : undefined,
+          preserveAttachments: true,
+        });
+        if (session === null) throw new Error("Session could not be created.");
+      }
+      if (!store.attachments.some((candidate) => candidate.key === key)) return;
+      store.updateAttachment(key, { sessionID: session });
+      const data = await uploadRequest(key, chip.file, session);
+      if (!store.attachments.some((candidate) => candidate.key === key)) return;
+      const body =
+        typeof data === "object" && data !== null ? (data as Record<string, unknown>) : {};
+      const view = normalizeAttachment(body.attachment);
+      if (view === null) throw new Error("The upload response was invalid.");
+      const quota =
+        typeof body.quota === "object" && body.quota !== null
+          ? (body.quota as { percent?: unknown })
+          : undefined;
+      const percent = quota === undefined ? undefined : quota.percent;
+      if (typeof percent === "number" && Number.isFinite(percent)) {
+        store.setAttachmentQuota(percent);
+      }
+      store.updateAttachment(key, {
+        ...view,
+        key,
+        status: "ready",
+        progress: 100,
+        error: null,
+        errorCode: null,
+        started: true,
+        sessionID: session,
+        file: null,
+      });
+      store.setError(null);
+    } catch (caught) {
+      if (!store.attachments.some((candidate) => candidate.key === key)) return;
+      if (cancelledUploads.has(key)) {
+        cancelledUploads.delete(key);
+        store.removeAttachment(key);
+        return;
+      }
+      const errorCode =
+        typeof caught === "object" &&
+        caught !== null &&
+        typeof (caught as { code?: unknown }).code === "string"
+          ? (caught as { code: string }).code
+          : null;
+      store.updateAttachment(key, {
+        status: "error",
+        progress: 0,
+        error: attachmentErrorMessage(caught),
+        errorCode,
+        started: true,
+      });
+    } finally {
+      activeUploads = Math.max(0, activeUploads - 1);
+      if (!disposed) startPendingUploads();
+    }
+  }
+
+  async function addFiles(files: readonly File[]): Promise<void> {
+    if (disposed) return;
+    const selected = files.filter((file) => file instanceof File);
+    if (selected.length === 0) return;
+    const accepted: File[] = [];
+    for (const file of selected) {
+      if (file.size > MAX_ATTACHMENT_BYTES) {
+        options.onToast?.(`${file.name} is larger than 100 MB.`, "error");
+        continue;
+      }
+      accepted.push(file);
+    }
+    if (accepted.length === 0) return;
+    if (store.attachments.length + accepted.length > MAX_ATTACHMENTS) {
+      store.setError(`Attach at most ${MAX_ATTACHMENTS} files per message.`);
+      return;
+    }
+    const chips = accepted.map((file) => {
+      const chip = chipFromFile(file, localAttachmentKey());
+      return { ...chip, kind: attachmentKindForMime(file.type) };
+    });
+    store.setAttachments([...store.attachments, ...chips]);
+    store.setError(null);
+    startPendingUploads();
+  }
+
+  function cancelUpload(key: string): void {
+    const xhr = xhrByKey.get(key);
+    cancelledUploads.add(key);
+    xhrByKey.delete(key);
+    if (xhr !== undefined) xhr.abort();
+    store.removeAttachment(key);
+    startPendingUploads();
+  }
+
+  async function retryAttachment(key: string): Promise<void> {
+    const chip = store.attachments.find((candidate) => candidate.key === key);
+    if (chip === undefined || chip.status !== "error") return;
+    store.updateAttachment(key, {
+      status: "uploading",
+      progress: 0,
+      error: null,
+      errorCode: null,
+      started: false,
+    });
+    startPendingUploads();
+  }
+
+  async function removeAttachment(key: string): Promise<void> {
+    const chip = store.attachments.find((candidate) => candidate.key === key);
+    if (chip === undefined) return;
+    if (chip.status === "uploading") {
+      cancelUpload(key);
+      return;
+    }
+    if (chip.id.length > 0) {
+      try {
+        await apiMutation<unknown>(
+          attachmentUrl(scope(), chip.id),
+          { json: {} },
+          { method: "DELETE", ...authOptions() },
+        );
+      } catch (caught) {
+        options.onToast?.(attachmentErrorMessage(caught), "error");
+        await loadDraft(store.sessionID ?? options.sessionID.value ?? "", {
+          applyText: false,
+          preserveAttachments: false,
+        });
+        return;
+      }
+    }
+    store.removeAttachment(key);
+    const session = options.sessionID.value;
+    if (session !== null) {
+      if (draftIsEmpty({ text: store.draft, attachmentCount: store.attachments.length })) {
+        void queueSave(session, "").then(() => maybeDeleteEmpty(session));
+      } else {
+        scheduleDraftSave(session, store.draft);
+      }
+    }
+  }
+
+  async function setAttachmentMode(key: string, mode: "auto" | "inline" | "file"): Promise<void> {
+    const chip = store.attachments.find((candidate) => candidate.key === key);
+    if (chip === undefined || chip.status !== "ready" || chip.id.length === 0) return;
+    const resolved = attachmentModeValue(chip.kind, mode);
+    try {
+      const data = await apiMutation<unknown>(
+        attachmentUrl(scope(), chip.id),
+        { json: { mode: resolved } },
+        { method: "PATCH", ...authOptions() },
+      );
+      const body =
+        typeof data === "object" && data !== null ? (data as Record<string, unknown>) : {};
+      const view = normalizeAttachment(body.attachment ?? data);
+      if (view === null) throw new Error("The attachment response was invalid.");
+      store.updateAttachment(key, {
+        ...view,
+        key,
+        status: "ready",
+        progress: 100,
+        error: null,
+        errorCode: null,
+        started: true,
+        file: null,
+      });
+    } catch (caught) {
+      options.onToast?.(attachmentErrorMessage(caught), "error");
+    }
+  }
+
+  async function redeliverAttachmentAsFile(
+    attachment: AttachmentChip | AttachmentView,
+  ): Promise<void> {
+    const session = options.sessionID.value;
+    if (session === null) {
+      options.onToast?.("Open a session before sending the attachment again.", "error");
+      return;
+    }
+    const payload = redeliveryAttachmentPayload(attachment);
+    if (payload.length === 0) return;
+    try {
+      await apiMutation<unknown>(
+        messagesUrl(scope(), session, true),
+        { json: { attachments: payload } },
+        authOptions(),
+      );
+      options.onToast?.("Sent again as a file.", "success");
+      await options.refreshMessages(session);
+      await loadDraft(session, { applyText: false });
+      forwardSent(session);
+    } catch (caught) {
+      options.onToast?.(sendFailureMessage(caught), "error");
+    }
+  }
+
   async function loadDraft(
     session: string,
-    settings: { readonly applyText?: boolean } = {},
+    settings: { readonly applyText?: boolean; readonly preserveAttachments?: boolean } = {},
   ): Promise<DraftResponse | null> {
     if (session.length === 0 || options.stopped.value) {
       return null;
@@ -344,6 +680,10 @@ export function useChatComposer(options: UseChatComposerOptions) {
       }
       const pending = normalizePendingSends(data.pendingSends);
       store.setPending(pending);
+      if (settings.preserveAttachments !== true) {
+        applyDraftAttachments(normalizeAttachments(data.attachments));
+      }
+      applyDraftQuota(data.quota);
       const text = typeof data.text === "string" ? data.text : "";
       store.setLastSaved(session, draftTextForSave(text));
       if (settings.applyText !== false && expectedEdit === editSeq) {
@@ -403,9 +743,17 @@ export function useChatComposer(options: UseChatComposerOptions) {
     editSeq += 1;
     store.setDraft("");
     if (next === null) {
+      store.setAttachments([]);
+      store.setAttachmentQuota(null);
       return;
     }
-    await loadDraft(next);
+    const preserve = preserveAttachmentsOnSwitch;
+    preserveAttachmentsOnSwitch = false;
+    if (!preserve) {
+      store.setAttachments([]);
+      store.setAttachmentQuota(null);
+    }
+    await loadDraft(next, preserve ? { preserveAttachments: true } : {});
   }
 
   function scheduleUnknownGrace(session: string): void {
@@ -437,17 +785,24 @@ export function useChatComposer(options: UseChatComposerOptions) {
     }
   }
 
-  async function createSession(): Promise<string | null> {
+  async function createSession(
+    settings: { readonly title?: string; readonly preserveAttachments?: boolean } = {},
+  ): Promise<string | null> {
     try {
+      const body =
+        typeof settings.title === "string" && settings.title.length > 0
+          ? { title: settings.title }
+          : {};
       const created = await apiMutation<{ id?: unknown }>(
         sessionsUrl(scope()),
-        { json: {} },
+        { json: body },
         authOptions(),
       );
       const id = typeof created.id === "string" && created.id.length > 0 ? created.id : null;
       if (id === null) {
         return null;
       }
+      preserveAttachmentsOnSwitch = settings.preserveAttachments === true;
       options.selectSession(id);
       await waitForSession(id);
       return id;
@@ -465,9 +820,22 @@ export function useChatComposer(options: UseChatComposerOptions) {
       return false;
     }
     const text = store.draft;
-    if (!canSendDraft({ text })) {
+    const sentChips = readyAttachments.value;
+    if (!canSendDraft({ text, attachmentCount: sentChips.length })) {
       return false;
     }
+    if (attachmentsBusy.value) {
+      store.setError("Wait for the attachments to finish uploading.");
+      return false;
+    }
+    if (attachmentsFailed.value) {
+      store.setError("Retry or remove failed attachments before sending.");
+      return false;
+    }
+    const sentViews = sentChips
+      .map((chip) => normalizeAttachment(chip))
+      .filter((view): view is AttachmentView => view !== null);
+    const sentPayload = attachmentSendPayload(sentViews);
     const seq = ++actionSeq;
     cancelUnknownGrace();
     cancelDraftTimer();
@@ -499,16 +867,27 @@ export function useChatComposer(options: UseChatComposerOptions) {
         return false;
       }
       tempID = localMessageID();
-      feed.insertOptimisticMessage({ id: tempID, text });
+      feed.insertOptimisticMessage({ id: tempID, text, attachments: sentViews });
       store.beginAcceptance({ tempID, text, sessionID: session });
       store.setDraft("");
       store.setLastSaved(session, "");
+      store.setAttachments([]);
       let response: unknown;
       try {
-        response = await postPrompt(messagesUrl(scope(), session, true), text, authOptions());
+        response = await postPrompt(
+          messagesUrl(scope(), session, true),
+          text,
+          authOptions(),
+          sentPayload,
+        );
       } catch (caught) {
         if (isAsyncUnavailable(caught)) {
-          response = await postPrompt(messagesUrl(scope(), session, false), text, authOptions());
+          response = await postPrompt(
+            messagesUrl(scope(), session, false),
+            text,
+            authOptions(),
+            sentPayload,
+          );
         } else {
           throw caught;
         }
@@ -580,6 +959,7 @@ export function useChatComposer(options: UseChatComposerOptions) {
       store.setDelivery("failed");
       store.setError(failure.message);
       store.setDraft(restore);
+      restoreAttachmentChips(sentViews);
       if (session !== null) {
         store.setLastSaved(session, draftTextForSave(restore));
         scheduleDraftSave(session, restore);
@@ -836,6 +1216,7 @@ export function useChatComposer(options: UseChatComposerOptions) {
       deleteEmpty &&
       draftAutoDeleteEligible({
         text: store.draft,
+        attachmentCount: store.attachments.length,
         hasPending: store.pendingSends.length > 0,
         acceptanceBusy: store.delivery === "sending" || store.delivery === "unknown",
         draftLoaded: true,
@@ -904,6 +1285,14 @@ export function useChatComposer(options: UseChatComposerOptions) {
     cancelDeleteEmpty();
     cancelPendingPoll();
     stopAbortSettle();
+    for (const xhr of xhrByKey.values()) {
+      try {
+        xhr.abort();
+      } catch {
+        // The upload may already be finished.
+      }
+    }
+    xhrByKey.clear();
     for (const remove of cleanup.splice(0)) {
       remove();
     }
@@ -918,6 +1307,11 @@ export function useChatComposer(options: UseChatComposerOptions) {
     pendingSends,
     abortPending,
     acceptance,
+    attachments,
+    attachmentQuota,
+    attachmentsBusy,
+    attachmentsFailed,
+    readyAttachments,
     turnActive,
     mode,
     sendDisabled,
@@ -935,6 +1329,13 @@ export function useChatComposer(options: UseChatComposerOptions) {
     shouldSuppressAbort,
     noteAgentStatus,
     promotionAllowed,
+    createSession,
+    addFiles,
+    retryAttachment,
+    removeAttachment,
+    cancelUpload,
+    setAttachmentMode,
+    redeliverAttachmentAsFile,
     reloadDraft: loadDraft,
   };
 }

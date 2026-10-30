@@ -145,7 +145,46 @@ export function draftAutoDeleteEligible(input?: {
   hasHistory?: unknown;
 }): boolean;
 
-export function normalizeAttachments(value: unknown): readonly Record<string, unknown>[];
+export type AttachmentKind = "image" | "video" | "pdf" | "file";
+export type AttachmentMode = "auto" | "inline" | "file";
+export type AttachmentState = "draft" | "in_flight" | "sent" | "missing";
+
+export interface AttachmentView {
+  id: string;
+  name: string;
+  mime: string;
+  size: number;
+  kind: AttachmentKind;
+  mode: AttachmentMode;
+  state: AttachmentState;
+  downloadURL: string;
+  inline: boolean;
+}
+
+export function normalizeAttachment(value: unknown): AttachmentView | null;
+export function normalizeAttachments(value: unknown): AttachmentView[];
+export function attachmentsUploading(value: unknown): boolean;
+export function attachmentKindForMime(value: unknown): AttachmentKind;
+export function attachmentIsMutable(value: unknown): boolean;
+export function attachmentSupportsInlineMode(kind: unknown): boolean;
+export function attachmentModeOptions(
+  kind: unknown,
+): Array<{ value: AttachmentMode; label: string }>;
+export function attachmentModeValue(kind: unknown, value: unknown): AttachmentMode;
+export function attachmentModeLabel(kind: unknown, mode: unknown): string;
+export function attachmentSendPayload(
+  value: unknown,
+): Array<{ id: string; mode?: "inline" | "file" }>;
+export function normalizeAttachmentWarnings(
+  value: unknown,
+): Array<{ code: string; message: string; downgrade: boolean }>;
+export function canRedeliverAsFile(value: unknown): boolean;
+export function redeliveryAttachmentPayload(
+  value: unknown,
+): Array<{ id: string; mode: "file" }>;
+export function attachmentViewFromFilePart(value: unknown): AttachmentView | null;
+export function safeAttachmentUrl(value: unknown): string | null;
+export function formatAttachmentSize(value: unknown): string;
 export function normalizeHandoffMeta(value: unknown): Record<string, unknown> | null;
 export function normalizeStreamWarning(value: unknown): {
   code: string;

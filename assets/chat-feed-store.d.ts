@@ -3,6 +3,7 @@
  * its shape matches the frozen legacy `createThreadStore` exactly.
  */
 
+import type { AttachmentView } from "./chat-core.js";
 import type { PartType } from "../src/opencode/events.js";
 
 export interface FeedPartRecord {
@@ -27,7 +28,7 @@ export interface FeedMessageRecord {
   usage?: { input: number; output: number; reasoning: number; cacheRead: number; cacheWrite: number };
   model?: { providerID: string; modelID: string };
   summary?: boolean;
-  attachments?: readonly Record<string, unknown>[];
+  attachments?: readonly AttachmentView[];
   handoff?: Record<string, unknown>;
   system?: Record<string, unknown>;
   classificationPending?: boolean;

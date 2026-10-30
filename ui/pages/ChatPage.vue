@@ -3,11 +3,21 @@ import { useQuery } from "@tanstack/vue-query";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import {
+  commandBlockedByPending,
+  commandLine,
+  hanseFallbackEntries,
+  parseComposerCommand,
+  resolveComposerCommand,
+  shellRequiresConfirmation,
+} from "../../assets/chat-commands.js";
+import {
+  type AttachmentView,
   handoffBodyFromText,
   handoffNoteFromText,
   imageGateFromView,
   imagePollDelay,
   messageCountLabel,
+  normalizeAttachments,
   normalizeHandoffMeta,
   resolveActiveStatusLabel,
 } from "../../assets/chat-core.js";
@@ -17,6 +27,7 @@ import type {
 } from "../../assets/chat-feed-store.js";
 import { disposeHighlightController } from "../../assets/chat-highlight.js";
 import type { RuntimeState } from "../../src/http/ui.js";
+import type { CommandEntry } from "../../src/opencode/commands.js";
 import type { ContextSnapshot } from "../../src/opencode/context.js";
 import type { NormalizedTodo } from "../../src/opencode/prompts.js";
 import type { PreviewView } from "../../src/preview/types.js";
@@ -32,7 +43,7 @@ import {
   partTerminal,
 } from "../chat/prompt-utils.js";
 import { deriveQueueRows } from "../chat/queue.js";
-import { isPendingResolved } from "../chat/send.js";
+import { commandListUrl, commandSendUrl, isPendingResolved, localMessageID } from "../chat/send.js";
 import { clearChatSessionState, clearChatWorkspaceState } from "../chat/session-storage.js";
 import { applyChatActions, type RenderIntent } from "../chat/state-actions.js";
 import type {
@@ -48,11 +59,15 @@ import type {
   ChatSessionsResponse,
   ChatThreadItem,
   ChatTodoResponse,
+  CommandConfirmRequest,
+  CommandPaletteStatus,
   InlineQuestionView,
   QuestionOutcome,
 } from "../chat/types.js";
 import { normalizeChatQuery, useChatRouteState } from "../chat/useChatRouteState.js";
 import AppIcon from "../components/AppIcon.vue";
+import ChatAttachments from "../components/chat/ChatAttachments.vue";
+import ChatCommandPalette from "../components/chat/ChatCommandPalette.vue";
 import ChatComposer from "../components/chat/ChatComposer.vue";
 import ChatContextRail from "../components/chat/ChatContextRail.vue";
 import ChatImageGate from "../components/chat/ChatImageGate.vue";
@@ -168,6 +183,346 @@ function stopPreviewRefresh(): void {
     clearTimeout(previewRefreshTimer);
     previewRefreshTimer = undefined;
   }
+}
+
+const COMMANDS_CACHE_MS = 30_000;
+const SHELL_CONFIRM_BODY =
+  "This command contains shell blocks, or its shell usage cannot be verified, and it runs on the server outside the agent permission flow.";
+const commandEntries = ref<readonly CommandEntry[]>([]);
+const commandStatus = ref<CommandPaletteStatus>("loading");
+const commandWarning = ref<string | null>(null);
+const commandShadowed = ref<readonly string[]>([]);
+let commandFetchedAt = 0;
+const paletteOpen = ref(false);
+const paletteFilter = ref("");
+const commandConfirm = ref<CommandConfirmRequest | null>(null);
+let commandConfirmResolver: ((accepted: boolean) => void) | null = null;
+
+function commandScope(): { app: string; project: string } {
+  return { app: routeState.app.value, project: routeState.project.value };
+}
+
+function commandWarningsFrom(value: unknown): { warning: string | null; shadowed: string[] } {
+  const shadowed: string[] = [];
+  let warning: string | null = null;
+  if (!Array.isArray(value)) return { warning, shadowed };
+  for (const raw of value) {
+    if (typeof raw !== "object" || raw === null) continue;
+    const entry = raw as Record<string, unknown>;
+    const code = typeof entry.code === "string" ? entry.code : "";
+    const message = typeof entry.message === "string" ? entry.message.trim() : "";
+    if (code === "command_shadowed" && typeof entry.command === "string") {
+      shadowed.push(entry.command);
+      continue;
+    }
+    if (warning === null && message.length > 0) warning = message;
+  }
+  return { warning, shadowed };
+}
+
+async function loadCommands(force = false): Promise<void> {
+  if (routeState.app.value.length === 0) return;
+  if (
+    !force &&
+    commandEntries.value.length > 0 &&
+    Date.now() - commandFetchedAt < COMMANDS_CACHE_MS
+  ) {
+    return;
+  }
+  try {
+    const data = await apiQuery<ChatCommandsResponse>(commandListUrl(commandScope()));
+    const commands = Array.isArray(data.commands) ? (data.commands as CommandEntry[]) : [];
+    const sources =
+      typeof data.sources === "object" && data.sources !== null
+        ? (data.sources as Record<string, unknown>)
+        : {};
+    const opencode = typeof sources.opencode === "string" ? sources.opencode : "unavailable";
+    commandStatus.value =
+      opencode === "ok"
+        ? "ready"
+        : opencode === "stopped"
+          ? "stopped"
+          : opencode === "unconfigured"
+            ? "unconfigured"
+            : "unavailable";
+    commandEntries.value = commands;
+    const mapped = commandWarningsFrom(data.warnings);
+    commandWarning.value = mapped.warning;
+    commandShadowed.value = mapped.shadowed;
+    commandFetchedAt = Date.now();
+  } catch {
+    commandEntries.value = hanseFallbackEntries(view.value?.app.master === true);
+    commandStatus.value = "unavailable";
+    commandWarning.value = "Application commands are unavailable; Hanse commands still work.";
+    commandShadowed.value = [];
+    commandFetchedAt = Date.now();
+  }
+}
+
+function openCommands(): void {
+  paletteOpen.value = true;
+  const parsed = parseComposerCommand(composerDraft.value);
+  paletteFilter.value = parsed.kind === "command" ? parsed.token : "";
+  void loadCommands();
+}
+
+function closeCommands(): void {
+  paletteOpen.value = false;
+  paletteFilter.value = "";
+}
+
+function selectCommand(entry: CommandEntry): void {
+  composerHandleInput(commandLine(entry.name));
+  closeCommands();
+  focusComposer();
+}
+
+function askCommandConfirm(request: CommandConfirmRequest): Promise<boolean> {
+  if (commandConfirmResolver !== null) {
+    commandConfirmResolver(false);
+    commandConfirmResolver = null;
+  }
+  commandConfirm.value = request;
+  return new Promise<boolean>((resolve) => {
+    commandConfirmResolver = resolve;
+  });
+}
+
+function resolveCommandConfirm(accepted: boolean): void {
+  const resolve = commandConfirmResolver;
+  commandConfirmResolver = null;
+  commandConfirm.value = null;
+  resolve?.(accepted);
+  focusComposer();
+}
+
+function openNewTab(url: string): void {
+  if (url.length === 0) {
+    toasts.push("No link is available.", "error");
+    return;
+  }
+  let opened: Window | null = null;
+  try {
+    opened = window.open(url, "_blank");
+  } catch {
+    opened = null;
+  }
+  if (opened === null) {
+    toasts.push("Opened in this tab because the popup was blocked.", "success");
+    window.location.assign(url);
+    return;
+  }
+  try {
+    opened.opener = null;
+  } catch {
+    // Cross-origin handle; the tab is already open.
+  }
+}
+
+async function ensureCommandSession(title?: string): Promise<string | null> {
+  if (routeState.session.value !== null) return routeState.session.value;
+  return composerCreateSession(title === undefined ? {} : { title });
+}
+
+async function sendServerCommand(entry: CommandEntry, args: string): Promise<void> {
+  const session = await ensureCommandSession();
+  if (session === null) return;
+  let confirmShell = shellRequiresConfirmation(entry.shell);
+  if (confirmShell) {
+    const accepted = await askCommandConfirm({
+      title: `Run /${entry.name}?`,
+      body: SHELL_CONFIRM_BODY,
+      confirmLabel: "Run command",
+      cancelLabel: "Cancel",
+    });
+    if (!accepted) return;
+  }
+  const originalDraft = composerDraft.value;
+  const lineText = commandLine(entry.name, args).trim();
+  const tempID = localMessageID();
+  composerHandleInput("");
+  feed.insertOptimisticMessage({ id: tempID, text: lineText, attachments: [] });
+  let retried = false;
+  for (;;) {
+    try {
+      const response = await apiMutation<{ messageID?: unknown }>(
+        commandSendUrl(commandScope(), session),
+        { json: { name: entry.name, arguments: args, confirmShell } },
+      );
+      const serverID =
+        typeof response === "object" &&
+        response !== null &&
+        typeof (response as { messageID?: unknown }).messageID === "string" &&
+        (response as { messageID: string }).messageID.length > 0
+          ? (response as { messageID: string }).messageID
+          : null;
+      if (serverID === null) {
+        throw Object.assign(new TypeError("Delivery unknown; checking…"), { outcome: "unknown" });
+      }
+      feed.rekeyOptimistic({
+        tempID,
+        serverID,
+        allowPromotion: composerPromotionAllowed(),
+      });
+      feed.clearOptimisticState(serverID);
+      toasts.push("Command accepted.", "success");
+      void sessionsQuery.refetch();
+      return;
+    } catch (caught) {
+      if (
+        !retried &&
+        caught instanceof ApiError &&
+        caught.status === 400 &&
+        caught.code === "shell_confirmation_required"
+      ) {
+        const accepted = await askCommandConfirm({
+          title: `Run /${entry.name}?`,
+          body: SHELL_CONFIRM_BODY,
+          confirmLabel: "Run command",
+          cancelLabel: "Cancel",
+        });
+        if (accepted) {
+          retried = true;
+          confirmShell = true;
+          continue;
+        }
+      }
+      feed.removeMessage(tempID);
+      composerHandleInput(originalDraft);
+      const message =
+        caught instanceof ApiError && caught.code === "command_not_found"
+          ? "Command not found; refreshing the list."
+          : errorText(caught, "Could not run the command.");
+      toasts.push(message, "error");
+      if (caught instanceof ApiError && caught.code === "command_not_found") {
+        void loadCommands(true);
+      }
+      return;
+    }
+  }
+}
+
+async function runHanseAction(entry: CommandEntry, args: string): Promise<void> {
+  switch (entry.action) {
+    case "new":
+      composerHandleInput("");
+      await createSession();
+      focusComposer();
+      return;
+    case "help": {
+      const filter = args.trim().length === 0 ? "" : (args.trim().split(/\s+/)[0] ?? "");
+      composerHandleInput("");
+      paletteOpen.value = true;
+      paletteFilter.value = filter;
+      void loadCommands();
+      focusComposer();
+      return;
+    }
+    case "editor":
+      composerHandleInput("");
+      openNewTab(view.value?.links.ide ?? "");
+      return;
+    case "diff":
+      composerHandleInput("");
+      openNewTab(view.value === undefined ? "" : `${view.value.links.app}#changes-title`);
+      return;
+    case "compact":
+      composerHandleInput("");
+      await compactSession();
+      return;
+    case "restart": {
+      const accepted = await askCommandConfirm({
+        title: `Restart ${appKey.value}?`,
+        body: "An active turn will be interrupted.",
+        confirmLabel: "Restart agent",
+        cancelLabel: "Cancel",
+      });
+      if (!accepted) return;
+      composerHandleInput("");
+      await restartAgent();
+      return;
+    }
+    default:
+      toasts.push(`/${entry.name} is not available in this build.`, "error");
+  }
+}
+
+async function runComposerCommand(parsed: { token: string; args: string }): Promise<void> {
+  if (composerAttachments.value.length > 0) {
+    toasts.push("Remove attachments before using a slash command.", "error");
+    return;
+  }
+  if (commandEntries.value.length === 0) {
+    await loadCommands(true);
+  }
+  const listAvailable = commandEntries.value.length > 0;
+  const resolved = resolveComposerCommand(listAvailable ? commandEntries.value : [], parsed.token, {
+    listAvailable,
+    master: view.value?.app.master === true,
+  });
+  if (resolved.kind === "unknown") {
+    const accepted = await askCommandConfirm({
+      title: "Unknown command",
+      body: `/${parsed.token} is not a command in this workspace. Send it as a message instead?`,
+      confirmLabel: "Send message",
+      cancelLabel: "Cancel",
+    });
+    if (accepted) {
+      await composerSend();
+    }
+    return;
+  }
+  if (resolved.kind === "disabled") {
+    toasts.push(resolved.reason, "error");
+    return;
+  }
+  if (
+    commandBlockedByPending(
+      resolved.entry,
+      promptsStore.dockEntriesForSession(routeState.session.value).length > 0,
+    )
+  ) {
+    toasts.push("Answer the pending request first.", "error");
+    focusComposer();
+    return;
+  }
+  if (resolved.kind === "opencode") {
+    if (resolved.shadowed) {
+      toasts.push(`/${parsed.token} is provided by the application.`, "error");
+    }
+    await sendServerCommand(resolved.entry, parsed.args);
+    return;
+  }
+  if (resolved.action !== "help" && parsed.args.trim().length > 0) {
+    toasts.push(`/${resolved.entry.name} does not take arguments.`, "error");
+    return;
+  }
+  await runHanseAction(resolved.entry, parsed.args);
+}
+
+async function submitComposer(): Promise<void> {
+  const parsed = parseComposerCommand(composerDraft.value);
+  if (parsed.kind !== "command") {
+    await composerSend();
+    return;
+  }
+  await runComposerCommand(parsed);
+}
+
+function onAppSelect(event: Event): void {
+  const select = event.target;
+  if (!(select instanceof HTMLSelectElement)) return;
+  const option = select.selectedOptions[0];
+  const app = option?.dataset.app ?? "";
+  const project = option?.dataset.project ?? "";
+  if (app.length === 0 || (app === routeState.app.value && project === routeState.project.value)) {
+    return;
+  }
+  routeState.switchApp(app, project);
+}
+
+function redeliverAttachment(attachment: AttachmentView): void {
+  void composerRedeliverAttachment(attachment);
 }
 
 async function loadPrompts(signal?: AbortSignal): Promise<void> {
@@ -802,7 +1157,31 @@ const {
   shouldSuppressAbort: composerShouldSuppressAbort,
   noteAgentStatus: composerNoteAgentStatus,
   promotionAllowed: composerPromotionAllowed,
+  attachments: composerAttachments,
+  attachmentQuota: composerAttachmentQuota,
+  createSession: composerCreateSession,
+  addFiles: composerAddFiles,
+  retryAttachment: composerRetryAttachment,
+  removeAttachment: composerRemoveAttachment,
+  cancelUpload: composerCancelUpload,
+  setAttachmentMode: composerSetAttachmentMode,
+  redeliverAttachmentAsFile: composerRedeliverAttachment,
 } = composer;
+
+watch(
+  composerDraft,
+  (value) => {
+    const tokenDraft = /^\/(?!\/)\S*$/.test(value) ? value.slice(1) : null;
+    if (tokenDraft !== null) {
+      paletteOpen.value = true;
+      paletteFilter.value = tokenDraft;
+      if (commandEntries.value.length === 0) void loadCommands();
+      return;
+    }
+    if (paletteOpen.value) closeCommands();
+  },
+  { immediate: true },
+);
 
 const composerPendingRows = computed(() => {
   feed.revision;
@@ -1000,12 +1379,8 @@ async function loadSidecars(sessionID: string, generation: number): Promise<void
     // Runtime state also comes from the boot props and stream ready refresh.
   }
 
-  try {
-    await apiQuery<ChatCommandsResponse>(withProject(`${apiBase.value}/commands`), {
-      ...(signal === undefined ? {} : { signal }),
-    });
-  } catch {
-    // Command metadata is not rendered in the read-only shell; the read keeps parity.
+  if (generation === loadGeneration) {
+    void loadCommands();
   }
 }
 
@@ -1220,6 +1595,7 @@ const chatStream = useChatStream({
     void loadPrompts();
     void loadSavedPermissions();
     void loadPreviews();
+    void loadCommands(true);
   },
   onResync: (reason) => {
     const message =
@@ -1268,6 +1644,7 @@ watch(
       void loadPrompts();
       void loadSavedPermissions();
       void loadPreviews();
+      void loadCommands(true);
     }
     if (sessionID === null) {
       feed.reset(null);
@@ -1383,6 +1760,7 @@ const threadMessages = computed<ChatMessageView[]>(() => {
     }
     const system = record.system;
     const handoff = record.handoff === undefined ? null : normalizeHandoffMetadata(record);
+    const attachments = normalizeAttachments(record.attachments);
     out.push({
       id: record.id,
       role: record.role,
@@ -1401,6 +1779,7 @@ const threadMessages = computed<ChatMessageView[]>(() => {
                 : {}),
             },
       handoff,
+      ...(attachments.length === 0 ? {} : { attachments }),
       parts,
     });
   }
@@ -1489,6 +1868,12 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   document.removeEventListener("keydown", onGlobalKeydown);
+  if (commandConfirmResolver !== null) {
+    const resolve = commandConfirmResolver;
+    commandConfirmResolver = null;
+    commandConfirm.value = null;
+    resolve(false);
+  }
   abortLoads();
   stopImagePolling();
   stopContextPolling();
@@ -1585,7 +1970,43 @@ onBeforeUnmount(() => {
           >
             <AppIcon name="menu" />
           </button>
-          <span class="chat-pane-head__title">{{ title }}</span>
+          <label class="sr-only" for="chat-app-select">Application</label>
+          <div v-if="view !== undefined && view.appOptions.length > 0" class="chat-app-select">
+            <select
+              id="chat-app-select"
+              class="select"
+              data-chat-app-select
+              :value="`${routeState.project.value}:${routeState.app.value}`"
+              @change="onAppSelect"
+            >
+              <template v-for="group in view.appOptions" :key="group.projectId">
+                <optgroup :label="group.projectName">
+                  <option
+                    v-for="option in group.apps"
+                    :key="option.value"
+                    :value="`${option.projectId}:${option.appKey}`"
+                    :data-app="option.appKey"
+                    :data-project="option.projectId"
+                    :selected="option.selected"
+                  >
+                    {{ group.projectName }} / {{ option.appKey }}
+                  </option>
+                </optgroup>
+              </template>
+            </select>
+          </div>
+          <span v-if="view === undefined" class="chat-pane-head__title">{{ title }}</span>
+          <button
+            class="btn btn-ghost btn-icon btn-sm chat-pane-head__new"
+            type="button"
+            aria-label="New session"
+            title="New session"
+            data-chat-new-session-head
+            :disabled="stopped || creatingSession"
+            @click="createSession"
+          >
+            <AppIcon name="plus" />
+          </button>
           <span class="chat-runtime status" :data-status="chatStream.status.value">
             {{
               chatStream.status.value === "paused"
@@ -1614,6 +2035,7 @@ onBeforeUnmount(() => {
           @load-earlier="loadEarlier"
           @question-submit="submitInlineQuestion"
           @question-reject="rejectInlineQuestion"
+          @attachment-redeliver="redeliverAttachment"
         />
         <ChatPromptDock
           v-if="!stopped && !appEmpty"
@@ -1650,19 +2072,38 @@ onBeforeUnmount(() => {
           :aria-busy="composerAbortPending"
           :placeholder="`Message ${appKey} agent`"
           @update:draft="composerHandleInput"
-          @send="composerSend"
+          @send="submitComposer"
           @stop="composerStop"
           @check-unknown="composerCheckAgain"
           @remove-unknown="composerRemoveUnknown"
           @retry-pending="composerRetryPending"
           @dismiss-pending="composerDismissPending"
           @restore-pending="composerRestorePending"
+          @attach-files="composerAddFiles"
+          @open-commands="openCommands"
           @escape="
+            closeCommands();
             chatUi.setQueueOpen(false);
             chatUi.setSessionsOpen(false);
             chatUi.setContextOpen(false);
           "
-        />
+        >
+          <template #attachments>
+            <ChatAttachments
+              :attachments="composerAttachments"
+              :quota-percent="composerAttachmentQuota"
+              :disabled="stopped || deletionPending || imageBlocked"
+              :command-active="
+                paletteOpen || parseComposerCommand(composerDraft).kind === 'command'
+              "
+              @add-files="composerAddFiles"
+              @retry="composerRetryAttachment"
+              @remove="composerRemoveAttachment"
+              @cancel="composerCancelUpload"
+              @mode="composerSetAttachmentMode"
+            />
+          </template>
+        </ChatComposer>
       </div>
 
       <ChatContextRail
@@ -1686,6 +2127,19 @@ onBeforeUnmount(() => {
         @dismiss-policy="chatUi.dismissPolicyWarning"
       />
 
+      <ChatCommandPalette
+        :open="paletteOpen"
+        :filter="paletteFilter"
+        :commands="commandEntries"
+        :status="commandStatus"
+        :warning="commandWarning"
+        :shadowed="commandShadowed"
+        :confirm="commandConfirm"
+        :master="view?.app.master === true"
+        @select="selectCommand"
+        @close="closeCommands"
+        @confirm-result="resolveCommandConfirm"
+      />
       <ChatQueueDialog
         :open="chatUi.queueOpen"
         :rows="queueRows"

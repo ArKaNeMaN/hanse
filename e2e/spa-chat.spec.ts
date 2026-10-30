@@ -1023,3 +1023,223 @@ test("SPA context rail visual QA at 390/768/1024/1360/1440 dark and light", asyn
   await page.waitForTimeout(300);
   expectNoPageErrors(errors);
 });
+
+async function dispatchFiles(
+  page: Page,
+  target: string,
+  type: "drop" | "paste",
+  name: string,
+): Promise<void> {
+  await page.evaluate(
+    ({ selector, eventType, filename }) => {
+      const dt = new DataTransfer();
+      dt.items.add(new File(["fixture"], filename, { type: "text/plain" }));
+      const node = document.querySelector(selector);
+      if (node === null) throw new Error(`missing ${selector}`);
+      const event = new Event(eventType, { bubbles: true, cancelable: true });
+      Object.defineProperty(event, eventType === "paste" ? "clipboardData" : "dataTransfer", {
+        value: dt,
+      });
+      node.dispatchEvent(event);
+    },
+    { selector: target, eventType: type, filename: name },
+  );
+}
+
+test("SPA attachments upload with progress, drop, paste, cancel, retry, and mode control", async ({
+  page,
+}) => {
+  test.skip(!isSpa(), "SPA mode only");
+  test.slow();
+  const errors = collectPageErrors(page);
+  let progressDelayed = false;
+  let retryFailed = false;
+  await page.route("**/api/apps/alpha/attachments?**", async (route) => {
+    const disposition = route.request().headers()["content-disposition"] ?? "";
+    if (disposition.includes("photo.png") && !progressDelayed) {
+      progressDelayed = true;
+      await new Promise((resolve) => setTimeout(resolve, 600));
+    }
+    if (disposition.includes("cancel.txt")) {
+      await new Promise((resolve) => setTimeout(resolve, 2_000));
+    }
+    if (disposition.includes("retry.txt") && !retryFailed) {
+      retryFailed = true;
+      await route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "Upload failed", code: "upload_failed" }),
+      });
+      return;
+    }
+    await route.continue().catch(() => undefined);
+  });
+
+  await signIn(page, CHAT_PATH);
+  await expect(page.locator("#chat-shell")).toHaveCount(1);
+  const input = page.locator("[data-chat-attach-input]");
+
+  await input.setInputFiles({
+    name: "photo.png",
+    mimeType: "image/png",
+    buffer: Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+      "base64",
+    ),
+  });
+  await expect(page.locator("[data-attachment-key] .chat-attachment__progress")).toBeVisible();
+  await expect(page.locator("[data-attachment-id]")).toHaveCount(1, { timeout: 15_000 });
+
+  await dispatchFiles(page, "form[data-chat-composer]", "drop", "dropped.txt");
+  await dispatchFiles(page, "[data-chat-composer-input]", "paste", "pasted.txt");
+  await expect(page.locator("[data-attachment-id]")).toHaveCount(3, { timeout: 15_000 });
+
+  await input.setInputFiles({
+    name: "cancel.txt",
+    mimeType: "text/plain",
+    buffer: Buffer.from("cancel fixture"),
+  });
+  await expect(page.locator("[data-attachment-key] [data-attachment-cancel]").last()).toBeVisible();
+  await page.locator("[data-attachment-key] [data-attachment-cancel]").last().click();
+  await expect(page.locator("[data-attachment-key]")).toHaveCount(3);
+
+  await input.setInputFiles({
+    name: "retry.txt",
+    mimeType: "text/plain",
+    buffer: Buffer.from("retry fixture"),
+  });
+  const retryChip = page.locator('[data-attachment-key][data-status="error"]');
+  await expect(retryChip).toHaveCount(1, { timeout: 15_000 });
+  await retryChip.locator("[data-attachment-retry]").click();
+  await expect(page.locator("[data-attachment-id]")).toHaveCount(4, { timeout: 15_000 });
+
+  const mode = page.locator("[data-attachment-mode]").first();
+  await expect(mode).toBeVisible();
+  await mode.selectOption("file");
+  await expect(page.locator("[data-chat-send-error]")).toHaveCount(0);
+
+  await page.locator("[data-attachment-remove]").first().click();
+  await expect(page.locator("[data-attachment-id]")).toHaveCount(3);
+  while ((await page.locator("[data-attachment-remove]").count()) > 0) {
+    await page.locator("[data-attachment-remove]").first().click();
+    await page.waitForTimeout(100);
+  }
+  await expect(page.locator("[data-attachment-key]")).toHaveCount(0);
+  await page.waitForTimeout(300);
+  // The retry fixture intentionally returns one 500; the failure itself is asserted above.
+  expectNoPageErrors(errors.filter((error) => !error.includes("500 (Internal Server Error)")));
+});
+
+test("SPA drafts expose attachment quota warnings", async ({ page }) => {
+  test.skip(!isSpa(), "SPA mode only");
+  const errors = collectPageErrors(page);
+  await page.route("**/sessions/ses_e2ealpha/draft*", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        text: "",
+        attachments: [],
+        pendingSends: [],
+        quota: { percent: 86 },
+        updatedAt: null,
+      }),
+    });
+  });
+  await signIn(page, CHAT_PATH);
+  await expect(page.locator("[data-chat-attachment-quota]")).toContainText("86% full");
+  await page.waitForTimeout(300);
+  expectNoPageErrors(errors);
+});
+
+test("SPA renders inline image and file-only attachment cards", async ({ page }) => {
+  const errors = collectPageErrors(page);
+  await signIn(page, `/chat?app=alpha&project=${PROJECT_ONE}&session=ses_e2erender`);
+  await expect(
+    page.locator('[data-message-attachments] [data-attachment-id="att_e2e_file"]'),
+  ).toHaveCount(1);
+  await expect(
+    page.locator('[data-message-id="msg_e2e_render_attachment_file"]').getByText("fixture.csv"),
+  ).toBeVisible();
+  const inline = page.locator('[data-attachment-id="att_e2e_inline"]');
+  await expect(inline).toHaveCount(1);
+  await expect(inline).toHaveAttribute("data-inline", "true");
+  await expect(inline).toHaveAttribute("data-kind", "image");
+  await page.waitForTimeout(300);
+  expectNoPageErrors(errors);
+});
+
+test("SPA slash palette filters, confirms a shell command, and posts a 202", async ({ page }) => {
+  test.skip(!isSpa(), "SPA mode only");
+  const errors = collectPageErrors(page);
+  await page.route("**/api/apps/alpha/prompts**", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ questions: [], permissions: [], warnings: [] }),
+    });
+  });
+  await page.route("**/sessions/ses_e2ealpha/draft*", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        text: "",
+        attachments: [],
+        pendingSends: [],
+        quota: { percent: 0 },
+        updatedAt: null,
+      }),
+    });
+  });
+  await signIn(page, CHAT_PATH);
+  const input = page.locator("[data-chat-composer-input]");
+  await input.fill("/e2e");
+  await expect(page.locator("[data-command-palette]")).toBeVisible();
+  await expect(page.locator("[data-command-name]")).toHaveCount(2);
+  await input.fill("/e2e-shell");
+  await expect(page.locator("[data-command-name]")).toHaveCount(1);
+  await input.press("Enter");
+  await expect(input).toHaveValue("/e2e-shell ");
+
+  const commandResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      response.url().includes("/sessions/ses_e2ealpha/commands"),
+  );
+  await page.locator("[data-chat-send]").click();
+  await expect(page.locator("[data-command-confirm]")).toBeVisible();
+  await page.locator("[data-command-confirm-accept]").click();
+  expect((await commandResponse).status()).toBe(202);
+  await expect(
+    page.locator("#chat-scroll [data-message-id] .chat-text", { hasText: "/e2e-shell" }),
+  ).toHaveCount(1, { timeout: 15_000 });
+  await page.waitForTimeout(300);
+  expectNoPageErrors(errors);
+});
+
+test("SPA app menu flushes the draft and remounts the workspace", async ({ page }) => {
+  test.skip(!isSpa(), "SPA mode only");
+  const errors = collectPageErrors(page);
+  await signIn(page, CHAT_PATH);
+  await page.locator("[data-chat-composer-input]").fill("draft before switch");
+  const draftWrite = page.waitForResponse(
+    (response) => response.request().method() === "PUT" && response.url().includes("/draft"),
+  );
+  await page.locator("[data-chat-app-select]").selectOption("e2e-project-one:beta");
+  await expect(page).toHaveURL(/app=beta/);
+  expect((await draftWrite).ok()).toBe(true);
+  await expect(page.locator('#chat-shell[data-app-key="beta"]')).toHaveCount(1, {
+    timeout: 15_000,
+  });
+  await expect(page.locator("[data-chat-app-select]")).toHaveValue("e2e-project-one:beta");
+
+  await page.locator("[data-chat-app-select]").selectOption("e2e-project-one:alpha");
+  await expect(page).toHaveURL(/app=alpha/);
+  await expect(page.locator('#chat-shell[data-app-key="alpha"]')).toHaveCount(1, {
+    timeout: 15_000,
+  });
+  await expect(page.locator("#chat-shell")).toHaveCount(1);
+  await page.waitForTimeout(300);
+  expectNoPageErrors(errors.filter((error) => !error.includes("503 (Service Unavailable)")));
+});

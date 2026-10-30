@@ -245,6 +245,18 @@ const upstream = await startOpencodeUpstream({
   appId: FIXTURE_ALPHA_APP,
   sessions: E2E_CHAT_SESSIONS,
   messages: E2E_CHAT_MESSAGES,
+  commands: [
+    {
+      name: "e2e-command",
+      description: "Synthetic fixture command.",
+      template: "Echo the fixture argument.",
+    },
+    {
+      name: "e2e-shell",
+      description: "Synthetic shell-block fixture command.",
+      template: "Run !`echo fixture` now.",
+    },
+  ],
   savedPermissions: [
     {
       id: "e2e-saved-permission",
@@ -636,6 +648,7 @@ const previews = {
 const deps: HttpDeps = {
   db: fixture.db,
   workspaceRoot: fixture.workspaceRoot,
+  agentsHome: fixture.agentsHome,
   getProjects: () => {
     const rows = fixture.db
       .prepare("SELECT id, name, root_path, deleting FROM projects ORDER BY rowid")

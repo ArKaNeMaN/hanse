@@ -31,9 +31,13 @@ const emit = defineEmits<{
   "dismiss-pending": [entry: PendingSendView];
   "restore-pending": [entry: PendingSendView];
   escape: [];
+  "attach-files": [files: File[]];
+  "open-commands": [];
 }>();
 
 const input = ref<HTMLTextAreaElement | null>(null);
+const dragging = ref(false);
+let dragDepth = 0;
 
 function resize(): void {
   const node = input.value;
@@ -83,6 +87,59 @@ function onInput(event: Event): void {
   }
 }
 
+function clipboardFiles(event: ClipboardEvent): File[] {
+  const transfer = event.clipboardData;
+  if (transfer === null) return [];
+  const files: File[] = [];
+  for (const item of Array.from(transfer.items ?? [])) {
+    if (item.kind !== "file") continue;
+    const file = item.getAsFile();
+    if (file !== null) files.push(file);
+  }
+  return files;
+}
+
+function onPaste(event: ClipboardEvent): void {
+  if (props.disabled) return;
+  const files = clipboardFiles(event);
+  if (files.length === 0) return;
+  event.preventDefault();
+  emit("attach-files", files);
+}
+
+function hasFiles(event: DragEvent): boolean {
+  const types = event.dataTransfer?.types;
+  return types === undefined ? false : Array.from(types).includes("Files");
+}
+
+function onDragEnter(event: DragEvent): void {
+  if (props.disabled || !hasFiles(event)) return;
+  event.preventDefault();
+  dragDepth += 1;
+  dragging.value = true;
+}
+
+function onDragOver(event: DragEvent): void {
+  if (props.disabled || !hasFiles(event)) return;
+  event.preventDefault();
+  if (event.dataTransfer !== null) event.dataTransfer.dropEffect = "copy";
+}
+
+function onDragLeave(event: DragEvent): void {
+  if (!hasFiles(event)) return;
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (dragDepth === 0) dragging.value = false;
+}
+
+function onDrop(event: DragEvent): void {
+  if (props.disabled || !hasFiles(event)) return;
+  event.preventDefault();
+  dragDepth = 0;
+  dragging.value = false;
+  const files = event.dataTransfer?.files;
+  if (files !== undefined && files.length > 0) emit("attach-files", Array.from(files));
+}
+
 function onKeydown(event: KeyboardEvent): void {
   if (event.isComposing) {
     return;
@@ -120,8 +177,29 @@ defineExpose({ focus, resize });
 </script>
 
 <template>
-  <form class="composer chat-composer" data-chat-composer @submit.prevent="primary">
+  <form
+    class="composer chat-composer"
+    :class="{ 'is-drop-target': dragging }"
+    data-chat-composer
+    :data-drop-target="dragging ? 'true' : undefined"
+    @submit.prevent="primary"
+    @dragenter="onDragEnter"
+    @dragover="onDragOver"
+    @dragleave="onDragLeave"
+    @drop="onDrop"
+  >
+    <slot name="attachments" />
     <div class="composer__row">
+      <button
+        class="btn btn-ghost btn-icon chat-commands-button"
+        type="button"
+        aria-label="Commands"
+        title="Commands"
+        data-chat-commands-button
+        @click="emit('open-commands')"
+      >
+        <AppIcon name="slash" />
+      </button>
       <label class="sr-only" for="chat-composer-input">Message</label>
       <textarea
         id="chat-composer-input"
@@ -138,6 +216,7 @@ defineExpose({ focus, resize });
         data-chat-composer-input
         @input="onInput"
         @keydown="onKeydown"
+        @paste="onPaste"
       ></textarea>
       <button
         class="btn btn-primary"

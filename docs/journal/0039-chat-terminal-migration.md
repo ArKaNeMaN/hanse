@@ -515,3 +515,35 @@ Tests/evidence:
 
 Limits: `chat.spa` stays `false`; no attachments, slash commands, Stage 7 app-menu work, or cutover.
 Stage 7 is the next action.
+
+
+## Stage 7A/7B - Attachments, slash commands, app menu
+
+Stage 7A/7B completes the remaining chat SPA surface except the cutover. `chat.spa` stays `false`;
+the legacy document remains the rollback.
+
+Implemented:
+- 7A: `ChatAttachments`/`ChatAttachmentCard` plus `ui/chat/attachments.ts` add XHR upload progress,
+  abort/retry/remove, 10-file/100 MiB limits, two concurrent uploads, drag/drop, paste, mode changes,
+  quota warning, chip state, `{text, attachments}` send payloads, rejected-send restoration, and
+  draft rehydration/redelivery. Inline image/video/PDF and file-only cards use existing projections;
+  unmount aborts XHRs and creates no object URLs.
+- 7B: `ChatCommandPalette` adds slash detection, catalog/filter/limit, keyboard navigation, focus
+  return, shell `present` confirmation/retry, unknown-command confirmation, stopped/unavailable
+  degradation, and `202` rekeying. The remaining app switch/menu surface flushes the draft, performs
+  one navigation, and exposes app/project/handoff/IDE actions.
+
+Tests/evidence:
+- New `chat-attachments`, `chat-attachments-drop`, `chat-commands`, `chat-app-menu`; E2E covers real
+  upload/progress/drop/paste/cancel/retry/mode/remove, quota, inline/file cards, palette
+  filter/shell-confirmation/202, app switch, and stopped degradation.
+- `NODE_ENV=development npm test`: **3285 passed** (219 files).
+- `NODE_ENV=development npm run test:e2e`: **202 passed, 12 skipped**. Two earlier full runs each had
+  one isolated retry-passing flake (`spa-app` git workbench, then `spa-chat` streaming); both passed
+  targeted and the final full run was clean.
+- `lint`, `typecheck`, `typecheck:ui`, `typecheck:e2e`, `build`, `check:ui` (76 SFCs),
+  `check:chat-worker`, `check:sensitive`, `git diff --check`: pass.
+- Chat route chunk: **247.78 kB raw / 71.68 kB gzip**, still under the 250 KiB gzip target.
+
+Limits: no parity audit, `chat.spa` cutover, current-state cutover text, or legacy deletion; those
+are Stage 7C. Stage 7C is the next action.

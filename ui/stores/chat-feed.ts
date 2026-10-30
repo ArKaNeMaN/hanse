@@ -195,7 +195,11 @@ export const useChatFeedStore = defineStore("chat-feed", () => {
     queuePromotionGuard = guard;
   }
 
-  function insertOptimisticMessage(input: { id: string; text: string }): FeedMessageRecord {
+  function insertOptimisticMessage(input: {
+    id: string;
+    text: string;
+    attachments?: readonly import("../../assets/chat-core.js").AttachmentView[];
+  }): FeedMessageRecord {
     const partID = `${input.id}:part:text`;
     const part: FeedPartRecord = {
       id: partID,
@@ -212,6 +216,9 @@ export const useChatFeedStore = defineStore("chat-feed", () => {
       optimistic: "sending",
       partOrder: [partID],
       parts: new Map([[partID, part]]),
+      ...(input.attachments === undefined || input.attachments.length === 0
+        ? {}
+        : { attachments: markRaw(input.attachments) }),
       version: 1,
     };
     thread.value.messages.set(input.id, record);

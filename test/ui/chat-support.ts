@@ -102,6 +102,19 @@ export interface ChatFixture {
   readonly previews?: readonly unknown[];
   readonly contextSnapshot?: Record<string, unknown>;
   readonly sshApprovals?: readonly unknown[];
+  readonly draftAttachments?: readonly unknown[];
+  readonly quotaPercent?: number;
+  readonly attachmentDeleteStatus?: number;
+  readonly attachmentPatchStatus?: number;
+  readonly commands?: {
+    readonly commands?: readonly unknown[];
+    readonly sources?: Record<string, unknown>;
+    readonly warnings?: readonly unknown[];
+  };
+  readonly commandsStatus?: number;
+  readonly commandPostStatus?: number;
+  readonly commandPostBody?: unknown;
+  readonly appOptions?: ChatResponse["appOptions"];
   readonly questionReplyStatus?: number;
   readonly permissionReplyStatus?: number;
   readonly compactStatus?: number;
@@ -128,6 +141,7 @@ export function boot(overrides: Partial<BootPayload> = {}): BootPayload {
 export function props(fixture: ChatFixture = {}): ChatResponse {
   return {
     ...CHAT_PROPS,
+    appOptions: fixture.appOptions ?? CHAT_PROPS.appOptions,
     deleting: {
       app: fixture.deletingPending === true,
       project: false,
@@ -321,6 +335,61 @@ export function installFetch(fixture: ChatFixture = {}): InstalledFetch {
       const status = fixture.restartStatus ?? 200;
       return json(status, status === 200 ? { restarted: true } : { error: "restart failed" });
     }
+    if (url.startsWith("/api/apps/alpha/commands")) {
+      const status = fixture.commandsStatus ?? 200;
+      if (status !== 200) {
+        return json(status, { error: "commands unavailable", code: "commands_unavailable" });
+      }
+      return json(200, {
+        commands: fixture.commands?.commands ?? [],
+        sources: fixture.commands?.sources ?? { hanse: "ok", opencode: "ok" },
+        warnings: fixture.commands?.warnings ?? [],
+      });
+    }
+    const commandPostMatch = /^\/api\/apps\/alpha\/sessions\/([^/?]+)\/commands(?:\?.*)?$/.exec(
+      url,
+    );
+    if (commandPostMatch !== null && method === "POST") {
+      const status = fixture.commandPostStatus ?? 202;
+      return json(
+        status,
+        fixture.commandPostBody ??
+          (status === 202
+            ? {
+                accepted: true,
+                messageID: "msg_command_1",
+                sessionID: decodeURIComponent(commandPostMatch[1] ?? ""),
+              }
+            : { error: "command failed", code: "command_failed", outcome: "unknown" }),
+      );
+    }
+    const attachmentDelete = /^\/api\/apps\/alpha\/attachments\/([^/?]+)(?:\?.*)?$/.exec(url);
+    if (attachmentDelete !== null) {
+      const status =
+        method === "PATCH"
+          ? (fixture.attachmentPatchStatus ?? 200)
+          : (fixture.attachmentDeleteStatus ?? 200);
+      if (status !== 200) {
+        return json(status, { error: "attachment unavailable", code: "attachment_unavailable" });
+      }
+      if (method === "PATCH") {
+        const parsed = typeof init?.body === "string" ? JSON.parse(init.body) : {};
+        return json(200, {
+          attachment: {
+            id: attachmentDelete[1],
+            name: "fixture.bin",
+            mime: "application/octet-stream",
+            size: 10,
+            kind: "file",
+            mode: typeof parsed.mode === "string" ? parsed.mode : "auto",
+            state: "draft",
+            downloadURL: `/api/apps/alpha/attachments/${attachmentDelete[1]}`,
+            inline: false,
+          },
+        });
+      }
+      return json(200, { deleted: true });
+    }
     if (url.startsWith("/api/apps/alpha/sessions?") || url === "/api/apps/alpha/sessions") {
       if (method === "POST") {
         const status = fixture.createSessionStatus ?? 200;
@@ -360,9 +429,9 @@ export function installFetch(fixture: ChatFixture = {}): InstalledFetch {
       }
       return json(200, {
         text: drafts.get(sessionId) ?? "",
-        attachments: [],
+        attachments: fixture.draftAttachments ?? [],
         pendingSends: fixture.pendingSends ?? [],
-        quota: { percent: 0 },
+        quota: { percent: fixture.quotaPercent ?? 0 },
         updatedAt: null,
       });
     }
@@ -492,6 +561,83 @@ export function installFetch(fixture: ChatFixture = {}): InstalledFetch {
   vi.stubGlobal("fetch", mock);
   (window as unknown as { EventSource: typeof FakeEventSource }).EventSource = FakeEventSource;
   return { mock, requests };
+}
+
+export class FakeXMLHttpRequest {
+  static instances: FakeXMLHttpRequest[] = [];
+  method = "";
+  url = "";
+  status = 0;
+  responseText = "";
+  aborted = false;
+  sentBody: Document | XMLHttpRequestBodyInit | null = null;
+  readonly headers: Record<string, string> = {};
+  readonly upload: {
+    listeners: Map<string, EventListener[]>;
+    addEventListener: (type: string, listener: EventListener) => void;
+  };
+  private readonly listeners = new Map<string, EventListener[]>();
+
+  constructor() {
+    FakeXMLHttpRequest.instances.push(this);
+    const uploadListeners = new Map<string, EventListener[]>();
+    this.upload = {
+      listeners: uploadListeners,
+      addEventListener: (type, listener) => {
+        const list = uploadListeners.get(type) ?? [];
+        list.push(listener);
+        uploadListeners.set(type, list);
+      },
+    };
+  }
+
+  open(method: string, url: string): void {
+    this.method = method;
+    this.url = url;
+  }
+
+  setRequestHeader(name: string, value: string): void {
+    this.headers[name.toLowerCase()] = value;
+  }
+
+  addEventListener(type: string, listener: EventListener): void {
+    const list = this.listeners.get(type) ?? [];
+    list.push(listener);
+    this.listeners.set(type, list);
+  }
+
+  send(body?: Document | XMLHttpRequestBodyInit | null): void {
+    this.sentBody = body ?? null;
+  }
+
+  abort(): void {
+    this.aborted = true;
+    this.emit("abort", new Event("abort"));
+  }
+
+  progress(loaded: number, total: number): void {
+    const event = Object.assign(new Event("progress"), { lengthComputable: true, loaded, total });
+    for (const listener of this.upload.listeners.get("progress") ?? []) listener(event);
+  }
+
+  respond(status: number, body: unknown): void {
+    this.status = status;
+    this.responseText = JSON.stringify(body);
+    this.emit("load", new Event("load"));
+  }
+
+  fail(): void {
+    this.emit("error", new Event("error"));
+  }
+
+  private emit(type: string, event: Event): void {
+    for (const listener of this.listeners.get(type) ?? []) listener(event);
+  }
+}
+
+export function installXhr(): void {
+  FakeXMLHttpRequest.instances = [];
+  vi.stubGlobal("XMLHttpRequest", FakeXMLHttpRequest as unknown as typeof XMLHttpRequest);
 }
 
 export async function mountChat(

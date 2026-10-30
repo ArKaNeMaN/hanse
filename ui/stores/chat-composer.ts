@@ -7,6 +7,7 @@
 import { defineStore } from "pinia";
 import { markRaw, ref, shallowRef } from "vue";
 import type { PendingSendView } from "../../assets/chat-core.js";
+import type { AttachmentChip } from "../chat/attachments.js";
 import type { SendDelivery } from "../chat/send.js";
 
 export interface ComposerAcceptance {
@@ -29,6 +30,8 @@ export const useChatComposerStore = defineStore("chat-composer", () => {
   const pendingSends = shallowRef<readonly PendingSendView[]>(markRaw([]));
   const abortPending = ref(false);
   const lastSaved = shallowRef<ReadonlyMap<string, string>>(markRaw(new Map<string, string>()));
+  const attachments = shallowRef<readonly AttachmentChip[]>(markRaw([]));
+  const attachmentQuota = ref<number | null>(null);
 
   function bindWorkspace(key: string): boolean {
     if (workspaceKey.value === key) {
@@ -58,6 +61,24 @@ export const useChatComposerStore = defineStore("chat-composer", () => {
 
   function setPending(list: readonly PendingSendView[]): void {
     pendingSends.value = markRaw([...list]);
+  }
+
+  function setAttachments(list: readonly AttachmentChip[]): void {
+    attachments.value = markRaw([...list]);
+  }
+
+  function updateAttachment(key: string, patch: Partial<AttachmentChip>): void {
+    attachments.value = markRaw(
+      attachments.value.map((chip) => (chip.key === key ? { ...chip, ...patch } : chip)),
+    );
+  }
+
+  function removeAttachment(key: string): void {
+    attachments.value = markRaw(attachments.value.filter((chip) => chip.key !== key));
+  }
+
+  function setAttachmentQuota(percent: number | null): void {
+    attachmentQuota.value = percent;
   }
 
   function lastSavedFor(session: string): string | undefined {
@@ -151,6 +172,8 @@ export const useChatComposerStore = defineStore("chat-composer", () => {
     pendingSends.value = markRaw([]);
     abortPending.value = false;
     lastSaved.value = markRaw(new Map<string, string>());
+    attachments.value = markRaw([]);
+    attachmentQuota.value = null;
   }
 
   return {
@@ -164,6 +187,8 @@ export const useChatComposerStore = defineStore("chat-composer", () => {
     pendingSends,
     abortPending,
     lastSaved,
+    attachments,
+    attachmentQuota,
     bindWorkspace,
     setSession,
     setDraft,
@@ -172,6 +197,10 @@ export const useChatComposerStore = defineStore("chat-composer", () => {
     setPending,
     lastSavedFor,
     setLastSaved,
+    setAttachments,
+    updateAttachment,
+    removeAttachment,
+    setAttachmentQuota,
     beginAcceptance,
     markUnknown,
     setServerID,

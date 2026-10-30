@@ -84,12 +84,39 @@ export function pendingRetryUrl(scope: ChatUrlScope, sessionID: string, pendingI
   );
 }
 
+export function attachmentsUrl(scope: ChatUrlScope, sessionID: string): string {
+  const base = withProject(`${chatApiBase(scope.app)}/attachments`, scope.project);
+  const separator = base.includes("?") ? "&" : "?";
+  return `${base}${separator}session=${encoded(sessionID)}`;
+}
+
+export function attachmentUrl(scope: ChatUrlScope, attachmentID: string): string {
+  return withProject(
+    `${chatApiBase(scope.app)}/attachments/${encoded(attachmentID)}`,
+    scope.project,
+  );
+}
+
+export function commandListUrl(scope: ChatUrlScope): string {
+  return withProject(`${chatApiBase(scope.app)}/commands`, scope.project);
+}
+
+export function commandSendUrl(scope: ChatUrlScope, sessionID: string): string {
+  return withProject(
+    `${chatApiBase(scope.app)}/sessions/${encoded(sessionID)}/commands`,
+    scope.project,
+  );
+}
+
 export async function postPrompt(
   url: string,
   text: string,
   options: PromptTransportOptions = {},
+  attachments?: readonly { readonly id: string; readonly mode?: "inline" | "file" }[],
 ): Promise<unknown> {
-  return apiMutation(url, { json: { text } }, options);
+  const body =
+    attachments === undefined || attachments.length === 0 ? { text } : { text, attachments };
+  return apiMutation(url, { json: body }, options);
 }
 
 function record(value: unknown): Record<string, unknown> | null {

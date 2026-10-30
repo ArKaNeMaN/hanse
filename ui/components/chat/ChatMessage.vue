@@ -1,9 +1,11 @@
 <script setup lang="ts">
 /** One chat feed message: OMO/handoff cards, text, reasoning, tools, details, and unknown parts. */
 import { computed, ref } from "vue";
+import { type AttachmentView, attachmentViewFromFilePart } from "../../../assets/chat-core.js";
 import { allocateView, patchPartView, type ToolView } from "../../../assets/chat-diff.js";
 import { isKnownPartType } from "../../chat/feed-store.js";
 import type { ChatMessagePartView, ChatMessageView, InlineQuestionView } from "../../chat/types.js";
+import ChatAttachmentCard from "./ChatAttachmentCard.vue";
 import ChatQuestionCard from "./ChatQuestionCard.vue";
 import DiffView from "./DiffView.vue";
 import HandoffCard from "./HandoffCard.vue";
@@ -29,6 +31,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   "question-submit": [view: InlineQuestionView, answers: string[][]];
   "question-reject": [view: InlineQuestionView];
+  "attachment-redeliver": [attachment: AttachmentView];
 }>();
 
 function questionView(part: ChatMessagePartView): InlineQuestionView | null {
@@ -36,6 +39,30 @@ function questionView(part: ChatMessagePartView): InlineQuestionView | null {
     ? null
     : props.questionViewForPart(part, props.record.id);
 }
+
+function fileAttachment(part: ChatMessagePartView): AttachmentView | null {
+  return part.type === "file" ? attachmentViewFromFilePart(part) : null;
+}
+
+const stripAttachments = computed<readonly AttachmentView[]>(() => {
+  const attachments = props.record.attachments ?? [];
+  if (attachments.length === 0) return [];
+  const inlineIDs = new Set<string>();
+  for (const part of props.record.parts) {
+    if (part.type !== "file") continue;
+    const attachment = attachmentViewFromFilePart(part);
+    if (attachment !== null) inlineIDs.add(attachment.id);
+  }
+  const seen = new Set<string>();
+  const out: AttachmentView[] = [];
+  for (const attachment of attachments) {
+    if (attachment.inline && inlineIDs.has(attachment.id)) continue;
+    if (seen.has(attachment.id)) continue;
+    seen.add(attachment.id);
+    out.push(attachment);
+  }
+  return out;
+});
 
 const showParts = computed(
   () => props.record.omo === null && (props.record.handoff ?? null) === null,
@@ -224,6 +251,11 @@ const optimisticLabel = computed(() => {
           />
           <pre v-else class="chat-detail__text">{{ detailsBody(part) }}</pre>
         </details>
+        <ChatAttachmentCard
+          v-else-if="fileAttachment(part) !== null"
+          :attachment="fileAttachment(part) as AttachmentView"
+          @redeliver="(attachment) => emit('attachment-redeliver', attachment)"
+        />
         <details
           v-else-if="part.type === 'file' || part.type === 'subtask'"
           class="tool-call chat-detail"
@@ -255,6 +287,15 @@ const optimisticLabel = computed(() => {
         />
       </template>
     </template>
+
+    <div v-if="stripAttachments.length > 0" class="message__attachments" data-message-attachments>
+      <ChatAttachmentCard
+        v-for="attachment in stripAttachments"
+        :key="attachment.id"
+        :attachment="attachment"
+        @redeliver="(value) => emit('attachment-redeliver', value)"
+      />
+    </div>
 
     <div v-if="optimisticLabel.length > 0" class="message__state" aria-hidden="true">
       {{ optimisticLabel }}

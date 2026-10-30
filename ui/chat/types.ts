@@ -1,3 +1,4 @@
+import type { AttachmentView } from "../../assets/chat-core.js";
 import type { ChatProps } from "../../src/http/props/chat.js";
 import type {
   NormalizedPermissionRequest,
@@ -84,6 +85,8 @@ export interface ChatMessageView {
   readonly omo: ChatOmoView | null;
   readonly handoff?: ChatHandoffView | null;
   readonly time?: { readonly created?: number; readonly completed?: number };
+  /** File-only attachment strip projected from `info.hanse.attachments`. */
+  readonly attachments?: readonly AttachmentView[];
   readonly parts: readonly ChatMessagePartView[];
 }
 
@@ -136,4 +139,13 @@ export interface InlineQuestionView {
   readonly tooLarge: boolean;
   readonly tooLargeReason?: string;
   readonly readOnly: boolean;
+}
+
+export type CommandPaletteStatus = "loading" | "ready" | "stopped" | "unavailable" | "unconfigured";
+
+export interface CommandConfirmRequest {
+  readonly title: string;
+  readonly body: string;
+  readonly confirmLabel?: string;
+  readonly cancelLabel?: string;
 }

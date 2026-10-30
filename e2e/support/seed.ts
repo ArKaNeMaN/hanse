@@ -138,6 +138,64 @@ function renderMessages(): readonly FixtureMessage[] {
     },
     {
       info: {
+        id: "msg_e2e_render_attachment_file",
+        sessionID: session,
+        role: "user",
+        time: { created: createdAt + 2.5 },
+        hanse: {
+          attachments: [
+            {
+              id: "att_e2e_file",
+              name: "fixture.csv",
+              mime: "text/csv",
+              size: 42,
+              kind: "file",
+              mode: "file",
+              state: "sent",
+              downloadURL: "/api/apps/alpha/attachments/att_e2e_file?project=e2e-project-one",
+              inline: false,
+            },
+          ],
+        },
+      },
+      parts: [
+        {
+          id: "prt_e2e_render_attachment_file",
+          sessionID: session,
+          messageID: "msg_e2e_render_attachment_file",
+          type: "text",
+          text: "File-only fixture attachment.",
+        },
+      ],
+    },
+    {
+      info: {
+        id: "msg_e2e_render_attachment_inline",
+        sessionID: session,
+        role: "user",
+        time: { created: createdAt + 2.6 },
+      },
+      parts: [
+        {
+          id: "prt_e2e_render_attachment_inline",
+          sessionID: session,
+          messageID: "msg_e2e_render_attachment_inline",
+          type: "file",
+          url: "/assets/favicon.svg",
+          mime: "image/png",
+          filename: "inline.png",
+          attachment: {
+            id: "att_e2e_inline",
+            size: 64,
+            mode: "inline",
+            kind: "image",
+            inline: true,
+          },
+        },
+      ],
+    },
+    {
+      info: {
         id: "msg_e2e_render_assistant",
         sessionID: session,
         role: "assistant",
@@ -386,7 +444,7 @@ export const E2E_CHAT_MESSAGES: Readonly<Record<string, readonly FixtureMessage[
   [E2E_CHAT_PERF_SESSION_ID]: perfMessages(),
 };
 
-const PROJECT_ONE = "e2e-project-one";
+export const PROJECT_ONE = "e2e-project-one";
 const PROJECT_TWO = "e2e-project-two";
 
 const PRIVATE_KEY = [
@@ -445,6 +503,7 @@ export interface SeededProject {
 export interface SeedResult {
   db: SqliteDatabase;
   workspaceRoot: string;
+  agentsHome: string;
   projects: SeededProject[];
   projectRoots: Record<string, string>;
   settings: SettingsService;
@@ -931,6 +990,7 @@ export function seed(options: SeedOptions = {}): SeedResult {
   return {
     db,
     workspaceRoot,
+    agentsHome,
     projects,
     projectRoots: Object.fromEntries(projects.map((project) => [project.id, project.rootPath])),
     settings,

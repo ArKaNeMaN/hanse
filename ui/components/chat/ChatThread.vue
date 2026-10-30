@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import type { AttachmentView } from "../../../assets/chat-core.js";
 import {
   type ChatScrollMemory,
   readScrollMemory,
@@ -31,6 +32,7 @@ const emit = defineEmits<{
   "load-earlier": [];
   "question-submit": [view: InlineQuestionView, answers: string[][]];
   "question-reject": [view: InlineQuestionView];
+  "attachment-redeliver": [attachment: AttachmentView];
 }>();
 const scroll = ref<HTMLElement | null>(null);
 const pinned = ref(true);
@@ -348,6 +350,7 @@ defineExpose({ captureAnchor, restoreAnchor, scrollToBottom, onScroll, unseen })
               :data-message-id="item.message.id"
               @question-submit="(view, answers) => emit('question-submit', view, answers)"
               @question-reject="(view) => emit('question-reject', view)"
+              @attachment-redeliver="(attachment) => emit('attachment-redeliver', attachment)"
             />
             <ChatNoticeRow v-else :notice="item.notice" />
           </template>
