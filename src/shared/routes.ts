@@ -20,7 +20,9 @@ export type RouteId =
   | "skills-app"
   | "skills-new"
   | "skills-detail"
-  | "app";
+  | "app"
+  | "terminal"
+  | "chat";
 
 export type NavId =
   | "overview"
@@ -29,7 +31,8 @@ export type NavId =
   | "handoffs"
   | "settings"
   | "skills"
-  | "ssh";
+  | "ssh"
+  | "none";
 
 export interface RouteDefinition {
   readonly id: RouteId;
@@ -38,6 +41,8 @@ export interface RouteDefinition {
   readonly label: string;
   /** Registry cutover flag. Phase 1A keeps every route legacy. */
   readonly spa: boolean;
+  /** True once the legacy renderer is retired and the SPA is always served (Stage 9). */
+  readonly legacyRetired?: boolean;
 }
 
 export interface PageMatch {
@@ -155,6 +160,22 @@ const ROUTE_DEFINITIONS: readonly RouteDefinition[] = [
     label: "Project",
     spa: true,
   },
+  {
+    id: "terminal",
+    path: "/terminal",
+    nav: "project",
+    label: "Terminal",
+    spa: false,
+    legacyRetired: false,
+  },
+  {
+    id: "chat",
+    path: "/chat",
+    nav: "none",
+    label: "Chat",
+    spa: false,
+    legacyRetired: false,
+  },
 ];
 
 export const ROUTES: readonly RouteDefinition[] = ROUTE_DEFINITIONS;
@@ -194,7 +215,10 @@ function decodeParam(value: string): string {
   }
 }
 
-/** Match a page pathname. Never matches `/api/*`, `/chat`, `/terminal`, `/ide`, `/preview`, `/assets/*`. */
+/**
+ * Match a page pathname. Static `/chat` and `/terminal` are page routes; `/api/*`, `/ide`,
+ * `/preview`, `/assets/*`, and terminal upgrades remain unmatched.
+ */
 export function matchPage(pathname: string): PageMatch | undefined {
   for (const compiled of COMPILED) {
     const match = compiled.pattern.exec(pathname);
@@ -280,4 +304,24 @@ export function isSpaRoute(id: RouteId, options: SpaRouteOptions = {}): boolean 
 export function isSpaPath(pathname: string, options: SpaRouteOptions = {}): boolean {
   const match = matchPage(pathname);
   return match !== undefined && isSpaRoute(match.id, options);
+}
+
+/** True once the route always serves the SPA and ignores the legacy rollback flags. */
+export function isLegacyRetired(id: RouteId): boolean {
+  return ROUTE_BY_ID.get(id)?.legacyRetired === true;
+}
+
+/**
+ * Membership check against the resolved boot route set. The client uses this instead of
+ * `isSpaPath()` because `process.env` is not available in the browser.
+ */
+export function isSpaPathIn(
+  pathname: string,
+  ids: ReadonlySet<RouteId> | readonly RouteId[],
+): boolean {
+  const match = matchPage(pathname);
+  if (match === undefined) {
+    return false;
+  }
+  return ids instanceof Set ? ids.has(match.id) : (ids as readonly RouteId[]).includes(match.id);
 }

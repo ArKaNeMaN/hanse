@@ -279,6 +279,7 @@ function shell(
     settingsHref?: string;
     skillsHref?: string;
     moduleScripts?: string[];
+    contentScript?: boolean;
   },
 ): string {
   return appShell({
@@ -295,6 +296,7 @@ function shell(
     settingsHref: options.settingsHref,
     skillsHref: options.skillsHref,
     moduleScripts: options.moduleScripts,
+    ...(options.contentScript === undefined ? {} : { contentScript: options.contentScript }),
   });
 }
 
@@ -1105,7 +1107,11 @@ export function renderHandoffs(
 /* Errors                                                                   */
 /* ------------------------------------------------------------------------- */
 
-export function renderNotFound(site: SiteModel, chrome: PageChrome): string {
+export function renderNotFound(
+  site: SiteModel,
+  chrome: PageChrome,
+  contentScript?: boolean,
+): string {
   const header = pageHeader({
     overline: "404",
     title: "Page not found",
@@ -1125,6 +1131,7 @@ export function renderNotFound(site: SiteModel, chrome: PageChrome): string {
     breadcrumb: [{ label: "404" }],
     header,
     body,
+    ...(contentScript === undefined ? {} : { contentScript }),
   });
 }
 

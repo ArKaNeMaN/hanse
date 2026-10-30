@@ -325,6 +325,8 @@ function boot(payload: SshProps | null, routeId: BootPayload["route"]["id"] = "s
   return {
     route: { id: routeId, params: {} },
     props: payload,
+    spaRoutes: [routeId],
+    topbar: { ideHref: "/ide/" },
     chrome: {
       sidebarNav: "",
       breadcrumb: "",

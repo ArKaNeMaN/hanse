@@ -1,3 +1,10 @@
+import { ROUTES } from "../../src/shared/routes.js";
+import { installSpaRoutes } from "../../ui/spa-routes.js";
+
+// Mirror the resolved default boot route set that `ui/main.ts` installs before mounting. Individual
+// tests can replace it (for example the router guard's off-set cases).
+installSpaRoutes(ROUTES.filter((route) => route.spa).map((route) => route.id));
+
 /**
  * jsdom gaps used by the incremental SPA migration.
  *

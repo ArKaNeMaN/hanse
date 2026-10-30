@@ -161,7 +161,9 @@ function boot(body: string): BootPayload {
 
 function enable(f: Fixture): void {
   delete process.env.HANSE_UI_LEGACY;
-  process.env.HANSE_UI_SPA_ROUTES = ROUTES.map((route) => route.id).join(",");
+  process.env.HANSE_UI_SPA_ROUTES = ROUTES.filter((route) => route.spa)
+    .map((route) => route.id)
+    .join(",");
   process.env.HANSE_UI_DEV_URL = "http://127.0.0.1:5173";
   f.log.warn.mockClear();
 }
@@ -246,6 +248,8 @@ describe("/api/ui auth and props", () => {
       "/api/ui/projects/p",
       "/api/ui/ssh",
       "/api/ui/skills",
+      "/api/ui/chat",
+      "/api/ui/terminal",
     ]) {
       const anonymous = handleUiApi(f.deps, request(pathname, {}));
       expect(anonymous?.status, pathname).toBe(401);
@@ -573,7 +577,7 @@ describe("/api/ui auth and props", () => {
     }
 
     enable(f);
-    for (const route of ROUTES) {
+    for (const route of ROUTES.filter((candidate) => candidate.spa)) {
       const pathname = route.path.replace(":id", "p").replace(":app", "web");
       const page = maybeServeSpa(
         f.deps,

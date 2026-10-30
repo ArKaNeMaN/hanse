@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { renderSpaDocument } from "../../src/http/spa.js";
 import { appShell, documentPage, loginPage, type ShellOptions } from "../../src/http/ui.js";
 
 function shellOptions(overrides: Partial<ShellOptions> = {}): ShellOptions {
@@ -44,30 +43,6 @@ describe("shell script matrix", () => {
     const html = loginPage({ next: "/projects" });
     expect(html).toContain('<script src="/assets/app.js" defer></script>');
     expect(html).toContain('<script src="/assets/app-content.js" defer></script>');
-  });
-
-  it("loads only the shell script on an SPA document", () => {
-    const html = renderSpaDocument({
-      title: "Projects",
-      active: "projects",
-      breadcrumb: [{ label: "Projects" }],
-      projects: [],
-      pendingCount: 0,
-      operatorName: "alice",
-      route: { id: "projects", params: {} },
-      props: {},
-      chrome: {
-        sidebarNav: "",
-        breadcrumb: "",
-        title: "Projects",
-        active: "projects",
-        pendingCount: 0,
-        sshPendingCount: 0,
-      },
-      devUrl: "http://127.0.0.1:5173",
-    });
-    expect(html).toContain('<script src="/assets/app.js" defer></script>');
-    expect(html).not.toContain("/assets/app-content.js");
   });
 
   it("keeps extra page scripts after the shell scripts", () => {

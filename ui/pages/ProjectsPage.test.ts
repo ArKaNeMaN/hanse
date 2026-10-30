@@ -69,6 +69,8 @@ function boot(
       matchedCount: 2,
       ...overrides,
     },
+    spaRoutes: ["projects"],
+    topbar: { ideHref: "/ide/" },
     chrome: {
       sidebarNav: "",
       breadcrumb: "",

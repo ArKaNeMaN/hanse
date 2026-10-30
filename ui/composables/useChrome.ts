@@ -1,7 +1,18 @@
 import type { Router } from "vue-router";
+import { matchPage } from "../../src/shared/routes.js";
 import type { BootChrome } from "../boot.js";
 
 export type ChromeFragment = BootChrome;
+
+export interface ChromeHints {
+  readonly projectId?: string;
+  readonly appKey?: string;
+}
+
+interface FocusDestination {
+  readonly path?: string;
+  readonly meta?: { readonly workspace?: unknown };
+}
 
 function isChrome(value: unknown): value is ChromeFragment {
   return (
@@ -47,11 +58,31 @@ export function closeDrawer(): void {
   }
 }
 
-/** Move keyboard focus to the client-owned main landmark and reset its scroll container. */
-export function focusMain(): void {
+function isWorkspaceDestination(destination: FocusDestination | undefined): boolean {
+  if (destination === undefined) {
+    return false;
+  }
+  if (destination.meta?.workspace === "chat" || destination.meta?.workspace === "terminal") {
+    return true;
+  }
+  if (destination.path === undefined) {
+    return false;
+  }
+  const match = matchPage(destination.path);
+  return match?.id === "chat" || match?.id === "terminal";
+}
+
+/**
+ * Move keyboard focus to the client-owned main landmark. Normal routes reset `.page`; workspace
+ * routes own their scroll container and keep it untouched.
+ */
+export function focusMain(destination?: FocusDestination): void {
   const main = document.getElementById("main");
   if (main !== null) {
     main.focus({ preventScroll: true });
+  }
+  if (isWorkspaceDestination(destination)) {
+    return;
   }
   const scrollContainer = document.querySelector<HTMLElement>(".page");
   if (scrollContainer !== null) {
@@ -75,16 +106,31 @@ function redirectToLogin(path: string): void {
 }
 
 /**
- * Fetch the server-rendered chrome fragment. `path` is a page path without a query string; the
- * chrome response does not depend on it. `nextPath` keeps the query for the login redirect.
+ * Build the chrome query. `path` selects the route; `project`/`app` are workspace hints so a
+ * chat/terminal refresh keeps the correct scoped sidebar and breadcrumb.
+ */
+function chromeQuery(path: string, hints: ChromeHints | undefined): string {
+  const params = new URLSearchParams({ path });
+  if (hints?.projectId !== undefined) {
+    params.set("project", hints.projectId);
+  }
+  if (hints?.appKey !== undefined) {
+    params.set("app", hints.appKey);
+  }
+  return params.toString();
+}
+
+/**
+ * Fetch the server-rendered chrome fragment. `nextPath` keeps the query for the login redirect.
  * Returns undefined on a non-auth failure.
  */
 export async function fetchChrome(
   path: string,
   nextPath: string = path,
+  hints?: ChromeHints,
 ): Promise<ChromeFragment | undefined> {
   try {
-    const response = await fetch(`/api/ui/chrome?path=${encodeURIComponent(path)}`, {
+    const response = await fetch(`/api/ui/chrome?${chromeQuery(path, hints)}`, {
       credentials: "same-origin",
       headers: { accept: "application/json" },
     });
@@ -109,25 +155,53 @@ export async function fetchChrome(
  *
  * Returns a cleanup function for tests and teardown.
  */
+function firstQueryValue(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    return value.length === 0 ? undefined : value;
+  }
+  if (Array.isArray(value)) {
+    return typeof value[0] === "string" && value[0].length > 0 ? value[0] : undefined;
+  }
+  return undefined;
+}
+
+function hintsFor(path: string, query: Record<string, unknown>): ChromeHints | undefined {
+  const match = matchPage(path);
+  if (match?.id !== "chat" && match?.id !== "terminal") {
+    return undefined;
+  }
+  const projectId = firstQueryValue(query.project);
+  const appKey = firstQueryValue(query.app);
+  return {
+    ...(projectId === undefined ? {} : { projectId }),
+    ...(appKey === undefined ? {} : { appKey }),
+  };
+}
+
 export function installChrome(router: Router): () => void {
   let initial = true;
   let currentPath = router.currentRoute.value.fullPath;
   let currentRoutePath = router.currentRoute.value.path;
+  let currentHints = hintsFor(
+    router.currentRoute.value.path,
+    router.currentRoute.value.query as Record<string, unknown>,
+  );
 
   router.afterEach(async (to) => {
     currentPath = to.fullPath;
     currentRoutePath = to.path;
+    currentHints = hintsFor(to.path, to.query as Record<string, unknown>);
     if (initial) {
       initial = false;
       return;
     }
 
-    const chrome = await fetchChrome(to.path, to.fullPath);
+    const chrome = await fetchChrome(to.path, to.fullPath, currentHints);
     if (chrome !== undefined) {
       applyChrome(chrome);
     }
     closeDrawer();
-    focusMain();
+    focusMain(to);
     announce(chrome?.title ?? document.title);
   });
 
@@ -135,7 +209,7 @@ export function installChrome(router: Router): () => void {
     if (document.visibilityState !== "visible") {
       return;
     }
-    void fetchChrome(currentRoutePath, currentPath).then((chrome) => {
+    void fetchChrome(currentRoutePath, currentPath, currentHints).then((chrome) => {
       if (chrome !== undefined) {
         applyChrome(chrome);
       }

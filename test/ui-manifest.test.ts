@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { renderNotFound } from "../src/http/dashboard.js";
 import {
   devModuleUrls,
   loadUiManifest,
@@ -143,6 +144,7 @@ describe("UI boot and dev URLs", () => {
       operatorName: "alice",
       route: { id: "projects", params: {} },
       props: { rows: [{ name: "<unsafe>" }] },
+      spaRoutes: ["projects", "overview"],
       chrome: {
         sidebarNav: "",
         breadcrumb: "",
@@ -167,6 +169,8 @@ describe("UI boot and dev URLs", () => {
     expect(html).toContain('id="route-announcer"');
     expect(html).toContain('id="sidebar-nav"');
     expect(html).toContain('id="breadcrumb-host"');
+    expect(html).toContain('"spaRoutes":["projects","overview"]');
+    expect(html).toContain('"topbar":{"ideHref":"/ide/"}');
   });
 
   it("prefers dev module URLs over the manifest entry", () => {
@@ -179,6 +183,7 @@ describe("UI boot and dev URLs", () => {
       operatorName: "alice",
       route: { id: "projects", params: {} },
       props: {},
+      spaRoutes: ["projects", "overview"],
       chrome: {
         sidebarNav: "",
         breadcrumb: "",
@@ -195,5 +200,65 @@ describe("UI boot and dev URLs", () => {
     expect(html).toContain(
       '<script type="module" src="http://127.0.0.1:5173/assets/ui/main.ts"></script>',
     );
+  });
+});
+
+describe("SPA shell inputs and content script forwarding", () => {
+  it("forwards page/body/viewport/topbar inputs into the SPA shell", () => {
+    const html = renderSpaDocument({
+      title: "web chat",
+      active: "none",
+      breadcrumb: [{ label: "Chat" }],
+      projects: [],
+      pendingCount: 0,
+      operatorName: "alice",
+      route: { id: "chat", params: {} },
+      props: {},
+      spaRoutes: ["projects"],
+      topbar: { ideHref: "/ide/", contextToggle: true },
+      topbarActions: '<button id="fallback-chat-action">chat</button>',
+      pageClass: "page--chat",
+      bodyClass: "page__body--chat",
+      viewport: "width=device-width, initial-scale=1, interactive-widget=resizes-content",
+      chrome: {
+        sidebarNav: "",
+        breadcrumb: "",
+        title: "web chat",
+        active: "none",
+        pendingCount: 0,
+        sshPendingCount: 0,
+      },
+      devUrl: "http://127.0.0.1:5173",
+    });
+    expect(html).toContain('class="page page--chat"');
+    expect(html).toContain('class="page__body page__body--chat"');
+    expect(html).toContain("interactive-widget=resizes-content");
+    expect(html).toContain('id="fallback-chat-action"');
+    expect(html).toContain('"contextToggle":true');
+  });
+
+  it("forwards contentScript:false through the private shell helper", () => {
+    const site = {
+      projects: [],
+      apps: new Map(),
+      runtime: new Map(),
+      pendingRestart: new Map(),
+      pendingRestartReasons: new Map(),
+      pendingCount: 0,
+      sshPendingCount: 0,
+      sshPendingByApp: new Map(),
+      sshHostsByApp: new Map(),
+      startingCount: 0,
+      runningCount: 0,
+      errorCount: 0,
+      stoppedCount: 0,
+      appCount: 0,
+      handoffCount: 0,
+    };
+    const shellOnly = renderNotFound(site, { operatorName: "alice" }, false);
+    expect(shellOnly).toContain('<script src="/assets/app.js" defer></script>');
+    expect(shellOnly).not.toContain("/assets/app-content.js");
+    const legacy = renderNotFound(site, { operatorName: "alice" });
+    expect(legacy).toContain("/assets/app-content.js");
   });
 });

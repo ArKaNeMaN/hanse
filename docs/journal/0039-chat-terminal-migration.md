@@ -4,8 +4,8 @@ Plan: [`0032`](../plans/0032-chat-terminal-migration.md). Design:
 [`chat-terminal-migration.md`](../design/chat-terminal-migration.md). Governing design:
 [`spa-migration.md`](../design/spa-migration.md) plus the Stage 0 amendment record in §15.
 
-Status: **Stage 0 implemented** (baseline and deterministic harness). No route cutover, no registry
-flag, no production source/asset change. Stages 1-9 are not started.
+Status: **Stages 0-1 implemented**. No route cutover, no registry flag, no production behavior
+change. Stages 2-9 are not started.
 
 ## Stage 0 baseline
 
@@ -151,3 +151,39 @@ the behavior oracle until Stage 9.
   chat/terminal E2E project or allowlist entry.
 - Legacy page HTML and `assets/chat.js`/`assets/terminal.js` remain the rollback oracle; nothing in
   Stage 0 changes their bytes.
+
+## Stage 1 - Workspace shell, routes, and props (no cutover)
+
+Stage 1 adds the chat/terminal route identities and the client/server shell plumbing without enabling
+either route. `/chat` and `/terminal` still serve the legacy renderers; `spa:false` and
+`legacyRetired:false` remain in the registry.
+
+Implemented:
+- `routes.ts`: `chat`/`terminal` ids, `nav:"none"` for chat, `legacyRetired`, `isLegacyRetired`,
+  `isSpaPathIn`, and `matchPage` coverage for the two static page paths. API/assets/IDE/preview and
+  terminal-upgrade paths remain unmatched.
+- `spa.ts`/`ui.ts`/`dashboard.ts`: SPA shell inputs (`pageClass`, `bodyClass`, `viewport`,
+  `topbarActions`, `spaRoutes`, `topbar` seed), chat/terminal chrome cases with project/app hints,
+  `/api/ui/chrome` hint support, `/api/ui/chat` and `/api/ui/terminal` prop endpoints, guarded
+  `recordOperatorHost`, and `contentScript` forwarding through the private shell helper. The legacy
+  `appShell` markup and `renderChatPage`/`renderTerminalPage` are untouched.
+- Client: boot validation of the resolved route set/topbar seed, installed boot route set,
+  `SmartLink` membership, router full-document guard, App-level persistent `TopbarActions`,
+  pre-mount server-fallback clear, `useWorkspaceShell`, workspace-aware `focusMain`, and chrome
+  hints. No chat/terminal router records or components were added; no allowlist entry exists.
+- Props builders `buildChatProps`/`buildTerminalProps` extract the page frame and context-rail data
+  without carrying `initialSession`; `/api/ui/chat` records the operator host only when
+  `request.host` is present.
+
+Verification:
+- `NODE_ENV=development npm test`: **3046 passed** (178 files).
+- `npm run lint`: pass (18 pre-existing docs/design `innerText` warnings).
+- `npm run typecheck`, `typecheck:ui`, `typecheck:e2e`: pass.
+- `npm run build`: pass; `check:ui`: pass (42 SFCs); `check:chat-worker`: pass.
+- `npm run test:e2e`: **139 passed, 1 skipped**.
+- `check:sensitive`: pass; `git diff --check`: pass.
+- `test/ui-legacy-bytes.test.ts`: legacy `/chat` and `/terminal` SHA-256 hashes match the Stage 0
+  baseline (`bd4c2e69…` and `f5878374…`), and both routes remain `maybeServeSpa`-ineligible.
+
+Known baseline debt remains: the pre-existing `chat-qa` `main` queue-strip expectation is still red
+on the unchanged legacy harness and must be reconciled in Stage 3B/7C; see Stage 0.

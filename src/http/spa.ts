@@ -9,10 +9,12 @@ import {
   matchPage,
   type PageMatch,
   parseSpaAllowlist,
+  ROUTES,
   type RouteId,
   routeById,
 } from "../shared/routes.js";
 import { SkillService, type SkillTarget } from "../skills/index.js";
+import { findApp } from "./apps.js";
 import { humanFromCookie } from "./auth.js";
 import { buildSite, type SiteModel } from "./dashboard.js";
 import {
@@ -23,6 +25,7 @@ import {
   safeDecode,
 } from "./handler.js";
 import { buildAppProps } from "./props/app.js";
+import { buildChatProps, type ChatProps } from "./props/chat.js";
 import { buildHandoffsProps } from "./props/handoffs.js";
 import { buildOverviewProps } from "./props/overview.js";
 import { buildProjectProps } from "./props/project.js";
@@ -40,9 +43,13 @@ import {
   targetExists,
 } from "./props/skills.js";
 import { buildSshProps, resolveSshScope } from "./props/ssh.js";
+import { buildTerminalProps, type TerminalProps } from "./props/terminal.js";
 import {
   appShell,
   type Crumb,
+  escapeHtml,
+  icon,
+  ideBase,
   type NavProject,
   type Notice,
   renderBreadcrumbInner,
@@ -369,6 +376,36 @@ function routeChrome(
         title: appKey ?? "Application",
         breadcrumb: [projects, project, { label: appKey ?? "Application" }],
       };
+    case "chat":
+      return {
+        title: appKey === undefined ? "Chat" : `${appKey} chat`,
+        breadcrumb: [
+          projects,
+          project,
+          {
+            label: appKey ?? "Application",
+            ...(projectId === undefined || appKey === undefined
+              ? {}
+              : { href: `/projects/${encoded(projectId)}/apps/${encoded(appKey)}` }),
+          },
+          { label: "Chat" },
+        ],
+      };
+    case "terminal":
+      return {
+        title: appKey === undefined ? "Terminal" : `${appKey} terminal`,
+        breadcrumb: [
+          projects,
+          project,
+          {
+            label: appKey ?? "Application",
+            ...(projectId === undefined || appKey === undefined
+              ? {}
+              : { href: `/projects/${encoded(projectId)}/apps/${encoded(appKey)}` }),
+          },
+          { label: "Terminal" },
+        ],
+      };
   }
 }
 
@@ -466,6 +503,13 @@ function skillsChromeHint(match: PageMatch, props: unknown): ChromeScopeHint {
   };
 }
 
+export interface SpaTopbar {
+  readonly ideHref: string;
+  readonly needsInputCount?: number;
+  readonly policyVisible?: boolean;
+  readonly contextToggle?: boolean;
+}
+
 export interface SpaDocumentInput {
   readonly title: string;
   readonly active: ShellOptions["active"];
@@ -480,16 +524,25 @@ export interface SpaDocumentInput {
   readonly route: PageMatch;
   readonly props: unknown;
   readonly chrome: ChromeProps;
+  readonly spaRoutes: readonly RouteId[];
+  readonly topbar?: SpaTopbar;
+  readonly pageClass?: string;
+  readonly bodyClass?: string;
+  readonly viewport?: string;
+  readonly topbarActions?: string;
   readonly notice?: Notice;
   readonly manifest?: UiManifest;
   readonly devUrl?: string;
 }
 
 export function renderSpaDocument(input: SpaDocumentInput): string {
+  const topbar = input.topbar ?? { ideHref: ideBase() };
   const boot = {
     route: input.route,
     props: input.props,
     chrome: input.chrome,
+    spaRoutes: input.spaRoutes,
+    topbar,
     ...(input.notice === undefined ? {} : { notice: input.notice }),
   };
   const moduleScripts =
@@ -518,6 +571,10 @@ export function renderSpaDocument(input: SpaDocumentInput): string {
     header: "",
     body: fallback,
     contentScript: false,
+    ...(input.pageClass === undefined ? {} : { pageClass: input.pageClass }),
+    ...(input.bodyClass === undefined ? {} : { bodyClass: input.bodyClass }),
+    ...(input.viewport === undefined ? {} : { viewport: input.viewport }),
+    ...(input.topbarActions === undefined ? {} : { topbarActions: input.topbarActions }),
     ...(input.manifest === undefined ? {} : { styles: [...input.manifest.css] }),
     moduleScripts,
     bootJson: `<script id="hanse-boot" type="application/json">${serializeBoot(boot)}</script>`,
@@ -786,7 +843,108 @@ function pagePropsFor(
   if (match.id === "skills-detail") {
     return skillDetailPropsFor(deps, site, match, request);
   }
+  if (match.id === "chat") {
+    return chatPropsFor(deps, site, request);
+  }
+  if (match.id === "terminal") {
+    return terminalPropsFor(site, request);
+  }
   return {};
+}
+
+function workspaceApp(request: HttpRequest): { projectId?: string; appKey: string } {
+  const projectId = request.query?.project?.trim();
+  return {
+    ...(projectId === undefined || projectId.length === 0 ? {} : { projectId }),
+    appKey: request.query?.app?.trim() ?? "",
+  };
+}
+
+/**
+ * Chat boot props. Records the operator host only when the request carries a host, matching the
+ * legacy `GET /chat` guard. Missing app/project returns null so the legacy redirect/404 stays in
+ * force until Stage 9.
+ */
+function chatPropsFor(deps: HttpDeps, site: SiteModel, request: HttpRequest): ChatProps | null {
+  const { projectId, appKey } = workspaceApp(request);
+  if (appKey.length === 0) {
+    return null;
+  }
+  const found = findApp(deps, projectId, appKey);
+  if (found === undefined) {
+    return null;
+  }
+  if (request.host !== undefined) {
+    deps.previews?.recordOperatorHost(found.app.id, request.host);
+  }
+  const previews = deps.previews?.views(found.app.id) ?? [];
+  return (
+    buildChatProps({
+      site,
+      projectId: found.project.id,
+      appKey: found.app.appKey,
+      previews,
+    }) ?? null
+  );
+}
+
+function terminalPropsFor(site: SiteModel, request: HttpRequest): TerminalProps | null {
+  const { projectId, appKey } = workspaceApp(request);
+  if (projectId === undefined || appKey.length === 0) {
+    return null;
+  }
+  return buildTerminalProps({ site, projectId, appKey }) ?? null;
+}
+
+/** Server first-paint topbar markup for the chat control set; terminal/default use appShell's IDE action. */
+function renderChatTopbarActions(topbar: SpaTopbar): string {
+  if (topbar.contextToggle !== true) {
+    return `<a class="btn btn-ghost btn-icon" href="${escapeHtml(topbar.ideHref)}" target="_blank" rel="noreferrer" aria-label="Open application in IDE" title="Open in IDE">${icon("external")}</a>`;
+  }
+  const count = topbar.needsInputCount ?? 0;
+  return `<button class="btn btn-ghost btn-sm chat-input-needed" id="chat-input-needed" type="button" aria-haspopup="dialog" aria-controls="chat-queue" aria-expanded="false" aria-label="No requests need input"${count === 0 ? " hidden" : ""}>${icon("message")}<span class="chat-input-needed__count" id="chat-input-needed-count" aria-hidden="true">${count}</span></button><button class="btn btn-ghost btn-sm policy-chip" id="chat-policy-chip" type="button" aria-controls="chat-policy-warning" aria-expanded="false"${topbar.policyVisible === true ? "" : " hidden"}>${icon("alert-triangle")}<span id="chat-policy-chip-label">Policy warning</span></button><button class="btn btn-ghost btn-icon chat-context-toggle" type="button" data-chat-context-toggle aria-controls="chat-context" aria-expanded="false" aria-label="Open context panel" title="Context panel">${icon("panel-right")}</button><a class="btn btn-ghost btn-icon" href="${escapeHtml(topbar.ideHref)}" target="_blank" rel="noreferrer" aria-label="Open application in IDE" title="Open in IDE">${icon("external")}</a>`;
+}
+
+interface WorkspaceShellInput {
+  readonly pageClass: string;
+  readonly bodyClass: string;
+  readonly viewport?: string;
+  readonly title: string;
+  readonly breadcrumb: readonly Crumb[];
+  readonly projectId: string;
+  readonly appKey: string;
+  readonly topbar: SpaTopbar;
+  readonly topbarActions?: string;
+}
+
+function workspaceShellFor(match: PageMatch, props: unknown): WorkspaceShellInput | undefined {
+  if (match.id === "chat") {
+    const chat = props as ChatProps;
+    return {
+      pageClass: "page--chat",
+      bodyClass: "page__body--chat",
+      viewport: "width=device-width, initial-scale=1, interactive-widget=resizes-content",
+      title: chat.title,
+      breadcrumb: chat.breadcrumb,
+      projectId: chat.app.projectId,
+      appKey: chat.app.appKey,
+      topbar: chat.topbar,
+      topbarActions: renderChatTopbarActions(chat.topbar),
+    };
+  }
+  if (match.id === "terminal") {
+    const terminal = props as TerminalProps;
+    return {
+      pageClass: "page--terminal",
+      bodyClass: "page__body--terminal",
+      title: terminal.title,
+      breadcrumb: terminal.breadcrumb,
+      projectId: terminal.app.projectId,
+      appKey: terminal.app.appKey,
+      topbar: terminal.topbar,
+    };
+  }
+  return undefined;
 }
 
 function agentForbidden(): HttpResponse {
@@ -820,7 +978,10 @@ export function maybeServeSpa(deps: HttpDeps, request: HttpRequest): HttpRespons
 
   logUnknownRoutes(deps);
   const devUrl = uiDevUrl();
-  if (!isSpaRoute(match.id, { manifestValid: true })) {
+  const spaRoutes = ROUTES.filter((route) => isSpaRoute(route.id, { manifestValid: true })).map(
+    (route) => route.id,
+  );
+  if (!spaRoutes.includes(match.id)) {
     return undefined;
   }
   const manifest =
@@ -838,7 +999,22 @@ export function maybeServeSpa(deps: HttpDeps, request: HttpRequest): HttpRespons
 
   const site = buildSite(deps);
   const props = pagePropsFor(deps, site, match, request);
-  const data = chromeFor(site, match, skillsChromeHint(match, props));
+  if ((match.id === "chat" || match.id === "terminal") && props === null) {
+    return undefined;
+  }
+  const workspace = workspaceShellFor(match, props);
+  const data = chromeFor(
+    site,
+    match,
+    workspace === undefined
+      ? skillsChromeHint(match, props)
+      : {
+          title: workspace.title,
+          breadcrumb: workspace.breadcrumb,
+          projectId: workspace.projectId,
+          appKey: workspace.appKey,
+        },
+  );
   const notice = noticeFromQuery(request);
   return {
     status: 200,
@@ -858,6 +1034,18 @@ export function maybeServeSpa(deps: HttpDeps, request: HttpRequest): HttpRespons
       route: match,
       props,
       chrome: data.chrome,
+      spaRoutes,
+      ...(workspace === undefined
+        ? {}
+        : {
+            topbar: workspace.topbar,
+            pageClass: workspace.pageClass,
+            bodyClass: workspace.bodyClass,
+            ...(workspace.viewport === undefined ? {} : { viewport: workspace.viewport }),
+            ...(workspace.topbarActions === undefined
+              ? {}
+              : { topbarActions: workspace.topbarActions }),
+          }),
       ...(notice === undefined ? {} : { notice }),
       ...(devUrl === undefined ? {} : { devUrl }),
       ...(manifest === undefined ? {} : { manifest }),
@@ -873,6 +1061,8 @@ const UI_API_PATHS = new Set([
   "/api/ui/ssh",
   "/api/ui/settings",
   "/api/ui/skills",
+  "/api/ui/chat",
+  "/api/ui/terminal",
 ]);
 const UI_SKILL_PATH = /^\/api\/ui\/skills\/([^/]+)$/;
 const UI_PROJECT_PATH = /^\/api\/ui\/projects\/([^/]+)$/;
@@ -953,9 +1143,72 @@ export function handleUiApi(deps: HttpDeps, request: HttpRequest): HttpResponse 
     if (match === undefined) {
       return jsonResponse(404, { error: "not found" }, { "cache-control": "no-store" });
     }
-    return jsonResponse(200, chromeFor(site, match).chrome, {
+    const projectId = request.query?.project?.trim();
+    const appKey = request.query?.app?.trim();
+    const hint = {
+      ...(projectId === undefined || projectId.length === 0 ? {} : { projectId }),
+      ...(appKey === undefined || appKey.length === 0 ? {} : { appKey }),
+    };
+    return jsonResponse(200, chromeFor(site, match, hint).chrome, {
       "cache-control": "no-store",
     });
+  }
+
+  if (request.path === "/api/ui/chat") {
+    const projectId = request.query?.project?.trim();
+    const appKey = request.query?.app?.trim() ?? "";
+    const found =
+      appKey.length === 0
+        ? undefined
+        : findApp(
+            deps,
+            projectId === undefined || projectId.length === 0 ? undefined : projectId,
+            appKey,
+          );
+    if (found === undefined) {
+      return jsonResponse(404, { error: "not found" }, { "cache-control": "no-store" });
+    }
+    if (request.host !== undefined) {
+      deps.previews?.recordOperatorHost(found.app.id, request.host);
+    }
+    const previews = deps.previews?.views(found.app.id) ?? [];
+    const props = buildChatProps({
+      site,
+      projectId: found.project.id,
+      appKey: found.app.appKey,
+      previews,
+    });
+    if (props === undefined) {
+      return jsonResponse(404, { error: "not found" }, { "cache-control": "no-store" });
+    }
+    const match: PageMatch = { id: "chat", params: {} };
+    const chrome = chromeFor(site, match, {
+      projectId: props.app.projectId,
+      appKey: props.app.appKey,
+      title: props.title,
+      breadcrumb: props.breadcrumb,
+    }).chrome;
+    return jsonResponse(200, { ...props, chrome }, { "cache-control": "no-store" });
+  }
+
+  if (request.path === "/api/ui/terminal") {
+    const projectId = request.query?.project?.trim() ?? "";
+    const appKey = request.query?.app?.trim() ?? "";
+    const props =
+      projectId.length === 0 || appKey.length === 0
+        ? undefined
+        : buildTerminalProps({ site, projectId, appKey });
+    if (props === undefined) {
+      return jsonResponse(404, { error: "not found" }, { "cache-control": "no-store" });
+    }
+    const match: PageMatch = { id: "terminal", params: {} };
+    const chrome = chromeFor(site, match, {
+      projectId: props.app.projectId,
+      appKey: props.app.appKey,
+      title: props.title,
+      breadcrumb: props.breadcrumb,
+    }).chrome;
+    return jsonResponse(200, { ...props, chrome }, { "cache-control": "no-store" });
   }
 
   if (request.path === "/api/ui/overview") {

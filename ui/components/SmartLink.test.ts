@@ -1,13 +1,8 @@
 import { flushPromises, mount } from "@vue/test-utils";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { createMemoryHistory, createRouter, type Router } from "vue-router";
+import { installSpaRoutes } from "../spa-routes.js";
 import SmartLink from "./SmartLink.vue";
-
-const routeState = vi.hoisted(() => ({ spa: false }));
-
-vi.mock("../../src/shared/routes.js", () => ({
-  isSpaPath: () => routeState.spa,
-}));
 
 function createTestRouter(): Router {
   return createRouter({
@@ -32,7 +27,7 @@ async function mountSpaLink(to: string, router: Router, attrs: Record<string, st
 
 describe("SmartLink", () => {
   beforeEach(() => {
-    routeState.spa = false;
+    installSpaRoutes(["overview", "projects"]);
   });
 
   it("renders a plain anchor for a legacy path", () => {
@@ -46,7 +41,6 @@ describe("SmartLink", () => {
   });
 
   it("renders a router link and navigates for an SPA path with a query and hash", async () => {
-    routeState.spa = true;
     const router = createTestRouter();
     const wrapper = await mountSpaLink("/projects?q=one#top", router);
 
@@ -64,7 +58,6 @@ describe("SmartLink", () => {
   });
 
   it("does not intercept modified clicks", async () => {
-    routeState.spa = true;
     const router = createTestRouter();
     const wrapper = await mountSpaLink("/projects", router);
 
@@ -84,7 +77,6 @@ describe("SmartLink", () => {
   });
 
   it("does not intercept target or download links", async () => {
-    routeState.spa = true;
     const router = createTestRouter();
     const wrapper = await mountSpaLink("/projects", router, {
       target: "_blank",
@@ -104,7 +96,6 @@ describe("SmartLink", () => {
   });
 
   it("keeps an explicit aria-current from the caller", async () => {
-    routeState.spa = true;
     const router = createTestRouter();
     const wrapper = await mountSpaLink("/projects?filter=waiting", router, {
       "aria-current": "page",
@@ -115,7 +106,6 @@ describe("SmartLink", () => {
   });
 
   it("renders a plain anchor for hash-only links", () => {
-    routeState.spa = true;
     const wrapper = mount(SmartLink, {
       props: { to: "#section" },
       slots: { default: "Section" },

@@ -374,6 +374,8 @@ function boot(
       params: routeId === "app" ? { id, app } : { id },
     },
     props: payload,
+    spaRoutes: [routeId as BootPayload["route"]["id"]],
+    topbar: { ideHref: "/ide/" },
     chrome: CHROME,
   };
 }

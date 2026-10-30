@@ -201,6 +201,8 @@ function boot(payload: ProjectProps | null, routeId = "project", id = "project-o
       params: routeId === "project" ? { id } : {},
     },
     props: payload,
+    spaRoutes: [routeId as BootPayload["route"]["id"]],
+    topbar: { ideHref: "/ide/" },
     chrome: {
       sidebarNav: "",
       breadcrumb: "",

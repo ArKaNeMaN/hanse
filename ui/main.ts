@@ -5,6 +5,8 @@ import App from "./App.vue";
 import { readBoot } from "./boot.js";
 import { installChrome } from "./composables/useChrome.js";
 import { router } from "./router.js";
+import { installSpaRoutes } from "./spa-routes.js";
+import { clearTopbarActions } from "./topbar.js";
 
 const PRELOAD_RELOAD_KEY = "hanse-ui-preload-reloaded";
 let preloadReloadAttempted = false;
@@ -94,7 +96,10 @@ if (boot === undefined) {
     const app = createApp(App, { boot });
     app.use(createPinia());
     app.use(VueQueryPlugin);
+    installSpaRoutes(boot.spaRoutes);
     installChrome(router);
+    // The server fallback is pre-JS only; the App-level TopbarActions owns the container after mount.
+    clearTopbarActions();
     app.use(router);
     app.mount(main);
   }

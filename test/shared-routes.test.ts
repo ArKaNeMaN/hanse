@@ -2,7 +2,9 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  isLegacyRetired,
   isSpaPath,
+  isSpaPathIn,
   isSpaRoute,
   matchPage,
   parseSpaAllowlist,
@@ -35,6 +37,8 @@ describe("shared route manifest", () => {
       ["skills-app", "/projects/:id/apps/:app/skills", "skills"],
       ["app", "/projects/:id/apps/:app", "project"],
       ["project", "/projects/:id", "project"],
+      ["terminal", "/terminal", "project"],
+      ["chat", "/chat", "none"],
     ]);
     expect(ROUTES.filter((route) => route.spa).map((route) => route.id)).toEqual([
       "projects",
@@ -85,6 +89,8 @@ describe("shared route manifest", () => {
     });
     expect(matchPage("/projects/alpha")).toEqual({ id: "project", params: { id: "alpha" } });
     expect(matchPage("/projects/a%20b")).toEqual({ id: "project", params: { id: "a b" } });
+    expect(matchPage("/chat")).toEqual({ id: "chat", params: {} });
+    expect(matchPage("/terminal")).toEqual({ id: "terminal", params: {} });
   });
 
   it("prefers static and longer patterns over dynamic ones", () => {
@@ -97,16 +103,17 @@ describe("shared route manifest", () => {
     expect(matchPage("/projects/p/apps/a")?.id).toBe("app");
   });
 
-  it("never matches API, asset, chat, terminal, IDE, or preview paths", () => {
+  it("matches the chat and terminal page paths but never API, asset, IDE, preview, or upgrade paths", () => {
+    expect(matchPage("/chat")).toEqual({ id: "chat", params: {} });
+    expect(matchPage("/terminal")).toEqual({ id: "terminal", params: {} });
     for (const pathname of [
       "/api/projects",
       "/api/ui/projects",
       "/assets/app.js",
-      "/chat",
-      "/terminal",
       "/ide/",
       "/preview/p/a/key",
       "/projects/p/apps/a/git/status",
+      "/api/apps/a/terminal",
     ]) {
       expect(matchPage(pathname), pathname).toBeUndefined();
     }
@@ -152,6 +159,8 @@ describe("shared route manifest", () => {
     expect(isSpaPath("/skills/new", { env: {} })).toBe(true);
     expect(isSpaPath("/skills/42", { env: {} })).toBe(true);
     expect(isSpaPath("/projects/alpha/apps/web", { env: {} })).toBe(true);
+    expect(isSpaPath("/chat", { env: {} })).toBe(false);
+    expect(isSpaPath("/terminal", { env: {} })).toBe(false);
   });
 
   it("applies HANSE_UI_LEGACY and manifest validity before the allowlist", () => {
@@ -187,6 +196,43 @@ describe("shared route manifest", () => {
 
   it("exposes route metadata by id", () => {
     expect(routeById("app")).toMatchObject({ path: "/projects/:id/apps/:app", nav: "project" });
+    expect(routeById("chat")).toMatchObject({
+      path: "/chat",
+      nav: "none",
+      spa: false,
+      legacyRetired: false,
+    });
+    expect(routeById("terminal")).toMatchObject({
+      path: "/terminal",
+      nav: "project",
+      spa: false,
+      legacyRetired: false,
+    });
     expect(routeById("nope" as never)).toBeUndefined();
+  });
+
+  it("keeps chat and terminal out of the default boot set until their records land", () => {
+    const bootRoutes = ROUTES.filter((route) =>
+      isSpaRoute(route.id, { env: {}, manifestValid: true }),
+    ).map((route) => route.id);
+    expect(bootRoutes).not.toContain("chat");
+    expect(bootRoutes).not.toContain("terminal");
+    expect(bootRoutes).toContain("projects");
+  });
+
+  it("reports legacyRetired false by default and for the new ids in this stage", () => {
+    expect(isLegacyRetired("projects")).toBe(false);
+    expect(isLegacyRetired("chat")).toBe(false);
+    expect(isLegacyRetired("terminal")).toBe(false);
+    expect(isLegacyRetired("nope" as never)).toBe(false);
+  });
+
+  it("checks SPA path membership against the resolved boot set", () => {
+    const ids = new Set<"projects" | "chat">(["projects", "chat"]);
+    expect(isSpaPathIn("/projects", ids)).toBe(true);
+    expect(isSpaPathIn("/chat", ids)).toBe(true);
+    expect(isSpaPathIn("/terminal", ids)).toBe(false);
+    expect(isSpaPathIn("/api/projects", ids)).toBe(false);
+    expect(isSpaPathIn("/projects", ["projects"] as const)).toBe(true);
   });
 });

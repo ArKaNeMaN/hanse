@@ -379,6 +379,8 @@ export function boot(
   return {
     route: { id: routeId, params },
     props: payload,
+    spaRoutes: [routeId],
+    topbar: { ideHref: "/ide/" },
     chrome: {
       sidebarNav: "",
       breadcrumb: "",

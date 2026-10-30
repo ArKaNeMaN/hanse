@@ -1,4 +1,20 @@
-import { createRouter, createWebHistory, type RouteRecordRaw } from "vue-router";
+import {
+  createRouter,
+  createWebHistory,
+  type RouteLocationNormalized,
+  type RouteRecordRaw,
+} from "vue-router";
+import { isLegacyRetired, matchPage } from "../src/shared/routes.js";
+import { installedSpaRoutes } from "./spa-routes.js";
+
+declare module "vue-router" {
+  interface RouteMeta {
+    /** Marks a chat/terminal workspace route for shell and focus behavior. */
+    workspace?: "chat" | "terminal";
+    /** Client mirror of the shared route `legacyRetired` flag. */
+    legacyRetired?: boolean;
+  }
+}
 
 /**
  * Only routes whose registry `spa` flag is enabled are registered here. Phase 1B registered
@@ -85,6 +101,32 @@ const routes: readonly RouteRecordRaw[] = [
   },
 ];
 
+export interface SpaGuardOptions {
+  /** Overridable for tests; a real full-document load by default. */
+  readonly load?: (path: string) => void;
+}
+
+/**
+ * Full-document-load guard for destinations outside the boot route set or explicitly pinned to
+ * the legacy renderer. It also catches a server route-set change after a restart.
+ */
+export function createSpaNavigationGuard(options: SpaGuardOptions = {}) {
+  const load = options.load ?? ((path: string) => window.location.assign(path));
+  return (to: RouteLocationNormalized): boolean => {
+    const match = matchPage(to.path);
+    if (match === undefined || !installedSpaRoutes().has(match.id)) {
+      load(to.fullPath);
+      return false;
+    }
+    const retired = to.meta.legacyRetired === true || isLegacyRetired(match.id);
+    if (to.query.legacy === "1" && !retired) {
+      load(to.fullPath);
+      return false;
+    }
+    return true;
+  };
+}
+
 export const router = createRouter({
   history: createWebHistory(),
   routes,
@@ -96,3 +138,5 @@ export const router = createRouter({
     return { el: ".page", left: 0, top: 0 };
   },
 });
+
+router.beforeEach(createSpaNavigationGuard());

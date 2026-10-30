@@ -3,6 +3,7 @@ import { onErrorCaptured, ref } from "vue";
 import { RouterView } from "vue-router";
 import type { BootPayload } from "./boot.js";
 import ToastHost from "./components/ToastHost.vue";
+import TopbarActions from "./components/TopbarActions.vue";
 import RouteErrorPage from "./pages/RouteErrorPage.vue";
 
 defineProps<{ boot: BootPayload }>();
@@ -21,5 +22,6 @@ onErrorCaptured((error) => {
   <RouterView v-else v-slot="{ Component }">
     <component :is="Component" :boot="boot" />
   </RouterView>
+  <TopbarActions :topbar="boot.topbar" />
   <ToastHost :notice="boot.notice" />
 </template>

@@ -181,6 +181,8 @@ function boot(payload: HandoffsProps | null, routeId = "handoffs"): BootPayload 
   return {
     route: { id: routeId as BootPayload["route"]["id"], params: {} },
     props: payload,
+    spaRoutes: [routeId as BootPayload["route"]["id"]],
+    topbar: { ideHref: "/ide/" },
     chrome: {
       sidebarNav: "",
       breadcrumb: "",

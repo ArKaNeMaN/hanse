@@ -1,7 +1,7 @@
 import { flushPromises } from "@vue/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createMemoryHistory, createRouter } from "vue-router";
-import { installChrome } from "./useChrome.js";
+import { fetchChrome, focusMain, installChrome } from "./useChrome.js";
 
 const CHROME = {
   sidebarNav: '<p class="nav-label">Projects</p>',
@@ -137,5 +137,58 @@ describe("installChrome", () => {
 
     expect(document.getElementById("sidebar-nav")?.innerHTML).toBe("");
     expect(document.getElementById("shell")?.dataset.nav).toBe("closed");
+  });
+
+  it("forwards workspace project/app hints to the chrome endpoint", async () => {
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: "/projects", component: { template: "<div />" } },
+        {
+          path: "/chat",
+          component: { template: "<div />" },
+          meta: { workspace: "chat" },
+        },
+      ],
+    });
+    cleanup = installChrome(router);
+    await router.push("/projects");
+    await flushPromises();
+
+    const page = document.querySelector<HTMLElement>(".page");
+    if (page !== null) {
+      page.scrollTop = 240;
+    }
+
+    await router.push("/chat?app=web&project=p");
+    await flushPromises();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const url = String(fetchMock.mock.calls[0]?.[0]);
+    expect(url).toContain("/api/ui/chrome?path=%2Fchat&project=p&app=web");
+    expect(document.activeElement?.id).toBe("main");
+    expect(page?.scrollTop).toBe(240);
+  });
+
+  it("forwards hints directly and keeps normal routes resetting .page", async () => {
+    await fetchChrome("/terminal", "/terminal?app=web&project=p", {
+      projectId: "p",
+      appKey: "web",
+    });
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain(
+      "/api/ui/chrome?path=%2Fterminal&project=p&app=web",
+    );
+
+    const page = document.querySelector<HTMLElement>(".page");
+    if (page !== null) {
+      page.scrollTop = 120;
+    }
+    focusMain({ path: "/projects" });
+    expect(page?.scrollTop).toBe(0);
+    if (page !== null) {
+      page.scrollTop = 120;
+    }
+    focusMain({ path: "/chat" });
+    expect(page?.scrollTop).toBe(120);
   });
 });
