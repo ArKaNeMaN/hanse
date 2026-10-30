@@ -438,3 +438,43 @@ Tests/evidence:
 
 Limits: `chat.spa` stays `false`; no cutover, attachments, commands, prompts, permissions, SSH,
 context rail, or feed-depth rendering was added. Stage 5 is the next action.
+
+
+## Stage 5 - Chat feed rendering parity
+
+Stage 5 ports the streaming feed renderers, diffs/highlighting, and long-thread performance while
+`chat.spa` stays `false`. `assets/chat.js`/`terminal.js` are unchanged; the only legacy-module change
+is the additive route teardown export in `assets/chat-highlight.js`.
+
+Implemented:
+- 5A: `MarkdownBlock.vue` clears and renders the shared DOM builder (no `v-html`), throttles streaming
+  at 50 ms, renders immediately on seal, and keeps the 16-column/200-row table caps. Reasoning,
+  tool streaming/bash tails, notices, OMO/handoff cards, image gate/warning, generation row, message
+  count, and text/reasoning/tool/patch/file/subtask/unknown parts are ported; adversarial HTML/XML
+  remains inert text.
+- 5B: `ToolPart` uses `extractToolView`; `DiffView`/`ReadView`/`WriteView` use the shared mount/open
+  path. `disposeHighlightController()` is the route-level owner: it cancels contexts and timers,
+  terminates the worker, clears jobs/stats, and resets fallback state. Caps remain 64 KiB/file,
+  128 KiB total, 50 files, 2,000 lines. The Vite worker emits ES because the existing worker imports
+  shared diff/Prism modules; the built-worker smoke still passes.
+- 5C: `ChatThread` uses rAF-coalesced pinned-bottom scrolling, prepend anchors, new-messages count,
+  and keyed message DOM. Feed updates no longer replace the whole list per token; Prism is not created
+  during feed load and starts only when a code/diff view opens.
+
+Tests/evidence:
+- New `chat-markdown`, `chat-message`, `chat-tools`, `chat-cards`, `chat-diff-view`,
+  `chat-highlight-teardown`, `chat-highlight-fallback`, `chat-scroll`, `chat-perf`; E2E covers
+  streaming text/tool/bash/table/OMO/handoff/notice, empty/oversized/truncated fixtures, diffs,
+  500-message threads, and 390/1440 scroll.
+- `NODE_ENV=development npm test`: **3239 passed** (210 files).
+- `NODE_ENV=development npm run test:e2e`: **193 passed, 12 skipped** across three modes.
+- `lint`, `typecheck`, `typecheck:ui`, `typecheck:e2e`, `build`, `check:ui` (68 SFCs),
+  `check:chat-worker`, `check:sensitive`, `git diff --check`: pass.
+- Chat route chunk: **157.29 kB raw / 46.87 kB gzip**; shared Markdown chunk 13.03 kB gzip. E2E first
+  chat load transfer was 117,450 B, below the 250 KiB gzip target; 500-message JS heap was 16,859 KiB.
+  Visual QA covered diffs/read/diff-adversarial/reasoning (102 assertions, 8 screenshots, zero errors).
+- Baseline gate repairs: moved the Node-builtins `app-js-split` test out of the jsdom project, fixed a
+  terminal custom-event assertion, and cleared three Biome warnings in design scripts/TerminalView.
+
+Limits: `chat.spa` stays `false`; no cutover, attachments, commands, prompts, permissions, SSH, or
+context rail. Stage 6 is the next action.

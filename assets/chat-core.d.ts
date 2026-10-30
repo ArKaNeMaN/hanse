@@ -154,3 +154,64 @@ export function normalizeStreamWarning(value: unknown): {
   sessionID?: string;
 } | null;
 export function provisionalPartType(value: unknown): PartType | null;
+
+export interface ImageGateView {
+  blocked: boolean;
+  state: string;
+  action: "build_start" | "none" | string;
+}
+
+export interface ImageCardView {
+  title: string;
+  body: string;
+  action: string;
+  actionLabel: string;
+}
+
+export interface ImageWarningView {
+  tone: "info" | "warning" | "error" | string;
+  title: string;
+  body: string;
+  action: string;
+}
+
+export function imageGateFromView(view: unknown): ImageGateView;
+export function imageCardFromView(view: unknown): ImageCardView | null;
+export function imageWarningFromView(view: unknown): ImageWarningView | null;
+export function imageActionLabel(action: unknown): string;
+export function imagePollDelay(elapsedMs: unknown): number;
+
+export function noticeLabel(notice: unknown): { label: string; reason: string };
+export function messageCountLabel(count: number, historyComplete: boolean): string;
+
+export function toolDisplayName(tool: string): string;
+export function normalizeToolName(tool: string): string;
+export function isHanseTool(tool: string): boolean;
+export function parseToolJsonOutput(output: unknown): Record<string, unknown> | unknown[] | null;
+export function toolFailure(value: unknown): { code: string; message: string } | null;
+export function toolStatusChip(status: string): { state: string; icon: string; label: string };
+export function toolSummaryText(
+  tool: string,
+  input: Record<string, unknown>,
+  output: unknown,
+): string | null;
+export function formatByteCount(value: unknown): string;
+export function shortIdentifier(value: unknown, length?: number): string;
+
+export function handoffBodyFromText(text: string, direction: "request" | "reply"): string;
+export function handoffNoteFromText(text: string): string;
+export function agentInitials(name: string): string;
+export function reasoningElapsedMs(start: unknown, end: unknown, now?: number): number | null;
+
+export function resolveActiveStatusLabel(input?: {
+  waiting?: boolean;
+  sending?: boolean;
+  paused?: boolean;
+  statusType?: string;
+  runningTool?: string | null;
+  unsealedReasoning?: boolean;
+  unsealedText?: boolean;
+  queueLength?: number;
+  activePromptID?: string | null;
+  queueBlocked?: boolean;
+}): string;

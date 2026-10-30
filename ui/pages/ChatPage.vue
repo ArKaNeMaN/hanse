@@ -2,7 +2,20 @@
 import { useQuery } from "@tanstack/vue-query";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import type { FeedPartRecord as PartRecord } from "../../assets/chat-feed-store.js";
+import {
+  handoffBodyFromText,
+  handoffNoteFromText,
+  imageGateFromView,
+  imagePollDelay,
+  messageCountLabel,
+  normalizeHandoffMeta,
+  resolveActiveStatusLabel,
+} from "../../assets/chat-core.js";
+import type {
+  FeedMessageRecord,
+  FeedPartRecord as PartRecord,
+} from "../../assets/chat-feed-store.js";
+import { disposeHighlightController } from "../../assets/chat-highlight.js";
 import type { RuntimeState } from "../../src/http/ui.js";
 import type { ContextSnapshot } from "../../src/opencode/context.js";
 import type { NormalizedTodo } from "../../src/opencode/prompts.js";
@@ -28,6 +41,8 @@ import type {
 import { normalizeChatQuery, useChatRouteState } from "../chat/useChatRouteState.js";
 import AppIcon from "../components/AppIcon.vue";
 import ChatComposer from "../components/chat/ChatComposer.vue";
+import ChatImageGate from "../components/chat/ChatImageGate.vue";
+import ChatImageWarning from "../components/chat/ChatImageWarning.vue";
 import ChatQueueDialog from "../components/chat/ChatQueueDialog.vue";
 import ChatQueueStrip from "../components/chat/ChatQueueStrip.vue";
 import ChatScrim from "../components/chat/ChatScrim.vue";
@@ -154,6 +169,104 @@ watch(
   },
   { immediate: true },
 );
+
+const imageQuery = useQuery<Record<string, unknown>>({
+  queryKey: computed(() => ["chat-image", routeState.project.value, routeState.app.value]),
+  queryFn: () => apiQuery<Record<string, unknown>>(withProject(`${apiBase.value}/image`)),
+  staleTime: 5_000,
+  retry: false,
+  enabled: computed(() => routeState.app.value.length > 0),
+});
+const imageView = computed<unknown>(() => imageQuery.data.value ?? null);
+const imageGate = computed(() => imageGateFromView(imageView.value));
+const imageBlocked = computed(() => imageGate.value.blocked);
+const imageActionBusy = ref(false);
+let imagePollTimer: ReturnType<typeof setTimeout> | undefined;
+let imagePollMode: "build_start" | "rebuild_restart" | null = null;
+let imagePollStartedAt = 0;
+
+function stopImagePolling(): void {
+  if (imagePollTimer !== undefined) {
+    clearTimeout(imagePollTimer);
+    imagePollTimer = undefined;
+  }
+  imagePollMode = null;
+}
+
+async function continueImageAction(mode: "build_start" | "rebuild_restart"): Promise<void> {
+  await apiMutation<unknown>(
+    withProject(`${apiBase.value}/${mode === "rebuild_restart" ? "restart" : "start"}`),
+    {
+      json: {},
+    },
+  );
+  await imageQuery.refetch();
+}
+
+function scheduleImagePoll(): void {
+  if (imagePollMode === null) {
+    return;
+  }
+  const delay = imagePollDelay(Date.now() - imagePollStartedAt);
+  if (delay <= 0) {
+    stopImagePolling();
+    return;
+  }
+  imagePollTimer = setTimeout(() => {
+    imagePollTimer = undefined;
+    void pollImageBuild();
+  }, delay);
+}
+
+async function pollImageBuild(): Promise<void> {
+  const mode = imagePollMode;
+  if (mode === null) {
+    return;
+  }
+  const result = await imageQuery.refetch();
+  const view = result.data;
+  if (view?.state === "building") {
+    scheduleImagePoll();
+    return;
+  }
+  stopImagePolling();
+  if (typeof view?.usableImageRef === "string" && view.usableImageRef.length > 0) {
+    try {
+      await continueImageAction(mode);
+    } catch (error) {
+      toasts.push(errorText(error, "The image action failed. Try again."), "error");
+    }
+  }
+}
+
+async function runImageAction(action: string): Promise<void> {
+  if (imageActionBusy.value || action === "none") {
+    return;
+  }
+  imageActionBusy.value = true;
+  try {
+    if (action === "build_start" || action === "rebuild_restart") {
+      stopImagePolling();
+      imagePollMode = action;
+      imagePollStartedAt = Date.now();
+      await apiMutation<unknown>(withProject(`${apiBase.value}/build`), { json: {} });
+      await imageQuery.refetch();
+      if (imageQuery.data.value?.state === "building") {
+        scheduleImagePoll();
+      } else {
+        await pollImageBuild();
+      }
+    } else {
+      await apiMutation<unknown>(withProject(`${apiBase.value}/restart`), { json: {} });
+      await imageQuery.refetch();
+    }
+  } catch (error) {
+    stopImagePolling();
+    toasts.push(errorText(error, "The image action failed. Try again."), "error");
+  } finally {
+    imageActionBusy.value = false;
+  }
+}
 
 const sessionsQuery = useQuery<ChatSessionsResponse>({
   queryKey: computed(() => ["chat-sessions", routeState.project.value, routeState.app.value]),
@@ -713,7 +826,73 @@ function partView(part: PartRecord, pendingDelta: string): ChatMessagePartView {
       : typeof part.data.status === "string"
         ? part.data.status
         : "";
-  return { id: part.id, type: part.type, text, title, status };
+  return {
+    id: part.id,
+    type: part.type,
+    text,
+    title,
+    status,
+    data: { ...part.data },
+    provisional: part.provisional === true,
+    partial: part.partial === true,
+    sealed: part.sealed === true,
+    omitted: part.omitted === true,
+    ...(part.truncation === undefined ? {} : { truncation: part.truncation }),
+  };
+}
+
+function recordTextContent(record: FeedMessageRecord): string {
+  const chunks: string[] = [];
+  for (const partID of record.partOrder) {
+    const part = record.parts.get(partID);
+    if (part === undefined || part.type !== "text") {
+      continue;
+    }
+    const text = typeof part.data.text === "string" ? part.data.text : "";
+    if (text.length > 0) {
+      chunks.push(text);
+    }
+  }
+  return chunks.join("\n");
+}
+
+function normalizeHandoffMetadata(record: FeedMessageRecord) {
+  const normalized = normalizeHandoffMeta(record.handoff);
+  if (normalized === null) {
+    return null;
+  }
+  const direction = normalized.direction === "request" ? "request" : "reply";
+  const raw = recordTextContent(record);
+  const body =
+    typeof normalized.body === "string" && normalized.body.length > 0
+      ? normalized.body
+      : handoffBodyFromText(raw, direction);
+  const note =
+    typeof normalized.operatorNote === "string" && normalized.operatorNote.length > 0
+      ? normalized.operatorNote
+      : direction === "reply"
+        ? handoffNoteFromText(raw)
+        : "";
+  return {
+    id: String(normalized.id),
+    direction: direction as "request" | "reply",
+    agent: String(normalized.agent),
+    from: String(normalized.from),
+    to: String(normalized.to),
+    state: typeof normalized.state === "string" ? normalized.state : undefined,
+    summary: String(normalized.summary),
+    body,
+    note,
+    outcome:
+      normalized.outcome === "completed" ||
+      normalized.outcome === "blocked" ||
+      normalized.outcome === "failed"
+        ? (normalized.outcome as "completed" | "blocked" | "failed")
+        : normalized.outcome === null
+          ? null
+          : undefined,
+    replyState: typeof normalized.replyState === "string" ? normalized.replyState : undefined,
+  };
 }
 
 const threadMessages = computed<ChatMessageView[]>(() => {
@@ -729,23 +908,31 @@ const threadMessages = computed<ChatMessageView[]>(() => {
     const parts: ChatMessagePartView[] = [];
     for (const partID of record.partOrder) {
       const part = record.parts.get(partID);
-      if (part === undefined || part.omitted === true) {
+      if (part === undefined) {
         continue;
       }
       parts.push(partView(part, feed.thread.pendingDeltas.get(partID) ?? ""));
     }
     const system = record.system;
+    const handoff = record.handoff === undefined ? null : normalizeHandoffMetadata(record);
     out.push({
       id: record.id,
       role: record.role,
       ...(record.optimistic === undefined ? {} : { optimistic: record.optimistic }),
+      ...(record.time === undefined ? {} : { time: record.time }),
       omo:
         system === undefined
           ? null
           : {
+              kind: typeof system.kind === "string" ? system.kind : "system",
+              tone: typeof system.tone === "string" ? system.tone : "neutral",
               title: typeof system.title === "string" ? system.title : "System reminder",
               body: typeof system.body === "string" ? system.body : "",
+              ...(Array.isArray(system.headers)
+                ? { headers: system.headers.filter((value) => typeof value === "string") }
+                : {}),
             },
+      handoff,
       parts,
     });
   }
@@ -779,6 +966,24 @@ const threadItems = computed<ChatThreadItem[]>(() => {
   }
   return items;
 });
+const messageCountText = computed(() =>
+  messageCountLabel(feed.thread.order.length, historyCursor.value === null),
+);
+const generatingLabel = computed(() => {
+  feed.revision;
+  const type = feed.thread.agentStatus?.type;
+  const busy = type === "busy" || type === "retry";
+  if (!busy && feed.thread.queue.length === 0 && feed.thread.activePromptID === null) {
+    return null;
+  }
+  return resolveActiveStatusLabel({
+    statusType: type,
+    queueLength: feed.thread.queue.length,
+    activePromptID: feed.thread.activePromptID,
+    queueBlocked: false,
+  });
+});
+
 const empty = computed(
   () =>
     !loadingMessages.value &&
@@ -812,6 +1017,8 @@ onMounted(() => {
 onBeforeUnmount(() => {
   document.removeEventListener("keydown", onGlobalKeydown);
   abortLoads();
+  stopImagePolling();
+  disposeHighlightController();
   if (reconcileTimer !== undefined) {
     clearTimeout(reconcileTimer);
     reconcileTimer = undefined;
@@ -867,6 +1074,13 @@ onBeforeUnmount(() => {
       >
         This application is pending deletion. Chat is read-only.
       </div>
+      <ChatImageGate :view="imageView" :busy="imageActionBusy" @action="runImageAction" />
+      <ChatImageWarning
+        :view="imageView"
+        :blocked="imageBlocked"
+        :busy="imageActionBusy"
+        @action="runImageAction"
+      />
 
       <ChatSessionsRail
         :sessions="sessionStore.sessions"
@@ -918,6 +1132,8 @@ onBeforeUnmount(() => {
           :empty="empty"
           :stopped="stopped"
           :load-earlier-enabled="historyCursor !== null"
+          :message-count="messageCountText"
+          :generating-label="generatingLabel"
           @load-earlier="loadEarlier"
         />
         <ChatQueueStrip
@@ -931,7 +1147,7 @@ onBeforeUnmount(() => {
           :error="composerError"
           :pending="composerPendingRows"
           :mode="composerMode"
-          :disabled="stopped || deletionPending"
+          :disabled="stopped || deletionPending || imageBlocked"
           :send-disabled="composerSendDisabled"
           :stop-disabled="composerStopDisabled"
           :show-recovery="composerShowRecovery"

@@ -30,6 +30,8 @@ export const E2E_CHAT_SESSION_ID = "ses_e2ealpha";
 export const E2E_CHAT_CHILD_SESSION_ID = "ses_e2echild";
 export const E2E_CHAT_GRANDCHILD_SESSION_ID = "ses_e2egrandchild";
 export const E2E_CHAT_HISTORY_SESSION_ID = "ses_e2ehistory";
+export const E2E_CHAT_RENDER_SESSION_ID = "ses_e2erender";
+export const E2E_CHAT_PERF_SESSION_ID = "ses_e2eperf";
 
 function historyMessages(): readonly FixtureMessage[] {
   return Array.from({ length: 35 }, (_, index) => {
@@ -49,6 +51,255 @@ function historyMessages(): readonly FixtureMessage[] {
           messageID: `msg_e2e_history_${suffix}`,
           type: "text",
           text: `Synthetic history message ${number}.`,
+        },
+      ],
+    } satisfies FixtureMessage;
+  });
+}
+
+function diffPatch(path: string, lines: number): string {
+  const body = [`--- a/${path}`, `+++ b/${path}`, `@@ -1,${lines} +1,${lines} @@`];
+  for (let line = 1; line <= lines; line += 1) {
+    body.push(`+export const e2e${line} = "${"x".repeat(56)}";`);
+  }
+  return body.join("\n");
+}
+
+function renderMessages(): readonly FixtureMessage[] {
+  const session = E2E_CHAT_RENDER_SESSION_ID;
+  const createdAt = 1_760_000_200_000;
+  return [
+    {
+      info: {
+        id: "msg_e2e_render_user",
+        sessionID: session,
+        role: "user",
+        time: { created: createdAt },
+      },
+      parts: [
+        {
+          id: "prt_e2e_render_user",
+          sessionID: session,
+          messageID: "msg_e2e_render_user",
+          type: "text",
+          text: "Render every supported surface.",
+        },
+      ],
+    },
+    {
+      info: {
+        id: "msg_e2e_render_omo",
+        sessionID: session,
+        role: "user",
+        time: { created: createdAt + 1 },
+      },
+      parts: [
+        {
+          id: "prt_e2e_render_omo",
+          sessionID: session,
+          messageID: "msg_e2e_render_omo",
+          type: "text",
+          synthetic: true,
+          text: "[BACKGROUND TASK COMPLETED]\n\nThe background fixture finished.",
+        },
+      ],
+    },
+    {
+      info: {
+        id: "msg_e2e_render_handoff",
+        sessionID: session,
+        role: "user",
+        time: { created: createdAt + 2 },
+        hanse: {
+          handoff: {
+            id: "handoff_e2e_render_0001",
+            direction: "reply",
+            agent: "fixture-agent",
+            from: "fixture-agent",
+            to: "alpha",
+            state: "delivered",
+            summary: "Fixture handoff reply",
+            body: "## Handoff result\n\nThe fixture reply body.",
+            operatorNote: "Reviewed in the fixture.",
+            outcome: "completed",
+            replyState: "delivered",
+          },
+        },
+      },
+      parts: [
+        {
+          id: "prt_e2e_render_handoff",
+          sessionID: session,
+          messageID: "msg_e2e_render_handoff",
+          type: "text",
+          text: "Handoff envelope fixture.",
+        },
+      ],
+    },
+    {
+      info: {
+        id: "msg_e2e_render_assistant",
+        sessionID: session,
+        role: "assistant",
+        parentID: "msg_e2e_render_user",
+        finish: "stop",
+        time: { created: createdAt + 3, completed: createdAt + 4 },
+      },
+      parts: [
+        {
+          id: "prt_e2e_render_text",
+          sessionID: session,
+          messageID: "msg_e2e_render_assistant",
+          type: "text",
+          text: "## Render fixture\n\n| Name | Value |\n| --- | ---: |\n| alpha | 1 |\n| beta | 2 |\n\nAdversarial <script>window.__bad = true</script> stays text.",
+        },
+        {
+          id: "prt_e2e_render_reasoning",
+          sessionID: session,
+          messageID: "msg_e2e_render_assistant",
+          type: "reasoning",
+          text: "I should inspect the fixture output.",
+        },
+        {
+          id: "prt_e2e_render_bash",
+          sessionID: session,
+          messageID: "msg_e2e_render_assistant",
+          type: "tool",
+          callID: "call_e2e_render_bash",
+          tool: "bash",
+          state: {
+            status: "completed",
+            input: { command: "npm test" },
+            metadata: { output: "fixture tests passed\nall green" },
+            output: "fixture tests passed\nall green",
+          },
+        },
+        {
+          id: "prt_e2e_render_edit",
+          sessionID: session,
+          messageID: "msg_e2e_render_assistant",
+          type: "tool",
+          callID: "call_e2e_render_edit",
+          tool: "edit",
+          state: {
+            status: "completed",
+            input: { filePath: "src/e2e.ts" },
+            metadata: {
+              filediff: {
+                file: "src/e2e.ts",
+                patch: diffPatch("src/e2e.ts", 12),
+              },
+            },
+          },
+        },
+        {
+          id: "prt_e2e_render_oversized",
+          sessionID: session,
+          messageID: "msg_e2e_render_assistant",
+          type: "tool",
+          callID: "call_e2e_render_oversized",
+          tool: "edit",
+          state: {
+            status: "completed",
+            input: { filePath: "src/oversized.ts" },
+            metadata: {
+              filediff: {
+                file: "src/oversized.ts",
+                patch: diffPatch("src/oversized.ts", 1_100),
+              },
+            },
+          },
+        },
+        {
+          id: "prt_e2e_render_patch",
+          sessionID: session,
+          messageID: "msg_e2e_render_assistant",
+          type: "patch",
+          title: "Fixture patch",
+          patch: diffPatch("src/patch.ts", 4),
+        },
+        {
+          id: "prt_e2e_render_file",
+          sessionID: session,
+          messageID: "msg_e2e_render_assistant",
+          type: "file",
+          filename: "src/read.ts",
+          content: "export const read = true;",
+        },
+        {
+          id: "prt_e2e_render_subtask",
+          sessionID: session,
+          messageID: "msg_e2e_render_assistant",
+          type: "subtask",
+          description: "Fixture subtask",
+          prompt: "Review the fixture subtask.",
+        },
+        {
+          id: "prt_e2e_render_step_start",
+          sessionID: session,
+          messageID: "msg_e2e_render_assistant",
+          type: "step-start",
+        },
+        {
+          id: "prt_e2e_render_step_finish",
+          sessionID: session,
+          messageID: "msg_e2e_render_assistant",
+          type: "step-finish",
+        },
+        {
+          id: "prt_e2e_render_retry",
+          sessionID: session,
+          messageID: "msg_e2e_render_assistant",
+          type: "retry",
+        },
+        {
+          id: "prt_e2e_render_compaction",
+          sessionID: session,
+          messageID: "msg_e2e_render_assistant",
+          type: "compaction",
+        },
+        {
+          id: "prt_e2e_render_snapshot",
+          sessionID: session,
+          messageID: "msg_e2e_render_assistant",
+          type: "snapshot",
+        },
+        {
+          id: "prt_e2e_render_agent",
+          sessionID: session,
+          messageID: "msg_e2e_render_assistant",
+          type: "agent",
+        },
+        {
+          id: "prt_e2e_render_unknown",
+          sessionID: session,
+          messageID: "msg_e2e_render_assistant",
+          type: "mystery",
+          text: "Unknown fixture part",
+        },
+      ],
+    },
+  ];
+}
+
+function perfMessages(): readonly FixtureMessage[] {
+  return Array.from({ length: 500 }, (_, index) => {
+    const number = index + 1;
+    const suffix = String(number).padStart(3, "0");
+    return {
+      info: {
+        id: `msg_e2e_perf_${suffix}`,
+        sessionID: E2E_CHAT_PERF_SESSION_ID,
+        role: number % 2 === 0 ? "assistant" : "user",
+        time: { created: 1_760_000_300_000 + number },
+      },
+      parts: [
+        {
+          id: `prt_e2e_perf_${suffix}`,
+          sessionID: E2E_CHAT_PERF_SESSION_ID,
+          messageID: `msg_e2e_perf_${suffix}`,
+          type: "text",
+          text: `Perf fixture message ${number}.`,
         },
       ],
     } satisfies FixtureMessage;
@@ -77,6 +328,16 @@ export const E2E_CHAT_SESSIONS: readonly FixtureSession[] = [
     id: E2E_CHAT_HISTORY_SESSION_ID,
     title: "E2E history session",
     time: { created: 1_760_000_100_000, updated: 1_760_000_100_035 },
+  },
+  {
+    id: E2E_CHAT_RENDER_SESSION_ID,
+    title: "E2E render session",
+    time: { created: 1_760_000_200_000, updated: 1_760_000_200_004 },
+  },
+  {
+    id: E2E_CHAT_PERF_SESSION_ID,
+    title: "E2E perf session",
+    time: { created: 1_760_000_300_000, updated: 1_760_000_300_500 },
   },
 ];
 export const E2E_CHAT_MESSAGES: Readonly<Record<string, readonly FixtureMessage[]>> = {
@@ -121,6 +382,8 @@ export const E2E_CHAT_MESSAGES: Readonly<Record<string, readonly FixtureMessage[
   [E2E_CHAT_CHILD_SESSION_ID]: [],
   [E2E_CHAT_GRANDCHILD_SESSION_ID]: [],
   [E2E_CHAT_HISTORY_SESSION_ID]: historyMessages(),
+  [E2E_CHAT_RENDER_SESSION_ID]: renderMessages(),
+  [E2E_CHAT_PERF_SESSION_ID]: perfMessages(),
 };
 
 const PROJECT_ONE = "e2e-project-one";

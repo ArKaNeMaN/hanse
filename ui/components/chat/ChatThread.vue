@@ -7,7 +7,9 @@ import {
   writeScrollMemory,
 } from "../../chat/scroll-memory.js";
 import type { ChatThreadItem } from "../../chat/types.js";
+import ChatGeneratingRow from "./ChatGeneratingRow.vue";
 import ChatMessage from "./ChatMessage.vue";
+import ChatNoticeRow from "./ChatNoticeRow.vue";
 
 const props = defineProps<{
   items: readonly ChatThreadItem[];
@@ -20,6 +22,8 @@ const props = defineProps<{
   empty: boolean;
   stopped: boolean;
   loadEarlierEnabled: boolean;
+  messageCount?: string;
+  generatingLabel?: string | null;
 }>();
 
 const emit = defineEmits<{ "load-earlier": [] }>();
@@ -29,6 +33,7 @@ const unseen = ref(0);
 const topRequested = ref(false);
 let lastCount = props.items.length;
 let restorePending: ChatScrollMemory | null = null;
+let bottomFrame: number | null = null;
 
 interface ScrollAnchor extends ChatScrollMemory {
   readonly messageID?: string;
@@ -80,6 +85,34 @@ function scrollToBottom(): void {
   unseen.value = 0;
   topRequested.value = false;
   persist();
+}
+
+function cancelScheduledBottom(): void {
+  if (bottomFrame === null) {
+    return;
+  }
+  if (typeof cancelAnimationFrame === "function") {
+    cancelAnimationFrame(bottomFrame);
+  } else {
+    clearTimeout(bottomFrame);
+  }
+  bottomFrame = null;
+}
+
+function scheduleBottomScroll(): void {
+  if (bottomFrame !== null) {
+    return;
+  }
+  const run = (): void => {
+    bottomFrame = null;
+    if (pinned.value) {
+      scrollToBottom();
+    }
+  };
+  bottomFrame =
+    typeof requestAnimationFrame === "function"
+      ? requestAnimationFrame(run)
+      : (setTimeout(run, 16) as unknown as number);
 }
 
 function captureAnchor(): ScrollAnchor | null {
@@ -218,7 +251,7 @@ watch(
     }
     if (count > previousCount && previousCount > 0) {
       if (pinned.value) {
-        scrollToBottom();
+        scheduleBottomScroll();
       } else {
         unseen.value += count - previousCount;
         persist();
@@ -226,7 +259,7 @@ watch(
       return;
     }
     if (pinned.value) {
-      scrollToBottom();
+      scheduleBottomScroll();
     }
   },
   { flush: "post" },
@@ -245,6 +278,7 @@ watch(
 );
 
 onBeforeUnmount(() => {
+  cancelScheduledBottom();
   persist();
 });
 
@@ -253,9 +287,18 @@ defineExpose({ captureAnchor, restoreAnchor, scrollToBottom, onScroll, unseen })
 
 <template>
   <section class="chat-thread" aria-label="Conversation" data-chat-thread>
+    <div class="chat-thread__meta">
+      <span
+        v-if="messageCount !== undefined && messageCount.length > 0"
+        class="caption"
+        data-chat-message-count
+      >
+        {{ messageCount }}
+      </span>
+    </div>
     <div class="chat-thread__viewport">
       <div class="chat-thread__scroll" id="chat-scroll" ref="scroll" @scroll.passive="onScroll">
-        <div class="chat-thread__inner">
+        <div class="chat-thread__inner" id="chat-messages" role="log" aria-live="off">
           <div v-if="loadEarlierEnabled || loadingEarlier" class="chat-history-row">
             <button
               class="btn btn-ghost btn-sm"
@@ -285,7 +328,8 @@ defineExpose({ captureAnchor, restoreAnchor, scrollToBottom, onScroll, unseen })
             </p>
           </div>
           <p v-else-if="empty" class="chat-empty" data-chat-empty>
-            No messages yet. This build is read-only.
+            Send the first message to start the agent. Its reply appears here, with tool calls in
+            place.
           </p>
 
           <template
@@ -297,13 +341,18 @@ defineExpose({ captureAnchor, restoreAnchor, scrollToBottom, onScroll, unseen })
               :record="item.message"
               :data-message-id="item.message.id"
             />
-            <div v-else class="feed-notice chat-notice" :data-notice-id="item.notice.id">
-              <span class="feed-notice__rule"></span>
-              <span>{{ item.notice.reason ?? item.notice.kind ?? "Session notice" }}</span>
-              <span class="feed-notice__rule"></span>
-            </div>
+            <ChatNoticeRow v-else :notice="item.notice" />
           </template>
         </div>
+        <ChatGeneratingRow
+          v-if="
+            !stopped &&
+            generatingLabel !== undefined &&
+            generatingLabel !== null &&
+            generatingLabel.length > 0
+          "
+          :label="generatingLabel"
+        />
       </div>
       <button
         v-if="unseen > 0"

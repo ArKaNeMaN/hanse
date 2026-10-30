@@ -123,7 +123,7 @@ function announce(text: string): void {
 }
 
 function updateCopyButton(): void {
-  const hasSelection = term !== null && term.hasSelection();
+  const hasSelection = term?.hasSelection() === true;
   const available =
     typeof navigator === "undefined" ||
     (navigator.clipboard !== undefined && typeof navigator.clipboard.writeText === "function") ||
@@ -219,7 +219,7 @@ function handleKeyEvent(event: KeyboardEvent): boolean {
     (event.ctrlKey && event.shiftKey && key === "c") ||
     (event.metaKey && !event.ctrlKey && key === "c");
   if (copyCombo) {
-    if (term !== null && term.hasSelection()) {
+    if (term?.hasSelection()) {
       void copySelection();
       return false;
     }

@@ -224,11 +224,27 @@ function defaultContextSnapshot(sessionID) {
 }
 
 async function emit(page, payload) {
-  await page.evaluate((event) => {
-    const source = window.__qaEventSource;
-    if (!source) throw new Error("FakeEventSource is not installed");
-    source.emit(event);
-  }, payload);
+  await page.evaluate(
+    ({ event, normalizeSeq }) => {
+      const source = window.__qaEventSource;
+      if (!source) throw new Error("FakeEventSource is not installed");
+      let next = event;
+      // The harness scripts synthetic high sequence numbers for the legacy client. The SPA adapter
+      // treats those as a real stream gap and reconciles from history, which would replace the
+      // just-emitted fixture part. Normalize only the harness sequence; gap handling has dedicated
+      // reducer/adapter tests.
+      if (normalizeSeq && typeof event === "object" && event !== null) {
+        if (event.type === "stream.ready") {
+          window.__qaSpaSeq = typeof event.seq === "number" ? event.seq : 0;
+        } else if (typeof event.seq === "number") {
+          window.__qaSpaSeq = Number(window.__qaSpaSeq ?? 0) + 1;
+          next = { ...event, seq: window.__qaSpaSeq };
+        }
+      }
+      source.emit(next);
+    },
+    { event: payload, normalizeSeq: CHAT_QA_MODE === "spa" },
+  );
 }
 
 async function emitMany(page, payloads) {
@@ -464,6 +480,9 @@ function installFakeEventSource() {
     }
 
     emit(payload) {
+      if (payload !== null && typeof payload === "object" && typeof payload.seq === "number") {
+        window.__qaSpaSeq = Math.max(Number(window.__qaSpaSeq ?? 0), payload.seq);
+      }
       if (this.onmessage) this.onmessage({ data: JSON.stringify(payload) });
     }
 

@@ -1,10 +1,9 @@
 import { readFileSync } from "node:fs";
-import path from "node:path";
 import { JSDOM } from "jsdom";
 import { describe, expect, it } from "vitest";
 
-const APP_JS = readFileSync(path.join(process.cwd(), "assets/app.js"), "utf8");
-const APP_CONTENT_JS = readFileSync(path.join(process.cwd(), "assets/app-content.js"), "utf8");
+const APP_JS = readFileSync(`${process.cwd()}/assets/app.js`, "utf8");
+const APP_CONTENT_JS = readFileSync(`${process.cwd()}/assets/app-content.js`, "utf8");
 
 interface Loaded {
   dom: JSDOM;
@@ -196,12 +195,12 @@ describe("app-content.js content behavior", () => {
     const { document } = load(CONTENT, APP_CONTENT_JS);
     const menu = document.querySelector("details.menu") as HTMLDetailsElement;
     menu.open = true;
-    menu.dispatchEvent(new Event("toggle", { bubbles: true }));
+    menu.dispatchEvent(new (document.defaultView as Window).Event("toggle", { bubbles: true }));
     keydown(document, "Escape");
     expect(menu.open).toBe(false);
 
     menu.open = true;
-    menu.dispatchEvent(new Event("toggle", { bubbles: true }));
+    menu.dispatchEvent(new (document.defaultView as Window).Event("toggle", { bubbles: true }));
     click(document.body);
     expect(menu.open).toBe(false);
   });
@@ -243,14 +242,18 @@ describe("app-content.js content behavior", () => {
     const { document } = load(CONTENT, APP_CONTENT_JS);
     const form = document.querySelector("form:not([data-no-busy])") as HTMLFormElement;
     const button = form.querySelector("button") as HTMLButtonElement;
-    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    form.dispatchEvent(
+      new (document.defaultView as Window).Event("submit", { bubbles: true, cancelable: true }),
+    );
     expect(form.dataset.submitting).toBe("true");
     expect(form.getAttribute("aria-busy")).toBe("true");
     expect(button.disabled).toBe(true);
     expect(button.querySelector(".spinner")).not.toBeNull();
 
     const optOut = document.querySelector("form[data-no-busy]") as HTMLFormElement;
-    optOut.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    optOut.dispatchEvent(
+      new (document.defaultView as Window).Event("submit", { bubbles: true, cancelable: true }),
+    );
     expect(optOut.dataset.submitting).toBeUndefined();
   });
 });

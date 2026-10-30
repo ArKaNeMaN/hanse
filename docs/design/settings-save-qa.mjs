@@ -181,7 +181,7 @@ try {
   );
   check(
     (
-      await page.locator("#setting-context-auto-compact .setting-row__effective").innerText()
+      await page.locator("#setting-context-auto-compact .setting-row__effective").textContent()
     ).includes("On"),
     "context enabled summary did not update",
   );
@@ -209,7 +209,7 @@ try {
     (
       await page
         .locator("#setting-context-auto-compact-percent .setting-row__effective")
-        .innerText()
+        .textContent()
     ).includes("70%"),
     "context percent summary did not update",
   );
@@ -228,8 +228,8 @@ try {
     `unexpected context inherit changed: ${contextInherit.changed}`,
   );
   check(
-    (await page.locator("#setting-context-auto-compact .setting-row__source").innerText()).length >
-      0,
+    (await page.locator("#setting-context-auto-compact .setting-row__source").textContent())
+      .length > 0,
     "context inherit source line missing",
   );
   check(
@@ -237,7 +237,7 @@ try {
     "context save added a restart requirement",
   );
   check(
-    !(await page.locator("#settings-restart").innerText()).includes("Auto-compaction"),
+    !(await page.locator("#settings-restart").textContent()).includes("Auto-compaction"),
     "context save rendered a restart warning",
   );
   await capture(page, "settings-save-context");
@@ -258,7 +258,7 @@ try {
     `unexpected model changed: ${model.changed}`,
   );
   check(
-    (await page.locator("#setting-llm-model .setting-row__effective").innerText()).includes(
+    (await page.locator("#setting-llm-model .setting-row__effective").textContent()).includes(
       "deepseek/deepseek-flash",
     ),
     "model summary did not update",
@@ -300,7 +300,7 @@ try {
     `unexpected web changed: ${web.changed}`,
   );
   check(
-    (await page.locator("#setting-web-search .setting-row__effective").innerText()).includes(
+    (await page.locator("#setting-web-search .setting-row__effective").textContent()).includes(
       "builtin",
     ),
     "web summary did not update",
@@ -320,7 +320,7 @@ try {
     `unexpected web clear changed: ${webClear.changed}`,
   );
   check(
-    (await page.locator("#setting-web-search .setting-row__effective").innerText()).includes(
+    (await page.locator("#setting-web-search .setting-row__effective").textContent()).includes(
       "Cleared",
     ),
     "web clear summary did not update",
@@ -338,7 +338,7 @@ try {
     `unexpected web inherit changed: ${inherit.changed}`,
   );
   check(
-    (await page.locator("#setting-web-search .setting-row__effective").innerText()).includes(
+    (await page.locator("#setting-web-search .setting-row__effective").textContent()).includes(
       "builtin",
     ),
     "web inherit summary did not update",
@@ -357,7 +357,7 @@ try {
     `unexpected identity changed: ${identity.changed}`,
   );
   check(
-    (await page.locator("#setting-git-user-name .setting-row__effective").innerText()).includes(
+    (await page.locator("#setting-git-user-name .setting-row__effective").textContent()).includes(
       "QA Agent",
     ),
     "identity summary did not update",
@@ -377,13 +377,13 @@ try {
   await stillAlive("HTTPS save reloaded the document");
   check(https.changed.join(",") === "git,restart", `unexpected HTTPS changed: ${https.changed}`);
   check(
-    (await page.locator("#setting-git-https .setting-row__effective").innerText()).includes(
+    (await page.locator("#setting-git-https .setting-row__effective").textContent()).includes(
       "github.com",
     ),
     "HTTPS summary did not update",
   );
   check(
-    !(await page.locator("body").innerText()).includes("qa-https-secret"),
+    !(await page.locator("body").textContent()).includes("qa-https-secret"),
     "HTTPS secret leaked",
   );
   await dismissToasts();
@@ -397,7 +397,7 @@ try {
     `unexpected HTTPS clear changed: ${httpsClear.changed}`,
   );
   check(
-    (await page.locator("#setting-git-https .setting-row__effective").innerText()).includes(
+    (await page.locator("#setting-git-https .setting-row__effective").textContent()).includes(
       "Cleared",
     ),
     "HTTPS clear summary did not update",
@@ -417,12 +417,15 @@ try {
     await stillAlive("SSH save reloaded the document");
     check(ssh.changed.join(",") === "git,restart", `unexpected SSH changed: ${ssh.changed}`);
     check(
-      (await page.locator("#setting-git-ssh .setting-row__effective").innerText()).includes(
+      (await page.locator("#setting-git-ssh .setting-row__effective").textContent()).includes(
         "ssh-ed25519",
       ),
       "SSH summary did not update",
     );
-    check(!(await page.locator("body").innerText()).includes("qa-body"), "SSH private key leaked");
+    check(
+      !(await page.locator("body").textContent()).includes("qa-body"),
+      "SSH private key leaked",
+    );
     await dismissToasts();
     page.once("dialog", (dialog) => dialog.accept());
     const sshClear = await post(async () => {
@@ -434,7 +437,7 @@ try {
       `unexpected SSH clear changed: ${sshClear.changed}`,
     );
     check(
-      (await page.locator("#setting-git-ssh .setting-row__effective").innerText()).includes(
+      (await page.locator("#setting-git-ssh .setting-row__effective").textContent()).includes(
         "Cleared",
       ),
       "SSH clear summary did not update",
@@ -457,7 +460,7 @@ try {
   const providerRow = page.locator("#providers .setting-row", { hasText: PROVIDER }).first();
   check((await providerRow.count()) === 1, "provider row did not appear");
   check(
-    !(await page.locator("body").innerText()).includes("qa-provider-secret"),
+    !(await page.locator("body").textContent()).includes("qa-provider-secret"),
     "provider secret leaked",
   );
   await dismissToasts();
@@ -483,7 +486,7 @@ try {
   );
   check(
     (
-      await page.locator("#providers .setting-row", { hasText: PROVIDER }).first().innerText()
+      await page.locator("#providers .setting-row", { hasText: PROVIDER }).first().textContent()
     ).includes("Cleared"),
     "provider clear state not shown",
   );

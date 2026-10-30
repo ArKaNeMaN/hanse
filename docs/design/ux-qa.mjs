@@ -310,7 +310,7 @@ try {
       await page.keyboard.type("hello");
       await page.keyboard.press("Enter");
       await page.waitForTimeout(400);
-      const screen = await page.locator(".xterm-rows").innerText();
+      const screen = await page.locator(".xterm-rows").textContent();
       check(screen.includes("qa:hello"), `terminal ${viewport.name}: input was not echoed`);
       await capture(page, `terminal-${viewport.name}-${theme}`);
       await page.locator("#terminal-close").click();

@@ -12,6 +12,9 @@ export default defineConfig({
   root: "ui",
   base: "/assets/ui/",
   plugins: [vue()],
+  // The shared chat-highlight controller instantiates the existing Prism worker as a module worker.
+  // Its worker imports chat-diff/vendor modules, so Rollup must emit ES rather than IIFE.
+  worker: { format: "es" },
   build: {
     outDir: "../assets/ui",
     emptyOutDir: true,

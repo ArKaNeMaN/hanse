@@ -2,6 +2,7 @@ import { QueryClient, VueQueryPlugin } from "@tanstack/vue-query";
 import { mount } from "@vue/test-utils";
 import { createPinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { defineComponent, h } from "vue";
 import { createMemoryHistory, createRouter } from "vue-router";
 import type { BootPayload } from "../../ui/boot.js";
 import TerminalStoppedState from "../../ui/components/TerminalStoppedState.vue";
@@ -139,8 +140,15 @@ describe("TerminalPage", () => {
     expect(wrapper.find("[data-terminal-chat]").attributes("href")).toBe(
       "/chat?app=alpha&project=p",
     );
-    await wrapper.find("[data-terminal-retry]").trigger("click");
-    expect(wrapper.emitted("reconnect")).toHaveLength(1);
+    const reconnect = vi.fn();
+    const Parent = defineComponent({
+      setup: () => () =>
+        h(TerminalStoppedState, { chatHref: "/chat?app=alpha&project=p", onReconnect: reconnect }),
+    });
+    const interactive = mount(Parent);
+    await interactive.find("[data-terminal-retry]").trigger("click");
+    expect(reconnect).toHaveBeenCalledTimes(1);
+    interactive.unmount();
     wrapper.unmount();
   });
 

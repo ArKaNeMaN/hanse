@@ -1064,6 +1064,32 @@ export function resetHighlightController(options = {}) {
   void controllerGeneration;
 }
 
+/**
+ * Route-level teardown owner.
+ *
+ * Terminates the module worker (and its ready timer), cancels every per-part context, clears the
+ * pending jobs and page counters, and resets `stats.disabled` so a worker failure cannot disable
+ * highlighting for the rest of the SPA session. `worker`/`workerPromise`/`resolveWorker` return to
+ * their initial state through `terminateWorker()`. Components must not call `worker.terminate()`
+ * directly; they reset only their own part, and the route disposes the controller on unmount.
+ */
+export function disposeHighlightController() {
+  controllerGeneration += 1;
+  terminateWorker();
+  for (const part of Array.from(contexts.keys())) cancelContext(part);
+  contexts.clear();
+  jobs.clear();
+  stats.inflightStreams = 0;
+  stats.reservedNodes = 0;
+  stats.pageCommitted = 0;
+  stats.pendingFiles = 0;
+  stats.timeouts = 0;
+  stats.pageWorkMs = 0;
+  stats.disabled = false;
+  // Reset the per-controller generation so any stale callback from the previous mount is ignored.
+  controllerGeneration = 0;
+}
+
 export function getHighlightStats() {
   return {
     inflightStreams: stats.inflightStreams,
