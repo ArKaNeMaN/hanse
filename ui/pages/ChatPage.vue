@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useQuery } from "@tanstack/vue-query";
-import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import type { FeedPartRecord as PartRecord } from "../../assets/chat-feed-store.js";
 import type { RuntimeState } from "../../src/http/ui.js";
@@ -10,6 +10,8 @@ import { ApiError, apiMutation, apiQuery } from "../api.js";
 import type { BootPayload } from "../boot.js";
 import type { InboundChatEvent } from "../chat/event-reducer.js";
 import { reduceEvent } from "../chat/event-reducer.js";
+import { deriveQueueRows } from "../chat/queue.js";
+import { isPendingResolved } from "../chat/send.js";
 import { clearChatSessionState, clearChatWorkspaceState } from "../chat/session-storage.js";
 import { applyChatActions, type RenderIntent } from "../chat/state-actions.js";
 import type {
@@ -26,9 +28,12 @@ import type {
 import { normalizeChatQuery, useChatRouteState } from "../chat/useChatRouteState.js";
 import AppIcon from "../components/AppIcon.vue";
 import ChatComposer from "../components/chat/ChatComposer.vue";
+import ChatQueueDialog from "../components/chat/ChatQueueDialog.vue";
+import ChatQueueStrip from "../components/chat/ChatQueueStrip.vue";
 import ChatScrim from "../components/chat/ChatScrim.vue";
 import ChatSessionsRail from "../components/chat/ChatSessionsRail.vue";
 import ChatThread from "../components/chat/ChatThread.vue";
+import { useChatComposer } from "../composables/useChatComposer.js";
 import { useChatStream } from "../composables/useChatStream.js";
 import { applyChrome } from "../composables/useChrome.js";
 import { useWorkspaceShell } from "../composables/useWorkspaceShell.js";
@@ -41,8 +46,15 @@ import { useToastStore } from "../stores/toasts.js";
 const props = defineProps<{ boot: BootPayload }>();
 const route = useRoute();
 const router = useRouter();
+let composerApi: ReturnType<typeof useChatComposer> | undefined;
 const routeState = useChatRouteState(router, route, {
+  onBeforeSessionChange: (previous, next) => {
+    if (previous !== null && previous !== next) {
+      composerApi?.flushForSwitch(previous);
+    }
+  },
   onBeforeAppSwitch: () => {
+    composerApi?.flushForSwitch();
     const previous = normalizeChatQuery(route.query as Record<string, unknown>);
     if (previous.app.length > 0) {
       clearChatWorkspaceState({ app: previous.app, project: previous.project });
@@ -200,6 +212,82 @@ const deletionPending = computed(
     (sessionsQuery.error.value instanceof ApiError &&
       sessionsQuery.error.value.code === "deletion_pending"),
 );
+
+function dropActiveSession(sessionID: string): void {
+  sessionStore.removeSessions([sessionID]);
+  clearChatSessionState(chatStorageScope(), sessionID);
+  void (async () => {
+    await sessionsQuery.refetch();
+    await nextTick();
+    if (routeState.session.value !== sessionID) {
+      return;
+    }
+    const next = sessionStore.firstRoot() ?? sessionStore.sessions[0]?.id ?? null;
+    if (next !== null) {
+      routeState.selectSession(next);
+      return;
+    }
+    await router.replace({
+      name: "chat",
+      query: {
+        app: routeState.app.value,
+        ...(routeState.project.value.length === 0 ? {} : { project: routeState.project.value }),
+      },
+    });
+  })();
+}
+
+composerApi = useChatComposer({
+  app: routeState.app,
+  project: routeState.project,
+  sessionID: routeState.session,
+  stopped,
+  deletionPending,
+  selectSession: routeState.selectSession,
+  hasHistory: () => feed.thread.order.length > 0,
+  refreshMessages: (sessionID) => loadMessages(sessionID, false),
+  onSessionGone: (sessionID) => dropActiveSession(sessionID),
+  onSessionDeleted: (sessionID) => dropActiveSession(sessionID),
+  onToast: (message, tone) => toasts.push(message, tone),
+  onSent: () => {
+    void sessionsQuery.refetch();
+  },
+});
+const composer = composerApi;
+const {
+  draft: composerDraft,
+  error: composerError,
+  delivery: composerDelivery,
+  pendingSends: composerPendingSends,
+  abortPending: composerAbortPending,
+  mode: composerMode,
+  sendDisabled: composerSendDisabled,
+  stopDisabled: composerStopDisabled,
+  showRecovery: composerShowRecovery,
+  handleInput: composerHandleInput,
+  send: composerSend,
+  stop: composerStop,
+  checkAgain: composerCheckAgain,
+  removeUnknown: composerRemoveUnknown,
+  retryPending: composerRetryPending,
+  dismissPending: composerDismissPending,
+  restorePending: composerRestorePending,
+  shouldSuppressAbort: composerShouldSuppressAbort,
+  noteAgentStatus: composerNoteAgentStatus,
+  promotionAllowed: composerPromotionAllowed,
+} = composer;
+
+const composerPendingRows = computed(() => {
+  feed.revision;
+  return composerPendingSends.value.filter(
+    (entry) => !isPendingResolved(entry, (id) => feed.thread.messages.has(id)),
+  );
+});
+
+const queueRows = computed(() => {
+  feed.revision;
+  return deriveQueueRows(feed.thread, composerPromotionAllowed());
+});
 
 const deleting = ref<ReadonlySet<string>>(new Set<string>());
 const creatingSession = ref(false);
@@ -537,6 +625,14 @@ function handleIntents(intents: readonly RenderIntent[]): void {
 }
 
 function handleEvent(event: InboundChatEvent): void {
+  if (event.type === "session.error" && composerShouldSuppressAbort(event)) {
+    feed.setAgentStatus({ type: "idle" });
+    feed.settleIdle();
+    return;
+  }
+  if (event.type === "session.status") {
+    composerNoteAgentStatus(event.sessionID, event.status?.type);
+  }
   const result = reduceEvent(event, {
     sessionID: routeState.session.value,
     currentStreamID: null,
@@ -694,7 +790,27 @@ const empty = computed(
 const title = computed(() => view.value?.title ?? "Chat");
 const appKey = computed(() => view.value?.app.appKey ?? routeState.app.value);
 
+function onGlobalKeydown(event: KeyboardEvent): void {
+  if (event.key !== "Escape") {
+    return;
+  }
+  if (chatUi.queueOpen) {
+    event.preventDefault();
+    chatUi.setQueueOpen(false);
+    return;
+  }
+  if (chatUi.sessionsOpen) {
+    event.preventDefault();
+    chatUi.setSessionsOpen(false);
+  }
+}
+
+onMounted(() => {
+  document.addEventListener("keydown", onGlobalKeydown);
+});
+
 onBeforeUnmount(() => {
+  document.removeEventListener("keydown", onGlobalKeydown);
   abortLoads();
   if (reconcileTimer !== undefined) {
     clearTimeout(reconcileTimer);
@@ -804,9 +920,43 @@ onBeforeUnmount(() => {
           :load-earlier-enabled="historyCursor !== null"
           @load-earlier="loadEarlier"
         />
-        <ChatComposer />
+        <ChatQueueStrip
+          v-if="!stopped && !deletionPending"
+          :rows="queueRows"
+          @open="chatUi.setQueueOpen(true)"
+        />
+        <ChatComposer
+          :draft="composerDraft"
+          :delivery="composerDelivery"
+          :error="composerError"
+          :pending="composerPendingRows"
+          :mode="composerMode"
+          :disabled="stopped || deletionPending"
+          :send-disabled="composerSendDisabled"
+          :stop-disabled="composerStopDisabled"
+          :show-recovery="composerShowRecovery"
+          :aria-busy="composerAbortPending"
+          :placeholder="`Message ${appKey} agent`"
+          @update:draft="composerHandleInput"
+          @send="composerSend"
+          @stop="composerStop"
+          @check-unknown="composerCheckAgain"
+          @remove-unknown="composerRemoveUnknown"
+          @retry-pending="composerRetryPending"
+          @dismiss-pending="composerDismissPending"
+          @restore-pending="composerRestorePending"
+          @escape="
+            chatUi.setQueueOpen(false);
+            chatUi.setSessionsOpen(false);
+          "
+        />
       </div>
 
+      <ChatQueueDialog
+        :open="chatUi.queueOpen"
+        :rows="queueRows"
+        @close="chatUi.setQueueOpen(false)"
+      />
       <ChatScrim :open="chatUi.sessionsOpen" @close="chatUi.setSessionsOpen(false)" />
     </section>
   </div>

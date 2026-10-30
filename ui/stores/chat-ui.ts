@@ -16,6 +16,7 @@ export const useChatUiStore = defineStore("chat-ui", () => {
   const policyVisible = ref(false);
   const sessionsOpen = ref(false);
   const contextOpen = ref(false);
+  const queueOpen = ref(false);
   const streamStatus = ref<ChatStreamStatusKind>("connecting");
   const streamDetail = ref<string | undefined>(undefined);
 
@@ -43,6 +44,15 @@ export const useChatUiStore = defineStore("chat-ui", () => {
     sessionsOpen.value = open;
     if (open) {
       contextOpen.value = false;
+      queueOpen.value = false;
+    }
+  }
+
+  function setQueueOpen(open: boolean): void {
+    queueOpen.value = open;
+    if (open) {
+      sessionsOpen.value = false;
+      contextOpen.value = false;
     }
   }
 
@@ -60,6 +70,7 @@ export const useChatUiStore = defineStore("chat-ui", () => {
     policyVisible.value = false;
     sessionsOpen.value = false;
     contextOpen.value = false;
+    queueOpen.value = false;
     streamStatus.value = "connecting";
     streamDetail.value = undefined;
   }
@@ -71,6 +82,7 @@ export const useChatUiStore = defineStore("chat-ui", () => {
     policyVisible,
     sessionsOpen,
     contextOpen,
+    queueOpen,
     streamStatus,
     streamDetail,
     activate,
@@ -78,6 +90,7 @@ export const useChatUiStore = defineStore("chat-ui", () => {
     setNeedsInput,
     setSessionsOpen,
     setContextOpen,
+    setQueueOpen,
     reset,
   };
 });

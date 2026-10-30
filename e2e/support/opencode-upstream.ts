@@ -781,6 +781,40 @@ export async function startOpencodeUpstream(
       pathname.endsWith("/prompt_async") &&
       method === "POST"
     ) {
+      const sessionId = decodeURIComponent(pathname.split("/")[2] ?? "");
+      const parsed = safeJson(body) ?? {};
+      const messageID =
+        typeof parsed.messageID === "string" && parsed.messageID.length > 0
+          ? parsed.messageID
+          : `msg_e2e_prompt_${resolved.messages.get(sessionId)?.length ?? 0}`;
+      const rawParts = Array.isArray(parsed.parts) ? parsed.parts : [];
+      const parts = rawParts
+        .filter(
+          (part): part is Record<string, unknown> => typeof part === "object" && part !== null,
+        )
+        .map((part, index) => ({
+          id: `${messageID}:part:${index}`,
+          sessionID: sessionId,
+          messageID,
+          type: typeof part.type === "string" ? part.type : "text",
+          ...(typeof part.text === "string" ? { text: part.text } : {}),
+        }));
+      const info = {
+        id: messageID,
+        sessionID: sessionId,
+        role: "user" as const,
+        time: { created: Date.now() },
+      };
+      const list = resolved.messages.get(sessionId) ?? [];
+      const message: FixtureMessage = { info, parts };
+      resolved.messages.set(sessionId, [...list, message]);
+      broadcast({ type: "message.updated", properties: { info } });
+      for (const part of parts) {
+        broadcast({
+          type: "message.part.updated",
+          properties: { sessionID: sessionId, messageID, part },
+        });
+      }
       writeEmpty(response);
       return;
     }

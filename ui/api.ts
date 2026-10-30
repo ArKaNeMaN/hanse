@@ -18,19 +18,28 @@ export type ApiMutationBody =
   | { readonly json: unknown };
 
 export interface ApiMutationOptions extends ApiRequestOptions {
-  /** Defaults to `POST`; the SSH host API uses `PATCH` for updates and `DELETE` for removal. */
-  readonly method?: "POST" | "PATCH" | "DELETE";
+  /**
+   * Defaults to `POST`; the SSH host API uses `PATCH` for updates, chat drafts use `PUT`, and
+   * deletes use `DELETE`.
+   */
+  readonly method?: "POST" | "PUT" | "PATCH" | "DELETE";
 }
 
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string | undefined;
+  /** Optional delivery outcome (`unknown` / `not_sent`) carried by prompt sends. */
+  readonly outcome: string | undefined;
+  /** Parsed response payload, retained for callers that need message ids on failure. */
+  readonly payload: unknown;
 
-  constructor(message: string, status: number, code?: string) {
+  constructor(message: string, status: number, code?: string, outcome?: string, payload?: unknown) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.code = code;
+    this.outcome = outcome;
+    this.payload = payload;
   }
 }
 
@@ -73,7 +82,11 @@ function errorFrom(response: Response, payload: unknown): ApiError {
     isRecord(payload) && typeof payload.code === "string" && payload.code.length > 0
       ? payload.code
       : undefined;
-  return new ApiError(message, response.status, code);
+  const outcome =
+    isRecord(payload) && typeof payload.outcome === "string" && payload.outcome.length > 0
+      ? payload.outcome
+      : undefined;
+  return new ApiError(message, response.status, code, outcome, payload);
 }
 
 async function parse<T>(response: Response, options: ApiRequestOptions): Promise<T> {

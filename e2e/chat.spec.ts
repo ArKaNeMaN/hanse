@@ -139,7 +139,7 @@ test("legacy sessions rail keeps tree search and disclosure parity", async ({ pa
   expectNoUnexpected(errors, [/50[023]/]);
 });
 
-test("SPA direct load renders the read-only chat shell, boot props, sessions, and messages", async ({
+test("SPA direct load renders the chat shell, boot props, sessions, and messages", async ({
   page,
 }) => {
   test.skip(!isSpa(), "SPA mode only");
@@ -157,7 +157,7 @@ test("SPA direct load renders the read-only chat shell, boot props, sessions, an
   await expect(page.locator('.session-item[data-session-id="ses_e2ealpha"]')).toHaveCount(1);
   await expect(page.getByText("Hello from the synthetic E2E fixture.")).toBeVisible();
   await expect(page.getByText("Synthetic assistant reply.")).toBeVisible();
-  await expect(page.locator("[data-chat-composer-input]")).toBeDisabled();
+  await expect(page.locator("[data-chat-composer-input]")).toBeEnabled();
   await expect(page.locator("[data-chat-send]")).toBeDisabled();
 
   await expect(page.locator(".topbar__actions #chat-input-needed")).toHaveCount(1);

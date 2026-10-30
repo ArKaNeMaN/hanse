@@ -94,6 +94,57 @@ export function applyOmittedPart(
   value: unknown,
 ): { part: FeedPartRecord; created: boolean } | null;
 
+export interface ComposerActionInput {
+  turnActive?: boolean;
+  hasDraft?: boolean;
+  hasAttachments?: boolean;
+  attachmentCount?: number;
+  sessionId?: string | null;
+  acceptanceBusy?: boolean;
+  promptsWaiting?: boolean;
+  abortPending?: boolean;
+}
+
+export function composerAction(input?: ComposerActionInput): {
+  mode: "stop" | "send";
+  disabled: boolean;
+};
+
+export function isSlashCommandOnly(text: unknown): boolean;
+export function draftTextForSave(text: unknown): string;
+export function draftIsEmpty(input?: { text?: unknown; attachmentCount?: unknown }): boolean;
+export function canSendDraft(input?: { text?: unknown; attachmentCount?: unknown }): boolean;
+
+export interface PendingSendView {
+  id: string;
+  messageID: string | null;
+  text: string;
+  attachments: readonly Record<string, unknown>[];
+  attachmentIDs: string[];
+  state: "sending" | "failed" | "unknown";
+  updatedAt: unknown;
+}
+
+export interface PendingSendActions {
+  readOnly: boolean;
+  canRetry: boolean;
+  canRestore: boolean;
+  retryLabel: string;
+  force: boolean;
+}
+
+export function normalizePendingSends(value: unknown): PendingSendView[];
+export function pendingSendActions(state: unknown): PendingSendActions;
+export function pendingSendLabel(entry: unknown): string;
+export function draftAutoDeleteEligible(input?: {
+  text?: unknown;
+  attachmentCount?: unknown;
+  hasPending?: unknown;
+  acceptanceBusy?: unknown;
+  draftLoaded?: unknown;
+  hasHistory?: unknown;
+}): boolean;
+
 export function normalizeAttachments(value: unknown): readonly Record<string, unknown>[];
 export function normalizeHandoffMeta(value: unknown): Record<string, unknown> | null;
 export function normalizeStreamWarning(value: unknown): {

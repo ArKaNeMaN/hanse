@@ -397,3 +397,44 @@ later stages. The Stage 0 `chat-qa` `main` queue-strip baseline assertion is **n
 3C** because the queue strip does not exist in the read-only surface; it remains deferred to the
 Stage 4/7C queue work and was not hidden or changed to make the harness pass. Stage 3C checkpoint
 commit is created with this record.
+
+## Stage 4 - Composer, drafts, send, queue, abort
+
+Stage 4 makes the allowlisted SPA chat surface functional for composing while `chat.spa` stays
+`false`. Drafts, optimistic send/delivery recovery, queue display, and human Stop/abort are ported;
+attachments, commands, prompts, SSH approvals, the context rail, feed-rendering depth, and the chat
+cutover remain later stages. `assets/chat.js` and `assets/terminal.js` are unchanged.
+
+Implemented:
+- `ChatComposer.vue` replaces the read-only shell: enabled textarea, autosize, Send/Stop primary
+  action, Enter / Shift+Enter / Cmd+Ctrl+Enter parity, IME and coarse-pointer handling, focus
+  retention, disabled/stopped states, pending-send rows, and the unknown-delivery recovery actions.
+- `useChatComposer.ts` + `chat-composer.ts` own one lifecycle per mount: 500 ms debounced draft
+  save, keepalive on hide/pagehide, flush on session/app switch and unmount, delete-if-empty,
+  per-session isolation, optimistic acceptance, unknown grace, retry/dismiss/restore, and
+  bounded abort settling. `chat-feed.ts` gained optimistic insert/remove/state and a single
+  queue-promotion guard; `session-storage.ts` remains the only suppression writer.
+- `chat/send.ts` and `chat/queue.ts` are pure helpers for endpoint construction, delivery
+  classification, intentional-abort detection, pending normalization, and `deriveQueue` rows.
+  `ChatQueueStrip.vue`/`ChatQueueDialog.vue` render the derived queue; user selection and draft
+  flushes still go through the one route watcher.
+- `ui/api.ts` retains the response outcome/payload on `ApiError` and supports the existing draft
+  `PUT`. A mid-send `401` uses the same `/login?next=` path as other SPA reads.
+- The E2E fixture upstream now records async prompt parts as user messages and broadcasts the
+  matching events, so send, reload, and queue scenarios exercise the real coordinator projection.
+
+Tests/evidence:
+- New `test/ui/chat-composer.test.ts`, `chat-send.test.ts`, `chat-draft.test.ts`,
+  `chat-queue.test.ts`, `chat-abort.test.ts`; updated `chat-page.test.ts`, `chat-readonly.test.ts`,
+  shared chat support, and `e2e/chat.spec.ts`/`spa-chat.spec.ts`.
+- `NODE_ENV=development npm test`: **3201 passed** (201 files).
+- `NODE_ENV=development npm run test:e2e`: **188 passed, 12 skipped** across the three modes;
+  composer/draft/send/blocking/unknown/queue/Stop/rapid-stop/auth-expiry cases are SPA-only.
+- `npm run lint`: pass (20 pre-existing warnings, no errors); `typecheck`, `typecheck:ui`,
+  `typecheck:e2e`, `build`, `check:ui` (56 SFCs), `check:chat-worker`, `check:sensitive`, and
+  `git diff --check`: pass.
+- Chat route chunk is lazy (`ChatPage`, 86.30 kB raw / 26.54 kB gzip); entry is 283.14 kB raw /
+  102.76 kB gzip. The chat registry flag and route allowlist are unchanged.
+
+Limits: `chat.spa` stays `false`; no cutover, attachments, commands, prompts, permissions, SSH,
+context rail, or feed-depth rendering was added. Stage 5 is the next action.

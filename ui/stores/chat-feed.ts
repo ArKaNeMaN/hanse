@@ -104,6 +104,7 @@ export const useChatFeedStore = defineStore("chat-feed", () => {
   const streamWarning = ref<string | null>(null);
   const streamPaused = ref(false);
   const revision = ref(0);
+  let queuePromotionGuard: ((statusType: string | undefined) => boolean) | null = null;
 
   function touch(): void {
     revision.value += 1;
@@ -188,10 +189,86 @@ export const useChatFeedStore = defineStore("chat-feed", () => {
     delete record.system;
   }
 
+  function setQueuePromotionGuard(
+    guard: ((statusType: string | undefined) => boolean) | null,
+  ): void {
+    queuePromotionGuard = guard;
+  }
+
+  function insertOptimisticMessage(input: { id: string; text: string }): FeedMessageRecord {
+    const partID = `${input.id}:part:text`;
+    const part: FeedPartRecord = {
+      id: partID,
+      type: "text",
+      data: { id: partID, type: "text", text: input.text, provisional: true, placeholder: true },
+      provisional: true,
+      partial: false,
+      sealed: false,
+      version: 1,
+    };
+    const record: FeedMessageRecord = {
+      id: input.id,
+      role: "user",
+      optimistic: "sending",
+      partOrder: [partID],
+      parts: new Map([[partID, part]]),
+      version: 1,
+    };
+    thread.value.messages.set(input.id, record);
+    thread.value.order.push(input.id);
+    markOptimisticOperator(record);
+    markMessageDirty(input.id);
+    recomputeQueue();
+    touch();
+    return record;
+  }
+
+  function removeMessage(id: string): boolean {
+    if (!thread.value.messages.has(id)) {
+      return false;
+    }
+    thread.value.messages.delete(id);
+    thread.value.order = thread.value.order.filter((entry) => entry !== id);
+    recomputeQueue();
+    touch();
+    return true;
+  }
+
+  function setOptimisticState(
+    id: string,
+    state: NonNullable<FeedMessageRecord["optimistic"]>,
+  ): boolean {
+    const record = thread.value.messages.get(id);
+    if (record === undefined) {
+      return false;
+    }
+    record.optimistic = state;
+    record.version += 1;
+    markMessageDirty(id);
+    recomputeQueue();
+    touch();
+    return true;
+  }
+
+  function clearOptimisticState(id: string): boolean {
+    const record = thread.value.messages.get(id);
+    if (record === undefined) {
+      return false;
+    }
+    delete record.optimistic;
+    record.version += 1;
+    markMessageDirty(id);
+    recomputeQueue();
+    touch();
+    return true;
+  }
+
   function recomputeQueue(): RecomputeResult {
     const current = thread.value;
+    const statusType = current.agentStatus?.type;
     const derived = deriveQueue(current, {
-      sessionStatusType: current.agentStatus?.type,
+      sessionStatusType: statusType,
+      ...(queuePromotionGuard === null ? {} : { allowPromotion: queuePromotionGuard(statusType) }),
     });
     current.queue = [...derived.queuedIDs];
     current.activePromptID = derived.nextActivePromptID;
@@ -428,6 +505,13 @@ export const useChatFeedStore = defineStore("chat-feed", () => {
   }): { consumed: boolean } {
     const result = rekeyOptimisticCore(thread.value, options);
     thread.value = markRaw(result.store);
+    if (options.serverID !== undefined) {
+      const record = thread.value.messages.get(options.serverID);
+      if (record !== undefined && record.role === "user") {
+        markOptimisticOperator(record);
+        record.version += 1;
+      }
+    }
     for (const id of thread.value.order) {
       markMessageDirty(id);
     }
@@ -629,6 +713,11 @@ export const useChatFeedStore = defineStore("chat-feed", () => {
     ensureLiveMessage,
     ensurePartMessage,
     upsertMessage,
+    insertOptimisticMessage,
+    removeMessage,
+    setOptimisticState,
+    clearOptimisticState,
+    setQueuePromotionGuard,
     upsertPart,
     appendDelta,
     markPartOmitted,

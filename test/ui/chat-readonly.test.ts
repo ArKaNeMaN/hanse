@@ -109,7 +109,7 @@ describe("read-only chat lifecycle", () => {
     wrapper.unmount();
   });
 
-  it("issues only GET reads and offers no mutation surface", async () => {
+  it("issues no automatic mutations and keeps send disabled for an empty draft", async () => {
     const { wrapper, fetchState } = await mountChat("/chat?app=alpha&project=p&session=s1", {
       sessions: [
         { id: "s1", title: "Session one" },
@@ -121,10 +121,9 @@ describe("read-only chat lifecycle", () => {
 
     expect(fetchState.requests.length).toBeGreaterThan(0);
     expect(fetchState.requests.every((request) => request.method === "GET")).toBe(true);
-    const buttons = wrapper.findAll("button:not([disabled])");
-    const labels = buttons.map((button) => button.text().trim());
-    expect(labels.some((label) => /send|stop|abort|delete|new session/i.test(label))).toBe(false);
-    expect(wrapper.find("[data-chat-composer-input]").attributes("disabled")).toBeDefined();
+    expect(wrapper.find("[data-chat-composer-input]").attributes("disabled")).toBeUndefined();
+    expect(wrapper.find("[data-chat-send]").attributes("disabled")).toBeDefined();
+    expect(wrapper.find("[data-chat-abort]").exists()).toBe(false);
     wrapper.unmount();
   });
 });

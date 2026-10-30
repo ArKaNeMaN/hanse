@@ -76,6 +76,25 @@ export interface ChatFixture {
   readonly createSessionID?: string;
   readonly createSessionStatus?: number;
   readonly deleteSessionStatus?: number;
+  readonly draftText?: string;
+  readonly drafts?: Readonly<Record<string, string>>;
+  readonly pendingSends?: readonly unknown[];
+  readonly messagesBySession?: Readonly<Record<string, readonly unknown[]>>;
+  readonly sentMessageID?: string;
+  readonly sendStatus?: number;
+  readonly sendBody?: unknown;
+  readonly blockingStatus?: number;
+  readonly blockingBody?: unknown;
+  readonly abortStatus?: number;
+  readonly abortBody?: unknown;
+  readonly deleteIfEmptyBody?: unknown;
+  readonly retryBody?: unknown;
+  readonly dismissBody?: unknown;
+  readonly custom?: (request: {
+    readonly method: string;
+    readonly url: string;
+    readonly body: string | undefined;
+  }) => { readonly status: number; readonly body: unknown } | undefined;
 }
 
 export function boot(overrides: Partial<BootPayload> = {}): BootPayload {
@@ -179,19 +198,42 @@ export class FakeEventSource {
 
 export interface InstalledFetch {
   readonly mock: ReturnType<typeof vi.fn>;
-  readonly requests: Array<{ method: string; url: string }>;
+  readonly requests: Array<{
+    method: string;
+    url: string;
+    body?: string;
+    keepalive?: boolean;
+  }>;
 }
 
 export function installFetch(fixture: ChatFixture = {}): InstalledFetch {
   FakeEventSource.instances = [];
-  const requests: Array<{ method: string; url: string }> = [];
+  const requests: Array<{
+    method: string;
+    url: string;
+    body?: string;
+    keepalive?: boolean;
+  }> = [];
   let sessions = (fixture.sessions ?? [{ id: "s1", title: "Session one" }]).map((session) => ({
     ...session,
   }));
+  const drafts = new Map<string, string>(
+    Object.entries(fixture.drafts ?? { s1: fixture.draftText ?? "" }),
+  );
   const mock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
     const method = init?.method ?? "GET";
-    requests.push({ method, url });
+    const bodyText = typeof init?.body === "string" ? init.body : undefined;
+    requests.push({
+      method,
+      url,
+      ...(bodyText === undefined ? {} : { body: bodyText }),
+      ...(init?.keepalive === true ? { keepalive: true } : {}),
+    });
+    const custom = fixture.custom?.({ method, url, body: bodyText });
+    if (custom !== undefined) {
+      return json(custom.status, custom.body);
+    }
     if (url.startsWith("/api/ui/chat")) {
       const status = fixture.chatStatus ?? 200;
       return status === 200 ? json(200, props(fixture)) : json(status, { error: "not found" });
@@ -218,6 +260,67 @@ export function installFetch(fixture: ChatFixture = {}): InstalledFetch {
         });
       }
       return json(200, { sessions });
+    }
+    const sessionOf = (value: string): string => decodeURIComponent(value);
+    const draftMatch = /^\/api\/apps\/alpha\/sessions\/([^/?]+)\/draft(?:\?.*)?$/.exec(url);
+    if (draftMatch !== null) {
+      const sessionId = sessionOf(draftMatch[1] ?? "");
+      if (method === "PUT") {
+        const parsed = typeof init?.body === "string" ? JSON.parse(init.body) : {};
+        const text = typeof parsed.text === "string" ? parsed.text : "";
+        if (text.length === 0) {
+          drafts.delete(sessionId);
+        } else {
+          drafts.set(sessionId, text);
+        }
+        return json(200, { text, updatedAt: "2026-10-30T00:00:00.000Z" });
+      }
+      return json(200, {
+        text: drafts.get(sessionId) ?? "",
+        attachments: [],
+        pendingSends: fixture.pendingSends ?? [],
+        quota: { percent: 0 },
+        updatedAt: null,
+      });
+    }
+    const sendMatch = /^\/api\/apps\/alpha\/sessions\/([^/?]+)\/messages(?:\?|$)/.exec(url);
+    if (sendMatch !== null && method === "POST") {
+      const parsedUrl = new URL(url, "http://localhost");
+      const async = parsedUrl.searchParams.get("async") === "1";
+      const status = async ? (fixture.sendStatus ?? 200) : (fixture.blockingStatus ?? 200);
+      const body = async
+        ? (fixture.sendBody ?? {
+            accepted: true,
+            messageID: fixture.sentMessageID ?? "msg_sent_1",
+            sessionID: sessionOf(sendMatch[1] ?? ""),
+          })
+        : (fixture.blockingBody ?? {
+            messageID: "msg_blocking_assistant",
+            userMessageID: fixture.sentMessageID ?? "msg_sent_1",
+            info: null,
+            truncated: true,
+          });
+      return json(status, body);
+    }
+    const abortMatch = /^\/api\/apps\/alpha\/sessions\/([^/?]+)\/abort(?:\?.*)?$/.exec(url);
+    if (abortMatch !== null && method === "POST") {
+      return json(fixture.abortStatus ?? 200, fixture.abortBody ?? { aborted: true });
+    }
+    const emptyMatch = /^\/api\/apps\/alpha\/sessions\/([^/?]+)\/delete-if-empty(?:\?.*)?$/.exec(
+      url,
+    );
+    if (emptyMatch !== null && method === "POST") {
+      return json(200, fixture.deleteIfEmptyBody ?? { deleted: false });
+    }
+    const retryMatch =
+      /^\/api\/apps\/alpha\/sessions\/([^/?]+)\/pending\/([^/?]+)\/retry(?:\?.*)?$/.exec(url);
+    if (retryMatch !== null && method === "POST") {
+      return json(200, fixture.retryBody ?? { retried: true, messageID: "msg_retried" });
+    }
+    const pendingMatch =
+      /^\/api\/apps\/alpha\/sessions\/([^/?]+)\/pending\/([^/?]+)(?:\?.*)?$/.exec(url);
+    if (pendingMatch !== null && method === "DELETE") {
+      return json(200, fixture.dismissBody ?? { dismissed: true });
     }
     const deleteMatch = /^\/api\/apps\/alpha\/sessions\/([^/?]+)(?:\?.*)?$/.exec(url);
     if (deleteMatch !== null && method === "DELETE") {
@@ -264,8 +367,10 @@ export function installFetch(fixture: ChatFixture = {}): InstalledFetch {
       if (tail !== undefined) {
         return json(200, { messages: tail.messages, nextCursor: tail.nextCursor });
       }
+      const sessionMatch = /\/sessions\/([^/?]+)\/messages/.exec(url);
+      const sessionID = sessionMatch === null ? "s1" : decodeURIComponent(sessionMatch[1] ?? "");
       return json(200, {
-        messages: fixture.messages ?? FIXTURE_MESSAGES,
+        messages: fixture.messagesBySession?.[sessionID] ?? fixture.messages ?? FIXTURE_MESSAGES,
         nextCursor: fixture.nextCursor ?? null,
       });
     }

@@ -100,19 +100,19 @@ describe("ChatPage read-only shell", () => {
     wrapper.unmount();
   });
 
-  it("keeps the composer read-only while exposing session navigation controls", async () => {
+  it("enables the composer while exposing session navigation controls", async () => {
     const { wrapper, fetchState } = await mountChat();
     const textarea = wrapper.find("[data-chat-composer-input]");
     const send = wrapper.find("[data-chat-send]");
-    expect(textarea.attributes("disabled")).toBeDefined();
-    expect(textarea.attributes("readonly")).toBeDefined();
+    expect(textarea.attributes("disabled")).toBeUndefined();
+    expect(textarea.attributes("readonly")).toBeUndefined();
     expect(send.attributes("disabled")).toBeDefined();
     expect(fetchState.requests.every((request) => request.method === "GET")).toBe(true);
     expect(wrapper.find("[data-chat-session-search]").exists()).toBe(true);
     expect(wrapper.find("[data-chat-new-session]").exists()).toBe(true);
     expect(wrapper.find("[data-session-delete]").exists()).toBe(true);
     expect(wrapper.find("[data-chat-abort]").exists()).toBe(false);
-    expect(wrapper.find("[data-chat-queue]").exists()).toBe(false);
+    expect(wrapper.find("[data-chat-queue-strip]").exists()).toBe(false);
     wrapper.unmount();
   });
 
