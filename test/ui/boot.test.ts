@@ -43,6 +43,17 @@ describe("readBoot route set and topbar", () => {
     expect(readBoot(document)?.spaRoutes).toEqual(["projects", "chat"]);
   });
 
+  it("accepts the chat route when the test allowlist enables it", () => {
+    bootDocument(
+      validPayload({
+        route: { id: "chat", params: {} },
+        spaRoutes: ["projects", "chat"],
+      }),
+    );
+    expect(readBoot(document)?.route.id).toBe("chat");
+    expect(readBoot(document)?.spaRoutes).toEqual(["projects", "chat"]);
+  });
+
   it("accepts the terminal route when the server enables it", () => {
     bootDocument(
       validPayload({

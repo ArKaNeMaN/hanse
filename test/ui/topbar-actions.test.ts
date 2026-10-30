@@ -1,8 +1,10 @@
 import { mount } from "@vue/test-utils";
+import { createPinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { nextTick } from "vue";
 import type { BootTopbar } from "../../ui/boot.js";
 import TopbarActions from "../../ui/components/TopbarActions.vue";
+import { useChatUiStore } from "../../ui/stores/chat-ui.js";
 import { clearTopbarActions } from "../../ui/topbar.js";
 
 function shell(defaultMarkup = '<a id="server-default" href="/ide/">IDE</a>'): void {
@@ -38,7 +40,10 @@ describe("TopbarActions", () => {
     clearTopbarActions();
     expect(actions().children).toHaveLength(0);
 
-    const wrapper = mount(TopbarActions, { props: { topbar: CHAT } });
+    const wrapper = mount(TopbarActions, {
+      props: { topbar: CHAT, workspace: "chat" },
+      global: { plugins: [createPinia()] },
+    });
     await nextTick();
 
     expect(actions().querySelector("#server-default")).toBeNull();
@@ -55,11 +60,17 @@ describe("TopbarActions", () => {
 
   it("renders only the default IDE action for terminal and restores it on prop change", async () => {
     clearTopbarActions();
-    const wrapper = mount(TopbarActions, { props: { topbar: CHAT } });
+    const wrapper = mount(TopbarActions, {
+      props: { topbar: CHAT, workspace: "chat" },
+      global: { plugins: [createPinia()] },
+    });
     await nextTick();
     expect(actions().querySelector("#chat-input-needed")).not.toBeNull();
 
-    await wrapper.setProps({ topbar: { ideHref: "/ide/?folder=%2Fworkspace%2Fp" } });
+    await wrapper.setProps({
+      topbar: { ideHref: "/ide/?folder=%2Fworkspace%2Fp" },
+      workspace: undefined,
+    });
     await nextTick();
 
     expect(actions().querySelector("#chat-input-needed")).toBeNull();
@@ -73,12 +84,36 @@ describe("TopbarActions", () => {
   it("shows the needs-input count and policy chip when the seed says so", async () => {
     clearTopbarActions();
     const wrapper = mount(TopbarActions, {
-      props: { topbar: { ...CHAT, needsInputCount: 2, policyVisible: true } },
+      props: { topbar: { ...CHAT, needsInputCount: 2, policyVisible: true }, workspace: "chat" },
+      global: { plugins: [createPinia()] },
     });
     await nextTick();
     expect(actions().querySelector("#chat-input-needed-count")?.textContent?.trim()).toBe("2");
     expect(actions().querySelector<HTMLButtonElement>("#chat-input-needed")?.hidden).toBe(false);
     expect(actions().querySelector<HTMLButtonElement>("#chat-policy-chip")?.hidden).toBe(false);
+    wrapper.unmount();
+  });
+});
+
+describe("TopbarActions chat store", () => {
+  it("renders the chat set on a direct chat boot and resets to the default when the store leaves", async () => {
+    shell();
+    clearTopbarActions();
+    const pinia = createPinia();
+    const wrapper = mount(TopbarActions, {
+      props: { topbar: CHAT, workspace: "chat" },
+      global: { plugins: [pinia] },
+    });
+    await nextTick();
+    expect(actions().querySelector("#chat-input-needed")).not.toBeNull();
+
+    const store = useChatUiStore(pinia);
+    store.reset();
+    await wrapper.setProps({ workspace: undefined });
+    await nextTick();
+    expect(actions().querySelector("#chat-input-needed")).toBeNull();
+    expect(actions().querySelector("#chat-policy-chip")).toBeNull();
+    expect(actions().querySelectorAll("a")).toHaveLength(1);
     wrapper.unmount();
   });
 });

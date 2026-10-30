@@ -22,8 +22,13 @@ describe("terminal route record", () => {
     });
   });
 
-  it("does not register a chat route in this stage", () => {
-    expect(router.hasRoute("chat")).toBe(false);
+  it("registers the chat route in Stage 3B while keeping the registry flag off", () => {
+    expect(router.hasRoute("chat")).toBe(true);
+    const record = router.getRoutes().find((route) => route.name === "chat");
+    expect(record?.path).toBe("/chat");
+    expect(record?.meta.workspace).toBe("chat");
+    expect(record?.meta.legacyRetired).toBe(false);
+    expect(typeof record?.components?.default).toBe("function");
     expect(isSpaRoute("chat", { env: {} })).toBe(false);
     expect(isLegacyRetired("chat")).toBe(false);
   });

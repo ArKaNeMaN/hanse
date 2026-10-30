@@ -26,8 +26,8 @@ export const E2E_TOKEN = "test-operator-token";
 export const E2E_OPERATOR = "test-operator";
 
 /** Deterministic chat identities served by the fake opencode upstream. Synthetic only. */
-export const E2E_CHAT_SESSION_ID = "ses_e2e_alpha";
-export const E2E_CHAT_CHILD_SESSION_ID = "ses_e2e_child";
+export const E2E_CHAT_SESSION_ID = "ses_e2ealpha";
+export const E2E_CHAT_CHILD_SESSION_ID = "ses_e2echild";
 export const E2E_CHAT_SESSIONS: readonly FixtureSession[] = [
   {
     id: E2E_CHAT_SESSION_ID,

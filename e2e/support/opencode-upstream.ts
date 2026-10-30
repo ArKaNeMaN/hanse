@@ -18,8 +18,8 @@ import type { Duplex } from "node:stream";
 /** Obvious fixture bearer value; never a deployment credential. */
 export const E2E_RUNNER_TOKEN = "e2e-runner-fixture-token";
 export const E2E_STREAM_ID = "stream-e2e-fixture";
-export const E2E_SESSION_ID = "ses_e2e_alpha";
-export const E2E_SECOND_SESSION_ID = "ses_e2e_child";
+export const E2E_SESSION_ID = "ses_e2ealpha";
+export const E2E_SECOND_SESSION_ID = "ses_e2echild";
 
 export interface FixtureSession {
   id: string;
@@ -595,6 +595,14 @@ export async function startOpencodeUpstream(
 
     if (pathname === "/__control" && method === "POST") {
       const parsed = safeJson(body);
+      if (parsed?.streamClose === true) {
+        for (const client of streamClients) {
+          if (!client.destroyed && !client.writableEnded) client.end();
+        }
+        streamClients.clear();
+        writeJson(response, 200, { accepted: 1, streamClose: true });
+        return;
+      }
       if (typeof parsed?.runnerClose === "number") {
         runner.lastCloseCode = parsed.runnerClose;
         for (const socket of runnerSockets) {

@@ -328,9 +328,9 @@ async function restartAgent(): Promise<void> {
         </div>
       </div>
       <div class="page-header__actions">
-        <a class="btn btn-secondary" :href="view.links.chat">
+        <SmartLink class="btn btn-secondary" :to="view.links.chat">
           <AppIcon name="message" />Open chat
-        </a>
+        </SmartLink>
         <SmartLink class="btn btn-secondary" :to="view.links.terminal">
           <AppIcon name="terminal" />Terminal
         </SmartLink>
@@ -407,9 +407,9 @@ async function restartAgent(): Promise<void> {
       </div>
       <div class="page-header__actions">
         <template v-if="view.header.showChatTerminal">
-          <a class="btn btn-secondary" :href="view.links.chat">
+          <SmartLink class="btn btn-secondary" :to="view.links.chat">
             <AppIcon name="message" />Open chat
-          </a>
+          </SmartLink>
           <SmartLink class="btn btn-secondary" :to="view.links.terminal">
             <AppIcon name="terminal" />Terminal
           </SmartLink>

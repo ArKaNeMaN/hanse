@@ -292,3 +292,45 @@ Verification (all with `NODE_ENV=development`):
 Limits: prompt upsert/resolve is represented as render intents until the Stage 6A prompt store;
 session-history paging and the read-only shell are Stage 3B/3C. The pre-existing `chat-qa` queue
 baseline debt is still recorded in Stage 0. Stage 3A checkpoint commit is created with this record.
+
+## Stage 3B - Chat read-only SPA behind the test allowlist
+
+Stage 3B registers the chat route record and renders a read-only chat workspace only when the
+test-only allowlist includes `chat`. `chat.spa` remains `false`; `/chat` is still the legacy document
+by default and for every rollback path.
+
+Implemented:
+- `ui/router.ts` adds `/chat` with `meta.workspace:"chat"`/`legacyRetired:false`; the registry flag is
+  still false. `App.vue` keys chat by `app:project` so an app switch remounts the stream/feed scope,
+  and passes the active workspace to the persistent topbar.
+- `ui/pages/ChatPage.vue` owns the runtime `.page__body--chat` root, boot/client-nav `/api/ui/chat`
+  props, chrome/workspace shell, sessions and message-tail reads, 30-message tail, older-page paging
+  with anchor preservation, read-only sessions rail/thread, keyed text/tool/OMO rows, disabled
+  composer, and empty/loading/error/stopped/deletion states. No `.page-header`.
+- `ui/chat/useChatRouteState.ts`: `route.query` is the only source for app/project/session; one
+  watcher applies it to the session store. Session selection uses `router.replace` and last-wins
+  generation; app switch uses `router.push`; stopped/empty sessions preserve the requested deep link;
+  no history/location writer exists outside the router.
+- `ui/chat/stream.ts` + `useChatStream.ts`: one EventSource, every `stream.ready` reset, duplicate
+  drop, gap/stream-id resync, hidden no-failure/probe behavior, three visible failures then one
+  stream-limit probe, cookie-only auth probe with 5s cooldown, 401/403 login redirect, dispose/
+  stale-callback guards, pagehide/pageshow/visibility lifecycle.
+- The read-only page applies `reduceEvent` + `applyChatActions`, refreshes tail/context/notices/
+  runtime/commands, and renders render intents. It does not send, queue, abort, upload, mutate
+  prompts, search/delete sessions, or use a legacy island.
+
+Tests/evidence:
+- New `test/ui/chat-page.test.ts`, `chat-readonly.test.ts`, `chat-route-state.test.ts`,
+  `chat-stream.test.ts`, shared support, and `e2e/chat.spec.ts`/`spa-chat.spec.ts`.
+- `npm test`: **3153 passed** (193 files).
+- `npm run test:e2e`: **177 passed, 11 skipped** (three modes; SPA-only cases skipped in legacy).
+- Lint/typecheck/typecheck:ui/typecheck:e2e, build, check:ui (53 SFCs), check:chat-worker,
+  check:sensitive, and `git diff --check`: pass.
+- Chat route chunk is lazy (`ChatPage`, 45.22 kB raw / 14.27 kB gzip); entry is 282.91 kB raw /
+  102.69 kB gzip.
+- The Stage 0 `chat-qa` queue-strip baseline debt remains for Stage 3C/7C; no new debt recorded.
+
+Limits: session tree/search/new/delete and the full read-only parity report are Stage 3C; composer/
+send/queue are Stage 4; feed rendering depth is Stage 5; prompts/context rail is Stage 6; attachments/
+commands and the `chat.spa` cutover are Stage 7. Stage 3B checkpoint commit is created with this
+record.

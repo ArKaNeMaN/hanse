@@ -1,27 +1,42 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import type { BootTopbar } from "../boot.js";
+import { useChatUiStore } from "../stores/chat-ui.js";
 import AppIcon from "./AppIcon.vue";
 
 /**
  * The single App-level topbar owner. `ui/main.ts` clears the server fallback once before mount;
  * this component teleports into the same `.topbar__actions` container and renders the boot seed.
- * Chat counters start at zero until the chat store lands; terminal and every other route render
- * the default IDE action.
+ * Chat counters start at zero until the chat store lands; leaving chat restores the default IDE
+ * action because the persistent component is never route-unmounted.
  */
-const props = defineProps<{ topbar: BootTopbar }>();
+const props = defineProps<{
+  topbar: BootTopbar;
+  workspace?: "chat" | "terminal";
+}>();
 
-const needsInputCount = computed(() => props.topbar.needsInputCount ?? 0);
+const chatUi = useChatUiStore();
+
+const chat = computed(() => props.workspace === "chat" || chatUi.active);
+const ideHref = computed(() =>
+  chat.value && chatUi.ideHref.length > 0 ? chatUi.ideHref : props.topbar.ideHref,
+);
+const needsInputCount = computed(() =>
+  chat.value ? (chatUi.active ? chatUi.needsInputCount : (props.topbar.needsInputCount ?? 0)) : 0,
+);
 const needsInputLabel = computed(() =>
   needsInputCount.value === 0
     ? "No requests need input"
     : `${needsInputCount.value} requests need input`,
 );
+const policyVisible = computed(() =>
+  chat.value ? (chatUi.active ? chatUi.policyVisible : props.topbar.policyVisible === true) : false,
+);
 </script>
 
 <template>
   <Teleport to=".topbar__actions">
-    <template v-if="topbar.contextToggle === true">
+    <template v-if="chat">
       <button
         class="btn btn-ghost btn-sm chat-input-needed"
         id="chat-input-needed"
@@ -43,7 +58,7 @@ const needsInputLabel = computed(() =>
         type="button"
         aria-controls="chat-policy-warning"
         aria-expanded="false"
-        :hidden="topbar.policyVisible !== true"
+        :hidden="!policyVisible"
       >
         <AppIcon name="alert-triangle" />
         <span id="chat-policy-chip-label">Policy warning</span>
@@ -62,13 +77,11 @@ const needsInputLabel = computed(() =>
     </template>
     <a
       class="btn btn-ghost btn-icon"
-      :href="topbar.ideHref"
+      :href="ideHref"
       target="_blank"
       rel="noreferrer"
-      :aria-label="
-        topbar.contextToggle === true ? 'Open application in IDE' : 'Open IDE in a new tab'
-      "
-      :title="topbar.contextToggle === true ? 'Open in IDE' : 'Open IDE'"
+      :aria-label="chat ? 'Open application in IDE' : 'Open IDE in a new tab'"
+      :title="chat ? 'Open in IDE' : 'Open IDE'"
     >
       <AppIcon name="external" />
     </a>

@@ -203,6 +203,28 @@ const manager = {
     restarted: false,
   }),
   isRestarting: () => false,
+  isRunning: (appId: string) => appId === FIXTURE_ALPHA_APP,
+  contextSnapshot: async (appId: string, sessionId: string) =>
+    appId === FIXTURE_ALPHA_APP
+      ? {
+          sessionID: sessionId,
+          state: "ready",
+          used: 1000,
+          limit: 2000,
+          percent: 50,
+          model: { providerID: "fixture", modelID: "fixture-model" },
+          status: "idle",
+          updatedAt: "2026-10-30T10:00:00.000Z",
+          lastCompactedAt: null,
+          lastError: null,
+          autoCompact: {
+            enabled: false,
+            percent: 80,
+            source: "default",
+            percentSource: "default",
+          },
+        }
+      : undefined,
   preflightRestart: async () => true,
   beginRestart: () => {
     alphaRestartPending = false;

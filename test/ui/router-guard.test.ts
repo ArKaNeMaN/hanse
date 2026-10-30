@@ -100,8 +100,12 @@ describe("SPA navigation guard", () => {
       const record = appRouter.getRoutes().find((route) => route.name === id);
       expect(record?.meta.legacyRetired ?? false, id).toBe(isLegacyRetired(id));
     }
-    expect(appRouter.hasRoute("chat")).toBe(false);
+    // The chat record lands in Stage 3B behind the test-only allowlist even though `spa` stays off.
+    expect(appRouter.hasRoute("chat")).toBe(true);
     expect(appRouter.hasRoute("terminal")).toBe(true);
+    const chatRecord = appRouter.getRoutes().find((route) => route.name === "chat");
+    expect(chatRecord?.meta.workspace).toBe("chat");
+    expect(chatRecord?.meta.legacyRetired).toBe(isLegacyRetired("chat"));
     const terminalRecord = appRouter.getRoutes().find((route) => route.name === "terminal");
     expect(terminalRecord?.meta.workspace).toBe("terminal");
     expect(isLegacyRetired("chat")).toBe(false);

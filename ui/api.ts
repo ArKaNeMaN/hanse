@@ -9,6 +9,8 @@
 export interface ApiRequestOptions {
   /** Test seam; production redirects to `/login?next=<current path>`. */
   readonly onUnauthorized?: (nextPath: string) => void;
+  /** Abort a stale workspace read (session switch, app switch, unmount). */
+  readonly signal?: AbortSignal;
 }
 
 export type ApiMutationBody =
@@ -93,6 +95,7 @@ export async function apiQuery<T>(path: string, options: ApiRequestOptions = {})
     method: "GET",
     credentials: "same-origin",
     headers: { accept: "application/json" },
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
   });
   return parse<T>(response, options);
 }
@@ -119,12 +122,13 @@ export async function apiMutation<T>(
     payload = JSON.stringify(body.json);
   }
 
-  const { method = "POST", ...requestOptions } = options;
+  const { method = "POST", signal, ...requestOptions } = options;
   const response = await fetch(path, {
     method,
     credentials: "same-origin",
     headers,
     body: payload,
+    ...(signal === undefined ? {} : { signal }),
   });
   return parse<T>(response, requestOptions);
 }

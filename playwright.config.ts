@@ -1,5 +1,5 @@
 import { defineConfig } from "@playwright/test";
-import { SPA_E2E_ROUTE_IDS_WITH_TERMINAL } from "./e2e/support/route-ids.js";
+import { SPA_E2E_ROUTE_IDS_WITH_TERMINAL_AND_CHAT } from "./e2e/support/route-ids.js";
 
 const baseEnv = Object.fromEntries(
   Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
@@ -20,6 +20,7 @@ const routeSpecs = [
   "**/ssh.spec.ts",
   "**/error.spec.ts",
   "**/terminal.spec.ts",
+  "**/chat.spec.ts",
 ];
 
 function fixtureEnv(port: number, mode: "spa" | "legacy", extra: Record<string, string> = {}) {
@@ -71,6 +72,8 @@ export default defineConfig({
         "**/spa-app.spec.ts",
         "**/terminal.spec.ts",
         "**/spa-terminal.spec.ts",
+        "**/chat.spec.ts",
+        "**/spa-chat.spec.ts",
       ],
       use: { baseURL: "http://127.0.0.1:4310" },
     },
@@ -100,7 +103,7 @@ export default defineConfig({
       timeout: 60_000,
       env: fixtureEnv(4310, "spa", {
         HANSE_UI_LEGACY: "",
-        HANSE_UI_SPA_ROUTES: SPA_E2E_ROUTE_IDS_WITH_TERMINAL,
+        HANSE_UI_SPA_ROUTES: SPA_E2E_ROUTE_IDS_WITH_TERMINAL_AND_CHAT,
       }),
     },
     {

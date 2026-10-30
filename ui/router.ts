@@ -21,8 +21,9 @@ declare module "vue-router" {
  * `/projects`; Phase 2B adds the fleet overview at `/`; Phase 2C adds project detail at
  * `/projects/:id`; Phase 3B adds the handoff inbox at `/handoffs`; Phase 4B adds the SSH console
  * at `/ssh`; Phase 6B adds the five skills routes; Phase 7C registers the application-detail route;
- * Stage 2 of the chat/terminal migration registers `/terminal`. Chat stays a server-rendered
- * document until its own cutover stage.
+ * Stage 2 of the chat/terminal migration registers `/terminal`; Stage 3B registers `/chat` as a
+ * read-only workspace behind the test-only allowlist. The registry `spa` flag for chat stays false
+ * until the Stage 7C cutover, so the route record is inert unless the server boot set includes it.
  */
 const routes: readonly RouteRecordRaw[] = [
   {
@@ -100,6 +101,12 @@ const routes: readonly RouteRecordRaw[] = [
     name: "terminal",
     component: () => import("./pages/TerminalPage.vue"),
     meta: { workspace: "terminal", legacyRetired: false },
+  },
+  {
+    path: "/chat",
+    name: "chat",
+    component: () => import("./pages/ChatPage.vue"),
+    meta: { workspace: "chat", legacyRetired: false },
   },
   {
     path: "/:pathMatch(.*)*",
