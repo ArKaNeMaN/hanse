@@ -87,6 +87,18 @@ export const useChatContextStore = defineStore("chat-context", () => {
     return todosBySession.value.get(sessionID) ?? null;
   }
 
+  function setCompacting(sessionID: string): void {
+    const current = contextBySession.value.get(sessionID);
+    if (current === undefined) {
+      return;
+    }
+    setSnapshot(
+      sessionID,
+      { ...current, state: "compacting", lastError: null },
+      current.sessionID === sessionID,
+    );
+  }
+
   function markCompacted(active: boolean): void {
     if (active) {
       compactedAt.value = new Date().toISOString();
@@ -140,6 +152,7 @@ export const useChatContextStore = defineStore("chat-context", () => {
     snapshotFor,
     setTodos,
     todosFor,
+    setCompacting,
     markCompacted,
     setPreviews,
     setHandoffs,

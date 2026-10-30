@@ -117,3 +117,68 @@ describe("TopbarActions chat store", () => {
     wrapper.unmount();
   });
 });
+
+describe("TopbarActions chat state ownership", () => {
+  it("renders the count and policy visibility published by the chat store", async () => {
+    clearTopbarActions();
+    const pinia = createPinia();
+    const wrapper = mount(TopbarActions, {
+      props: { topbar: CHAT, workspace: "chat" },
+      global: { plugins: [pinia] },
+    });
+    await nextTick();
+    const store = useChatUiStore(pinia);
+    store.activate({ ideHref: CHAT.ideHref });
+    store.setNeedsInput(3);
+    store.setPolicyWarnings(["One policy warning."]);
+    await nextTick();
+
+    expect(actions().querySelector("#chat-input-needed-count")?.textContent?.trim()).toBe("3");
+    expect(actions().querySelector<HTMLButtonElement>("#chat-input-needed")?.hidden).toBe(false);
+    expect(actions().querySelector<HTMLButtonElement>("#chat-input-needed")?.ariaLabel).toBe(
+      "3 requests need input",
+    );
+    expect(actions().querySelector<HTMLButtonElement>("#chat-policy-chip")?.hidden).toBe(false);
+
+    store.dismissPolicyWarnings();
+    store.setNeedsInput(0);
+    await nextTick();
+    expect(actions().querySelector<HTMLButtonElement>("#chat-policy-chip")?.hidden).toBe(true);
+    expect(actions().querySelector<HTMLButtonElement>("#chat-input-needed")?.hidden).toBe(true);
+    expect(actions().querySelector("#chat-input-needed-count")?.textContent?.trim()).toBe("0");
+    wrapper.unmount();
+  });
+
+  it("opens the queue, policy rail, and context rail through the persistent store", async () => {
+    clearTopbarActions();
+    const pinia = createPinia();
+    const wrapper = mount(TopbarActions, {
+      props: { topbar: { ...CHAT, needsInputCount: 1, policyVisible: true }, workspace: "chat" },
+      global: { plugins: [pinia] },
+    });
+    await nextTick();
+    const store = useChatUiStore(pinia);
+    store.activate({ ideHref: CHAT.ideHref });
+
+    await actions().querySelector<HTMLButtonElement>("#chat-input-needed")?.click();
+    await nextTick();
+    expect(store.queueOpen).toBe(true);
+    expect(actions().querySelector("#chat-input-needed")?.getAttribute("aria-expanded")).toBe(
+      "true",
+    );
+
+    await actions().querySelector<HTMLButtonElement>("#chat-policy-chip")?.click();
+    await nextTick();
+    expect(store.contextOpen).toBe(true);
+    expect(store.queueOpen).toBe(false);
+
+    await actions().querySelector<HTMLButtonElement>("[data-chat-context-toggle]")?.click();
+    await nextTick();
+    expect(store.contextOpen).toBe(false);
+
+    await actions().querySelector<HTMLButtonElement>("[data-chat-context-toggle]")?.click();
+    await nextTick();
+    expect(store.contextOpen).toBe(true);
+    wrapper.unmount();
+  });
+});

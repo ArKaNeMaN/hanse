@@ -19,6 +19,7 @@ export const useChatUiStore = defineStore("chat-ui", () => {
   const queueOpen = ref(false);
   const streamStatus = ref<ChatStreamStatusKind>("connecting");
   const streamDetail = ref<string | undefined>(undefined);
+  const policyWarnings = ref<readonly string[]>([]);
 
   function activate(topbar: {
     ideHref: string;
@@ -29,6 +30,24 @@ export const useChatUiStore = defineStore("chat-ui", () => {
     ideHref.value = topbar.ideHref;
     needsInputCount.value = topbar.needsInputCount ?? 0;
     policyVisible.value = topbar.policyVisible ?? false;
+  }
+
+  function setPolicyWarnings(warnings: readonly string[]): void {
+    const next = warnings
+      .filter((warning) => typeof warning === "string")
+      .map((warning) => warning.trim())
+      .filter((warning) => warning.length > 0);
+    policyWarnings.value = next;
+    policyVisible.value = next.length > 0;
+  }
+
+  function dismissPolicyWarnings(): void {
+    policyWarnings.value = [];
+    policyVisible.value = false;
+  }
+
+  function dismissPolicyWarning(warning: string): void {
+    setPolicyWarnings(policyWarnings.value.filter((entry) => entry !== warning));
   }
 
   function setStreamStatus(kind: ChatStreamStatusKind, detail?: string): void {
@@ -60,6 +79,7 @@ export const useChatUiStore = defineStore("chat-ui", () => {
     contextOpen.value = open;
     if (open) {
       sessionsOpen.value = false;
+      queueOpen.value = false;
     }
   }
 
@@ -73,6 +93,7 @@ export const useChatUiStore = defineStore("chat-ui", () => {
     queueOpen.value = false;
     streamStatus.value = "connecting";
     streamDetail.value = undefined;
+    policyWarnings.value = [];
   }
 
   return {
@@ -85,9 +106,13 @@ export const useChatUiStore = defineStore("chat-ui", () => {
     queueOpen,
     streamStatus,
     streamDetail,
+    policyWarnings,
     activate,
     setStreamStatus,
     setNeedsInput,
+    setPolicyWarnings,
+    dismissPolicyWarnings,
+    dismissPolicyWarning,
     setSessionsOpen,
     setContextOpen,
     setQueueOpen,

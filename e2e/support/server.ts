@@ -19,6 +19,7 @@ import {
   type ImageStateView,
 } from "../../src/images/service.js";
 import type { InstanceManager } from "../../src/opencode/manager.js";
+import type { PreviewView } from "../../src/preview/types.js";
 import { startOpencodeUpstream } from "./opencode-upstream.js";
 import { E2E_CHAT_MESSAGES, E2E_CHAT_SESSIONS, seed } from "./seed.js";
 
@@ -197,6 +198,8 @@ const manager = {
       ? { pending: true, reasons: ["settings_changed"] }
       : { pending: false, reasons: [] },
   profileWarnings: () => [],
+  policyWarnings: (appId: string) =>
+    appId === FIXTURE_ALPHA_APP ? ["Fixture policy warning."] : [],
   probeStatus: async () => false,
   rollbackImage: async (_app: unknown, rollback: () => Promise<unknown>) => ({
     result: await rollback(),
@@ -225,6 +228,7 @@ const manager = {
           },
         }
       : undefined,
+  compactSession: async () => ({ accepted: true }),
   preflightRestart: async () => true,
   beginRestart: () => {
     alphaRestartPending = false;
@@ -241,7 +245,54 @@ const upstream = await startOpencodeUpstream({
   appId: FIXTURE_ALPHA_APP,
   sessions: E2E_CHAT_SESSIONS,
   messages: E2E_CHAT_MESSAGES,
+  savedPermissions: [
+    {
+      id: "e2e-saved-permission",
+      projectID: "e2e-project-one",
+      action: "bash",
+      resource: "echo fixture",
+    },
+  ],
+  todos: {
+    ses_e2ealpha: [
+      { content: "Fixture plan step", status: "in_progress", priority: "high" },
+      { content: "Finished fixture step", status: "completed", priority: "low" },
+    ],
+  },
   onControl: (event) => {
+    if ((event as { seedChatApprovals?: unknown }).seedChatApprovals === true) {
+      const hostRow = fixture.db
+        .prepare("SELECT id FROM ssh_hosts WHERE name = 'app-host'")
+        .get() as { id: string } | undefined;
+      if (hostRow !== undefined) {
+        const insert = fixture.db.prepare(
+          `INSERT OR REPLACE INTO ssh_approvals
+             (id, app_id, host_id, action, command_hash, command_preview, command_bytes, status,
+              requested_at, expires_at)
+           VALUES (?, ?, ?, 'exec', ?, ?, ?, 'pending', ?, '2099-01-01T00:00:00.000Z')`,
+        );
+        const now = new Date().toISOString();
+        for (const [id, preview] of [
+          ["e2e-chat-ssh-approve", "echo chat approve e2e"],
+          ["e2e-chat-ssh-reject", "echo chat reject e2e"],
+        ] as const) {
+          insert.run(
+            id,
+            "e2e-project-one:alpha",
+            hostRow.id,
+            `e2e-${id}-hash`,
+            preview,
+            preview.length,
+            now,
+          );
+        }
+      }
+      return true;
+    }
+    if (typeof (event as { restartPending?: unknown }).restartPending === "boolean") {
+      alphaRestartPending = (event as { restartPending: boolean }).restartPending;
+      return true;
+    }
     const properties =
       typeof event.properties === "object" && event.properties !== null
         ? (event.properties as Record<string, unknown>)
@@ -554,6 +605,34 @@ const deletion = {
   },
 } as unknown as DeletionService;
 
+const previewState = new Map<string, PreviewView[]>([
+  [
+    FIXTURE_ALPHA_APP,
+    [
+      {
+        key: "e2e-preview",
+        name: "Fixture preview",
+        port: 3000,
+        url: "/preview/e2e-fixture/",
+        basePath: "/preview/e2e-fixture/",
+        basePathWithoutTrailingSlash: "/preview/e2e-fixture",
+        createdAt: "2026-10-30T00:00:00.000Z",
+        expiresAt: "2099-01-01T00:00:00.000Z",
+      },
+    ],
+  ],
+]);
+const previews = {
+  recordOperatorHost: () => undefined,
+  views: (appId: string) => previewState.get(appId) ?? [],
+  close: (appId: string, key: string) => {
+    const current = previewState.get(appId) ?? [];
+    const next = current.filter((preview) => preview.key !== key);
+    previewState.set(appId, next);
+    return next.length !== current.length;
+  },
+} as unknown as NonNullable<HttpDeps["previews"]>;
+
 const deps: HttpDeps = {
   db: fixture.db,
   workspaceRoot: fixture.workspaceRoot,
@@ -580,7 +659,8 @@ const deps: HttpDeps = {
   images,
   dispatcher,
   deletion,
-  // Previews and Docker remain unconfigured: their routes keep the existing 503 contracts.
+  previews,
+  // Docker remains unconfigured: those routes keep the existing 503 contracts.
 };
 
 /**

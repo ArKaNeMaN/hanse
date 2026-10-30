@@ -1,4 +1,12 @@
 import type { ChatProps } from "../../src/http/props/chat.js";
+import type {
+  NormalizedPermissionRequest,
+  NormalizedQuestion,
+  NormalizedQuestionRequest,
+  NormalizedSavedPermission,
+  NormalizedTodo,
+} from "../../src/opencode/prompts.js";
+import type { SshApprovalView } from "../../src/ssh/types.js";
 import type { BootChrome } from "../boot.js";
 import type { NoticeView } from "../stores/chat-feed.js";
 import type { ChatSessionSummary } from "../stores/chat-session.js";
@@ -82,3 +90,50 @@ export interface ChatMessageView {
 export type ChatThreadItem =
   | { readonly type: "message"; readonly message: ChatMessageView }
   | { readonly type: "notice"; readonly notice: NoticeView };
+
+export interface ChatPromptsResponse {
+  readonly questions?: readonly NormalizedQuestionRequest[];
+  readonly permissions?: readonly NormalizedPermissionRequest[];
+  readonly warnings?: readonly string[];
+  readonly truncated?: boolean;
+}
+
+export interface ChatSavedPermissionsResponse {
+  readonly permissions?: readonly NormalizedSavedPermission[];
+}
+
+export interface ChatTodoResponse {
+  readonly todos?: readonly NormalizedTodo[];
+  readonly truncated?: boolean;
+}
+
+export interface ChatSshApprovalsResponse {
+  readonly approvals?: readonly SshApprovalView[];
+}
+
+export type ChatPromptKind = "question" | "permission";
+
+export type QuestionOutcomeKind = "answered" | "dismissed" | "expired";
+
+export interface QuestionOutcome {
+  readonly kind: QuestionOutcomeKind;
+  readonly at: number;
+  readonly answers?: readonly (readonly string[])[] | null;
+  readonly questions?: readonly NormalizedQuestion[];
+  readonly reason?: string;
+  readonly elsewhere?: boolean;
+}
+
+export interface InlineQuestionView {
+  readonly key: string;
+  readonly correlationKey: string;
+  readonly questions: readonly NormalizedQuestion[];
+  readonly state: "pending" | "answered" | "dismissed" | "expired" | "tooLarge" | "preparing";
+  readonly stateLabel: string;
+  readonly answers?: readonly (readonly string[])[] | null;
+  readonly busy: boolean;
+  readonly error?: string;
+  readonly tooLarge: boolean;
+  readonly tooLargeReason?: string;
+  readonly readOnly: boolean;
+}

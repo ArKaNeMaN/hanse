@@ -215,3 +215,12 @@ export function resolveActiveStatusLabel(input?: {
   activePromptID?: string | null;
   queueBlocked?: boolean;
 }): string;
+
+export function formatTokenCount(value: number | null | undefined): string;
+export function contextMeterPercent(snapshot: unknown): number;
+export function contextChipLabel(snapshot: unknown): string;
+export function contextStateClass(snapshot: unknown): "ok" | "warning" | "danger" | "compacting" | "unknown";
+export function contextSummary(snapshot: unknown): string;
+export function contextDetail(snapshot: unknown): string;
+export function autoCompactText(snapshot: unknown): string;
+export function contextErrorText(code: string | null | undefined): string;

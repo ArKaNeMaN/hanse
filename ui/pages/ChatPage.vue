@@ -19,10 +19,18 @@ import { disposeHighlightController } from "../../assets/chat-highlight.js";
 import type { RuntimeState } from "../../src/http/ui.js";
 import type { ContextSnapshot } from "../../src/opencode/context.js";
 import type { NormalizedTodo } from "../../src/opencode/prompts.js";
+import type { PreviewView } from "../../src/preview/types.js";
 import { ApiError, apiMutation, apiQuery } from "../api.js";
 import type { BootPayload } from "../boot.js";
 import type { InboundChatEvent } from "../chat/event-reducer.js";
 import { reduceEvent } from "../chat/event-reducer.js";
+import {
+  isQuestionToolPart,
+  partAnswers,
+  partCorrelationKey,
+  partQuestions,
+  partTerminal,
+} from "../chat/prompt-utils.js";
 import { deriveQueueRows } from "../chat/queue.js";
 import { isPendingResolved } from "../chat/send.js";
 import { clearChatSessionState, clearChatWorkspaceState } from "../chat/session-storage.js";
@@ -33,16 +41,23 @@ import type {
   ChatMessagesResponse,
   ChatMessageView,
   ChatNoticesResponse,
+  ChatPromptsResponse,
   ChatResponse,
   ChatRuntimeResponse,
+  ChatSavedPermissionsResponse,
   ChatSessionsResponse,
   ChatThreadItem,
+  ChatTodoResponse,
+  InlineQuestionView,
+  QuestionOutcome,
 } from "../chat/types.js";
 import { normalizeChatQuery, useChatRouteState } from "../chat/useChatRouteState.js";
 import AppIcon from "../components/AppIcon.vue";
 import ChatComposer from "../components/chat/ChatComposer.vue";
+import ChatContextRail from "../components/chat/ChatContextRail.vue";
 import ChatImageGate from "../components/chat/ChatImageGate.vue";
 import ChatImageWarning from "../components/chat/ChatImageWarning.vue";
+import ChatPromptDock from "../components/chat/ChatPromptDock.vue";
 import ChatQueueDialog from "../components/chat/ChatQueueDialog.vue";
 import ChatQueueStrip from "../components/chat/ChatQueueStrip.vue";
 import ChatScrim from "../components/chat/ChatScrim.vue";
@@ -54,6 +69,7 @@ import { applyChrome } from "../composables/useChrome.js";
 import { useWorkspaceShell } from "../composables/useWorkspaceShell.js";
 import { useChatContextStore } from "../stores/chat-context.js";
 import { useChatFeedStore } from "../stores/chat-feed.js";
+import { type PromptEntry, useChatPromptsStore } from "../stores/chat-prompts.js";
 import { useChatSessionStore } from "../stores/chat-session.js";
 import { useChatUiStore } from "../stores/chat-ui.js";
 import { useToastStore } from "../stores/toasts.js";
@@ -84,8 +100,13 @@ useWorkspaceShell(
 const feed = useChatFeedStore();
 const sessionStore = useChatSessionStore();
 const contextStore = useChatContextStore();
+const promptsStore = useChatPromptsStore();
 const chatUi = useChatUiStore();
 const toasts = useToastStore();
+const composerRef = ref<InstanceType<typeof ChatComposer> | null>(null);
+const previewsView = ref<readonly PreviewView[]>([]);
+const compactBusy = ref(false);
+const compactError = ref<string | null>(null);
 
 if (sessionStore.bindWorkspace(routeState.workspaceKey.value)) {
   feed.reset(null);
@@ -121,6 +142,389 @@ const projectQuery = computed(() =>
   routeState.project.value.length === 0 ? "" : `?project=${encoded(routeState.project.value)}`,
 );
 const withProject = (path: string): string => `${path}${projectQuery.value}`;
+
+function projectSuffix(path: string): string {
+  return routeState.project.value.length === 0
+    ? path
+    : `${path}${path.includes("?") ? "&" : "?"}project=${encoded(routeState.project.value)}`;
+}
+
+let previewRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+let contextPollTimer: ReturnType<typeof setInterval> | undefined;
+let contextPollStartedAt = 0;
+const CONTEXT_POLL_MS = 2_000;
+const CONTEXT_POLL_MAX_MS = 10 * 60_000;
+
+function stopContextPolling(): void {
+  if (contextPollTimer !== undefined) {
+    clearInterval(contextPollTimer);
+    contextPollTimer = undefined;
+  }
+  contextPollStartedAt = 0;
+}
+
+function stopPreviewRefresh(): void {
+  if (previewRefreshTimer !== undefined) {
+    clearTimeout(previewRefreshTimer);
+    previewRefreshTimer = undefined;
+  }
+}
+
+async function loadPrompts(signal?: AbortSignal): Promise<void> {
+  if (routeState.app.value.length === 0) return;
+  try {
+    const data = await apiQuery<ChatPromptsResponse>(
+      withProject(`${apiBase.value}/prompts`),
+      signal === undefined ? {} : { signal },
+    );
+    promptsStore.hydrate(data.questions ?? [], data.permissions ?? []);
+    chatUi.setPolicyWarnings(data.warnings ?? []);
+  } catch {
+    // Keep the last prompt state; a stopped agent or a transient read must not clear the dock.
+  }
+}
+
+async function loadSavedPermissions(signal?: AbortSignal): Promise<void> {
+  if (routeState.app.value.length === 0) return;
+  try {
+    const data = await apiQuery<ChatSavedPermissionsResponse>(
+      withProject(`${apiBase.value}/permissions/saved`),
+      signal === undefined ? {} : { signal },
+    );
+    promptsStore.setSavedPermissions(data.permissions ?? []);
+  } catch {
+    // Saved permissions are optional in the rail.
+  }
+}
+
+async function loadPreviews(): Promise<void> {
+  if (routeState.app.value.length === 0 || routeState.project.value.length === 0) return;
+  try {
+    const data = await apiQuery<{ previews?: readonly PreviewView[] }>(
+      projectSuffix(`${apiBase.value}/previews`),
+    );
+    previewsView.value = data.previews ?? [];
+  } catch {
+    // Preview listing is optional (runner-only).
+  }
+}
+
+function schedulePreviewRefresh(): void {
+  if (previewRefreshTimer !== undefined) return;
+  previewRefreshTimer = setTimeout(() => {
+    previewRefreshTimer = undefined;
+    void loadPreviews();
+  }, 50);
+}
+
+async function refreshContext(sessionID: string): Promise<void> {
+  try {
+    const snapshot = await apiQuery<ContextSnapshot>(
+      `${apiBase.value}/sessions/${encoded(sessionID)}/context${projectQuery.value}`,
+    );
+    if (routeState.session.value === sessionID) {
+      contextStore.setSnapshot(sessionID, snapshot, true);
+      if (snapshot.state !== "compacting") stopContextPolling();
+    }
+  } catch {
+    // Context is optional; stream/status refreshes retry it.
+  }
+}
+
+function startContextPolling(sessionID: string): void {
+  stopContextPolling();
+  contextPollStartedAt = Date.now();
+  contextPollTimer = setInterval(() => {
+    if (Date.now() - contextPollStartedAt >= CONTEXT_POLL_MAX_MS) {
+      stopContextPolling();
+      return;
+    }
+    if (typeof document !== "undefined" && document.hidden) return;
+    if (routeState.session.value !== sessionID) {
+      stopContextPolling();
+      return;
+    }
+    void refreshContext(sessionID);
+  }, CONTEXT_POLL_MS);
+}
+
+function contextErrorMessage(error: unknown): string {
+  if (!(error instanceof ApiError)) return "Compaction failed. Try again.";
+  if (error.status === 401) return "Sign in again to compact this session.";
+  if (error.status === 403) return "You do not have permission to compact this session.";
+  if (error.status === 404) return "Session not found.";
+  if (error.status === 409) {
+    if (error.code === "not_top_level")
+      return "Compaction is only available for top-level sessions.";
+    if (error.code === "session_busy") return "Wait for the agent to finish before compacting.";
+    if (error.code === "compact_in_progress") return "Compaction is already in progress.";
+    if (error.code === "model_unavailable") return "No model is available for this session.";
+    return "Compaction is not available right now.";
+  }
+  if (error.status === 502) return "Compaction failed. Try again.";
+  if (error.status === 503) return "Context is unavailable. Try again.";
+  return "Compaction failed. Try again.";
+}
+
+async function compactSession(): Promise<void> {
+  const sessionID = routeState.session.value;
+  if (sessionID === null || compactBusy.value) return;
+  compactBusy.value = true;
+  compactError.value = null;
+  try {
+    const result = await apiMutation<{ accepted?: boolean }>(
+      `${apiBase.value}/sessions/${encoded(sessionID)}/compact${projectQuery.value}`,
+      { json: {} },
+    );
+    if (result.accepted !== true) {
+      throw new Error("Compaction was not accepted.");
+    }
+    contextStore.setCompacting(sessionID);
+    startContextPolling(sessionID);
+    toasts.push("Compaction started.", "success");
+    await refreshContext(sessionID);
+  } catch (error) {
+    const message = contextErrorMessage(error);
+    compactError.value = message;
+    toasts.push(message, "error");
+  } finally {
+    compactBusy.value = false;
+  }
+}
+
+async function restartAgent(): Promise<void> {
+  try {
+    await apiMutation<unknown>(withProject(`${apiBase.value}/restart`), { json: {} });
+    await chatQuery.refetch();
+    await sessionsQuery.refetch();
+    toasts.push("Agent restart requested.", "success");
+  } catch (error) {
+    toasts.push(errorText(error, "Could not restart the agent."), "error");
+  }
+}
+
+async function closePreview(key: string): Promise<void> {
+  try {
+    await apiMutation<unknown>(projectSuffix(`${apiBase.value}/previews/${encoded(key)}/close`), {
+      json: {},
+    });
+    previewsView.value = previewsView.value.filter((preview) => preview.key !== key);
+  } catch (error) {
+    toasts.push(errorText(error, "Could not close the preview."), "error");
+  }
+}
+
+async function revokeSavedPermission(id: string): Promise<void> {
+  try {
+    await apiMutation<unknown>(
+      withProject(`${apiBase.value}/permissions/saved/${encoded(id)}`),
+      { json: {} },
+      { method: "DELETE" },
+    );
+    promptsStore.removeSavedPermission(id);
+    toasts.push("Saved permission revoked.", "success");
+  } catch (error) {
+    toasts.push(errorText(error, "Could not revoke the saved permission."), "error");
+  }
+}
+
+function focusComposer(): void {
+  void nextTick().then(() => composerRef.value?.focus());
+}
+
+async function submitQuestion(entry: PromptEntry, answers: string[][]): Promise<void> {
+  if (entry.kind !== "question") return;
+  const request = entry.request;
+  promptsStore.markBusy(request.key, true);
+  promptsStore.setError(request.key, null);
+  try {
+    await apiMutation<unknown>(
+      withProject(`${apiBase.value}/questions/${encoded(request.id)}/reply`),
+      { json: { source: request.source, answers } },
+    );
+    promptsStore.resolveQuestion(request.id, request.source, "answered", {
+      answers,
+      questions: request.questions,
+    });
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) {
+      promptsStore.resolveQuestion(request.id, request.source, "expired", {
+        reason: "Already answered or expired",
+        questions: request.questions,
+      });
+      toasts.push("Already answered or expired.", "error");
+    } else {
+      promptsStore.setError(request.key, errorText(error, "Could not send the answer."));
+    }
+  } finally {
+    promptsStore.markBusy(request.key, false);
+    focusComposer();
+  }
+}
+
+async function rejectQuestion(entry: PromptEntry): Promise<void> {
+  if (entry.kind !== "question") return;
+  const request = entry.request;
+  promptsStore.markBusy(request.key, true);
+  promptsStore.setError(request.key, null);
+  try {
+    await apiMutation<unknown>(
+      withProject(`${apiBase.value}/questions/${encoded(request.id)}/reject`),
+      { json: { source: request.source } },
+    );
+    promptsStore.resolveQuestion(request.id, request.source, "dismissed", {
+      questions: request.questions,
+    });
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) {
+      promptsStore.resolveQuestion(request.id, request.source, "expired", {
+        reason: "Already answered or expired",
+        questions: request.questions,
+      });
+      toasts.push("Already answered or expired.", "error");
+    } else {
+      promptsStore.setError(request.key, errorText(error, "Could not dismiss the question."));
+    }
+  } finally {
+    promptsStore.markBusy(request.key, false);
+    focusComposer();
+  }
+}
+
+async function replyPermission(
+  entry: PromptEntry,
+  reply: "once" | "always" | "reject",
+  message?: string,
+): Promise<void> {
+  if (entry.kind !== "permission") return;
+  const request = entry.request;
+  promptsStore.markBusy(request.key, true);
+  promptsStore.setError(request.key, null);
+  try {
+    const body: Record<string, unknown> = { source: request.source, reply };
+    if (typeof message === "string" && message.length > 0) body.message = message;
+    await apiMutation<unknown>(
+      withProject(`${apiBase.value}/permissions/${encoded(request.id)}/reply`),
+      { json: body },
+    );
+    promptsStore.resolvePermission(request.id, request.source);
+    if (reply === "always") {
+      await loadSavedPermissions();
+      if (request.source === "v2") void loadPrompts();
+    }
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) {
+      promptsStore.resolvePermission(request.id, request.source);
+      toasts.push("Already answered or expired.", "error");
+    } else {
+      promptsStore.setError(request.key, errorText(error, "Could not reply to the request."));
+    }
+  } finally {
+    promptsStore.markBusy(request.key, false);
+    focusComposer();
+  }
+}
+
+function outcomeLabel(outcome: QuestionOutcome): string {
+  if (outcome.kind === "answered") {
+    return outcome.elsewhere === true ? "Answered elsewhere" : "Answered";
+  }
+  if (outcome.kind === "dismissed") return "Dismissed";
+  return outcome.reason ?? "Request no longer pending";
+}
+
+function inlineQuestionView(
+  part: ChatMessagePartView,
+  messageID: string,
+): InlineQuestionView | null {
+  if (!isQuestionToolPart(part)) return null;
+  const partKey = partCorrelationKey(part, routeState.session.value, messageID);
+  if (partKey === null) return null;
+  const data = part.data;
+  const toolMessageID = typeof data.messageID === "string" ? data.messageID : "";
+  const toolCallID =
+    typeof data.callID === "string" && data.callID.length > 0 ? data.callID : part.id;
+  const entry =
+    promptsStore.questionByCorrelation(partKey) ??
+    promptsStore.questionByToolRef(toolMessageID, toolCallID);
+  const correlationKey =
+    entry === undefined ? partKey : (promptsStore.promptCorrelationKey(entry) ?? partKey);
+  const outcome =
+    entry === undefined
+      ? (promptsStore.outcomeForCorrelation(correlationKey) ??
+        promptsStore.outcomeForToolRef(toolMessageID, toolCallID))
+      : promptsStore.outcomeFor(entry.key);
+  if (entry === undefined && outcome === undefined) {
+    if (!partTerminal(part)) return null;
+    return {
+      key: correlationKey,
+      correlationKey,
+      questions: partQuestions(part),
+      state: "answered",
+      stateLabel: "Answered",
+      answers: partAnswers(part),
+      busy: false,
+      tooLarge: false,
+      readOnly: true,
+    };
+  }
+  if (entry !== undefined) {
+    const error = promptsStore.errorFor(entry.key);
+    return {
+      key: entry.key,
+      correlationKey,
+      questions: entry.questions,
+      state: entry.tooLarge ? "tooLarge" : "pending",
+      stateLabel: entry.tooLarge ? "Too large" : "",
+      ...(entry.tooLarge && entry.tooLargeReason !== undefined
+        ? { tooLargeReason: entry.tooLargeReason }
+        : {}),
+      answers: null,
+      busy: promptsStore.isBusy(entry.key),
+      ...(error === undefined ? {} : { error }),
+      tooLarge: entry.tooLarge,
+      readOnly: false,
+    };
+  }
+  const resolved = outcome as QuestionOutcome;
+  return {
+    key: promptsStore.questionKeyForCorrelation(correlationKey) ?? correlationKey,
+    correlationKey,
+    questions: resolved.questions ?? partQuestions(part),
+    state: resolved.kind === "answered" ? "answered" : resolved.kind,
+    stateLabel: outcomeLabel(resolved),
+    answers: resolved.answers ?? partAnswers(part),
+    busy: false,
+    tooLarge: false,
+    readOnly: true,
+  };
+}
+
+function submitInlineQuestion(view: InlineQuestionView, answers: string[][]): void {
+  const entry = promptsStore.questions.find((request) => request.key === view.key);
+  if (entry === undefined) return;
+  void submitQuestion({ kind: "question", request: entry }, answers);
+}
+
+function rejectInlineQuestion(view: InlineQuestionView): void {
+  const entry = promptsStore.questions.find((request) => request.key === view.key);
+  if (entry === undefined) return;
+  void rejectQuestion({ kind: "question", request: entry });
+}
+
+const dockEntries = computed(() => {
+  promptsStore.revision;
+  return promptsStore.dockEntriesForSession(routeState.session.value);
+});
+const composerEmpty = computed(() => composerDraft.value.trim().length === 0);
+
+watch(
+  [() => promptsStore.revision, () => routeState.session.value],
+  () => {
+    chatUi.setNeedsInput(promptsStore.needsInputCount(routeState.session.value));
+  },
+  { immediate: true },
+);
 
 const chatPath = computed(() => {
   const params = new URLSearchParams({ app: routeState.app.value });
@@ -166,6 +570,16 @@ watch(
   () => view.value?.runtime.state,
   (state) => {
     contextStore.setRuntime(state === undefined ? null : state);
+  },
+  { immediate: true },
+);
+
+watch(
+  () => view.value?.previews,
+  (previews) => {
+    if (previews !== undefined) {
+      previewsView.value = previews;
+    }
   },
   { immediate: true },
 );
@@ -560,11 +974,16 @@ async function loadSidecars(sessionID: string, generation: number): Promise<void
   }
 
   try {
-    const todos = await apiQuery<readonly NormalizedTodo[]>(path("todo"), {
+    const todoData = await apiQuery<ChatTodoResponse | readonly NormalizedTodo[]>(path("todo"), {
       ...(signal === undefined ? {} : { signal }),
     });
+    const normalized = Array.isArray(todoData)
+      ? { todos: todoData, truncated: false }
+      : (todoData as ChatTodoResponse);
+    const todos = normalized.todos ?? [];
+    const truncated = normalized.truncated === true;
     if (generation === loadGeneration && routeState.session.value === sessionID) {
-      contextStore.setTodos(sessionID, todos, false, true);
+      contextStore.setTodos(sessionID, todos, truncated, true);
     }
   } catch {
     // Todo/plan is optional in the read-only shell.
@@ -733,11 +1152,43 @@ function handleIntents(intents: readonly RenderIntent[]): void {
       }
     } else if (intent.type === "stream-paused") {
       feed.setStreamPaused(intent.message !== null);
+    } else if (intent.type === "prompt-upsert") {
+      if (intent.kind === "question") {
+        promptsStore.upsert("question", intent.request as never);
+      } else {
+        promptsStore.upsert("permission", intent.request as never);
+      }
+    } else if (intent.type === "prompt-resolve") {
+      if (intent.kind === "question") {
+        const outcome =
+          intent.outcome === "dismissed"
+            ? "dismissed"
+            : intent.outcome === "answered"
+              ? "answered"
+              : "expired";
+        promptsStore.resolveQuestion(intent.requestID, intent.source, outcome);
+      } else {
+        promptsStore.resolvePermission(intent.requestID, intent.source);
+      }
     }
   }
 }
 
+function eventTouchesPreviews(event: InboundChatEvent): boolean {
+  if (event.type !== "message.part.updated") return false;
+  const tool = event.part?.tool;
+  return (
+    tool === "preview_open" ||
+    tool === "preview_close" ||
+    tool === "hanse_preview_open" ||
+    tool === "hanse_preview_close"
+  );
+}
+
 function handleEvent(event: InboundChatEvent): void {
+  if (eventTouchesPreviews(event)) {
+    schedulePreviewRefresh();
+  }
   if (event.type === "session.error" && composerShouldSuppressAbort(event)) {
     feed.setAgentStatus({ type: "idle" });
     feed.settleIdle();
@@ -766,6 +1217,9 @@ const chatStream = useChatStream({
     if (sessionID !== null) {
       void loadMessages(sessionID, false);
     }
+    void loadPrompts();
+    void loadSavedPermissions();
+    void loadPreviews();
   },
   onResync: (reason) => {
     const message =
@@ -791,15 +1245,29 @@ watch(
 
 watch(
   () => [routeState.app.value, routeState.project.value, routeState.session.value] as const,
-  ([appKey, , sessionID], previous) => {
+  ([appKey, projectID, sessionID], previous) => {
     if (previous !== undefined && (previous[0] !== appKey || previous[2] !== sessionID)) {
       abortLoads();
+    }
+    const workspaceChanged =
+      previous === undefined || previous[0] !== appKey || previous[1] !== projectID;
+    if (workspaceChanged) {
+      promptsStore.clear();
+      chatUi.setPolicyWarnings([]);
+      previewsView.value = [];
+      stopContextPolling();
+      compactError.value = null;
     }
     if (appKey.length === 0) {
       feed.reset(null);
       messages.value = [];
       messageCount.value = 0;
       return;
+    }
+    if (workspaceChanged) {
+      void loadPrompts();
+      void loadSavedPermissions();
+      void loadPreviews();
     }
     if (sessionID === null) {
       feed.reset(null);
@@ -1007,6 +1475,11 @@ function onGlobalKeydown(event: KeyboardEvent): void {
   if (chatUi.sessionsOpen) {
     event.preventDefault();
     chatUi.setSessionsOpen(false);
+    return;
+  }
+  if (chatUi.contextOpen) {
+    event.preventDefault();
+    chatUi.setContextOpen(false);
   }
 }
 
@@ -1018,6 +1491,9 @@ onBeforeUnmount(() => {
   document.removeEventListener("keydown", onGlobalKeydown);
   abortLoads();
   stopImagePolling();
+  stopContextPolling();
+  stopPreviewRefresh();
+  promptsStore.clear();
   disposeHighlightController();
   if (reconcileTimer !== undefined) {
     clearTimeout(reconcileTimer);
@@ -1063,7 +1539,7 @@ onBeforeUnmount(() => {
       :data-app-key="routeState.app.value"
       :data-project-id="routeState.project.value"
       :data-chat-sessions="chatUi.sessionsOpen ? 'open' : 'closed'"
-      data-chat-context="closed"
+      :data-chat-context="chatUi.contextOpen ? 'open' : 'closed'"
       :aria-label="title"
     >
       <div
@@ -1134,7 +1610,26 @@ onBeforeUnmount(() => {
           :load-earlier-enabled="historyCursor !== null"
           :message-count="messageCountText"
           :generating-label="generatingLabel"
+          :question-view-for-part="inlineQuestionView"
           @load-earlier="loadEarlier"
+          @question-submit="submitInlineQuestion"
+          @question-reject="rejectInlineQuestion"
+        />
+        <ChatPromptDock
+          v-if="!stopped && !appEmpty"
+          :entries="dockEntries"
+          :busy-for="(key: string) => promptsStore.isBusy(key)"
+          :error-for="(key: string) => promptsStore.errorFor(key)"
+          :auto-focus="composerEmpty"
+          :disabled="deletionPending"
+          @question-submit="submitQuestion"
+          @question-reject="rejectQuestion"
+          @permission-once="(entry: PromptEntry) => replyPermission(entry, 'once')"
+          @permission-always="(entry: PromptEntry) => replyPermission(entry, 'always')"
+          @permission-deny="
+            (entry: PromptEntry, message: string) => replyPermission(entry, 'reject', message)
+          "
+          @open-saved="chatUi.setContextOpen(true)"
         />
         <ChatQueueStrip
           v-if="!stopped && !deletionPending"
@@ -1142,6 +1637,7 @@ onBeforeUnmount(() => {
           @open="chatUi.setQueueOpen(true)"
         />
         <ChatComposer
+          ref="composerRef"
           :draft="composerDraft"
           :delivery="composerDelivery"
           :error="composerError"
@@ -1164,9 +1660,31 @@ onBeforeUnmount(() => {
           @escape="
             chatUi.setQueueOpen(false);
             chatUi.setSessionsOpen(false);
+            chatUi.setContextOpen(false);
           "
         />
       </div>
+
+      <ChatContextRail
+        v-if="view !== undefined"
+        :view="view"
+        :session-id="routeState.session.value"
+        :snapshot="contextStore.snapshot"
+        :todos="contextStore.todos"
+        :todos-truncated="contextStore.todosTruncated"
+        :previews="previewsView"
+        :saved-permissions="promptsStore.savedPermissions"
+        :policy-warnings="chatUi.policyWarnings"
+        :compact-busy="compactBusy"
+        :compact-error="compactError"
+        :deletion-pending="deletionPending"
+        @close="chatUi.setContextOpen(false)"
+        @compact="compactSession"
+        @restart="restartAgent"
+        @close-preview="closePreview"
+        @revoke-saved="revokeSavedPermission"
+        @dismiss-policy="chatUi.dismissPolicyWarning"
+      />
 
       <ChatQueueDialog
         :open="chatUi.queueOpen"

@@ -27,11 +27,23 @@ const needsInputCount = computed(() =>
 const needsInputLabel = computed(() =>
   needsInputCount.value === 0
     ? "No requests need input"
-    : `${needsInputCount.value} requests need input`,
+    : `${needsInputCount.value} ${needsInputCount.value === 1 ? "request needs" : "requests need"} input`,
 );
 const policyVisible = computed(() =>
   chat.value ? (chatUi.active ? chatUi.policyVisible : props.topbar.policyVisible === true) : false,
 );
+
+function openQueue(): void {
+  chatUi.setQueueOpen(true);
+}
+
+function openPolicy(): void {
+  chatUi.setContextOpen(true);
+}
+
+function toggleContext(): void {
+  chatUi.setContextOpen(!chatUi.contextOpen);
+}
 </script>
 
 <template>
@@ -43,9 +55,10 @@ const policyVisible = computed(() =>
         type="button"
         aria-haspopup="dialog"
         aria-controls="chat-queue"
-        aria-expanded="false"
         :aria-label="needsInputLabel"
+        :aria-expanded="chatUi.queueOpen ? 'true' : 'false'"
         :hidden="needsInputCount === 0"
+        @click="openQueue"
       >
         <AppIcon name="message" />
         <span class="chat-input-needed__count" id="chat-input-needed-count" aria-hidden="true">
@@ -57,8 +70,9 @@ const policyVisible = computed(() =>
         id="chat-policy-chip"
         type="button"
         aria-controls="chat-policy-warning"
-        aria-expanded="false"
+        :aria-expanded="chatUi.contextOpen ? 'true' : 'false'"
         :hidden="!policyVisible"
+        @click="openPolicy"
       >
         <AppIcon name="alert-triangle" />
         <span id="chat-policy-chip-label">Policy warning</span>
@@ -68,9 +82,10 @@ const policyVisible = computed(() =>
         type="button"
         data-chat-context-toggle
         aria-controls="chat-context"
-        aria-expanded="false"
+        :aria-expanded="chatUi.contextOpen ? 'true' : 'false'"
         aria-label="Open context panel"
         title="Context panel"
+        @click="toggleContext"
       >
         <AppIcon name="panel-right" />
       </button>

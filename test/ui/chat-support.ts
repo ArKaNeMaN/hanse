@@ -90,6 +90,23 @@ export interface ChatFixture {
   readonly deleteIfEmptyBody?: unknown;
   readonly retryBody?: unknown;
   readonly dismissBody?: unknown;
+  readonly questions?: readonly unknown[];
+  readonly permissions?: readonly unknown[];
+  readonly savedPermissions?: readonly unknown[];
+  readonly promptsWarnings?: readonly string[];
+  readonly promptsStatus?: number;
+  readonly savedPermissionsStatus?: number;
+  readonly todos?:
+    | readonly unknown[]
+    | { readonly todos: readonly unknown[]; readonly truncated?: boolean };
+  readonly previews?: readonly unknown[];
+  readonly contextSnapshot?: Record<string, unknown>;
+  readonly sshApprovals?: readonly unknown[];
+  readonly questionReplyStatus?: number;
+  readonly permissionReplyStatus?: number;
+  readonly compactStatus?: number;
+  readonly restartStatus?: number;
+  readonly previewCloseStatus?: number;
   readonly custom?: (request: {
     readonly method: string;
     readonly url: string;
@@ -238,6 +255,72 @@ export function installFetch(fixture: ChatFixture = {}): InstalledFetch {
       const status = fixture.chatStatus ?? 200;
       return status === 200 ? json(200, props(fixture)) : json(status, { error: "not found" });
     }
+    if (url.startsWith("/api/apps/alpha/prompts")) {
+      const status = fixture.promptsStatus ?? 200;
+      if (status !== 200) {
+        return json(status, { error: "prompts unavailable", code: "prompts_unavailable" });
+      }
+      return json(200, {
+        questions: fixture.questions ?? [],
+        permissions: fixture.permissions ?? [],
+        ...(fixture.promptsWarnings === undefined ? {} : { warnings: fixture.promptsWarnings }),
+      });
+    }
+    if (url.startsWith("/api/apps/alpha/permissions/saved")) {
+      const revoke = /\/permissions\/saved\/([^/?]+)/.exec(url);
+      if (revoke !== null && method === "DELETE") {
+        return json(200, { ok: true });
+      }
+      const status = fixture.savedPermissionsStatus ?? 200;
+      if (status !== 200) {
+        return json(status, { error: "saved permissions unavailable" });
+      }
+      return json(200, { permissions: fixture.savedPermissions ?? [] });
+    }
+    if (/\/api\/apps\/alpha\/questions\/[^/]+\/(reply|reject)/.test(url)) {
+      const status = fixture.questionReplyStatus ?? 200;
+      return json(
+        status,
+        status === 200 ? { ok: true } : { error: "prompt expired", code: "prompt_expired" },
+      );
+    }
+    if (/\/api\/apps\/alpha\/permissions\/[^/]+\/reply/.test(url)) {
+      const status = fixture.permissionReplyStatus ?? 200;
+      return json(
+        status,
+        status === 200 ? { ok: true } : { error: "prompt expired", code: "prompt_expired" },
+      );
+    }
+    if (/\/api\/apps\/alpha\/ssh\/approvals/.test(url)) {
+      if (method === "POST") {
+        return json(200, { approval: { id: "approval" } });
+      }
+      return json(200, { approvals: fixture.sshApprovals ?? [] });
+    }
+    if (/\/api\/apps\/alpha\/previews/.test(url)) {
+      const close = /\/previews\/([^/?]+)\/close/.test(url);
+      if (close && method === "POST") {
+        const status = fixture.previewCloseStatus ?? 200;
+        return json(
+          status,
+          status === 200 ? { ok: true, closed: true } : { error: "preview unavailable" },
+        );
+      }
+      return json(200, { previews: fixture.previews ?? [] });
+    }
+    if (/\/api\/apps\/alpha\/sessions\/[^/]+\/compact/.test(url) && method === "POST") {
+      const status = fixture.compactStatus ?? 202;
+      return json(
+        status,
+        status === 202
+          ? { accepted: true }
+          : { error: "compaction unavailable", code: "compaction_unavailable" },
+      );
+    }
+    if (/\/api\/apps\/alpha\/restart/.test(url) && method === "POST") {
+      const status = fixture.restartStatus ?? 200;
+      return json(status, status === 200 ? { restarted: true } : { error: "restart failed" });
+    }
     if (url.startsWith("/api/apps/alpha/sessions?") || url === "/api/apps/alpha/sessions") {
       if (method === "POST") {
         const status = fixture.createSessionStatus ?? 200;
@@ -378,22 +461,25 @@ export function installFetch(fixture: ChatFixture = {}): InstalledFetch {
       return json(200, { notices: [], nextCursor: null });
     }
     if (/\/sessions\/[^/]+\/context/.test(url)) {
-      return json(200, {
-        sessionID: "s1",
-        state: "ready",
-        used: 10,
-        limit: 100,
-        percent: 10,
-        model: null,
-        status: "idle",
-        updatedAt: "2026-10-30T00:00:00.000Z",
-        lastCompactedAt: null,
-        lastError: null,
-        autoCompact: { enabled: false, percent: 80, source: "default", percentSource: "default" },
-      });
+      return json(
+        200,
+        fixture.contextSnapshot ?? {
+          sessionID: "s1",
+          state: "ready",
+          used: 10,
+          limit: 100,
+          percent: 10,
+          model: null,
+          status: "idle",
+          updatedAt: "2026-10-30T00:00:00.000Z",
+          lastCompactedAt: null,
+          lastError: null,
+          autoCompact: { enabled: false, percent: 80, source: "default", percentSource: "default" },
+        },
+      );
     }
     if (/\/sessions\/[^/]+\/todo/.test(url)) {
-      return json(200, []);
+      return json(200, fixture.todos ?? []);
     }
     if (/\/runtime\?/.test(url)) {
       return json(200, { state: "running" });

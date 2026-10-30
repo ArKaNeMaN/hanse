@@ -3,7 +3,8 @@
 import { computed, ref } from "vue";
 import { allocateView, patchPartView, type ToolView } from "../../../assets/chat-diff.js";
 import { isKnownPartType } from "../../chat/feed-store.js";
-import type { ChatMessagePartView, ChatMessageView } from "../../chat/types.js";
+import type { ChatMessagePartView, ChatMessageView, InlineQuestionView } from "../../chat/types.js";
+import ChatQuestionCard from "./ChatQuestionCard.vue";
 import DiffView from "./DiffView.vue";
 import HandoffCard from "./HandoffCard.vue";
 import MarkdownBlock from "./MarkdownBlock.vue";
@@ -20,7 +21,21 @@ const HIDDEN_PART_TYPES = new Set([
   "agent",
 ]);
 
-const props = defineProps<{ record: ChatMessageView }>();
+const props = defineProps<{
+  record: ChatMessageView;
+  questionViewForPart?: (part: ChatMessagePartView, messageID: string) => InlineQuestionView | null;
+}>();
+
+const emit = defineEmits<{
+  "question-submit": [view: InlineQuestionView, answers: string[][]];
+  "question-reject": [view: InlineQuestionView];
+}>();
+
+function questionView(part: ChatMessagePartView): InlineQuestionView | null {
+  return props.questionViewForPart === undefined
+    ? null
+    : props.questionViewForPart(part, props.record.id);
+}
 
 const showParts = computed(
   () => props.record.omo === null && (props.record.handoff ?? null) === null,
@@ -177,6 +192,15 @@ const optimisticLabel = computed(() => {
           data-part-type="text"
         />
         <ReasoningPart v-else-if="part.type === 'reasoning'" :part="part" />
+        <ChatQuestionCard
+          v-else-if="questionView(part) !== null"
+          :view="questionView(part) as InlineQuestionView"
+          inline
+          @submit="
+            (answers) => emit('question-submit', questionView(part) as InlineQuestionView, answers)
+          "
+          @reject="emit('question-reject', questionView(part) as InlineQuestionView)"
+        />
         <ToolPart v-else-if="part.type === 'tool'" :part="part" />
         <details
           v-else-if="part.type === 'patch'"

@@ -876,3 +876,150 @@ test("SPA loads a 500-message thread and records chunk transfer and heap", async
   await page.waitForTimeout(300);
   expectNoPageErrors(errors);
 });
+
+test("SPA chat answers a question, replies to a permission, and revokes a saved grant", async ({
+  page,
+}) => {
+  test.skip(!isSpa(), "SPA mode only");
+  const errors = collectPageErrors(page);
+  await signIn(page, CHAT_PATH);
+  await expect(page.locator("#chat-shell")).toHaveCount(1);
+
+  const dock = page.locator("[data-chat-prompt-dock]");
+  await expect(dock).toBeVisible({ timeout: 15_000 });
+  await expect(dock).toContainText("Continue with the synthetic fixture?");
+  await dock.locator('[data-question-option][data-label="Yes"]').click();
+  await dock.locator("[data-question-primary]").click();
+
+  await expect(dock).toHaveAttribute("data-prompt-kind", "permission", { timeout: 15_000 });
+  await expect(dock.locator("[data-permission-risk]")).toHaveAttribute("data-risk", "high");
+  await expect(dock).toContainText("echo fixture");
+  await dock.locator("[data-permission-once]").click();
+  await expect(dock).toHaveCount(0, { timeout: 15_000 });
+
+  await page.locator("[data-chat-context-toggle]").click();
+  const saved = page.locator("[data-chat-saved-section]");
+  await expect(saved).toBeVisible({ timeout: 15_000 });
+  await expect(saved).toContainText("echo fixture");
+  await saved.locator("[data-saved-revoke]").click();
+  await expect(saved.locator("[data-saved-revoke]")).toContainText("Confirm revoke");
+  await saved.locator("[data-saved-revoke]").click();
+  await expect(saved).toHaveCount(0, { timeout: 15_000 });
+
+  await page.waitForTimeout(400);
+  expectNoPageErrors(errors);
+});
+
+test("SPA chat approves and rejects SSH approval cards from the context rail", async ({ page }) => {
+  test.skip(!isSpa(), "SPA mode only");
+  const errors = collectPageErrors(page);
+  await signIn(page, CHAT_PATH);
+  await control(page, { event: { seedChatApprovals: true } });
+  await page.reload();
+  await expect(page.locator("#chat-shell")).toHaveCount(1);
+
+  await page.locator("[data-chat-context-toggle]").click();
+  const approvals = page.locator("[data-chat-ssh-approvals]");
+  const chatApprovals = approvals.locator('[data-approval-id^="e2e-chat-ssh-"]');
+  await expect(approvals).toBeVisible({ timeout: 15_000 });
+  await expect(chatApprovals).toHaveCount(2);
+  await approvals.locator('[data-approval-id="e2e-chat-ssh-reject"] [data-ssh-reject]').click();
+  await expect(chatApprovals).toHaveCount(1, { timeout: 15_000 });
+  await approvals.locator('[data-approval-id="e2e-chat-ssh-approve"] [data-ssh-approve]').click();
+  await expect(chatApprovals).toHaveCount(0, { timeout: 15_000 });
+
+  await page.waitForTimeout(400);
+  expectNoPageErrors(errors);
+});
+
+test("SPA context rail covers context, compact, plan, handoffs, previews, restart, and policy", async ({
+  page,
+}) => {
+  test.skip(!isSpa(), "SPA mode only");
+  test.slow();
+  const errors = collectPageErrors(page);
+  await signIn(page, CHAT_PATH);
+  await control(page, { event: { restartPending: true } });
+  await page.reload();
+  await expect(page.locator("#chat-shell")).toHaveCount(1);
+
+  await page.locator("[data-chat-context-toggle]").click();
+  const rail = page.locator("[data-chat-context-rail]");
+  await expect(rail).toBeVisible();
+  await expect(rail.locator("[data-chat-context-summary]")).toContainText("% of");
+  await expect(rail.locator("[data-chat-plan-section]")).toContainText("Fixture plan step");
+  await expect(rail.locator("[data-chat-plan-summary]")).toContainText("1/2 done");
+  await expect(rail.locator("[data-chat-handoffs]")).toContainText("E2E handoff summary");
+  await expect(rail.locator('[data-preview-key="e2e-preview"]')).toContainText("Fixture preview");
+  await expect(rail.locator("[data-chat-restart-pending]")).toBeVisible();
+  await expect(rail.locator("[data-chat-policy-warning]")).toContainText("Fixture policy warning.");
+  await expect(page.locator("#chat-policy-chip")).toBeVisible();
+
+  const compactResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      response.url().includes("/sessions/ses_e2ealpha/compact"),
+  );
+  await rail.locator("[data-chat-compact]").click();
+  await rail.locator("[data-chat-compact-apply]").click();
+  expect((await compactResponse).status()).toBe(202);
+  await expect(rail.locator("[data-chat-compact-error]")).toHaveCount(0);
+
+  const closePreview = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      response.url().includes("/previews/e2e-preview/close"),
+  );
+  await rail.locator('[data-preview-key="e2e-preview"] .chat-preview__close').click();
+  expect((await closePreview).ok()).toBe(true);
+  await expect(rail.locator('[data-preview-key="e2e-preview"]')).toHaveCount(0);
+
+  const restartResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" && response.url().includes("/apps/alpha/restart"),
+  );
+  await rail.locator("[data-chat-restart]").click();
+  expect((await restartResponse).ok()).toBe(true);
+  await expect(rail.locator("[data-chat-restart-pending]")).toHaveCount(0, { timeout: 15_000 });
+
+  await page.waitForTimeout(400);
+  expectNoPageErrors(errors);
+});
+
+test("SPA context rail visual QA at 390/768/1024/1360/1440 dark and light", async ({ page }) => {
+  test.skip(!isSpa(), "SPA mode only");
+  test.slow();
+  const errors = collectPageErrors(page);
+  await signIn(page, CHAT_PATH);
+  await expect(page.locator("#chat-shell")).toHaveCount(1);
+  await page.locator("[data-chat-context-toggle]").click();
+  await expect(page.locator('#chat-shell[data-chat-context="open"]')).toHaveCount(1);
+  await expect(page.locator("[data-chat-plan-section]")).toBeVisible();
+
+  for (const width of [390, 768, 1024, 1360, 1440]) {
+    for (const theme of ["light", "dark"] as const) {
+      await page.setViewportSize({ width, height: 900 });
+      await page.emulateMedia({ colorScheme: theme });
+      await page.evaluate((value) => localStorage.setItem("hanse-theme", value), theme);
+      await page.reload();
+      await expect(page.locator("#chat-shell")).toHaveCount(1);
+      if (width < 1360) {
+        await page.locator("[data-chat-context-toggle]").click();
+        await expect(page.locator('#chat-shell[data-chat-context="open"]')).toHaveCount(1);
+      }
+      await expect(page.locator("[data-chat-context-rail]")).toBeVisible();
+      await expect(page.locator("[data-chat-context-summary]")).toContainText("% of");
+      await expect(page.locator("[data-chat-plan-section]")).toBeVisible();
+      const overflow = await page.evaluate(
+        () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      );
+      expect(overflow).toBeLessThanOrEqual(1);
+      await page.screenshot({
+        path: `test-results/chat-context-${width}-${theme}.png`,
+        fullPage: false,
+      });
+    }
+  }
+  await page.waitForTimeout(300);
+  expectNoPageErrors(errors);
+});

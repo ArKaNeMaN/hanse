@@ -478,3 +478,40 @@ Tests/evidence:
 
 Limits: `chat.spa` stays `false`; no cutover, attachments, commands, prompts, permissions, SSH, or
 context rail. Stage 6 is the next action.
+
+
+## Stage 6 - Prompts, questions, permissions, approvals, context
+
+Stage 6 ports the human-in-the-loop prompt surface and context rail while `chat.spa` stays `false`.
+All reads/writes use the existing app-scoped prompts, permission, compact, preview, handoff, and SSH
+routes; no server route or legacy client was added or changed.
+
+Implemented:
+- 6A: `ChatPromptDock`, `ChatQuestionCard`, and `ChatPermissionCard` with question submit/reject,
+  custom answers, multi-question auto-advance, expiry/tombstone correlation to the `question` tool
+  part, permission once/always/reject, risk/scope chips, saved-permission revoke, outcome labels, and
+  focus return. Cmd/Ctrl+Enter and terminal prompt-expiry behavior are covered.
+- Needs-input count is derived from `chat-prompts` and published once to `chatUi`; App-level
+  `TopbarActions` renders it, opens the queue/context panels, and restores the default topbar at zero
+  and on unmount.
+- 6B: `ChatContextRail` covers app/runtime/links, restart pending, policy warnings/chip, previews and
+  close, context meter/error, compact confirmation + `202` polling, plan/todo, saved permissions,
+  handoffs, and deletion-pending disabling. `ChatSshApprovals` polls the existing app-scoped approval
+  route with one timer, visibility skip, approve/reject, and unmount cleanup.
+
+Tests/evidence:
+- New `chat-prompts`, `chat-permissions`, `chat-ssh-approvals`, `chat-context-rail`, `chat-policy`;
+  extended `topbar-actions` and chat support/E2E fixtures.
+- `NODE_ENV=development npm test`: **3263 passed** (215 files).
+- `NODE_ENV=development npm run test:e2e`: **197 passed, 12 skipped** across three modes; covers
+  question/permission/saved, SSH approve/reject, context/compact/plan/handoffs/previews/restart/policy.
+- `lint`, `typecheck`, `typecheck:ui`, `typecheck:e2e`, `build`, `check:ui` (73 SFCs),
+  `check:chat-worker`, `check:sensitive`, `git diff --check`: pass.
+- Chat route chunk: **209.47 kB raw / 60.50 kB gzip**, still under the 250 KiB gzip target.
+- Visual QA captured `test-results/chat-context-*.png` at 390/768/1024/1360/1440 light+dark with
+  zero-horizontal-overflow and rail/context/plan assertions. Aesthetic inspection was **not** possible:
+  both the orchestrator and `multimodal-looker` reject image input, so screenshots are evidence, not a
+  manual visual PASS.
+
+Limits: `chat.spa` stays `false`; no attachments, slash commands, Stage 7 app-menu work, or cutover.
+Stage 7 is the next action.

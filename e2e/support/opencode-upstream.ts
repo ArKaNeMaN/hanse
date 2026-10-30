@@ -831,19 +831,25 @@ export async function startOpencodeUpstream(
       return;
     }
     if (questionAction !== null && method === "POST") {
+      const id = decodeURIComponent(questionAction[1] ?? "");
+      const index = resolved.questions.findIndex((entry) => entry.id === id);
+      if (index >= 0) resolved.questions.splice(index, 1);
       writeJson(response, 200, true);
       return;
     }
     if (permissionAction !== null && method === "POST") {
+      const id = decodeURIComponent(permissionAction[1] ?? "");
+      const index = resolved.permissions.findIndex((entry) => entry.id === id);
+      if (index >= 0) resolved.permissions.splice(index, 1);
       writeJson(response, 200, true);
       return;
     }
     if (pathname === "/api/question/request" && method === "GET") {
-      writeJson(response, 200, { data: resolved.questions });
+      writeJson(response, 200, { data: [] });
       return;
     }
     if (pathname === "/api/permission/request" && method === "GET") {
-      writeJson(response, 200, { data: resolved.permissions });
+      writeJson(response, 200, { data: [] });
       return;
     }
     if (v2Question !== null && method === "POST") {
@@ -860,6 +866,12 @@ export async function startOpencodeUpstream(
         return;
       }
       if (method === "DELETE" && savedPermission[1] !== undefined) {
+        const id = decodeURIComponent(savedPermission[1]);
+        const index = resolved.savedPermissions.findIndex(
+          (entry) =>
+            typeof entry === "object" && entry !== null && (entry as { id?: unknown }).id === id,
+        );
+        if (index >= 0) resolved.savedPermissions.splice(index, 1);
         writeEmpty(response);
         return;
       }

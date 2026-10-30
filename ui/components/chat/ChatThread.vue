@@ -6,7 +6,7 @@ import {
   scrollMemoryKey,
   writeScrollMemory,
 } from "../../chat/scroll-memory.js";
-import type { ChatThreadItem } from "../../chat/types.js";
+import type { ChatMessagePartView, ChatThreadItem, InlineQuestionView } from "../../chat/types.js";
 import ChatGeneratingRow from "./ChatGeneratingRow.vue";
 import ChatMessage from "./ChatMessage.vue";
 import ChatNoticeRow from "./ChatNoticeRow.vue";
@@ -24,9 +24,14 @@ const props = defineProps<{
   loadEarlierEnabled: boolean;
   messageCount?: string;
   generatingLabel?: string | null;
+  questionViewForPart?: (part: ChatMessagePartView, messageID: string) => InlineQuestionView | null;
 }>();
 
-const emit = defineEmits<{ "load-earlier": [] }>();
+const emit = defineEmits<{
+  "load-earlier": [];
+  "question-submit": [view: InlineQuestionView, answers: string[][]];
+  "question-reject": [view: InlineQuestionView];
+}>();
 const scroll = ref<HTMLElement | null>(null);
 const pinned = ref(true);
 const unseen = ref(0);
@@ -339,7 +344,10 @@ defineExpose({ captureAnchor, restoreAnchor, scrollToBottom, onScroll, unseen })
             <ChatMessage
               v-if="item.type === 'message'"
               :record="item.message"
+              :question-view-for-part="questionViewForPart"
               :data-message-id="item.message.id"
+              @question-submit="(view, answers) => emit('question-submit', view, answers)"
+              @question-reject="(view) => emit('question-reject', view)"
             />
             <ChatNoticeRow v-else :notice="item.notice" />
           </template>
