@@ -77,6 +77,13 @@
   round 3 PASS); Phases 0-7 complete; `/`, `/projects`, `/projects/:id`, `/handoffs`, `/ssh`, settings, skills,
   and application detail are cut over. D1 was revised: chat and terminal are scheduled for a
   separate design/plan migration, then operator verification and Phase 8 cleanup.
+- [Chat and terminal SPA migration](./chat-terminal-migration.md) - migrating `/chat` and
+  `/terminal` to the Vue client before legacy cleanup: the SSE/WebSocket lifecycle inventory,
+  the Vue/legacy island trade-off, a recommended hybrid incremental port (terminal first, chat in
+  vertical slices), an explicit event-reducer/state-to-slice inventory, workspace shell/route props,
+  the six shared-module keep list, boot-carried `spaRoutes`/client route records, copy-first feed
+  store, post-cleanup `legacyRetired` rollback semantics, and the deployment-host operator
+  verification gate that must precede deleting the legacy renderers. Status: approved (`oracle` round 5 PASS; owner decisions Q1-Q6 closed).
 - [Architecture overview](./overview.md) - the coordinator architecture and stage plan.
 - [Agent runtime isolation and per-app toolchains](./agent-runtime.md) - staged B0/B1/B2 runtime split, layered agent images, per-app containers, app image builds, and deployment constraints. Status: proposed, revised after design review.
 - [Agent process protection and interrupted-turn recovery](./agent-process-protection.md) - safe-test instructions, narrow bash self-kill denies, runtime-epoch stop detection, persisted system notices, subagent parent signals, and recency-guarded top-level session resume. Status: deployed (design `oracle` round 10 PASS; journal 0037; commit `25e5c81`).
