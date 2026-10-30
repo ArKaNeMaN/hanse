@@ -737,13 +737,13 @@ not started.
 
 Gate D1: record the `/chat` and `/terminal` request soak and operator feedback, then decide whether
 either remains a legacy document. Phase 8 cleanup is out of scope until that decision.
-## Gate D1 - chat and terminal (2026-10-29)
+## Gate D1 - chat and terminal (revised 2026-10-29)
 
 Phase 7 is complete and all migrated routes are SPA; only `/chat` and `/terminal` remain legacy.
-The D1 default is to keep both as legacy documents. No migration is included in plan 0031.
+The owner revised the D1 default: both routes are to be migrated before legacy cleanup, followed by
+a full operator verification of chat and terminal.
 
-Evidence available in this workspace is insufficient for the full gate as written: there is no
-retained 7-day access-log extract and no operator feedback. The design records the existing chat
-client at 14,362 lines, so a separate design, mount estimate, and Oracle review would be required
-before any migration. Phase 8 cleanup is deferred until a rollback soak; the legacy renderers,
-scripts, `HANSE_UI_LEGACY=1`, and `?legacy=1` remain available in the meantime.
+This is a new design/plan cycle, not a mechanical continuation of plan 0031. The existing chat client
+is 14,362 lines and owns SSE, URL state, composer/selection state, and DOM lifecycle; a separate
+design with an Oracle review is required. Legacy renderers, scripts, `HANSE_UI_LEGACY=1`, and
+`?legacy=1` stay available until that verification passes.

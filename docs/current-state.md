@@ -371,8 +371,9 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   notice. Reply, cancel, policy, and deletion requests reuse the existing JSON handlers.
 - `#ui-fallback` stays hidden, then reveals after 4 s only if the client did not mount;
   `vite:preloadError` reloads once and then renders a safe `?legacy=1` fallback.
-- D1 default: `/chat` and `/terminal` remain legacy documents; Phase 8 cleanup is deferred until a
-  rollback soak. `HANSE_UI_LEGACY=1` and `?legacy=1` remain the rollback path.
+- D1 revised: `/chat` and `/terminal` are scheduled for a separate design/plan migration, after
+  which the operator verifies both before Phase 8 cleanup. They remain legacy for now;
+  `HANSE_UI_LEGACY=1` and `?legacy=1` remain the rollback path.
 
 ## Git workbench
 

@@ -18,8 +18,8 @@ registry keeps `app` legacy); Phase 7B complete (2026-10-29; the git workbench s
 fetch/update/push/commit-all/branch-switch flow and remotes are ported onto the existing git JSON
 handlers; the registry kept `app` legacy). Phase 7C complete (2026-10-29; image build/rollback/
 check/logs/poll, app-scoped SSH allowlist/grant/revoke/approve/reject/audit, and exact-name deletion
-are ported; `app` is now `spa: true`, and only chat/terminal remain legacy). Gate D1 default (2026-10-29): keep chat/terminal legacy;
-Phase 8 cleanup deferred until a rollback soak.
+are ported; `app` is now `spa: true`, and only chat/terminal remain legacy). Gate D1 revised (2026-10-29): migrate chat/terminal in a separate
+design/plan cycle, then operator verification before Phase 8 cleanup.
 Design: [Incremental SPA migration](../design/spa-migration.md) (approved, `oracle` round 5 PASS;
 flag/test-glob/no-JS clarifications recorded in revision 6).
 Owner decisions: [open questions](../open-questions.md), 2026-10-28.
@@ -1196,6 +1196,9 @@ retire it with the legacy renderer. Keep `test/git-settings-asset.test.ts` while
 loads the asset.
 
 ## Gate D1 - Chat and terminal decision
+
+> Revised 2026-10-29: the owner chose to migrate both `/chat` and `/terminal` before legacy cleanup.
+> This requires a new design, Oracle review, and plan; plan 0031 does not implement it.
 
 After Phase 7, record:
 
