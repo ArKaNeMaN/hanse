@@ -302,6 +302,28 @@ test("SPA reconnects after the upstream stream closes without a second EventSour
   expectNoPageErrors(errors);
 });
 
+test("SPA bfcache pagehide/pageshow keeps one surface and one live source", async ({ page }) => {
+  test.skip(!isSpa(), "SPA mode only");
+  const errors = collectPageErrors(page);
+  await installEventSourceCounter(page);
+  await signIn(page, CHAT_PATH);
+  await expect(page.locator(".chat-runtime")).toContainText("Live");
+  await expect.poll(async () => (await eventSourceStats(page)).active).toBe(1);
+
+  await page.evaluate(() => window.dispatchEvent(new Event("pagehide")));
+  await expect.poll(async () => (await eventSourceStats(page)).active).toBe(0);
+  await page.evaluate(() => window.dispatchEvent(new Event("pageshow")));
+  await expect.poll(async () => (await eventSourceStats(page)).active).toBe(1);
+  await expect.poll(async () => (await eventSourceStats(page)).created).toBe(2);
+  await expect(page.locator("#chat-shell")).toHaveCount(1);
+  const ids = await page
+    .locator("#chat-scroll [data-message-id]")
+    .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-message-id")));
+  expect(new Set(ids).size).toBe(ids.length);
+  await page.waitForTimeout(400);
+  expectNoPageErrors(errors);
+});
+
 test("SPA chat redirects to login when an authenticated read expires", async ({ page }) => {
   test.skip(!isSpa(), "SPA mode only");
   await signIn(page, CHAT_PATH);

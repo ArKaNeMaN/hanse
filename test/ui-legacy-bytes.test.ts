@@ -103,8 +103,8 @@ function chrome(): PageChrome {
 }
 
 describe("legacy chat and terminal byte identity", () => {
-  it("keeps chat legacy and cuts terminal over in Stage 2", () => {
-    expect(routeById("chat")?.spa).toBe(false);
+  it("cuts chat and terminal over while keeping both legacy rollbacks live", () => {
+    expect(routeById("chat")?.spa).toBe(true);
     expect(routeById("terminal")?.spa).toBe(true);
     expect(routeById("chat")?.legacyRetired).toBe(false);
     expect(routeById("terminal")?.legacyRetired).toBe(false);
@@ -136,7 +136,7 @@ describe("legacy chat and terminal byte identity", () => {
     expect(sha256(direct ?? "")).toBe(TERMINAL_SHA256);
   });
 
-  it("serves terminal as SPA and keeps chat legacy, with ?legacy=1 still reaching the legacy terminal", () => {
+  it("serves chat and terminal as SPA, with ?legacy=1 still reaching both legacy documents", () => {
     const f = fixture();
     delete process.env.HANSE_UI_LEGACY;
     process.env.HANSE_UI_SPA_ROUTES = ROUTES.filter((route) => route.spa)
@@ -151,7 +151,13 @@ describe("legacy chat and terminal byte identity", () => {
       ...request("/chat", f.token, { app: "web", project: "p" }),
       headers,
     });
-    expect(chat).toBeUndefined();
+    expect(chat?.status).toBe(200);
+    expect(chat?.body).toContain('id="hanse-boot"');
+    const chatLegacy = maybeServeSpa(f.deps, {
+      ...request("/chat", f.token, { app: "web", project: "p", legacy: "1" }),
+      headers,
+    });
+    expect(chatLegacy).toBeUndefined();
     const terminal = maybeServeSpa(f.deps, {
       ...request("/terminal", f.token, { app: "web", project: "p" }),
       headers,

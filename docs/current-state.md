@@ -1,6 +1,6 @@
 # Hanse - Current State (read this first)
 
-> Last updated: 2026-10-28. This is the canonical description of what is **implemented right now**.
+> Last updated: 2026-10-30. This is the canonical description of what is **implemented right now**.
 > If this document and the code disagree, the code wins - update this document.
 > History and rationale: `docs/design/overview.md`, `docs/plans/0001-core.md`,
 > `docs/journal/0001-core.md`. Deployment: `docs/deployment.md`.
@@ -270,19 +270,23 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   `/assets/vendor/xterm/addon-unicode-graphemes-0.4.0.js`, and `/assets/favicon.svg`.
 - `assets/app.js` owns shell behavior (drawer, theme, nav); `assets/app-content.js` owns dialogs,
   menus, segmented controls, toast close/autodismiss, password visibility, and submit-busy behavior.
-  Legacy pages load both; SPA documents load only `app.js`. `assets/chat.js` is an ESM module that owns the chat workspace (sessions,
-  messages, typed SSE, composer, queue, questions, OMO cards, safe markdown/tables, syntax-highlighted
-  diffs/write content) and imports the pure helpers in `assets/chat-core.js`,
+  Legacy pages load both; SPA documents load only `app.js`. The SPA chat workspace is
+  `ui/pages/ChatPage.vue` plus its `ui/chat/*` adapters, `ui/stores/chat-*`, and
+  `ui/components/chat/*`; it reuses the pure helpers in `assets/chat-core.js`,
   `assets/chat-commands.js`, `assets/chat-diff.js`, and the lazy worker controller in
-  `assets/chat-highlight.js`. `assets/git.js` hydrates the legacy rollback application git panel.
-  Every page route except `/chat` is an SPA route by default; `/terminal` runs in the Vue client.
-  The legacy chat and terminal renderers stay frozen as the rollback path and remain reachable
-  through `HANSE_UI_LEGACY=1`, `?legacy=1`, or a `HANSE_UI_SPA_ROUTES` allowlist (see
-  **UI rendering modes**).
-- The chat workspace is the stage-3 three-pane surface: sessions rail, thread, and context rail.
-  Below 1360 the context pane is a drawer; below 768 both rails are drawers. The thread is the only
-  scroll owner. `session` is mirrored to the URL, and the optional `project` query disambiguates
-  duplicate app keys across projects.
+  `assets/chat-highlight.js`. `assets/chat.js` is the frozen legacy chat client retained only as
+  the rollback document. `assets/git.js` hydrates the legacy rollback application git panel.
+  Every page route, including `/chat` and `/terminal`, is an SPA route by default. The legacy chat
+  and terminal renderers stay frozen as the rollback path and remain reachable through
+  `HANSE_UI_LEGACY=1`, `?legacy=1`, or a `HANSE_UI_SPA_ROUTES` allowlist (see
+  **UI rendering modes**). Freeze policy: do not add behavior to `renderChatPage` or
+  `assets/chat.js`; fixes and new behavior land in the Vue client.
+- The chat workspace is the three-pane surface: sessions rail, thread, and context rail, rendered
+  by `ui/pages/ChatPage.vue`. Below 1360 the context pane is a drawer; below 768 both rails are
+  drawers. The thread is the only scroll owner. `session` is mirrored to the URL, and the optional
+  `project` query disambiguates duplicate app keys across projects. SSE, drafts, send/queue/abort,
+  prompts/permissions, SSH approvals, context/previews, attachments, slash commands, diffs/
+  highlighting, and long-thread scrolling use the existing app-scoped APIs.
 - The operator terminal (`/terminal?app=<key>&project=<id>`) is SPA-rendered by
   `ui/pages/TerminalPage.vue` with `TerminalToolbar`, `TerminalBanner`, `TerminalView`, and
   `TerminalStoppedState`. `TerminalView` is the sole owner of the vendored xterm scripts and the one
@@ -301,10 +305,12 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   inbox), `/ssh` (SSH console), the three settings scopes (`/settings`,
   `/projects/:id/settings`, `/projects/:id/apps/:app/settings`), and the five skills routes
   (`/skills`, `/projects/:id/skills`, `/projects/:id/apps/:app/skills`, `/skills/new`,
-  `/skills/:id`) and `/terminal` are SPA routes: the shared registry (`src/shared/routes.ts`) has
-  `spa: true` for `overview`, `projects`, `project`, `handoffs`, `ssh`, `settings-global`,
-  `settings-project`, `settings-app`, `skills-global`, `skills-project`, `skills-app`, `skills-new`,
-  `skills-detail`, `app`, and `terminal`; only chat remains a legacy document. Application detail
+  `/skills/:id`), `/terminal`, and `/chat` are SPA routes: the shared registry
+  (`src/shared/routes.ts`) has `spa: true` for `overview`, `projects`, `project`, `handoffs`, `ssh`,
+  `settings-global`, `settings-project`, `settings-app`, `skills-global`, `skills-project`,
+  `skills-app`, `skills-new`, `skills-detail`, `app`, `terminal`, and `chat`. Chat and terminal
+  keep `legacyRetired: false`, so both legacy documents remain the rollback path until Stage 9.
+  Application detail
   (`/projects/:id/apps/:app`) is the default SPA route, and its legacy rollback page still loads
   `git.js`, `images.js`, and `ssh.js`. The page dispatcher
   is the only place that chooses a renderer:
@@ -383,10 +389,11 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   notice. Reply, cancel, policy, and deletion requests reuse the existing JSON handlers.
 - `#ui-fallback` stays hidden, then reveals after 4 s only if the client did not mount;
   `vite:preloadError` reloads once and then renders a safe `?legacy=1` fallback.
-- D1 revised: `/terminal` was cut over in Stage 2; `/chat` remains in the separate design/plan
-  migration. The operator verifies both before Phase 8 cleanup. The legacy terminal document and
-  `assets/terminal.js` remain the rollback path through `HANSE_UI_LEGACY=1`, `?legacy=1`, or an
-  allowlist omission until Stage 9.
+- D1 revised: `/terminal` was cut over in Stage 2 and `/chat` in Stage 7C. The operator verifies
+  both on the deployment host before Phase 8 cleanup. The legacy chat and terminal documents,
+  `assets/chat.js`, and `assets/terminal.js` remain the rollback path through
+  `HANSE_UI_LEGACY=1`, `?legacy=1`, or an allowlist omission until Stage 9. The legacy chat
+  renderer/client is frozen: no new behavior lands there; fixes land in Vue.
 
 ## Git workbench
 

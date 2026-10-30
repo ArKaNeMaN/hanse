@@ -21,7 +21,7 @@ describe("shared route manifest", () => {
     expect(source).not.toMatch(/require\(["']node:/);
   });
 
-  it("publishes the complete route table and cuts every migrated route except chat over", () => {
+  it("publishes the complete route table and cuts every route over by Stage 7C", () => {
     expect(ROUTES.map((route) => [route.id, route.path, route.nav])).toEqual([
       ["projects", "/projects", "projects"],
       ["overview", "/", "overview"],
@@ -56,6 +56,7 @@ describe("shared route manifest", () => {
       "app",
       "project",
       "terminal",
+      "chat",
     ]);
   });
 
@@ -143,7 +144,8 @@ describe("shared route manifest", () => {
         route.id === "skills-new" ||
         route.id === "skills-detail" ||
         route.id === "app" ||
-        route.id === "terminal";
+        route.id === "terminal" ||
+        route.id === "chat";
       expect(isSpaRoute(route.id, { env: {} }), route.id).toBe(migrated);
     }
     expect(isSpaPath("/projects", { env: {} })).toBe(true);
@@ -161,7 +163,7 @@ describe("shared route manifest", () => {
     expect(isSpaPath("/skills/new", { env: {} })).toBe(true);
     expect(isSpaPath("/skills/42", { env: {} })).toBe(true);
     expect(isSpaPath("/projects/alpha/apps/web", { env: {} })).toBe(true);
-    expect(isSpaPath("/chat", { env: {} })).toBe(false);
+    expect(isSpaPath("/chat", { env: {} })).toBe(true);
     expect(isSpaPath("/terminal", { env: {} })).toBe(true);
   });
 
@@ -201,7 +203,7 @@ describe("shared route manifest", () => {
     expect(routeById("chat")).toMatchObject({
       path: "/chat",
       nav: "none",
-      spa: false,
+      spa: true,
       legacyRetired: false,
     });
     expect(routeById("terminal")).toMatchObject({
@@ -213,13 +215,15 @@ describe("shared route manifest", () => {
     expect(routeById("nope" as never)).toBeUndefined();
   });
 
-  it("keeps chat out of the default boot set while terminal is cut over", () => {
+  it("keeps chat and terminal in the default boot set while the rollback flags remain live", () => {
     const bootRoutes = ROUTES.filter((route) =>
       isSpaRoute(route.id, { env: {}, manifestValid: true }),
     ).map((route) => route.id);
-    expect(bootRoutes).not.toContain("chat");
+    expect(bootRoutes).toContain("chat");
     expect(bootRoutes).toContain("terminal");
     expect(bootRoutes).toContain("projects");
+    expect(isSpaRoute("chat", { env: { legacy: "1" } })).toBe(false);
+    expect(isSpaRoute("chat", { env: { spaRoutes: "" } })).toBe(false);
   });
 
   it("reports legacyRetired false by default and for the new ids in this stage", () => {

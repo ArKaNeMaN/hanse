@@ -1,9 +1,9 @@
 /**
- * Every route that is a default SPA route at Stage 0, in registry order.
+ * The Stage 0 default SPA route set, in registry order.
  *
- * `HANSE_UI_SPA_ROUTES` is a replacement set, so a test that needs one extra route must include this
- * full list plus the route under test. Chat stays absent from the default registry set until its
- * cutover; terminal is added by Stage 2, chat by Stage 3B, never as a bare id.
+ * `HANSE_UI_SPA_ROUTES` is a replacement set, so a test that needs a workspace route must include
+ * this full list plus the route under test, never a bare id. `/terminal` and `/chat` are appended
+ * explicitly so the SPA project stays stable before and after their registry cutovers.
  */
 export const SPA_E2E_ROUTE_IDS = [
   "projects",
@@ -22,8 +22,8 @@ export const SPA_E2E_ROUTE_IDS = [
   "project",
 ].join(",");
 
-/** Stage 2/3A SPA project: the full default set plus the terminal record, never a bare id. */
+/** Stage 2 SPA project: the full default set plus the terminal record, never a bare id. */
 export const SPA_E2E_ROUTE_IDS_WITH_TERMINAL = `${SPA_E2E_ROUTE_IDS},terminal`;
 
-/** Stage 3B SPA project: the full default set plus both test-only workspace records. */
+/** Stage 3B onward SPA project: the full default set plus both workspace records. */
 export const SPA_E2E_ROUTE_IDS_WITH_TERMINAL_AND_CHAT = `${SPA_E2E_ROUTE_IDS},chat,terminal`;

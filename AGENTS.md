@@ -67,10 +67,12 @@ be restarted after the build to pick it up.
 - The Vue client lives in `ui/` with its own `tsconfig.ui.json` (`moduleResolution: Bundler`). It
   imports the pure `src/shared/routes.ts` only; do not add `node:*` imports there. No SFC `<style>`
   blocks or `v-html`; use the existing Tailwind classes and `DESIGN.md` tokens.
-- Only routes whose registry `spa` flag is true are served by the Vite client; `/` and `/projects`
-  are the current cutovers. Every other route, including `/projects/:id`, stays legacy;
-  `/api/ui/*` and SPA documents are cookie-only.
-  Legacy pages load `app.js` + `app-content.js`; SPA documents load only the shell `app.js`.
+- Only routes whose registry `spa` flag is true are served by the Vite client; every page route,
+  including `/chat` and `/terminal`, is SPA by default. Both keep `legacyRetired: false`, so
+  `HANSE_UI_LEGACY=1`, `?legacy=1`, or allowlist omission still serves the frozen legacy document.
+  `/api/ui/*` and SPA documents are cookie-only. Legacy pages load `app.js` + `app-content.js`; SPA
+  documents load only the shell `app.js`. Freeze policy: do not add behavior to
+  `renderChatPage`/`renderTerminalPage` or `assets/chat.js`/`assets/terminal.js`; fixes land in Vue.
 - Node-compatible only: do not use Bun or other runtime-specific APIs.
 - `.hanse/project.yaml` and `.hanse/app.yaml` schemas (in `src/schema/`) are the source of truth;
   keep docs and code in sync.

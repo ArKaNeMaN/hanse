@@ -1024,6 +1024,89 @@ test("SPA context rail visual QA at 390/768/1024/1360/1440 dark and light", asyn
   expectNoPageErrors(errors);
 });
 
+test("SPA chat mobile drawers open and close without trapping each other", async ({ page }) => {
+  test.skip(!isSpa(), "SPA mode only");
+  test.slow();
+  const errors = collectPageErrors(page);
+  await signIn(page, CHAT_PATH);
+  await expect(page.locator("#chat-shell")).toHaveCount(1);
+
+  await page.setViewportSize({ width: 390, height: 900 });
+  await page.reload();
+  const shell = page.locator("#chat-shell");
+  await expect(shell).toHaveCount(1);
+  await expect(page.locator(".chat-sessions-toggle")).toBeVisible();
+  await page.locator(".chat-sessions-toggle").click();
+  await expect(shell).toHaveAttribute("data-chat-sessions", "open");
+  await expect(page.locator("[data-chat-scrim]")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(shell).toHaveAttribute("data-chat-sessions", "closed");
+  await expect(page.locator("[data-chat-scrim]")).toHaveCount(0);
+
+  for (const width of [390, 768, 1024]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.reload();
+    await expect(shell).toHaveCount(1);
+    await expect(page.locator("[data-chat-context-toggle]")).toBeVisible();
+    await page.locator("[data-chat-context-toggle]").click();
+    await expect(shell).toHaveAttribute("data-chat-context", "open");
+    await expect(page.locator("[data-chat-context-rail]")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(shell).toHaveAttribute("data-chat-context", "closed");
+  }
+
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.reload();
+  await expect(shell).toHaveCount(1);
+  await expect(page.locator("[data-chat-context-toggle]")).toBeHidden();
+  await expect(page.locator(".chat-sessions-toggle")).toBeHidden();
+  await expect(page.locator("[data-chat-sessions-rail]")).toBeVisible();
+  await expect(page.locator("[data-chat-context-rail]")).toBeVisible();
+  await page.waitForTimeout(300);
+  expectNoPageErrors(errors);
+});
+
+test("SPA chat first paint stays within the recorded legacy CLS threshold", async ({ page }) => {
+  test.skip(!isSpa(), "SPA mode only");
+  test.slow();
+  await signIn(page, CHAT_PATH);
+  await page.addInitScript(() => {
+    const state: { value: number } = { value: 0 };
+    Object.defineProperty(window, "__stage7cChatCls", { value: state, configurable: true });
+    new PerformanceObserver((list) => {
+      for (const entry of list.getEntries()) {
+        const shift = entry as PerformanceEntry & { value?: number; hadRecentInput?: boolean };
+        if (shift.hadRecentInput !== true && typeof shift.value === "number") {
+          state.value += shift.value;
+        }
+      }
+    }).observe({ type: "layout-shift", buffered: true });
+  });
+
+  const thresholds: Record<number, number> = { 390: 0.49, 768: 0.24, 1024: 0.18, 1440: 0.13 };
+  for (const width of [390, 768, 1024, 1440]) {
+    for (const theme of ["light", "dark"] as const) {
+      await page.setViewportSize({ width, height: 900 });
+      await page.emulateMedia({ colorScheme: theme });
+      await page.evaluate((value) => localStorage.setItem("hanse-theme", value), theme);
+      await page.goto(CHAT_PATH);
+      await expect(page.locator("#chat-shell")).toHaveCount(1);
+      await expect(page.locator("[data-chat-composer-input]")).toBeEnabled({ timeout: 15_000 });
+      await page.waitForTimeout(500);
+      const cls = await page.evaluate(() => {
+        const state = window as unknown as { __stage7cChatCls?: { value: number } };
+        return state.__stage7cChatCls?.value ?? 0;
+      });
+      const detail = `chat first paint CLS ${width}-${theme}: ${cls}`;
+      test.info().annotations.push({ type: "cls", description: detail });
+      console.log(`chat-first-paint-cls: ${detail}`);
+      expect(cls, detail).toBeLessThanOrEqual(thresholds[width] ?? 0.1);
+      await expect(page.locator('script[src*="prism"]')).toHaveCount(0);
+      await expect(page.locator('script[src*="xterm"]')).toHaveCount(0);
+    }
+  }
+});
+
 async function dispatchFiles(
   page: Page,
   target: string,

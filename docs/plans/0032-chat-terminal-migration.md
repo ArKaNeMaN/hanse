@@ -1,7 +1,7 @@
 # Plan 0032 - Chat and terminal SPA migration
 
 Status: **approved** - `momus` plan review PASS (2026-10-30). Design is approved (`oracle` round 5
-PASS). Stages 0-7B are implemented; `/terminal` is SPA by default with the legacy rollback retained, and the allowlisted SPA chat feed, composer, prompts/permissions, SSH approvals, context rail, attachments, slash commands, app menu, diffs/highlighting, and long-thread scrolling are functional behind the test allowlist. Stage 7C, the parity audit and cutover, is the next action.
+PASS). Stages 0-7C are implemented; `/chat` and `/terminal` are SPA by default with both frozen legacy rollback documents retained (`legacyRetired: false`). The chat SPA covers the feed, composer, prompts/permissions, SSH approvals, context rail, attachments, slash commands, app menu, diffs/highlighting, and long-thread scrolling, with the Stage 7C parity matrix, resource/auth gates, and rollback drill green. Stage 8, deployment-host operator verification, is the next action.
 
 Design: [Chat and terminal SPA migration](../design/chat-terminal-migration.md) (approved).
 Governing design: [Incremental SPA migration](../design/spa-migration.md) plus the eight explicit
@@ -1250,6 +1250,9 @@ Gate: full repository gate block plus E2E; `git diff --check`. Commit checkpoint
 
 ### Stage 7C - Full parity audit and chat cutover
 
+Status: implemented 2026-10-30. `/chat` is SPA by default; `legacyRetired: false` keeps the frozen
+legacy document as the rollback until Stage 9.
+
 Goal: audit every event/part/behavior against the design and cut `/chat` over.
 
 Depends on: Stage 7B.
@@ -1304,6 +1307,10 @@ Commit checkpoint (owner only): `feat(ui): cut chat over to the SPA`.
 Keep `renderChatPage`, `assets/chat.js`, all shared modules, and the `GET /chat` page branch until
 Stage 9. Roll back with `?legacy=1`, `HANSE_UI_LEGACY=1`, or by removing `chat` from the allowlist
 until Stage 8 sign-off.
+
+Freeze policy after the Stage 7C cutover: `renderChatPage` and `assets/chat.js` receive no new
+behavior. All fixes and new behavior land in the Vue client. The legacy page stays the rollback
+document and keeps one smoke/E2E test.
 
 ---
 

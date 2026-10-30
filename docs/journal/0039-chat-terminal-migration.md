@@ -4,8 +4,9 @@ Plan: [`0032`](../plans/0032-chat-terminal-migration.md). Design:
 [`chat-terminal-migration.md`](../design/chat-terminal-migration.md). Governing design:
 [`spa-migration.md`](../design/spa-migration.md) plus the Stage 0 amendment record in §15.
 
-Status: **Stages 0-2 implemented**. `/terminal` is SPA by default with the legacy document and
-`assets/terminal.js` retained for rollback. `/chat` remains legacy. Stages 3-9 are not started.
+Status: **Stages 0-7C implemented**. `/chat` and `/terminal` are SPA by default; both frozen legacy
+documents and their assets remain the rollback path with `legacyRetired: false`. Stage 8
+(deployment-host operator verification) is next.
 
 ## Stage 0 baseline
 
@@ -547,3 +548,60 @@ Tests/evidence:
 
 Limits: no parity audit, `chat.spa` cutover, current-state cutover text, or legacy deletion; those
 are Stage 7C. Stage 7C is the next action.
+
+## Stage 7C - Full parity audit and chat cutover
+
+`/chat` is SPA by default. `chat.spa` is `true`; `chat.legacyRetired` and `terminal.legacyRetired`
+stay `false`. `renderChatPage`, `assets/chat.js`, all shared modules, and the legacy page branch are
+unchanged. Rollback remains `?legacy=1`, `HANSE_UI_LEGACY=1`, or removing `chat` from
+`HANSE_UI_SPA_ROUTES`. `renderChatPage`/`assets/chat.js` are frozen: fixes and new behavior land in
+Vue.
+
+Implemented:
+- `test/chat-parity.test.ts` parses `HanseEvent` and `PartType` from `src/opencode/events.ts`,
+  requires one matrix row per event (18) and per part type (12) plus the unknown-part reconcile
+  row, and resolves every event/part/behavior evidence marker to a real test file. It also covers
+  every design §2.1-2.9 and §7.1-7.4 subsection, rejects `v-html` anywhere in `ui/`, and asserts
+  ChatPage/TerminalPage stay dynamic imports with no eager Prism/xterm.
+- `test/ui/chat-runtime-resources.test.ts` runs 20 enter/leave cycles, 10 application switches, 20
+  rapid session switches, and an online reconnect. EventSource, window/document listeners,
+  intervals, timeouts/rAF, highlight workers, and chat DOM all return to the recorded baseline;
+  session switches keep one source and no duplicate message ids.
+- `test/ui/chat-auth.test.ts` covers 401 reads and mutations, the default `/login?next=` logout,
+  the SSE cookie probe (401, 200, hidden, once-per-window), and the send probe.
+- `ui/composables/useChatStream.ts` adds the missing `online` reconnect path (non-live, non-paused
+  only), so offline/online parity no longer relies on native EventSource retry alone; the listener
+  is removed on unmount.
+- E2E adds the mobile session/context drawer matrix (390/768/1024/1440), bfcache
+  pagehide/pageshow, and a first-paint CLS test at 390/768/1024/1440 light+dark. The existing
+  legacy smoke, `?legacy=1`, legacy-origin, and allowlist-empty rollback drill remain.
+- `scripts/check-ui.mjs` now requires the lazy ChatPage manifest chunk, asserts the entry does not
+  statically import ChatPage/TerminalPage/Prism/xterm, and prints the gzip budget.
+
+Parity result: no unported `HanseEvent`, `PartType`, unknown-part path, or §2/§7 sub-gate. One gap
+was found and fixed in Vue: `online` reconnect was absent from `useChatStream`.
+
+Measurements (built at this stage, compared with a clean `de9eecc` worktree build):
+- Chat route chunk: `ChatPage-C_AP2I2b.js`, **247,954 B raw / 71,733 B gzip** (budget 256,000 B
+  gzip); HEAD was 249,146 B / 71,820 B gzip. Entry: `main--tJ7i7ue.js`, **284,535 B raw /
+  103,318 B gzip** versus HEAD 284,770 B / 103,363 B gzip, so the entry budget did not grow.
+- First-paint CLS on the fixture (recorded legacy threshold in parentheses): 390 light 0.0144 /
+  dark 0.0220 (0.4887); 768 light/dark 0.0085 (0.2387); 1024 light 0.0096 / dark 0.0095 (0.1767);
+  1440 light 0.0710 / dark 0.0551 (0.1287). No eager Prism or xterm script is present at first
+  paint.
+- Resource/auth tests and the E2E drawer, bfcache, and CLS cases are green.
+
+Rollback drill: `/chat?legacy=1` and the `HANSE_UI_LEGACY=1` legacy origin serve the frozen
+`assets/chat.js` document; the `HANSE_UI_SPA_ROUTES=""` origin also serves it. The normal SPA
+origin serves `#hanse-boot`, no `assets/chat.js`, one chat shell, and one EventSource.
+
+Gate results (final Stage 7C run):
+- `npm run lint`: pass (Biome, 749 files).
+- `npm run typecheck`, `typecheck:ui`, `typecheck:e2e`: pass.
+- `NODE_ENV=development npm test`: **3303 passed**, 222 files.
+- `npm run build`: pass; `check:ui` reports the ChatPage chunk at 71,733 B gzip and the SFC
+  sentinel. `check:chat-worker`: pass. `check:sensitive`: pass. `git diff --check`: pass.
+- `NODE_ENV=development npm run test:e2e`: **205 passed, 13 skipped** across the three modes.
+
+Limits: no deploy, no Stage 8 operator verification, no Stage 9 cleanup, no `legacyRetired: true`,
+and no legacy renderer/asset deletion.

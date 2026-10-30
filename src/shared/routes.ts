@@ -39,7 +39,7 @@ export interface RouteDefinition {
   readonly path: string;
   readonly nav: NavId;
   readonly label: string;
-  /** Registry cutover flag. Phase 1A keeps every route legacy. */
+  /** Registry cutover flag. Chat/terminal stay rollback-capable until Stage 9 sets `legacyRetired`. */
   readonly spa: boolean;
   /** True once the legacy renderer is retired and the SPA is always served (Stage 9). */
   readonly legacyRetired?: boolean;
@@ -173,7 +173,7 @@ const ROUTE_DEFINITIONS: readonly RouteDefinition[] = [
     path: "/chat",
     nav: "none",
     label: "Chat",
-    spa: false,
+    spa: true,
     legacyRetired: false,
   },
 ];

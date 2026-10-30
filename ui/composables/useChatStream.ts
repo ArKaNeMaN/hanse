@@ -70,11 +70,23 @@ export function useChatStream(options: UseChatStreamOptions): UseChatStream {
   const onBeforeUnload = (): void => {
     stream.disconnect();
   };
+  const shouldReconnect = (): boolean => {
+    const kind = stream.status();
+    return kind !== "live" && kind !== "paused";
+  };
   const onVisibility = (): void => {
     if (doc?.visibilityState !== "visible" || suspended) {
       return;
     }
-    if (stream.status() !== "live") {
+    if (shouldReconnect()) {
+      stream.connect(false);
+    }
+  };
+  const onOnline = (): void => {
+    if (suspended || doc?.visibilityState === "hidden") {
+      return;
+    }
+    if (shouldReconnect()) {
       stream.connect(false);
     }
   };
@@ -83,6 +95,7 @@ export function useChatStream(options: UseChatStreamOptions): UseChatStream {
     win?.addEventListener("pagehide", onPageHide);
     win?.addEventListener("pageshow", onPageShow);
     win?.addEventListener("beforeunload", onBeforeUnload);
+    win?.addEventListener("online", onOnline);
     doc?.addEventListener("visibilitychange", onVisibility);
     stream.connect(false);
   });
@@ -91,6 +104,7 @@ export function useChatStream(options: UseChatStreamOptions): UseChatStream {
     win?.removeEventListener("pagehide", onPageHide);
     win?.removeEventListener("pageshow", onPageShow);
     win?.removeEventListener("beforeunload", onBeforeUnload);
+    win?.removeEventListener("online", onOnline);
     doc?.removeEventListener("visibilitychange", onVisibility);
     stream.dispose();
   });

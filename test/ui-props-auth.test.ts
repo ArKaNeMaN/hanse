@@ -584,7 +584,7 @@ describe("/api/ui auth and props", () => {
         request(
           pathname,
           { ...cookie(f.humanToken), accept: "text/html" },
-          route.id === "terminal" ? { app: "web", project: "p" } : undefined,
+          route.id === "terminal" || route.id === "chat" ? { app: "web", project: "p" } : undefined,
         ),
       );
       expect(page?.status, route.id).toBe(200);
