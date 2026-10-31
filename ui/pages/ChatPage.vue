@@ -2134,7 +2134,7 @@ onBeforeUnmount(() => {
               :command-active="
                 paletteOpen || parseComposerCommand(composerDraft).kind === 'command'
               "
-              :placeholder="`Message ${appKey} agent`"
+              :placeholder="`Message ${appKey}`"
               @update:draft="composerHandleInput"
               @send="submitComposer"
               @stop="composerStop"

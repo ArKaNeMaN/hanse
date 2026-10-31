@@ -286,6 +286,11 @@ watch(
     restorePending = readScrollMemory(memoryKey(next));
     await nextTick();
     if (props.items.length === 0) {
+      // The session can be selected before its message snapshot arrives. Without saved scroll
+      // memory, keep following the bottom so the first render lands on the newest content.
+      if (restorePending === null) {
+        pinned.value = true;
+      }
       return;
     }
     if (restorePending !== null) {

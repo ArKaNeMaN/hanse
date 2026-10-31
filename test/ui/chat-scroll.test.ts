@@ -156,4 +156,30 @@ describe("500-message scroll ownership", () => {
     expect(metrics.scrollTop).toBe(9_000);
     wrapper.unmount();
   });
+
+  it("pins to the newest content when a session is selected before its messages load", async () => {
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    vi.stubGlobal("cancelAnimationFrame", () => undefined);
+    const wrapper = mount(ChatThread, {
+      props: { ...props([]), sessionId: null },
+      attachTo: document.body,
+    });
+    await flushPromises();
+    const scroll = wrapper.find("#chat-scroll").element as HTMLElement;
+    const metrics = scrollMetrics(scroll);
+
+    await wrapper.setProps({ sessionId: "s1", items: [] });
+    await flushPromises();
+    await wrapper.setProps({ items: items(2), revision: 1 });
+    await flushPromises();
+    frames[frames.length - 1]?.(0);
+    await nextTick();
+
+    expect(metrics.scrollTop).toBe(20_000);
+    wrapper.unmount();
+  });
 });

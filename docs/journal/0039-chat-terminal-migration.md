@@ -605,3 +605,27 @@ Gate results (final Stage 7C run):
 
 Limits: no deploy, no Stage 8 operator verification, no Stage 9 cleanup, no `legacyRetired: true`,
 and no legacy renderer/asset deletion.
+
+
+## Post-cutover visual alignment - 2026-10-31
+
+A full SPA/legacy visual audit (20 routes x 2 origins x 1440/390 x light/dark, plus
+streaming frames and DOM measurements) found concrete regressions after the cutover. The
+following checkpoints align the SPA with the legacy composition without changing the route flags:
+
+- Chat layout: prompt dock/composer/queue moved back into the `chat-thread` grid; the composer
+  spans the full chat column, the attachment control sits in the composer row, the duplicate
+  waiting badge is gone, answer options use full-width rows, and Markdown text uses the
+  `message__body` wrapping rules so long streamed tokens do not clip.
+- Settings/SSH: the global `Scope target` no longer renders a blank select, section links carry
+  `aria-current`, the active section is tracked on `#main` scroll/click with no timers, the
+  duplicated SSH header summary is gone, and long fingerprints truncate cleanly.
+- Chat identity/approvals: the session meta strip restores title/id/live/message/waiting/plan/context;
+  the single SSH approvals poller now renders inline in the thread and is removed from the rail.
+- Initial chat load now pins the feed to the newest content when a session is selected before its
+  messages arrive, so the inline approval cards are not left below an unpinned viewport.
+
+Evidence: `npm test` 3325 passed; `npm run test:e2e` 209 passed, 13 skipped; lint/typecheck/
+typecheck:ui/typecheck:e2e/build/check ui/check:chat-worker/check:sensitive/diff-check pass. Fresh
+audit captures and per-route diffs live under the untracked `.omo/visual-audit/` directory. No
+deploy or Stage 9 cleanup was performed by this checkpoint.
