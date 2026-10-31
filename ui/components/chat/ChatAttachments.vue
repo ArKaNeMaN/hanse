@@ -35,7 +35,6 @@ const emit = defineEmits<{
   mode: [key: string, mode: "auto" | "inline" | "file"];
 }>();
 
-const input = ref<HTMLInputElement | null>(null);
 const dragging = ref(false);
 let dragDepth = 0;
 
@@ -43,19 +42,6 @@ const quotaWarning = computed(
   () =>
     typeof props.quotaPercent === "number" && props.quotaPercent >= ATTACHMENT_QUOTA_WARN_PERCENT,
 );
-
-function chooseFiles(): void {
-  if (props.disabled === true || props.commandActive === true) return;
-  input.value?.click();
-}
-
-function onInputChange(): void {
-  const node = input.value;
-  if (node === null || node.files === null) return;
-  const files = Array.from(node.files);
-  node.value = "";
-  if (files.length > 0) emit("add-files", files);
-}
 
 function hasFiles(event: DragEvent): boolean {
   const types = event.dataTransfer?.types;
@@ -124,7 +110,10 @@ function canRemove(chip: AttachmentChip): boolean {
   <!-- biome-ignore lint/a11y/useSemanticElements: the legacy attachment strip is a labelled group -->
   <div
     class="chat-attachments"
-    :class="{ 'is-drop-target': dragging }"
+    :class="{
+      'is-drop-target': dragging,
+      'chat-attachments--empty': attachments.length === 0 && !quotaWarning,
+    }"
     role="group"
     aria-label="Attachments"
     data-chat-attachments
@@ -134,28 +123,6 @@ function canRemove(chip: AttachmentChip): boolean {
     @dragleave="onDragLeave"
     @drop="onDrop"
   >
-    <input
-      ref="input"
-      class="chat-attach__input"
-      type="file"
-      multiple
-      hidden
-      tabindex="-1"
-      data-chat-attach-input
-      @change="onInputChange"
-    >
-    <button
-      class="btn btn-ghost btn-icon chat-attach"
-      type="button"
-      aria-label="Attach files"
-      title="Attach files"
-      data-chat-attach
-      :disabled="disabled === true || commandActive === true"
-      @click="chooseFiles"
-    >
-      <AppIcon name="paperclip" />
-    </button>
-
     <div v-if="attachments.length > 0" class="chat-attachments__list" data-chat-attachment-list>
       <div
         v-for="chip in attachments"

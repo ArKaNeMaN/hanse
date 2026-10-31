@@ -2,7 +2,6 @@
 /** The prompt dock shows the oldest uncorrelated request for the active session. */
 import { computed } from "vue";
 import type { PromptEntry } from "../../stores/chat-prompts.js";
-import AppIcon from "../AppIcon.vue";
 import ChatPermissionCard from "./ChatPermissionCard.vue";
 import ChatQuestionCard from "./ChatQuestionCard.vue";
 
@@ -78,8 +77,5 @@ const questionView = computed(() => {
       @deny="(message) => emit('permission-deny', current as PromptEntry, message)"
       @open-saved="emit('open-saved')"
     />
-    <p v-if="entries.length > 1" class="prompt-dock__queue-count" data-prompt-queue-count>
-      <AppIcon name="inbox" />{{ entries.length - 1 }} more waiting
-    </p>
   </section>
 </template>

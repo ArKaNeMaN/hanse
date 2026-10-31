@@ -24,6 +24,24 @@ describe("ChatPage read-only shell", () => {
     expect(document.getElementById("main")?.classList.contains("page--chat")).toBe(false);
   });
 
+  it("keeps the thread as the single owner of the viewport, queue, dock, and composer", async () => {
+    const { wrapper } = await mountChat();
+    const main = wrapper.find(".chat-main").element;
+    const thread = wrapper.find(".chat-thread").element;
+    expect(main.querySelector(":scope > .chat-pane-head")).not.toBeNull();
+    expect(main.querySelector(":scope > .chat-thread")).not.toBeNull();
+    expect(main.querySelector(":scope > .composer")).toBeNull();
+    expect(thread.querySelector(":scope > .chat-thread__meta")).not.toBeNull();
+    expect(thread.querySelector(":scope > .chat-thread__viewport")).not.toBeNull();
+    expect(thread.querySelector(":scope > .composer")).not.toBeNull();
+    expect(thread.querySelector(":scope > .chat-queue-strip")).toBeNull();
+    expect(wrapper.find(".composer__row > [data-chat-attach]").exists()).toBe(true);
+    expect(wrapper.find(".composer__row > [data-chat-composer-input]").exists()).toBe(true);
+    expect(wrapper.find(".chat-attachments > [data-chat-attach]").exists()).toBe(false);
+    expect(wrapper.findAll("[data-chat-attach]")).toHaveLength(1);
+    wrapper.unmount();
+  });
+
   it("has exactly one EventSource and renders the boot sessions and messages", async () => {
     const { wrapper } = await mountChat();
     expect(FakeEventSource.instances).toHaveLength(1);

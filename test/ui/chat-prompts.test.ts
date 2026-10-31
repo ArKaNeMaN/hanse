@@ -85,10 +85,22 @@ describe("chat prompt questions", () => {
     await flushPromises();
     const dock = wrapper.find("[data-chat-prompt-dock]");
     expect(dock.exists()).toBe(true);
+    expect(wrapper.find(".chat-thread > [data-chat-prompt-dock]").exists()).toBe(true);
+    expect(wrapper.find(".chat-main > [data-chat-prompt-dock]").exists()).toBe(false);
     expect(dock.text()).toContain("Continue with the fixture?");
     expect(wrapper.find("[data-question-option]").exists()).toBe(true);
+    const answers = dock.findAll(".chat-question__answer--option");
+    expect(answers).toHaveLength(2);
+    expect(answers[0]?.attributes("role")).toBe("radio");
+    expect(answers[0]?.attributes("data-selected")).toBe("false");
 
     await wrapper.find('[data-question-option][data-label="Yes"]').trigger("click");
+    expect(
+      wrapper.find('[data-question-option][data-label="Yes"]').attributes("data-selected"),
+    ).toBe("true");
+    expect(
+      wrapper.find('[data-question-option][data-label="Yes"]').attributes("aria-checked"),
+    ).toBe("true");
     await wrapper.find("[data-question-primary]").trigger("click");
     await flushPromises();
 
@@ -97,6 +109,32 @@ describe("chat prompt questions", () => {
     expect(JSON.parse(reply?.body ?? "{}")).toEqual({ source: "v1", answers: [["Yes"]] });
     expect(wrapper.find("[data-chat-prompt-dock]").exists()).toBe(false);
     expect(document.activeElement).toBe(wrapper.find("[data-chat-composer-input]").element);
+    wrapper.unmount();
+  });
+
+  it("renders exactly one queue count inside the question card header", async () => {
+    const { wrapper } = await mountChat("/chat?app=alpha&project=p&session=s1", {
+      questions: [
+        question(),
+        question({
+          key: "v1:q2",
+          id: "q2",
+          questions: [
+            {
+              header: "Second fixture question",
+              question: "Continue with the second fixture?",
+              options: [{ label: "Yes", description: "" }],
+              multiple: false,
+              custom: false,
+            },
+          ],
+        }),
+      ],
+    });
+    await flushPromises();
+    expect(wrapper.findAll(".prompt-dock__queue-count")).toHaveLength(1);
+    expect(wrapper.find(".chat-question .prompt-dock__queue-count").text()).toContain("1");
+    expect(wrapper.find("[data-prompt-queue-count]").exists()).toBe(false);
     wrapper.unmount();
   });
 
@@ -132,7 +170,8 @@ describe("chat prompt questions", () => {
     expect(wrapper.text()).toContain("Explain");
     expect(wrapper.text()).toContain("2 of 2");
 
-    const custom = wrapper.find(".chat-question textarea");
+    const custom = wrapper.find(".chat-question [data-question-custom]");
+    expect(custom.attributes("placeholder")).toBe("Type a custom answer");
     await custom.setValue("Because the fixture says so");
     await wrapper.find("[data-question-primary]").trigger("click");
     await flushPromises();

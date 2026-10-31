@@ -303,6 +303,9 @@ defineExpose({ captureAnchor, restoreAnchor, scrollToBottom, onScroll, unseen })
         {{ messageCount }}
       </span>
     </div>
+    <slot name="policy-warning" />
+    <slot name="image-gate" />
+    <slot name="image-warning" />
     <div class="chat-thread__viewport">
       <div class="chat-thread__scroll" id="chat-scroll" ref="scroll" @scroll.passive="onScroll">
         <div class="chat-thread__inner" id="chat-messages" role="log" aria-live="off">
@@ -375,5 +378,9 @@ defineExpose({ captureAnchor, restoreAnchor, scrollToBottom, onScroll, unseen })
         New messages ({{ unseen }})
       </button>
     </div>
+    <slot name="queue-strip" />
+    <slot name="session-notice" />
+    <slot name="prompt-dock" />
+    <slot name="composer" />
   </section>
 </template>

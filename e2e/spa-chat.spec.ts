@@ -910,6 +910,121 @@ test("SPA chat answers a question, replies to a permission, and revokes a saved 
   expectNoPageErrors(errors);
 });
 
+test("SPA chat keeps the composer full-width, answer rows full-width, and long tokens wrapping", async ({
+  page,
+}) => {
+  test.skip(!isSpa(), "SPA mode only");
+  test.slow();
+  const errors = collectPageErrors(page);
+  await signIn(page, CHAT_PATH);
+  await expect(page.locator("#chat-shell")).toHaveCount(1);
+  await expect(page.locator(".chat-thread > .composer")).toHaveCount(1);
+  await expect(page.locator(".chat-main > .composer")).toHaveCount(0);
+  const session = await newComposerSession(page);
+  await composerInput(page).fill("layout fixture");
+  await composerInput(page).press("Enter");
+  await expect(page.getByText("layout fixture").first()).toBeVisible();
+
+  const token = `token-${"A".repeat(220)}`;
+
+  for (const width of [1440, 390] as const) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.reload();
+    await expect(page.locator("#chat-shell")).toHaveCount(1);
+    await control(page, {
+      event: {
+        type: "question.asked",
+        properties: {
+          id: "que_e2e_fix1",
+          sessionID: session,
+          questions: [
+            {
+              header: "Layout question",
+              question: "Choose the layout fixture",
+              options: [
+                { label: "Yes", description: "First fixture option" },
+                { label: "No", description: "Second fixture option" },
+              ],
+              multiple: false,
+              custom: true,
+            },
+          ],
+        },
+      },
+    });
+    await control(page, {
+      event: {
+        type: "message.part.updated",
+        properties: {
+          sessionID: session,
+          messageID: "msg_e2e_long_token",
+          part: {
+            id: "prt_e2e_long_token",
+            sessionID: session,
+            messageID: "msg_e2e_long_token",
+            type: "text",
+            text: token,
+          },
+        },
+      },
+    });
+    await expect(page.locator('[data-part-id="prt_e2e_long_token"]')).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.locator(".chat-question__answer--option")).toHaveCount(2);
+    const metrics = await page.evaluate(() => {
+      const rect = (selector: string): DOMRect | null =>
+        document.querySelector(selector)?.getBoundingClientRect() ?? null;
+      const composer = document.querySelector<HTMLElement>(".composer");
+      const style = composer === null ? null : getComputedStyle(composer);
+      const innerWidth =
+        composer === null || style === null
+          ? 0
+          : composer.clientWidth -
+            Number.parseFloat(style.paddingInlineStart) -
+            Number.parseFloat(style.paddingInlineEnd);
+      const answerBox = rect(".chat-question__answers--options");
+      const answerRow = rect(".chat-question__answer--option");
+      const long = document.querySelector<HTMLElement>('[data-part-id="prt_e2e_long_token"]');
+      return {
+        thread: rect(".chat-thread")?.width ?? 0,
+        row: rect(".composer__row")?.width ?? 0,
+        composerInner: innerWidth,
+        attachInRow: document.querySelectorAll(".composer__row [data-chat-attach]").length,
+        attachTotal: document.querySelectorAll("[data-chat-attach]").length,
+        detachedQueue: document.querySelectorAll("[data-prompt-queue-count]").length,
+        queueCounts: document.querySelectorAll(".prompt-dock__queue-count").length,
+        answerBox: answerBox?.width ?? 0,
+        answerRow: answerRow?.width ?? 0,
+        longScroll: long?.scrollWidth ?? 0,
+        longClient: long?.clientWidth ?? 0,
+        overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      };
+    });
+
+    console.log(`chat-fix1 ${width}: ${JSON.stringify(metrics)}`);
+    expect(metrics.row).toBeGreaterThan(0);
+    expect(Math.abs(metrics.row - metrics.composerInner)).toBeLessThanOrEqual(1);
+    expect(metrics.row).toBeGreaterThan(metrics.thread * 0.9);
+    expect(metrics.attachInRow).toBe(1);
+    expect(metrics.attachTotal).toBe(1);
+    expect(metrics.detachedQueue).toBe(0);
+    expect(metrics.queueCounts).toBeLessThanOrEqual(1);
+    expect(metrics.answerRow).toBeGreaterThan(0);
+    expect(Math.abs(metrics.answerRow - metrics.answerBox)).toBeLessThanOrEqual(1);
+    expect(metrics.longScroll).toBeLessThanOrEqual(metrics.longClient + 1);
+    expect(metrics.overflow).toBeLessThanOrEqual(1);
+
+    await page.screenshot({
+      path: `.omo/visual-audit/chat-fix1--${width}--light--viewport.png`,
+      fullPage: false,
+    });
+  }
+
+  await page.waitForTimeout(300);
+  expectNoPageErrors(errors);
+});
+
 test("SPA chat approves and rejects SSH approval cards from the context rail", async ({ page }) => {
   test.skip(!isSpa(), "SPA mode only");
   const errors = collectPageErrors(page);

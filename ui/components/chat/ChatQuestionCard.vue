@@ -118,9 +118,31 @@ function focusFirstControl(): void {
   const node = root.value;
   if (node === null) return;
   const target = node.querySelector<HTMLElement>(
-    "[data-question-option]:not(:disabled), textarea:not(:disabled), [data-question-primary]:not(:disabled)",
+    "[data-question-option]:not(:disabled), [data-question-custom]:not(:disabled), [data-question-primary]:not(:disabled)",
   );
   target?.focus();
+}
+
+function onOptionKeydown(event: KeyboardEvent, questionIndex: number): void {
+  const keys = ["ArrowDown", "ArrowRight", "ArrowUp", "ArrowLeft", "Home", "End"];
+  if (!keys.includes(event.key)) return;
+  const node = root.value;
+  if (node === null) return;
+  const options = Array.from(
+    node.querySelectorAll<HTMLButtonElement>(
+      `[data-question-field="${questionIndex}"] [data-question-option]:not(:disabled)`,
+    ),
+  );
+  const at = options.indexOf(event.currentTarget as HTMLButtonElement);
+  if (at < 0 || options.length === 0) return;
+  event.preventDefault();
+  let next = at;
+  if (event.key === "Home") next = 0;
+  else if (event.key === "End") next = options.length - 1;
+  else if (event.key === "ArrowDown" || event.key === "ArrowRight")
+    next = (at + 1) % options.length;
+  else next = (at - 1 + options.length) % options.length;
+  options[next]?.focus();
 }
 
 onMounted(() => {
@@ -198,24 +220,39 @@ defineExpose({ submit, reject, focusFirstControl });
           </template>
           <template v-else-if="current !== undefined">
             <p class="prompt-dock__title">{{ questionLabel(current, index) }}</p>
-            <div class="prompt-dock__tabs">
+            <div
+              class="chat-question__answers chat-question__answers--options"
+              :role="current.multiple ? 'group' : 'radiogroup'"
+              :aria-label="questionLabel(current, index)"
+              :data-question-field="index"
+            >
               <button
                 v-for="option in current.options"
                 :key="option.label"
-                class="prompt-dock__tab"
+                class="chat-question__answer chat-question__answer--option"
+                :class="{
+                  'is-selected': (selected[index] ?? []).includes(option.label),
+                }"
                 type="button"
+                :role="current.multiple ? 'checkbox' : 'radio'"
                 data-question-option
                 :data-label="option.label"
-                :aria-pressed="(selected[index] ?? []).includes(option.label)"
+                :data-selected="(selected[index] ?? []).includes(option.label) ? 'true' : 'false'"
+                :aria-checked="(selected[index] ?? []).includes(option.label)"
                 :disabled="view.busy || disabled"
                 @click="selectOption(index, option.label)"
+                @keydown="onOptionKeydown($event, index)"
               >
-                <AppIcon
-                  :name="(selected[index] ?? []).includes(option.label) ? 'check' : 'circle'"
-                />
-                <span>{{ option.label }}</span>
-                <span v-if="option.description.length > 0" class="caption">
-                  {{ option.description }}
+                <span class="chat-question__answer-marker" aria-hidden="true">
+                  <AppIcon
+                    :name="(selected[index] ?? []).includes(option.label) ? 'check' : 'circle'"
+                  />
+                </span>
+                <span class="chat-question__answer-body">
+                  <span class="chat-question__answer-text">{{ option.label }}</span>
+                  <span v-if="option.description.length > 0" class="chat-question__answer-desc">
+                    {{ option.description }}
+                  </span>
                 </span>
               </button>
             </div>
@@ -224,17 +261,19 @@ defineExpose({ submit, reject, focusFirstControl });
               class="label"
               :for="`question-custom-${view.key}-${index}`"
             >
-              Custom answer (optional)
+              Other
             </label>
-            <textarea
+            <input
               v-if="current.custom"
               :id="`question-custom-${view.key}-${index}`"
-              class="textarea prompt-feedback"
-              rows="2"
+              class="input"
+              type="text"
+              data-question-custom
+              placeholder="Type a custom answer"
               :value="custom[index] ?? ''"
               :disabled="view.busy || disabled"
-              @input="updateCustom(($event.target as HTMLTextAreaElement).value)"
-            />
+              @input="updateCustom(($event.target as HTMLInputElement).value)"
+            >
           </template>
         </template>
         <p v-else class="prompt-dock__copy">This question has no answer fields.</p>

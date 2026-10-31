@@ -19,6 +19,7 @@ const LOCAL_PATHS: Record<string, readonly string[]> = {
     "m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21",
   ],
   download: ["M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4", "M7 10l5 5 5-5", "M12 15V3"],
+  circle: ["M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Z"],
 };
 
 const localPaths = computed(() => LOCAL_PATHS[props.name]);

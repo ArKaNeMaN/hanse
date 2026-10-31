@@ -27,10 +27,23 @@ describe("ChatMessage part surfaces", () => {
       }),
     ]);
     await nextTick();
+    expect(wrapper.find(".chat-text").classes()).toContain("message__body");
     expect(wrapper.find(".chat-text strong").text()).toBe("Bold");
     expect(wrapper.find(".chat-reasoning summary").text()).toContain("Thinking");
     expect(wrapper.find(".chat-reasoning__text").text()).toContain("I should inspect the output.");
     expect(wrapper.findAll('[data-part-id="p1"]')).toHaveLength(1);
+    wrapper.unmount();
+  });
+
+  it("renders long unbroken tokens inside the shared message body wrapper", async () => {
+    const token = `https://example.invalid/${"a".repeat(240)}`;
+    const wrapper = render([
+      part({ id: "long", type: "text", text: token, data: { text: token } }),
+    ]);
+    await nextTick();
+    const body = wrapper.find('[data-part-id="long"]');
+    expect(body.classes()).toContain("message__body");
+    expect(body.text()).toContain("a".repeat(240));
     wrapper.unmount();
   });
 

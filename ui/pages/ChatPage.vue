@@ -1927,22 +1927,6 @@ onBeforeUnmount(() => {
       :data-chat-context="chatUi.contextOpen ? 'open' : 'closed'"
       :aria-label="title"
     >
-      <div
-        v-if="deletionPending"
-        class="chat-session-notice"
-        role="status"
-        data-chat-deletion-pending
-      >
-        This application is pending deletion. Chat is read-only.
-      </div>
-      <ChatImageGate :view="imageView" :busy="imageActionBusy" @action="runImageAction" />
-      <ChatImageWarning
-        :view="imageView"
-        :blocked="imageBlocked"
-        :busy="imageActionBusy"
-        @action="runImageAction"
-      />
-
       <ChatSessionsRail
         :sessions="sessionStore.sessions"
         :tree="sessionStore.tree"
@@ -2036,74 +2020,105 @@ onBeforeUnmount(() => {
           @question-submit="submitInlineQuestion"
           @question-reject="rejectInlineQuestion"
           @attachment-redeliver="redeliverAttachment"
-        />
-        <ChatPromptDock
-          v-if="!stopped && !appEmpty"
-          :entries="dockEntries"
-          :busy-for="(key: string) => promptsStore.isBusy(key)"
-          :error-for="(key: string) => promptsStore.errorFor(key)"
-          :auto-focus="composerEmpty"
-          :disabled="deletionPending"
-          @question-submit="submitQuestion"
-          @question-reject="rejectQuestion"
-          @permission-once="(entry: PromptEntry) => replyPermission(entry, 'once')"
-          @permission-always="(entry: PromptEntry) => replyPermission(entry, 'always')"
-          @permission-deny="
-            (entry: PromptEntry, message: string) => replyPermission(entry, 'reject', message)
-          "
-          @open-saved="chatUi.setContextOpen(true)"
-        />
-        <ChatQueueStrip
-          v-if="!stopped && !deletionPending"
-          :rows="queueRows"
-          @open="chatUi.setQueueOpen(true)"
-        />
-        <ChatComposer
-          ref="composerRef"
-          :draft="composerDraft"
-          :delivery="composerDelivery"
-          :error="composerError"
-          :pending="composerPendingRows"
-          :mode="composerMode"
-          :disabled="stopped || deletionPending || imageBlocked"
-          :send-disabled="composerSendDisabled"
-          :stop-disabled="composerStopDisabled"
-          :show-recovery="composerShowRecovery"
-          :aria-busy="composerAbortPending"
-          :placeholder="`Message ${appKey} agent`"
-          @update:draft="composerHandleInput"
-          @send="submitComposer"
-          @stop="composerStop"
-          @check-unknown="composerCheckAgain"
-          @remove-unknown="composerRemoveUnknown"
-          @retry-pending="composerRetryPending"
-          @dismiss-pending="composerDismissPending"
-          @restore-pending="composerRestorePending"
-          @attach-files="composerAddFiles"
-          @open-commands="openCommands"
-          @escape="
-            closeCommands();
-            chatUi.setQueueOpen(false);
-            chatUi.setSessionsOpen(false);
-            chatUi.setContextOpen(false);
-          "
         >
-          <template #attachments>
-            <ChatAttachments
-              :attachments="composerAttachments"
-              :quota-percent="composerAttachmentQuota"
+          <template #image-gate>
+            <ChatImageGate :view="imageView" :busy="imageActionBusy" @action="runImageAction" />
+          </template>
+          <template #image-warning>
+            <ChatImageWarning
+              :view="imageView"
+              :blocked="imageBlocked"
+              :busy="imageActionBusy"
+              @action="runImageAction"
+            />
+          </template>
+          <template #queue-strip>
+            <ChatQueueStrip
+              v-if="!stopped && !deletionPending"
+              :rows="queueRows"
+              @open="chatUi.setQueueOpen(true)"
+            />
+          </template>
+          <template #session-notice>
+            <div
+              v-if="deletionPending"
+              class="chat-session-notice"
+              role="status"
+              data-chat-deletion-pending
+            >
+              This application is pending deletion. Chat is read-only.
+            </div>
+          </template>
+          <template #prompt-dock>
+            <ChatPromptDock
+              v-if="!stopped && !appEmpty"
+              :entries="dockEntries"
+              :busy-for="(key: string) => promptsStore.isBusy(key)"
+              :error-for="(key: string) => promptsStore.errorFor(key)"
+              :auto-focus="composerEmpty"
+              :disabled="deletionPending"
+              @question-submit="submitQuestion"
+              @question-reject="rejectQuestion"
+              @permission-once="(entry: PromptEntry) => replyPermission(entry, 'once')"
+              @permission-always="(entry: PromptEntry) => replyPermission(entry, 'always')"
+              @permission-deny="
+                (entry: PromptEntry, message: string) => replyPermission(entry, 'reject', message)
+              "
+              @open-saved="chatUi.setContextOpen(true)"
+            />
+          </template>
+          <template #composer>
+            <ChatComposer
+              ref="composerRef"
+              :draft="composerDraft"
+              :delivery="composerDelivery"
+              :error="composerError"
+              :pending="composerPendingRows"
+              :mode="composerMode"
               :disabled="stopped || deletionPending || imageBlocked"
+              :send-disabled="composerSendDisabled"
+              :stop-disabled="composerStopDisabled"
+              :show-recovery="composerShowRecovery"
+              :aria-busy="composerAbortPending"
               :command-active="
                 paletteOpen || parseComposerCommand(composerDraft).kind === 'command'
               "
-              @add-files="composerAddFiles"
-              @retry="composerRetryAttachment"
-              @remove="composerRemoveAttachment"
-              @cancel="composerCancelUpload"
-              @mode="composerSetAttachmentMode"
-            />
+              :placeholder="`Message ${appKey} agent`"
+              @update:draft="composerHandleInput"
+              @send="submitComposer"
+              @stop="composerStop"
+              @check-unknown="composerCheckAgain"
+              @remove-unknown="composerRemoveUnknown"
+              @retry-pending="composerRetryPending"
+              @dismiss-pending="composerDismissPending"
+              @restore-pending="composerRestorePending"
+              @attach-files="composerAddFiles"
+              @open-commands="openCommands"
+              @escape="
+                closeCommands();
+                chatUi.setQueueOpen(false);
+                chatUi.setSessionsOpen(false);
+                chatUi.setContextOpen(false);
+              "
+            >
+              <template #attachments>
+                <ChatAttachments
+                  :attachments="composerAttachments"
+                  :quota-percent="composerAttachmentQuota"
+                  :disabled="stopped || deletionPending || imageBlocked"
+                  :command-active="
+                    paletteOpen || parseComposerCommand(composerDraft).kind === 'command'
+                  "
+                  @add-files="composerAddFiles"
+                  @retry="composerRetryAttachment"
+                  @remove="composerRemoveAttachment"
+                  @cancel="composerCancelUpload"
+                  @mode="composerSetAttachmentMode"
+                />
+              </template>
+            </ChatComposer>
           </template>
-        </ChatComposer>
+        </ChatThread>
       </div>
 
       <ChatContextRail

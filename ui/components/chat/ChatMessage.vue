@@ -214,7 +214,7 @@ const optimisticLabel = computed(() => {
           v-if="part.type === 'text' && part.text.length > 0"
           :text="part.text"
           :sealed="part.sealed"
-          class="chat-text"
+          class="message__body chat-text"
           :data-part-id="part.id"
           data-part-type="text"
         />

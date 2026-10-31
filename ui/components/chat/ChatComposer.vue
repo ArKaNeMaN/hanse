@@ -19,6 +19,7 @@ const props = defineProps<{
   stopDisabled: boolean;
   showRecovery: boolean;
   placeholder: string;
+  commandActive?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -36,6 +37,7 @@ const emit = defineEmits<{
 }>();
 
 const input = ref<HTMLTextAreaElement | null>(null);
+const fileInput = ref<HTMLInputElement | null>(null);
 const dragging = ref(false);
 let dragDepth = 0;
 
@@ -51,6 +53,25 @@ function resize(): void {
 
 function focus(): void {
   input.value?.focus();
+}
+
+function chooseFiles(): void {
+  if (props.disabled || props.commandActive === true) {
+    return;
+  }
+  fileInput.value?.click();
+}
+
+function onFileChange(): void {
+  const node = fileInput.value;
+  if (node === null || node.files === null) {
+    return;
+  }
+  const files = Array.from(node.files);
+  node.value = "";
+  if (files.length > 0) {
+    emit("attach-files", files);
+  }
 }
 
 function isCoarsePointer(): boolean {
@@ -190,6 +211,27 @@ defineExpose({ focus, resize });
   >
     <slot name="attachments" />
     <div class="composer__row">
+      <input
+        ref="fileInput"
+        class="chat-attach__input"
+        type="file"
+        multiple
+        hidden
+        tabindex="-1"
+        data-chat-attach-input
+        @change="onFileChange"
+      >
+      <button
+        class="btn btn-ghost btn-icon chat-attach"
+        type="button"
+        aria-label="Attach files"
+        title="Attach files"
+        data-chat-attach
+        :disabled="disabled || commandActive === true"
+        @click="chooseFiles"
+      >
+        <AppIcon name="paperclip" />
+      </button>
       <button
         class="btn btn-ghost btn-icon chat-commands-button"
         type="button"
