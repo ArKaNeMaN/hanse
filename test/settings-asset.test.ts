@@ -41,4 +41,11 @@ describe("settings asset", () => {
     expect(asset).toContain('hasAttribute("data-confirm")');
     expect(asset).toContain("window.confirm");
   });
+
+  it("adds, removes, and renumbers custom-provider model rows", () => {
+    expect(asset).toContain("data-model-add");
+    expect(asset).toContain("data-model-remove");
+    expect(asset).toContain("renumberModelRows");
+    expect(asset).toContain("data-model-template");
+  });
 });

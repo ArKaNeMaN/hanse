@@ -239,16 +239,51 @@ export interface SettingsProviderRowProps {
   readonly form: SettingsFormProps;
 }
 
+export const SETTINGS_MODEL_MODALITIES = ["text", "audio", "image", "video", "pdf"] as const;
+export type SettingsModelModality = (typeof SETTINGS_MODEL_MODALITIES)[number];
+
+export interface SettingsModelProviderCost {
+  readonly input: number;
+  readonly output: number;
+  readonly cacheRead?: number;
+  readonly cacheWrite?: number;
+}
+
+export interface SettingsModelProviderModel {
+  readonly id: string;
+  readonly name?: string;
+  readonly limit: { readonly context: number; readonly input?: number; readonly output: number };
+  readonly attachment?: boolean;
+  readonly reasoning?: boolean;
+  readonly toolCall?: boolean;
+  readonly temperature?: boolean;
+  readonly cost?: SettingsModelProviderCost;
+  readonly modalities?: {
+    readonly input?: readonly SettingsModelModality[];
+    readonly output?: readonly SettingsModelModality[];
+  };
+}
+
+export interface SettingsModelDraft {
+  key: number;
+  id: string;
+  name: string;
+  context: string;
+  input: string;
+  output: string;
+  attachment: boolean;
+  reasoning: boolean;
+  toolCall: boolean;
+  temperature: boolean;
+  costInput: string;
+  costOutput: string;
+}
+
 export interface SettingsModelProviderRowProps {
   readonly id: string;
   readonly name: string;
   readonly baseUrl: string;
-  readonly models: readonly {
-    readonly id: string;
-    readonly name?: string;
-    readonly limit: { readonly context: number; readonly output: number };
-  }[];
-  readonly modelsText: string;
+  readonly models: readonly SettingsModelProviderModel[];
   readonly warnings: readonly string[];
   readonly key: {
     readonly status: ProviderKeyStatus;
@@ -259,7 +294,6 @@ export interface SettingsModelProviderRowProps {
   readonly rowId: string;
   readonly nameInputId: string;
   readonly urlInputId: string;
-  readonly modelsInputId: string;
   readonly errorId: string;
   readonly actions: {
     readonly update: string;
@@ -400,9 +434,30 @@ export interface SettingsLabelsProps {
     readonly providerIdPlaceholder: string;
     readonly namePlaceholder: string;
     readonly baseUrlPlaceholder: string;
-    readonly modelsPlaceholder: string;
     readonly deleteConfirmPrefix: string;
     readonly modelsCount: string;
+    readonly modelRow: string;
+    readonly modelId: string;
+    readonly modelName: string;
+    readonly contextWindow: string;
+    readonly outputLimit: string;
+    readonly inputLimit: string;
+    readonly capabilities: string;
+    readonly attachments: string;
+    readonly reasoning: string;
+    readonly toolCalls: string;
+    readonly temperature: string;
+    readonly cost: string;
+    readonly costInput: string;
+    readonly costOutput: string;
+    readonly addModel: string;
+    readonly removeModel: string;
+    readonly modelIdPlaceholder: string;
+    readonly modelNamePlaceholder: string;
+    readonly contextWindowPlaceholder: string;
+    readonly outputLimitPlaceholder: string;
+    readonly inputLimitPlaceholder: string;
+    readonly costPlaceholder: string;
   };
   readonly git: {
     readonly title: string;

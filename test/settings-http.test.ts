@@ -2445,6 +2445,53 @@ describe("custom model providers settings", () => {
     expect(f.modelProviders.list()).toEqual([]);
   });
 
+  it("creates a provider from separate model fields", async () => {
+    const f = fixture();
+    const response = await providerPost(f, {
+      action: "create",
+      id: "llm-lan",
+      name: "LLM LAN",
+      baseUrl: "http://gateway:4000/v1",
+      "model-0-id": "vision",
+      "model-0-name": "Vision",
+      "model-0-context": "1000",
+      "model-0-input": "900",
+      "model-0-output": "100",
+      "model-0-attachment": "1",
+      "model-0-reasoning": "1",
+      "model-0-toolCall": "1",
+      "model-0-temperature": "1",
+      "model-0-costInput": "0.5",
+      "model-0-costOutput": "1.5",
+      "model-1-id": "plain",
+      "model-1-context": "2000",
+      "model-1-output": "200",
+      return_to: "/settings#custom-providers",
+    });
+    expect(response.status).toBe(200);
+    expect(f.modelProviders.get("llm-lan")?.models).toEqual([
+      {
+        id: "plain",
+        limit: { context: 2000, output: 200 },
+        attachment: false,
+        reasoning: false,
+        toolCall: false,
+        temperature: false,
+      },
+      {
+        id: "vision",
+        name: "Vision",
+        limit: { context: 1000, input: 900, output: 100 },
+        attachment: true,
+        reasoning: true,
+        toolCall: true,
+        temperature: true,
+        cost: { input: 0.5, output: 1.5 },
+        modalities: { input: ["text", "image", "video", "pdf"] },
+      },
+    ]);
+  });
+
   it("rejects invalid input, duplicate ids, and in-use deletes", async () => {
     const f = fixture();
     const invalid = await createProvider(f, { baseUrl: "ftp://gateway:4000/v1" });

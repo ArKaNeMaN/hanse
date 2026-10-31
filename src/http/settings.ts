@@ -4,6 +4,7 @@ import {
   type ModelProvider,
   ModelProviderConflictError,
   ModelProviderInUseError,
+  type ModelProviderModel,
   ModelProviderNotFoundError,
   ModelProviderValidationError,
   parseModelLines,
@@ -201,6 +202,69 @@ function parseObjectBody(request: HttpRequest): Record<string, unknown> {
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
+}
+
+const MODEL_FIELD_RE =
+  /^model-(\d+)-(id|name|context|input|output|attachment|reasoning|toolCall|temperature|costInput|costOutput)$/;
+
+function numberOrUndefined(value: string | undefined): number | undefined {
+  if (value === undefined || value.trim().length === 0) {
+    return undefined;
+  }
+  return Number(value);
+}
+
+function modelsFromPayload(payload: Record<string, unknown>): unknown {
+  if (payload.models !== undefined) {
+    return typeof payload.models === "string" ? parseModelLines(payload.models) : payload.models;
+  }
+  const rows = new Map<number, Record<string, string>>();
+  for (const [key, value] of Object.entries(payload)) {
+    const match = MODEL_FIELD_RE.exec(key);
+    if (match === null || typeof value !== "string") {
+      continue;
+    }
+    const index = Number(match[1]);
+    const field = match[2];
+    if (field === undefined) {
+      continue;
+    }
+    const row = rows.get(index) ?? {};
+    row[field] = value;
+    rows.set(index, row);
+  }
+  if (rows.size === 0) {
+    return undefined;
+  }
+  return [...rows.entries()]
+    .sort(([left], [right]) => left - right)
+    .map(([, row]) => {
+      const input = numberOrUndefined(row.input);
+      const costInput = numberOrUndefined(row.costInput);
+      const costOutput = numberOrUndefined(row.costOutput);
+      const hasCost = costInput !== undefined || costOutput !== undefined;
+      return {
+        id: row.id ?? "",
+        ...(row.name === undefined || row.name.trim().length === 0 ? {} : { name: row.name }),
+        limit: {
+          context: numberOrUndefined(row.context),
+          ...(input === undefined ? {} : { input }),
+          output: numberOrUndefined(row.output),
+        },
+        attachment: row.attachment === "1",
+        reasoning: row.reasoning === "1",
+        toolCall: row.toolCall === "1",
+        temperature: row.temperature === "1",
+        ...(hasCost
+          ? {
+              cost: {
+                input: costInput ?? 0,
+                output: costOutput ?? 0,
+              },
+            }
+          : {}),
+      };
+    });
 }
 
 function parseTarget(source: Record<string, unknown>): {
@@ -619,8 +683,7 @@ export async function handleSettings(deps: HttpDeps, request: HttpRequest): Prom
         } else if (action === "create" || action === "update") {
           const name = stringValue(payload.name);
           const baseUrl = stringValue(payload.baseUrl ?? payload.base_url) ?? "";
-          const models =
-            typeof payload.models === "string" ? parseModelLines(payload.models) : payload.models;
+          const models = modelsFromPayload(payload);
           if (action === "create") {
             modelProviders.create({ id, name, baseUrl, models }, actor);
           } else {
@@ -1170,16 +1233,115 @@ function providerSection(props: SettingsProps): string {
   </div>`;
 }
 
+type ModelProviderLabels = SettingsProps["labels"]["modelProviders"];
+
+interface ModelRowValues {
+  readonly id?: string;
+  readonly name?: string;
+  readonly context?: string;
+  readonly input?: string;
+  readonly output?: string;
+  readonly attachment?: boolean;
+  readonly reasoning?: boolean;
+  readonly toolCall?: boolean;
+  readonly temperature?: boolean;
+  readonly costInput?: string;
+  readonly costOutput?: string;
+}
+
+function modelRowValues(model: ModelProviderModel): ModelRowValues {
+  return {
+    id: model.id,
+    name: model.name,
+    context: String(model.limit.context),
+    input: model.limit.input === undefined ? "" : String(model.limit.input),
+    output: String(model.limit.output),
+    attachment: model.attachment === true,
+    reasoning: model.reasoning === true,
+    toolCall: model.toolCall !== false,
+    temperature: model.temperature === true,
+    costInput: model.cost === undefined ? "" : String(model.cost.input),
+    costOutput: model.cost === undefined ? "" : String(model.cost.output),
+  };
+}
+
+function modelRowFields(
+  index: number,
+  prefix: string,
+  values: ModelRowValues,
+  labels: ModelProviderLabels,
+  withIds = true,
+): string {
+  const fieldId = (field: string) => `${prefix}-${index}-${field}`;
+  const labelFor = (field: string) => (withIds ? ` for="${escapeHtml(fieldId(field))}"` : "");
+  const inputId = (field: string) => (withIds ? ` id="${escapeHtml(fieldId(field))}"` : "");
+  const textField = (
+    field: string,
+    label: string,
+    value: string,
+    placeholder: string,
+    type = "text",
+  ) =>
+    `<div class="field">
+      <label class="label"${labelFor(field)} data-model-label="${field}">${escapeHtml(label)}</label>
+      <input class="input"${inputId(field)} name="model-${index}-${field}" data-model-field="${field}" type="${type}" value="${escapeHtml(value)}" placeholder="${escapeHtml(placeholder)}" autocomplete="off"${type === "number" ? ' min="0" step="any"' : ""} />
+    </div>`;
+  const checkbox = (field: string, label: string, checked: boolean) =>
+    `<label class="check"><input class="checkbox" type="checkbox" name="model-${index}-${field}" data-model-field="${field}" value="1"${checked ? " checked" : ""} /><span>${escapeHtml(label)}</span></label>`;
+  return `<div class="model-row" data-model-row>
+    <div class="model-row__head">
+      <span class="label" data-model-title>${escapeHtml(labels.modelRow)} ${index + 1}</span>
+      <button class="btn btn-ghost btn-sm" type="button" data-model-remove>${escapeHtml(labels.removeModel)}</button>
+    </div>
+    <div class="model-row__grid">
+      ${textField("id", labels.modelId, values.id ?? "", labels.modelIdPlaceholder)}
+      ${textField("name", labels.modelName, values.name ?? "", labels.modelNamePlaceholder)}
+      ${textField("context", labels.contextWindow, values.context ?? "", labels.contextWindowPlaceholder, "number")}
+      ${textField("output", labels.outputLimit, values.output ?? "", labels.outputLimitPlaceholder, "number")}
+      ${textField("input", labels.inputLimit, values.input ?? "", labels.inputLimitPlaceholder, "number")}
+      <span class="label model-row__section">${escapeHtml(labels.cost)}</span>
+      ${textField("costInput", labels.costInput, values.costInput ?? "", labels.costPlaceholder, "number")}
+      ${textField("costOutput", labels.costOutput, values.costOutput ?? "", labels.costPlaceholder, "number")}
+    </div>
+    <span class="label">${escapeHtml(labels.capabilities)}</span>
+    <div class="cluster">
+      ${checkbox("attachment", labels.attachments, values.attachment === true)}
+      ${checkbox("reasoning", labels.reasoning, values.reasoning === true)}
+      ${checkbox("toolCall", labels.toolCalls, values.toolCall !== false)}
+      ${checkbox("temperature", labels.temperature, values.temperature === true)}
+    </div>
+  </div>`;
+}
+
+function modelRowsBlock(
+  prefix: string,
+  models: readonly ModelProviderModel[],
+  labels: ModelProviderLabels,
+): string {
+  const rows =
+    models.length === 0
+      ? modelRowFields(0, prefix, { toolCall: true }, labels)
+      : models
+          .map((model, index) => modelRowFields(index, prefix, modelRowValues(model), labels))
+          .join("");
+  return `<div class="model-list" data-model-list data-model-prefix="${escapeHtml(prefix)}" data-model-title-label="${escapeHtml(labels.modelRow)}">${rows}</div>
+    <template data-model-template>${modelRowFields(0, prefix, { toolCall: true }, labels, false)}</template>
+    <div class="setting-row__actions">
+      <button class="btn btn-ghost btn-sm" type="button" data-model-add>${escapeHtml(labels.addModel)}</button>
+    </div>`;
+}
+
 function customProvidersBlock(props: SettingsProps): string {
   const block = props.modelProviders;
+  const labels = props.labels.modelProviders;
   if (props.scope.scope !== "global") {
-    return `<p class="hint">Custom model providers are global. <a href="${escapeHtml(block.manageHref)}">Manage in Global settings</a>.</p>`;
+    return `<p class="hint">${escapeHtml(labels.globalHint)} <a href="${escapeHtml(block.manageHref)}">${escapeHtml(labels.manage)}</a>.</p>`;
   }
   const rows =
     block.providers.length === 0
-      ? '<p class="hint">No custom providers yet.</p>'
+      ? `<p class="hint">${escapeHtml(labels.empty)}</p>`
       : block.providers
-          .map((provider) =>
+          .map((provider, index) =>
             settingRow({
               id: provider.rowId,
               title: `${provider.name} (${provider.id})`,
@@ -1195,18 +1357,18 @@ function customProvidersBlock(props: SettingsProps): string {
                 <input type="hidden" name="return_to" value="${escapeHtml(block.add.returnTo)}" />
                 ${fieldErrorSlot(provider.errorId)}
                 <div class="field">
-                  <label class="label" for="${escapeHtml(provider.nameInputId)}">Name</label>
+                  <label class="label" for="${escapeHtml(provider.nameInputId)}">${escapeHtml(labels.name)}</label>
                   <input class="input" id="${escapeHtml(provider.nameInputId)}" name="name" type="text" value="${escapeHtml(provider.name)}" autocomplete="off" />
                 </div>
                 <div class="field">
-                  <label class="label" for="${escapeHtml(provider.urlInputId)}">Base URL</label>
+                  <label class="label" for="${escapeHtml(provider.urlInputId)}">${escapeHtml(labels.baseUrl)}</label>
                   <input class="input" id="${escapeHtml(provider.urlInputId)}" name="baseUrl" type="text" value="${escapeHtml(provider.baseUrl)}" required autocomplete="off" />
                 </div>
                 <div class="field">
-                  <label class="label" for="${escapeHtml(provider.modelsInputId)}">Models</label>
-                  <textarea class="input" id="${escapeHtml(provider.modelsInputId)}" name="models" rows="4" required>${escapeHtml(provider.modelsText)}</textarea>
-                  <p class="hint">One per line: id | context | output | optional name.</p>
+                  <span class="label">${escapeHtml(labels.models)}</span>
+                  <p class="hint">${escapeHtml(labels.modelsHint)}</p>
                 </div>
+                ${modelRowsBlock(`custom-provider-model-${index}`, provider.models, labels)}
                 <div class="setting-row__actions">
                   <button class="btn btn-primary btn-sm" type="submit">Save</button>
                   <button class="btn btn-danger btn-sm" type="submit" name="delete" value="1" data-confirm="Delete provider ${escapeHtml(provider.id)}?">Delete</button>
@@ -1216,29 +1378,29 @@ function customProvidersBlock(props: SettingsProps): string {
           )
           .join("");
   const add = `<details class="disclosure provider-add">
-    <summary>Add custom provider${icon("chevron-down", "disclosure__chevron")}</summary>
+    <summary>${escapeHtml(labels.addTitle)}${icon("chevron-down", "disclosure__chevron")}</summary>
     <form class="setting-row__form provider-add__form" method="post" action="${escapeHtml(block.add.action)}" data-settings-form data-no-busy data-success-notice="Provider saved.">
       <input type="hidden" name="action" value="create" />
       <input type="hidden" name="return_to" value="${escapeHtml(block.add.returnTo)}" />
       ${fieldErrorSlot(block.add.errorId)}
       <div class="field">
-        <label class="label" for="custom-provider-new-id">Provider id</label>
-        <input class="input" id="custom-provider-new-id" name="id" type="text" placeholder="llm-lan" required autocomplete="off" />
+        <label class="label" for="custom-provider-new-id">${escapeHtml(labels.providerId)}</label>
+        <input class="input" id="custom-provider-new-id" name="id" type="text" placeholder="${escapeHtml(labels.providerIdPlaceholder)}" required autocomplete="off" />
       </div>
       <div class="field">
-        <label class="label" for="custom-provider-new-name">Name</label>
-        <input class="input" id="custom-provider-new-name" name="name" type="text" placeholder="LLM LAN" autocomplete="off" />
+        <label class="label" for="custom-provider-new-name">${escapeHtml(labels.name)}</label>
+        <input class="input" id="custom-provider-new-name" name="name" type="text" placeholder="${escapeHtml(labels.namePlaceholder)}" autocomplete="off" />
       </div>
       <div class="field">
-        <label class="label" for="custom-provider-new-url">Base URL</label>
-        <input class="input" id="custom-provider-new-url" name="baseUrl" type="text" placeholder="http://gateway.example:4000/v1" required autocomplete="off" />
+        <label class="label" for="custom-provider-new-url">${escapeHtml(labels.baseUrl)}</label>
+        <input class="input" id="custom-provider-new-url" name="baseUrl" type="text" placeholder="${escapeHtml(labels.baseUrlPlaceholder)}" required autocomplete="off" />
         <p class="hint">Resolved inside the app container: use the host LAN address, not 127.0.0.1 or localhost.</p>
       </div>
       <div class="field">
-        <label class="label" for="custom-provider-new-models">Models</label>
-        <textarea class="input" id="custom-provider-new-models" name="models" rows="4" placeholder="deepseek | 1000000 | 64000" required></textarea>
-        <p class="hint">One per line: id | context | output | optional name.</p>
+        <span class="label">${escapeHtml(labels.models)}</span>
+        <p class="hint">${escapeHtml(labels.modelsHint)}</p>
       </div>
+      ${modelRowsBlock("custom-provider-model-new", [], labels)}
       <div class="setting-row__actions">
         <button class="btn btn-primary btn-sm" type="submit">Save</button>
       </div>
@@ -1246,10 +1408,10 @@ function customProvidersBlock(props: SettingsProps): string {
   </details>`;
   return `<div class="providers" id="custom-providers" aria-labelledby="custom-providers-title">
     <div class="providers__head">
-      <h3 class="card__title" id="custom-providers-title">Custom model providers</h3>
+      <h3 class="card__title" id="custom-providers-title">${escapeHtml(labels.title)}</h3>
       <span class="badge">${plural(block.count, "provider")}</span>
     </div>
-    <p class="hint providers__hint">Global OpenAI-compatible endpoints. The API key stays in the Providers block.</p>
+    <p class="hint providers__hint">${escapeHtml(labels.hint)}</p>
     ${rows}${add}
   </div>`;
 }

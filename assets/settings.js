@@ -61,6 +61,108 @@ document.addEventListener("change", (event) => {
 
 syncAllDrivers();
 
+function renumberModelRows(form) {
+  const list = form.querySelector("[data-model-list]");
+  if (!(list instanceof HTMLElement)) {
+    return;
+  }
+  const prefix = list.getAttribute("data-model-prefix") ?? "model";
+  const titleLabel = list.getAttribute("data-model-title-label") ?? "Model";
+  const rows = [...list.querySelectorAll("[data-model-row]")];
+  rows.forEach((row, index) => {
+    row.querySelectorAll("[data-model-field]").forEach((control) => {
+      if (!(control instanceof HTMLInputElement)) {
+        return;
+      }
+      const field = control.getAttribute("data-model-field");
+      if (field === null) {
+        return;
+      }
+      control.name = `model-${index}-${field}`;
+      control.id = `${prefix}-${index}-${field}`;
+    });
+    row.querySelectorAll("[data-model-label]").forEach((label) => {
+      if (!(label instanceof HTMLLabelElement)) {
+        return;
+      }
+      const field = label.getAttribute("data-model-label");
+      if (field !== null) {
+        label.htmlFor = `${prefix}-${index}-${field}`;
+      }
+    });
+    const title = row.querySelector("[data-model-title]");
+    if (title instanceof HTMLElement) {
+      title.textContent = `${titleLabel} ${index + 1}`;
+    }
+  });
+  const removable = rows.length > 1;
+  list.querySelectorAll("[data-model-remove]").forEach((button) => {
+    if (button instanceof HTMLButtonElement) {
+      button.disabled = !removable;
+    }
+  });
+}
+
+function syncModelRows() {
+  document.querySelectorAll("form [data-model-list]").forEach((list) => {
+    const form = list.closest("form");
+    if (form instanceof HTMLFormElement) {
+      renumberModelRows(form);
+    }
+  });
+}
+
+syncModelRows();
+
+document.addEventListener("click", (event) => {
+  const target = event.target;
+  if (!(target instanceof Element)) {
+    return;
+  }
+  const add = target.closest("[data-model-add]");
+  if (add instanceof HTMLElement) {
+    const form = add.closest("form");
+    if (!(form instanceof HTMLFormElement)) {
+      return;
+    }
+    const list = form.querySelector("[data-model-list]");
+    const template = form.querySelector("template[data-model-template]");
+    if (!(list instanceof HTMLElement) || !(template instanceof HTMLTemplateElement)) {
+      return;
+    }
+    event.preventDefault();
+    const row = template.content.firstElementChild?.cloneNode(true);
+    if (!(row instanceof HTMLElement)) {
+      return;
+    }
+    list.append(row);
+    renumberModelRows(form);
+    const first = row.querySelector("input");
+    if (first instanceof HTMLInputElement) {
+      first.focus();
+    }
+    return;
+  }
+  const remove = target.closest("[data-model-remove]");
+  if (remove instanceof HTMLElement) {
+    const form = remove.closest("form");
+    if (!(form instanceof HTMLFormElement)) {
+      return;
+    }
+    const list = form.querySelector("[data-model-list]");
+    const row = remove.closest("[data-model-row]");
+    if (!(list instanceof HTMLElement) || !(row instanceof HTMLElement)) {
+      return;
+    }
+    if (list.querySelectorAll("[data-model-row]").length <= 1) {
+      return;
+    }
+    event.preventDefault();
+    row.remove();
+    renumberModelRows(form);
+  }
+});
+
 const clearDialog = document.querySelector("#settings-clear-dialog");
 const clearForm =
   clearDialog instanceof HTMLDialogElement ? clearDialog.querySelector("form") : null;
@@ -511,6 +613,7 @@ function applySections(data, options) {
   }
   restoreDrafts(drafts);
   syncAllDrivers();
+  syncModelRows();
 
   const nextFocus = focusRowId.length > 0 ? document.getElementById(focusRowId) : null;
   if (nextFocus instanceof HTMLElement) {

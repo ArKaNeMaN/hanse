@@ -237,7 +237,6 @@ export interface SettingsModelProviderRowProps {
   readonly name: string;
   readonly baseUrl: string;
   readonly models: readonly ModelProviderModel[];
-  readonly modelsText: string;
   readonly warnings: readonly string[];
   readonly key: {
     readonly status: ProviderKeyStatus;
@@ -248,7 +247,6 @@ export interface SettingsModelProviderRowProps {
   readonly rowId: string;
   readonly nameInputId: string;
   readonly urlInputId: string;
-  readonly modelsInputId: string;
   readonly errorId: string;
   readonly actions: {
     readonly update: string;
@@ -389,9 +387,30 @@ export interface SettingsLabelsProps {
     readonly providerIdPlaceholder: string;
     readonly namePlaceholder: string;
     readonly baseUrlPlaceholder: string;
-    readonly modelsPlaceholder: string;
     readonly deleteConfirmPrefix: string;
     readonly modelsCount: string;
+    readonly modelRow: string;
+    readonly modelId: string;
+    readonly modelName: string;
+    readonly contextWindow: string;
+    readonly outputLimit: string;
+    readonly inputLimit: string;
+    readonly capabilities: string;
+    readonly attachments: string;
+    readonly reasoning: string;
+    readonly toolCalls: string;
+    readonly temperature: string;
+    readonly cost: string;
+    readonly costInput: string;
+    readonly costOutput: string;
+    readonly addModel: string;
+    readonly removeModel: string;
+    readonly modelIdPlaceholder: string;
+    readonly modelNamePlaceholder: string;
+    readonly contextWindowPlaceholder: string;
+    readonly outputLimitPlaceholder: string;
+    readonly inputLimitPlaceholder: string;
+    readonly costPlaceholder: string;
   };
   readonly git: {
     readonly title: string;
@@ -1079,19 +1098,6 @@ function gitAuthScopeDetails(
   });
 }
 
-function formatModelsText(models: readonly ModelProviderModel[]): string {
-  return models
-    .map((model) =>
-      [
-        model.id,
-        String(model.limit.context),
-        String(model.limit.output),
-        ...(model.name === undefined ? [] : [model.name]),
-      ].join(" | "),
-    )
-    .join("\n");
-}
-
 function providerRowId(provider: string): string {
   return `provider-${encodeURIComponent(provider)}`;
 }
@@ -1159,14 +1165,35 @@ const LABELS: SettingsLabelsProps = {
     name: "Name",
     baseUrl: "Base URL",
     models: "Models",
-    modelsHint: "One per line: id | context | output | optional name.",
+    modelsHint: "One row per model. Context and max output are required token limits.",
     providerId: "Provider id",
     providerIdPlaceholder: "llm-lan",
     namePlaceholder: "LLM LAN",
     baseUrlPlaceholder: "http://gateway.example:4000/v1",
-    modelsPlaceholder: "deepseek | 1000000 | 64000",
     deleteConfirmPrefix: "Delete provider",
     modelsCount: "models",
+    modelRow: "Model",
+    modelId: "Model id",
+    modelName: "Display name",
+    contextWindow: "Context window (tokens)",
+    outputLimit: "Max output (tokens)",
+    inputLimit: "Max input (tokens)",
+    capabilities: "Capabilities",
+    attachments: "Attachments (image, PDF, video)",
+    reasoning: "Reasoning output",
+    toolCalls: "Tool calls",
+    temperature: "Temperature parameter",
+    cost: "Cost (USD per 1M tokens)",
+    costInput: "Input cost",
+    costOutput: "Output cost",
+    addModel: "Add model",
+    removeModel: "Remove model",
+    modelIdPlaceholder: "deepseek-chat",
+    modelNamePlaceholder: "DeepSeek Chat",
+    contextWindowPlaceholder: "1000000",
+    outputLimitPlaceholder: "64000",
+    inputLimitPlaceholder: "Optional",
+    costPlaceholder: "0.00",
   },
   git: {
     title: "Git",
@@ -1496,7 +1523,6 @@ export function buildSettingsProps(input: SettingsBuildInput): SettingsProps | u
         name: provider.name,
         baseUrl: provider.baseUrl,
         models: provider.models,
-        modelsText: formatModelsText(provider.models),
         warnings: [
           ...collisionWarnings(provider.id, providerKeyIds),
           ...providerBaseUrlWarnings(provider.baseUrl),
@@ -1510,7 +1536,6 @@ export function buildSettingsProps(input: SettingsBuildInput): SettingsProps | u
         rowId: `custom-provider-${encodeURIComponent(provider.id)}`,
         nameInputId: `custom-provider-name-${index}`,
         urlInputId: `custom-provider-url-${index}`,
-        modelsInputId: `custom-provider-models-${index}`,
         errorId: `custom-provider-error-${index}`,
         actions: {
           update: "/api/settings/model-providers",

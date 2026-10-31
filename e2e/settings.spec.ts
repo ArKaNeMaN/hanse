@@ -129,7 +129,9 @@ test("renders providers and custom model providers masked", async ({ page }, inf
   await page.locator("#custom-provider-new-id").fill("e2e-added");
   await page.locator("#custom-provider-new-name").fill("E2E Added");
   await page.locator("#custom-provider-new-url").fill("http://added.example.test/v1");
-  await page.locator("#custom-provider-new-models").fill("added-model | 1000 | 100");
+  await page.locator("#custom-provider-model-new-0-id").fill("added-model");
+  await page.locator("#custom-provider-model-new-0-context").fill("1000");
+  await page.locator("#custom-provider-model-new-0-output").fill("100");
   await page
     .locator("#custom-providers details.provider-add form")
     .getByRole("button", { name: "Save" })

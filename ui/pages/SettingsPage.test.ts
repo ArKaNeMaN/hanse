@@ -84,14 +84,35 @@ const LABELS: SettingsLabelsProps = {
     name: "Name",
     baseUrl: "Base URL",
     models: "Models",
-    modelsHint: "One per line: id | context | output | optional name.",
+    modelsHint: "One row per model. Context and max output are required token limits.",
     providerId: "Provider id",
     providerIdPlaceholder: "llm-lan",
     namePlaceholder: "LLM LAN",
     baseUrlPlaceholder: "http://gateway.example:4000/v1",
-    modelsPlaceholder: "deepseek | 1000000 | 64000",
     deleteConfirmPrefix: "Delete provider",
     modelsCount: "models",
+    modelRow: "Model",
+    modelId: "Model id",
+    modelName: "Display name",
+    contextWindow: "Context window (tokens)",
+    outputLimit: "Max output (tokens)",
+    inputLimit: "Max input (tokens)",
+    capabilities: "Capabilities",
+    attachments: "Attachments (image, PDF, video)",
+    reasoning: "Reasoning output",
+    toolCalls: "Tool calls",
+    temperature: "Temperature parameter",
+    cost: "Cost (USD per 1M tokens)",
+    costInput: "Input cost",
+    costOutput: "Output cost",
+    addModel: "Add model",
+    removeModel: "Remove model",
+    modelIdPlaceholder: "deepseek-chat",
+    modelNamePlaceholder: "DeepSeek Chat",
+    contextWindowPlaceholder: "1000000",
+    outputLimitPlaceholder: "64000",
+    inputLimitPlaceholder: "Optional",
+    costPlaceholder: "0.00",
   },
   git: {
     title: "Git",
@@ -545,8 +566,18 @@ function props(scope: SettingsScope = "global"): SettingsProps {
           id: "e2e-llm",
           name: "E2E LLM",
           baseUrl: "http://llm.example.test/v1",
-          models: [{ id: "e2e-model", name: "E2E Model", limit: { context: 1000, output: 256 } }],
-          modelsText: "e2e-model | 1000 | 256 | E2E Model",
+          models: [
+            {
+              id: "e2e-model",
+              name: "E2E Model",
+              limit: { context: 1000, output: 256 },
+              attachment: true,
+              reasoning: true,
+              toolCall: false,
+              temperature: true,
+              cost: { input: 0.5, output: 1.5, cacheRead: 0.1, cacheWrite: 0.2 },
+            },
+          ],
           warnings: [],
           key: {
             status: { state: "missing" },
@@ -557,7 +588,6 @@ function props(scope: SettingsScope = "global"): SettingsProps {
           rowId: "custom-provider-e2e-llm",
           nameInputId: "custom-provider-name-0",
           urlInputId: "custom-provider-url-0",
-          modelsInputId: "custom-provider-models-0",
           errorId: "custom-provider-error-0",
           actions: {
             update: "/api/settings/model-providers",
@@ -927,10 +957,25 @@ describe("SettingsPage", () => {
 
     await wrapper.get("#custom-provider-e2e-llm > summary").trigger("click");
     await wrapper.get("#custom-provider-name-0").setValue("Renamed LLM");
+    await wrapper.get("#custom-provider-model-0-0-context").setValue("2048");
     await wrapper.get("#custom-provider-e2e-llm form").trigger("submit");
     await flushPromises();
     expect(mocks.apiMutation).toHaveBeenCalledWith("/api/settings/model-providers", {
-      json: expect.objectContaining({ action: "update", id: "e2e-llm", name: "Renamed LLM" }),
+      json: expect.objectContaining({
+        action: "update",
+        id: "e2e-llm",
+        name: "Renamed LLM",
+        models: [
+          expect.objectContaining({
+            id: "e2e-model",
+            limit: { context: 2048, output: 256 },
+            attachment: true,
+            reasoning: true,
+            toolCall: false,
+            temperature: true,
+          }),
+        ],
+      }),
     });
 
     await wrapper.get("#custom-provider-e2e-llm form button.btn-danger").trigger("click");
@@ -944,11 +989,17 @@ describe("SettingsPage", () => {
     const add = wrapper.get("#custom-providers details.provider-add");
     await add.get("input[name='id']").setValue("e2e-new");
     await add.get("input[name='baseUrl']").setValue("http://new.example.test/v1");
-    await add.get("textarea[name='models']").setValue("m | 1000 | 100");
+    await add.get("#custom-provider-model-new-0-id").setValue("m");
+    await add.get("#custom-provider-model-new-0-context").setValue("1000");
+    await add.get("#custom-provider-model-new-0-output").setValue("100");
     await add.get("form").trigger("submit");
     await flushPromises();
     expect(mocks.apiMutation).toHaveBeenLastCalledWith("/api/settings/model-providers", {
-      json: expect.objectContaining({ action: "create", id: "e2e-new" }),
+      json: expect.objectContaining({
+        action: "create",
+        id: "e2e-new",
+        models: [expect.objectContaining({ id: "m", limit: { context: 1000, output: 100 } })],
+      }),
     });
   });
 
