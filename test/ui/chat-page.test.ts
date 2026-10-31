@@ -2,6 +2,30 @@ import { flushPromises } from "@vue/test-utils";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FakeEventSource, mountChat } from "./chat-support.js";
 
+function permission(): Record<string, unknown> {
+  return {
+    key: "v1:waiting",
+    id: "waiting",
+    sessionID: "s1",
+    permission: "bash",
+    patterns: ["echo fixture"],
+    always: ["echo fixture"],
+    metadata: { command: "echo fixture" },
+    source: "v1",
+  };
+}
+
+function approval(id: string): Record<string, unknown> {
+  return {
+    id,
+    hostName: "fixture-host",
+    action: "exec",
+    commandPreview: `echo ${id}`,
+    requestedAt: "2026-10-30T00:00:00.000Z",
+    expiresAt: "2099-01-01T00:00:00.000Z",
+  };
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
   document.body.innerHTML = "";
@@ -250,6 +274,78 @@ describe("ChatPage read-only shell", () => {
       deletingPending: true,
     });
     expect(wrapper.find("[data-chat-deletion-pending]").exists()).toBe(true);
+    wrapper.unmount();
+  });
+
+  it("restores the session meta strip with title, id, live state, count, waiting, plan, and context", async () => {
+    const { wrapper } = await mountChat("/chat?app=alpha&project=p&session=s1", {
+      sessions: [{ id: "s1", title: "Session one" }],
+      permissions: [permission()],
+      todos: [
+        { content: "Fixture plan step", status: "in_progress", priority: "high" },
+        { content: "Finished fixture step", status: "completed", priority: "low" },
+      ],
+    });
+    await flushPromises();
+    const source = FakeEventSource.instances[0];
+    if (source === undefined) throw new Error("missing source");
+    source.open();
+    source.emit({ type: "stream.ready", seq: 0, streamID: "stream-meta" });
+    await flushPromises();
+
+    const meta = wrapper.find(".chat-thread > .chat-thread__meta");
+    expect(meta.find("[data-chat-session-title]").text()).toBe("Session one");
+    expect(meta.find("[data-chat-session-id]").text()).toBe("s1");
+    expect(meta.find("[data-chat-session-id]").attributes("title")).toBe("s1");
+    expect(meta.find("[data-chat-live]").text()).toBe("Live");
+    expect(meta.find("[data-chat-live]").attributes("data-state")).toBe("live");
+    expect(meta.find("[data-chat-message-count]").text()).toBe("2 messages");
+    expect(meta.find("[data-chat-waiting]").text()).toContain("Waiting for you");
+    expect(meta.find("[data-chat-plan-chip]").text()).toContain("Plan 1/2");
+    expect(meta.find("[data-chat-context-chip]").text()).toContain("Context 10%");
+    expect(
+      meta.find("[data-chat-context-chip] .chat-context-chip__meter").attributes("aria-valuenow"),
+    ).toBe("10");
+    wrapper.unmount();
+  });
+
+  it("opens the context rail from the context and plan chips", async () => {
+    const { wrapper } = await mountChat("/chat?app=alpha&project=p&session=s1", {
+      todos: [{ content: "Fixture plan step", status: "in_progress", priority: "high" }],
+    });
+    await flushPromises();
+    const shell = wrapper.find("#chat-shell");
+    expect(shell.attributes("data-chat-context")).toBe("closed");
+
+    await wrapper.find("[data-chat-context-chip]").trigger("click");
+    await flushPromises();
+    expect(shell.attributes("data-chat-context")).toBe("open");
+
+    await wrapper.find("[data-chat-context-close]").trigger("click");
+    await flushPromises();
+    expect(shell.attributes("data-chat-context")).toBe("closed");
+
+    await wrapper.find("[data-chat-plan-chip]").trigger("click");
+    await flushPromises();
+    expect(shell.attributes("data-chat-context")).toBe("open");
+    wrapper.unmount();
+  });
+
+  it("renders one inline SSH approvals owner in the thread and none in the rail", async () => {
+    const { wrapper, fetchState } = await mountChat("/chat?app=alpha&project=p&session=s1", {
+      sshApprovals: [approval("inline-1")],
+    });
+    await flushPromises();
+
+    expect(wrapper.findAll("[data-chat-ssh-approvals]")).toHaveLength(1);
+    expect(wrapper.find(".chat-thread [data-chat-ssh-approvals]").exists()).toBe(true);
+    expect(wrapper.find("[data-chat-context-rail] [data-chat-ssh-approvals]").exists()).toBe(false);
+    expect(wrapper.findAll(".ssh-approval-card")).toHaveLength(1);
+    expect(
+      fetchState.requests.filter(
+        (request) => request.method === "GET" && request.url.includes("/ssh/approvals"),
+      ),
+    ).toHaveLength(1);
     wrapper.unmount();
   });
 });

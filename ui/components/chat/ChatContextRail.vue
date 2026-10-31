@@ -1,8 +1,8 @@
 <script setup lang="ts">
 /**
  * Context rail: application, previews, context/compact, plan/todo, saved permissions, handoffs,
- * SSH approvals, restart pending, and policy warnings. It owns no network reads except the SSH
- * cards' polling; every other action is emitted to `ChatPage`, which already owns those stores.
+ * restart pending, and policy warnings. It owns no polling or network reads; every action is emitted
+ * to `ChatPage`, which already owns those stores. SSH approval cards live inline in the thread.
  */
 import { computed, ref } from "vue";
 import {
@@ -19,7 +19,6 @@ import type { NormalizedSavedPermission, NormalizedTodo } from "../../../src/ope
 import type { PreviewView } from "../../../src/preview/types.js";
 import type { ChatResponse } from "../../chat/types.js";
 import AppIcon from "../AppIcon.vue";
-import ChatSshApprovals from "./ChatSshApprovals.vue";
 
 const props = defineProps<{
   view: ChatResponse;
@@ -437,12 +436,6 @@ function requestRevoke(id: string): void {
           </a>
         </div>
       </section>
-
-      <ChatSshApprovals
-        :app-key="view.app.appKey"
-        :project="view.app.projectId"
-        :disabled="deletionPending"
-      />
 
       <hr class="rule">
       <section class="chat-context__section" aria-labelledby="context-shortcuts-title">

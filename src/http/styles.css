@@ -4121,6 +4121,11 @@
     font-size: var(--text-caption);
   }
 
+  .chat-meta-placeholder {
+    visibility: hidden;
+    pointer-events: none;
+  }
+
   .chat-session-title {
     max-inline-size: 32ch;
     overflow: hidden;
@@ -4715,6 +4720,17 @@
 
   .chat-shell--workspace .chat-thread > .composer {
     grid-row: 9;
+  }
+
+  /* Reserve the final meta height so late chips do not shift the feed or composer. */
+  .chat-thread--spa .chat-thread__meta {
+    min-block-size: calc(var(--space-16) + var(--space-5));
+  }
+
+  @media (min-width: 768px) {
+    .chat-thread--spa .chat-thread__meta {
+      min-block-size: calc(var(--space-16) + var(--space-1));
+    }
   }
 
   .chat-input-needed {

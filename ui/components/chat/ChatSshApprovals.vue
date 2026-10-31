@@ -20,6 +20,8 @@ const props = withDefaults(
   { intervalMs: 5_000, disabled: false },
 );
 
+const emit = defineEmits<{ "update:count": [count: number] }>();
+
 const approvals = ref<readonly SshApprovalView[]>([]);
 const error = ref<string | null>(null);
 const busy = ref<ReadonlySet<string>>(new Set<string>());
@@ -43,6 +45,7 @@ async function refresh(): Promise<void> {
   try {
     const data = await apiQuery<ChatSshApprovalsResponse>(basePath());
     approvals.value = data.approvals ?? [];
+    emit("update:count", approvals.value.length);
     error.value = null;
   } catch (failure) {
     error.value = failure instanceof Error ? failure.message : "Could not load SSH approvals.";

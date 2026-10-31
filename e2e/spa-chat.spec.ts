@@ -1025,7 +1025,9 @@ test("SPA chat keeps the composer full-width, answer rows full-width, and long t
   expectNoPageErrors(errors);
 });
 
-test("SPA chat approves and rejects SSH approval cards from the context rail", async ({ page }) => {
+test("SPA chat renders inline SSH approval cards in the thread and decides them", async ({
+  page,
+}) => {
   test.skip(!isSpa(), "SPA mode only");
   const errors = collectPageErrors(page);
   await signIn(page, CHAT_PATH);
@@ -1033,15 +1035,57 @@ test("SPA chat approves and rejects SSH approval cards from the context rail", a
   await page.reload();
   await expect(page.locator("#chat-shell")).toHaveCount(1);
 
-  await page.locator("[data-chat-context-toggle]").click();
-  const approvals = page.locator("[data-chat-ssh-approvals]");
+  const approvals = page.locator(".chat-thread [data-chat-ssh-approvals]");
   const chatApprovals = approvals.locator('[data-approval-id^="e2e-chat-ssh-"]');
+  await expect(page.locator("[data-chat-ssh-approvals]")).toHaveCount(1);
   await expect(approvals).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator("[data-chat-context-rail] [data-chat-ssh-approvals]")).toHaveCount(0);
   await expect(chatApprovals).toHaveCount(2);
   await approvals.locator('[data-approval-id="e2e-chat-ssh-reject"] [data-ssh-reject]').click();
   await expect(chatApprovals).toHaveCount(1, { timeout: 15_000 });
   await approvals.locator('[data-approval-id="e2e-chat-ssh-approve"] [data-ssh-approve]').click();
   await expect(chatApprovals).toHaveCount(0, { timeout: 15_000 });
+
+  await page.waitForTimeout(400);
+  expectNoPageErrors(errors);
+});
+
+test("SPA session meta and inline approvals hold at 1440 and 390 light", async ({ page }) => {
+  test.skip(!isSpa(), "SPA mode only");
+  test.slow();
+  const errors = collectPageErrors(page);
+  await signIn(page, CHAT_PATH);
+  await page.evaluate(() => localStorage.setItem("hanse-theme", "light"));
+  await page.emulateMedia({ colorScheme: "light" });
+
+  for (const width of [1440, 390] as const) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.reload();
+    await expect(page.locator("#chat-shell")).toHaveCount(1);
+
+    const meta = page.locator(".chat-thread > .chat-thread__meta");
+    await expect(meta.locator("[data-chat-session-title]")).toHaveText("E2E alpha session");
+    await expect(meta.locator("[data-chat-session-id]")).toHaveText("ses_e2ea");
+    await expect(meta.locator("[data-chat-session-id]")).toHaveAttribute("title", "ses_e2ealpha");
+    await expect(meta.locator("[data-chat-live]")).toHaveText(/Live|Paused|Connecting/);
+    await expect(meta.locator("[data-chat-message-count]")).toBeVisible();
+    await expect(meta.locator("[data-chat-context-chip]")).toContainText("Context");
+    await expect(meta.locator("[data-chat-plan-chip]")).toContainText("Plan 1/2");
+
+    const approvals = page.locator(".chat-thread [data-chat-ssh-approvals]");
+    await expect(page.locator("[data-chat-ssh-approvals]")).toHaveCount(1);
+    await expect(approvals).toBeVisible({ timeout: 15_000 });
+    await expect(page.locator("[data-chat-context-rail] [data-chat-ssh-approvals]")).toHaveCount(0);
+
+    const overflow = await page.evaluate(
+      () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    );
+    expect(overflow).toBeLessThanOrEqual(1);
+    await page.screenshot({
+      path: `.omo/visual-audit/chat-fix2--${width}--light--viewport.png`,
+      fullPage: false,
+    });
+  }
 
   await page.waitForTimeout(400);
   expectNoPageErrors(errors);

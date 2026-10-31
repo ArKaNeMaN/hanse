@@ -165,6 +165,15 @@ describe("ChatContextRail", () => {
     wrapper.unmount();
   });
 
+  it("does not own SSH approval polling or cards", async () => {
+    stubFetch();
+    const { wrapper } = mountRail();
+    await flushPromises();
+    expect(wrapper.find("[data-chat-ssh-approvals]").exists()).toBe(false);
+    expect(wrapper.text()).not.toContain("SSH approvals");
+    wrapper.unmount();
+  });
+
   it("posts a 202 compact request from the chat page and refreshes context", async () => {
     const { wrapper, fetchState } = await mountChat("/chat?app=alpha&project=p&session=s1", {
       contextSnapshot: snapshot(),

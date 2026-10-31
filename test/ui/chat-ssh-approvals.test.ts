@@ -141,4 +141,38 @@ describe("ChatSshApprovals", () => {
     expect(state.requests.filter((entry) => entry.method === "POST")).toHaveLength(posts);
     wrapper.unmount();
   });
+
+  it("keeps exactly one timer and one visibility listener across remount", async () => {
+    vi.useFakeTimers();
+    const state = installFetch([approval("a1")]);
+    const addListener = vi.spyOn(document, "addEventListener");
+    const removeListener = vi.spyOn(document, "removeEventListener");
+    const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
+
+    const first = mount(ChatSshApprovals, {
+      props: { appKey: "alpha", project: "p", intervalMs: 1_000 },
+    });
+    await flushPromises();
+    expect(setIntervalSpy).toHaveBeenCalledTimes(1);
+    expect(addListener.mock.calls.filter(([type]) => type === "visibilitychange")).toHaveLength(1);
+    first.unmount();
+    expect(removeListener.mock.calls.filter(([type]) => type === "visibilitychange")).toHaveLength(
+      1,
+    );
+
+    addListener.mockClear();
+    setIntervalSpy.mockClear();
+    const second = mount(ChatSshApprovals, {
+      props: { appKey: "alpha", project: "p", intervalMs: 1_000 },
+    });
+    await flushPromises();
+    expect(setIntervalSpy).toHaveBeenCalledTimes(1);
+    expect(addListener.mock.calls.filter(([type]) => type === "visibilitychange")).toHaveLength(1);
+
+    const readsBefore = state.requests.filter((entry) => entry.method === "GET").length;
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flushPromises();
+    expect(state.requests.filter((entry) => entry.method === "GET")).toHaveLength(readsBefore + 1);
+    second.unmount();
+  });
 });

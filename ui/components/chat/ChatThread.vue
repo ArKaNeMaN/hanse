@@ -1,13 +1,23 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import type { AttachmentView } from "../../../assets/chat-core.js";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import {
+  type AttachmentView,
+  contextChipLabel,
+  contextDetail,
+  contextMeterPercent,
+  contextStateClass,
+} from "../../../assets/chat-core.js";
+import type { ContextSnapshot } from "../../../src/opencode/context.js";
+import type { NormalizedTodo } from "../../../src/opencode/prompts.js";
 import {
   type ChatScrollMemory,
   readScrollMemory,
   scrollMemoryKey,
   writeScrollMemory,
 } from "../../chat/scroll-memory.js";
+import type { ChatStreamStatusKind } from "../../chat/stream.js";
 import type { ChatMessagePartView, ChatThreadItem, InlineQuestionView } from "../../chat/types.js";
+import AppIcon from "../AppIcon.vue";
 import ChatGeneratingRow from "./ChatGeneratingRow.vue";
 import ChatMessage from "./ChatMessage.vue";
 import ChatNoticeRow from "./ChatNoticeRow.vue";
@@ -25,6 +35,12 @@ const props = defineProps<{
   loadEarlierEnabled: boolean;
   messageCount?: string;
   generatingLabel?: string | null;
+  sessionTitle?: string;
+  streamStatus?: ChatStreamStatusKind;
+  waiting?: boolean;
+  todos?: readonly NormalizedTodo[];
+  contextSnapshot?: ContextSnapshot | null;
+  approvalCount?: number;
   questionViewForPart?: (part: ChatMessagePartView, messageID: string) => InlineQuestionView | null;
 }>();
 
@@ -33,7 +49,49 @@ const emit = defineEmits<{
   "question-submit": [view: InlineQuestionView, answers: string[][]];
   "question-reject": [view: InlineQuestionView];
   "attachment-redeliver": [attachment: AttachmentView];
+  "open-context": [section: "context" | "plan"];
 }>();
+
+const sessionTitleText = computed(() => {
+  const title = props.sessionTitle?.trim();
+  if (title !== undefined && title.length > 0) return title;
+  return props.sessionId === null ? "Session" : `Session ${props.sessionId.slice(0, 8)}`;
+});
+const sessionShortId = computed(() =>
+  props.sessionId === null ? "" : props.sessionId.slice(0, 8),
+);
+const liveState = computed(() => {
+  if (props.streamStatus === "live") return "live";
+  if (props.streamStatus === "paused") return "paused";
+  return "starting";
+});
+const liveLabel = computed(() => {
+  if (props.streamStatus === "live") return "Live";
+  if (props.streamStatus === "paused") return "Paused";
+  return "Connecting";
+});
+const planCounts = computed(() => {
+  const counts = { completed: 0, total: 0 };
+  for (const todo of props.todos ?? []) {
+    if (todo.status === "cancelled") continue;
+    counts.total += 1;
+    if (todo.status === "completed") counts.completed += 1;
+  }
+  return counts;
+});
+const planLabel = computed(() => `Plan ${planCounts.value.completed}/${planCounts.value.total}`);
+const hasPlan = computed(() => (props.todos ?? []).length > 0);
+const contextPercent = computed(() => contextMeterPercent(props.contextSnapshot ?? null));
+const contextState = computed(() => contextStateClass(props.contextSnapshot ?? null));
+const contextLabel = computed(() => contextChipLabel(props.contextSnapshot ?? null));
+const contextDetailText = computed(() => contextDetail(props.contextSnapshot ?? null));
+const contextTitle = computed(() =>
+  props.contextSnapshot === null || props.contextSnapshot === undefined
+    ? undefined
+    : contextDetailText.value === "—"
+      ? undefined
+      : contextDetailText.value,
+);
 const scroll = ref<HTMLElement | null>(null);
 const pinned = ref(true);
 const unseen = ref(0);
@@ -284,6 +342,16 @@ watch(
   },
 );
 
+watch(
+  () => props.approvalCount ?? 0,
+  (next, previous) => {
+    if (next > (previous ?? 0) && pinned.value) {
+      scheduleBottomScroll();
+    }
+  },
+  { flush: "post" },
+);
+
 onBeforeUnmount(() => {
   cancelScheduledBottom();
   persist();
@@ -293,8 +361,23 @@ defineExpose({ captureAnchor, restoreAnchor, scrollToBottom, onScroll, unseen })
 </script>
 
 <template>
-  <section class="chat-thread" aria-label="Conversation" data-chat-thread>
+  <section class="chat-thread chat-thread--spa" aria-label="Conversation" data-chat-thread>
     <div class="chat-thread__meta">
+      <span class="chat-session-title" data-chat-session-title :title="sessionTitleText">
+        {{ sessionTitleText }}
+      </span>
+      <span v-if="sessionId !== null" class="mono" data-chat-session-id :title="sessionId">{{
+        sessionShortId
+      }}</span>
+      <span
+        class="chat-live"
+        :data-state="liveState"
+        data-chat-live
+        role="status"
+        aria-live="polite"
+      >
+        {{ liveLabel }}
+      </span>
       <span
         v-if="messageCount !== undefined && messageCount.length > 0"
         class="caption"
@@ -302,6 +385,60 @@ defineExpose({ captureAnchor, restoreAnchor, scrollToBottom, onScroll, unseen })
       >
         {{ messageCount }}
       </span>
+      <span
+        class="chat-waiting"
+        :class="{ 'chat-meta-placeholder': waiting !== true }"
+        :aria-hidden="waiting !== true"
+        data-chat-waiting
+        role="status"
+        aria-live="polite"
+      >
+        <AppIcon name="stamp" />Waiting for you
+      </span>
+      <button
+        class="btn btn-ghost btn-sm chat-plan-chip"
+        :class="{ 'chat-meta-placeholder': !hasPlan }"
+        :aria-hidden="!hasPlan"
+        type="button"
+        data-chat-plan-chip
+        aria-controls="chat-plan-section"
+        title="Open the plan panel"
+        @click="emit('open-context', 'plan')"
+      >
+        <AppIcon name="activity" /><span>{{ planLabel }}</span>
+      </button>
+      <button
+        class="btn btn-ghost btn-sm chat-context-chip"
+        :class="{
+          'chat-meta-placeholder': contextSnapshot === null || contextSnapshot === undefined,
+        }"
+        :aria-hidden="contextSnapshot === null || contextSnapshot === undefined"
+        type="button"
+        data-chat-context-chip
+        aria-controls="chat-context-usage"
+        :data-state="contextState"
+        :title="contextTitle"
+        @click="emit('open-context', 'context')"
+      >
+        <AppIcon name="gauge" /><span>{{ contextLabel }}</span>
+        <span class="sr-only">{{ contextDetailText }}</span>
+        <!-- biome-ignore lint/a11y/useSemanticElements: keep the legacy meter markup and classes -->
+        <span
+          class="chat-context-chip__meter"
+          role="meter"
+          aria-label="Context usage"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          :aria-valuenow="contextPercent"
+          :aria-valuetext="contextLabel"
+        >
+          <span
+            class="chat-context-chip__fill"
+            :style="{ width: `${contextPercent}%` }"
+            aria-hidden="true"
+          />
+        </span>
+      </button>
     </div>
     <slot name="policy-warning" />
     <slot name="image-gate" />
@@ -357,6 +494,9 @@ defineExpose({ captureAnchor, restoreAnchor, scrollToBottom, onScroll, unseen })
             />
             <ChatNoticeRow v-else :notice="item.notice" />
           </template>
+        </div>
+        <div class="chat-thread__approvals">
+          <slot name="approvals" />
         </div>
         <ChatGeneratingRow
           v-if="

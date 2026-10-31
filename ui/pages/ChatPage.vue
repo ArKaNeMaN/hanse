@@ -77,6 +77,7 @@ import ChatQueueDialog from "../components/chat/ChatQueueDialog.vue";
 import ChatQueueStrip from "../components/chat/ChatQueueStrip.vue";
 import ChatScrim from "../components/chat/ChatScrim.vue";
 import ChatSessionsRail from "../components/chat/ChatSessionsRail.vue";
+import ChatSshApprovals from "../components/chat/ChatSshApprovals.vue";
 import ChatThread from "../components/chat/ChatThread.vue";
 import { useChatComposer } from "../composables/useChatComposer.js";
 import { useChatStream } from "../composables/useChatStream.js";
@@ -85,7 +86,7 @@ import { useWorkspaceShell } from "../composables/useWorkspaceShell.js";
 import { useChatContextStore } from "../stores/chat-context.js";
 import { useChatFeedStore } from "../stores/chat-feed.js";
 import { type PromptEntry, useChatPromptsStore } from "../stores/chat-prompts.js";
-import { useChatSessionStore } from "../stores/chat-session.js";
+import { chatSessionLabel, useChatSessionStore } from "../stores/chat-session.js";
 import { useChatUiStore } from "../stores/chat-ui.js";
 import { useToastStore } from "../stores/toasts.js";
 
@@ -120,6 +121,7 @@ const chatUi = useChatUiStore();
 const toasts = useToastStore();
 const composerRef = ref<InstanceType<typeof ChatComposer> | null>(null);
 const previewsView = ref<readonly PreviewView[]>([]);
+const sshApprovalCount = ref(0);
 const compactBusy = ref(false);
 const compactError = ref<string | null>(null);
 
@@ -1631,6 +1633,7 @@ watch(
       promptsStore.clear();
       chatUi.setPolicyWarnings([]);
       previewsView.value = [];
+      sshApprovalCount.value = 0;
       stopContextPolling();
       compactError.value = null;
     }
@@ -1816,6 +1819,37 @@ const threadItems = computed<ChatThreadItem[]>(() => {
 const messageCountText = computed(() =>
   messageCountLabel(feed.thread.order.length, historyCursor.value === null),
 );
+const activeSession = computed(() => {
+  const sessionID = routeState.session.value;
+  if (sessionID === null) return undefined;
+  return sessionStore.sessions.find((session) => session.id === sessionID);
+});
+const sessionTitle = computed(() => {
+  const sessionID = routeState.session.value;
+  if (sessionID === null) return "Session";
+  const session = activeSession.value;
+  return session === undefined ? `Session ${sessionID.slice(0, 8)}` : chatSessionLabel(session);
+});
+const sessionSnapshot = computed(() => contextStore.snapshotFor(routeState.session.value));
+const sessionTodos = computed(() => contextStore.todosFor(routeState.session.value)?.todos ?? []);
+const sessionWaiting = computed(() => {
+  promptsStore.revision;
+  const sessionID = routeState.session.value;
+  return sessionID !== null && promptsStore.countForSession(sessionID) > 0;
+});
+
+function openContextSection(section: "context" | "plan"): void {
+  chatUi.setContextOpen(true);
+  void nextTick().then(() => {
+    const target = document.getElementById(
+      section === "plan" ? "chat-plan-section" : "chat-context-usage",
+    );
+    if (target === null) return;
+    target.scrollIntoView?.({ block: "start" });
+    const heading = target.querySelector<HTMLElement>("h2");
+    heading?.focus();
+  });
+}
 const generatingLabel = computed(() => {
   feed.revision;
   const type = feed.thread.agentStatus?.type;
@@ -2015,11 +2049,18 @@ onBeforeUnmount(() => {
           :load-earlier-enabled="historyCursor !== null"
           :message-count="messageCountText"
           :generating-label="generatingLabel"
+          :session-title="sessionTitle"
+          :stream-status="chatStream.status.value"
+          :waiting="sessionWaiting"
+          :todos="sessionTodos"
+          :context-snapshot="sessionSnapshot"
+          :approval-count="sshApprovalCount"
           :question-view-for-part="inlineQuestionView"
           @load-earlier="loadEarlier"
           @question-submit="submitInlineQuestion"
           @question-reject="rejectInlineQuestion"
           @attachment-redeliver="redeliverAttachment"
+          @open-context="openContextSection"
         >
           <template #image-gate>
             <ChatImageGate :view="imageView" :busy="imageActionBusy" @action="runImageAction" />
@@ -2030,6 +2071,16 @@ onBeforeUnmount(() => {
               :blocked="imageBlocked"
               :busy="imageActionBusy"
               @action="runImageAction"
+            />
+          </template>
+          <template #approvals>
+            <ChatSshApprovals
+              v-if="view !== undefined && !stopped"
+              class="ssh-approval-slot"
+              :app-key="view.app.appKey"
+              :project="view.app.projectId"
+              :disabled="deletionPending"
+              @update:count="sshApprovalCount = $event"
             />
           </template>
           <template #queue-strip>
