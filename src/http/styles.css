@@ -7862,6 +7862,19 @@
     color: var(--text-1);
   }
 
+  .settings-nav__sections .settings-nav__link[aria-current="page"] {
+    background: var(--wash-2);
+    color: var(--text-1);
+    text-decoration: underline;
+    text-decoration-thickness: 2px;
+    text-underline-offset: 0.3em;
+  }
+
+  .settings-nav__sections .settings-nav__link[aria-current="page"]:hover {
+    background: var(--wash-2);
+    color: var(--text-1);
+  }
+
   .settings-nav__scope-short {
     display: none;
   }
@@ -8433,6 +8446,10 @@
   border-block: 1px solid var(--line);
 }
 
+.ssh-host__fact {
+  min-inline-size: 0;
+}
+
 .ssh-host__fact dt {
   margin: 0;
   color: var(--text-3);
@@ -8444,9 +8461,18 @@
 
 .ssh-host__fact dd {
   margin: var(--space-1) 0 0;
+  min-inline-size: 0;
   color: var(--text-2);
   font-size: var(--text-sm);
   overflow-wrap: anywhere;
+}
+
+.ssh-host__fingerprint {
+  display: block;
+  max-inline-size: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .ssh-host__access {

@@ -13,6 +13,7 @@ import SettingsRestartSection from "../components/SettingsRestartSection.vue";
 import SettingsRow from "../components/SettingsRow.vue";
 import SmartLink from "../components/SmartLink.vue";
 import { applyChrome } from "../composables/useChrome.js";
+import { useSectionNav } from "../composables/useSectionNav.js";
 import type {
   SettingsProps,
   SettingsResponse,
@@ -122,6 +123,15 @@ const dirtyRows = ref<ReadonlySet<string>>(new Set());
 const pendingClear = ref<SettingsRowProps | null>(null);
 
 const targetValue = computed(() => view.value?.scope.href ?? "");
+
+const SETTINGS_SECTION_IDS = [
+  "settings-agent",
+  "settings-web",
+  "settings-context",
+  "settings-git",
+  "settings-restart",
+] as const;
+const { activeId: activeSection, activate: activateSection } = useSectionNav(SETTINGS_SECTION_IDS);
 
 async function refreshChromeAndProps(): Promise<void> {
   const result = await settingsQuery.refetch();
@@ -313,7 +323,7 @@ watch(
     </p>
 
     <template v-else>
-      <nav class="settings-nav" :aria-label="view.labels.nav.ariaLabel">
+      <nav class="settings-nav" :aria-label="view.labels.nav.ariaLabel" data-section-nav>
         <section
           v-if="view.scope.scope !== 'global'"
           class="settings-nav__scopes"
@@ -352,7 +362,11 @@ watch(
           </span>
         </section>
 
-        <form class="settings-nav__scopes" :aria-label="view.labels.nav.scopeLabel">
+        <form
+          v-if="view.scope.scope !== 'global'"
+          class="settings-nav__scopes"
+          :aria-label="view.labels.nav.scopeLabel"
+        >
           <label class="label" for="settings-target">Scope target</label>
           <div class="select-wrap">
             <select
@@ -379,13 +393,44 @@ watch(
         </form>
 
         <div class="settings-nav__sections" :aria-label="view.labels.nav.sectionsLabel">
-          <a class="settings-nav__link" href="#settings-agent">{{ view.labels.sections.agent }}</a>
-          <a class="settings-nav__link" href="#settings-web">{{ view.labels.sections.web }}</a>
-          <a class="settings-nav__link" href="#settings-context">
+          <a
+            class="settings-nav__link"
+            href="#settings-agent"
+            :aria-current="activeSection === 'settings-agent' ? 'page' : undefined"
+            @click.prevent="activateSection('settings-agent')"
+          >
+            {{ view.labels.sections.agent }}
+          </a>
+          <a
+            class="settings-nav__link"
+            href="#settings-web"
+            :aria-current="activeSection === 'settings-web' ? 'page' : undefined"
+            @click.prevent="activateSection('settings-web')"
+          >
+            {{ view.labels.sections.web }}
+          </a>
+          <a
+            class="settings-nav__link"
+            href="#settings-context"
+            :aria-current="activeSection === 'settings-context' ? 'page' : undefined"
+            @click.prevent="activateSection('settings-context')"
+          >
             {{ view.labels.sections.context }}
           </a>
-          <a class="settings-nav__link" href="#settings-git">{{ view.labels.sections.git }}</a>
-          <a class="settings-nav__link" href="#settings-restart">
+          <a
+            class="settings-nav__link"
+            href="#settings-git"
+            :aria-current="activeSection === 'settings-git' ? 'page' : undefined"
+            @click.prevent="activateSection('settings-git')"
+          >
+            {{ view.labels.sections.git }}
+          </a>
+          <a
+            class="settings-nav__link"
+            href="#settings-restart"
+            :aria-current="activeSection === 'settings-restart' ? 'page' : undefined"
+            @click.prevent="activateSection('settings-restart')"
+          >
             {{ view.labels.sections.restart }}
           </a>
         </div>

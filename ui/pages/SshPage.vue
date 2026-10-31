@@ -7,6 +7,7 @@ import type { BootPayload } from "../boot.js";
 import AppIcon from "../components/AppIcon.vue";
 import SshHostDialog from "../components/SshHostDialog.vue";
 import { applyChrome } from "../composables/useChrome.js";
+import { useSectionNav } from "../composables/useSectionNav.js";
 import { absoluteTime, timeAgo } from "../format.js";
 import type {
   SshApproval,
@@ -41,6 +42,9 @@ const props = defineProps<{ boot: BootPayload }>();
 const route = useRoute();
 const router = useRouter();
 const toasts = useToastStore();
+
+const SSH_SECTION_IDS = ["ssh-hosts", "ssh-access", "ssh-approvals", "ssh-audit"] as const;
+const { activeId: activeSection, activate: activateSection } = useSectionNav(SSH_SECTION_IDS);
 
 function queryString(value: unknown): string {
   const raw = Array.isArray(value) ? value[0] : value;
@@ -440,15 +444,6 @@ async function refreshPage(): Promise<void> {
           "Coordinator-held keys, host-key pinning, per-application grants, approvals, and audit."
         }}
       </p>
-      <div class="page-meta">
-        <span class="mono"> {{ counts.hosts }} {{ counts.hosts === 1 ? "host" : "hosts" }} </span>
-        <span class="mono">{{ counts.pendingApprovals }} pending</span>
-        <span class="mono">
-          {{ counts.activeGrants }}
-          active
-          {{ counts.activeGrants === 1 ? "grant" : "grants" }}
-        </span>
-      </div>
     </div>
     <div class="page-header__actions">
       <button class="btn btn-secondary" type="button" @click="refreshPage">
@@ -489,19 +484,39 @@ async function refreshPage(): Promise<void> {
         <AppIcon name="alert-triangle" />{{ view.error.message }}
       </p>
 
-      <nav class="settings-nav ssh-nav" :aria-label="view.labels.nav.ariaLabel">
+      <nav class="settings-nav ssh-nav" :aria-label="view.labels.nav.ariaLabel" data-section-nav>
         <div class="settings-nav__sections" :aria-label="view.labels.nav.sectionsLabel">
-          <a class="settings-nav__link" :href="view.scope.hostsHref">
+          <a
+            class="settings-nav__link"
+            :href="view.scope.hostsHref"
+            :aria-current="activeSection === 'ssh-hosts' ? 'page' : undefined"
+            @click.prevent="activateSection('ssh-hosts')"
+          >
             {{ view.labels.nav.hosts }}
           </a>
-          <a class="settings-nav__link" :href="view.scope.accessHref">
+          <a
+            class="settings-nav__link"
+            :href="view.scope.accessHref"
+            :aria-current="activeSection === 'ssh-access' ? 'page' : undefined"
+            @click.prevent="activateSection('ssh-access')"
+          >
             {{ view.labels.nav.access }}
           </a>
-          <a class="settings-nav__link" :href="view.scope.approvalsHref">
+          <a
+            class="settings-nav__link"
+            :href="view.scope.approvalsHref"
+            :aria-current="activeSection === 'ssh-approvals' ? 'page' : undefined"
+            @click.prevent="activateSection('ssh-approvals')"
+          >
             {{ view.labels.nav.approvals }}
             ({{ counts.pendingApprovals }})
           </a>
-          <a class="settings-nav__link" :href="view.scope.auditHref">
+          <a
+            class="settings-nav__link"
+            :href="view.scope.auditHref"
+            :aria-current="activeSection === 'ssh-audit' ? 'page' : undefined"
+            @click.prevent="activateSection('ssh-audit')"
+          >
             {{ view.labels.nav.audit }}
           </a>
         </div>
@@ -616,7 +631,7 @@ async function refreshPage(): Promise<void> {
                 <div class="ssh-host__fact">
                   <dt>Host key</dt>
                   <dd>
-                    <span class="mono" :title="host.hostKeyFingerprint ?? ''">
+                    <span class="mono ssh-host__fingerprint" :title="host.hostKeyFingerprint ?? ''">
                       {{ shortFingerprint(host.hostKeyFingerprint) }}
                     </span>
                   </dd>
@@ -624,7 +639,10 @@ async function refreshPage(): Promise<void> {
                 <div class="ssh-host__fact">
                   <dt>Client key</dt>
                   <dd>
-                    <span class="mono" :title="host.credential?.fingerprint ?? ''">
+                    <span
+                      class="mono ssh-host__fingerprint"
+                      :title="host.credential?.fingerprint ?? ''"
+                    >
                       {{ shortFingerprint(host.credential?.fingerprint) }}
                     </span>
                   </dd>

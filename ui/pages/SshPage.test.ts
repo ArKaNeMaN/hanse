@@ -393,9 +393,9 @@ describe("SshPage", () => {
 
     expect(wrapper.get("h1").text()).toBe("SSH hosts");
     expect(wrapper.text()).toContain("Access");
-    expect(wrapper.text()).toContain("1 host");
-    expect(wrapper.text()).toContain("1 pending");
-    expect(wrapper.text()).toContain("1 active grant");
+    expect(wrapper.get(".page-header").find(".page-meta").exists()).toBe(false);
+    expect(wrapper.get(".page-header").text()).not.toContain("1 host");
+    expect(wrapper.findAll(".ssh-watch .watch")).toHaveLength(4);
     expect(wrapper.get("#ssh-scope").element).toHaveProperty("value", "p:a");
     expect(wrapper.get("#ssh-host-host-1").text()).toContain("deploy-host");
     expect(wrapper.get("#ssh-host-host-1").text()).toContain("Not pinned");
@@ -409,6 +409,49 @@ describe("SshPage", () => {
     expect(wrapper.find("style").exists()).toBe(false);
     expect(wrapper.html()).not.toContain("PRIVATE KEY");
     expect(mocks.apiQuery).not.toHaveBeenCalled();
+  });
+
+  it("keeps long fingerprints on one truncated line with the full value in the title", async () => {
+    const base = host();
+    const credential = base.credential;
+    if (credential === null) {
+      throw new Error("fixture host credential is missing");
+    }
+    const longFingerprint = `SHA256:${"a".repeat(40)}`;
+    const wrapper = await mountPage(
+      boot(
+        props({
+          hosts: [
+            host({
+              credential: { ...credential, fingerprint: longFingerprint },
+            }),
+          ],
+        }),
+      ),
+    );
+
+    const values = wrapper.findAll("#ssh-host-host-1 .ssh-host__fingerprint");
+    expect(values).toHaveLength(2);
+    const client = wrapper.get(
+      `#ssh-host-host-1 .ssh-host__fingerprint[title="${longFingerprint}"]`,
+    );
+    expect(client.text()).toContain("…");
+    expect(client.text()).not.toBe(longFingerprint);
+  });
+
+  it("marks the first section current and follows a section-link click", async () => {
+    const wrapper = await mountPage(boot(props()));
+    const links = wrapper.findAll(".settings-nav__sections a");
+
+    expect(links).toHaveLength(4);
+    expect(links[0]?.attributes("aria-current")).toBe("page");
+    expect(links[0]?.text()).toBe("Hosts");
+
+    await links[2]?.trigger("click");
+
+    expect(links[0]?.attributes("aria-current")).toBeUndefined();
+    expect(links[2]?.attributes("aria-current")).toBe("page");
+    expect(links[2]?.text()).toContain("Approvals");
   });
 
   it("renders the unscoped console with the choose-application state", async () => {

@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, type Page, test } from "@playwright/test";
 import {
   collectPageErrors,
   expectNoPageErrors,
@@ -16,6 +16,23 @@ const CHROME_FIXTURE = {
   sshPendingCount: 0,
 };
 
+async function expectSingleLineClientFingerprints(page: Page): Promise<void> {
+  const clientFingerprints = page.locator(
+    '.ssh-host .ssh-host__fingerprint[title="SHA256:e2e-fixture-fingerprint"]',
+  );
+  await expect(clientFingerprints).toHaveCount(2);
+  for (let index = 0; index < 2; index += 1) {
+    const fingerprint = clientFingerprints.nth(index);
+    await expect(fingerprint).toBeVisible();
+    await expect(fingerprint).toHaveCSS("white-space", "nowrap");
+    await expect(fingerprint).toHaveCSS("text-overflow", "ellipsis");
+    expect(await fingerprint.textContent()).toContain("…");
+    const cardBox = await page.locator(".ssh-host").nth(index).boundingBox();
+    const fingerprintBox = await fingerprint.boundingBox();
+    expect(fingerprintBox?.width ?? 0).toBeLessThanOrEqual(cardBox?.width ?? 0);
+  }
+}
+
 test("deep links, target queries, refreshes, and history stay in the SPA document", async ({
   page,
 }) => {
@@ -26,6 +43,20 @@ test("deep links, target queries, refreshes, and history stay in the SPA documen
   await expect(page.locator("#ui-fallback")).not.toBeVisible();
   await expect(page.getByRole("heading", { name: "SSH hosts" })).toBeVisible();
   await expect(page).toHaveURL(new RegExp(`/ssh\\?target=${PROJECT_ONE}(?::|%3A)alpha$`));
+
+  await expectSingleLineClientFingerprints(page);
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.locator("#main").evaluate((element) => {
+    element.scrollTop = 0;
+  });
+  await page.locator("#ssh-hosts").scrollIntoViewIfNeeded();
+  await expectSingleLineClientFingerprints(page);
+  const mobileOverflow = await page.evaluate(
+    () => document.documentElement.scrollWidth > window.innerWidth + 1,
+  );
+  expect(mobileOverflow).toBe(false);
+
   await expect(page.locator("#ssh-scope")).toHaveValue(`${PROJECT_ONE}:alpha`);
   await expect(page.getByText("Access for E2E Project One / alpha")).toBeVisible();
 
@@ -52,6 +83,42 @@ test("deep links, target queries, refreshes, and history stay in the SPA documen
   await expect(page).toHaveURL(new RegExp(`/ssh\\?target=${PROJECT_ONE}(?::|%3A)alpha$`));
   await expect(page.getByText("Access for E2E Project One / alpha")).toBeVisible();
   await expect(page.locator("#hanse-boot")).toHaveCount(1);
+
+  await settle(page);
+  expectNoPageErrors(errors);
+});
+
+test("section nav marks the current section and the header keeps counts in the strip", async ({
+  page,
+}) => {
+  const errors = collectPageErrors(page);
+  await signIn(page, "/ssh");
+
+  await expect(page.locator(".page-header .page-meta")).toHaveCount(0);
+  await expect(page.locator(".ssh-watch .watch")).toHaveCount(4);
+
+  const sections = page.locator(".ssh-nav .settings-nav__sections");
+  await expect(sections.locator('a[aria-current="page"]')).toHaveText("Hosts");
+
+  await sections.getByRole("link", { name: "Access", exact: true }).click();
+  await expect(sections.locator('a[aria-current="page"]')).toHaveText("Access");
+  await expect(page.locator("#ssh-access")).toBeInViewport();
+
+  await page.locator("#main").evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+  });
+  await expect(sections.locator('a[aria-current="page"]')).toHaveText("Audit");
+
+  for (const viewport of [
+    { width: 1440, height: 900 },
+    { width: 390, height: 844 },
+  ]) {
+    await page.setViewportSize(viewport);
+    const overflow = await page.evaluate(
+      () => document.documentElement.scrollWidth > window.innerWidth + 1,
+    );
+    expect(overflow).toBe(false);
+  }
 
   await settle(page);
   expectNoPageErrors(errors);

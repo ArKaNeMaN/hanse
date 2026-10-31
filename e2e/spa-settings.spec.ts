@@ -40,11 +40,11 @@ test("deep links, refreshes, and scope navigation stay in the SPA document", asy
 
   await page.goto("/settings");
   await expect(page.getByRole("heading", { name: "Settings", exact: true })).toBeVisible();
-  await page.locator("#settings-target").selectOption(PROJECT_SETTINGS);
-  await expect(page).toHaveURL(new RegExp(`${PROJECT_SETTINGS}$`));
-  await expect(page.locator("#hanse-boot")).toHaveCount(1);
-  await expect(page.getByRole("heading", { name: "E2E Project One settings" })).toBeVisible();
+  await expect(page.locator("#settings-target")).toHaveCount(0);
+  await expect(page.locator(".page-header .page-meta")).toContainText("Global");
 
+  await page.goto(PROJECT_SETTINGS);
+  await expect(page.getByRole("heading", { name: "E2E Project One settings" })).toBeVisible();
   await page.locator("#settings-target").selectOption(APP_SETTINGS);
   await expect(page).toHaveURL(new RegExp(`${APP_SETTINGS}$`));
   await expect(page.locator("#hanse-boot")).toHaveCount(1);
@@ -63,9 +63,44 @@ test("deep links, refreshes, and scope navigation stay in the SPA document", asy
   expectNoPageErrors(errors);
 });
 
-test("swaps chrome, title, and active nav after a scoped client navigation", async ({ page }) => {
+test("global target selector is hidden and the section nav tracks scroll", async ({ page }) => {
   const errors = collectPageErrors(page);
   await signIn(page, "/settings");
+
+  await expect(page.locator("#settings-target")).toHaveCount(0);
+  await expect(page.locator(".page-header .page-meta")).toContainText("Global");
+
+  const sections = page.locator(".settings-nav__sections");
+  await expect(sections.locator('a[aria-current="page"]')).toHaveText("Agent");
+
+  await sections.getByRole("link", { name: "Git", exact: true }).click();
+  await expect(sections.locator('a[aria-current="page"]')).toHaveText("Git");
+  await expect(page.locator("#settings-git")).toBeInViewport();
+
+  await page.locator("#main").evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+  });
+  await expect(sections.locator('a[aria-current="page"]')).toHaveText(/^Restart/);
+
+  for (const viewport of [
+    { width: 1440, height: 900 },
+    { width: 390, height: 844 },
+  ]) {
+    await page.setViewportSize(viewport);
+    const overflow = await page.evaluate(
+      () => document.documentElement.scrollWidth > window.innerWidth + 1,
+    );
+    expect(overflow).toBe(false);
+    await expect(page.locator("#settings-target")).toHaveCount(0);
+  }
+
+  await settle(page);
+  expectNoPageErrors(errors);
+});
+
+test("swaps chrome, title, and active nav after a scoped client navigation", async ({ page }) => {
+  const errors = collectPageErrors(page);
+  await signIn(page, PROJECT_SETTINGS);
 
   await page.route(/\/api\/ui\/chrome\?/, (route) =>
     route.fulfill({
@@ -75,9 +110,9 @@ test("swaps chrome, title, and active nav after a scoped client navigation", asy
     }),
   );
 
-  await page.locator("#settings-target").selectOption(PROJECT_SETTINGS);
+  await page.locator("#settings-target").selectOption(APP_SETTINGS);
 
-  await expect(page).toHaveURL(new RegExp(`${PROJECT_SETTINGS}$`));
+  await expect(page).toHaveURL(new RegExp(`${APP_SETTINGS}$`));
   await expect(page.locator("#hanse-boot")).toHaveCount(1);
   await expect(page.locator("#breadcrumb-host")).toContainText("Swapped Settings");
   await expect(page.locator("#breadcrumb-host")).toHaveAttribute("data-nav-id", "settings");

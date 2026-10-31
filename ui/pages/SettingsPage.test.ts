@@ -764,6 +764,40 @@ describe("SettingsPage", () => {
     expect(mocks.apiQuery).not.toHaveBeenCalled();
   });
 
+  it("hides the target selector at global scope", async () => {
+    const wrapper = await mountPage(boot(props("global")));
+
+    expect(wrapper.find("#settings-target").exists()).toBe(false);
+    expect(wrapper.get(".page-header").text()).toContain("Global");
+  });
+
+  it("selects the current application target", async () => {
+    const wrapper = await mountPage(
+      boot(props("app"), "settings-app", { id: "p", app: "a" }),
+      "/projects/p/apps/a/settings",
+    );
+    const select = wrapper.get("#settings-target").element as HTMLSelectElement;
+
+    expect(select.selectedIndex).toBeGreaterThan(0);
+    expect(select.value).toBe("/projects/p/apps/a/settings");
+    expect(select.selectedOptions[0]?.textContent).toContain("Alpha / a");
+  });
+
+  it("marks the first section current and follows a section-link click", async () => {
+    const wrapper = await mountPage(boot(props("global")));
+    const links = wrapper.findAll(".settings-nav__sections a");
+
+    expect(links).toHaveLength(5);
+    expect(links[0]?.attributes("aria-current")).toBe("page");
+    expect(links[0]?.text()).toBe("Agent");
+
+    await links[3]?.trigger("click");
+
+    expect(links[0]?.attributes("aria-current")).toBeUndefined();
+    expect(links[3]?.attributes("aria-current")).toBe("page");
+    expect(links[3]?.text()).toBe("Git");
+  });
+
   it("renders inherited project rows and scope details", async () => {
     const wrapper = await mountPage(
       boot(props("project"), "settings-project", { id: "p" }),
@@ -771,6 +805,7 @@ describe("SettingsPage", () => {
     );
 
     expect(wrapper.get("h1").text()).toBe("Alpha settings");
+    expect(wrapper.find("#settings-target").exists()).toBe(true);
     expect(wrapper.get("#setting-web-search").text()).toContain("Inherited");
     expect(wrapper.get("#setting-web-search").text()).toContain("Scope details");
     expect(wrapper.text()).toContain("Global settings");
@@ -792,9 +827,13 @@ describe("SettingsPage", () => {
     expect(wrapper.get("#setting-git-ssh").text()).toContain("Not shown");
   });
 
-  it("switches project target through the router and refetches props", async () => {
+  it("switches the target through the router and refetches props", async () => {
     const router = testRouter();
-    const wrapper = await mountPage(boot(props("global")), "/settings", router);
+    const wrapper = await mountPage(
+      boot(props("app"), "settings-app", { id: "p", app: "a" }),
+      "/projects/p/apps/a/settings",
+      router,
+    );
     mocks.apiQuery.mockResolvedValue(props("project"));
 
     await wrapper.get("#settings-target").setValue("/projects/p/settings");
