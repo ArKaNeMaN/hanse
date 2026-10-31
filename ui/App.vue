@@ -28,6 +28,15 @@ const viewKey = computed(() => {
     const project = typeof route.query.project === "string" ? route.query.project : "";
     return `chat:${app}:${project}`;
   }
+  // Keep one inventory component alive across global/project/app scope switches so the previous
+  // rows remain mounted while the next scope loads instead of flashing a blank page.
+  if (
+    route.name === "skills-global" ||
+    route.name === "skills-project" ||
+    route.name === "skills-app"
+  ) {
+    return "skills-inventory";
+  }
   return route.fullPath;
 });
 

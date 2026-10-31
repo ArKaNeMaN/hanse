@@ -30,6 +30,7 @@ describe("ChatMessage part surfaces", () => {
     expect(wrapper.find(".chat-text").classes()).toContain("message__body");
     expect(wrapper.find(".chat-text strong").text()).toBe("Bold");
     expect(wrapper.find(".chat-reasoning summary").text()).toContain("Thinking");
+    expect(wrapper.find(".chat-reasoning summary .icon").exists()).toBe(true);
     expect(wrapper.find(".chat-reasoning__text").text()).toContain("I should inspect the output.");
     expect(wrapper.findAll('[data-part-id="p1"]')).toHaveLength(1);
     wrapper.unmount();
@@ -44,6 +45,17 @@ describe("ChatMessage part surfaces", () => {
     const body = wrapper.find('[data-part-id="long"]');
     expect(body.classes()).toContain("message__body");
     expect(body.text()).toContain("a".repeat(240));
+    wrapper.unmount();
+  });
+
+  it("marks user messages with the legacy bubble class", async () => {
+    const wrapper = render(
+      [part({ id: "user", type: "text", text: "Hello", data: { text: "Hello" } })],
+      { role: "user" },
+    );
+    await nextTick();
+    expect(wrapper.classes()).toContain("message--user");
+    expect(wrapper.find(".message__body").classes()).toContain("message__body");
     wrapper.unmount();
   });
 

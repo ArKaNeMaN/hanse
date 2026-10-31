@@ -3,6 +3,7 @@
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { reasoningElapsedMs } from "../../../assets/chat-core.js";
 import type { ChatMessagePartView } from "../../chat/types.js";
+import AppIcon from "../AppIcon.vue";
 
 const props = defineProps<{ part: ChatMessagePartView }>();
 const now = ref(Date.now());
@@ -54,6 +55,7 @@ onBeforeUnmount(() => {
 <template>
   <details class="tool-call chat-reasoning" :data-part-id="part.id" data-part-type="reasoning">
     <summary>
+      <AppIcon name="activity" />
       <span class="mono">Thinking</span>
       <span v-if="elapsed.length > 0" class="tool-call__elapsed mono">{{ elapsed }}</span>
     </summary>

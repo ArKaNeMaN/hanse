@@ -1208,6 +1208,11 @@ function chatStorageScope(): { app: string; project: string } {
   return { app: routeState.app.value, project: routeState.project.value };
 }
 
+function selectSessionFromRail(sessionID: string): void {
+  routeState.selectSession(sessionID);
+  chatUi.setSessionsOpen(false);
+}
+
 async function createSession(): Promise<void> {
   if (creatingSession.value || routeState.app.value.length === 0) {
     return;
@@ -1222,6 +1227,7 @@ async function createSession(): Promise<void> {
     await nextTick();
     if (createdID !== null) {
       routeState.selectSession(createdID);
+      chatUi.setSessionsOpen(false);
     }
   } catch (error) {
     toasts.push(errorText(error, "Could not create a session."), "error");
@@ -1896,11 +1902,30 @@ function onGlobalKeydown(event: KeyboardEvent): void {
   }
 }
 
+function closeChatPanelsForGlobalNav(): void {
+  chatUi.setSessionsOpen(false);
+  chatUi.setContextOpen(false);
+  chatUi.setQueueOpen(false);
+}
+
+let globalNavObserver: MutationObserver | undefined;
+
 onMounted(() => {
   document.addEventListener("keydown", onGlobalKeydown);
+  const shell = document.getElementById("shell");
+  if (shell !== null) {
+    globalNavObserver = new MutationObserver(() => {
+      if (shell.dataset.nav === "open") {
+        closeChatPanelsForGlobalNav();
+      }
+    });
+    globalNavObserver.observe(shell, { attributes: true, attributeFilter: ["data-nav"] });
+  }
 });
 
 onBeforeUnmount(() => {
+  globalNavObserver?.disconnect();
+  globalNavObserver = undefined;
   document.removeEventListener("keydown", onGlobalKeydown);
   if (commandConfirmResolver !== null) {
     const resolve = commandConfirmResolver;
@@ -1971,7 +1996,7 @@ onBeforeUnmount(() => {
         :error="sessionsError"
         :stopped="stopped"
         :deleting="deleting"
-        @select="routeState.selectSession"
+        @select="selectSessionFromRail"
         @toggle="sessionStore.toggleExpanded"
         @delete="deleteSession"
         @new="createSession"

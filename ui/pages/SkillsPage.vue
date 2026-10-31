@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { useQuery, useQueryClient } from "@tanstack/vue-query";
+import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/vue-query";
 import { computed, ref, watch } from "vue";
 import { RouterLink, useRoute, useRouter } from "vue-router";
 import { ApiError, apiMutation, apiQuery } from "../api.js";
@@ -181,6 +181,7 @@ const inventoryQuery = useQuery<SkillsResponse>({
   ]),
   queryFn: () => apiQuery<SkillsResponse>(inventoryApiPath()),
   initialData: () => bootInventory.value,
+  placeholderData: keepPreviousData,
   staleTime: 30_000,
   retry: false,
   enabled: computed(() => !isCreate.value || bootCreate.value === undefined),
@@ -531,10 +532,6 @@ function discardCreate(): void {
 
     <!-- Inventory ---------------------------------------------------------- -->
     <template v-else>
-      <p v-if="loading && view !== undefined" class="hint" role="status" aria-live="polite">
-        Updating skills…
-      </p>
-
       <section v-if="failed && view === undefined" class="card">
         <div class="card__head">
           <h2 class="card__title">
@@ -567,7 +564,7 @@ function discardCreate(): void {
       <template v-else>
         <SkillsScopeNav :model="view.scope" />
 
-        <div class="workbench-grid section">
+        <div class="workbench-grid section" :aria-busy="loading">
           <div class="stack">
             <div class="toolbar skill-toolbar" data-skill-inventory-toolbar>
               <form class="cluster" aria-label="Search skills" @submit.prevent="submitSearch">

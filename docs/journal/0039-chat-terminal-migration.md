@@ -624,6 +624,12 @@ following checkpoints align the SPA with the legacy composition without changing
   the single SSH approvals poller now renders inline in the thread and is removed from the rail.
 - Initial chat load now pins the feed to the newest content when a session is selected before its
   messages arrive, so the inline approval cards are not left below an unpinned viewport.
+- Follow-up polish: operator messages use the legacy `message--user` bubble, reasoning rows restore
+  the activity icon, the phone composer hides the commands button and uses an icon-only Send, and
+  opening the global navigation drawer closes the chat session/context/queue panels.
+- Skills inventory keeps one component instance across global/project/app scope and filter changes
+  (`keepPreviousData` plus a stable route key), so the previous inventory stays visible instead of
+  flashing a blank page and shifting the shared layout.
 
 Evidence: `npm test` 3325 passed; `npm run test:e2e` 209 passed, 13 skipped; lint/typecheck/
 typecheck:ui/typecheck:e2e/build/check ui/check:chat-worker/check:sensitive/diff-check pass. Fresh

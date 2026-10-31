@@ -6111,6 +6111,24 @@
     color: var(--danger);
   }
 
+  @media (max-width: 767px) {
+    .chat-commands-button {
+      display: none;
+    }
+
+    .chat-send-button {
+      flex: none;
+      justify-content: center;
+      inline-size: 2.75rem;
+      min-inline-size: 2.75rem;
+      padding-inline: 0;
+    }
+
+    .chat-send-button .btn__label {
+      display: none;
+    }
+  }
+
   @media (max-width: 480px) {
     .composer__row {
       gap: var(--space-1);

@@ -198,6 +198,7 @@ const optimisticLabel = computed(() => {
       `chat-message--${record.role}`,
       record.handoff != null ? 'message--handoff' : '',
       record.omo != null ? 'message--system' : '',
+      record.role === 'user' && record.handoff == null && record.omo == null ? 'message--user' : '',
       record.optimistic != null ? 'message--optimistic' : '',
     ]"
     :data-message-id="record.id"

@@ -85,6 +85,33 @@ test("navigates between global, project, and application skills without a reload
   expectNoPageErrors(errors);
 });
 
+test("keeps the current inventory visible while switching scope", async ({ page }) => {
+  const errors = collectPageErrors(page);
+  await signIn(page, APP_SKILLS);
+  await expect(page.locator("[data-skill-inventory]")).toBeVisible();
+
+  let release: (() => void) | undefined;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route(/\/api\/ui\/skills\?scope=global\b/, async (route) => {
+    await held;
+    await route.continue();
+  });
+
+  await page.locator(".settings-nav a", { hasText: "Global" }).click();
+  await page.waitForTimeout(150);
+  await expect(page.locator("[data-skill-inventory]")).toBeVisible();
+  await expect(page.getByText("Loading skills…")).toHaveCount(0);
+  release?.();
+  await expect(page).toHaveURL(/\/skills$/);
+  await expect(page.locator("[data-skill-inventory]")).toBeVisible();
+  await page.unroute(/\/api\/ui\/skills\?scope=global\b/);
+
+  await settle(page);
+  expectNoPageErrors(errors);
+});
+
 test("?legacy=1 and the rollback servers serve the legacy skills pages", async ({ page }) => {
   const errors = collectPageErrors(page);
   await signIn(page, "/skills");

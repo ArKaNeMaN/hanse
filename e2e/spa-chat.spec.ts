@@ -1195,9 +1195,27 @@ test("SPA chat mobile drawers open and close without trapping each other", async
   const shell = page.locator("#chat-shell");
   await expect(shell).toHaveCount(1);
   await expect(page.locator(".chat-sessions-toggle")).toBeVisible();
+  await expect(page.locator("[data-chat-commands-button]")).toBeHidden();
+  await expect(page.locator("[data-chat-send] .btn__label")).toBeHidden();
+  const inputBox = await page.locator("[data-chat-composer-input]").boundingBox();
+  expect(inputBox?.width ?? 0).toBeGreaterThan(200);
   await page.locator(".chat-sessions-toggle").click();
   await expect(shell).toHaveAttribute("data-chat-sessions", "open");
   await expect(page.locator("[data-chat-scrim]")).toBeVisible();
+
+  await page.locator("[data-nav-toggle]").click();
+  await expect(page.locator("#shell")).toHaveAttribute("data-nav", "open");
+  await expect(shell).toHaveAttribute("data-chat-sessions", "closed");
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#shell")).toHaveAttribute("data-nav", "closed");
+
+  await page.locator(".chat-sessions-toggle").click();
+  await page.locator('.session-item[data-session-id="ses_e2ehistory"]').click();
+  await expect(shell).toHaveAttribute("data-chat-sessions", "closed");
+  await expect(page).toHaveURL(/session=ses_e2ehistory/);
+
+  await page.locator(".chat-sessions-toggle").click();
+  await expect(shell).toHaveAttribute("data-chat-sessions", "open");
   await page.keyboard.press("Escape");
   await expect(shell).toHaveAttribute("data-chat-sessions", "closed");
   await expect(page.locator("[data-chat-scrim]")).toHaveCount(0);
@@ -1219,6 +1237,8 @@ test("SPA chat mobile drawers open and close without trapping each other", async
   await expect(shell).toHaveCount(1);
   await expect(page.locator("[data-chat-context-toggle]")).toBeHidden();
   await expect(page.locator(".chat-sessions-toggle")).toBeHidden();
+  await expect(page.locator("[data-chat-commands-button]")).toBeVisible();
+  await expect(page.locator("[data-chat-send] .btn__label")).toBeVisible();
   await expect(page.locator("[data-chat-sessions-rail]")).toBeVisible();
   await expect(page.locator("[data-chat-context-rail]")).toBeVisible();
   await page.waitForTimeout(300);
