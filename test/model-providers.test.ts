@@ -127,6 +127,82 @@ describe("ModelProviderService", () => {
     expect(service.snapshot().hash).not.toBe(first.hash);
   });
 
+  it("projects capability, cost, limit, and modality settings", () => {
+    const { service } = fixture();
+    service.create(
+      input({
+        models: [
+          model("vision", {
+            attachment: true,
+            reasoning: true,
+            toolCall: false,
+            temperature: true,
+            limit: { context: 1000, input: 900, output: 100 },
+            cost: { input: 0.5, output: 1.5, cacheRead: 0.1, cacheWrite: 0.2 },
+          }),
+        ],
+      }),
+      "operator",
+    );
+    expect(service.snapshot().overlay).toEqual({
+      "llm-lan": {
+        npm: "@ai-sdk/openai-compatible",
+        name: "LLM LAN",
+        options: { baseURL: "http://gateway:4000/v1" },
+        models: {
+          vision: {
+            limit: { context: 1000, input: 900, output: 100 },
+            attachment: true,
+            reasoning: true,
+            tool_call: false,
+            temperature: true,
+            cost: { input: 0.5, output: 1.5, cache_read: 0.1, cache_write: 0.2 },
+            modalities: { input: ["text", "image", "video", "pdf"] },
+          },
+        },
+      },
+    });
+    const hash = service.snapshot().hash;
+    service.update(
+      "llm-lan",
+      input({ models: [model("vision", { attachment: false })] }),
+      "operator",
+    );
+    expect(service.snapshot().hash).not.toBe(hash);
+  });
+
+  it("keeps explicitly configured modalities", () => {
+    const { service } = fixture();
+    service.create(
+      input({
+        models: [
+          model("image-only", {
+            attachment: true,
+            modalities: { input: ["text", "image"] },
+          }),
+        ],
+      }),
+      "operator",
+    );
+    expect(service.snapshot().overlay?.["llm-lan"]?.models["image-only"]).toMatchObject({
+      modalities: { input: ["text", "image"] },
+    });
+  });
+
+  it("rejects invalid capability, cost, and modality values", () => {
+    const { service } = fixture();
+    for (const overrides of [
+      { attachment: "yes" as unknown as boolean },
+      { cost: { input: -1, output: 1 } },
+      { cost: { input: 1, output: Number.NaN } },
+      { modalities: { input: ["hologram"] as never } },
+    ]) {
+      expect(() =>
+        service.create(input({ models: [model("bad", overrides)] }), "operator"),
+      ).toThrow(ModelProviderValidationError);
+    }
+  });
+
   it("rejects invalid provider ids, names, URLs, and models", () => {
     const { service } = fixture();
     for (const id of ["LLM", "-llm", "__proto__", "constructor", "a/b"]) {

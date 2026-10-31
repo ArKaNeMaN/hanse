@@ -1,12 +1,17 @@
 import { hashValue } from "../settings/hash.js";
 import { ModelProviderValidationError } from "./errors.js";
 import {
+  MODEL_MODALITIES,
+  type ModelModality,
   type ModelProvider,
+  type ModelProviderCost,
   type ModelProviderInput,
   type ModelProviderLimit,
+  type ModelProviderModalities,
   type ModelProviderModel,
   PROVIDER_NPM,
   type ProviderOverlay,
+  type ProviderOverlayModel,
 } from "./types.js";
 
 export const MAX_PROVIDERS = 32;
@@ -35,9 +40,12 @@ const PROVIDER_ID_RE = /^[a-z0-9][a-z0-9._-]*$/;
 const MODEL_ID_RE = /^[A-Za-z0-9@][A-Za-z0-9._:/@+-]*$/;
 const PROTOTYPE_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 const MAX_TOKENS = 10_000_000;
+const MAX_PRICE = 1_000_000;
 const MAX_MODEL_NAME = 128;
 const MAX_PROVIDER_NAME = 128;
 const MAX_BASE_URL = 2048;
+const MODALITY_SET: ReadonlySet<string> = new Set(MODEL_MODALITIES);
+const DEFAULT_ATTACHMENT_INPUT_MODALITIES: ModelModality[] = ["text", "image", "video", "pdf"];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -160,7 +168,7 @@ function validateModelName(value: unknown): string | undefined {
   return name;
 }
 
-function validateToken(value: unknown, field: "context" | "output"): number {
+function validateToken(value: unknown, field: string): number {
   if (typeof value !== "number" || !Number.isInteger(value) || value < 1 || value > MAX_TOKENS) {
     throw new ModelProviderValidationError(
       `${field} must be an integer between 1 and ${MAX_TOKENS}`,
@@ -169,12 +177,98 @@ function validateToken(value: unknown, field: "context" | "output"): number {
   return value;
 }
 
+function validateOptionalToken(value: unknown, field: string): number | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  return validateToken(value, field);
+}
+
+function validateOptionalBoolean(value: unknown, field: string): boolean | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (typeof value !== "boolean") {
+    throw new ModelProviderValidationError(`${field} must be a boolean`);
+  }
+  return value;
+}
+
+function validatePrice(value: unknown, field: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > MAX_PRICE) {
+    throw new ModelProviderValidationError(`${field} must be a number between 0 and ${MAX_PRICE}`);
+  }
+  return value;
+}
+
+function validateCost(value: unknown): ModelProviderCost | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (!isRecord(value)) {
+    throw new ModelProviderValidationError("model cost must be an object");
+  }
+  return {
+    input: validatePrice(value.input, "cost input"),
+    output: validatePrice(value.output, "cost output"),
+    ...(value.cacheRead === undefined
+      ? {}
+      : { cacheRead: validatePrice(value.cacheRead, "cost cache read") }),
+    ...(value.cacheWrite === undefined
+      ? {}
+      : { cacheWrite: validatePrice(value.cacheWrite, "cost cache write") }),
+  };
+}
+
+function validateModalityList(value: unknown, field: string): ModelModality[] | undefined {
+  if (!Array.isArray(value)) {
+    throw new ModelProviderValidationError(`${field} must be an array`);
+  }
+  const seen = new Set<ModelModality>();
+  for (const entry of value) {
+    if (typeof entry !== "string" || !MODALITY_SET.has(entry)) {
+      throw new ModelProviderValidationError(
+        `${field} entries must be one of ${MODEL_MODALITIES.join(", ")}`,
+      );
+    }
+    seen.add(entry as ModelModality);
+  }
+  if (seen.size === 0) {
+    return undefined;
+  }
+  return MODEL_MODALITIES.filter((modality) => seen.has(modality));
+}
+
+function validateModalities(value: unknown): ModelProviderModalities | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (!isRecord(value)) {
+    throw new ModelProviderValidationError("model modalities must be an object");
+  }
+  const input =
+    value.input === undefined ? undefined : validateModalityList(value.input, "modalities input");
+  const output =
+    value.output === undefined
+      ? undefined
+      : validateModalityList(value.output, "modalities output");
+  if (input === undefined && output === undefined) {
+    return undefined;
+  }
+  return {
+    ...(input === undefined ? {} : { input }),
+    ...(output === undefined ? {} : { output }),
+  };
+}
+
 function validateLimit(value: unknown): ModelProviderLimit {
   if (!isRecord(value)) {
     throw new ModelProviderValidationError("model limit must be an object");
   }
+  const input = validateOptionalToken(value.input, "input");
   return {
     context: validateToken(value.context, "context"),
+    ...(input === undefined ? {} : { input }),
     output: validateToken(value.output, "output"),
   };
 }
@@ -185,10 +279,24 @@ function validateModel(value: unknown): ModelProviderModel {
   }
   const id = validateModelId(value.id);
   const name = validateModelName(value.name);
+  const attachment = validateOptionalBoolean(value.attachment, "model attachment");
+  const reasoning = validateOptionalBoolean(value.reasoning, "model reasoning");
+  const toolCall = validateOptionalBoolean(value.toolCall, "model toolCall");
+  const temperature = validateOptionalBoolean(value.temperature, "model temperature");
+  const cost = validateCost(value.cost);
+  const modalities =
+    validateModalities(value.modalities) ??
+    (attachment === true ? { input: [...DEFAULT_ATTACHMENT_INPUT_MODALITIES] } : undefined);
   return {
     id,
     ...(name === undefined ? {} : { name }),
     limit: validateLimit(value.limit),
+    ...(attachment === undefined ? {} : { attachment }),
+    ...(reasoning === undefined ? {} : { reasoning }),
+    ...(toolCall === undefined ? {} : { toolCall }),
+    ...(temperature === undefined ? {} : { temperature }),
+    ...(cost === undefined ? {} : { cost }),
+    ...(modalities === undefined ? {} : { modalities }),
   };
 }
 
@@ -268,6 +376,41 @@ export function parseModelLines(text: unknown): ModelProviderModel[] {
   return validateModels(models);
 }
 
+function overlayModel(model: ModelProviderModel): ProviderOverlayModel {
+  return {
+    ...(model.name === undefined ? {} : { name: model.name }),
+    limit: {
+      context: model.limit.context,
+      ...(model.limit.input === undefined ? {} : { input: model.limit.input }),
+      output: model.limit.output,
+    },
+    ...(model.attachment === undefined ? {} : { attachment: model.attachment }),
+    ...(model.reasoning === undefined ? {} : { reasoning: model.reasoning }),
+    ...(model.toolCall === undefined ? {} : { tool_call: model.toolCall }),
+    ...(model.temperature === undefined ? {} : { temperature: model.temperature }),
+    ...(model.cost === undefined
+      ? {}
+      : {
+          cost: {
+            input: model.cost.input,
+            output: model.cost.output,
+            ...(model.cost.cacheRead === undefined ? {} : { cache_read: model.cost.cacheRead }),
+            ...(model.cost.cacheWrite === undefined ? {} : { cache_write: model.cost.cacheWrite }),
+          },
+        }),
+    ...(model.modalities === undefined
+      ? {}
+      : {
+          modalities: {
+            ...(model.modalities.input === undefined ? {} : { input: [...model.modalities.input] }),
+            ...(model.modalities.output === undefined
+              ? {}
+              : { output: [...model.modalities.output] }),
+          },
+        }),
+  };
+}
+
 export function toOverlay(
   providers: readonly ModelProvider[],
 ): Record<string, ProviderOverlay> | undefined {
@@ -280,13 +423,7 @@ export function toOverlay(
       const models = Object.fromEntries(
         [...provider.models]
           .sort((left, right) => left.id.localeCompare(right.id))
-          .map((model) => [
-            model.id,
-            {
-              ...(model.name === undefined ? {} : { name: model.name }),
-              limit: { context: model.limit.context, output: model.limit.output },
-            },
-          ]),
+          .map((model) => [model.id, overlayModel(model)]),
       );
       return [
         provider.id,
@@ -314,11 +451,7 @@ export function hashProviders(providers: readonly ModelProvider[]): string | und
         baseUrl: provider.baseUrl,
         models: [...provider.models]
           .sort((left, right) => left.id.localeCompare(right.id))
-          .map((model) => ({
-            id: model.id,
-            ...(model.name === undefined ? {} : { name: model.name }),
-            limit: { context: model.limit.context, output: model.limit.output },
-          })),
+          .map((model) => ({ id: model.id, ...overlayModel(model) })),
       })),
   });
 }
