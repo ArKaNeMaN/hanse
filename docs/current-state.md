@@ -895,7 +895,10 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   entries.
 - Custom model providers live in the global `model_providers` table (migration v19). An operator
   adds an OpenAI-compatible provider under Settings -> Custom model providers with an id, display
-  name, base URL, and 1-64 models (`context`/`output` limits). The coordinator projects every
+  name, base URL, and 1-64 models. Each model is edited through separate fields: id, display name,
+  context/input/output token limits, attachment/reasoning/tool-call/temperature capabilities, and
+  optional input/output/cache cost metadata. Enabling attachments also enables the image, PDF, and
+  video input modalities that Hanse's inline-attachment gate reads. The coordinator projects every
   validated provider into `OPENCODE_CONFIG_CONTENT.provider` with the bundled
   `@ai-sdk/openai-compatible` adapter; the API key stays in `provider_keys`/`auth.json`.
   `llm.model` remains a free-form `provider/model` string with a datalist of custom models. The

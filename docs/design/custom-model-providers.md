@@ -145,9 +145,11 @@ to:
 }
 ```
 
-`limit` is always emitted. `tool_call`, `reasoning`, and `attachment` are not exposed in this stage;
+`limit` is always emitted. This stage does not expose `tool_call`, `reasoning`, or `attachment`;
 opencode's default for a new config model is `tool_call: true`, which is required for an agent
-provider. A provider with no models is rejected before it reaches the overlay.
+provider. A later enhancement exposes these as per-model fields together with `limit.input`,
+modalities, and optional cost metadata. A provider with no models is rejected before it reaches the
+overlay.
 
 The overlay remains the highest non-managed config layer. A project `opencode.json` provider with a
 different id still applies. A same-id provider is deep-merged per key: the overlay wins on `npm`,
@@ -181,9 +183,10 @@ HTTP (human-only, same-origin; settings pages and JSON callers):
 
 - `GET /api/settings/model-providers` -> `{ providers: ModelProvider[], warnings: Record<string, string[]> }`.
 - `POST /api/settings/model-providers` with `action=create|update|delete`, `id`, `name`, `baseUrl`,
-  and `models` (form: one line per model, `id | context | output | optional name`; JSON: the
-  structured array). Browser form submissions use the existing settings fragment contract and
-  refresh the `agent` section plus `restart`/`warnings`.
+  and model input (JSON: the structured array; browser forms: `model-<n>-<field>` indexed fields;
+  the legacy `models` line string `id | context | output | optional name` remains accepted). Browser
+  form submissions use the existing settings fragment contract and refresh the `agent` section plus
+  `restart`/`warnings`.
 - The create/update JSON response includes `warnings` for the affected id. The HTML row shows the
   same warnings; they never block.
 - The path is registered in `isSettingsRoute` before dispatch; the `GET` and `POST` branches are
@@ -200,9 +203,11 @@ On Global settings only, a **Custom model providers** block sits next to the exi
 
 - One row per provider: display name/id, base URL, model count, key status, collision warnings,
   edit form, delete action.
-- An **Add custom provider** disclosure with id, name, base URL, and a models textarea.
-- The models textarea uses one line per model: `id | context | output | optional display name`.
-  A `|` in a model display name is rejected by validation.
+- An **Add custom provider** disclosure with id, name, base URL, and a model-row editor.
+- Each model row uses separate fields for id, display name, context/input/output token limits,
+  optional input/output cost, and the attachment, reasoning, tool-call, and temperature
+  capabilities. A later enhancement replaces the original pipe-delimited textarea; the HTTP API
+  still accepts the line format for compatibility.
 - Delete asks for confirmation and is refused server-side when the provider is in use.
 - Project and app settings show a short hint that custom providers are global, with a link to
   `/settings#custom-providers`; the key block remains scope-aware.
@@ -381,11 +386,12 @@ provider delete guard reads the `settings` table directly, not through `Settings
 - Project/app-scoped provider definitions and provider inheritance.
 - Auto-discovery of models from `/v1/models` or `/model/info`.
 - Arbitrary npm adapters, custom headers, OAuth providers, or a per-provider `apiKey` field.
-- Model capability flags beyond the opencode defaults (`tool_call: true`).
+- Model capability flags beyond the opencode defaults (`tool_call: true`); a later enhancement adds
+  the per-model capability, modalities, and cost fields described above.
 - Enabling/disabling a provider without deleting it.
 - Master-agent provider management.
 - A model picker that enumerates the bundled `models.dev` catalog.
-- Per-model cost metadata in the UI.
+- Per-model cost metadata in the UI; a later enhancement adds optional input/output/cache costs.
 - A complete bundled-provider registry for collision detection; only a curated warning set.
 
 ## 8. Rollout and backward compatibility

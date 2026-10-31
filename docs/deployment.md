@@ -192,8 +192,10 @@ If the provider is not in `opencode`'s bundled catalog, register it once for all
 2. Enter a provider id (for example `llm-lan`), a display name, and the base URL of the
    OpenAI-compatible API root (usually ending in `/v1`). The base URL is resolved **inside the app
    container**: use the host's LAN address, not `127.0.0.1` or `localhost`.
-3. Add one model per line: `model-id | context | output | optional name`, where `context` and
-   `output` are the model's token limits.
+3. Add each model with its own fields: model id, optional display name, context and max-output
+   token limits, optional separate input limit, and optional cost per million input/output tokens.
+   Enable **Attachments** for models that accept images, PDFs, or video, and set **Reasoning**,
+   **Tool calls**, and **Temperature** to match the model. Use **Add model** for more entries.
 4. Save, add the API key under **Settings -> Providers** for the same id, set `llm.model` to
    `<provider-id>/<model-id>`, and restart the application.
 
