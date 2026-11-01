@@ -7174,11 +7174,28 @@
     .chat-thread__identity {
       flex-wrap: nowrap;
       gap: var(--space-1) var(--space-2);
+      overflow: hidden;
+    }
+
+    .chat-thread__identity > * {
+      white-space: nowrap;
+    }
+
+    .chat-thread__identity [data-chat-session-id] {
+      display: none;
     }
 
     .chat-session-title {
       flex: 1 1 auto;
+      min-inline-size: 0;
       max-inline-size: none;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .chat-thread__identity [data-chat-message-count],
+    .chat-thread__identity [data-chat-live] {
+      flex: none;
     }
 
     .chat-thread__chips {

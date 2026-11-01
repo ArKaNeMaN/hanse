@@ -631,7 +631,9 @@ following checkpoints align the SPA with the legacy composition without changing
   (`keepPreviousData` plus a stable route key), so the previous inventory stays visible instead of
   flashing a blank page and shifting the shared layout.
 - The stopped-agent shell restores the in-chat `Start agent` action; the legacy session meta is now
-  two semantic groups with a compact 390px layout and a desktop height reservation for CLS.
+  two semantic groups with a compact 390px layout and a desktop height reservation for CLS. On
+  mobile the redundant short session id is hidden and the title ellipsizes, so the identity row
+  cannot wrap to a third line.
 - The Stop action uses the destructive button style and a local `stop` icon fallback. Fenced JSON
   Markdown and JSON-array tool output are covered; an aborted message load retries once so rapid
   session switching cannot strand an empty feed.

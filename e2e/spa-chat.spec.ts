@@ -1200,6 +1200,7 @@ test("SPA chat mobile drawers open and close without trapping each other", async
   const inputBox = await page.locator("[data-chat-composer-input]").boundingBox();
   expect(inputBox?.width ?? 0).toBeGreaterThan(200);
   await expect(page.locator(".chat-thread__identity")).toBeVisible();
+  await expect(page.locator("[data-chat-session-id]")).toBeHidden();
   await expect(page.locator(".chat-thread__chips")).toBeVisible();
   const metaBox = await page.locator(".chat-thread__meta").boundingBox();
   expect(metaBox?.height ?? 999).toBeLessThan(70);
