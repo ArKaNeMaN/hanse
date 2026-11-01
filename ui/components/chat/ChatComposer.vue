@@ -261,7 +261,8 @@ defineExpose({ focus, resize });
         @paste="onPaste"
       ></textarea>
       <button
-        class="btn btn-primary chat-send-button"
+        class="btn chat-send-button"
+        :class="mode === 'stop' ? 'btn-danger' : 'btn-primary'"
         type="button"
         :aria-label="mode === 'stop' ? 'Stop' : 'Send'"
         :data-chat-send="mode === 'send' ? 'true' : undefined"

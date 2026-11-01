@@ -119,6 +119,7 @@ export interface ChatFixture {
   readonly permissionReplyStatus?: number;
   readonly compactStatus?: number;
   readonly restartStatus?: number;
+  readonly startStatus?: number;
   readonly previewCloseStatus?: number;
   readonly custom?: (request: {
     readonly method: string;
@@ -334,6 +335,10 @@ export function installFetch(fixture: ChatFixture = {}): InstalledFetch {
     if (/\/api\/apps\/alpha\/restart/.test(url) && method === "POST") {
       const status = fixture.restartStatus ?? 200;
       return json(status, status === 200 ? { restarted: true } : { error: "restart failed" });
+    }
+    if (/\/api\/apps\/alpha\/start/.test(url) && method === "POST") {
+      const status = fixture.startStatus ?? 200;
+      return json(status, status === 200 ? { state: "running" } : { error: "start failed" });
     }
     if (url.startsWith("/api/apps/alpha/commands")) {
       const status = fixture.commandsStatus ?? 200;

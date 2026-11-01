@@ -244,8 +244,16 @@ describe("ChatPage read-only shell", () => {
       { sessionsStatus: 503, sessionsCode: "agent_stopped" },
     );
     expect(wrapper.find("[data-chat-stopped]").exists()).toBe(true);
+    expect(wrapper.find("[data-chat-start-agent]").exists()).toBe(true);
     expect(router.currentRoute.value.query.session).toBe("keep");
     expect(fetchState.requests.some((request) => request.url.includes("/messages"))).toBe(true);
+    await wrapper.find("[data-chat-start-agent]").trigger("click");
+    await flushPromises();
+    expect(
+      fetchState.requests.some(
+        (request) => request.method === "POST" && request.url.includes("/start"),
+      ),
+    ).toBe(true);
     wrapper.unmount();
   });
 

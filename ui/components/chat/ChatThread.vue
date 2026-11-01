@@ -35,6 +35,7 @@ const props = defineProps<{
   loadEarlierEnabled: boolean;
   messageCount?: string;
   generatingLabel?: string | null;
+  startingAgent?: boolean;
   sessionTitle?: string;
   streamStatus?: ChatStreamStatusKind;
   waiting?: boolean;
@@ -50,6 +51,7 @@ const emit = defineEmits<{
   "question-reject": [view: InlineQuestionView];
   "attachment-redeliver": [attachment: AttachmentView];
   "open-context": [section: "context" | "plan"];
+  start: [];
 }>();
 
 const sessionTitleText = computed(() => {
@@ -368,82 +370,86 @@ defineExpose({ captureAnchor, restoreAnchor, scrollToBottom, onScroll, unseen })
 <template>
   <section class="chat-thread chat-thread--spa" aria-label="Conversation" data-chat-thread>
     <div class="chat-thread__meta">
-      <span class="chat-session-title" data-chat-session-title :title="sessionTitleText">
-        {{ sessionTitleText }}
-      </span>
-      <span v-if="sessionId !== null" class="mono" data-chat-session-id :title="sessionId">{{
-        sessionShortId
-      }}</span>
-      <span
-        class="chat-live"
-        :data-state="liveState"
-        data-chat-live
-        role="status"
-        aria-live="polite"
-      >
-        {{ liveLabel }}
-      </span>
-      <span
-        v-if="messageCount !== undefined && messageCount.length > 0"
-        class="caption"
-        data-chat-message-count
-      >
-        {{ messageCount }}
-      </span>
-      <span
-        class="chat-waiting"
-        :class="{ 'chat-meta-placeholder': waiting !== true }"
-        :aria-hidden="waiting !== true"
-        data-chat-waiting
-        role="status"
-        aria-live="polite"
-      >
-        <AppIcon name="stamp" />Waiting for you
-      </span>
-      <button
-        class="btn btn-ghost btn-sm chat-plan-chip"
-        :class="{ 'chat-meta-placeholder': !hasPlan }"
-        :aria-hidden="!hasPlan"
-        type="button"
-        data-chat-plan-chip
-        aria-controls="chat-plan-section"
-        title="Open the plan panel"
-        @click="emit('open-context', 'plan')"
-      >
-        <AppIcon name="activity" /><span>{{ planLabel }}</span>
-      </button>
-      <button
-        class="btn btn-ghost btn-sm chat-context-chip"
-        :class="{
-          'chat-meta-placeholder': contextSnapshot === null || contextSnapshot === undefined,
-        }"
-        :aria-hidden="contextSnapshot === null || contextSnapshot === undefined"
-        type="button"
-        data-chat-context-chip
-        aria-controls="chat-context-usage"
-        :data-state="contextState"
-        :title="contextTitle"
-        @click="emit('open-context', 'context')"
-      >
-        <AppIcon name="gauge" /><span>{{ contextLabel }}</span>
-        <span class="sr-only">{{ contextDetailText }}</span>
-        <!-- biome-ignore lint/a11y/useSemanticElements: keep the legacy meter markup and classes -->
-        <span
-          class="chat-context-chip__meter"
-          role="meter"
-          aria-label="Context usage"
-          aria-valuemin="0"
-          aria-valuemax="100"
-          :aria-valuenow="contextPercent"
-          :aria-valuetext="contextLabel"
-        >
-          <span
-            class="chat-context-chip__fill"
-            :style="{ width: `${contextPercent}%` }"
-            aria-hidden="true"
-          />
+      <div class="chat-thread__identity">
+        <span class="chat-session-title" data-chat-session-title :title="sessionTitleText">
+          {{ sessionTitleText }}
         </span>
-      </button>
+        <span v-if="sessionId !== null" class="mono" data-chat-session-id :title="sessionId">{{
+          sessionShortId
+        }}</span>
+        <span
+          class="chat-live"
+          :data-state="liveState"
+          data-chat-live
+          role="status"
+          aria-live="polite"
+        >
+          {{ liveLabel }}
+        </span>
+        <span
+          v-if="messageCount !== undefined && messageCount.length > 0"
+          class="caption"
+          data-chat-message-count
+        >
+          {{ messageCount }}
+        </span>
+      </div>
+      <div class="chat-thread__chips">
+        <span
+          class="chat-waiting"
+          :class="{ 'chat-meta-placeholder': waiting !== true }"
+          :aria-hidden="waiting !== true"
+          data-chat-waiting
+          role="status"
+          aria-live="polite"
+        >
+          <AppIcon name="stamp" />Waiting for you
+        </span>
+        <button
+          class="btn btn-ghost btn-sm chat-plan-chip"
+          :class="{ 'chat-meta-placeholder': !hasPlan }"
+          :aria-hidden="!hasPlan"
+          type="button"
+          data-chat-plan-chip
+          aria-controls="chat-plan-section"
+          title="Open the plan panel"
+          @click="emit('open-context', 'plan')"
+        >
+          <AppIcon name="activity" /><span>{{ planLabel }}</span>
+        </button>
+        <button
+          class="btn btn-ghost btn-sm chat-context-chip"
+          :class="{
+            'chat-meta-placeholder': contextSnapshot === null || contextSnapshot === undefined,
+          }"
+          :aria-hidden="contextSnapshot === null || contextSnapshot === undefined"
+          type="button"
+          data-chat-context-chip
+          aria-controls="chat-context-usage"
+          :data-state="contextState"
+          :title="contextTitle"
+          @click="emit('open-context', 'context')"
+        >
+          <AppIcon name="gauge" /><span>{{ contextLabel }}</span>
+          <span class="sr-only">{{ contextDetailText }}</span>
+          <!-- biome-ignore lint/a11y/useSemanticElements: keep the legacy meter markup and classes -->
+          <span
+            class="chat-context-chip__meter"
+            role="meter"
+            aria-label="Context usage"
+            aria-valuemin="0"
+            aria-valuemax="100"
+            :aria-valuenow="contextPercent"
+            :aria-valuetext="contextLabel"
+          >
+            <span
+              class="chat-context-chip__fill"
+              :style="{ width: `${contextPercent}%` }"
+              aria-hidden="true"
+            />
+          </span>
+        </button>
+      </div>
     </div>
     <slot name="policy-warning" />
     <slot name="image-gate" />
@@ -475,9 +481,20 @@ defineExpose({ captureAnchor, restoreAnchor, scrollToBottom, onScroll, unseen })
           <div v-else-if="stopped" class="empty-state" data-chat-stopped>
             <h3 class="empty-state__title">Agent is not running</h3>
             <p class="empty-state__body">
-              The conversation is preserved. Start the agent from the application page to read live
-              updates.
+              The conversation is preserved. Start the agent to read live updates; nothing starts
+              automatically.
             </p>
+            <div class="chat-stopped__actions">
+              <button
+                class="btn btn-primary btn-sm"
+                type="button"
+                data-chat-start-agent
+                :disabled="startingAgent === true"
+                @click="emit('start')"
+              >
+                <AppIcon name="refresh" />{{ startingAgent === true ? "Starting…" : "Start agent" }}
+              </button>
+            </div>
           </div>
           <p v-else-if="empty" class="chat-empty" data-chat-empty>
             Send the first message to start the agent. Its reply appears here, with tool calls in

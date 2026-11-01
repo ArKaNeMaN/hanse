@@ -176,7 +176,7 @@ const structuredEntries = computed(() => {
   });
 });
 const structuredJson = computed(() => {
-  if (parsed.value === null || Array.isArray(parsed.value) || failure.value !== null) {
+  if (parsed.value === null || failure.value !== null) {
     return "";
   }
   try {

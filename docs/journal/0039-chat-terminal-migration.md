@@ -630,6 +630,11 @@ following checkpoints align the SPA with the legacy composition without changing
 - Skills inventory keeps one component instance across global/project/app scope and filter changes
   (`keepPreviousData` plus a stable route key), so the previous inventory stays visible instead of
   flashing a blank page and shifting the shared layout.
+- The stopped-agent shell restores the in-chat `Start agent` action; the legacy session meta is now
+  two semantic groups with a compact 390px layout and a desktop height reservation for CLS.
+- The Stop action uses the destructive button style and a local `stop` icon fallback. Fenced JSON
+  Markdown and JSON-array tool output are covered; an aborted message load retries once so rapid
+  session switching cannot strand an empty feed.
 
 Evidence: `npm test` 3325 passed; `npm run test:e2e` 209 passed, 13 skipped; lint/typecheck/
 typecheck:ui/typecheck:e2e/build/check ui/check:chat-worker/check:sensitive/diff-check pass. Fresh

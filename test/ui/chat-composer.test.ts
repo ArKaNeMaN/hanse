@@ -136,6 +136,8 @@ describe("ChatComposer", () => {
 
     const stop = wrapper.find("[data-chat-abort]");
     expect(stop.exists()).toBe(true);
+    expect(stop.classes()).toContain("btn-danger");
+    expect(stop.classes()).not.toContain("btn-primary");
     expect(wrapper.find("[data-chat-send]").exists()).toBe(false);
     await stop.trigger("click");
     await flushPromises();

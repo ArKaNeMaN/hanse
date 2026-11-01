@@ -124,6 +124,7 @@ const previewsView = ref<readonly PreviewView[]>([]);
 const sshApprovalCount = ref(0);
 const compactBusy = ref(false);
 const compactError = ref<string | null>(null);
+const startingAgent = ref(false);
 
 if (sessionStore.bindWorkspace(routeState.workspaceKey.value)) {
   feed.reset(null);
@@ -646,6 +647,26 @@ async function compactSession(): Promise<void> {
     toasts.push(message, "error");
   } finally {
     compactBusy.value = false;
+  }
+}
+
+async function startAgent(): Promise<void> {
+  if (startingAgent.value) {
+    return;
+  }
+  startingAgent.value = true;
+  try {
+    await apiMutation<unknown>(withProject(`${apiBase.value}/start`), { json: {} });
+    await Promise.all([chatQuery.refetch(), sessionsQuery.refetch()]);
+    const sessionID = routeState.session.value;
+    if (sessionID !== null) {
+      await loadMessages(sessionID, true);
+    }
+    toasts.push("Agent starting.", "success");
+  } catch (error) {
+    toasts.push(errorText(error, "Could not start the agent."), "error");
+  } finally {
+    startingAgent.value = false;
   }
 }
 
@@ -1297,6 +1318,8 @@ const historyExhausted = ref(false);
 const messageCount = ref(0);
 const threadRef = ref<InstanceType<typeof ChatThread> | null>(null);
 let loadGeneration = 0;
+let disposed = false;
+let messageRetryTimer: ReturnType<typeof setTimeout> | undefined;
 let messageAbort: AbortController | undefined;
 let historyAbort: AbortController | undefined;
 let reconcileTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1392,11 +1415,15 @@ async function loadSidecars(sessionID: string, generation: number): Promise<void
   }
 }
 
-async function loadMessages(sessionID: string, reset: boolean): Promise<void> {
+async function loadMessages(sessionID: string, reset: boolean, attempt = 0): Promise<void> {
   if (sessionID.length === 0) {
     return;
   }
   const generation = ++loadGeneration;
+  if (messageRetryTimer !== undefined) {
+    clearTimeout(messageRetryTimer);
+    messageRetryTimer = undefined;
+  }
   abortLoads();
   const controller = new AbortController();
   messageAbort = controller;
@@ -1439,6 +1466,15 @@ async function loadMessages(sessionID: string, reset: boolean): Promise<void> {
       return;
     }
     if (error instanceof DOMException && error.name === "AbortError") {
+      if (!disposed && attempt === 0) {
+        if (messageRetryTimer !== undefined) clearTimeout(messageRetryTimer);
+        messageRetryTimer = setTimeout(() => {
+          messageRetryTimer = undefined;
+          if (!disposed && routeState.session.value === sessionID) {
+            void loadMessages(sessionID, reset, 1);
+          }
+        }, 120);
+      }
       return;
     }
     messagesError.value =
@@ -1924,6 +1960,11 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  disposed = true;
+  if (messageRetryTimer !== undefined) {
+    clearTimeout(messageRetryTimer);
+    messageRetryTimer = undefined;
+  }
   globalNavObserver?.disconnect();
   globalNavObserver = undefined;
   document.removeEventListener("keydown", onGlobalKeydown);
@@ -2074,6 +2115,7 @@ onBeforeUnmount(() => {
           :load-earlier-enabled="historyCursor !== null"
           :message-count="messageCountText"
           :generating-label="generatingLabel"
+          :starting-agent="startingAgent"
           :session-title="sessionTitle"
           :stream-status="chatStream.status.value"
           :waiting="sessionWaiting"
@@ -2086,6 +2128,7 @@ onBeforeUnmount(() => {
           @question-reject="rejectInlineQuestion"
           @attachment-redeliver="redeliverAttachment"
           @open-context="openContextSection"
+          @start="startAgent"
         >
           <template #image-gate>
             <ChatImageGate :view="imageView" :busy="imageActionBusy" @action="runImageAction" />

@@ -21,6 +21,22 @@ describe("MarkdownBlock", () => {
     wrapper.unmount();
   });
 
+  it("renders fenced JSON code with its language and content", async () => {
+    const wrapper = mount(MarkdownBlock, {
+      props: {
+        text: '```json\n{"name":"alpha","values":[1,true,null]}\n```',
+        sealed: true,
+      },
+      attachTo: document.body,
+    });
+    await nextTick();
+    const code = wrapper.find("pre code");
+    expect(code.attributes("data-language")).toBe("json");
+    expect(code.text()).toContain('"name":"alpha"');
+    expect(wrapper.findAll("pre")).toHaveLength(1);
+    wrapper.unmount();
+  });
+
   it("clears the previous nodes before rendering new text", async () => {
     const wrapper = mount(MarkdownBlock, { props: { text: "First paragraph", sealed: true } });
     await nextTick();

@@ -97,6 +97,21 @@ describe("ToolPart", () => {
     wrapper.unmount();
   });
 
+  it("renders a JSON array output instead of an empty structured card", async () => {
+    const wrapper = mount(ToolPart, {
+      props: {
+        part: tool("t1", "hanse_list_dir", {
+          output: JSON.stringify(["<script>x</script>", { path: "src", count: 2 }]),
+        }),
+      },
+    });
+    await nextTick();
+    expect(wrapper.find(".tool-code--json").text()).toContain("<script>x</script>");
+    expect(wrapper.find(".tool-code--json").text()).toContain('"count": 2');
+    expect(wrapper.findAll("script")).toHaveLength(0);
+    wrapper.unmount();
+  });
+
   it("renders todowrite items with their status", async () => {
     const wrapper = mount(ToolPart, {
       props: {
