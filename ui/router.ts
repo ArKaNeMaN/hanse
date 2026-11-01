@@ -100,13 +100,13 @@ const routes: readonly RouteRecordRaw[] = [
     path: "/terminal",
     name: "terminal",
     component: () => import("./pages/TerminalPage.vue"),
-    meta: { workspace: "terminal", legacyRetired: false },
+    meta: { workspace: "terminal", legacyRetired: true },
   },
   {
     path: "/chat",
     name: "chat",
     component: () => import("./pages/ChatPage.vue"),
-    meta: { workspace: "chat", legacyRetired: false },
+    meta: { workspace: "chat", legacyRetired: true },
   },
   {
     path: "/:pathMatch(.*)*",

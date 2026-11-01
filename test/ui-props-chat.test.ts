@@ -5,7 +5,6 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CoordinatorService } from "../src/coordinator/service.js";
 import { GitService } from "../src/git/service.js";
-import { handleChat } from "../src/http/chat.js";
 import type { HttpDeps, HttpRequest } from "../src/http/handler.js";
 import { handleUiApi } from "../src/http/spa.js";
 import { createPrincipal } from "../src/identity/principals.js";
@@ -227,27 +226,5 @@ describe("/api/ui/chat", () => {
       activeProjectId: "p",
     });
     expect(terminalChrome.breadcrumb).toContain("Terminal");
-  });
-  it("characterizes the same page-frame values the legacy renderer emits", async () => {
-    const f = fixture();
-    const response = handleUiApi(
-      f.deps,
-      request("/api/ui/chat", cookie(f.token), { app: "web", project: "p" }),
-    );
-    const props = JSON.parse(response?.body ?? "{}");
-    const legacy = await handleChat(f.deps, {
-      method: "GET",
-      path: "/chat",
-      headers: { authorization: `Bearer ${f.token}` },
-      query: { app: "web", project: "p" },
-    });
-    expect(legacy.status).toBe(200);
-    expect(legacy.body).toContain(`data-app-key="${props.app.appKey}"`);
-    expect(legacy.body).toContain(`data-project-id="${props.app.projectId}"`);
-    expect(legacy.body).toContain(`data-runtime-url="${props.runtime.runtimeUrl}"`);
-    expect(legacy.body).toContain(`href="${props.links.app}"`);
-    expect(legacy.body).toContain('id="chat-input-needed-count"');
-    expect(legacy.body).toContain('id="chat-policy-chip"');
-    expect(legacy.body).toContain("data-chat-context-toggle");
   });
 });

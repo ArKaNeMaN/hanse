@@ -659,7 +659,7 @@ export async function mountChat(
         path: "/chat",
         name: "chat",
         component: ChatPage,
-        meta: { workspace: "chat", legacyRetired: false },
+        meta: { workspace: "chat", legacyRetired: true },
       },
       { path: "/projects", name: "projects", component: { template: "<div />" } },
     ],

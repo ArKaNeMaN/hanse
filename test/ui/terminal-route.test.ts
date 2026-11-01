@@ -13,24 +13,24 @@ describe("terminal route record", () => {
     const record = router.getRoutes().find((route) => route.name === "terminal");
     expect(record?.path).toBe("/terminal");
     expect(record?.meta.workspace).toBe("terminal");
-    expect(record?.meta.legacyRetired).toBe(false);
+    expect(record?.meta.legacyRetired).toBe(true);
     expect(typeof record?.components?.default).toBe("function");
     expect(routeById("terminal")).toMatchObject({
       path: "/terminal",
       spa: true,
-      legacyRetired: false,
+      legacyRetired: true,
     });
   });
 
-  it("registers the chat route with its registry cutover flag on and legacyRetired off", () => {
+  it("registers the chat route with its registry cutover flag on and legacyRetired set", () => {
     expect(router.hasRoute("chat")).toBe(true);
     const record = router.getRoutes().find((route) => route.name === "chat");
     expect(record?.path).toBe("/chat");
     expect(record?.meta.workspace).toBe("chat");
-    expect(record?.meta.legacyRetired).toBe(false);
+    expect(record?.meta.legacyRetired).toBe(true);
     expect(typeof record?.components?.default).toBe("function");
     expect(isSpaRoute("chat", { env: {} })).toBe(true);
-    expect(isLegacyRetired("chat")).toBe(false);
+    expect(isLegacyRetired("chat")).toBe(true);
   });
 
   it("allows terminal when installed and full-document-loads it when off-set", async () => {
@@ -55,7 +55,7 @@ describe("terminal route record", () => {
     expect(load).toHaveBeenCalledWith("/terminal?app=alpha&project=p");
   });
 
-  it("full-document-loads ?legacy=1 because terminal is not retired", () => {
+  it("ignores ?legacy=1 because terminal is retired", () => {
     const load = vi.fn();
     const guard = createSpaNavigationGuard({ load });
     expect(
@@ -65,7 +65,7 @@ describe("terminal route record", () => {
         query: { legacy: "1" },
         meta: {},
       } as never),
-    ).toBe(false);
-    expect(load).toHaveBeenCalledWith("/terminal?legacy=1");
+    ).toBe(true);
+    expect(load).not.toHaveBeenCalled();
   });
 });

@@ -12,10 +12,6 @@ const APP_PATH = `/projects/${PROJECT_ONE}/apps/alpha`;
 const CHAT_PATH = `/chat?app=alpha&project=${PROJECT_ONE}`;
 const SESSION_ID = "ses_e2ealpha";
 
-function isSpa(): boolean {
-  return test.info().project.name === "spa";
-}
-
 async function eventSourceStats(page: Page): Promise<{ created: number; active: number }> {
   return page.evaluate(() => {
     const stats = (
@@ -103,46 +99,9 @@ async function signInAt(page: Page, origin: string, path: string): Promise<void>
   await page.waitForURL((url) => url.pathname === path.split("?")[0]);
 }
 
-test("legacy chat remains the rollback document", async ({ page }) => {
-  test.skip(isSpa(), "legacy mode only");
-  const errors = collectPageErrors(page);
-  await signIn(page, CHAT_PATH);
-  await expect(page.locator("#hanse-boot")).toHaveCount(0);
-  await expect(page.locator('script[src="/assets/chat.js"]')).toHaveCount(1);
-  await expect(page.locator("#chat-shell")).toHaveCount(1);
-  await expect(page.locator('.session-item[data-session-id="ses_e2ealpha"]')).toHaveCount(1);
-  await page.waitForTimeout(400);
-  expectNoUnexpected(errors, [/50[023]/]);
-});
-
-test("legacy sessions rail keeps tree search and disclosure parity", async ({ page }) => {
-  test.skip(isSpa(), "legacy mode only");
-  const errors = collectPageErrors(page);
-  await signIn(page, CHAT_PATH);
-  await expect(page.locator("#chat-shell")).toHaveCount(1);
-
-  const search = page.locator("#session-search");
-  await search.fill("grandchild");
-  await expect(page.locator('.session-node[data-session-id="ses_e2egrandchild"]')).toBeVisible();
-  await expect(page.locator('.session-node[data-session-id="ses_e2ealpha"]')).toBeVisible();
-  await expect(
-    page.locator('.session-node[data-session-id="ses_e2ealpha"] .session-chevron').first(),
-  ).toHaveAttribute("aria-expanded", "true");
-  await search.fill("");
-  await page
-    .locator('.session-node[data-session-id="ses_e2ealpha"] .session-chevron')
-    .first()
-    .click();
-  await expect(page.locator('.session-node[data-session-id="ses_e2echild"]')).toBeVisible();
-
-  await page.waitForTimeout(400);
-  expectNoUnexpected(errors, [/50[023]/]);
-});
-
 test("SPA direct load renders the chat shell, boot props, sessions, and messages", async ({
   page,
 }) => {
-  test.skip(!isSpa(), "SPA mode only");
   const errors = collectPageErrors(page);
   await installEventSourceCounter(page);
   await signIn(page, CHAT_PATH);
@@ -174,7 +133,7 @@ test("SPA direct load renders the chat shell, boot props, sessions, and messages
 test("SPA client navigation resolves to ChatPage and does not duplicate the surface or stream", async ({
   page,
 }) => {
-  test.skip(!isSpa(), "SPA mode only");
+  test.skip(test.info().project.name !== "spa", "client navigation requires an SPA source page");
   const errors = collectPageErrors(page);
   await installEventSourceCounter(page);
   await signIn(page, APP_PATH);
@@ -202,7 +161,6 @@ test("SPA client navigation resolves to ChatPage and does not duplicate the surf
 });
 
 test("SPA renders live deltas, tool parts, status, and a resync warning", async ({ page }) => {
-  test.skip(!isSpa(), "SPA mode only");
   const errors = collectPageErrors(page);
   const previousStreams = await upstreamStreamCount(page).catch(() => 0);
   await signIn(page, CHAT_PATH);
@@ -286,7 +244,6 @@ test("SPA renders live deltas, tool parts, status, and a resync warning", async 
 test("SPA reconnects after the upstream stream closes without a second EventSource", async ({
   page,
 }) => {
-  test.skip(!isSpa(), "SPA mode only");
   const errors = collectPageErrors(page);
   await installEventSourceCounter(page);
   const previousStreams = await upstreamStreamCount(page).catch(() => 0);
@@ -303,7 +260,6 @@ test("SPA reconnects after the upstream stream closes without a second EventSour
 });
 
 test("SPA bfcache pagehide/pageshow keeps one surface and one live source", async ({ page }) => {
-  test.skip(!isSpa(), "SPA mode only");
   const errors = collectPageErrors(page);
   await installEventSourceCounter(page);
   await signIn(page, CHAT_PATH);
@@ -325,7 +281,6 @@ test("SPA bfcache pagehide/pageshow keeps one surface and one live source", asyn
 });
 
 test("SPA chat redirects to login when an authenticated read expires", async ({ page }) => {
-  test.skip(!isSpa(), "SPA mode only");
   await signIn(page, CHAT_PATH);
   await expect(page.locator("#chat-shell")).toHaveCount(1);
   await page.context().clearCookies();
@@ -334,7 +289,6 @@ test("SPA chat redirects to login when an authenticated read expires", async ({ 
 });
 
 test("SPA shows the stopped shell and preserves a requested session", async ({ page }) => {
-  test.skip(!isSpa(), "SPA mode only");
   const errors = collectPageErrors(page);
   await signIn(page, `/chat?app=beta&project=${PROJECT_ONE}&session=ses_keep_me`);
   await expect(page.locator("[data-chat-stopped]")).toBeVisible({ timeout: 15_000 });
@@ -343,18 +297,17 @@ test("SPA shows the stopped shell and preserves a requested session", async ({ p
   expectNoUnexpected(errors, [/503/, /500/]);
 });
 
-test("SPA off-set and ?legacy=1 chat still serve the legacy document", async ({ page }) => {
-  test.skip(!isSpa(), "SPA mode only");
+test("?legacy=1 and legacy servers still serve the SPA chat", async ({ page }) => {
   const errors = collectPageErrors(page);
   await signIn(page, `${CHAT_PATH}&legacy=1`);
-  await expect(page.locator("#hanse-boot")).toHaveCount(0);
-  await expect(page.locator('script[src="/assets/chat.js"]')).toHaveCount(1);
+  await expect(page.locator("#hanse-boot")).toHaveCount(1);
+  await expect(page.locator('script[src="/assets/chat.js"]')).toHaveCount(0);
   await expect(page.locator("#chat-shell")).toHaveCount(1);
 
   for (const origin of ["http://127.0.0.1:4311", "http://127.0.0.1:4312"]) {
     await signInAt(page, origin, CHAT_PATH);
-    await expect(page.locator("#hanse-boot")).toHaveCount(0);
-    await expect(page.locator('script[src="/assets/chat.js"]')).toHaveCount(1);
+    await expect(page.locator("#hanse-boot")).toHaveCount(1);
+    await expect(page.locator('script[src="/assets/chat.js"]')).toHaveCount(0);
     await expect(page.locator("#chat-shell")).toHaveCount(1);
   }
   await page.waitForTimeout(400);

@@ -50,7 +50,7 @@ onErrorCaptured((error) => {
 
 <template>
   <span class="hanse-ui-sentinel" aria-hidden="true"></span>
-  <RouteErrorPage v-if="renderError !== undefined" :message="renderError" />
+  <RouteErrorPage v-if="renderError !== undefined" :message="renderError" :boot="boot" />
   <RouterView v-else v-slot="{ Component }">
     <component :is="Component" :key="viewKey" :boot="boot" :data-boot-route="bootRoute" />
   </RouterView>

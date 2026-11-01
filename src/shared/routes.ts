@@ -39,7 +39,7 @@ export interface RouteDefinition {
   readonly path: string;
   readonly nav: NavId;
   readonly label: string;
-  /** Registry cutover flag. Chat/terminal stay rollback-capable until Stage 9 sets `legacyRetired`. */
+  /** Registry cutover flag. */
   readonly spa: boolean;
   /** True once the legacy renderer is retired and the SPA is always served (Stage 9). */
   readonly legacyRetired?: boolean;
@@ -166,7 +166,7 @@ const ROUTE_DEFINITIONS: readonly RouteDefinition[] = [
     nav: "project",
     label: "Terminal",
     spa: true,
-    legacyRetired: false,
+    legacyRetired: true,
   },
   {
     id: "chat",
@@ -174,7 +174,7 @@ const ROUTE_DEFINITIONS: readonly RouteDefinition[] = [
     nav: "none",
     label: "Chat",
     spa: true,
-    legacyRetired: false,
+    legacyRetired: true,
   },
 ];
 
@@ -274,21 +274,24 @@ function environment(): UiRouteEnv {
 /**
  * Resolve whether a route is served by the SPA.
  *
- * Precedence: `HANSE_UI_LEGACY=1` > manifest validity > `HANSE_UI_SPA_ROUTES` > registry `spa`.
- * An unset allowlist falls through to the registry flag; an empty string disables every route; a
- * comma list enables only the listed ids (unknown ids are ignored). `?legacy=1` is handled by the
- * page dispatcher, not here.
+ * Precedence: an invalid manifest > a retired route > `HANSE_UI_LEGACY=1` >
+ * `HANSE_UI_SPA_ROUTES` > registry `spa`. An unset allowlist falls through to the registry flag;
+ * an empty string disables every non-retired route; a comma list enables only the listed ids
+ * (unknown ids are ignored). `?legacy=1` is handled by the page dispatcher, not here.
  */
 export function isSpaRoute(id: RouteId, options: SpaRouteOptions = {}): boolean {
   const route = ROUTE_BY_ID.get(id);
   if (route === undefined) {
     return false;
   }
-  const env = options.env ?? environment();
-  if (env.legacy?.trim() === "1") {
+  if (options.manifestValid === false) {
     return false;
   }
-  if (options.manifestValid === false) {
+  if (route.legacyRetired === true) {
+    return true;
+  }
+  const env = options.env ?? environment();
+  if (env.legacy?.trim() === "1") {
     return false;
   }
   const allowlist = env.spaRoutes;

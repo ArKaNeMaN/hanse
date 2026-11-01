@@ -97,13 +97,16 @@ describe("vendored xterm", () => {
     }
   });
 
-  it("activates the vendored unicode providers", () => {
-    const terminalJs = readFileSync(path.join(process.cwd(), "assets", "terminal.js"), "utf8");
-    expect(terminalJs).toContain("allowProposedApi: true");
-    expect(terminalJs).toContain("Unicode11Addon");
-    expect(terminalJs).toContain("UnicodeGraphemesAddon");
-    expect(terminalJs).toContain('activeVersion = "11"');
-    expect(terminalJs).toContain('activeVersion = "15-graphemes"');
+  it("activates the vendored unicode providers from the SPA terminal view", () => {
+    const view = readFileSync(
+      path.join(process.cwd(), "ui", "components", "TerminalView.vue"),
+      "utf8",
+    );
+    expect(view).toContain("allowProposedApi: true");
+    expect(view).toContain("Unicode11Addon");
+    expect(view).toContain("UnicodeGraphemesAddon");
+    expect(view).toContain('activeVersion = "11"');
+    expect(view).toContain('activeVersion = "15-graphemes"');
   });
 
   it("serves the allowlisted assets and rejects sibling vendor paths", () => {

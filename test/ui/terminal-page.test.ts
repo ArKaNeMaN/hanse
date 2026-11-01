@@ -95,7 +95,7 @@ async function page() {
         path: "/terminal",
         name: "terminal",
         component: TerminalPage,
-        meta: { workspace: "terminal", legacyRetired: false },
+        meta: { workspace: "terminal", legacyRetired: true },
       },
     ],
   });

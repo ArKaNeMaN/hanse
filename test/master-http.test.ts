@@ -4,7 +4,6 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { CoordinatorService } from "../src/coordinator/service.js";
 import { GitService } from "../src/git/service.js";
-import { handleChat } from "../src/http/chat.js";
 import { handleDeletion } from "../src/http/deletion.js";
 import {
   type HttpDeps,
@@ -14,6 +13,7 @@ import {
 } from "../src/http/handler.js";
 import { handleInternalMcp } from "../src/http/internal-mcp.js";
 import { createHttpServer } from "../src/http/server.js";
+import { maybeServeSpa } from "../src/http/spa.js";
 import { createPrincipal } from "../src/identity/principals.js";
 import { ensureMasterAgent } from "../src/master/bootstrap.js";
 import { MASTER_APP_ID, MASTER_APP_KEY, MASTER_PROJECT_ID } from "../src/master/constants.js";
@@ -23,8 +23,11 @@ import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/i
 
 const dirs: string[] = [];
 const databases: SqliteDatabase[] = [];
+const originalDevUrl = process.env.HANSE_UI_DEV_URL;
 
 afterEach(() => {
+  if (originalDevUrl === undefined) delete process.env.HANSE_UI_DEV_URL;
+  else process.env.HANSE_UI_DEV_URL = originalDevUrl;
   for (const db of databases.splice(0)) {
     try {
       db.close();
@@ -111,6 +114,22 @@ function request(
   };
 }
 
+function spaRequest(
+  pathValue: string,
+  token: string,
+  query: Record<string, string> = {},
+): HttpRequest {
+  return {
+    method: "GET",
+    path: pathValue,
+    query,
+    headers: {
+      accept: "text/html",
+      cookie: `hanse_token=${encodeURIComponent(token)}`,
+    },
+  };
+}
+
 describe("master HTTP surface", () => {
   it("hides the master from operator lists while keeping the navigation entry", () => {
     const value = fixture({ withOperator: true });
@@ -130,21 +149,19 @@ describe("master HTTP surface", () => {
     expect(body.projects.map((project) => project.id)).toEqual(["p"]);
   });
 
-  it("prefers an operator application for /chat and falls back to the master", async () => {
+  it("prefers an operator application for /chat and falls back to the master", () => {
+    process.env.HANSE_UI_DEV_URL = "http://127.0.0.1:5173";
     const withOperator = fixture({ withOperator: true });
-    const preferred = await handleChat(
-      withOperator.deps,
-      request("GET", "/chat", withOperator.token),
-    );
-    expect(preferred.status).toBe(303);
-    expect(preferred.headers?.location).toContain("app=a");
-    expect(preferred.headers?.location).not.toContain("master");
+    const preferred = maybeServeSpa(withOperator.deps, spaRequest("/chat", withOperator.token));
+    expect(preferred?.status).toBe(302);
+    expect(preferred?.headers?.location).toContain("app=a");
+    expect(preferred?.headers?.location).not.toContain("master");
 
     const masterOnly = fixture({ withOperator: false });
-    const fallback = await handleChat(masterOnly.deps, request("GET", "/chat", masterOnly.token));
-    expect(fallback.status).toBe(303);
-    expect(fallback.headers?.location).toContain(`app=${MASTER_APP_KEY}`);
-    expect(fallback.headers?.location).toContain(`project=${MASTER_PROJECT_ID}`);
+    const fallback = maybeServeSpa(masterOnly.deps, spaRequest("/chat", masterOnly.token));
+    expect(fallback?.status).toBe(302);
+    expect(fallback?.headers?.location).toContain(`app=${MASTER_APP_KEY}`);
+    expect(fallback?.headers?.location).toContain(`project=${MASTER_PROJECT_ID}`);
   });
 
   it("renders direct master pages without destructive or git controls", async () => {
@@ -168,15 +185,17 @@ describe("master HTTP surface", () => {
     expect(app.body).not.toContain("Delete application");
     expect(app.body).not.toContain("/assets/git.js");
 
-    const chat = await handleChat(
+    process.env.HANSE_UI_DEV_URL = "http://127.0.0.1:5173";
+    const chat = maybeServeSpa(
       value.deps,
-      request("GET", "/chat", value.token, {
+      spaRequest("/chat", value.token, {
         app: MASTER_APP_KEY,
         project: MASTER_PROJECT_ID,
       }),
     );
-    expect(chat.status).toBe(200);
-    expect(chat.body).toContain(MASTER_APP_KEY);
+    expect(chat?.status).toBe(200);
+    expect(chat?.body).toContain(MASTER_APP_KEY);
+    expect(chat?.body).toContain('id="hanse-boot"');
   });
 
   it("refuses deletion even without a configured deletion service", async () => {

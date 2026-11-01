@@ -7,7 +7,7 @@ import type { Duplex } from "node:stream";
 import { afterEach, describe, expect, it } from "vitest";
 import { CoordinatorService } from "../src/coordinator/service.js";
 import { GitService } from "../src/git/service.js";
-import { type HttpDeps, type HttpRequest, handleRequest } from "../src/http/handler.js";
+import type { HttpDeps } from "../src/http/handler.js";
 import { createHttpServer } from "../src/http/server.js";
 import { createPrincipal } from "../src/identity/principals.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
@@ -157,10 +157,6 @@ async function fixture(): Promise<Fixture> {
   return { db, deps, humanToken, agentToken, upstream: state, port: address.port };
 }
 
-function get(pathname: string, query: Record<string, string>): HttpRequest {
-  return { method: "GET", path: pathname, query, headers: {} };
-}
-
 async function waitFor(condition: () => boolean, timeoutMs = 2000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!condition()) {
@@ -169,94 +165,8 @@ async function waitFor(condition: () => boolean, timeoutMs = 2000): Promise<void
   }
 }
 
-describe("operator terminal page", () => {
-  it("renders for humans and links the terminal from the application page", async () => {
-    const f = await fixture();
-    const human = { authorization: `Bearer ${f.humanToken}` };
-    const terminal = handleRequest(f.deps, {
-      ...get("/terminal", { app: "a", project: "p" }),
-      headers: human,
-    });
-    expect(terminal.status).toBe(200);
-    expect(terminal.contentType).toContain("text/html");
-    expect(terminal.body).toContain('class="page page--terminal"');
-    expect(terminal.body).toContain('class="page__body page__body--terminal"');
-    expect(terminal.body).toContain('class="terminal-shell" id="terminal"');
-    expect(terminal.body).toContain('data-terminal-ws="/api/apps/a/terminal?project=p"');
-    expect(terminal.body).toContain('data-app-key="a"');
-    expect(terminal.body).toContain('data-project-id="p"');
-    expect(terminal.body).toContain('data-runtime-state="stopped"');
-    expect(terminal.body).toContain('data-runtime-url="/api/apps/a/runtime?project=p"');
-
-    expect(terminal.body).toContain('class="terminal-toolbar"');
-    expect(terminal.body).toContain("a / Operator terminal");
-    expect(terminal.body).toContain('id="terminal-status"');
-    expect(terminal.body).toContain('role="status"');
-    expect(terminal.body).toContain('aria-live="polite"');
-    expect(terminal.body).toContain('id="terminal-copy"');
-    expect(terminal.body).toContain('id="terminal-reconnect"');
-    expect(terminal.body).toContain('id="terminal-close"');
-    expect(terminal.body).toContain('id="terminal-banner"');
-    expect(terminal.body).toContain('id="terminal-host"');
-    expect(terminal.body).toContain('id="terminal-announcer"');
-    expect(terminal.body).not.toContain('id="terminal-output"');
-    expect(terminal.body).not.toContain('id="terminal-input"');
-
-    const xtermCss = terminal.body.indexOf("/assets/vendor/xterm/xterm-6.0.0.css");
-    const appCss = terminal.body.indexOf("/assets/app.css");
-    expect(xtermCss).toBeGreaterThan(-1);
-    expect(appCss).toBeGreaterThan(-1);
-    expect(xtermCss).toBeLessThan(appCss);
-
-    const xtermScript = terminal.body.indexOf("/assets/vendor/xterm/xterm-6.0.0.js");
-    const fitScript = terminal.body.indexOf("/assets/vendor/xterm/addon-fit-0.11.0.js");
-    const unicode11Script = terminal.body.indexOf("/assets/vendor/xterm/addon-unicode11-0.9.0.js");
-    const graphemesScript = terminal.body.indexOf(
-      "/assets/vendor/xterm/addon-unicode-graphemes-0.4.0.js",
-    );
-    const terminalScript = terminal.body.indexOf("/assets/terminal.js");
-    expect(xtermScript).toBeGreaterThan(-1);
-    expect(fitScript).toBeGreaterThan(xtermScript);
-    expect(unicode11Script).toBeGreaterThan(fitScript);
-    expect(graphemesScript).toBeGreaterThan(unicode11Script);
-    expect(terminalScript).toBeGreaterThan(graphemesScript);
-    expect(terminal.body).not.toContain(RUNTIME_TOKEN);
-
-    const application = handleRequest(f.deps, {
-      ...get("/projects/p/apps/a", {}),
-      headers: human,
-    });
-    expect(application.status).toBe(200);
-    expect(application.body).toContain('href="/terminal?app=a&amp;project=p"');
-  });
-
-  it("redirects agents and unauthenticated visitors, and 404s unknown apps", async () => {
-    const f = await fixture();
-    const agent = handleRequest(f.deps, {
-      ...get("/terminal", { app: "a", project: "p" }),
-      headers: { authorization: `Bearer ${f.agentToken}` },
-    });
-    expect(agent.status).toBe(303);
-    expect(agent.headers?.location).toContain("/login?next=");
-
-    const anonymous = handleRequest(f.deps, get("/terminal", { app: "a", project: "p" }));
-    expect(anonymous.status).toBe(303);
-
-    const unknown = handleRequest(f.deps, {
-      ...get("/terminal", { app: "missing", project: "p" }),
-      headers: { authorization: `Bearer ${f.humanToken}` },
-    });
-    expect(unknown.status).toBe(404);
-  });
-});
-
 describe("operator terminal layout styles", () => {
   const css = readFileSync(new URL("../src/http/styles.css", import.meta.url), "utf8");
-
-  it("keeps the legacy terminal log box off xterm's root element", () => {
-    expect(css).toContain(".terminal:not(.xterm) {");
-    expect(css).not.toMatch(/(^|\n)\s*\.terminal\s*\{/);
-  });
 
   it("uses host margin rather than padding so FitAddon measures the content box", () => {
     const hostRule = css.match(/\.terminal-host\s*\{[^}]*\}/)?.[0];

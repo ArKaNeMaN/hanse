@@ -107,10 +107,7 @@ import {
   upsertSessionState,
   writeDraft,
 } from "../chat/state.js";
-import type { Handoff } from "../coordinator/handoff.js";
 import { projectHandoffMessages } from "../coordinator/handoff-messages.js";
-import type { Principal } from "../identity/principals.js";
-import { isMasterApp } from "../master/constants.js";
 import {
   abortSession,
   createSession,
@@ -132,43 +129,15 @@ import { authorizationFor } from "../opencode/endpoint-auth.js";
 import { APP_STREAM_MAX_FRAME_BYTES, createRawEventStream } from "../opencode/events.js";
 import { DEFAULT_MODEL, DeletionPendingError } from "../opencode/manager.js";
 import { SESSION_NOTICE_MAX_PAGE, SessionNoticeStore } from "../opencode/recovery.js";
-import type { PreviewView } from "../preview/types.js";
-import type { RegisteredApp } from "../registry/index.js";
-import { appDir, type FoundApp, findApp, toManagedApp } from "./apps.js";
-import { humanFrom, principalFrom } from "./auth.js";
-import {
-  buildSite,
-  operatorProjects,
-  type PageChrome,
-  renderNotFound,
-  type SiteModel,
-} from "./dashboard.js";
+import { type FoundApp, findApp, toManagedApp } from "./apps.js";
+import { principalFrom } from "./auth.js";
+import type { PageChrome, SiteModel } from "./dashboard.js";
 import { lifecycleErrorResponse } from "./errors.js";
 import type { HttpDeps, HttpRequest, HttpResponse } from "./handler.js";
-import {
-  appShell,
-  emptyState,
-  escapeHtml,
-  icon,
-  ideFolderUrl,
-  initials,
-  pageHeader,
-  plural,
-  routeText,
-  runtimePill,
-  statusPill,
-} from "./ui.js";
+import { appShell, emptyState, pageHeader } from "./ui.js";
 
 function json(status: number, value: unknown): HttpResponse {
   return { status, contentType: "application/json; charset=utf-8", body: JSON.stringify(value) };
-}
-
-function html(status: number, body: string): HttpResponse {
-  return { status, contentType: "text/html; charset=utf-8", body };
-}
-
-function redirect(location: string): HttpResponse {
-  return { status: 303, contentType: "text/plain", body: "", headers: { location } };
 }
 
 function safeDecode(value: string): string {
@@ -205,26 +174,9 @@ function noticeCursor(value: string): string | undefined {
   return value;
 }
 
-function requestPath(request: HttpRequest): string {
-  const params = new URLSearchParams();
-  for (const [key, value] of Object.entries(request.query ?? {})) {
-    params.set(key, value);
-  }
-  const query = params.toString();
-  return query.length === 0 ? request.path : `${request.path}?${query}`;
-}
-
-function chatLoginRedirect(request: HttpRequest): HttpResponse {
-  return redirect(`/login?next=${encodeURIComponent(requestPath(request))}`);
-}
-
 function projectParam(request: HttpRequest): string | undefined {
   const project = request.query?.project?.trim();
   return project === undefined || project.length === 0 ? undefined : project;
-}
-
-function projectAppKey(projectId: string, appKey: string): string {
-  return `${projectId}:${appKey}`;
 }
 
 function effectiveModel(
@@ -251,67 +203,7 @@ function navProjects(site: SiteModel): Array<{ id: string; name: string; appCoun
   }));
 }
 
-function pageChrome(principal: Principal, request: HttpRequest): PageChrome {
-  const message = request.query?.notice;
-  const notice =
-    message === undefined || message.trim().length === 0
-      ? undefined
-      : {
-          message,
-          tone: request.query?.tone === "error" ? ("error" as const) : ("success" as const),
-        };
-  return { operatorName: principal.name, notice };
-}
-
-function appKeyFor(site: SiteModel, appId: string): string {
-  return site.apps.get(appId)?.appKey ?? appId.split(":").pop() ?? appId;
-}
-
-function contextHandoffs(site: SiteModel, appId: string): Handoff[] {
-  return site.projects
-    .flatMap((project) => project.handoffs)
-    .filter((handoff) => handoff.fromAppId === appId || handoff.toAppId === appId)
-    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-}
-
-function renderContextHandoffs(site: SiteModel, appId: string, appKey: string): string {
-  const handoffs = contextHandoffs(site, appId);
-  if (handoffs.length === 0) {
-    return emptyState({
-      iconName: "branch",
-      title: "No handoffs",
-      body: `No handoff routes involve ${appKey} yet.`,
-      action: '<a class="btn btn-secondary btn-sm" href="/handoffs">Open inbox</a>',
-    });
-  }
-  return `<div class="stack--tight">${handoffs
-    .map(
-      (handoff) => `<a class="context-handoff" href="/handoffs?q=${encodeURIComponent(handoff.id)}">
-        <span class="context-handoff__head"><span class="mono table__nowrap">${escapeHtml(handoff.id.slice(0, 8))}</span>${statusPill(handoff.state)}</span>
-        <span class="context-handoff__summary">${escapeHtml(handoff.summary)}</span>
-        <span class="context-handoff__route">${routeText(appKeyFor(site, handoff.fromAppId), appKeyFor(site, handoff.toAppId))}</span>
-      </a>`,
-    )
-    .join("")}</div>`;
-}
-
-function appOptions(site: SiteModel, selectedProjectId: string, selectedAppKey: string): string {
-  return site.projects
-    .filter((project) => project.builtin !== true || project.id === selectedProjectId)
-    .map((project) => {
-      const options = project.apps
-        .map((app) => {
-          const value = projectAppKey(project.id, app.appKey);
-          const selected = project.id === selectedProjectId && app.appKey === selectedAppKey;
-          return `<option value="${escapeHtml(value)}" data-project="${escapeHtml(project.id)}" data-app="${escapeHtml(app.appKey)}"${selected ? " selected" : ""}>${escapeHtml(app.appKey)}</option>`;
-        })
-        .join("");
-      return `<optgroup label="${escapeHtml(project.name)}">${options}</optgroup>`;
-    })
-    .join("");
-}
-
-function renderNoApps(site: SiteModel, chrome: PageChrome): string {
+export function renderNoApps(site: SiteModel, chrome: PageChrome): string {
   return appShell({
     title: "Chat",
     active: "none",
@@ -332,290 +224,7 @@ function renderNoApps(site: SiteModel, chrome: PageChrome): string {
       action: '<a class="btn btn-primary btn-sm" href="/projects">Open projects</a>',
     }),
     skillsHref: "/skills",
-  });
-}
-
-function renderPreviewRows(previews: PreviewView[]): string {
-  return previews
-    .map(
-      (preview) => `<li class="chat-preview" data-preview-key="${escapeHtml(preview.key)}">
-        <a class="chat-preview__link" href="${escapeHtml(preview.url)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(preview.name)}">
-          <span class="chat-preview__name">${escapeHtml(preview.name)}</span>
-          <span class="chat-preview__key mono" title="${escapeHtml(preview.key)}">${escapeHtml(preview.key)}</span>
-          ${icon("external")}
-          <span class="sr-only">(opens in a new tab)</span>
-        </a>
-        <button class="btn btn-ghost btn-icon btn-sm chat-preview__close" type="button" aria-label="Close preview ${escapeHtml(preview.name)}" hidden>${icon("x")}</button>
-      </li>`,
-    )
-    .join("");
-}
-
-function renderPreviewSection(previews: PreviewView[]): string {
-  return `<div class="chat-context__group" id="chat-previews"${previews.length === 0 ? " hidden" : ""}>
-        <hr class="rule" />
-        <section class="chat-context__section" aria-labelledby="context-previews-title">
-          <div class="cluster summary-row"><h2 class="overline" id="context-previews-title">Previews</h2><span class="caption" id="chat-previews-count">${previews.length} active</span></div>
-          <p class="hint">Demo only. Preview pages share the coordinator's origin and session.</p>
-          <ul class="chat-previews" id="chat-previews-list" role="list">${renderPreviewRows(previews)}</ul>
-        </section>
-      </div>`;
-}
-
-function renderChatPage(
-  site: SiteModel,
-  found: {
-    project: { id: string; name: string; rootPath: string; workspaceRoot: string };
-    app: RegisteredApp;
-  },
-  principal: Principal,
-  chrome: PageChrome,
-  previews: PreviewView[],
-): string {
-  const { project, app } = found;
-  const ref = site.apps.get(app.id);
-  const runtime = site.runtime.get(app.id) ?? "stopped";
-  const handoffs = contextHandoffs(site, app.id);
-  const folder = appDir(project, app);
-  const path = isMasterApp(project.id, app.appKey) ? folder : (ref?.path ?? app.path);
-  const appHref = `/projects/${encodeURIComponent(project.id)}/apps/${encodeURIComponent(app.appKey)}`;
-  const master = isMasterApp(project.id, app.appKey);
-  const settingsHref = `/projects/${encodeURIComponent(project.id)}/apps/${encodeURIComponent(app.appKey)}/settings`;
-  const pendingRestart = site.pendingRestart.get(app.id) ?? false;
-  const chatHref = `/chat?app=${encodeURIComponent(app.appKey)}&project=${encodeURIComponent(project.id)}`;
-  const breadcrumb = [
-    { label: "Projects", href: "/projects" },
-    { label: project.name, href: `/projects/${encodeURIComponent(project.id)}` },
-    { label: app.appKey, href: appHref },
-    { label: "Chat" },
-  ];
-  const topbarActions = `<button class="btn btn-ghost btn-sm chat-input-needed" id="chat-input-needed" type="button" aria-haspopup="dialog" aria-controls="chat-queue" aria-expanded="false" aria-label="No requests need input" hidden>${icon("message")}<span class="chat-input-needed__count" id="chat-input-needed-count" aria-hidden="true">0</span></button><button class="btn btn-ghost btn-sm policy-chip" id="chat-policy-chip" type="button" aria-controls="chat-policy-warning" aria-expanded="false" hidden>${icon("alert-triangle")}<span id="chat-policy-chip-label">Policy warning</span></button><button class="btn btn-ghost btn-icon chat-context-toggle" type="button" data-chat-context-toggle aria-controls="chat-context" aria-expanded="false" aria-label="Open context panel" title="Context panel">${icon("panel-right")}</button><a class="btn btn-ghost btn-icon" href="${escapeHtml(ideFolderUrl(folder))}" target="_blank" rel="noreferrer" aria-label="Open application in IDE" title="Open in IDE">${icon("external")}</a>`;
-
-  const sessions = `<aside class="chat-sessions" id="chat-sessions" aria-label="Sessions">
-    <div class="chat-pane-head">
-      <span class="overline">Sessions</span>
-      <div class="cluster">
-        <button class="btn btn-ghost btn-icon btn-sm" type="button" data-chat-new-session aria-label="New session" title="New session">${icon("plus")}</button>
-        <button class="btn btn-ghost btn-icon btn-sm chat-sessions-close" type="button" data-chat-sessions-close aria-label="Close sessions">${icon("x")}</button>
-      </div>
-    </div>
-    <div class="chat-sessions__tools">
-      <label class="sr-only" for="session-search">Search sessions</label>
-      <input class="input" id="session-search" type="search" placeholder="Filter sessions" autocomplete="off" />
-    </div>
-    <p class="field-error chat-sessions__error" id="session-error" role="alert" hidden></p>
-    <div class="chat-sessions__list" id="session-list">
-      <div class="skeleton-stack chat-sessions__skeleton" aria-hidden="true">
-        <span class="skeleton skeleton--title"></span>
-        <span class="skeleton"></span>
-        <span class="skeleton skeleton--short"></span>
-        <span class="skeleton"></span>
-      </div>
-    </div>
-  </aside>`;
-
-  const thread = `<section class="chat-thread" id="chat-thread" aria-label="Chat thread">
-    <div class="chat-pane-head">
-      <button class="btn btn-ghost btn-icon btn-sm chat-sessions-toggle" type="button" data-chat-sessions-toggle aria-controls="chat-sessions" aria-expanded="false" aria-label="Open sessions" title="Sessions">${icon("panel-left")}</button>
-      <div class="chat-app-select">
-        <label class="sr-only" for="chat-app-select">Application</label>
-        <div class="select-wrap"><select class="select" id="chat-app-select">${appOptions(site, project.id, app.appKey)}</select>${icon("chevron-down")}</div>
-      </div>
-      <div class="cluster">
-        <button class="btn btn-secondary btn-sm" type="button" data-chat-new-session aria-label="New session" title="New session">${icon("plus")}<span class="chat-action-label">New session</span></button>
-        <span class="chat-runtime" id="chat-runtime">${runtimePill(runtime)}</span>
-      </div>
-    </div>
-    <div class="chat-thread__meta">
-      <span class="chat-session-title" id="chat-session-title">Session</span>
-      <span class="mono" id="chat-session-id">-</span>
-      <span class="chat-live" id="chat-live" data-state="starting">Starting agent...</span>
-      <span class="caption" id="chat-message-count" hidden>0 messages</span>
-      <span class="chat-waiting" id="chat-waiting" role="status" aria-live="polite" hidden>${icon("stamp")}Waiting for you</span>
-      <button class="btn btn-ghost btn-sm chat-plan-chip" id="chat-plan-chip" type="button" aria-controls="chat-plan-section" title="Open the plan panel" hidden>${icon("activity")}<span id="chat-plan-chip-label">Plan 0/0</span></button>
-      <button class="btn btn-ghost btn-sm chat-context-chip" id="chat-context-chip" type="button" aria-controls="chat-context-usage" hidden>${icon("gauge")}<span id="chat-context-chip-label">Context —</span><span class="sr-only" id="chat-context-chip-exact"></span><span class="chat-context-chip__meter" role="meter" aria-label="Context usage" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-valuetext="Unknown" hidden><span class="chat-context-chip__fill" aria-hidden="true"></span></span></button>
-      <span class="chat-working" id="chat-working" hidden><span class="spinner" aria-hidden="true" data-chat-working-spinner></span><span class="chat-working__label" id="chat-working-label" role="status" aria-live="polite" aria-atomic="true">Ready</span><span class="chat-working__elapsed" id="chat-working-elapsed" aria-hidden="true" hidden></span><span class="chat-working__queued" id="chat-working-queued" aria-hidden="true" hidden></span></span>
-      <button class="btn btn-ghost btn-sm chat-retry" id="chat-stream-retry" type="button" hidden>${icon("refresh")}Retry</button>
-    </div>
-    <div class="policy-warning" id="chat-policy-warning" role="status" hidden></div>
-    <section class="chat-image-gate" id="image-gate" role="region" aria-live="polite" hidden></section>
-    <div class="chat-image-warning" id="image-warning" role="status" hidden></div>
-    <div class="chat-thread__viewport">
-      <div class="chat-thread__scroll" id="chat-scroll">
-        <div class="chat-history" id="chat-history" data-state="idle" hidden><span class="spinner" aria-hidden="true"></span><span id="chat-history-label">Loading earlier messages...</span></div>
-        <div class="chat-thread__inner" id="chat-messages" role="log" aria-live="off">
-          <div class="skeleton-stack" aria-hidden="true">
-            <span class="skeleton skeleton--title"></span>
-            <span class="skeleton"></span>
-            <span class="skeleton skeleton--short"></span>
-            <span class="skeleton"></span>
-            <span class="skeleton skeleton--short"></span>
-          </div>
-        </div>
-        <div class="chat-generating" id="chat-generating" hidden aria-hidden="true"><span class="chat-generating__dots" aria-hidden="true"><span></span><span></span><span></span></span><span class="chat-generating__label" id="chat-generating-label"></span><span class="chat-generating__elapsed" id="chat-generating-elapsed"></span></div>
-        <div class="chat-question-placeholder" id="chat-question-placeholder"></div>
-      </div>
-      <button class="btn btn-secondary btn-sm chat-new-messages" id="chat-new-messages" type="button" hidden>New messages ${icon("arrow-right")}</button>
-    </div>
-    <div class="chat-queue-strip" id="chat-queue-strip" hidden>
-      <span class="chat-queue-strip__count" id="chat-queue-strip-count" role="status" aria-live="polite" aria-atomic="true"></span>
-      <ol class="chat-queue-strip__list" id="chat-queue-strip-list"></ol>
-    </div>
-    <p class="chat-session-notice" id="chat-session-notice" role="status" hidden>Session too large to refresh; showing the last loaded state.</p>
-    <div class="ssh-approval-slot" id="chat-ssh-approvals" hidden></div>
-    <section class="prompt-dock" id="chat-prompt-dock" aria-label="Agent requests" hidden></section>
-    <div class="command-palette" id="chat-command-palette" hidden>
-      <div class="command-palette__head">
-        <span class="overline">Commands</span>
-        <span class="command-palette__status" id="chat-command-status" role="status" aria-live="polite" aria-atomic="true"></span>
-      </div>
-      <div class="command-palette__list" id="chat-command-listbox" role="listbox" aria-label="Slash commands"></div>
-      <p class="command-palette__shadow" id="chat-command-shadow" hidden></p>
-    </div>
-    <form class="composer" id="chat-composer" data-no-busy>
-      <div class="composer__row">
-        <label class="sr-only" for="chat-prompt">Message ${escapeHtml(app.appKey)} agent</label>
-        <textarea class="textarea" id="chat-prompt" name="prompt" rows="1" enterkeyhint="enter" placeholder="Message ${escapeHtml(app.appKey)} agent" aria-describedby="chat-composer-hint" role="combobox" aria-autocomplete="list" aria-haspopup="listbox" aria-controls="chat-command-listbox" aria-expanded="false"></textarea>
-        <button class="btn btn-ghost btn-icon" id="chat-commands-button" type="button" aria-label="Commands" aria-haspopup="listbox" aria-expanded="false" aria-controls="chat-command-listbox" title="Commands">${icon("slash")}</button>
-        <button class="btn btn-primary" id="chat-send" type="submit">${icon("send")}<span class="btn__label">Send</span></button>
-      </div>
-      <div class="composer__hint" id="chat-composer-hint">
-        <span id="chat-composer-hint-text">Enter to send / Shift+Enter for a new line</span>
-        <span>${plural(handoffs.length, "handoff")} in context</span>
-      </div>
-      <p class="field-error" id="chat-send-error" role="alert" hidden></p>
-      <div class="chat-send-recovery" id="chat-send-recovery" hidden>
-        <span id="chat-send-recovery-text">Delivery unknown; checking…</span>
-        <button class="btn btn-secondary btn-sm" type="button" id="chat-send-check" hidden>Check again</button>
-        <button class="btn btn-ghost btn-sm" type="button" id="chat-send-remove" hidden>Remove</button>
-      </div>
-    </form>
-  </section>`;
-
-  const context = `<aside class="chat-context" id="chat-context" aria-label="Context">
-    <div class="chat-pane-head">
-      <span class="overline">Context</span>
-      <button class="btn btn-ghost btn-icon btn-sm chat-context-close" type="button" data-chat-context-close aria-label="Close context">${icon("x")}</button>
-    </div>
-    <div class="chat-context__body">
-      <section class="chat-context__section" aria-labelledby="context-app-title">
-        <p class="overline">Application</p>
-        <div class="summary-row"><h2 class="h3" id="context-app-title">${escapeHtml(app.appKey)}</h2><span class="chat-runtime" id="chat-context-runtime">${runtimePill(runtime)}</span></div>
-        <a class="small" href="/projects/${encodeURIComponent(project.id)}">${escapeHtml(project.name)}</a>
-        <p class="mono">${escapeHtml(path)}</p>
-        <div class="cluster">
-          <a class="btn btn-secondary btn-sm" href="${escapeHtml(ideFolderUrl(folder))}" target="_blank" rel="noreferrer">${icon("external")}Open IDE</a>
-          <a class="btn btn-ghost btn-sm" href="${escapeHtml(appHref)}">Application</a>
-          <a class="btn btn-ghost btn-sm" href="${escapeHtml(settingsHref)}">${icon("settings")}Settings</a>
-          <a class="btn btn-ghost btn-sm" href="/projects/${encodeURIComponent(project.id)}">Open project</a>
-        </div>
-        ${
-          pendingRestart
-            ? `<div class="stack--tight" id="chat-settings-pending">
-                <div class="cluster"><span class="badge badge-warning">Restart required</span><span class="small">Settings changed</span></div>
-                <p class="hint">Restart the agent to apply the new model, auth, or web tools. An active turn will be interrupted.</p>
-                <form method="post" action="/api/apps/${encodeURIComponent(app.appKey)}/restart?project=${encodeURIComponent(project.id)}">
-                  <input type="hidden" name="return_to" value="${escapeHtml(chatHref)}" />
-                  <button class="btn btn-primary btn-sm" type="submit">${icon("refresh")}Restart agent</button>
-                </form>
-              </div>`
-            : ""
-        }
-      </section>
-      ${renderPreviewSection(previews)}
-      <section class="chat-context__section chat-context-usage" id="chat-context-usage" aria-labelledby="context-usage-title">
-        <div class="cluster summary-row"><h2 class="overline" id="context-usage-title" tabindex="-1">Context</h2><span class="caption" id="chat-context-summary">—</span></div>
-        <div class="chat-context-usage__meter" id="chat-context-meter" role="meter" aria-label="Context usage" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-valuetext="Unknown"><span class="chat-context-usage__fill" id="chat-context-meter-fill" aria-hidden="true"></span></div>
-        <p class="caption" id="chat-context-detail">Waiting for a completed step.</p>
-        <div class="cluster summary-row"><p class="hint" id="chat-context-auto">Auto-compact off</p><a class="btn btn-ghost btn-sm" id="chat-context-settings" href="${escapeHtml(settingsHref)}">${icon("settings")}Settings</a></div>
-        <div class="cluster">
-          <button class="btn btn-secondary btn-sm" id="chat-context-compact" type="button" disabled aria-describedby="chat-context-compact-reason">Compact now</button>
-        </div>
-        <p class="hint" id="chat-context-compact-reason">Start a session to compact.</p>
-        <div class="chat-context-usage__confirm" id="chat-context-confirm" hidden>
-          <p class="caption">Summarization replaces the session history and can lose detail.</p>
-          <div class="cluster">
-            <button class="btn btn-danger btn-sm" id="chat-context-confirm-compact" type="button">Compact now</button>
-            <button class="btn btn-ghost btn-sm" id="chat-context-confirm-cancel" type="button">Cancel</button>
-          </div>
-        </div>
-        <p class="field-error" id="chat-context-error" role="alert" hidden></p>
-      </section>
-      <hr class="rule" id="chat-plan-divider" hidden />
-      <section class="chat-context__section chat-plan-section" id="chat-plan-section" aria-labelledby="context-plan-title" hidden>
-        <div class="cluster summary-row"><h2 class="overline" id="context-plan-title" tabindex="-1">Plan</h2><span class="caption" id="chat-plan-summary">No plan yet</span></div>
-        <p class="chat-plan__empty" id="chat-plan-empty">Send a message to start a session.</p>
-        <ul class="chat-plan__list" id="chat-plan-list" hidden></ul>
-      </section>
-      <hr class="rule" id="chat-saved-divider" hidden />
-      <section class="chat-context__section" id="chat-saved-section" aria-labelledby="context-saved-title" hidden>
-        <div class="cluster summary-row"><h2 class="overline" id="context-saved-title">Saved permissions</h2><span class="badge" id="chat-saved-badge" hidden>New</span></div>
-        <p class="caption">Durable project grants. Revoke to restore the policy.</p>
-        <div class="chat-saved" id="chat-saved-list"></div>
-      </section>
-      <hr class="rule" />
-      <section class="chat-context__section" aria-labelledby="context-handoffs-title">
-        <div class="cluster summary-row"><p class="overline" id="context-handoffs-title">Handoffs</p><a class="btn btn-ghost btn-sm" href="/handoffs?q=${encodeURIComponent(app.appKey)}">Open inbox</a></div>
-        ${renderContextHandoffs(site, app.id, app.appKey)}
-      </section>
-      <hr class="rule" />
-      <section class="chat-context__section" aria-labelledby="context-shortcuts-title">
-        <p class="overline" id="context-shortcuts-title">Shortcuts</p>
-        <div class="cluster">
-          <a class="btn btn-ghost btn-sm" href="/handoffs?q=${encodeURIComponent(app.appKey)}">Handoff inbox</a>
-          <a class="btn btn-ghost btn-sm" href="/projects/${encodeURIComponent(project.id)}">Project</a>
-          <a class="btn btn-ghost btn-sm" href="${escapeHtml(ideFolderUrl(folder))}" target="_blank" rel="noreferrer">IDE</a>
-        </div>
-      </section>
-    </div>
-  </aside>`;
-
-  return appShell({
-    title: `${app.appKey} chat`,
-    active: "none",
-    activeProjectId: project.id,
-    breadcrumb,
-    projects: navProjects(site),
-    pendingCount: site.pendingCount,
-    settingsHref: `/projects/${encodeURIComponent(project.id)}/apps/${encodeURIComponent(app.appKey)}/settings`,
-    skillsHref: `/projects/${encodeURIComponent(project.id)}/apps/${encodeURIComponent(app.appKey)}/skills`,
-    operatorName: principal.name,
-    notice: chrome.notice,
-    header: "",
-    pageClass: "page--chat",
-    bodyClass: "page__body--chat",
-    moduleScripts: ["/assets/chat.js"],
-    viewport: "width=device-width, initial-scale=1, interactive-widget=resizes-content",
-    topbarActions,
-    body: `<div class="chat-shell chat-shell--workspace" id="chat-shell" data-app-key="${escapeHtml(app.appKey)}" data-project-id="${escapeHtml(project.id)}" data-runtime-url="${escapeHtml(`/api/apps/${encodeURIComponent(app.appKey)}/runtime?project=${encodeURIComponent(project.id)}`)}" data-ide-url="${escapeHtml(ideFolderUrl(folder))}" data-app-url="${escapeHtml(appHref)}"${master ? ' data-master="1"' : ""} data-app-initials="${escapeHtml(initials(app.appKey))}" data-operator-initials="${escapeHtml(initials(principal.name))}" data-chat-sessions="closed" data-chat-context="closed">
-      <h1 class="sr-only">Chat with ${escapeHtml(app.appKey)}</h1>
-      ${sessions}
-      ${thread}
-      ${context}
-      <div class="chat-queue" id="chat-queue" role="dialog" aria-modal="false" aria-labelledby="chat-queue-title" hidden>
-        <div class="chat-queue__head">
-          <p class="overline" id="chat-queue-title">Needs input</p>
-          <button class="btn btn-ghost btn-icon btn-sm" type="button" data-chat-queue-close aria-label="Close request queue">${icon("x")}</button>
-        </div>
-        <div class="chat-queue__list" id="chat-queue-list"></div>
-      </div>
-      <dialog class="dialog command-confirm" id="chat-command-confirm" aria-modal="true" aria-labelledby="chat-command-confirm-title" aria-describedby="chat-command-confirm-body">
-        <div class="dialog__frame">
-          <div class="dialog__head">
-            <h2 class="dialog__title" id="chat-command-confirm-title">Confirm command</h2>
-          </div>
-          <div class="dialog__body">
-            <p id="chat-command-confirm-body"></p>
-          </div>
-          <div class="dialog__foot">
-            <button class="btn btn-ghost btn-sm" type="button" id="chat-command-confirm-cancel">Cancel</button>
-            <button class="btn btn-danger btn-sm" type="button" id="chat-command-confirm-accept">Confirm</button>
-          </div>
-        </div>
-      </dialog>
-      <p class="sr-only" id="chat-announcer" role="status" aria-live="polite" aria-atomic="true"></p>
-      <div class="chat-scrim" data-chat-scrim></div>
-    </div>`,
+    contentScript: false,
   });
 }
 
@@ -2399,39 +2008,6 @@ async function readMessagesResponse(
 
 export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<HttpResponse> {
   const projectId = projectParam(request);
-
-  if (request.method === "GET" && request.path === "/chat") {
-    const principal = humanFrom(deps, request);
-    if (principal === undefined) {
-      return chatLoginRedirect(request);
-    }
-    const appKey = request.query?.app?.trim();
-    const site = buildSite(deps);
-    const chrome = pageChrome(principal, request);
-    if (appKey === undefined || appKey.length === 0) {
-      const candidates = operatorProjects(site).flatMap((project) =>
-        project.apps.map((app) => ({ project, app })),
-      );
-      const first =
-        candidates[0] ??
-        site.projects.flatMap((project) => project.apps.map((app) => ({ project, app })))[0];
-      if (first === undefined) {
-        return html(200, renderNoApps(site, chrome));
-      }
-      return redirect(
-        `/chat?app=${encodeURIComponent(first.app.appKey)}&project=${encodeURIComponent(first.project.id)}`,
-      );
-    }
-    const found = findApp(deps, projectId, appKey);
-    if (found === undefined) {
-      return html(404, renderNotFound(site, chrome));
-    }
-    if (request.host !== undefined) {
-      deps.previews?.recordOperatorHost(found.app.id, request.host);
-    }
-    const previews = deps.previews?.views(found.app.id) ?? [];
-    return html(200, renderChatPage(site, found, principal, chrome, previews));
-  }
 
   if (START_PATH.test(request.path)) {
     return handleStart(deps, request);

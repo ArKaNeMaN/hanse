@@ -98,19 +98,11 @@ const chatHref = computed(
     `/chat?app=${encodeURIComponent(appKey.value)}&project=${encodeURIComponent(projectId.value)}`,
 );
 
-const legacyHref = computed(() => {
-  const params = new URLSearchParams();
-  for (const [key, value] of Object.entries(route.query)) {
-    if (key === "legacy") {
-      continue;
-    }
-    if (typeof value === "string") {
-      params.set(key, value);
-    }
-  }
-  params.set("legacy", "1");
-  return `${route.path}?${params.toString()}`;
-});
+const appHref = computed(
+  () =>
+    view.value?.links.app ??
+    `/projects/${encodeURIComponent(projectId.value)}/apps/${encodeURIComponent(appKey.value)}`,
+);
 
 function reconnect(): void {
   engineUnavailable.value = false;
@@ -144,7 +136,7 @@ function retryEngine(): void {
           <button class="btn btn-secondary btn-sm" type="button" @click="terminalQuery.refetch()">
             <AppIcon name="refresh" />Retry
           </button>
-          <a class="btn btn-ghost btn-sm" :href="legacyHref">Use the classic interface</a>
+          <a class="btn btn-ghost btn-sm" :href="appHref">Back to application</a>
         </div>
       </div>
     </section>
@@ -180,7 +172,7 @@ function retryEngine(): void {
             <button class="btn btn-secondary" type="button" @click="retryEngine">
               <AppIcon name="refresh" />Retry
             </button>
-            <a class="btn btn-ghost" :href="legacyHref">Use the classic interface</a>
+            <a class="btn btn-ghost" :href="appHref">Back to application</a>
           </div>
         </div>
       </div>

@@ -1,17 +1,7 @@
 import http, { type IncomingMessage, STATUS_CODES } from "node:http";
 import type { Duplex } from "node:stream";
 import { cookieToken, isHumanCookie } from "./auth.js";
-import type { PageChrome, SiteModel } from "./dashboard.js";
 import type { HttpDeps } from "./handler.js";
-import { appShell, escapeHtml, icon, runtimePill } from "./ui.js";
-
-function navProjects(site: SiteModel): Array<{ id: string; name: string; appCount: number }> {
-  return site.projects.map((project) => ({
-    id: project.id,
-    name: project.name,
-    appCount: project.apps.length,
-  }));
-}
 
 function safeDecode(value: string): string {
   try {
@@ -39,70 +29,6 @@ function rejectSocket(socket: Duplex, status: number, message: string): void {
     ].join("\r\n"),
   );
   socket.end();
-}
-
-/** Operator terminal page; only human principals reach this route. */
-export function renderTerminalPage(
-  site: SiteModel,
-  projectId: string,
-  appKey: string,
-  chrome: PageChrome,
-): string | undefined {
-  const project = site.projects.find((candidate) => candidate.id === projectId);
-  if (project === undefined) return undefined;
-  const app = project.apps.find((candidate) => candidate.appKey === appKey);
-  if (app === undefined) return undefined;
-
-  const runtime = site.runtime.get(app.id) ?? "stopped";
-  const appHref = `/projects/${encodeURIComponent(project.id)}/apps/${encodeURIComponent(app.appKey)}`;
-  const wsPath = `/api/apps/${encodeURIComponent(app.appKey)}/terminal?project=${encodeURIComponent(project.id)}`;
-  const runtimeUrl = `/api/apps/${encodeURIComponent(app.appKey)}/runtime?project=${encodeURIComponent(project.id)}`;
-
-  const body = `<section class="terminal-shell" id="terminal" aria-labelledby="terminal-title" data-terminal-ws="${escapeHtml(wsPath)}" data-app-key="${escapeHtml(app.appKey)}" data-project-id="${escapeHtml(project.id)}" data-runtime-state="${escapeHtml(runtime)}" data-runtime-url="${escapeHtml(runtimeUrl)}">
-    <div class="terminal-toolbar">
-      <h1 class="terminal-toolbar__title" id="terminal-title">${escapeHtml(app.appKey)} / Operator terminal</h1>
-      <span class="terminal-toolbar__meta">${runtimePill(runtime)}</span>
-      <span class="terminal-toolbar__status"><span class="status" data-state="queued" id="terminal-status" role="status" aria-live="polite">${icon("clock")}Connecting</span></span>
-      <div class="terminal-toolbar__actions">
-        <button class="btn btn-ghost btn-sm" type="button" id="terminal-copy" aria-label="Copy selection" title="Select terminal text to copy" disabled>${icon("copy")}<span class="btn__label">Copy</span></button>
-        <button class="btn btn-secondary btn-sm" type="button" id="terminal-reconnect" aria-label="Reconnect terminal" title="Reconnect terminal">${icon("refresh")}<span class="btn__label">Reconnect</span></button>
-        <button class="btn btn-ghost btn-sm" type="button" id="terminal-close" aria-label="Close terminal" title="Close terminal">${icon("x")}<span class="btn__label">Close</span></button>
-      </div>
-    </div>
-    <div class="terminal-banner" id="terminal-banner" hidden></div>
-    <div class="terminal-host" id="terminal-host"></div>
-    <p class="sr-only" id="terminal-announcer" role="status" aria-live="polite" aria-atomic="true"></p>
-  </section>`;
-
-  return appShell({
-    title: `${app.appKey} terminal`,
-    active: "project",
-    activeProjectId: project.id,
-    breadcrumb: [
-      { label: "Projects", href: "/projects" },
-      { label: project.name, href: `/projects/${encodeURIComponent(project.id)}` },
-      { label: app.appKey, href: appHref },
-      { label: "Terminal" },
-    ],
-    projects: navProjects(site),
-    pendingCount: site.pendingCount,
-    operatorName: chrome.operatorName,
-    notice: chrome.notice,
-    header: "",
-    pageClass: "page--terminal",
-    bodyClass: "page__body--terminal",
-    scripts: [
-      "/assets/vendor/xterm/xterm-6.0.0.js",
-      "/assets/vendor/xterm/addon-fit-0.11.0.js",
-      "/assets/vendor/xterm/addon-unicode11-0.9.0.js",
-      "/assets/vendor/xterm/addon-unicode-graphemes-0.4.0.js",
-      "/assets/terminal.js",
-    ],
-    styles: ["/assets/vendor/xterm/xterm-6.0.0.css"],
-    body,
-    settingsHref: `/projects/${encodeURIComponent(project.id)}/apps/${encodeURIComponent(app.appKey)}/settings`,
-    skillsHref: `/projects/${encodeURIComponent(project.id)}/apps/${encodeURIComponent(app.appKey)}/skills`,
-  });
 }
 
 /** Proxy an operator terminal WebSocket to the runner with the runtime bearer token. */

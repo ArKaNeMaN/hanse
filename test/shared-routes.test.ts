@@ -204,32 +204,36 @@ describe("shared route manifest", () => {
       path: "/chat",
       nav: "none",
       spa: true,
-      legacyRetired: false,
+      legacyRetired: true,
     });
     expect(routeById("terminal")).toMatchObject({
       path: "/terminal",
       nav: "project",
       spa: true,
-      legacyRetired: false,
+      legacyRetired: true,
     });
     expect(routeById("nope" as never)).toBeUndefined();
   });
 
-  it("keeps chat and terminal in the default boot set while the rollback flags remain live", () => {
+  it("keeps retired chat and terminal in the boot set regardless of rollback flags", () => {
     const bootRoutes = ROUTES.filter((route) =>
       isSpaRoute(route.id, { env: {}, manifestValid: true }),
     ).map((route) => route.id);
     expect(bootRoutes).toContain("chat");
     expect(bootRoutes).toContain("terminal");
     expect(bootRoutes).toContain("projects");
-    expect(isSpaRoute("chat", { env: { legacy: "1" } })).toBe(false);
-    expect(isSpaRoute("chat", { env: { spaRoutes: "" } })).toBe(false);
+    expect(isSpaRoute("chat", { env: { legacy: "1" } })).toBe(true);
+    expect(isSpaRoute("chat", { env: { spaRoutes: "" } })).toBe(true);
+    expect(isSpaRoute("terminal", { env: { legacy: "1", spaRoutes: "projects" } })).toBe(true);
+    expect(isSpaRoute("chat", { manifestValid: false })).toBe(false);
+    expect(isSpaRoute("terminal", { manifestValid: false })).toBe(false);
+    expect(isSpaRoute("projects", { env: { legacy: "1" } })).toBe(false);
   });
 
-  it("reports legacyRetired false by default and for the new ids in this stage", () => {
+  it("retires only chat and terminal", () => {
     expect(isLegacyRetired("projects")).toBe(false);
-    expect(isLegacyRetired("chat")).toBe(false);
-    expect(isLegacyRetired("terminal")).toBe(false);
+    expect(isLegacyRetired("chat")).toBe(true);
+    expect(isLegacyRetired("terminal")).toBe(true);
     expect(isLegacyRetired("nope" as never)).toBe(false);
   });
 

@@ -74,23 +74,21 @@ test("client navigation does not duplicate the topbar, stylesheet, or host", asy
   expectNoPageErrors(errors);
 });
 
-test("?legacy=1 serves the legacy document for a full rollback drill", async ({ page }) => {
+test("?legacy=1 still serves the SPA terminal", async ({ page }) => {
   const errors = collectPageErrors(page);
   await signIn(page, `${TERMINAL_PATH}&legacy=1`);
-  await expect(page.locator("#hanse-boot")).toHaveCount(0);
-  await expect(page.locator('script[src="/assets/terminal.js"]')).toHaveCount(1);
+  await expect(page.locator("#hanse-boot")).toHaveCount(1);
+  await expect(page.locator('script[src="/assets/terminal.js"]')).toHaveCount(0);
   await expect(page.locator(".terminal-shell")).toHaveCount(1);
   await settle(page);
   expectNoPageErrors(errors);
 });
 
-test("HANSE_UI_LEGACY=1 and allowlist removal still serve the legacy terminal", async ({
-  page,
-}) => {
+test("HANSE_UI_LEGACY=1 and allowlist removal still serve the SPA terminal", async ({ page }) => {
   for (const origin of ["http://127.0.0.1:4311", "http://127.0.0.1:4312"]) {
     await signInAt(page, origin, TERMINAL_PATH);
-    await expect(page.locator("#hanse-boot")).toHaveCount(0);
-    await expect(page.locator('script[src="/assets/terminal.js"]')).toHaveCount(1);
+    await expect(page.locator("#hanse-boot")).toHaveCount(1);
+    await expect(page.locator('script[src="/assets/terminal.js"]')).toHaveCount(0);
     await expect(page.locator(".terminal-shell")).toHaveCount(1);
     await expect(page.locator('link[href="/assets/vendor/xterm/xterm-6.0.0.css"]')).toHaveCount(1);
   }

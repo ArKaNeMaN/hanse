@@ -92,7 +92,9 @@ test("server first paint already carries the chat topbar set with zeroed counter
   const errors = collectPageErrors(page);
   await signIn(page, CHAT_PATH);
 
-  const html = await (await page.request.get(CHAT_PATH)).text();
+  const html = await (
+    await page.request.get(CHAT_PATH, { headers: { accept: "text/html" } })
+  ).text();
   expect(html).toContain('id="chat-input-needed"');
   expect(html).toContain('id="chat-policy-chip"');
   expect(html).toContain("data-chat-context-toggle");
@@ -151,7 +153,7 @@ test("deep link, refresh, and back/forward keep one chat host and the requested 
   expectNoPageErrors(errors);
 });
 
-test("unknown or missing application chat stays on the legacy fallback", async ({ page }) => {
+test("unknown application chat returns the shell-only 404", async ({ page }) => {
   const noApp = await page.goto(`/login?next=${encodeURIComponent("/chat")}`);
   expect(noApp?.status()).toBeLessThan(500);
   await page.getByLabel("Operator token (required)").fill(E2E_TOKEN);

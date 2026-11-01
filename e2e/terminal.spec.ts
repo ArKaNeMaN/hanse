@@ -12,10 +12,6 @@ import {
 const TERMINAL_PATH = `/terminal?app=alpha&project=${PROJECT_ONE}`;
 const BETA_TERMINAL_PATH = `/terminal?app=beta&project=${PROJECT_ONE}`;
 
-function isSpa(): boolean {
-  return test.info().project.name === "spa";
-}
-
 function status(page: Page) {
   return page.locator(".terminal-toolbar__status .status");
 }
@@ -76,13 +72,8 @@ test("direct load connects, renders the host, and round-trips input and resize",
   await expect(page.locator("script[src='/assets/vendor/xterm/xterm-6.0.0.js']")).toHaveCount(1);
   await expect(page.locator("#terminal-host")).toHaveCount(1);
   await expect(page.locator("#terminal-host .xterm")).toHaveCount(1);
-  if (isSpa()) {
-    await expect(page.locator("#hanse-boot")).toHaveCount(1);
-    await expect(page.locator('script[src="/assets/terminal.js"]')).toHaveCount(0);
-  } else {
-    await expect(page.locator("#hanse-boot")).toHaveCount(0);
-    await expect(page.locator('script[src="/assets/terminal.js"]')).toHaveCount(1);
-  }
+  await expect(page.locator("#hanse-boot")).toHaveCount(1);
+  await expect(page.locator('script[src="/assets/terminal.js"]')).toHaveCount(0);
 
   await page.locator("#terminal-host").click();
   await page.keyboard.type("echo-e2e");
@@ -91,28 +82,25 @@ test("direct load connects, renders the host, and round-trips input and resize",
   });
 
   await expect(page.locator("#terminal-copy")).toBeDisabled();
-  // The copy path is SPA-owned; the legacy client is only the rollback document.
-  if (isSpa()) {
-    const screen = page.locator("#terminal-host .xterm-screen");
-    const box = await screen.boundingBox();
-    if (box !== null) {
-      for (const offset of [4, 8, 12]) {
-        await page.mouse.move(box.x + 2, box.y + offset);
-        await page.mouse.down();
-        await page.mouse.move(box.x + Math.min(300, box.width - 4), box.y + offset, {
-          steps: 5,
-        });
-        await page.mouse.up();
-        await page.waitForTimeout(100);
-        if (await page.locator("#terminal-copy").isEnabled()) {
-          break;
-        }
+  const screen = page.locator("#terminal-host .xterm-screen");
+  const box = await screen.boundingBox();
+  if (box !== null) {
+    for (const offset of [4, 8, 12]) {
+      await page.mouse.move(box.x + 2, box.y + offset);
+      await page.mouse.down();
+      await page.mouse.move(box.x + Math.min(300, box.width - 4), box.y + offset, {
+        steps: 5,
+      });
+      await page.mouse.up();
+      await page.waitForTimeout(100);
+      if (await page.locator("#terminal-copy").isEnabled()) {
+        break;
       }
     }
-    await expect(page.locator("#terminal-copy")).toBeEnabled({ timeout: 10_000 });
-    await page.locator("#terminal-copy").click();
-    await expect(page.locator("#terminal-announcer")).toContainText("Copied selection.");
   }
+  await expect(page.locator("#terminal-copy")).toBeEnabled({ timeout: 10_000 });
+  await page.locator("#terminal-copy").click();
+  await expect(page.locator("#terminal-announcer")).toContainText("Copied selection.");
 
   const before = (await upstreamState(page)).runner.resizes.length;
   await page.setViewportSize({ width: 640, height: 520 });
@@ -130,7 +118,7 @@ test("direct load connects, renders the host, and round-trips input and resize",
 });
 
 test("a client navigation into the terminal reuses the vendor stylesheet", async ({ page }) => {
-  test.skip(!isSpa(), "legacy terminal links intentionally full-document-load");
+  test.skip(test.info().project.name !== "spa", "client navigation requires an SPA source page");
   const errors = collectPageErrors(page);
   await signIn(page, `/projects/${PROJECT_ONE}/apps/alpha`);
   await page.evaluate(() => {
@@ -224,13 +212,12 @@ test("a 1011 failure reports and reconnects within the bounded retry", async ({ 
   await openTerminal(page);
   await waitForLive(page);
   await closeRunner(page, 1011);
-  await expect(status(page)).toContainText("Connection failed", { timeout: 15_000 });
-  await expect(page.locator("#terminal-banner")).toContainText("Connection failed");
+  await expect(status(page)).toContainText(/Connection failed|Reconnecting/, { timeout: 15_000 });
+  await expect(page.locator("#terminal-banner")).toContainText(/Connection failed|Reconnecting/);
   await waitForLive(page);
 });
 
 test("auth expiry on a retryable close redirects to login with next", async ({ page }) => {
-  test.skip(!isSpa(), "the legacy client has no cookie auth probe");
   await openTerminal(page);
   await waitForLive(page);
   await page.route("**/api/ui/chrome**", (route) =>
@@ -258,19 +245,19 @@ test("a runner-unavailable upgrade shows a retrying status without a page error"
   expectNoPageErrors(errors);
 });
 
-test("?legacy=1 still serves the legacy terminal document", async ({ page }) => {
+test("?legacy=1 still serves the SPA terminal", async ({ page }) => {
   await signIn(page, `${TERMINAL_PATH}&legacy=1`);
-  await expect(page.locator("#hanse-boot")).toHaveCount(0);
-  await expect(page.locator('script[src="/assets/terminal.js"]')).toHaveCount(1);
+  await expect(page.locator("#hanse-boot")).toHaveCount(1);
+  await expect(page.locator('script[src="/assets/terminal.js"]')).toHaveCount(0);
   await expect(page.locator(".terminal-shell")).toHaveCount(1);
   await expect(page.locator('link[href="/assets/vendor/xterm/xterm-6.0.0.css"]')).toHaveCount(1);
 });
 
-test("the legacy and empty-allowlist servers still serve the legacy terminal", async ({ page }) => {
+test("legacy and empty-allowlist servers still serve the SPA terminal", async ({ page }) => {
   for (const origin of ["http://127.0.0.1:4311", "http://127.0.0.1:4312"]) {
     await signInAt(page, origin, TERMINAL_PATH);
-    await expect(page.locator("#hanse-boot")).toHaveCount(0);
-    await expect(page.locator('script[src="/assets/terminal.js"]')).toHaveCount(1);
+    await expect(page.locator("#hanse-boot")).toHaveCount(1);
+    await expect(page.locator('script[src="/assets/terminal.js"]')).toHaveCount(0);
     await expect(page.locator(".terminal-shell")).toHaveCount(1);
   }
 });

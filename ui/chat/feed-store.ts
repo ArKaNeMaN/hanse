@@ -2,7 +2,7 @@
  * Typed SPA wrapper over the copy-first `assets/chat-feed-store.js`.
  *
  * The JavaScript module is the runtime oracle copy; this file only adds TypeScript types and
- * convenience re-exports. It must never import `assets/chat.js` or any server module.
+ * convenience re-exports. It must never import a legacy client or any server module.
  */
 
 import type {

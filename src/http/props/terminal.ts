@@ -2,7 +2,7 @@
  * Page props for the operator terminal (`/terminal?app=&project=`).
  *
  * `buildTerminalProps` extracts the identity, runtime state, WebSocket path, and links that the
- * legacy `renderTerminalPage` assembles, so the future SPA endpoint/document cannot drift. The WS
+ * SPA terminal document assembles, so the endpoint and document cannot drift. The WS
  * path carries only the app key and project id; no runtime token is included.
  */
 

@@ -5,6 +5,7 @@ import { verifyAgentToken } from "../mcp/agent-tokens.js";
 import { SettingsValidationError } from "../settings/index.js";
 import type { SettingsScope, SettingsTarget } from "../settings/types.js";
 import {
+  isLegacyRetired,
   isSpaRoute,
   matchPage,
   type PageMatch,
@@ -16,7 +17,14 @@ import {
 import { SkillService, type SkillTarget } from "../skills/index.js";
 import { findApp } from "./apps.js";
 import { humanFromCookie } from "./auth.js";
-import { buildSite, type SiteModel } from "./dashboard.js";
+import { renderNoApps } from "./chat.js";
+import {
+  buildSite,
+  operatorProjects,
+  type PageChrome,
+  renderNotFound,
+  type SiteModel,
+} from "./dashboard.js";
 import {
   agentTokenFor,
   type HttpDeps,
@@ -533,6 +541,8 @@ export interface SpaDocumentInput {
   readonly notice?: Notice;
   readonly manifest?: UiManifest;
   readonly devUrl?: string;
+  readonly legacyAvailable?: boolean;
+  readonly fallbackHref?: string;
 }
 
 export function renderSpaDocument(input: SpaDocumentInput): string {
@@ -544,6 +554,7 @@ export function renderSpaDocument(input: SpaDocumentInput): string {
     spaRoutes: input.spaRoutes,
     topbar,
     ...(input.notice === undefined ? {} : { notice: input.notice }),
+    ...(input.legacyAvailable === false ? { legacyAvailable: false } : {}),
   };
   const moduleScripts =
     input.devUrl !== undefined
@@ -551,11 +562,13 @@ export function renderSpaDocument(input: SpaDocumentInput): string {
       : input.manifest === undefined
         ? []
         : [input.manifest.entry];
+  const legacyAvailable = input.legacyAvailable !== false;
+  const fallbackHref = input.fallbackHref ?? "?legacy=1";
   const fallback = `<div class="ui-fallback" id="ui-fallback" data-ui-fallback>
       <p class="overline">Interface</p>
       <h2 class="h3">The new interface did not load.</h2>
-      <p class="body">Reload the page, or switch to the classic interface.</p>
-      <a class="btn btn-secondary btn-sm" href="?legacy=1">Use the classic interface</a>
+      <p class="body">${legacyAvailable ? "Reload the page, or switch to the classic interface." : "Reload the page."}</p>
+      <a class="btn btn-secondary btn-sm" href="${escapeHtml(fallbackHref)}">${legacyAvailable ? "Use the classic interface" : "Reload the page"}</a>
     </div>`;
   return appShell({
     title: input.title,
@@ -861,9 +874,8 @@ function workspaceApp(request: HttpRequest): { projectId?: string; appKey: strin
 }
 
 /**
- * Chat boot props. Records the operator host only when the request carries a host, matching the
- * legacy `GET /chat` guard. Missing app/project returns null so the legacy redirect/404 stays in
- * force until Stage 9.
+ * Chat boot props. Records the operator host only when the request carries a host. Missing
+ * app/project returns null; `maybeServeSpa` owns the retired-route redirect/404.
  */
 function chatPropsFor(deps: HttpDeps, site: SiteModel, request: HttpRequest): ChatProps | null {
   const { projectId, appKey } = workspaceApp(request);
@@ -952,8 +964,9 @@ function agentForbidden(): HttpResponse {
 }
 
 /**
- * Single page-dispatch point for the SPA. Returns undefined to let the legacy renderer handle the
- * request: non-HTML, non-page, disabled, `?legacy=1`, or an invalid/missing manifest.
+ * Single page-dispatch point for the SPA. Returns undefined for requests that are not SPA pages or
+ * for non-retired routes that should still fall through to a legacy renderer. Retired routes never
+ * return undefined: they either render the SPA, a static entry/error page, or an explicit 503.
  */
 export function maybeServeSpa(deps: HttpDeps, request: HttpRequest): HttpResponse | undefined {
   if (request.method !== "GET" && request.method !== "HEAD") {
@@ -972,7 +985,8 @@ export function maybeServeSpa(deps: HttpDeps, request: HttpRequest): HttpRespons
   if (presented !== undefined && verifyAgentToken(deps.db, presented) !== undefined) {
     return agentForbidden();
   }
-  if (request.query?.legacy === "1") {
+  const retired = isLegacyRetired(match.id);
+  if (request.query?.legacy === "1" && !retired) {
     return undefined;
   }
 
@@ -988,7 +1002,7 @@ export function maybeServeSpa(deps: HttpDeps, request: HttpRequest): HttpRespons
     devUrl === undefined
       ? loadUiManifest({ ...(deps.logger === undefined ? {} : { logger: deps.logger }) })
       : undefined;
-  if (devUrl === undefined && manifest === undefined) {
+  if (!retired && devUrl === undefined && manifest === undefined) {
     return undefined;
   }
 
@@ -998,9 +1012,18 @@ export function maybeServeSpa(deps: HttpDeps, request: HttpRequest): HttpRespons
   }
 
   const site = buildSite(deps);
+  if (retired) {
+    const entry = retiredEntryPage(deps, site, match, request, principal);
+    if (entry !== undefined) {
+      return entry;
+    }
+    if (devUrl === undefined && manifest === undefined) {
+      return uiBuildMissing(site, pageChrome(principal, request));
+    }
+  }
   const props = pagePropsFor(deps, site, match, request);
-  if ((match.id === "chat" || match.id === "terminal") && props === null) {
-    return undefined;
+  if (retired && props === null) {
+    return htmlResponse(404, renderNotFound(site, pageChrome(principal, request), false));
   }
   const workspace = workspaceShellFor(match, props);
   const data = chromeFor(
@@ -1049,8 +1072,104 @@ export function maybeServeSpa(deps: HttpDeps, request: HttpRequest): HttpRespons
       ...(notice === undefined ? {} : { notice }),
       ...(devUrl === undefined ? {} : { devUrl }),
       ...(manifest === undefined ? {} : { manifest }),
+      ...(retired ? { legacyAvailable: false, fallbackHref: pagePath(request) } : {}),
     }),
   };
+}
+
+function htmlResponse(status: number, body: string): HttpResponse {
+  return {
+    status,
+    contentType: "text/html; charset=utf-8",
+    body,
+    headers: { "cache-control": "no-store" },
+  };
+}
+
+function pageChrome(principal: { name: string }, request: HttpRequest): PageChrome {
+  const notice = noticeFromQuery(request);
+  return {
+    operatorName: principal.name,
+    ...(notice === undefined ? {} : { notice }),
+  };
+}
+
+function redirectTo(location: string): HttpResponse {
+  return {
+    status: 302,
+    contentType: "text/plain; charset=utf-8",
+    body: "",
+    headers: { location },
+  };
+}
+
+/** Entry/error behavior that used to live in the deleted chat/terminal GET branches. */
+function retiredEntryPage(
+  deps: HttpDeps,
+  site: SiteModel,
+  match: PageMatch,
+  request: HttpRequest,
+  principal: { name: string },
+): HttpResponse | undefined {
+  if (match.id !== "chat" && match.id !== "terminal") {
+    return undefined;
+  }
+  const { projectId, appKey } = workspaceApp(request);
+  if (match.id === "terminal") {
+    if (projectId === undefined || appKey.length === 0) {
+      return htmlResponse(404, renderNotFound(site, pageChrome(principal, request), false));
+    }
+    return findApp(deps, projectId, appKey) === undefined
+      ? htmlResponse(404, renderNotFound(site, pageChrome(principal, request), false))
+      : undefined;
+  }
+  if (appKey.length === 0) {
+    const candidates = operatorProjects(site).flatMap((project) =>
+      project.apps.map((app) => ({ project, app })),
+    );
+    const first =
+      candidates[0] ??
+      site.projects.flatMap((project) => project.apps.map((app) => ({ project, app })))[0];
+    if (first === undefined) {
+      return htmlResponse(200, renderNoApps(site, pageChrome(principal, request)));
+    }
+    return redirectTo(
+      `/chat?app=${encodeURIComponent(first.app.appKey)}&project=${encodeURIComponent(first.project.id)}`,
+    );
+  }
+  return findApp(deps, projectId, appKey) === undefined
+    ? htmlResponse(404, renderNotFound(site, pageChrome(principal, request), false))
+    : undefined;
+}
+
+function uiBuildMissing(site: SiteModel, chrome: PageChrome): HttpResponse {
+  return htmlResponse(
+    503,
+    appShell({
+      title: "Interface unavailable",
+      active: "none",
+      breadcrumb: [{ label: "Interface" }],
+      projects: site.projects.map((project) => ({
+        id: project.id,
+        name: project.name,
+        appCount: project.apps.length,
+      })),
+      pendingCount: site.pendingCount,
+      sshPendingCount: site.sshPendingCount,
+      operatorName: chrome.operatorName,
+      notice: chrome.notice,
+      header: "",
+      contentScript: false,
+      body: `<div class="error-state" role="alert">
+        <span class="error-state__mark">${icon("alert-triangle", "icon--lg")}</span>
+        <div>
+          <h3 class="error-state__title">Interface build missing</h3>
+          <p class="error-state__body">This deployment has no SPA build. Redeploy the image with the UI build included; the legacy chat and terminal clients are retired.</p>
+          <div class="cluster"><a class="btn btn-primary btn-sm" href="/">Reload overview</a></div>
+        </div>
+      </div>`,
+    }),
+  );
 }
 
 const UI_API_PATHS = new Set([

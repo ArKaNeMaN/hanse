@@ -1,5 +1,5 @@
 import { defineConfig } from "@playwright/test";
-import { SPA_E2E_ROUTE_IDS_WITH_TERMINAL_AND_CHAT } from "./e2e/support/route-ids.js";
+import { SPA_E2E_ROUTE_IDS } from "./e2e/support/route-ids.js";
 
 const baseEnv = Object.fromEntries(
   Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
@@ -103,7 +103,7 @@ export default defineConfig({
       timeout: 60_000,
       env: fixtureEnv(4310, "spa", {
         HANSE_UI_LEGACY: "",
-        HANSE_UI_SPA_ROUTES: SPA_E2E_ROUTE_IDS_WITH_TERMINAL_AND_CHAT,
+        HANSE_UI_SPA_ROUTES: SPA_E2E_ROUTE_IDS,
       }),
     },
     {

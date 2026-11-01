@@ -1,6 +1,6 @@
 # Hanse - Current State (read this first)
 
-> Last updated: 2026-10-30. This is the canonical description of what is **implemented right now**.
+> Last updated: 2026-11-01. This is the canonical description of what is **implemented right now**.
 > If this document and the code disagree, the code wins - update this document.
 > History and rationale: `docs/design/overview.md`, `docs/plans/0001-core.md`,
 > `docs/journal/0001-core.md`. Deployment: `docs/deployment.md`.
@@ -259,7 +259,7 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   still work. Reply relaunch/retry/cancel and the project policy editor use
   `POST /api/handoffs/:id/reply/*`, `POST /api/handoffs/:id/cancel`, and
   `POST /api/projects/:id/handoff-policy*` (all human-only).
-- Static assets are allowlisted: `/assets/app.css`, `/assets/app.js`, `/assets/chat.js`,
+- Static assets are allowlisted: `/assets/app.css`, `/assets/app.js`,
   `/assets/chat-core.js`, `/assets/chat-commands.js`, `/assets/chat-diff.js`, `/assets/chat-highlight.js`,
   `/assets/chat-highlight-worker.js`, `/assets/git.js`, `/assets/git-settings.js`,
   `/assets/handoff.js`, `/assets/settings.js`, `/assets/skill-detail.js`, `/assets/markdown.js`,
@@ -274,13 +274,9 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   `ui/pages/ChatPage.vue` plus its `ui/chat/*` adapters, `ui/stores/chat-*`, and
   `ui/components/chat/*`; it reuses the pure helpers in `assets/chat-core.js`,
   `assets/chat-commands.js`, `assets/chat-diff.js`, and the lazy worker controller in
-  `assets/chat-highlight.js`. `assets/chat.js` is the frozen legacy chat client retained only as
-  the rollback document. `assets/git.js` hydrates the legacy rollback application git panel.
-  Every page route, including `/chat` and `/terminal`, is an SPA route by default. The legacy chat
-  and terminal renderers stay frozen as the rollback path and remain reachable through
-  `HANSE_UI_LEGACY=1`, `?legacy=1`, or a `HANSE_UI_SPA_ROUTES` allowlist (see
-  **UI rendering modes**). Freeze policy: do not add behavior to `renderChatPage` or
-  `assets/chat.js`; fixes and new behavior land in the Vue client.
+  `assets/chat-highlight.js`. `assets/chat.js` and `assets/terminal.js` were deleted in Stage 9;
+  chat and terminal are always SPA, and their only rollback is an image rollback. `assets/git.js`
+  still hydrates the legacy rollback application git panel for non-chat pages.
 - The chat workspace is the three-pane surface: sessions rail, thread, and context rail, rendered
   by `ui/pages/ChatPage.vue`. Below 1360 the context pane is a drawer; below 768 both rails are
   drawers. The thread is the only scroll owner. `session` is mirrored to the URL, and the optional
@@ -296,10 +292,10 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   reconnects with the recorded C9 bound - delays `[1,2,4,8,15]s`, exactly five automatic attempts,
   then manual Reconnect. A failed upgrade probes the cookie-only `/api/ui/chrome?path=/terminal` at
   most once per retry window (5 s cooldown, never while hidden); `401/403` redirects to
-  `/login?next=<fullPath>`. Runtime stopped/error links to chat. `/assets/terminal.js` and the
-  legacy terminal document remain the rollback until Stage 9.
+  `/login?next=<fullPath>`. Runtime stopped/error links to chat. `/assets/terminal.js` and its
+  legacy document were deleted in Stage 9; terminal rollback is image rollback only.
 
-## UI rendering modes (Phase 7 complete)
+## UI rendering modes (Stage 9 complete)
 
 - `/` (fleet overview), `/projects`, `/projects/:id` (project detail), `/handoffs` (handoff
   inbox), `/ssh` (SSH console), the three settings scopes (`/settings`,
@@ -309,14 +305,15 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   (`src/shared/routes.ts`) has `spa: true` for `overview`, `projects`, `project`, `handoffs`, `ssh`,
   `settings-global`, `settings-project`, `settings-app`, `skills-global`, `skills-project`,
   `skills-app`, `skills-new`, `skills-detail`, `app`, `terminal`, and `chat`. Chat and terminal
-  keep `legacyRetired: false`, so both legacy documents remain the rollback path until Stage 9.
-  Application detail
+  have `legacyRetired: true`: `HANSE_UI_LEGACY=1`, `?legacy=1`, and `HANSE_UI_SPA_ROUTES` no longer
+  affect them; rollback is an image rollback. Application detail
   (`/projects/:id/apps/:app`) is the default SPA route, and its legacy rollback page still loads
   `git.js`, `images.js`, and `ssh.js`. The page dispatcher
-  is the only place that chooses a renderer:
-  `HANSE_UI_LEGACY=1` > `?legacy=1` > `HANSE_UI_SPA_ROUTES` > the registry flag. A missing, invalid,
-  or partial `assets/ui/.vite/manifest.json` also falls back to legacy and logs
-  `ui.manifest_invalid`.
+  is the only place that chooses a renderer. For non-retired routes the order is
+  `HANSE_UI_LEGACY=1` > `?legacy=1` > `HANSE_UI_SPA_ROUTES` > the registry flag; a missing, invalid,
+  or partial `assets/ui/.vite/manifest.json` falls back to legacy and logs `ui.manifest_invalid`.
+  A retired route is always SPA (or an explicit `503` UI-build-missing page) and never reaches a
+  legacy branch.
 - The Vue 3 + Vue Router + Pinia + Vue Query client lives in `ui/`, builds into `assets/ui/`
   (`npm run build:ui`), and mounts into the existing server shell `<main id="main">` (no second
   wrapper). Server-rendered chrome is refreshed through `GET /api/ui/chrome?path=`, and page data
@@ -388,12 +385,11 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   `403/409/400` denied/existing/summary-required, while the legacy form path keeps its `303` +
   notice. Reply, cancel, policy, and deletion requests reuse the existing JSON handlers.
 - `#ui-fallback` stays hidden, then reveals after 4 s only if the client did not mount;
-  `vite:preloadError` reloads once and then renders a safe `?legacy=1` fallback.
-- D1 revised: `/terminal` was cut over in Stage 2 and `/chat` in Stage 7C. The operator verifies
-  both on the deployment host before Phase 8 cleanup. The legacy chat and terminal documents,
-  `assets/chat.js`, and `assets/terminal.js` remain the rollback path through
-  `HANSE_UI_LEGACY=1`, `?legacy=1`, or an allowlist omission until Stage 9. The legacy chat
-  renderer/client is frozen: no new behavior lands there; fixes land in Vue.
+  `vite:preloadError` reloads once and then renders a route-aware fallback: classic-interface link
+  for non-retired routes, reload-only for chat/terminal.
+- Stage 9 is complete: `/terminal` was cut over in Stage 2 and `/chat` in Stage 7C; after operator
+  sign-off both legacy renderers and clients were deleted. Their retired route records ignore all
+  runtime rollback flags, and the only rollback is an image rollback with a UI-build check.
 
 ## Git workbench
 
@@ -1255,9 +1251,9 @@ Host `./agents` is mounted at `/data/agents` read-write in `hanse` and read-only
 | `HANSE_IDE=0` | serve | do not spawn code-server in the coordinator |
 | `HANSE_IDE_HOST` / `HANSE_IDE_PORT` | serve | proxy target for `/ide` (default `127.0.0.1:8080`) |
 | `HANSE_IDE_BIN` | serve | code-server binary |
-| `HANSE_ASSETS` | serve | directory for `app.css`, `app.js`, `app-content.js`, the built client assets under `assets/ui/`, `chat.js`, `chat-core.js`, `chat-diff.js`, `chat-highlight.js`, `chat-highlight-worker.js`, `git.js`, `git-settings.js`, `handoff.js`, `settings.js`, `skill-detail.js`, `markdown.js`, `vendor/prism/prism-1.30.0.min.js`, and `favicon.svg` |
-| `HANSE_UI_LEGACY` | serve | `1` forces every page to the legacy renderer (restart required); `?legacy=1` forces one request |
-| `HANSE_UI_SPA_ROUTES` | serve | comma-separated route ids to serve as SPA; unset uses the registry flags, empty string disables all SPA routes |
+| `HANSE_ASSETS` | serve | directory for `app.css`, `app.js`, `app-content.js`, the built client assets under `assets/ui/`, `chat-core.js`, `chat-diff.js`, `chat-highlight.js`, `chat-highlight-worker.js`, `git.js`, `git-settings.js`, `handoff.js`, `settings.js`, `skill-detail.js`, `markdown.js`, `vendor/prism/prism-1.30.0.min.js`, xterm vendor files, and `favicon.svg` |
+| `HANSE_UI_LEGACY` | serve | `1` forces non-retired pages to the legacy renderer (restart required); ignored for retired chat/terminal |
+| `HANSE_UI_SPA_ROUTES` | serve | comma-separated non-retired route ids to serve as SPA; retired chat/terminal are always SPA |
 | `HANSE_UI_DEV_URL` | serve, dev | Vite dev origin (for example `http://127.0.0.1:5173`); the server emits `<url>/assets/ui/@vite/client` and `<url>/assets/ui/main.ts` instead of the built manifest |
 | `HANSE_DB` / `HANSE_PROJECT_ID` / `HANSE_APP_KEY` | `hanse mcp` | MCP server binding |
 | `HANSE_API_BASE` | extension | coordinator base URL (`http://hanse:8787`) |

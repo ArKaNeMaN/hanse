@@ -40,6 +40,8 @@ export interface BootPayload {
   readonly spaRoutes: readonly RouteId[];
   readonly topbar: BootTopbar;
   readonly notice?: BootNotice;
+  /** False when this route has no classic fallback; the runtime fallback links to a reload. */
+  readonly legacyAvailable?: boolean;
 }
 
 const KNOWN_ROUTE_IDS = new Set<RouteId>(ROUTES.map((route) => route.id));
@@ -127,6 +129,9 @@ export function readBoot(doc: Document = document): BootPayload | undefined {
   if (parsed.notice !== undefined && !isNotice(parsed.notice)) {
     return undefined;
   }
+  if (parsed.legacyAvailable !== undefined && typeof parsed.legacyAvailable !== "boolean") {
+    return undefined;
+  }
   if (!isTopbar(parsed.topbar)) {
     return undefined;
   }
@@ -152,5 +157,6 @@ export function readBoot(doc: Document = document): BootPayload | undefined {
     spaRoutes,
     topbar: parsed.topbar,
     ...(parsed.notice === undefined ? {} : { notice: parsed.notice }),
+    ...(parsed.legacyAvailable === undefined ? {} : { legacyAvailable: parsed.legacyAvailable }),
   };
 }

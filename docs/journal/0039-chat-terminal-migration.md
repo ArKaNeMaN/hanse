@@ -641,7 +641,36 @@ following checkpoints align the SPA with the legacy composition without changing
   time). Client-owned SVG fallbacks now share the sprite's `0 0 24 24` viewBox, so the Stop glyph
   and question option circles/checks are no longer clipped.
 
-Evidence: `npm test` 3332 passed; `npm run test:e2e` 210 passed, 13 skipped; lint/typecheck/
+Evidence after Stage 9: `npm test` 3298 passed; `npm run test:e2e` 216 passed, 3 skipped; lint/typecheck/
 typecheck:ui/typecheck:e2e/build/check ui/check:chat-worker/check:sensitive/diff-check pass. Fresh
 audit captures and per-route diffs live under the untracked `.omo/visual-audit/` directory. No
 deploy or Stage 9 cleanup was performed by this checkpoint.
+
+
+## Stage 9 - Legacy cleanup
+
+Owner sign-off on the deployed SPA surface cleared the cleanup gate. The two legacy page
+implementations are deleted; the API, SSE, attachment, and terminal WebSocket contracts remain.
+
+- `src/shared/routes.ts` marks `chat` and `terminal` `legacyRetired: true`. `isSpaRoute` now checks
+  an invalid manifest first, then the retired flag, then `HANSE_UI_LEGACY`, then the allowlist.
+  `?legacy=1` is ignored for retired routes, and a missing UI build returns an explicit `503`.
+- `src/http/spa.ts` owns the retired entry/error semantics that used to live in the deleted page
+  branches: `/chat` redirects to the first operator application, zero applications render the
+  shell-only no-apps page, unknown chat/terminal targets render the shell-only 404, and the
+  `renderNoApps`/`renderNotFound` pages omit `app-content.js`. Valid retired routes always render
+  the SPA document.
+- Deleted `renderChatPage` and chat-page-only helpers (`renderContextHandoffs`, `appOptions`,
+  `renderPreviewRows`, `renderPreviewSection`) plus the `GET /chat` branch; retained every
+  `/api/apps/*` handler, `handleStart`, attachment endpoints, and `streamSessionEvents`.
+- Deleted `renderTerminalPage`, the `GET /terminal` branch, `assets/chat.js`, `assets/terminal.js`,
+  and their asset allowlist entries. `proxyTerminalUpgrade`, the upgrade dispatch, terminal props,
+  xterm vendor assets, and the SPA terminal components remain.
+- Removed the legacy page/byte tests and the chat/terminal-specific E2E allowlist scaffolding.
+  Added retired-flag and entry/error coverage, including the `503` missing-build state and the
+  no-apps/404 shell-only pages.
+- Updated the SPA fallback to be route-aware: retired routes offer Reload, non-retired routes keep
+  the classic-interface link. Terminal error states now link back to the application instead of a
+  deleted classic document.
+- Rollback is now image rollback only. The deploy runbook requires the UI build in the image and a
+  first-load plus client-navigation check on `/chat` and `/terminal`.

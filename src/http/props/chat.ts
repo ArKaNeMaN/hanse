@@ -1,8 +1,8 @@
 /**
  * Page props for the chat workspace (`/chat?app=&project=`).
  *
- * `buildChatProps` extracts the page-frame and context-rail data the legacy `renderChatPage`
- * assembles, so the future SPA endpoint and document cannot invent a second shape. Chat messages,
+ * `buildChatProps` extracts the page-frame and context-rail data the SPA chat document
+ * assembles. Chat messages,
  * sessions, queues, and prompts stay on the existing `/api/apps/*` APIs; this module only carries
  * route identity, links, runtime state, app-selector options, handoffs, previews, and the stable
  * first-paint topbar fallback.

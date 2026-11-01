@@ -1,5 +1,7 @@
 <script setup lang="ts">
-defineProps<{ message: string }>();
+import type { BootPayload } from "../boot.js";
+
+defineProps<{ message: string; boot: BootPayload }>();
 
 function retry(): void {
   window.location.reload();
@@ -12,8 +14,7 @@ function retry(): void {
       <p class="overline">Interface</p>
       <h1 class="page-title">This view could not be rendered</h1>
       <p class="page-description">
-        The client hit an unexpected error while rendering this route. Reload, or switch to the
-        classic interface.
+        The client hit an unexpected error while rendering this route. Reload the page to continue.
       </p>
       <p class="hint">{{ message }}</p>
     </div>
@@ -30,7 +31,10 @@ function retry(): void {
       <p class="empty-state__body">No data was changed.</p>
       <div class="cluster">
         <button class="btn btn-secondary btn-sm" type="button" @click="retry">Reload</button>
-        <a class="btn btn-ghost btn-sm" href="?legacy=1">Use the classic interface</a>
+        <a v-if="boot.legacyAvailable !== false" class="btn btn-ghost btn-sm" href="?legacy=1">
+          Use the classic interface
+        </a>
+        <a v-else class="btn btn-ghost btn-sm" href="/">Open overview</a>
       </div>
     </div>
   </div>

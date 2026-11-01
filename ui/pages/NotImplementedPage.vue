@@ -21,7 +21,7 @@ defineProps<{ boot: BootPayload }>();
       <div class="card__body stack--tight">
         <p class="small">No data was changed and no request was sent.</p>
         <div class="cluster">
-          <a class="btn btn-secondary" href="?legacy=1">Use the classic interface</a>
+          <a class="btn btn-secondary" href="/">Open overview</a>
         </div>
       </div>
     </section>

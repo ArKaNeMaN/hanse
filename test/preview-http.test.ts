@@ -4,10 +4,10 @@ import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import { CoordinatorService } from "../src/coordinator/service.js";
 import { GitService } from "../src/git/service.js";
-import { handleChat } from "../src/http/chat.js";
 import type { HttpDeps, HttpRequest } from "../src/http/handler.js";
 import { handlePreviews } from "../src/http/previews.js";
 import { createHttpServer } from "../src/http/server.js";
+import { handleUiApi } from "../src/http/spa.js";
 import { createPrincipal } from "../src/identity/principals.js";
 import { PreviewService } from "../src/preview/service.js";
 import { SettingsService } from "../src/settings/index.js";
@@ -288,36 +288,36 @@ describe("server dispatch", () => {
 describe("operator host capture", () => {
   it("records the latest human chat host per app", async () => {
     const f = fixture();
-    const first = await handleChat(
+    const first = handleUiApi(
       f.deps,
       request({
-        path: "/chat",
-        headers: auth(f.token),
+        path: "/api/ui/chat",
+        headers: { cookie: `hanse_token=${encodeURIComponent(f.token)}` },
         query: { app: "a", project: "p1" },
         host: "coordinator.example:8787",
       }),
     );
-    expect(first.status).toBe(200);
+    expect(first?.status).toBe(200);
     expect(f.previews.operatorHost("p1:a")).toEqual({
       host: "coordinator.example:8787",
       hostname: "coordinator.example",
     });
     expect(f.previews.operatorHost("p2:a")).toBeUndefined();
 
-    await handleChat(
+    handleUiApi(
       f.deps,
       request({
-        path: "/chat",
-        headers: auth(f.token),
+        path: "/api/ui/chat",
+        headers: { cookie: `hanse_token=${encodeURIComponent(f.token)}` },
         query: { app: "a", project: "p2" },
         host: "second.example:8787",
       }),
     );
-    await handleChat(
+    handleUiApi(
       f.deps,
       request({
-        path: "/chat",
-        headers: auth(f.token),
+        path: "/api/ui/chat",
+        headers: { cookie: `hanse_token=${encodeURIComponent(f.token)}` },
         query: { app: "a", project: "p1" },
         host: "latest.example:8787",
       }),
@@ -329,16 +329,16 @@ describe("operator host capture", () => {
 
   it("does not record the host for a non-human request", async () => {
     const f = fixture();
-    const response = await handleChat(
+    const response = handleUiApi(
       f.deps,
       request({
-        path: "/chat",
+        path: "/api/ui/chat",
         headers: auth(f.agentToken),
         query: { app: "a", project: "p1" },
         host: "coordinator.example:8787",
       }),
     );
-    expect(response.status).toBe(303);
+    expect(response?.status).toBe(403);
     expect(f.previews.operatorHost("p1:a")).toBeUndefined();
   });
 });

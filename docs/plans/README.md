@@ -61,10 +61,9 @@
   inventory, workspace shell/boot route set/props, terminal port and cutover, copy-first chat feed
   store and event reducer, vertical chat slices (read-only, composer/send/queue, feed rendering,
   prompts/context, attachments/commands), full chat cutover, deployment-host operator verification,
-  and post-verification legacy cleanup with `legacyRetired` and image rollback. Status: in progress
-  (Stages 0-7C implemented; `/chat` and `/terminal` cut over with legacy rollback;
-  renderers/diffs/scroll, composer/drafts/send, prompts/permissions/SSH approvals, context rail,
-  attachments/commands/app menu, session tree/history, the Stage 7C parity audit, and the chat
-  cutover); `/chat` and `/terminal` are SPA by default with the frozen legacy rollback retained;
-  design approved (`oracle` round 5 PASS); plan review PASS (`momus`); Stage 8 operator
-  verification is next.
+  and post-verification legacy cleanup with `legacyRetired` and image rollback. Status: complete
+  (Stages 0-7C implemented; renderers/diffs/scroll, composer/drafts/send, prompts/permissions/SSH
+  approvals, context rail, attachments/commands/app menu, session tree/history, the Stage 7C parity
+  audit, and the chat cutover); Stage 8 operator sign-off received; Stage 9 deleted both legacy
+  renderers/clients and retired all runtime rollback flags for `/chat` and `/terminal`. Their only
+  rollback is image rollback with the mandatory UI-build check.

@@ -6,7 +6,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { CoordinatorService } from "../src/coordinator/service.js";
 import { GitService } from "../src/git/service.js";
 import type { HttpDeps, HttpRequest } from "../src/http/handler.js";
-import { handleRequest } from "../src/http/handler.js";
 import { handleUiApi } from "../src/http/spa.js";
 import { createPrincipal } from "../src/identity/principals.js";
 import { SettingsService } from "../src/settings/index.js";
@@ -152,21 +151,5 @@ describe("/api/ui/terminal", () => {
       expect(response, JSON.stringify(query)).toMatchObject({ status: 404 });
       expect(response?.headers?.["cache-control"]).toBe("no-store");
     }
-  });
-  it("characterizes the same page-frame values the legacy renderer emits", () => {
-    const f = fixture();
-    const response = handleUiApi(f.deps, request(cookie(f.token), { app: "web", project: "p" }));
-    const props = JSON.parse(response?.body ?? "{}");
-    const legacy = handleRequest(f.deps, {
-      method: "GET",
-      path: "/terminal",
-      headers: { authorization: `Bearer ${f.token}` },
-      query: { app: "web", project: "p" },
-    });
-    expect(legacy.status).toBe(200);
-    expect(legacy.body).toContain(`data-terminal-ws="${props.runtime.wsPath}"`);
-    expect(legacy.body).toContain(`data-runtime-url="${props.runtime.runtimeUrl}"`);
-    expect(legacy.body).toContain(`data-app-key="${props.app.appKey}"`);
-    expect(legacy.body).toContain(`data-project-id="${props.app.projectId}"`);
   });
 });
