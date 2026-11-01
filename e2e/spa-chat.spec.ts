@@ -140,6 +140,12 @@ test("deep link, refresh, and back/forward keep one chat host and the requested 
   await expect(page.locator("#chat-scroll")).toHaveCount(1);
   await expect(page.locator('[data-message-id="msg_e2e_user"]')).toHaveCount(1);
   await expect(page.locator('[data-message-id="msg_e2e_assistant"]')).toHaveCount(1);
+  const user = page.locator('[data-message-id="msg_e2e_user"]');
+  const assistant = page.locator('[data-message-id="msg_e2e_assistant"]');
+  await expect(user.locator("[data-message-role]")).toHaveText("operator");
+  await expect(user.locator("[data-message-time]")).toHaveText(/\d{1,2}:\d{2}/);
+  await expect(assistant.locator("[data-message-role]")).toHaveText("alpha");
+  await expect(assistant.locator("[data-message-time]")).toHaveText(/\d{1,2}:\d{2}/);
 
   await page.waitForTimeout(400);
   expectNoPageErrors(errors);
@@ -291,6 +297,12 @@ test("SPA session switching keeps one stream and no duplicate messages", async (
   await expect(page).toHaveURL(/session=ses_e2ealpha/);
   await expect(page.locator('[data-message-id="msg_e2e_user"]')).toHaveCount(1);
   await expect(page.locator('[data-message-id="msg_e2e_assistant"]')).toHaveCount(1);
+  const user = page.locator('[data-message-id="msg_e2e_user"]');
+  const assistant = page.locator('[data-message-id="msg_e2e_assistant"]');
+  await expect(user.locator("[data-message-role]")).toHaveText("operator");
+  await expect(user.locator("[data-message-time]")).toHaveText(/\d{1,2}:\d{2}/);
+  await expect(assistant.locator("[data-message-role]")).toHaveText("alpha");
+  await expect(assistant.locator("[data-message-time]")).toHaveText(/\d{1,2}:\d{2}/);
   const ids = await page
     .locator("#chat-scroll [data-message-id]")
     .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-message-id")));

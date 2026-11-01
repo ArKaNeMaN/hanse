@@ -24,6 +24,7 @@ import ChatNoticeRow from "./ChatNoticeRow.vue";
 
 const props = defineProps<{
   items: readonly ChatThreadItem[];
+  appKey?: string;
   sessionId: string | null;
   workspaceKey: string;
   revision: number;
@@ -508,6 +509,7 @@ defineExpose({ captureAnchor, restoreAnchor, scrollToBottom, onScroll, unseen })
             <ChatMessage
               v-if="item.type === 'message'"
               :record="item.message"
+              :app-key="appKey"
               :question-view-for-part="questionViewForPart"
               :data-message-id="item.message.id"
               @question-submit="(view, answers) => emit('question-submit', view, answers)"

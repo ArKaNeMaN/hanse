@@ -2104,6 +2104,7 @@ onBeforeUnmount(() => {
         <ChatThread
           ref="threadRef"
           :items="threadItems"
+          :app-key="appKey"
           :session-id="routeState.session.value"
           :workspace-key="routeState.workspaceKey.value"
           :revision="feed.revision"

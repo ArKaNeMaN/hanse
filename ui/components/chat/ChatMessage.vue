@@ -1,7 +1,11 @@
 <script setup lang="ts">
 /** One chat feed message: OMO/handoff cards, text, reasoning, tools, details, and unknown parts. */
 import { computed, ref } from "vue";
-import { type AttachmentView, attachmentViewFromFilePart } from "../../../assets/chat-core.js";
+import {
+  type AttachmentView,
+  agentInitials,
+  attachmentViewFromFilePart,
+} from "../../../assets/chat-core.js";
 import { allocateView, patchPartView, type ToolView } from "../../../assets/chat-diff.js";
 import { isKnownPartType } from "../../chat/feed-store.js";
 import type { ChatMessagePartView, ChatMessageView, InlineQuestionView } from "../../chat/types.js";
@@ -25,6 +29,7 @@ const HIDDEN_PART_TYPES = new Set([
 
 const props = defineProps<{
   record: ChatMessageView;
+  appKey?: string;
   questionViewForPart?: (part: ChatMessagePartView, messageID: string) => InlineQuestionView | null;
 }>();
 
@@ -67,6 +72,17 @@ const stripAttachments = computed<readonly AttachmentView[]>(() => {
 const showParts = computed(
   () => props.record.omo === null && (props.record.handoff ?? null) === null,
 );
+const roleLabel = computed(() =>
+  props.record.role === "user" ? "operator" : (props.appKey ?? "").trim() || "agent",
+);
+const avatarText = computed(() => agentInitials(roleLabel.value));
+const timeLabel = computed(() => {
+  const value = props.record.time?.created;
+  if (typeof value !== "number" || !Number.isFinite(value)) return "";
+  const date = new Date(value < 1_000_000_000_000 ? value * 1000 : value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+});
 
 function dataOf(part: ChatMessagePartView): Record<string, unknown> {
   return part.data ?? {};
@@ -208,6 +224,14 @@ const optimisticLabel = computed(() => {
   >
     <OmoCard v-if="record.omo !== null" :omo="record.omo" />
     <HandoffCard v-else-if="record.handoff != null" :handoff="record.handoff" />
+
+    <div v-if="showParts" class="message__meta" data-message-meta>
+      <span class="avatar avatar--sm" aria-hidden="true">{{ avatarText }}</span>
+      <span class="message__role" data-message-role>{{ roleLabel }}</span>
+      <span v-if="timeLabel.length > 0" class="message__time" data-message-time>{{
+        timeLabel
+      }}</span>
+    </div>
 
     <template v-if="showParts">
       <template v-for="part in record.parts" :key="part.id">

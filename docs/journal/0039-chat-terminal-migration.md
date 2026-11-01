@@ -637,8 +637,11 @@ following checkpoints align the SPA with the legacy composition without changing
 - The Stop action uses the destructive button style and a local `stop` icon fallback. Fenced JSON
   Markdown and JSON-array tool output are covered; an aborted message load retries once so rapid
   session switching cannot strand an empty feed.
+- Normal message rows restore the legacy sender/time meta (`operator` or the app key plus local
+  time). Client-owned SVG fallbacks now share the sprite's `0 0 24 24` viewBox, so the Stop glyph
+  and question option circles/checks are no longer clipped.
 
-Evidence: `npm test` 3325 passed; `npm run test:e2e` 209 passed, 13 skipped; lint/typecheck/
+Evidence: `npm test` 3332 passed; `npm run test:e2e` 210 passed, 13 skipped; lint/typecheck/
 typecheck:ui/typecheck:e2e/build/check ui/check:chat-worker/check:sensitive/diff-check pass. Fresh
 audit captures and per-route diffs live under the untracked `.omo/visual-audit/` directory. No
 deploy or Stage 9 cleanup was performed by this checkpoint.

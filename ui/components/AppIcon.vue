@@ -29,6 +29,7 @@ const localPaths = computed(() => LOCAL_PATHS[props.name]);
 <template>
   <svg
     :class="className === undefined ? 'icon' : `icon ${className}`"
+    viewBox="0 0 24 24"
     aria-hidden="true"
     focusable="false"
   >

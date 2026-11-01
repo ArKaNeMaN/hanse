@@ -48,6 +48,36 @@ describe("ChatMessage part surfaces", () => {
     wrapper.unmount();
   });
 
+  it("shows the sender label and time on normal messages", async () => {
+    const wrapper = mount(ChatMessage, {
+      props: {
+        appKey: "alpha",
+        record: message({
+          id: "m-meta",
+          role: "assistant",
+          time: { created: 1_760_000_002_000 },
+          parts: [part({ id: "meta", type: "text", text: "Reply", data: { text: "Reply" } })],
+        }),
+      },
+    });
+    await nextTick();
+    expect(wrapper.find("[data-message-role]").text()).toBe("alpha");
+    expect(wrapper.find("[data-message-time]").text()).toMatch(/\d{1,2}:\d{2}/);
+    expect(wrapper.find(".avatar").text()).toBe("AL");
+    wrapper.unmount();
+  });
+
+  it("labels operator messages and omits a missing time", async () => {
+    const wrapper = render(
+      [part({ id: "user", type: "text", text: "Hello", data: { text: "Hello" } })],
+      { role: "user" },
+    );
+    await nextTick();
+    expect(wrapper.find("[data-message-role]").text()).toBe("operator");
+    expect(wrapper.find("[data-message-time]").exists()).toBe(false);
+    wrapper.unmount();
+  });
+
   it("marks user messages with the legacy bubble class", async () => {
     const wrapper = render(
       [part({ id: "user", type: "text", text: "Hello", data: { text: "Hello" } })],
