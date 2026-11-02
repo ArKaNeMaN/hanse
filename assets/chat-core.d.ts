@@ -88,6 +88,9 @@ export function firstRootId(tree: SessionTree | null | undefined): string | null
 export function ancestorIds(tree: SessionTree | null | undefined, id: unknown): string[];
 export function collectSubtreeIds(tree: SessionTree | null | undefined, id: unknown): string[];
 export function classifyOmo(message: unknown): OmoSystemMeta | null;
+export function isAttachmentManifestPart(value: unknown): boolean;
+export function isResumeSyntheticPart(value: unknown): boolean;
+export function isHiddenSyntheticTextPart(value: unknown): boolean;
 
 export function applyOmittedPart(
   record: FeedMessageRecord,

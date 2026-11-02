@@ -3065,4 +3065,32 @@ describe("agent-resume synthetic parts", () => {
   it("is never classified as an OMO system card", () => {
     expect(classifyOmo({ role: "user", parts: [resumePart] })).toBeNull();
   });
+
+  it("hides the attachment manifest and synthetic read-tool text", () => {
+    expect(
+      isHiddenSyntheticTextPart({
+        id: "prt_manifest",
+        type: "text",
+        data: {
+          text: "Attached files (use these paths...):\n- /tmp/a.txt",
+          synthetic: true,
+          metadata: { hanse: "attachment-manifest" },
+        },
+      }),
+    ).toBe(true);
+    expect(
+      isHiddenSyntheticTextPart({
+        id: "prt_read",
+        type: "text",
+        data: { text: "Called the Read tool with the following input: {}", synthetic: true },
+      }),
+    ).toBe(true);
+    expect(
+      isHiddenSyntheticTextPart({
+        id: "prt_synthetic",
+        type: "text",
+        data: { text: "ordinary synthetic text", synthetic: true },
+      }),
+    ).toBe(false);
+  });
 });

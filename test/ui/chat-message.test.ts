@@ -157,4 +157,35 @@ describe("ChatMessage part surfaces", () => {
     expect(wrapper.text()).toContain("<system-reminder>");
     wrapper.unmount();
   });
+
+  it("hides synthetic attachment-manifest and read-tool text parts", async () => {
+    const wrapper = render([
+      part({ id: "visible", type: "text", text: "Visible reply", data: { text: "Visible reply" } }),
+      part({
+        id: "manifest",
+        type: "text",
+        text: "Attached files (use these paths...):\n- /tmp/a.txt",
+        data: {
+          text: "Attached files (use these paths...):\n- /tmp/a.txt",
+          synthetic: true,
+          metadata: { hanse: "attachment-manifest" },
+        },
+      }),
+      part({
+        id: "read-synthetic",
+        type: "text",
+        text: "Called the Read tool with the following input: {}",
+        data: {
+          text: "Called the Read tool with the following input: {}",
+          synthetic: true,
+        },
+      }),
+    ]);
+    await nextTick();
+    expect(wrapper.findAll(".chat-text")).toHaveLength(1);
+    expect(wrapper.text()).toContain("Visible reply");
+    expect(wrapper.text()).not.toContain("Attached files (use these paths...)");
+    expect(wrapper.text()).not.toContain("Called the Read tool");
+    wrapper.unmount();
+  });
 });

@@ -101,6 +101,45 @@ describe("chat queue and abort", () => {
     wrapper.unmount();
   });
 
+  it("skips a hidden synthetic manifest in the queue row preview", async () => {
+    const { wrapper } = await mountChat("/chat?app=alpha&project=p&session=s1", {
+      messages: [
+        QUEUED_MESSAGES[0],
+        {
+          info: {
+            id: "msg_q_manifest",
+            sessionID: "s1",
+            role: "user",
+            time: { created: 1_760_000_004_000 },
+          },
+          parts: [
+            {
+              id: "prt_q_manifest",
+              sessionID: "s1",
+              messageID: "msg_q_manifest",
+              type: "text",
+              text: "Attached files (use these paths...):\n- /tmp/a.txt",
+              synthetic: true,
+              metadata: { hanse: "attachment-manifest" },
+            },
+            {
+              id: "prt_q_visible",
+              sessionID: "s1",
+              messageID: "msg_q_manifest",
+              type: "text",
+              text: "Visible queued text",
+            },
+          ],
+        },
+      ],
+    });
+    const strip = wrapper.find("[data-chat-queue-strip]");
+    expect(strip.exists()).toBe(true);
+    expect(strip.text()).toContain("Visible queued text");
+    expect(strip.text()).not.toContain("Attached files");
+    wrapper.unmount();
+  });
+
   it("keeps queue promotion suppressed after an intentional abort settles idle", async () => {
     const { wrapper, pinia } = await mountChat("/chat?app=alpha&project=p&session=s1", {
       messages: QUEUED_MESSAGES,

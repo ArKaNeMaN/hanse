@@ -5,6 +5,7 @@ import {
   type AttachmentView,
   agentInitials,
   attachmentViewFromFilePart,
+  isHiddenSyntheticTextPart,
 } from "../../../assets/chat-core.js";
 import { allocateView, patchPartView, type ToolView } from "../../../assets/chat-diff.js";
 import { isKnownPartType } from "../../chat/feed-store.js";
@@ -236,7 +237,7 @@ const optimisticLabel = computed(() => {
     <template v-if="showParts">
       <template v-for="part in record.parts" :key="part.id">
         <MarkdownBlock
-          v-if="part.type === 'text' && part.text.length > 0"
+          v-if="part.type === 'text' && part.text.length > 0 && !isHiddenSyntheticTextPart(part)"
           :text="part.text"
           :sealed="part.sealed"
           class="message__body chat-text"

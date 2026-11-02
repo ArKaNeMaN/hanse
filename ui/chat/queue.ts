@@ -5,7 +5,7 @@
  * short row labels the composer surface renders.
  */
 
-import { deriveQueue } from "../../assets/chat-core.js";
+import { deriveQueue, isHiddenSyntheticTextPart } from "../../assets/chat-core.js";
 import type { FeedMessageRecord, ThreadStore } from "../../assets/chat-feed-store.js";
 
 export interface QueueRow {
@@ -21,6 +21,9 @@ function previewOf(record: FeedMessageRecord | undefined): string {
   for (const partID of record.partOrder) {
     const part = record.parts.get(partID);
     if (part === undefined || part.type !== "text") {
+      continue;
+    }
+    if (isHiddenSyntheticTextPart(part)) {
       continue;
     }
     const text = typeof part.data.text === "string" ? part.data.text : "";
