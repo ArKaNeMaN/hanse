@@ -713,8 +713,9 @@ Message feed:
   `applyBufferedEvent` preserve `attachments`; the `sendPrompt` empty-text guard allows empty text
   when attachments exist. History snapshots read `info.hanse.attachments`; the live typed event is
   flat (`attachments`); the client never reads a nested `info.hanse` on the typed event.
-- A sent/inline file card offers `Send again as file`, which calls the send route with
-  `{attachments:[{id, mode:'file'}]}` (or the retry endpoint) and shows the duplicate warning.
+- The send route still accepts `{attachments:[{id, mode:'file'}]}` for a sent attachment (a new
+  delivery with the duplicate warning), but the chat UI no longer exposes a dedicated
+  `Send again as file` button.
 - On live `session.error`, the client marks only the **local** acceptance row (`serverID === null`)
   as failed; it does **not** mark server-backed rows (queued or active), which are resolved by
   `pendingSends`, and it refetches `GET /draft`. A later snapshot/confirmation clears any local

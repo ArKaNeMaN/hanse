@@ -532,7 +532,6 @@ const S = {
   visual: "ses_visual",
   inline: "ses_inline",
   downgrade: "ses_downgrade",
-  redeliver: "ses_redeliver",
   stream: "ses_stream",
   limit: "ses_stream_limit",
 };
@@ -781,29 +780,6 @@ function appendSentHistory(fixture, sessionId, messageID, text, deliveries) {
   };
   ensureMessages(fixture, sessionId).push(message);
   return message;
-}
-
-/** Seed a sent (non-draft) attachment plus its projected history message. */
-function seedSentHistory(fixture, sessionId, options) {
-  const record = {
-    id: nextAttachmentID(fixture),
-    sessionID: sessionId,
-    name: options.name,
-    mime: options.mime,
-    size: options.size ?? 1,
-    kind: kindForMime(options.mime),
-    mode: options.mode ?? "inline",
-    state: "sent",
-    missing: false,
-    inline: options.mode !== "file",
-  };
-  fixture.attachments.set(record.id, record);
-  fixture.seq.message += 1;
-  const messageID = `msg_seed_${fixture.seq.message}`;
-  const message = appendSentHistory(fixture, sessionId, messageID, options.text ?? "", [
-    { record, mode: record.mode, inline: record.inline },
-  ]);
-  return { record, messageID, message };
 }
 
 /** Seed one plain history message (used by the stream-recovery scenarios). */
@@ -2157,7 +2133,6 @@ async function attachmentCards(page) {
         download: card.querySelector(".attachment-card__download")?.getAttribute("href") ?? null,
         thumb: thumb === null ? null : thumb.naturalWidth,
         thumbSrc: thumb === null ? null : thumb.getAttribute("src"),
-        redeliver: card.querySelector(".attachment-card__redeliver") !== null,
       };
     });
     const html = feed?.innerHTML ?? "";
@@ -2386,90 +2361,6 @@ async function scenarioDowngrade(browser, target) {
 }
 
 // ---------------------------------------------------------------------------
-// Scenario 10: redeliver a sent inline attachment as a file without mutation
-// ---------------------------------------------------------------------------
-
-async function scenarioRedelivery(browser, target) {
-  const fixture = createFixture({ sessions: [{ id: S.redeliver, title: "Redelivery QA" }] });
-  const seeded = seedSentHistory(fixture, S.redeliver, {
-    name: "look.png",
-    mime: "image/png",
-    size: PNG.length,
-    mode: "inline",
-    text: "What is this?",
-  });
-  const { context, page, errors, networkFailures } = await newPage(browser, target);
-  try {
-    await installFixtureRoutes(page, fixture);
-    await gotoChat(page, target, S.redeliver);
-    await page.waitForSelector('#chat-messages .attachment-card[data-inline="true"]', {
-      timeout: 8_000,
-    });
-    const redeliver = page.locator(
-      '#chat-messages .attachment-card[data-inline="true"] .attachment-card__redeliver',
-    );
-    check((await redeliver.count()) === 1, "a sent inline card offers Send again as file");
-    assertEqual(
-      await redeliver.first().textContent(),
-      "Send again as file",
-      "redelivery control label",
-    );
-
-    const before = JSON.parse(JSON.stringify(fixture.messages.get(S.redeliver)));
-    const getsBefore = fixture.calls.messageGets.length;
-    await redeliver.first().click();
-    await waitFor(() => fixture.calls.messagePosts.length === 1, "redelivery send");
-    const body = fixture.calls.messagePosts[0].body;
-    assertEqual(
-      body.attachments,
-      [{ id: seeded.record.id, mode: "file" }],
-      "redelivery sends the same attachment with mode file",
-    );
-    check(!("text" in body), "redelivery sends no operator text");
-    await waitFor(
-      () => fixture.calls.messageGets.length > getsBefore,
-      "redelivery hydrates history",
-    );
-
-    const after = fixture.messages.get(S.redeliver);
-    assertEqual(after.length, 2, "redelivery appends a new message");
-    assertEqual(
-      JSON.stringify(after[0]),
-      JSON.stringify(before[0]),
-      "the original message and its delivery are unchanged",
-    );
-    const newView = after[1].info.hanse.attachments[0];
-    assertEqual(newView.inline, false, "new delivery is file-only");
-    assertEqual(newView.mode, "file", "new delivery records mode file");
-    check(
-      after[1].parts.every((part) => part.type !== "file"),
-      "the file-only redelivery has no inline file part",
-    );
-
-    await page.waitForFunction(
-      () =>
-        document.querySelectorAll('#chat-messages .attachment-card[data-inline="true"]').length ===
-          1 &&
-        document.querySelectorAll('#chat-messages .attachment-card[data-inline="false"]').length ===
-          1,
-      undefined,
-      { timeout: 8_000 },
-    );
-    const warning = await attachmentWarningState(page);
-    check(
-      warning.items.some((item) => item.code === "attachment_redelivered"),
-      "redelivery shows the duplicate warning",
-    );
-    await shot(page, "attachments-redelivery-1440-dark");
-
-    assertClean(errors, networkFailures);
-    return { body, before: before[0], after: after[1], warning };
-  } finally {
-    await context.close();
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Scenario 11: stream.warning + message.part.omitted -> notice + bounded hydration
 // ---------------------------------------------------------------------------
 
@@ -2681,9 +2572,8 @@ function writeReports() {
         "7 responsive/visual",
         "8 inline delivery",
         "9 inline downgrade",
-        "10 redeliver as file",
-        "11 stream recovery",
-        "12 stream limit",
+        "10 stream recovery",
+        "11 stream limit",
       ][index] ?? "";
     return `| ${index + 1} | ${surface} | \`${entry.name}\` | ${status} | ${entry.checks.length} | ${evidenceFor(entry).replaceAll("|", "\\|")} |`;
   });
@@ -2761,7 +2651,6 @@ try {
     ["responsive-visual", scenarioResponsiveVisual],
     ["inline-delivery", scenarioInline],
     ["inline-downgrade", scenarioDowngrade],
-    ["redeliver-as-file", scenarioRedelivery],
     ["stream-recovery", scenarioStreamRecovery],
     ["stream-limit", scenarioStreamLimit],
   ];
