@@ -6032,28 +6032,6 @@
     border-radius: var(--radius-xs);
   }
 
-  .attachment-card__redeliver {
-    min-block-size: 2rem;
-    max-inline-size: 100%;
-    padding-inline: var(--space-2);
-    color: var(--text-2);
-    font-family: var(--font-mono);
-    font-size: var(--text-micro);
-    letter-spacing: 0.02em;
-    line-height: 1.2;
-    text-align: start;
-    white-space: normal;
-  }
-
-  .attachment-card__redeliver:hover {
-    color: var(--text-1);
-  }
-
-  .attachment-card__redeliver:focus-visible {
-    outline: 2px solid var(--focus);
-    outline-offset: 2px;
-  }
-
   .attachment-card__pending {
     color: var(--warning);
   }
