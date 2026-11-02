@@ -181,10 +181,6 @@ export function attachmentSendPayload(
 export function normalizeAttachmentWarnings(
   value: unknown,
 ): Array<{ code: string; message: string; downgrade: boolean }>;
-export function canRedeliverAsFile(value: unknown): boolean;
-export function redeliveryAttachmentPayload(
-  value: unknown,
-): Array<{ id: string; mode: "file" }>;
 export function attachmentViewFromFilePart(value: unknown): AttachmentView | null;
 export function safeAttachmentUrl(value: unknown): string | null;
 export function formatAttachmentSize(value: unknown): string;

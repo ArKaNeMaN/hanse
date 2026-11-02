@@ -22,7 +22,6 @@ import {
   normalizeAttachments,
   normalizePendingSends,
   type PendingSendView,
-  redeliveryAttachmentPayload,
 } from "../../assets/chat-core.js";
 import { type ApiRequestOptions, apiMutation, apiQuery } from "../api.js";
 import {
@@ -635,31 +634,6 @@ export function useChatComposer(options: UseChatComposerOptions) {
       });
     } catch (caught) {
       options.onToast?.(attachmentErrorMessage(caught), "error");
-    }
-  }
-
-  async function redeliverAttachmentAsFile(
-    attachment: AttachmentChip | AttachmentView,
-  ): Promise<void> {
-    const session = options.sessionID.value;
-    if (session === null) {
-      options.onToast?.("Open a session before sending the attachment again.", "error");
-      return;
-    }
-    const payload = redeliveryAttachmentPayload(attachment);
-    if (payload.length === 0) return;
-    try {
-      await apiMutation<unknown>(
-        messagesUrl(scope(), session, true),
-        { json: { attachments: payload } },
-        authOptions(),
-      );
-      options.onToast?.("Sent again as a file.", "success");
-      await options.refreshMessages(session);
-      await loadDraft(session, { applyText: false });
-      forwardSent(session);
-    } catch (caught) {
-      options.onToast?.(sendFailureMessage(caught), "error");
     }
   }
 
@@ -1335,7 +1309,6 @@ export function useChatComposer(options: UseChatComposerOptions) {
     removeAttachment,
     cancelUpload,
     setAttachmentMode,
-    redeliverAttachmentAsFile,
     reloadDraft: loadDraft,
   };
 }

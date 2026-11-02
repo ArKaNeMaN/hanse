@@ -476,33 +476,6 @@ export function normalizeAttachmentWarnings(value) {
 }
 
 /**
- * A sent or inline attachment can be delivered again as a file-only copy. A missing or in-flight
- * attachment cannot.
- *
- * @param {unknown} value
- * @returns {boolean}
- */
-export function canRedeliverAsFile(value) {
-  if (!isRecord(value)) return false;
-  const id = asString(value.id);
-  if (id === undefined || id.length === 0) return false;
-  if (value.state === "missing" || value.state === "in_flight") return false;
-  return value.state === "sent" || value.inline === true || value.mode === "inline";
-}
-
-/**
- * Redelivery body: a new message with the same attachment forced to file mode.
- *
- * @param {unknown} value
- * @returns {Array<{ id: string, mode: "file" }>}
- */
-export function redeliveryAttachmentPayload(value) {
-  if (!canRedeliverAsFile(value)) return [];
-  const id = asString(value.id);
-  return id === undefined ? [] : [{ id, mode: "file" }];
-}
-
-/**
  * Map one projected inline `file` part to the attachment-card view. Returns null for parts without
  * trusted attachment metadata or with a data/unknown URL, so raw base64 is never rendered.
  *

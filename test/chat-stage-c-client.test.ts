@@ -6,9 +6,7 @@ import {
   attachmentSendPayload,
   attachmentSupportsInlineMode,
   attachmentViewFromFilePart,
-  canRedeliverAsFile,
   normalizeAttachmentWarnings,
-  redeliveryAttachmentPayload,
 } from "../assets/chat-core.js";
 
 describe("stage C client attachment modes", () => {
@@ -61,16 +59,6 @@ describe("stage C client attachment modes", () => {
         code: "attachment_capability_unknown",
         downgrade: true,
       }),
-    ]);
-  });
-
-  it("redelivers only sent/inline attachments as a new file-only send", () => {
-    expect(canRedeliverAsFile({ id: "att_1", state: "sent", inline: false })).toBe(true);
-    expect(canRedeliverAsFile({ id: "att_1", state: "draft", inline: true })).toBe(true);
-    expect(canRedeliverAsFile({ id: "att_1", state: "in_flight", inline: true })).toBe(false);
-    expect(canRedeliverAsFile({ id: "att_1", state: "missing", inline: true })).toBe(false);
-    expect(redeliveryAttachmentPayload({ id: "att_1", state: "sent" })).toEqual([
-      { id: "att_1", mode: "file" },
     ]);
   });
 
