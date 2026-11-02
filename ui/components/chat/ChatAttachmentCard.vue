@@ -4,7 +4,6 @@ import { computed } from "vue";
 import {
   type AttachmentView,
   attachmentModeLabel,
-  canRedeliverAsFile,
   formatAttachmentSize,
   safeAttachmentUrl,
 } from "../../../assets/chat-core.js";
@@ -12,7 +11,6 @@ import { attachmentStateText } from "../../chat/attachments.js";
 import AppIcon from "../AppIcon.vue";
 
 const props = defineProps<{ attachment: AttachmentView }>();
-const emit = defineEmits<{ redeliver: [attachment: AttachmentView] }>();
 
 const downloadURL = computed(() => safeAttachmentUrl(props.attachment.downloadURL));
 const thumbnailURL = computed(() =>
@@ -84,17 +82,6 @@ const name = computed(() => props.attachment.name || "Attachment");
       >
         <AppIcon name="download" />Download
       </a>
-      <button
-        v-if="canRedeliverAsFile(attachment)"
-        class="btn btn-ghost btn-sm attachment-card__redeliver"
-        type="button"
-        title="Send a new file-only copy; this message is unchanged"
-        :aria-label="`Send ${name} again as a file`"
-        data-attachment-redeliver
-        @click="emit('redeliver', attachment)"
-      >
-        Send again as file
-      </button>
     </div>
   </article>
 </template>

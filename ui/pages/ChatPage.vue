@@ -11,7 +11,6 @@ import {
   shellRequiresConfirmation,
 } from "../../assets/chat-commands.js";
 import {
-  type AttachmentView,
   handoffBodyFromText,
   handoffNoteFromText,
   imageGateFromView,
@@ -522,10 +521,6 @@ function onAppSelect(event: Event): void {
     return;
   }
   routeState.switchApp(app, project);
-}
-
-function redeliverAttachment(attachment: AttachmentView): void {
-  void composerRedeliverAttachment(attachment);
 }
 
 async function loadPrompts(signal?: AbortSignal): Promise<void> {
@@ -1188,7 +1183,6 @@ const {
   removeAttachment: composerRemoveAttachment,
   cancelUpload: composerCancelUpload,
   setAttachmentMode: composerSetAttachmentMode,
-  redeliverAttachmentAsFile: composerRedeliverAttachment,
 } = composer;
 
 watch(
@@ -2127,7 +2121,6 @@ onBeforeUnmount(() => {
           @load-earlier="loadEarlier"
           @question-submit="submitInlineQuestion"
           @question-reject="rejectInlineQuestion"
-          @attachment-redeliver="redeliverAttachment"
           @open-context="openContextSection"
           @start="startAgent"
         >
