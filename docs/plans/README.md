@@ -67,3 +67,9 @@
   audit, and the chat cutover); Stage 8 operator sign-off received; Stage 9 deleted both legacy
   renderers/clients and retired all runtime rollback flags for `/chat` and `/terminal`. Their only
   rollback is image rollback with the mandatory UI-build check.
+- [0033 - Chat image display and agent-sent images](./0033-chat-image-display.md) - Phase A renders
+  every chat image large in a single column with a native-dialog lightbox; Phase B adds an explicit
+  `show_image` MCP tool, durable per-app agent media, live/history synthetic file-part projection,
+  nested tool-attachment base64 stripping, a human-only download route, cleanup/quota, and the
+  compact tool card. Status: design PASS (`oracle` round 6); plan PASS (`momus` round 2);
+  implemented and verified (journal 0040); one pre-existing jsdom suite failure remains.

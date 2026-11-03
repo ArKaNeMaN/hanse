@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import path from "node:path";
+import { deleteSessionAgentMedia } from "../agent-media/store.js";
 import { BLOCKING_RESPONSE_BUDGET_BYTES, blockingResponseBudget } from "../attachments/budget.js";
 import { type CapabilityOutcome, resolveModelCapabilities } from "../attachments/capabilities.js";
 import {
@@ -36,6 +37,7 @@ import {
 } from "../attachments/names.js";
 import {
   type AttachmentPathMode,
+  appStateRoot,
   attachmentRelPath,
   attachmentsHostRoot,
   attachmentTempRelPath,
@@ -82,7 +84,7 @@ import {
 } from "../attachments/types.js";
 import { streamUploadBody, UploadStreamError } from "../attachments/upload.js";
 import { attachmentView, draftAttachmentViews, parseAttachmentRefs } from "../attachments/views.js";
-import { KeyedMutex, sessionLockKey, sessionLocks } from "../chat/locks.js";
+import { appQuotaLocks, sessionLockKey, sessionLocks } from "../chat/locks.js";
 import { collectSessionSubtreeIDs } from "../chat/session-tree.js";
 import {
   bumpLastActivity,
@@ -129,6 +131,7 @@ import { authorizationFor } from "../opencode/endpoint-auth.js";
 import { APP_STREAM_MAX_FRAME_BYTES, createRawEventStream } from "../opencode/events.js";
 import { DEFAULT_MODEL, DeletionPendingError } from "../opencode/manager.js";
 import { SESSION_NOTICE_MAX_PAGE, SessionNoticeStore } from "../opencode/recovery.js";
+import { agentMediaServiceFor } from "./agent-media.js";
 import { type FoundApp, findApp, toManagedApp } from "./apps.js";
 import { principalFrom } from "./auth.js";
 import type { PageChrome, SiteModel } from "./dashboard.js";
@@ -427,9 +430,6 @@ function newMessageId(): string {
   return `msg_${randomUUID().replaceAll("-", "")}`;
 }
 
-/** Per-app upload/quota lock; lock order is ensure -> session -> quota. */
-const appUploadLocks = new KeyedMutex();
-
 function newAttachmentId(): string {
   return `att_${randomUUID().replaceAll("-", "")}`;
 }
@@ -550,6 +550,14 @@ function removeLocalSessionRows(deps: HttpDeps, found: FoundApp, sessionId: stri
   removeSessionFolder(
     sessionFolder(deps.agentsHome, found.project.id, found.app.appKey, sessionId),
   );
+  if (deps.agentsHome !== undefined) {
+    deleteSessionAgentMedia(
+      deps.db,
+      appStateRoot(deps.agentsHome, found.project.id, found.app.appKey),
+      found.app.id,
+      sessionId,
+    );
+  }
 }
 
 function markHandoffsDeleted(deps: HttpDeps, sessionId: string): void {
@@ -1267,6 +1275,9 @@ async function dispatchTextSend(
       appId: found.app.id,
       appKey: found.app.appKey,
       projectId: found.project.id,
+      ...(agentMediaServiceFor(deps, found) === undefined
+        ? {}
+        : { agentMedia: agentMediaServiceFor(deps, found) }),
     })(projected);
     const message = projected[0] ?? assistant;
     const payload = {
@@ -1539,7 +1550,7 @@ export async function handleAttachmentUpload(
   let tempPath: string | undefined;
   let committed = false;
   try {
-    const prepared = await appUploadLocks.run(found.app.id, () => {
+    const prepared = await appQuotaLocks.run(found.app.id, () => {
       if (reservedAttachmentBytes(deps.db, found.app.id) + declaredSize > 5 * 1024 * 1024 * 1024) {
         return { ok: false as const, status: 507, code: "attachment_quota_exceeded" };
       }
@@ -1590,7 +1601,7 @@ export async function handleAttachmentUpload(
               : "agent_unavailable",
         };
       }
-      const quota = await appUploadLocks.run(found.app.id, () => {
+      const quota = await appQuotaLocks.run(found.app.id, () => {
         const otherReserved = deps.db
           .prepare(
             `SELECT COALESCE(SUM(MIN(COALESCE(declared_size, ?), ?)), 0) AS used
@@ -1945,6 +1956,9 @@ async function readMessagesResponse(
         appId: found.app.id,
         appKey: found.app.appKey,
         projectId: found.project.id,
+        ...(agentMediaServiceFor(deps, found) === undefined
+          ? {}
+          : { agentMedia: agentMediaServiceFor(deps, found) }),
       });
       const projectHistory = (messages: Parameters<typeof project>[0]): void => {
         project(messages);

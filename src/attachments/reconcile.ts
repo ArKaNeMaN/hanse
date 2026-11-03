@@ -1,5 +1,7 @@
 import { lstatSync, readdirSync, realpathSync, rmSync, statSync } from "node:fs";
 import path from "node:path";
+import { activeAgentMediaIds } from "../agent-media/active.js";
+import { reconcileAgentMedia } from "../agent-media/reconcile.js";
 import { isInside } from "../runtime/app-path.js";
 import type { SqliteDatabase } from "../store/index.js";
 import {
@@ -226,6 +228,14 @@ export function runAttachmentMaintenance(
   options: { now?: number; activeIds?: ReadonlySet<string>; startup?: boolean } = {},
 ): AttachmentMaintenanceResult {
   if (agentsHome === undefined) return { reconciled: 0, missing: 0, orphans: 0 };
+  const agentActiveIds = new Set([...(options.activeIds ?? []), ...activeAgentMediaIds]);
+  reconcileAgentMedia({
+    db,
+    agentsHome,
+    startup: options.startup === true,
+    activeIds: agentActiveIds,
+    ...(options.now === undefined ? {} : { now: options.now }),
+  });
   const roots = listAppAttachmentRoots(db, agentsHome);
   const rootById = new Map(roots.map((root) => [root.appId, root.appRoot]));
   const reconciled = reconcileUploading(

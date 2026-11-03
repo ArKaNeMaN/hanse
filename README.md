@@ -37,7 +37,9 @@ and requirements) to each other through the coordinator - like independent teams
 - Optional per-tool web drivers: built-in OMO/opencode tools or the DeepSeek standalone Search/Fetch
   APIs, exposed through the managed `hanse_web` MCP server only when configured.
 - Explicit "restart required" markers and a restart action; settings never restart agents silently.
-- Integrated chat with agents: sessions, messages, SSE updates, tool-call/diff rendering.
+- Integrated chat with agents: sessions, messages, SSE updates, tool-call/diff rendering,
+  operator and agent images rendered large, and a native-dialog lightbox. Agents publish an image
+  explicitly through the `show_image` MCP tool; tool attachments are never mirrored automatically.
 - Demo app previews: an agent exposes a service running in its app container at `/preview/...`, with
   an MCP tool, a chat tool-card link, and a conditional context-rail list (runner mode; same-origin
   demo risk accepted).

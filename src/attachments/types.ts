@@ -61,6 +61,10 @@ export interface AttachmentView {
   state: AttachmentViewState;
   downloadURL: string;
   inline: boolean;
+  /** Agent-published image caption; operator attachments leave it undefined. */
+  caption?: string;
+  /** Present only on agent-published media. */
+  origin?: "agent";
 }
 
 /** A per-send attachment reference persisted in `pending_sends.attachments_json`. */

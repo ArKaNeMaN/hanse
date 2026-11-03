@@ -11,6 +11,7 @@ import {
   shellRequiresConfirmation,
 } from "../../assets/chat-commands.js";
 import {
+  type AttachmentView,
   handoffBodyFromText,
   handoffNoteFromText,
   imageGateFromView,
@@ -19,6 +20,7 @@ import {
   normalizeAttachments,
   normalizeHandoffMeta,
   resolveActiveStatusLabel,
+  safeAttachmentUrl,
 } from "../../assets/chat-core.js";
 import type {
   FeedMessageRecord,
@@ -70,6 +72,7 @@ import ChatCommandPalette from "../components/chat/ChatCommandPalette.vue";
 import ChatComposer from "../components/chat/ChatComposer.vue";
 import ChatContextRail from "../components/chat/ChatContextRail.vue";
 import ChatImageGate from "../components/chat/ChatImageGate.vue";
+import ChatImageLightbox from "../components/chat/ChatImageLightbox.vue";
 import ChatImageWarning from "../components/chat/ChatImageWarning.vue";
 import ChatPromptDock from "../components/chat/ChatPromptDock.vue";
 import ChatQueueDialog from "../components/chat/ChatQueueDialog.vue";
@@ -1310,7 +1313,15 @@ const historyError = ref<string | null>(null);
 const historyCursor = ref<string | null>(null);
 const historyExhausted = ref(false);
 const messageCount = ref(0);
+interface LightboxImage {
+  readonly src: string;
+  readonly name: string;
+  readonly downloadURL: string;
+  readonly caption?: string;
+}
+
 const threadRef = ref<InstanceType<typeof ChatThread> | null>(null);
+const lightboxImage = ref<LightboxImage | null>(null);
 let loadGeneration = 0;
 let disposed = false;
 let messageRetryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1874,6 +1885,21 @@ const sessionWaiting = computed(() => {
   return sessionID !== null && promptsStore.countForSession(sessionID) > 0;
 });
 
+function openImage(attachment: AttachmentView): void {
+  const src = safeAttachmentUrl(attachment.downloadURL);
+  if (src === null) return;
+  lightboxImage.value = {
+    src,
+    downloadURL: src,
+    name: attachment.name || "Image",
+    ...(attachment.caption === undefined ? {} : { caption: attachment.caption }),
+  };
+}
+
+function closeImage(): void {
+  lightboxImage.value = null;
+}
+
 function openContextSection(section: "context" | "plan"): void {
   chatUi.setContextOpen(true);
   void nextTick().then(() => {
@@ -2122,6 +2148,7 @@ onBeforeUnmount(() => {
           @question-submit="submitInlineQuestion"
           @question-reject="rejectInlineQuestion"
           @open-context="openContextSection"
+          @open-image="openImage"
           @start="startAgent"
         >
           <template #image-gate>
@@ -2233,6 +2260,8 @@ onBeforeUnmount(() => {
           </template>
         </ChatThread>
       </div>
+
+      <ChatImageLightbox :image="lightboxImage" @close="closeImage" />
 
       <ChatContextRail
         v-if="view !== undefined"

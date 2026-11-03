@@ -493,9 +493,10 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   order; migrations v10 (applied settings/profile state), v11 (deletion markers), v12 (skills),
   v13 (skill bundles), v14 (session-bound handoffs, reply routing, and handoff policy), and v15
   (chat drafts, session state, and pending sends) and v16 (file-only attachments and deliveries)
-  follow. The current schema versions are `[1..20]` (v17 adds handoff message-id lookup indexes;
+  follow. The current schema versions are `[1..21]` (v17 adds handoff message-id lookup indexes;
   v18 adds agent image validity; v19 adds the global custom model provider registry; v20 adds the
-  process-rule hash, runtime epoch/exit fields, and the session resume/notice tables).
+  process-rule hash, runtime epoch/exit fields, and the session resume/notice tables; v21 adds
+  `agent_media` for agent-published chat images).
 - Live on `deployment-host` (`sha-e2d89a2`): a temporary SSH target pinned and authenticated, an approval was
   approved, `echo QA_OK` and a 65 s `sleep` succeeded, upload/download round-tripped, a real
   `opencode` turn called `hanse_ssh_exec` and received the result after 65 s, and audit rows survived
@@ -783,6 +784,17 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   human-only, projected, and never forwards a `data:` URL. The bundled IDE extension uses
   `?async=1`, a 30-message tail, merges attachments, hides the manifest, renders file-only cards,
   and bounds post-202 reads.
+- Agent images (plan 0033): an app agent calls the non-master `show_image` MCP tool with a path
+  inside its app directory, `<appRoot>/tmp`, or `<appRoot>/attachments` (a literal `$TMPDIR/`
+  prefix is expanded). The coordinator stores a copy under `<appRoot>/agent-media` in migration-v21
+  `agent_media` (PNG/JPEG/GIF/WebP, 20 MiB, shared 5 GiB quota), returns a small media id, and
+  binds it to the assistant message when the completed tool part is observed live or read from
+  history. The live/history projection appends a synthetic `file` part with a human-only
+  `GET|HEAD /api/apps/:app/agent-media/:id` download URL; it strips nested tool-attachment
+  `data:` URLs and redacts the `show_image` path. Tool attachments are never mirrored
+  automatically, and the deprecated legacy session SSE route only strips nested data URLs. Chat
+  images (operator and agent) render large in a single column and open in a native-dialog
+  lightbox; the `show_image` tool card is a compact action card.
 - Deletion is human-only (`403` for agent principals), proxies opencode `DELETE /session/:id`, and
   the UI selects the next session or returns to the draft when the active one is removed.
 - The chat workspace renders interactive opencode prompts above the composer:

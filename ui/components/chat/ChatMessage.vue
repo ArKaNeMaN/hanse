@@ -37,6 +37,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   "question-submit": [view: InlineQuestionView, answers: string[][]];
   "question-reject": [view: InlineQuestionView];
+  "open-image": [attachment: AttachmentView];
 }>();
 
 function questionView(part: ChatMessagePartView): InlineQuestionView | null {
@@ -279,6 +280,7 @@ const optimisticLabel = computed(() => {
         <ChatAttachmentCard
           v-else-if="fileAttachment(part) !== null"
           :attachment="fileAttachment(part) as AttachmentView"
+          @open="(attachment) => emit('open-image', attachment)"
         />
         <details
           v-else-if="part.type === 'file' || part.type === 'subtask'"
@@ -317,6 +319,7 @@ const optimisticLabel = computed(() => {
         v-for="attachment in stripAttachments"
         :key="attachment.id"
         :attachment="attachment"
+        @open="(entry) => emit('open-image', entry)"
       />
     </div>
 

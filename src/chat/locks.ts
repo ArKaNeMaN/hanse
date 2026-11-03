@@ -34,3 +34,6 @@ export const sessionLocks = new KeyedMutex();
 export function sessionLockKey(appId: string, sessionId: string): string {
   return `${appId}\u0000${sessionId}`;
 }
+
+/** Shared per-app upload/quota lock; lock order is ensure -> session -> quota. */
+export const appQuotaLocks = new KeyedMutex();

@@ -300,6 +300,8 @@ export function normalizeAttachment(value) {
   const mode = ATTACHMENT_MODES.has(value.mode) ? value.mode : "auto";
   const state = ATTACHMENT_STATES.has(value.state) ? value.state : "draft";
   const mime = asString(value.mime) ?? "";
+  const caption = asString(value.caption);
+  const origin = value.origin === "agent" ? "agent" : undefined;
   return {
     id,
     name: asString(value.name) ?? "",
@@ -312,6 +314,8 @@ export function normalizeAttachment(value) {
     state,
     downloadURL: asString(value.downloadURL) ?? "",
     inline: value.inline === true,
+    ...(caption === undefined ? {} : { caption }),
+    ...(origin === undefined ? {} : { origin }),
   };
 }
 
@@ -512,6 +516,8 @@ export function attachmentViewFromFilePart(value) {
     state: metadata.state ?? "sent",
     downloadURL,
     inline: true,
+    caption: metadata.caption,
+    origin: metadata.origin,
   });
 }
 

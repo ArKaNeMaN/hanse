@@ -7,6 +7,7 @@
 import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import {
   isHanseTool,
+  normalizeToolName,
   parseToolJsonOutput,
   toolDisplayName,
   toolFailure,
@@ -53,6 +54,13 @@ const tool = computed(() =>
       : "tool",
 );
 const displayName = computed(() => toolDisplayName(tool.value));
+const showImage = computed(() => normalizeToolName(tool.value) === "show_image");
+const showImageName = computed(() => {
+  const parsed = parseToolJsonOutput(output.value);
+  if (parsed === null || Array.isArray(parsed)) return "";
+  const name = parsed.name;
+  return typeof name === "string" ? name : "";
+});
 const status = computed(() => {
   if (props.part.status.length > 0) {
     return props.part.status;
@@ -303,7 +311,24 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
+  <div
+    v-if="showImage && status === 'completed'"
+    class="tool-call tool-call--image"
+    :data-part-id="part.id"
+    :data-tool="tool"
+    data-part-type="tool"
+  >
+    <AppIcon name="image" />
+    <span class="mono" data-tool-name>{{ displayName }}</span>
+    <span v-if="showImageName.length > 0" class="tool-call__path" :title="showImageName">
+      {{ showImageName }}
+    </span>
+    <span class="status" :data-state="chip.state">
+      <AppIcon :name="chip.icon" />{{ chip.label }}
+    </span>
+  </div>
   <details
+    v-else
     class="tool-call"
     :data-part-id="part.id"
     :data-tool="tool"

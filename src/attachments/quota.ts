@@ -15,13 +15,22 @@ export function quotaView(usedBytes: number): QuotaView {
   return { percent };
 }
 
+export function agentMediaUsedBytes(db: SqliteDatabase, appId: string): number {
+  const row = db
+    .prepare(
+      "SELECT COALESCE(SUM(size), 0) AS used FROM agent_media WHERE app_id = ? AND state <> 'missing'",
+    )
+    .get(appId) as { used: number };
+  return row.used;
+}
+
 export function availableAttachmentBytes(db: SqliteDatabase, appId: string): number {
   const row = db
     .prepare(
       "SELECT COALESCE(SUM(size), 0) AS used FROM app_attachments WHERE app_id = ? AND state = 'available'",
     )
     .get(appId) as { used: number };
-  return row.used;
+  return row.used + agentMediaUsedBytes(db, appId);
 }
 
 /** `available` bytes plus the reservation of every `uploading` row (capped per file). */
@@ -36,7 +45,7 @@ export function reservedAttachmentBytes(db: SqliteDatabase, appId: string): numb
        FROM app_attachments WHERE app_id = ?`,
     )
     .get(MAX_FILE_BYTES, MAX_FILE_BYTES, appId) as { used: number };
-  return row.used;
+  return row.used + agentMediaUsedBytes(db, appId);
 }
 
 export type UploadReservationResult =

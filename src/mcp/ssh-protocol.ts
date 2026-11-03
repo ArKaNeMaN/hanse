@@ -1,4 +1,7 @@
+import { AgentMediaService } from "../agent-media/service.js";
+import { appStateRoot } from "../attachments/paths.js";
 import type { CoordinatorService } from "../coordinator/service.js";
+import { appDir, findApp } from "../http/apps.js";
 import type { InstanceManager } from "../opencode/manager.js";
 import type { PreviewService } from "../preview/service.js";
 import { APP_SKILL_TOOLS, callAppSkillTool, isAppSkillToolName } from "../skills/app-tools.js";
@@ -11,6 +14,21 @@ import type { AgentTokenIdentity } from "./agent-tokens.js";
 import { callPreviewTool, isPreviewToolName, PREVIEW_TOOLS } from "./preview-protocol.js";
 import { handleRpc, type RpcRequest, type RpcResponse, TOOLS } from "./protocol.js";
 import { textResult } from "./result.js";
+
+export const SHOW_IMAGE_TOOL = {
+  name: "show_image",
+  description:
+    "Show one image to the operator in this chat. Use only when the operator should see an image; do not call it for routine reading or analysis. The path must be a real file inside the application workspace or its runtime temp/attachments roots. Save screenshots there first; a tool attachment or a container /tmp path is not readable. A literal leading $TMPDIR/ is expanded to the app runtime temp directory; no other shell expansion is performed. Supports PNG, JPEG, GIF, and WebP up to 20 MiB. Returns a media id; the operator sees the image, not you.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      path: { type: "string", minLength: 1, maxLength: 2048 },
+      caption: { type: "string", minLength: 1, maxLength: 200 },
+    },
+    required: ["path"],
+    additionalProperties: false,
+  },
+};
 
 export const SSH_TOOLS = [
   {
@@ -121,6 +139,8 @@ export interface AppSkillRpcOptions {
   skills?: SkillService;
   manager?: InstanceManager;
   previews?: PreviewService;
+  agentsHome?: string;
+  getProjects?: () => ReturnType<import("../http/handler.js").HttpDeps["getProjects"]>;
 }
 
 /** Handle one JSON-RPC message for the coordinator MCP server. */
@@ -139,6 +159,11 @@ export async function handleRpcAsync(
     const tools = [
       ...TOOLS,
       ...SSH_TOOLS,
+      ...(options.agentsHome !== undefined &&
+      options.manager !== undefined &&
+      options.getProjects !== undefined
+        ? [SHOW_IMAGE_TOOL]
+        : []),
       ...(options.skills !== undefined && options.db !== undefined ? APP_SKILL_TOOLS : []),
       ...(options.previews !== undefined ? PREVIEW_TOOLS : []),
     ];
@@ -153,6 +178,56 @@ export async function handleRpcAsync(
   }
   const params = request.params ?? {};
   const name = typeof params.name === "string" ? params.name : "";
+  if (name === "show_image") {
+    if (
+      options.agentsHome === undefined ||
+      options.manager === undefined ||
+      options.getProjects === undefined ||
+      options.db === undefined
+    ) {
+      return {
+        jsonrpc: "2.0",
+        id,
+        result: textResult({
+          ok: false,
+          code: "image_unavailable",
+          message: "image display is not configured",
+        }),
+      };
+    }
+    const found = findApp({ getProjects: options.getProjects }, agent.projectId, agent.appKey);
+    if (found === undefined) {
+      return {
+        jsonrpc: "2.0",
+        id,
+        result: textResult({
+          ok: false,
+          code: "image_unavailable",
+          message: "application not found",
+        }),
+      };
+    }
+    const rawArgs = params.arguments;
+    const args =
+      typeof rawArgs === "object" && rawArgs !== null && !Array.isArray(rawArgs)
+        ? (rawArgs as Record<string, unknown>)
+        : {};
+    const service = new AgentMediaService(options.db, {
+      appId: found.app.id,
+      projectId: found.project.id,
+      appKey: found.app.appKey,
+      appDir: appDir(found.project, found.app),
+      appRoot: appStateRoot(options.agentsHome, found.project.id, found.app.appKey),
+      workspaceRoot: found.project.workspaceRoot,
+      pathMode: options.manager.attachmentsPathMode() === "host" ? "runner" : "supervisor",
+    });
+    const caption = typeof args.caption === "string" ? args.caption : undefined;
+    const result = await service.showImage({
+      path: typeof args.path === "string" ? args.path : "",
+      ...(caption === undefined ? {} : { caption }),
+    });
+    return { jsonrpc: "2.0", id, result: textResult(result) };
+  }
   if (isPreviewToolName(name)) {
     if (options.previews === undefined) {
       return { jsonrpc: "2.0", id, result: textResult(notConfiguredPreview()) };

@@ -5916,8 +5916,8 @@
 
   .message__attachments {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(min(11rem, 100%), 1fr));
-    gap: var(--space-1);
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-2);
     inline-size: 100%;
     min-inline-size: 0;
     max-inline-size: var(--reading-measure);
@@ -5967,6 +5967,135 @@
     inline-size: 100%;
     block-size: 100%;
     object-fit: cover;
+  }
+
+  .attachment-card--image {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "preview"
+      "body"
+      "action";
+    align-items: stretch;
+    gap: var(--space-2);
+    padding: var(--space-2);
+  }
+
+  .attachment-card__preview--image {
+    inline-size: 100%;
+    block-size: auto;
+    min-block-size: 6rem;
+    max-block-size: min(70vh, 32rem);
+    border-radius: var(--radius-sm);
+  }
+
+  .attachment-card__open {
+    display: block;
+    inline-size: 100%;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    cursor: zoom-in;
+    line-height: 0;
+    border-radius: var(--radius-sm);
+  }
+
+  .attachment-card__open:focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
+  }
+
+  .attachment-card__image {
+    display: block;
+    inline-size: 100%;
+    block-size: auto;
+    max-block-size: min(70vh, 32rem);
+    object-fit: contain;
+    border-radius: var(--radius-sm);
+    background: var(--wash-1);
+  }
+
+  .attachment-card__unavailable-image {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-1);
+    min-block-size: 6rem;
+    color: var(--text-3);
+    font-size: var(--text-sm);
+  }
+
+  .attachment-card__unavailable-image .icon {
+    inline-size: 1.5rem;
+    block-size: 1.5rem;
+  }
+
+  .attachment-card__caption {
+    color: var(--text-2);
+    font-size: var(--text-sm);
+    line-height: 1.45;
+  }
+
+  .lightbox {
+    max-inline-size: min(96rem, calc(100vw - var(--space-4)));
+    max-block-size: calc(100dvb - var(--space-4));
+  }
+
+  .lightbox__frame {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    max-block-size: calc(100dvb - var(--space-4));
+    padding: var(--space-3);
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius-lg);
+    background: var(--surface-3);
+    box-shadow: var(--shadow-overlay);
+  }
+
+  .lightbox__head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+  }
+
+  .lightbox__title {
+    margin: 0;
+    overflow: hidden;
+    color: var(--text-1);
+    font-family: var(--font-display);
+    font-size: var(--text-h2);
+    font-weight: 600;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .lightbox__close {
+    flex: none;
+  }
+
+  .lightbox__image {
+    display: block;
+    max-inline-size: 100%;
+    max-block-size: 80dvh;
+    margin-inline: auto;
+    object-fit: contain;
+    border-radius: var(--radius-sm);
+    background: var(--wash-1);
+  }
+
+  .lightbox__foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+    min-block-size: 2rem;
+  }
+
+  .lightbox__caption {
+    color: var(--text-2);
+    font-size: var(--text-sm);
   }
 
   .attachment-card__preview .icon {

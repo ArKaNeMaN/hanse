@@ -162,6 +162,8 @@ export interface AttachmentView {
   state: AttachmentState;
   downloadURL: string;
   inline: boolean;
+  caption?: string;
+  origin?: "agent";
 }
 
 export function normalizeAttachment(value: unknown): AttachmentView | null;

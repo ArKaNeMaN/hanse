@@ -1,3 +1,5 @@
+import { deleteSessionAgentMedia } from "../agent-media/store.js";
+import { appStateRoot } from "../attachments/paths.js";
 import { activeUploadIds } from "../attachments/quota.js";
 import { runAttachmentMaintenance } from "../attachments/reconcile.js";
 import {
@@ -193,6 +195,7 @@ export class ChatSweep {
       removeSessionFolder(
         sessionFolder(this.#agentsHome, candidate.projectId, candidate.appKey, candidate.sessionId),
       );
+      this.#deleteAgentMedia(candidate);
     });
   }
 
@@ -244,7 +247,18 @@ export class ChatSweep {
       removeSessionFolder(
         sessionFolder(this.#agentsHome, candidate.projectId, candidate.appKey, candidate.sessionId),
       );
+      this.#deleteAgentMedia(candidate);
     });
+  }
+
+  #deleteAgentMedia(candidate: SweepCandidate | NoticeOrphanCandidate): void {
+    if (this.#agentsHome === undefined) return;
+    deleteSessionAgentMedia(
+      this.#db,
+      appStateRoot(this.#agentsHome, candidate.projectId, candidate.appKey),
+      candidate.appId,
+      candidate.sessionId,
+    );
   }
 }
 

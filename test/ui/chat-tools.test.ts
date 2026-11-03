@@ -154,4 +154,20 @@ describe("ToolPart", () => {
     wrapper.unmount();
     errored.unmount();
   });
+  it("renders show_image as a compact action card without raw JSON", async () => {
+    const wrapper = mount(ToolPart, {
+      props: {
+        part: tool("t1", "hanse_show_image", {
+          status: "completed",
+          output: JSON.stringify({ ok: true, id: "amed_1", name: "ui.png" }),
+        }),
+      },
+    });
+    await nextTick();
+    expect(wrapper.find(".tool-call--image").exists()).toBe(true);
+    expect(wrapper.find("details").exists()).toBe(false);
+    expect(wrapper.text()).toContain("ui.png");
+    expect(wrapper.text()).not.toContain('"ok"');
+    wrapper.unmount();
+  });
 });

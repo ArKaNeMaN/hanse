@@ -49,6 +49,11 @@
   storage, inline image/video/PDF delivery gated by model capabilities, file-only paths for the
   agent, history/SSE base64 projection, server-side message drafts, eager empty-session creation,
   and delete-if-empty semantics. Status: implemented/verified - design review PASS (round 16); Stages A/B/C complete (2198 tests, Stage A/B/C browser QA, security findings fixed).
+- [Chat image display and agent-sent images](./chat-image-display.md) - an explicit `show_image`
+  MCP tool (the model decides), a durable per-app `agent_media` store, live/history synthetic
+  file-part projection, a human-only download route, large inline image cards, and a native
+  `<dialog>` lightbox. Status: approved (`oracle` round 6 PASS after five revision rounds);
+  implemented and verified (journal 0040); one pre-existing jsdom suite failure remains.
 - [Chat session tree](./chat-session-tree.md) - group `opencode` subagent sessions under their
   parent in the chat rail with disclosure chevrons, multi-level nesting, active-ancestor expansion,
   orphan/cycle handling, subtree delete cleanup, and a deferred realtime follow-up. Status:

@@ -8,6 +8,7 @@ import net from "node:net";
 import path from "node:path";
 import type { Duplex } from "node:stream";
 import { gzipSync } from "node:zlib";
+import { handleAgentMediaDownload } from "./agent-media.js";
 import { findApp } from "./apps.js";
 import { isHumanCookie } from "./auth.js";
 import {
@@ -316,6 +317,20 @@ export function createHttpServer(deps: HttpDeps): Server {
         if (!response.headersSent) {
           response.writeHead(500, { "content-type": "application/json; charset=utf-8" });
           response.end(JSON.stringify({ error: "attachment request failed" }));
+        } else {
+          response.end();
+        }
+      });
+      return;
+    }
+    const isAgentMediaDownload =
+      (request.method === "GET" || request.method === "HEAD") &&
+      /^\/api\/apps\/[^/]+\/agent-media\/[^/]+$/.test(url.pathname);
+    if (isAgentMediaDownload) {
+      void handleAgentMediaDownload(deps, request, response, url).catch(() => {
+        if (!response.headersSent) {
+          response.writeHead(500, { "content-type": "application/json; charset=utf-8" });
+          response.end(JSON.stringify({ error: "agent media request failed" }));
         } else {
           response.end();
         }

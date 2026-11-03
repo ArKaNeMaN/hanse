@@ -41,6 +41,7 @@ import {
   normalizeTodos,
   type PromptSource,
 } from "../opencode/prompts.js";
+import { agentMediaServiceFor } from "./agent-media.js";
 import { appDir, type FoundApp, findApp, toManagedApp } from "./apps.js";
 import { principalFrom } from "./auth.js";
 import { agentStoppedResponse } from "./chat.js";
@@ -782,11 +783,14 @@ export async function streamAppEvents(
       appKey: found.app.appKey,
       projectId: found.project.id,
     });
+    const agentMedia = agentMediaServiceFor(deps, found);
     const stream = createEventStream(upstream.body, {
       signal: controller.signal,
       maxFrameBytes: APP_STREAM_MAX_FRAME_BYTES,
       attachments: resolver,
       handoffs: createHandoffEventResolver(deps.db),
+      appId: found.app.id,
+      ...(agentMedia === undefined ? {} : { agentMedia }),
       isPriority: () => appStreams.isActive(found.app.id, streamID),
       onAttached: () => {
         response.writeHead(200, {

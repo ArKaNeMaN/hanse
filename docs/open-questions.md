@@ -1,5 +1,39 @@
 # Open questions
 
+> Stage: `0033-chat-image-display`. The owner delegated decisions on 2026-11-02 and asked for
+> autonomous delivery. There are no open items for this stage.
+
+## Stage `0033-chat-image-display` - resolved owner decisions
+
+1. **Intent** - an explicit `show_image` MCP tool; the model decides when the operator should see an
+   image. Automatically mirroring every `ToolPart.state.attachments` is rejected as noise.
+2. **Layout** - images render in a single column, stacked, at the full chat feed width.
+3. **Lightbox** - fit-to-screen plus download; no zoom/pan in v1.
+4. **Size and quota** - 20 MiB per agent image, counted against the existing 5 GiB per-app
+   attachment quota.
+5. **Tool name** - `show_image`, exposed by opencode as `hanse_show_image`.
+6. **Paths** - the application directory, `<appRoot>/tmp`, and `<appRoot>/attachments` only;
+   credential paths are excluded at the tool boundary.
+7. **Master agent** - out of scope in this stage; its MCP surface is a separate follow-up.
+8. **Transport** - store-and-return-metadata. The image bytes never enter the model context.
+9. **Retention** - staged media never expires by time; it is durable until attached, until the app
+   is deleted, or until a future explicit maintenance action. A staged row has no session
+   association, so session deletion cannot target it.
+10. **Caption** - reject an empty or over-200-character caption after single-line sanitization;
+    never silently truncate.
+11. **Payload hygiene** - nested tool-attachment `data:` URLs are stripped from live and history;
+    the "no base64 from tool attachments" invariant applies to tool parts. Other nested `data:`
+    fields are out of scope.
+12. **Media location** - `<appRoot>/agent-media` inside the app-writable agents bind is accepted,
+    with the self-tamper risk recorded; the destination is protected against symlink planting;
+    moving it outside that root is a future hardening option.
+13. **Path redaction** - `show_image` input/output paths are removed before projection; the tool
+    part carries no host path.
+14. **Shared quota lock** - operator uploads and `show_image` reserve under the same per-app
+    upload/quota lock; the lock is released before the copy/stream.
+15. **Association result** - `attach` returns `attached`/`missing`/`conflict`/`unknown`; missing
+    emits a placeholder card; conflict/unknown skip.
+
 > Stage: `0031-spa-migration`. Owner decisions were collected on 2026-10-28, before the design was
 > written. There are no open items for this stage.
 

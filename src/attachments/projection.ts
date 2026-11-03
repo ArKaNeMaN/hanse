@@ -1,3 +1,11 @@
+import {
+  isShowImageTool,
+  parseShowImageEnvelope,
+  redactShowImagePath,
+  stripNestedToolDataUrls,
+  syntheticShowImagePart,
+} from "../agent-media/projection.js";
+import type { AgentMediaAttachResult } from "../agent-media/types.js";
 import type { SqliteDatabase } from "../store/index.js";
 import { readAttachment, readDeliveriesForMessages, readDeliveryByPartId } from "./store.js";
 import type { AttachmentRow, AttachmentView, DeliveryRow } from "./types.js";
@@ -18,11 +26,22 @@ export interface ProjectableMessage {
 
 export type MessageProjector = (messages: ProjectableMessage[]) => void;
 
+export interface AgentMediaProjector {
+  attach(
+    appId: string,
+    id: string,
+    sessionId: string,
+    messageId: string,
+    partId: string,
+  ): AgentMediaAttachResult;
+}
+
 export interface ProjectionTarget {
   db: SqliteDatabase;
   appId: string;
   appKey: string;
   projectId: string;
+  agentMedia?: AgentMediaProjector;
 }
 
 function isDataUrl(value: unknown): value is string {
@@ -89,21 +108,59 @@ export function createMessageProjector(target: ProjectionTarget): MessageProject
       if (row !== undefined) rows.set(delivery.attachmentId, row);
     }
     for (const message of messages) {
+      const projectedParts: ProjectablePart[] = [];
       for (let index = 0; index < message.parts.length; index += 1) {
         const part = message.parts[index];
-        if (part === undefined || part.type !== "file") continue;
-        const id = partId(part);
-        const delivery = id === undefined ? undefined : byPartId.get(id);
-        const row = delivery === undefined ? undefined : rows.get(delivery.attachmentId);
-        if (row !== undefined) {
-          message.parts[index] = projectedFilePart(part, row, target);
+        if (part === undefined) continue;
+        stripNestedToolDataUrls(part);
+        redactShowImagePath(part);
+        let projected = part;
+        if (part.type === "file") {
+          const id = partId(part);
+          const delivery = id === undefined ? undefined : byPartId.get(id);
+          const row = delivery === undefined ? undefined : rows.get(delivery.attachmentId);
+          if (row !== undefined) {
+            projected = projectedFilePart(part, row, target);
+          } else if (isDataUrl(part.url)) {
+            part.url = "";
+            part.truncated = true;
+          }
+        }
+        projectedParts.push(projected);
+        const state = asRecord(part.state);
+        if (
+          target.agentMedia === undefined ||
+          part.type !== "tool" ||
+          !isShowImageTool(typeof part.tool === "string" ? part.tool : undefined) ||
+          state?.status !== "completed"
+        ) {
           continue;
         }
-        if (isDataUrl(part.url)) {
-          part.url = "";
-          part.truncated = true;
+        const parsed = parseShowImageEnvelope(state.output);
+        if (parsed === undefined) continue;
+        const sessionID =
+          typeof part.sessionID === "string" ? part.sessionID : message.info.sessionID;
+        const partID = partId(part);
+        if (typeof sessionID !== "string" || partID === undefined) continue;
+        const result = target.agentMedia.attach(
+          target.appId,
+          parsed.id,
+          sessionID,
+          message.info.id,
+          partID,
+        );
+        if (result.status !== "attached" && result.status !== "missing") continue;
+        const synthetic = syntheticShowImagePart({
+          sessionID,
+          messageID: message.info.id,
+          view: result.view,
+          url: result.view.downloadURL,
+        });
+        if (!projectedParts.some((candidate) => candidate.id === synthetic.partID)) {
+          projectedParts.push(synthetic.part as ProjectablePart);
         }
       }
+      message.parts = projectedParts;
       const attachments = attachmentViewsForMessages(
         target.db,
         target.appId,
@@ -189,4 +246,10 @@ export function createEventAttachmentResolver(target: ProjectionTarget): EventAt
       return views === undefined ? undefined : remember(messages, messageId, views);
     },
   };
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
 }

@@ -1,3 +1,5 @@
+import { deleteSessionAgentMedia } from "../agent-media/store.js";
+import { appStateRoot } from "../attachments/paths.js";
 import { failDeliveriesForMessage, markDeliveriesUnknownForMessage } from "../attachments/store.js";
 import {
   getMessage,
@@ -360,6 +362,14 @@ export class PendingRecovery {
         removeSessionFolder(
           sessionFolder(this.#agentsHome, identity.projectId, identity.appKey, row.sessionId),
         );
+        if (this.#agentsHome !== undefined) {
+          deleteSessionAgentMedia(
+            this.#db,
+            appStateRoot(this.#agentsHome, identity.projectId, identity.appKey),
+            appId,
+            row.sessionId,
+          );
+        }
       }
       return;
     }

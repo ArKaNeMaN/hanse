@@ -70,6 +70,8 @@ export async function handleInternalMcp(
     payload as Parameters<typeof handleRpcAsync>[3],
     {
       db: deps.db,
+      getProjects: deps.getProjects,
+      ...(deps.agentsHome === undefined ? {} : { agentsHome: deps.agentsHome }),
       ...(deps.skills === undefined ? {} : { skills: deps.skills }),
       ...(deps.manager === undefined ? {} : { manager: deps.manager }),
       ...(deps.previews === undefined ? {} : { previews: deps.previews }),

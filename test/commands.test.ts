@@ -132,7 +132,7 @@ describe("cli commands", () => {
     );
     db.prepare(
       "INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?, ?, ?, ?)",
-    ).run(21, "future", "future-checksum", new Date().toISOString());
+    ).run(22, "future", "future-checksum", new Date().toISOString());
     db.close();
 
     const previousToken = process.env.HANSE_RUNTIME_TOKEN;

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import type { AttachmentView } from "../../../assets/chat-core.js";
 import {
   contextChipLabel,
   contextDetail,
@@ -49,6 +50,7 @@ const emit = defineEmits<{
   "load-earlier": [];
   "question-submit": [view: InlineQuestionView, answers: string[][]];
   "question-reject": [view: InlineQuestionView];
+  "open-image": [attachment: AttachmentView];
   "open-context": [section: "context" | "plan"];
   start: [];
 }>();
@@ -512,6 +514,7 @@ defineExpose({ captureAnchor, restoreAnchor, scrollToBottom, onScroll, unseen })
               :data-message-id="item.message.id"
               @question-submit="(view, answers) => emit('question-submit', view, answers)"
               @question-reject="(view) => emit('question-reject', view)"
+              @open-image="(attachment) => emit('open-image', attachment)"
             />
             <ChatNoticeRow v-else :notice="item.notice" />
           </template>

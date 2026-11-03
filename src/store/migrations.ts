@@ -708,4 +708,44 @@ CREATE TABLE session_notice_dedupe (
 );
 `,
   },
+  {
+    version: 21,
+    name: "agent-media",
+    sql: `
+CREATE TABLE agent_media (
+  id TEXT PRIMARY KEY,
+  app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+  session_id TEXT,
+  message_id TEXT,
+  part_id TEXT,
+  original_name TEXT NOT NULL,
+  stored_name TEXT NOT NULL,
+  rel_path TEXT NOT NULL,
+  mime TEXT NOT NULL,
+  size INTEGER NOT NULL CHECK (size >= 0),
+  caption TEXT,
+  state TEXT NOT NULL CHECK (state IN ('staged', 'attached', 'missing')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  CHECK (length(id) BETWEEN 1 AND 64),
+  CHECK (length(original_name) > 0),
+  CHECK (length(mime) > 0),
+  CHECK (caption IS NULL OR length(caption) <= 200),
+  CHECK (
+    state <> 'staged'
+    OR (session_id IS NULL AND message_id IS NULL AND part_id IS NULL)
+  ),
+  CHECK (
+    state NOT IN ('attached', 'missing')
+    OR (session_id IS NOT NULL AND message_id IS NOT NULL AND part_id IS NOT NULL)
+  ),
+  UNIQUE (app_id, rel_path)
+);
+CREATE INDEX agent_media_app_state ON agent_media(app_id, state, created_at);
+CREATE INDEX agent_media_app_session ON agent_media(app_id, session_id);
+CREATE UNIQUE INDEX agent_media_message_part
+  ON agent_media(app_id, message_id, part_id)
+  WHERE message_id IS NOT NULL AND part_id IS NOT NULL;
+`,
+  },
 ];

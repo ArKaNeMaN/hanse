@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /** One attachment card from a projected file part or a message attachment strip. */
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import {
   type AttachmentView,
   attachmentModeLabel,
@@ -12,11 +12,13 @@ import AppIcon from "../AppIcon.vue";
 
 const props = defineProps<{ attachment: AttachmentView }>();
 
+const emit = defineEmits<{ open: [attachment: AttachmentView] }>();
+
+const failed = ref(false);
 const downloadURL = computed(() => safeAttachmentUrl(props.attachment.downloadURL));
-const thumbnailURL = computed(() =>
-  props.attachment.kind === "image" && props.attachment.state !== "missing"
-    ? downloadURL.value
-    : null,
+const isImage = computed(() => props.attachment.kind === "image");
+const imageURL = computed(() =>
+  isImage.value && props.attachment.state !== "missing" && !failed.value ? downloadURL.value : null,
 );
 const meta = computed(() => {
   const parts = [formatAttachmentSize(props.attachment.size)];
@@ -31,31 +33,52 @@ const meta = computed(() => {
   return parts.join(" · ");
 });
 const name = computed(() => props.attachment.name || "Attachment");
+const caption = computed(() => props.attachment.caption?.trim() ?? "");
 </script>
 
 <template>
   <article
     class="attachment-card"
-    :class="{ 'attachment-card--inline': attachment.inline }"
+    :class="{
+      'attachment-card--inline': attachment.inline,
+      'attachment-card--image': isImage,
+    }"
     :data-attachment-id="attachment.id"
     :data-kind="attachment.kind"
     :data-state="attachment.state"
     :data-inline="attachment.inline ? 'true' : 'false'"
+    :data-origin="attachment.origin"
   >
-    <div class="attachment-card__preview">
-      <img
-        v-if="thumbnailURL !== null"
-        class="attachment-card__thumb"
-        :src="thumbnailURL"
-        :alt="name"
-        loading="lazy"
-        decoding="async"
+    <div v-if="isImage" class="attachment-card__preview attachment-card__preview--image">
+      <button
+        v-if="imageURL !== null"
+        class="attachment-card__open"
+        type="button"
+        :aria-label="`Open image: ${name}`"
+        data-attachment-open
+        @click="emit('open', attachment)"
       >
-      <AppIcon v-else :name="attachment.kind === 'image' ? 'image' : 'file'" />
+        <img
+          class="attachment-card__image"
+          :src="imageURL"
+          :alt="name"
+          loading="lazy"
+          decoding="async"
+          @error="failed = true"
+        >
+      </button>
+      <div v-else class="attachment-card__unavailable-image">
+        <AppIcon name="image" />
+        <span>{{ attachment.state === "missing" ? "Missing file" : "Image unavailable" }}</span>
+      </div>
+    </div>
+    <div v-else class="attachment-card__preview">
+      <AppIcon :name="attachment.kind === 'image' ? 'image' : 'file'" />
     </div>
     <div class="attachment-card__body">
       <span class="attachment-card__name" :title="name">{{ name }}</span>
       <span class="attachment-card__meta">{{ meta }}</span>
+      <span v-if="caption.length > 0" class="attachment-card__caption">{{ caption }}</span>
     </div>
     <div class="attachment-card__action">
       <span

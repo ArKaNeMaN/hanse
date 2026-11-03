@@ -380,6 +380,13 @@ migration. Existing rows keep their data: startup registration backfills `build_
 legacy base kind/ref and v1 hashes stay `unknown` and no app is marked stale from a fabricated
 identity. No agent is rebuilt, restarted, or recreated by the upgrade.
 
+**Migration 21 (agent-sent chat images) is also forward-only.** It adds the `agent_media` table
+only; existing app attachments, drafts, sessions, and rows are untouched. After it runs, an older
+coordinator refuses the schema. Roll back by restoring the pre-upgrade database backup with the
+matching `agents` state and the old image; there is no down migration. `show_image` is omitted for
+non-master apps when the media store or instance manager is not configured; the rest of chat is
+unchanged.
+
 On the first start after this upgrade, each application's managed skills are materialized before
 `opencode serve`. If an instance already has entries outside the effective set in its Hanse-owned
 `config/opencode/skills` or `config/opencode/skill` roots, the first apply moves them to

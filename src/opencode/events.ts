@@ -1,5 +1,13 @@
+import {
+  isShowImageTool,
+  parseShowImageEnvelope,
+  redactShowImagePath,
+  type ShowImageSyntheticPart,
+  stripNestedToolDataUrls,
+  syntheticShowImagePart,
+} from "../agent-media/projection.js";
 import { appStreamBudget, type RawStreamBudget } from "../attachments/budget.js";
-import type { EventAttachmentResolver } from "../attachments/projection.js";
+import type { AgentMediaProjector, EventAttachmentResolver } from "../attachments/projection.js";
 import type { AttachmentView } from "../attachments/types.js";
 import type { HandoffEventResolver, HandoffMessageMeta } from "../coordinator/handoff-messages.js";
 import type { ContextSnapshot } from "./context.js";
@@ -234,6 +242,8 @@ export interface EventProjectorOptions {
   includeUsage?: boolean;
   attachments?: EventAttachmentResolver;
   handoffs?: HandoffEventResolver;
+  appId?: string;
+  agentMedia?: AgentMediaProjector;
 }
 
 export interface EventStreamOptions {
@@ -242,6 +252,8 @@ export interface EventStreamOptions {
   includeUsage?: boolean;
   attachments?: EventAttachmentResolver;
   handoffs?: HandoffEventResolver;
+  appId?: string;
+  agentMedia?: AgentMediaProjector;
   budget?: RawStreamBudget;
   isPriority?: () => boolean;
   /** Called after the upstream reader is attached, before any frame is read. */
@@ -1432,6 +1444,9 @@ export class EventProjector {
   private readonly includeUsage: boolean;
   private readonly attachments: EventAttachmentResolver | undefined;
   private readonly handoffs: HandoffEventResolver | undefined;
+  private readonly appId: string | undefined;
+  private readonly agentMedia: AgentMediaProjector | undefined;
+  private readonly syntheticShowImages = new Set<string>();
   private readonly eventIds = new Set<string>();
   private readonly askedKeys = new Set<string>();
   private readonly partTypes = new Map<string, PartType>();
@@ -1448,6 +1463,8 @@ export class EventProjector {
     this.includeUsage = options.includeUsage === true;
     this.attachments = options.attachments;
     this.handoffs = options.handoffs;
+    this.appId = options.appId;
+    this.agentMedia = options.agentMedia;
   }
 
   project(raw: unknown): HanseEvent[] {
@@ -1830,7 +1847,14 @@ export class EventProjector {
     ) {
       return [];
     }
-    if (!this.shouldForwardSnapshot(part, rawPartType, partID)) return [];
+    const synthetic = this.attachShowImage(part, rawPartType, partID, sessionID, messageID);
+    if (!this.shouldForwardSnapshot(part, rawPartType, partID)) {
+      return synthetic === undefined
+        ? []
+        : [this.syntheticShowImageEvent(sessionID, messageID, synthetic)];
+    }
+    stripNestedToolDataUrls(part);
+    redactShowImagePath(part);
 
     const sourcePart =
       rawPartType === "file" && this.attachments !== undefined
@@ -1860,7 +1884,7 @@ export class EventProjector {
       }
     }
     if (jsonBytes(event) > MAX_PART_EVENT_BYTES) {
-      return [
+      const output: HanseEvent[] = [
         {
           type: "message.part.omitted",
           sessionID,
@@ -1870,8 +1894,63 @@ export class EventProjector {
           reason: "too_large",
         },
       ];
+      if (synthetic !== undefined)
+        output.push(this.syntheticShowImageEvent(sessionID, messageID, synthetic));
+      return output;
     }
-    return [event];
+    if (synthetic === undefined) return [event];
+    return [event, this.syntheticShowImageEvent(sessionID, messageID, synthetic)];
+  }
+
+  private attachShowImage(
+    part: Record<string, unknown>,
+    rawPartType: PartType,
+    partID: string,
+    sessionID: string,
+    messageID: string,
+  ): ShowImageSyntheticPart | undefined {
+    if (
+      rawPartType !== "tool" ||
+      this.appId === undefined ||
+      this.agentMedia === undefined ||
+      !isShowImageTool(asString(part.tool))
+    ) {
+      return undefined;
+    }
+    const state = asRecord(part.state);
+    if (state === undefined || state.status !== "completed") return undefined;
+    const parsed = parseShowImageEnvelope(state.output);
+    if (parsed === undefined) return undefined;
+    const result = this.agentMedia.attach(this.appId, parsed.id, sessionID, messageID, partID);
+    if (result.status !== "attached" && result.status !== "missing") return undefined;
+    const key = `${messageID}:${parsed.id}`;
+    if (this.syntheticShowImages.has(key)) return undefined;
+    this.syntheticShowImages.add(key);
+    if (this.syntheticShowImages.size > 1_000) {
+      const oldest = this.syntheticShowImages.values().next();
+      if (!oldest.done) this.syntheticShowImages.delete(oldest.value);
+    }
+    return syntheticShowImagePart({
+      sessionID,
+      messageID,
+      view: result.view,
+      url: result.view.downloadURL,
+    });
+  }
+
+  private syntheticShowImageEvent(
+    sessionID: string,
+    messageID: string,
+    synthetic: ShowImageSyntheticPart,
+  ): HanseEvent {
+    return {
+      type: "message.part.updated",
+      sessionID,
+      messageID,
+      partID: synthetic.partID,
+      partType: "file",
+      part: synthetic.part,
+    };
   }
 
   private partDelta(properties: Record<string, unknown>): HanseEvent[] {
@@ -2012,6 +2091,8 @@ export function createEventStream(
     includeUsage: options.includeUsage,
     ...(options.attachments === undefined ? {} : { attachments: options.attachments }),
     ...(options.handoffs === undefined ? {} : { handoffs: options.handoffs }),
+    ...(options.appId === undefined ? {} : { appId: options.appId }),
+    ...(options.agentMedia === undefined ? {} : { agentMedia: options.agentMedia }),
   });
   const reader = body.getReader();
   const warned = new Set<string>();
@@ -2111,12 +2192,19 @@ export function projectRawEnvelope(
   attachments: EventAttachmentResolver | undefined,
 ): unknown {
   const event = asRecord(raw);
-  if (event === undefined || attachments === undefined) return raw;
+  if (event === undefined) return raw;
   if (asString(event.type) !== "message.part.updated") return raw;
   const properties = asRecord(event.properties);
   const part = asRecord(properties?.part);
   if (properties === undefined || part === undefined) return raw;
-  if (asString(part.type) !== "file") return raw;
+  stripNestedToolDataUrls(part);
+  redactShowImagePath(part);
+  if (asString(part.type) !== "file") {
+    return { ...event, properties: { ...properties, part } };
+  }
+  if (attachments === undefined) {
+    return { ...event, properties: { ...properties, part } };
+  }
   return {
     ...event,
     properties: { ...properties, part: attachments.projectFilePart(part) },
