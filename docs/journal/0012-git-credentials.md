@@ -93,6 +93,16 @@ resolution (`502 unknown app` while `demo-app` was stopped, not a `400` validati
 validation of the deployed module returned a SHA256 fingerprint. The full suite is **1196 passing**;
 `npm run lint`, `npm run typecheck`, `npm test`, and `npm run build` are green.
 
+## Follow-up - Test connection with a saved SSH key
+
+Test connection originally tested only the posted draft. Saving clears the secret fields, so Test
+clicked after Save sent an empty private key and failed with `ssh.privateKey is not a supported
+private key`; the same happened on an app that inherits its key and shows a configured credential
+with an empty form. The endpoint now fills a blank SSH draft from the effective saved credential
+(`SettingsService.appGitAuth`) before validation. A present draft key still wins, and with neither a
+draft nor a saved key the error is `ssh.privateKey is required to test a connection`. Blank and
+public-key inputs now have distinct messages instead of the generic envelope error.
+
 ## Decisions and residuals
 
 - Accepted Variant A: the agent can read its own credentials. Use one-repository deploy keys,

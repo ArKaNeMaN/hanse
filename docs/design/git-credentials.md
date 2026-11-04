@@ -67,7 +67,7 @@ provide `ssh`/`ssh-keygen`.
 | R5 | `known_hosts` is optional. If provided, use `StrictHostKeyChecking=yes` and the managed file; if absent, use `accept-new` and show a TOFU warning. |
 | R6 | HTTPS `hosts` is mandatory. The askpass helper must refuse to release the token to any host not on the list. |
 | R7 | The web git workbench must read the same materialized files through a read-only mount; remove all runner-global git credential environment. |
-| R8 | Add a Test connection button that tests **draft** values through a network-enabled one-shot sandbox (`git ls-remote`), with an ephemeral credential directory, redacted output, and no persistence. |
+| R8 | Add a Test connection button that tests **draft** values (falling back to the saved SSH credential when the draft private key is empty) through a network-enabled one-shot sandbox (`git ls-remote`), with an ephemeral credential directory, redacted output, and no persistence. |
 | R9 | Git settings apply on an explicit agent restart using the existing `pendingRestart` mechanism. `settingsHashFor` must include git plain values and a hash of the plaintext git credentials so a secret-only change is detected. |
 | R10 | Remove every credential/config `HANSE_GIT_*` variable (`HANSE_GIT_TOKEN`, `HANSE_GIT_SSH_KEY`, `HANSE_GIT_KNOWN_HOSTS`, `HANSE_GIT_SSH_COMMAND`, `HANSE_GIT_ASKPASS`, `HANSE_GIT_AUTHOR_*`, `HANSE_GIT_COMMITTER_*`, `HANSE_GIT_SSL_CAINFO`), `HANSE_HOST_GIT_DIR`, and `HANSE_GIT_SSL_CAINFO` with no fallback; retain the four non-secret sandbox operation variables (`HANSE_GIT_OP`, `HANSE_GIT_APP_DIR`, `HANSE_GIT_BRANCH`, `HANSE_GIT_MESSAGE`). Remove the legacy `secrets` table and its helper. |
 | R11 | v1 supports exactly one SSH credential and one HTTPS credential per scope. The schema and materializer leave a seam for multiple host-keyed credentials later. |
@@ -108,16 +108,18 @@ contradict them. There are **no open questions** for this stage.
 5. **Web IDE is out of scope;** its terminal git will not receive these credentials.
 6. **Git settings apply on explicit restart for the agent in v1** (existing `pendingRestart`
    mechanism). Live apply is backlog. The web git workbench reads the same materialized files, so it
-   also reflects applied settings. Test connection tests draft values without saving.
+   also reflects applied settings. Test connection tests draft values without saving, falling back
+   to the effective saved SSH credential when the draft private key is empty.
 7. **v1 supports one SSH credential and one HTTPS credential per scope.** The data model and wrapper
    leave a seam for multiple host-keyed credentials later.
 8. **Remove the entire `HANSE_GIT_*` mechanism, `HANSE_HOST_GIT_DIR`, and `HANSE_GIT_SSL_CAINFO`; no
    fallback.** Remove the unused legacy `secrets` table/helper (`src/secrets/git-credential.ts`,
    `src/secrets/store.ts`); the legacy table was empty. A private CA, if ever needed, belongs in the app image
    trust store or a future `git.tls` setting.
-9. **Add a Test connection button** that tests draft values through a new runner operation
-   (`ls-remote`) in a network-enabled one-shot sandbox, using an ephemeral credential dir, redacted
-   output, and no persistence.
+9. **Add a Test connection button** that tests draft values (or the effective saved SSH credential
+   when the draft private key is empty) through a new runner operation (`ls-remote`) in a
+   network-enabled one-shot sandbox, using an ephemeral credential dir, redacted output, and no
+   persistence.
 
 ## 5. Current state and constraints
 
@@ -932,7 +934,11 @@ from the workbench before restart uses the old credential, which is expected and
    the existing `appDir`/`resolveRepository` rules (workspace containment, repository root). It uses
    the app id for runner routing.
 2. Validate the body with the §8.5 validators. `kind` and the matching draft are required; unknown
-   fields are rejected; `remote` is optional and validated for scheme and embedded credentials.
+   fields are rejected; `remote` is optional and validated for scheme and embedded credentials. If
+   `kind=ssh` and the draft `privateKey` is empty, `handleGit` fills it (and any missing
+   `knownHosts`) from the effective saved SSH credential for the app before validation. A draft key
+   that is present always wins; with no draft key and no saved credential the response is
+   `400 invalid_input` with "ssh.privateKey is required to test a connection".
 3. For `kind=https` with a supplied `remote`, require the remote's host in the draft `hosts` and return
    `400 host_not_allowed` before any container starts. For `kind=ssh`, require `ssh://` or scp-like.
 4. Call `deps.git.testConnection(resolved, { kind, remote, ssh, https })`. In production `GitService`
@@ -1036,7 +1042,9 @@ The existing settings pages gain a **Git** section (global, project, and app sco
   (password input, `autocomplete="new-password"`), Set/Inherit/Clear.
 - **Test connection is app-page-only.** A remote input (placeholder "Defaults to origin"), a Test
   button, and a result panel with success/failure, refs count, redacted remote, and warnings. The
-  panel uses `role="status"`/`aria-live="polite"`; errors use `role="alert"`. Global and project Git
+  panel uses `role="status"`/`aria-live="polite"`; errors use `role="alert"`. The SSH test uses the
+  draft key when present, otherwise the saved credential, so Test works after Save and on an app
+  whose key is inherited from a wider scope. Global and project Git
   sections show credential status and configuration but no Test button; they link to an application
   page to run it, because the endpoint needs an app id and a running container (§10.3).
 - **Restart.** The existing pending-restart card lists affected apps. The Git cards add the copy
