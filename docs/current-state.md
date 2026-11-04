@@ -520,6 +520,14 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   (`oh-my-openagent@5.1.35`, `/opt/hanse/omo`) through `HANSE_OMO_PLUGIN`. The coordinator writes a
   per-app profile at `<app-home>/.omo/omo.jsonc` and pins OMO agents/categories to
   `deepseek/deepseek-flash`. Per-project/per-app MCP and plugin inheritance is not implemented yet.
+- The opencode process receives a non-interactive shell environment that every child tool inherits:
+  `GIT_TERMINAL_PROMPT=0`, `GCM_INTERACTIVE=never`, `GIT_EDITOR=:`, `GIT_SEQUENCE_EDITOR=:`,
+  `GIT_MERGE_AUTOEDIT=no`, `GIT_PAGER=cat`, `PAGER=cat`, `EDITOR=:`, `VISUAL=''`,
+  `DEBIAN_FRONTEND=noninteractive`, `npm_config_yes=true`, `PIP_NO_INPUT=1`, and
+  `YARN_ENABLE_IMMUTABLE_INSTALLS=false`. The baked `omo/omo.jsonc` disables OMO's
+  `non-interactive-env` hook: that hook prepends an `export ...;` prefix to git commands, the prefix
+  persists in tool-call history, and the model then copies it onto unrelated commands. `CI` is not
+  set globally because it changes test/build behavior beyond non-interactive prompts.
 - Every managed instance also gets the codegraph MCP server
   (`@colbymchenry/codegraph@1.6.2`, `/opt/hanse/codegraph`) through `HANSE_CODEGRAPH_BIN`. The
   application must be indexed with `codegraph init` (creates `.codegraph/`) before graph queries

@@ -1,6 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/code-yeongyu/oh-my-openagent/dev/assets/omo.schema.json",
-  "disabled_hooks": ["auto-update-checker"],
+  "disabled_hooks": ["auto-update-checker", "non-interactive-env"],
   "[opencode]": {
     "agents": {
       "hephaestus": { "model": "deepseek/deepseek-flash" },
