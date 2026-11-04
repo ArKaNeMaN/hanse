@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, type Page, test } from "@playwright/test";
 import {
   collectPageErrors,
   expectNoPageErrors,
@@ -22,6 +22,12 @@ async function openApp(page: Parameters<typeof signIn>[0]): Promise<void> {
   await expect(page.getByRole("heading", { name: "alpha", exact: true })).toBeVisible();
 }
 
+async function openGroup(page: Page, group: "git" | "image" | "ssh" | "danger") {
+  const toggle = page.locator(`#group-${group}-toggle`);
+  if ((await toggle.getAttribute("aria-expanded")) !== "true") await toggle.click();
+  await expect(page.locator(`#group-${group}-body`)).toBeVisible();
+}
+
 test("deep links, refreshes, and renders the read-only runtime, image, git, and SSH panels", async ({
   page,
 }) => {
@@ -35,6 +41,15 @@ test("deep links, refreshes, and renders the read-only runtime, image, git, and 
   await expect(page.locator("#runtime-state")).toContainText("Running");
   await expect(page.locator("#settings-state")).toBeVisible();
   await expect(page.locator("#app-restart")).toBeVisible();
+
+  await expect(page.locator("#group-git-toggle")).toHaveAttribute("aria-expanded", "false");
+  await expect(page.locator("#group-image-toggle")).toHaveAttribute("aria-expanded", "false");
+  await expect(page.locator("#group-ssh-toggle")).toHaveAttribute("aria-expanded", "false");
+  await expect(page.locator("#group-danger-toggle")).toHaveAttribute("aria-expanded", "false");
+
+  await openGroup(page, "git");
+  await openGroup(page, "image");
+  await openGroup(page, "ssh");
 
   await expect(page.locator("#image-panel")).toBeVisible();
   await expect(page.locator("#image-ref")).toHaveText("Default agent image");
@@ -79,6 +94,9 @@ test("deep links, refreshes, and renders the read-only runtime, image, git, and 
   await page.reload();
   await expect(page.locator("#hanse-boot")).toHaveCount(1);
   await expect(page.getByRole("heading", { name: "alpha", exact: true })).toBeVisible();
+  await expect(page.locator("#group-git-toggle")).toHaveAttribute("aria-expanded", "true");
+  await expect(page.locator("#group-image-toggle")).toHaveAttribute("aria-expanded", "true");
+  await expect(page.locator("#group-ssh-toggle")).toHaveAttribute("aria-expanded", "true");
   await expect(page.locator("#image-panel")).toBeVisible();
 
   await settle(page);
@@ -179,11 +197,13 @@ test("renders clean, dirty, detached, and conflicted git states", async ({ page 
   const errors = collectPageErrors(page);
   prepareGitState(PROJECT_ONE, "alpha", "clean");
   await openApp(page);
+  await openGroup(page, "git");
   await expect(page.locator("#repository-card").getByText("Clean", { exact: true })).toBeVisible();
   await expect(page.locator("#remotes-card")).toContainText("origin");
 
   prepareGitState(PROJECT_ONE, "beta", "dirty");
   await page.goto(BETA_PATH);
+  await openGroup(page, "git");
   await expect(page.getByRole("heading", { name: "beta", exact: true })).toBeVisible();
   await expect(page.locator("#repository-card")).toContainText("Changes");
   await expect(page.locator("#git-change-counts")).toContainText("Staged 1");
@@ -195,6 +215,7 @@ test("renders clean, dirty, detached, and conflicted git states", async ({ page 
 
   prepareGitState(PROJECT_TWO, "gamma", "detached");
   await page.goto(GAMMA_PATH);
+  await openGroup(page, "git");
   await expect(page.getByRole("heading", { name: "gamma", exact: true })).toBeVisible();
   await expect(page.locator("#git-branch")).toContainText("Detached HEAD");
   await expect(page.locator("#repository-card")).toContainText("Detached");
@@ -205,6 +226,7 @@ test("renders clean, dirty, detached, and conflicted git states", async ({ page 
 
   prepareGitState(PROJECT_ONE, "beta", "conflicted");
   await page.goto(BETA_PATH);
+  await openGroup(page, "git");
   await expect(page.locator("#repository-card")).toContainText("Conflicts");
   await expect(page.locator("#git-change-counts")).toContainText("Conflicted 1");
   await expect(page.locator("#git-commit")).toBeDisabled();
@@ -219,6 +241,7 @@ test("refreshes status on demand and renders ahead and behind counts", async ({ 
   const errors = collectPageErrors(page);
   prepareGitState(PROJECT_ONE, "alpha", "ahead");
   await openApp(page);
+  await openGroup(page, "git");
   await expect(page.locator("#git-upstream")).toContainText("1 ahead");
 
   prepareGitState(PROJECT_ONE, "alpha", "behind");
@@ -240,6 +263,7 @@ test("commits every change group and updates the last commit", async ({ page }) 
   prepareGitState(PROJECT_ONE, "beta", "dirty");
   await signIn(page, BETA_PATH);
   await expect(page.getByRole("heading", { name: "beta", exact: true })).toBeVisible();
+  await openGroup(page, "git");
 
   await page.locator("#git-commit-message").fill("E2E commit from SPA");
   await page.locator("#git-commit").click();
@@ -258,6 +282,7 @@ test("fetches, updates, pushes, and switches branches", async ({ page }) => {
   const errors = collectPageErrors(page);
   prepareGitState(PROJECT_ONE, "alpha", "behind");
   await openApp(page);
+  await openGroup(page, "git");
   await expect(page.locator("#git-upstream")).toContainText("1 behind");
 
   await page.locator("#git-fetch").click();
@@ -291,6 +316,7 @@ test("fetches, updates, pushes, and switches branches", async ({ page }) => {
 test("maps git action and status failures to the legacy messages", async ({ page }) => {
   prepareGitState(PROJECT_ONE, "alpha", "clean");
   await openApp(page);
+  await openGroup(page, "git");
 
   await page.route(/\/git\/push$/, (route) =>
     route.fulfill({
@@ -344,6 +370,7 @@ test("validates the commit message and warns before switching to the current bra
   prepareGitState(PROJECT_ONE, "beta", "dirty");
   await signIn(page, BETA_PATH);
   await expect(page.getByRole("heading", { name: "beta", exact: true })).toBeVisible();
+  await openGroup(page, "git");
 
   let commits = 0;
   page.on("request", (request) => {
@@ -358,6 +385,7 @@ test("validates the commit message and warns before switching to the current bra
   prepareGitState(PROJECT_ONE, "alpha", "clean");
   await page.goto(APP_PATH);
   await expect(page.getByRole("heading", { name: "alpha", exact: true })).toBeVisible();
+  await openGroup(page, "git");
   await page.locator("#git-branch-select").selectOption("main");
   await page.locator("#git-switch").click();
   await expect(page.locator("#git-notice")).toContainText("You are already on main.");
@@ -367,6 +395,7 @@ test("drives the custom image matrix through build, logs, poll, and rollback", a
   const errors = collectPageErrors(page);
   await signIn(page, BETA_PATH);
   await expect(page.getByRole("heading", { name: "beta", exact: true })).toBeVisible();
+  await openGroup(page, "image");
 
   await expect(page.locator("#image-panel")).toHaveAttribute("data-status", "error");
   await expect(page.locator("#image-status")).toContainText("Build failed");
@@ -405,12 +434,14 @@ test("drives the custom image matrix through build, logs, poll, and rollback", a
 test("checks the default image and renders an out-of-date custom image", async ({ page }) => {
   const errors = collectPageErrors(page);
   await openApp(page);
+  await openGroup(page, "image");
 
   await page.locator("#image-check").click();
   await expect(toast(page, "Default image is current.")).toBeVisible();
   await expect(page.locator("#image-ref")).toHaveText("Default agent image");
 
   await page.goto(GAMMA_PATH);
+  await openGroup(page, "image");
   await expect(page.getByRole("heading", { name: "gamma", exact: true })).toBeVisible();
   await expect(page.locator("#image-status")).toContainText("Out of date");
   await expect(page.locator("#image-panel")).toContainText("Drift");
@@ -424,6 +455,7 @@ test("grants, revokes, approves, rejects, and refreshes app-scoped SSH", async (
   const errors = collectPageErrors(page);
   await signIn(page, BETA_PATH);
   await expect(page.getByRole("heading", { name: "beta", exact: true })).toBeVisible();
+  await openGroup(page, "ssh");
 
   await expect(page.locator("#ssh-panel")).toContainText("2 pending approvals");
   await expect(page.locator("#ssh-grants")).toContainText("test-host");
@@ -469,10 +501,31 @@ test("grants, revokes, approves, rejects, and refreshes app-scoped SSH", async (
   expectNoPageErrors(errors);
 });
 
+test("collapses groups by default and remembers open state per app", async ({ page }) => {
+  const errors = collectPageErrors(page);
+  await openApp(page);
+
+  await expect(page.locator("#group-git-toggle")).toHaveAttribute("aria-expanded", "false");
+  await openGroup(page, "git");
+  await expect(page.locator("#group-git-toggle")).toHaveAttribute("aria-expanded", "true");
+
+  await page.goto(BETA_PATH);
+  await expect(page.getByRole("heading", { name: "beta", exact: true })).toBeVisible();
+  await expect(page.locator("#group-git-toggle")).toHaveAttribute("aria-expanded", "false");
+
+  await page.goto(APP_PATH);
+  await expect(page.getByRole("heading", { name: "alpha", exact: true })).toBeVisible();
+  await expect(page.locator("#group-git-toggle")).toHaveAttribute("aria-expanded", "true");
+
+  await settle(page);
+  expectNoPageErrors(errors);
+});
+
 test("deletes an application only with the exact name", async ({ page }) => {
   const errors = collectPageErrors(page);
   await signIn(page, BETA_PATH);
   await expect(page.getByRole("heading", { name: "beta", exact: true })).toBeVisible();
+  await openGroup(page, "danger");
 
   await page.locator("#app-delete").click();
   const dialog = page.locator("#application-delete-dialog");

@@ -392,10 +392,13 @@ follows its normal shell behavior.
 7. **Embedded IDE.** Opens in a new tab at `/ide/`; no hanse chrome is injected. GitHub Dark Dimmed
 is the reference; hanse's ink/brass does not clash because it shares the same luminance band and
 avoids bright chrome.
-8. **Application page.** Header with `Open chat`, `Terminal`, and a `More actions` disclosure; a
-two-cell state strip (`Runtime`, `Settings`); the git workbench as the main column (Repository,
-Changes) and a 320px rail (Image, SSH access, Remotes, Last commit). The only page primary is
-`Commit all`; the Image card uses status pills and disclosures, not a full-width block.
+8. **Application page.** Header with `Open chat`, `Terminal`, and a `More actions` disclosure; an
+always-visible two-cell state strip (`Runtime`, `Settings`); below it an accordion of four
+button-controlled group cards in order: `Git`, `Image`, `SSH access`, `Danger zone`. All groups are
+collapsed by default, and each app's open state is persisted per project+app key in `localStorage`.
+An open Git group keeps the workbench as the main column (Repository, Changes) and a 320px rail
+(Remotes, Last commit); Image is its own group. The only page primary is `Commit all`; the Image
+card uses status pills and disclosures, not a full-width block.
 9. **Settings.** A sticky scope/section nav, four section cards (`Agent`, `Web tools`, `Git`,
 `Restart & pending`), and one collapsed `.setting-row` per setting. Only effective value and source
 are visible at rest; editor, scope history, warnings, and actions are inside the row disclosure.
@@ -879,6 +882,14 @@ These map exactly to Section 3. No other font sizes are allowed in product CSS.
   (`border-block: 1px solid var(--line)`), `.state-strip__cell`, `.state-strip__label`,
   `.state-strip__value`, `.state-strip__actions`. Below 768 it stacks with a block-start hairline.
   The Settings cell is the only pending-restart statement on the page.
+- **Application groups:** `.app-group` is an accordion of four native button-controlled cards
+  (`Git`, `Image`, `SSH access`, `Danger zone`). The `.app-group__heading`/`.app-group__toggle`
+  carries the icon, title, `.app-group__summary` (hidden below 479px), and the rotating
+  `.app-group__chevron`; the button sets `aria-expanded`/`aria-controls`, and the
+  `.app-group__body` is a `role="region"` labelled by the heading. `.app-group--open` marks the open
+  card. Bodies use `v-show`, so hidden panels stay mounted and keep their state. Open/closed state is
+  stored per project+app key in `localStorage`; a missing or invalid value means all groups are
+  closed.
 - **Overflow menu:** `<details class="menu">` with a `.btn.btn-ghost.btn-icon` summary, a
   `.menu__panel` (surface 3, hairline, radius md, overlay shadow, `--z-sticky`), and `.menu__item`
   links. Outside click/Escape close it and return focus to the summary.
@@ -1196,7 +1207,10 @@ spacing value.
 `.overline`, `.mono`, `.rule`, `.rule--strong`, `.rule--double`, `.sr-only`, `.skip-link`,
 `.chart-ground`.
 - UX polish: `.state-strip`, `.state-strip__cell`, `.state-strip__label`, `.state-strip__value`,
-`.state-strip__actions`, `.menu`, `.menu__panel`, `.menu__item`, `.disclosure`,
+`.state-strip__actions`, `.app-group`, `.app-group__heading`, `.app-group__toggle`,
+`.app-group__identity`, `.app-group__icon`, `.app-group__title`, `.app-group__tail`,
+`.app-group__summary`, `.app-group__chevron`, `.app-group--open`, `.app-group__body`, `.menu`,
+`.menu__panel`, `.menu__item`, `.disclosure`,
 `.disclosure__chevron`, `.settings-nav`, `.settings-nav__scopes`, `.settings-nav__sections`,
 `.settings-nav__link`, `.settings-section`, `.setting-row`, `.setting-row__summary`,
 `.setting-row__title`, `.setting-row__effective`, `.setting-row__source`, `.setting-row__state`,

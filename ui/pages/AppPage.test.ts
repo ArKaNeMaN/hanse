@@ -473,6 +473,7 @@ describe("AppPage", () => {
   beforeEach(() => {
     mocks.apiQuery.mockReset();
     mocks.apiMutation.mockReset();
+    window.localStorage.clear();
   });
 
   it("renders the header, runtime strip, settings state, links, and restart control", async () => {
@@ -1212,5 +1213,61 @@ describe("AppPage", () => {
     await flushPromises();
     expect(wrapper.get("#repository-card").text()).toContain("Clean");
     expect(wrapper.get("#git-refreshed").text()).toContain("Refreshed");
+  });
+
+  it("renders all four groups collapsed on first mount", async () => {
+    const appProps = props();
+    installQueries(appProps);
+    const wrapper = await mountPage(boot(appProps));
+
+    for (const group of ["git", "image", "ssh", "danger"] as const) {
+      expect(wrapper.get(`#group-${group}-toggle`).attributes("aria-expanded")).toBe("false");
+      expect(wrapper.get(`#group-${group}-body`).attributes("style")).toContain("display: none");
+    }
+    expect(wrapper.find("#git-panel").exists()).toBe(true);
+    expect(wrapper.find("#image-panel").exists()).toBe(true);
+    expect(wrapper.find("#ssh-panel").exists()).toBe(true);
+    expect(wrapper.find("#danger-zone").exists()).toBe(true);
+  });
+
+  it("toggles the git group open and closed", async () => {
+    const appProps = props();
+    installQueries(appProps);
+    const wrapper = await mountPage(boot(appProps));
+
+    await wrapper.get("#group-git-toggle").trigger("click");
+    expect(wrapper.get("#group-git-toggle").attributes("aria-expanded")).toBe("true");
+    expect(wrapper.get("#group-git-body").attributes("style") ?? "").not.toContain("display: none");
+
+    await wrapper.get("#group-git-toggle").trigger("click");
+    expect(wrapper.get("#group-git-toggle").attributes("aria-expanded")).toBe("false");
+    expect(wrapper.get("#group-git-body").attributes("style")).toContain("display: none");
+  });
+
+  it("restores open groups from localStorage after a remount", async () => {
+    const appProps = props();
+    installQueries(appProps);
+    const first = await mountPage(boot(appProps));
+    await first.get("#group-git-toggle").trigger("click");
+    first.unmount();
+
+    const second = await mountPage(boot(appProps));
+    expect(second.get("#group-git-toggle").attributes("aria-expanded")).toBe("true");
+    expect(second.get("#group-git-body").attributes("style") ?? "").not.toContain("display: none");
+  });
+
+  it("keeps group state separate per application", async () => {
+    const appProps = props();
+    installQueries(appProps);
+    const alpha = await mountPage(boot(appProps));
+    await alpha.get("#group-git-toggle").trigger("click");
+    alpha.unmount();
+
+    const beta = await mountPage(boot(props(), { id: "p", app: "beta" }));
+    expect(beta.get("#group-git-toggle").attributes("aria-expanded")).toBe("false");
+    beta.unmount();
+
+    const alphaAgain = await mountPage(boot(appProps));
+    expect(alphaAgain.get("#group-git-toggle").attributes("aria-expanded")).toBe("true");
   });
 });

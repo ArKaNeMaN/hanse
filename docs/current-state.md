@@ -356,11 +356,14 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   rollback pages. The application page reads boot props only for a matching app route and otherwise
   fetches `/api/ui/apps/:app?project=`, whose response also carries the live git read summary (boot
   props load it as `git.summary.loaded=false`). It renders the application header and links, the
-  Runtime/Settings state strip, the image rail with build/rollback/check/logs and the full legacy
-  state matrix, the Repository/Changes/Remotes/Last-commit git workbench, the app-scoped SSH
-  allowlist/grant/revoke/approve/reject/audit actions, the exact-name delete dialog, and the master
-  variant. Runtime and image are polled at the existing cadence (runtime 10 s, image 3 s while
-  building). Git status loads from `/api/projects/:id/apps/:app/git/status` on entry, on demand, and
+  always-visible Runtime/Settings state strip, and a default-collapsed accordion of four group cards
+  (Git, Image, SSH access, Danger zone) whose open state is persisted per project+app key in
+  `localStorage`. The Git group holds the Repository/Changes workbench with Remotes/Last commit in
+  its rail; the Image group holds build/rollback/check/logs and the full legacy state matrix; the
+  SSH group holds the app-scoped allowlist/grant/revoke/approve/reject/audit actions; the Danger
+  zone holds the exact-name delete dialog. The master variant is unchanged. Runtime and image are
+  polled at the existing cadence (runtime 10 s, image 3 s while building). Git status loads from
+  `/api/projects/:id/apps/:app/git/status` on entry, on demand, and
   after an action only when the action response carries no status; fetch, update, push, commit-all,
   and branch switch reuse the existing git JSON handlers, preserve the
   clean/dirty/detached/conflicted/upstream/ahead/behind vocabulary, and map failures to the legacy
@@ -402,8 +405,11 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   and represented by `ui/pages/AppPage.vue`. The legacy rollback document still hydrates its git
   panel with `assets/git.js`. The page header has `Open chat`, `Terminal`,
   and a `More actions` disclosure (`Open IDE in this folder`, `Application settings`); a two-cell
-  state strip (`Runtime`, `Settings`) precedes the git workbench. Repository and Changes occupy the
-  main column; the rail holds Image, SSH access, Remotes, and Last commit. The page's only brass
+  state strip (`Runtime`, `Settings`) precedes the body, which is a default-collapsed accordion of
+  four group cards: Git, Image, SSH access, and Danger zone. Each app's open state is persisted per
+  project+app key in `localStorage`. An open Git group keeps Repository/Changes in the main column
+  and Remotes/Last commit in its rail; Image, SSH access, and the exact-name delete card live in
+  their own groups. The page's only brass
   action is `Commit all`. It is linked from the project application table, the chat context rail,
   and the chat breadcrumb. The SPA application page renders the same read state from
   `/api/ui/apps/:app?project=` and ports status refresh, fetch, update, push, commit-all, branch

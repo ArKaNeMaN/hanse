@@ -8,6 +8,7 @@ import type { BootPayload } from "../boot.js";
 import AppDeleteDialog from "../components/AppDeleteDialog.vue";
 import AppGitPanel from "../components/AppGitPanel.vue";
 import AppGitRemotes from "../components/AppGitRemotes.vue";
+import AppGroup from "../components/AppGroup.vue";
 import AppIcon from "../components/AppIcon.vue";
 import AppImagePanel from "../components/AppImagePanel.vue";
 import AppRestartDialog from "../components/AppRestartDialog.vue";
@@ -15,6 +16,7 @@ import AppSshPanel from "../components/AppSshPanel.vue";
 import AppStateStrip from "../components/AppStateStrip.vue";
 import SmartLink from "../components/SmartLink.vue";
 import { useAppGit } from "../composables/useAppGit.js";
+import { useAppGroups } from "../composables/useAppGroups.js";
 import { useAppImage } from "../composables/useAppImage.js";
 import { applyChrome } from "../composables/useChrome.js";
 import { absoluteTime, timeAgo } from "../format.js";
@@ -219,6 +221,55 @@ const canRestart = computed(() => {
 const lastCommit = computed(() => gitSummary.value.lastCommit ?? null);
 const deletionPending = computed(() => view.value?.delete.pending === true);
 const deletionBanner = computed(() => view.value?.delete.banner ?? null);
+
+const { isOpen: isGroupOpen, setOpen: setGroupOpen } = useAppGroups(projectId, appKey);
+
+const IMAGE_GROUP_LABELS: Record<string, string> = {
+  default: "Default image",
+  missing: "Not built",
+  building: "Building",
+  ready: "Built",
+  stale: "Out of date",
+  error: "Build failed",
+};
+
+function imageGroupLabel(status: string | undefined): string {
+  if (status === undefined) return "Image";
+  return IMAGE_GROUP_LABELS[status] ?? "Image";
+}
+
+const gitGroupSummary = computed(() => {
+  const summary = gitSummary.value;
+  if (!summary.loaded) return "Unavailable";
+  const branch = summary.detached ? "Detached HEAD" : (summary.branch?.name ?? "Unknown branch");
+  let state: string;
+  if (summary.conflicted) {
+    state = "Conflicts";
+  } else if (summary.operation !== null && summary.operation.length > 0) {
+    state = "In progress";
+  } else if (summary.clean) {
+    state = "Clean";
+  } else {
+    const { staged, unstaged, untracked, conflicted } = summary.counts;
+    const total = staged + unstaged + untracked + conflicted;
+    state = `${total} change${total === 1 ? "" : "s"}`;
+  }
+  return `${branch} · ${state}`;
+});
+
+const imageGroupSummary = computed(() => {
+  const liveStatus = imageLive.value?.status;
+  return imageGroupLabel(liveStatus ?? view.value?.image.status);
+});
+
+const sshGroupSummary = computed(() => {
+  const ssh = view.value?.ssh;
+  if (ssh === undefined || !ssh.available) return "Unavailable";
+  const hosts = `${ssh.hosts} host${ssh.hosts === 1 ? "" : "s"}`;
+  return ssh.pendingApprovals > 0 ? `${hosts} · ${ssh.pendingApprovals} pending` : hosts;
+});
+
+const dangerGroupSummary = computed(() => view.value?.delete.statusLabel ?? "Destructive");
 
 async function refreshApp(): Promise<void> {
   const result = await appQuery.refetch();
@@ -454,122 +505,159 @@ async function restartAgent(): Promise<void> {
         @restart="restartDialog?.open()"
       />
 
-      <div id="git-panel">
-        <div class="workbench-grid workbench-grid--detail section">
-          <AppGitPanel
-            v-model:commit-draft="gitCommitDraft"
-            :summary="gitSummary"
-            :status="gitStatus"
-            :rules="gitRules"
-            :hint="gitHint"
-            :loading="gitLoading"
-            :busy-action="gitBusyAction"
-            :failure="gitFailure"
-            :notice="gitNotice"
-            :commit-error="gitCommitError"
-            :needs-refresh="gitNeedsRefresh"
-            :refreshed-label="gitRefreshedLabel"
-            :ide-href="view.links.ide"
-            :project-href="projectHref"
-            :live-message="gitLiveMessage"
-            @refresh="refreshGit"
-            @action="runGitAction"
-            @commit="submitGitCommit"
-            @switch="requestGitSwitch"
-          />
-          <aside class="rail-stack" aria-label="Application details">
-            <AppImagePanel
-              :logs-open="imageLogsOpen"
-              :image="view.image"
-              :live="imageLive"
-              :live-error="imageLiveError"
-              :logs="imageLogs"
-              :logs-error="imageLogsError"
-              :busy-action="imageBusy"
-              :runtime-active="runtimeState === 'running' || runtimeState === 'starting'"
-              :runtime-image-ref="runtimeImageRef"
-              :ide-href="view.links.ide"
-              @build="buildImage"
-              @rollback="rollbackImage"
-              @check="checkImage"
-              @refresh="refreshImage"
-              @refresh-logs="refreshImageLogs"
-              @update:logs-open="setImageLogsOpen"
-            />
-            <AppGitRemotes
+      <AppGroup
+        group-id="git"
+        title="Git"
+        icon="branch"
+        :open="isGroupOpen('git')"
+        :summary="gitGroupSummary"
+        @update:open="setGroupOpen('git', $event)"
+      >
+        <div id="git-panel">
+          <div class="workbench-grid workbench-grid--detail">
+            <AppGitPanel
+              v-model:commit-draft="gitCommitDraft"
+              :summary="gitSummary"
               :status="gitStatus"
-              :failure="gitFailure !== null"
-              :loaded="gitSummary.loaded"
+              :rules="gitRules"
+              :hint="gitHint"
+              :loading="gitLoading"
+              :busy-action="gitBusyAction"
+              :failure="gitFailure"
+              :notice="gitNotice"
+              :commit-error="gitCommitError"
+              :needs-refresh="gitNeedsRefresh"
+              :refreshed-label="gitRefreshedLabel"
+              :ide-href="view.links.ide"
+              :project-href="projectHref"
+              :live-message="gitLiveMessage"
+              @refresh="refreshGit"
+              @action="runGitAction"
+              @commit="submitGitCommit"
+              @switch="requestGitSwitch"
             />
-            <section class="card" id="last-commit-card" aria-labelledby="last-commit-title">
-              <div class="card__head">
-                <h2 class="card__title" id="last-commit-title">Last commit</h2>
-              </div>
-              <div class="card__body stack--tight">
-                <p v-if="gitUnavailable || !gitSummary.loaded" class="hint">
-                  Commit history is unavailable for this repository.
-                </p>
-                <div v-else-if="lastCommit === null" class="empty-state">
-                  <span class="empty-state__mark">
-                    <AppIcon name="branch" class-name="icon--lg" />
-                  </span>
-                  <h3 class="empty-state__title">No commits yet.</h3>
-                  <p class="empty-state__body">The first commit will appear here.</p>
+            <aside class="rail-stack" aria-label="Application details">
+              <AppGitRemotes
+                :status="gitStatus"
+                :failure="gitFailure !== null"
+                :loaded="gitSummary.loaded"
+              />
+              <section class="card" id="last-commit-card" aria-labelledby="last-commit-title">
+                <div class="card__head">
+                  <h2 class="card__title" id="last-commit-title">Last commit</h2>
                 </div>
-                <template v-else>
-                  <p class="body">{{ lastCommit.subject }}</p>
-                  <div class="cluster">
-                    <span class="mono" :title="lastCommit.hash">{{ lastCommit.shortHash }}</span>
-                    <span class="caption">{{ lastCommit.author }}</span>
-                    <time
-                      class="caption"
-                      :datetime="lastCommit.committedAt"
-                      :title="absoluteTime(lastCommit.committedAt)"
-                    >
-                      {{ timeAgo(lastCommit.committedAt) }}
-                    </time>
+                <div class="card__body stack--tight">
+                  <p v-if="gitUnavailable || !gitSummary.loaded" class="hint">
+                    Commit history is unavailable for this repository.
+                  </p>
+                  <div v-else-if="lastCommit === null" class="empty-state">
+                    <span class="empty-state__mark">
+                      <AppIcon name="branch" class-name="icon--lg" />
+                    </span>
+                    <h3 class="empty-state__title">No commits yet.</h3>
+                    <p class="empty-state__body">The first commit will appear here.</p>
                   </div>
-                </template>
-              </div>
-            </section>
-          </aside>
+                  <template v-else>
+                    <p class="body">{{ lastCommit.subject }}</p>
+                    <div class="cluster">
+                      <span class="mono" :title="lastCommit.hash">{{ lastCommit.shortHash }}</span>
+                      <span class="caption">{{ lastCommit.author }}</span>
+                      <time
+                        class="caption"
+                        :datetime="lastCommit.committedAt"
+                        :title="absoluteTime(lastCommit.committedAt)"
+                      >
+                        {{ timeAgo(lastCommit.committedAt) }}
+                      </time>
+                    </div>
+                  </template>
+                </div>
+              </section>
+            </aside>
+          </div>
         </div>
-      </div>
+      </AppGroup>
 
-      <AppSshPanel
-        :ssh="view.ssh"
-        :project-id="view.identity.projectId"
-        :app-key="view.identity.appKey"
-        :disabled="deletionPending"
-        @changed="refreshApp"
-      />
+      <AppGroup
+        group-id="image"
+        title="Image"
+        icon="layers"
+        :open="isGroupOpen('image')"
+        :summary="imageGroupSummary"
+        @update:open="setGroupOpen('image', $event)"
+      >
+        <AppImagePanel
+          :logs-open="imageLogsOpen"
+          :image="view.image"
+          :live="imageLive"
+          :live-error="imageLiveError"
+          :logs="imageLogs"
+          :logs-error="imageLogsError"
+          :busy-action="imageBusy"
+          :runtime-active="runtimeState === 'running' || runtimeState === 'starting'"
+          :runtime-image-ref="runtimeImageRef"
+          :ide-href="view.links.ide"
+          @build="buildImage"
+          @rollback="rollbackImage"
+          @check="checkImage"
+          @refresh="refreshImage"
+          @refresh-logs="refreshImageLogs"
+          @update:logs-open="setImageLogsOpen"
+        />
+      </AppGroup>
 
-      <section class="card section" id="danger-zone" aria-labelledby="danger-zone-title">
-        <div class="card__head">
-          <h2 class="card__title" id="danger-zone-title">Danger zone</h2>
-          <span v-if="view.delete.statusLabel !== null" class="badge">
-            {{ view.delete.statusLabel }}
-          </span>
-          <span v-else class="badge">Destructive</span>
-        </div>
-        <div class="card__body stack--tight">
-          <p class="small">
-            Deleting this application removes its sessions, handoffs, credentials, and managed
-            images. Source files are kept unless you choose to delete them too.
-          </p>
-        </div>
-        <div class="card__foot">
-          <button
-            class="btn btn-danger"
-            id="app-delete"
-            type="button"
-            @click="appDeleteDialog?.open()"
-          >
-            <AppIcon name="trash" />
-            {{ view.delete.pending ? "Retry deletion" : "Delete application" }}
-          </button>
-        </div>
-      </section>
+      <AppGroup
+        group-id="ssh"
+        title="SSH access"
+        icon="terminal"
+        :open="isGroupOpen('ssh')"
+        :summary="sshGroupSummary"
+        @update:open="setGroupOpen('ssh', $event)"
+      >
+        <AppSshPanel
+          :ssh="view.ssh"
+          :project-id="view.identity.projectId"
+          :app-key="view.identity.appKey"
+          :disabled="deletionPending"
+          @changed="refreshApp"
+        />
+      </AppGroup>
+
+      <AppGroup
+        group-id="danger"
+        title="Danger zone"
+        icon="trash"
+        :open="isGroupOpen('danger')"
+        :summary="dangerGroupSummary"
+        @update:open="setGroupOpen('danger', $event)"
+      >
+        <section class="card section" id="danger-zone" aria-labelledby="danger-zone-title">
+          <div class="card__head">
+            <h2 class="card__title" id="danger-zone-title">Danger zone</h2>
+            <span v-if="view.delete.statusLabel !== null" class="badge">
+              {{ view.delete.statusLabel }}
+            </span>
+            <span v-else class="badge">Destructive</span>
+          </div>
+          <div class="card__body stack--tight">
+            <p class="small">
+              Deleting this application removes its sessions, handoffs, credentials, and managed
+              images. Source files are kept unless you choose to delete them too.
+            </p>
+          </div>
+          <div class="card__foot">
+            <button
+              class="btn btn-danger"
+              id="app-delete"
+              type="button"
+              @click="appDeleteDialog?.open()"
+            >
+              <AppIcon name="trash" />
+              {{ view.delete.pending ? "Retry deletion" : "Delete application" }}
+            </button>
+          </div>
+        </section>
+      </AppGroup>
 
       <AppDeleteDialog ref="appDeleteDialog" :deletion="view.delete" @deleted="onDeleted" />
 
