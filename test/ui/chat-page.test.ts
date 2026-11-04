@@ -27,6 +27,29 @@ function approval(id: string): Record<string, unknown> {
   };
 }
 
+function keydown(node: Element, init: KeyboardEventInit): void {
+  node.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init }));
+}
+
+function questionFixture(): Record<string, unknown> {
+  return {
+    key: "v1:q1",
+    id: "q1",
+    sessionID: "s1",
+    source: "v1",
+    tooLarge: false,
+    questions: [
+      {
+        header: "Fixture question",
+        question: "Continue with the fixture?",
+        options: [{ label: "Yes", description: "" }],
+        multiple: false,
+        custom: true,
+      },
+    ],
+  };
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
   document.body.innerHTML = "";
@@ -457,6 +480,69 @@ describe("ChatPage read-only shell", () => {
     await wrapper.find("[data-chat-plan-chip]").trigger("click");
     await flushPromises();
     expect(shell.attributes("data-chat-context")).toBe("open");
+    wrapper.unmount();
+  });
+
+  it("focuses the composer when typing on a non-editable chat target", async () => {
+    const { wrapper } = await mountChat();
+    keydown(wrapper.find(".chat-thread").element, { key: "a" });
+    await flushPromises();
+    expect(document.activeElement).toBe(wrapper.find("[data-chat-composer-input]").element);
+    wrapper.unmount();
+  });
+
+  it("keeps focus in the session search field", async () => {
+    const { wrapper } = await mountChat();
+    const search = wrapper.find("[data-chat-session-search]").element as HTMLInputElement;
+    search.focus();
+    keydown(search, { key: "a" });
+    await flushPromises();
+    expect(document.activeElement).toBe(search);
+    wrapper.unmount();
+  });
+
+  it("keeps focus in a custom answer field", async () => {
+    const { wrapper } = await mountChat("/chat?app=alpha&project=p&session=s1", {
+      questions: [questionFixture()],
+    });
+    await flushPromises();
+    const custom = wrapper.find("[data-question-custom]").element as HTMLInputElement;
+    custom.focus();
+    keydown(custom, { key: "a" });
+    await flushPromises();
+    expect(document.activeElement).toBe(custom);
+    wrapper.unmount();
+  });
+
+  it("does not redirect shortcuts with a modifier", async () => {
+    const { wrapper } = await mountChat();
+    const composer = wrapper.find("[data-chat-composer-input]").element;
+    const thread = wrapper.find(".chat-thread").element;
+    keydown(thread, { key: "a", ctrlKey: true });
+    keydown(thread, { key: "a", metaKey: true });
+    keydown(thread, { key: "a", altKey: true });
+    await flushPromises();
+    expect(document.activeElement).not.toBe(composer);
+    wrapper.unmount();
+  });
+
+  it("does not redirect while the composer is disabled", async () => {
+    const { wrapper } = await mountChat("/chat?app=alpha&project=p&session=s1", {
+      deletingPending: true,
+    });
+    keydown(wrapper.find(".chat-thread").element, { key: "a" });
+    await flushPromises();
+    expect(document.activeElement).not.toBe(wrapper.find("[data-chat-composer-input]").element);
+    wrapper.unmount();
+  });
+
+  it("does not redirect space on a focused chat button", async () => {
+    const { wrapper } = await mountChat();
+    const button = wrapper.find("[data-chat-new-session-head]").element as HTMLButtonElement;
+    button.focus();
+    keydown(button, { key: " " });
+    await flushPromises();
+    expect(document.activeElement).toBe(button);
     wrapper.unmount();
   });
 

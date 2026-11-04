@@ -1957,24 +1957,77 @@ const empty = computed(
 const title = computed(() => view.value?.title ?? "Chat");
 const appKey = computed(() => view.value?.app.appKey ?? routeState.app.value);
 
+function isPrintableKey(event: KeyboardEvent): boolean {
+  return (
+    event.key.length === 1 &&
+    !event.ctrlKey &&
+    !event.metaKey &&
+    !event.altKey &&
+    !event.isComposing
+  );
+}
+
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLTextAreaElement ||
+    target instanceof HTMLSelectElement ||
+    target.isContentEditable
+  ) {
+    return true;
+  }
+  return target.closest("[data-chat-type-to-focus-ignore]") !== null;
+}
+
+function isKeyboardActivatable(target: EventTarget | null): boolean {
+  return (
+    target instanceof Element &&
+    target.closest('button, a, summary, [role="button"], [role="link"]') !== null
+  );
+}
+
+function hasBlockingDialog(): boolean {
+  return document.querySelector('dialog[open], [role="dialog"][aria-modal="true"]') !== null;
+}
+
+function isChatWindowTarget(target: EventTarget | null): boolean {
+  if (target instanceof Element && target.closest("#chat-shell") !== null) {
+    return true;
+  }
+  const active = document.activeElement;
+  return active === document.body || active === document.documentElement;
+}
+
+function focusComposerForTyping(event: KeyboardEvent): void {
+  if (!isPrintableKey(event)) return;
+  if (stopped.value || deletionPending.value || imageBlocked.value) return;
+  if (hasBlockingDialog()) return;
+  if (!isChatWindowTarget(event.target)) return;
+  if (isEditableTarget(event.target)) return;
+  if (event.key === " " && isKeyboardActivatable(event.target)) return;
+  composerRef.value?.focus();
+}
+
 function onGlobalKeydown(event: KeyboardEvent): void {
-  if (event.key !== "Escape") {
+  if (event.key === "Escape") {
+    if (chatUi.queueOpen) {
+      event.preventDefault();
+      chatUi.setQueueOpen(false);
+      return;
+    }
+    if (chatUi.sessionsOpen) {
+      event.preventDefault();
+      chatUi.setSessionsOpen(false);
+      return;
+    }
+    if (chatUi.contextOpen) {
+      event.preventDefault();
+      chatUi.setContextOpen(false);
+    }
     return;
   }
-  if (chatUi.queueOpen) {
-    event.preventDefault();
-    chatUi.setQueueOpen(false);
-    return;
-  }
-  if (chatUi.sessionsOpen) {
-    event.preventDefault();
-    chatUi.setSessionsOpen(false);
-    return;
-  }
-  if (chatUi.contextOpen) {
-    event.preventDefault();
-    chatUi.setContextOpen(false);
-  }
+  focusComposerForTyping(event);
 }
 
 function closeChatPanelsForGlobalNav(): void {
