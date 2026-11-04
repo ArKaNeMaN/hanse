@@ -7641,7 +7641,8 @@
   .chat-context-toggle,
   .chat-context-close,
   .chat-sessions-toggle,
-  .chat-sessions-close {
+  .chat-sessions-close,
+  .chat-pane-head__new {
     display: none;
   }
 
@@ -7729,7 +7730,8 @@
     }
 
     .chat-sessions-toggle,
-    .chat-sessions-close {
+    .chat-sessions-close,
+    .chat-pane-head__new {
       display: inline-flex;
     }
 

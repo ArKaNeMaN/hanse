@@ -34,7 +34,8 @@ Routes:
 - `.page--chat` does not scroll and has no chart ground; `.chat-thread__scroll` is the only vertical
   scroll owner. The composer is the last grid row and never scrolls away.
 - Top bar: context toggle (below 1360) and the app IDE link. The pane head holds the grouped app
-  selector, new-session action, sessions toggle (`<768`), and runtime pill.
+  selector, sessions toggle (`<768`), and runtime pill; its new-session action is shown only below
+  768px, and from 768px up the sessions rail provides the new-session action.
 - The thread meta strip holds the session title, mono short id, live status, message count, working
   indicator, and stream retry. The page has a visually hidden `h1` because the design intentionally
   omits a page header.
