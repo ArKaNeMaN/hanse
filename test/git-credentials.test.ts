@@ -132,6 +132,26 @@ describe("validateSshCredential", () => {
     expect(request.ssh?.privateKey).toBe(VALID_SSH_KEY);
   });
 
+  it("names a missing or public SSH key instead of a generic envelope error", async () => {
+    const cases: Array<[string, string]> = [
+      ["", "ssh.privateKey is required to test a connection"],
+      ["   \n", "ssh.privateKey is required to test a connection"],
+      [
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIexample user@example.test",
+        "ssh.privateKey must be a private key, not a public key",
+      ],
+      [
+        "-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----\n",
+        "ssh.privateKey must be a private key, not a public key or certificate",
+      ],
+    ];
+    for (const [privateKey, message] of cases) {
+      await expect(validateGitTestRequest({ kind: "ssh", ssh: { privateKey } })).rejects.toThrow(
+        message,
+      );
+    }
+  });
+
   it("rejects a real passphrase-protected key with the v1 message", () => {
     if (!hasSshKeygen) {
       return;

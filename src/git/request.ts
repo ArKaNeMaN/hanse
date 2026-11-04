@@ -159,17 +159,21 @@ function sshDraft(value: unknown): GitSshTestDraft {
   if (hasControl(privateKey, true)) {
     throw invalidTest("ssh.privateKey contains control characters");
   }
+  if (privateKey.trim().length === 0) {
+    throw invalidTest("ssh.privateKey is required to test a connection");
+  }
+  if (/^(ssh-|ecdsa-sha2-|sk-ssh-|sk-ecdsa-)/.test(privateKey)) {
+    throw invalidTest("ssh.privateKey must be a private key, not a public key");
+  }
   const begin = /^-----BEGIN ([A-Z0-9 ]+)-----/m.exec(privateKey);
   if (begin === null || begin[1] === undefined) {
-    throw invalidTest("ssh.privateKey is not a supported private key");
+    throw invalidTest("ssh.privateKey must be a PEM or OpenSSH private key");
   }
   const label = begin[1];
-  if (
-    !label.endsWith("PRIVATE KEY") ||
-    label.includes("PUBLIC") ||
-    label.includes("CERTIFICATE") ||
-    !privateKey.includes(`-----END ${label}-----`)
-  ) {
+  if (label.includes("PUBLIC") || label.includes("CERTIFICATE")) {
+    throw invalidTest("ssh.privateKey must be a private key, not a public key or certificate");
+  }
+  if (!label.endsWith("PRIVATE KEY") || !privateKey.includes(`-----END ${label}-----`)) {
     throw invalidTest("ssh.privateKey is not a supported private key");
   }
   if (value.knownHosts === undefined) {
