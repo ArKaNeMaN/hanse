@@ -455,9 +455,19 @@ defineExpose({ captureAnchor, restoreAnchor, scrollToBottom, onScroll, unseen })
     <slot name="policy-warning" />
     <slot name="image-gate" />
     <slot name="image-warning" />
-    <div class="chat-thread__viewport">
+    <div
+      class="chat-thread__viewport"
+      :data-loading="loading ? 'true' : undefined"
+      :aria-busy="loading ? 'true' : undefined"
+    >
       <div class="chat-thread__scroll" id="chat-scroll" ref="scroll" @scroll.passive="onScroll">
-        <div class="chat-thread__inner" id="chat-messages" role="log" aria-live="off">
+        <div
+          class="chat-thread__inner"
+          :class="{ 'is-muted': loading }"
+          id="chat-messages"
+          role="log"
+          aria-live="off"
+        >
           <div v-if="loadEarlierEnabled || loadingEarlier" class="chat-history-row">
             <button
               class="btn btn-ghost btn-sm"
@@ -466,6 +476,7 @@ defineExpose({ captureAnchor, restoreAnchor, scrollToBottom, onScroll, unseen })
               :disabled="loadingEarlier"
               @click="emit('load-earlier')"
             >
+              <span v-if="loadingEarlier" class="spinner" aria-hidden="true" />
               {{ loadingEarlier ? "Loading earlier messages…" : "Load earlier messages" }}
             </button>
           </div>
@@ -473,12 +484,7 @@ defineExpose({ captureAnchor, restoreAnchor, scrollToBottom, onScroll, unseen })
             Start of conversation
           </p>
 
-          <div v-if="loading" class="skeleton-stack" role="status" aria-live="polite">
-            <span class="skeleton skeleton--line"></span>
-            <span class="skeleton skeleton--line"></span>
-            <span class="skeleton skeleton--line"></span>
-          </div>
-          <p v-else-if="error !== null" class="form-error" role="alert">{{ error }}</p>
+          <p v-if="error !== null" class="form-error" role="alert">{{ error }}</p>
           <div v-else-if="stopped" class="empty-state" data-chat-stopped>
             <h3 class="empty-state__title">Agent is not running</h3>
             <p class="empty-state__body">
@@ -541,6 +547,21 @@ defineExpose({ captureAnchor, restoreAnchor, scrollToBottom, onScroll, unseen })
       >
         New messages ({{ unseen }})
       </button>
+      <div v-if="loading" class="chat-loading" role="status" aria-live="polite" data-chat-loading>
+        <span class="chat-loading__plate">
+          <span class="spinner" aria-hidden="true" />
+          <span>{{ items.length > 0 ? "Refreshing conversation…" : "Loading conversation…" }}</span>
+        </span>
+        <span
+          v-if="items.length === 0"
+          class="skeleton-stack chat-loading__skeleton"
+          aria-hidden="true"
+        >
+          <span class="skeleton skeleton--line"></span>
+          <span class="skeleton skeleton--line"></span>
+          <span class="skeleton skeleton--line"></span>
+        </span>
+      </div>
     </div>
     <slot name="queue-strip" />
     <slot name="session-notice" />

@@ -1,3 +1,4 @@
+import { QueryClient } from "@tanstack/vue-query";
 import { flushPromises } from "@vue/test-utils";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FakeEventSource, mountChat } from "./chat-support.js";
@@ -235,6 +236,86 @@ describe("ChatPage read-only shell", () => {
     expect(router.currentRoute.value.query.session).toBe("s3");
     expect(wrapper.text()).toContain("Message s3");
     expect(wrapper.text()).not.toContain("Message s2");
+    wrapper.unmount();
+  });
+
+  it("selects a cached session when the chat remounts without ?session", async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(["chat-sessions", "p", "alpha"], {
+      sessions: [{ id: "s1", title: "Session one" }],
+    });
+    const { wrapper, router, fetchState } = await mountChat(
+      "/chat?app=alpha&project=p",
+      {},
+      { queryClient },
+    );
+    await flushPromises();
+
+    expect(router.currentRoute.value.query.session).toBe("s1");
+    expect(
+      fetchState.requests.some(
+        (request) => request.method === "GET" && request.url.includes("/sessions/s1/messages"),
+      ),
+    ).toBe(true);
+    expect(wrapper.text()).toContain("Hello from the fixture.");
+    wrapper.unmount();
+  });
+
+  it("shows a spinner and mutes the thread while the next session loads", async () => {
+    const { wrapper, fetchState } = await mountChat("/chat?app=alpha&project=p&session=s1", {
+      sessions: [{ id: "s1" }, { id: "s2" }],
+    });
+    const original = fetchState.mock.getMockImplementation();
+    if (original === undefined) throw new Error("missing fetch implementation");
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    fetchState.mock.mockImplementation(async (input, init) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (/\/sessions\/s2\/messages\?/.test(url)) {
+        await gate;
+      }
+      return original(input, init);
+    });
+
+    await wrapper.find('.session-item[data-session-id="s2"]').trigger("click");
+    await flushPromises();
+
+    const viewport = wrapper.get(".chat-thread__viewport");
+    expect(viewport.attributes("aria-busy")).toBe("true");
+    expect(viewport.attributes("data-loading")).toBe("true");
+    expect(wrapper.get(".chat-thread__inner").classes()).toContain("is-muted");
+    const indicator = wrapper.get("[data-chat-loading]");
+    expect(indicator.attributes("role")).toBe("status");
+    expect(indicator.find(".spinner").exists()).toBe(true);
+    expect(indicator.text()).toContain("Loading conversation");
+
+    release();
+    await flushPromises();
+
+    expect(wrapper.find("[data-chat-loading]").exists()).toBe(false);
+    expect(viewport.attributes("aria-busy")).toBeUndefined();
+    expect(wrapper.find(".chat-thread__inner").classes()).not.toContain("is-muted");
+    wrapper.unmount();
+  });
+
+  it("shows the loading state while the first session list is still pending", async () => {
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { wrapper, router } = await mountChat("/chat?app=alpha&project=p", {
+      sessions: [{ id: "s1", title: "Session one" }],
+      sessionsGate: gate,
+    });
+
+    expect(wrapper.find("[data-chat-loading]").exists()).toBe(true);
+    release();
+    await flushPromises();
+
+    expect(wrapper.find("[data-chat-loading]").exists()).toBe(false);
+    expect(router.currentRoute.value.query.session).toBe("s1");
     wrapper.unmount();
   });
 

@@ -4246,6 +4246,61 @@
     block-size: 100%;
   }
 
+  /* Explicit loading state: muting the stale thread while the next page loads, with one centered
+     spinner. The overlay fades in after a short delay so fast reads never flash. */
+  .chat-thread__inner {
+    transition: opacity var(--dur-micro) var(--ease-out);
+  }
+
+  .chat-thread__viewport[data-loading="true"] .chat-thread__inner {
+    opacity: 0.45;
+    pointer-events: none;
+  }
+
+  .chat-loading {
+    position: absolute;
+    z-index: var(--z-sticky);
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-3);
+    padding: var(--space-6);
+    background: color-mix(in oklab, var(--canvas) 60%, transparent);
+    animation: hns-chat-loading-in var(--dur-standard) var(--ease-out) 160ms both;
+  }
+
+  .chat-loading__plate {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-pill);
+    background: var(--surface-1);
+    color: var(--text-2);
+    font-size: var(--text-sm);
+  }
+
+  .chat-loading__plate .spinner {
+    inline-size: 1rem;
+    block-size: 1rem;
+  }
+
+  .chat-loading__skeleton {
+    inline-size: min(100%, 32rem);
+  }
+
+  @keyframes hns-chat-loading-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
   .chat-new-messages {
     position: absolute;
     z-index: var(--z-sticky);

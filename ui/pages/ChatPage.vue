@@ -1077,6 +1077,10 @@ const stopped = computed(
     view.value?.runtime.state === "error",
 );
 
+// `immediate` matters after a client-side remount: TanStack reuses a still-fresh cached session
+// list, so `data` is already set before this watcher is registered. Without the immediate run the
+// store is never hydrated and a URL without `session` never canonicalizes, which looks like a chat
+// that silently failed to load.
 watch(
   () => sessionsQuery.data.value,
   (data) => {
@@ -1086,6 +1090,7 @@ watch(
     sessionStore.setSessions(data.sessions);
     routeState.canonicalize(data.sessions, { stopped: stopped.value });
   },
+  { immediate: true },
 );
 
 const sessionsError = computed(() => {
@@ -1927,9 +1932,19 @@ const generatingLabel = computed(() => {
   });
 });
 
+// Session discovery is part of loading the conversation: before the first session is selected the
+// thread has nothing to render, so it must not look like an empty chat with the load already done.
+const awaitingSession = computed(
+  () =>
+    routeState.app.value.length > 0 &&
+    routeState.session.value === null &&
+    sessionsQuery.isPending.value,
+);
+const threadLoading = computed(() => loadingMessages.value || awaitingSession.value);
+
 const empty = computed(
   () =>
-    !loadingMessages.value &&
+    !threadLoading.value &&
     messagesError.value === null &&
     !stopped.value &&
     messageNodes.value.length === 0,
@@ -2128,7 +2143,7 @@ onBeforeUnmount(() => {
           :session-id="routeState.session.value"
           :workspace-key="routeState.workspaceKey.value"
           :revision="feed.revision"
-          :loading="loadingMessages"
+          :loading="threadLoading"
           :loading-earlier="loadingEarlier"
           :error="stopped ? null : (messagesError ?? historyError)"
           :empty="empty"

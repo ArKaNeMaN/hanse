@@ -61,6 +61,7 @@ export interface ChatFixture {
   readonly sessions?: readonly { id: string; title?: string; parentID?: string }[];
   readonly sessionsStatus?: number;
   readonly sessionsCode?: string;
+  readonly sessionsGate?: Promise<void>;
   readonly messages?: readonly unknown[];
   readonly olderMessages?: readonly unknown[];
   readonly nextCursor?: string | null;
@@ -410,6 +411,9 @@ export function installFetch(fixture: ChatFixture = {}): InstalledFetch {
         return json(200, created);
       }
       const status = fixture.sessionsStatus ?? 200;
+      if (fixture.sessionsGate !== undefined) {
+        await fixture.sessionsGate;
+      }
       if (status !== 200) {
         return json(status, {
           error: "agent is stopped",
@@ -648,6 +652,7 @@ export function installXhr(): void {
 export async function mountChat(
   path = "/chat?app=alpha&project=p&session=s1",
   fixture: ChatFixture = {},
+  options: { readonly queryClient?: QueryClient } = {},
 ) {
   document.body.innerHTML =
     '<meta name="viewport" content="width=device-width, initial-scale=1" /><main id="main" class="page" tabindex="-1"></main>';
@@ -666,7 +671,8 @@ export async function mountChat(
   });
   await router.push(path);
   await router.isReady();
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const queryClient =
+    options.queryClient ?? new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const pinia = createPinia();
   const wrapper = mount(ChatPage, {
     props: { boot: boot() },
