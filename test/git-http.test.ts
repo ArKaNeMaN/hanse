@@ -1,6 +1,6 @@
-import { execFile } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import type { Server } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -8,6 +8,7 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { CoordinatorService } from "../src/coordinator/service.js";
+import { normalizeSshPrivateKey } from "../src/git/credentials.js";
 import type { GitTestResult } from "../src/git/request.js";
 import {
   type GitActionResult,
@@ -612,6 +613,23 @@ describe("git HTTP API", () => {
 const TEST_SSH_KEY =
   "-----BEGIN OPENSSH PRIVATE KEY-----\nbody\n-----END OPENSSH PRIVATE KEY-----\n";
 
+const hasSshKeygen = spawnSync("ssh-keygen", ["-V"], { encoding: "utf8" }).error === undefined;
+
+function generateSshKey(): string | undefined {
+  if (!hasSshKeygen) {
+    return undefined;
+  }
+  const dir = mkdtempSync(path.join(tmpdir(), "hanse-git-http-key-"));
+  dirs.push(dir);
+  const keyPath = path.join(dir, "id_ed25519");
+  const result = spawnSync(
+    "ssh-keygen",
+    ["-q", "-t", "ed25519", "-N", "", "-C", "test", "-f", keyPath],
+    { encoding: "utf8" },
+  );
+  return result.status === 0 ? readFileSync(keyPath, "utf8") : undefined;
+}
+
 function testBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     kind: "https",
@@ -621,6 +639,81 @@ function testBody(overrides: Record<string, unknown> = {}): Record<string, unkno
 }
 
 describe("git test HTTP API", () => {
+  it("tests the effective saved SSH credential when the draft key is empty", async () => {
+    const privateKey = generateSshKey();
+    if (privateKey === undefined) {
+      return;
+    }
+    const f = await fixture();
+    const settings = new SettingsService({ db: f.db, secretKey: randomBytes(32) });
+    settings.setGitAuth("app", { projectId: "p", appKey: "repo" }, "ssh", { privateKey }, "owner");
+    const result: GitTestResult = {
+      ok: true,
+      kind: "ssh",
+      remote: "git@github.com:acme/repo.git",
+      refs: 2,
+      warnings: [],
+    };
+    const service = new StubTestGitService(result);
+    const response = await handleGit(
+      { ...f.deps, git: service, settings },
+      post(f, "/test", { kind: "ssh", ssh: { privateKey: "" } }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(service.requests[0]).toMatchObject({
+      kind: "ssh",
+      ssh: { privateKey: normalizeSshPrivateKey(privateKey) },
+    });
+  });
+
+  it("prefers a draft SSH key over the saved credential", async () => {
+    const storedKey = generateSshKey();
+    const draftKey = generateSshKey();
+    if (storedKey === undefined || draftKey === undefined) {
+      return;
+    }
+    const f = await fixture();
+    const settings = new SettingsService({ db: f.db, secretKey: randomBytes(32) });
+    settings.setGitAuth(
+      "app",
+      { projectId: "p", appKey: "repo" },
+      "ssh",
+      { privateKey: storedKey },
+      "owner",
+    );
+    const service = new StubTestGitService({
+      ok: true,
+      kind: "ssh",
+      remote: "git@github.com:acme/repo.git",
+      refs: 1,
+      warnings: [],
+    });
+    const response = await handleGit(
+      { ...f.deps, git: service, settings },
+      post(f, "/test", { kind: "ssh", ssh: { privateKey: draftKey } }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(service.requests[0]).toMatchObject({
+      ssh: { privateKey: normalizeSshPrivateKey(draftKey) },
+    });
+  });
+
+  it("returns a clear error when neither a draft nor a saved SSH key exists", async () => {
+    const f = await fixture();
+    const response = await handleGit(
+      f.deps,
+      post(f, "/test", { kind: "ssh", ssh: { privateKey: "" } }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(parse(response)).toMatchObject({
+      code: "invalid_input",
+      error: "ssh.privateKey is required to test a connection",
+    });
+  });
+
   it("returns a GitTestResult for a human and never saves the draft", async () => {
     const f = await fixture();
     const result: GitTestResult = {

@@ -442,6 +442,11 @@ export class SettingsService {
     return this.#gitAuth.resolve(this.#gitAuth.listFor(projectId));
   }
 
+  /** Resolve the effective git credential for an app (global, project, and app scopes). */
+  appGitAuth(projectId: string, appKey: string): GitAuthResolution {
+    return this.#gitAuth.resolve(this.#gitAuth.listFor(projectId, appKey));
+  }
+
   #timestamp(): Date {
     return this.#now === undefined ? new Date() : this.#now();
   }

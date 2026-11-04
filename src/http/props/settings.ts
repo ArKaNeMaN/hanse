@@ -1217,12 +1217,12 @@ const LABELS: SettingsLabelsProps = {
         "No credential is set or inherited; git operations that need a remote credential fail closed.",
     },
     testApp:
-      "Test connection checks the draft values against the remote without saving them. The agent must be running.",
+      "Test connection checks the form values against the remote without saving them. An empty SSH private key tests the saved credential. The agent must be running.",
     credentialCheck: "Credential check",
     credentialCheckHint: "Run the remote check from an application settings page.",
     appSettings: "Application settings",
     testHint:
-      "Test connection checks the draft values against the remote without saving them. The agent must be running.",
+      "Test connection checks the form values against the remote without saving them. An empty SSH private key tests the saved credential. The agent must be running.",
     securityNotes:
       "Passphrase-protected SSH keys are not supported in v1; use an unencrypted deploy key. Without known_hosts, SSH uses accept-new (TOFU) on first connection. HTTPS hosts are mandatory and matched exactly; remote URLs with a different host fail closed. Use scoped deploy keys or fine-grained tokens with the least privilege — the agent can read its own materialized credentials.",
   },

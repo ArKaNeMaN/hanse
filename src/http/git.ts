@@ -47,6 +47,10 @@ function isJsonContentType(header: string | undefined): boolean {
   return media === "application/json";
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function parseJsonBody(body: string | undefined): Record<string, unknown> | undefined {
   if (body === undefined || body.trim().length === 0) {
     return {};
@@ -61,6 +65,47 @@ function parseJsonBody(body: string | undefined): Record<string, unknown> | unde
     return undefined;
   }
   return parsed as Record<string, unknown>;
+}
+
+/**
+ * Use the effective saved SSH credential when the test draft carries no private key.
+ *
+ * Saving clears the secret fields, and an app that inherits its key shows a configured credential
+ * with an empty form. A draft key that is present always wins, so editing before saving still tests
+ * the edit.
+ */
+function withStoredSshDraft(
+  deps: HttpDeps,
+  projectId: string,
+  appKey: string,
+  body: Record<string, unknown>,
+): Record<string, unknown> {
+  if (body.kind !== "ssh" || deps.settings === undefined || !isRecord(body.ssh)) {
+    return body;
+  }
+  const draft = body.ssh;
+  if (draft.privateKey !== undefined && typeof draft.privateKey !== "string") {
+    return body;
+  }
+  if (typeof draft.privateKey === "string" && draft.privateKey.trim().length > 0) {
+    return body;
+  }
+  const stored = deps.settings.appGitAuth(projectId, appKey).gitAuth.ssh;
+  if (stored === undefined) {
+    return body;
+  }
+  const draftKnownHosts =
+    typeof draft.knownHosts === "string" && draft.knownHosts.trim().length > 0
+      ? draft.knownHosts
+      : undefined;
+  const knownHosts = draftKnownHosts ?? stored.knownHosts;
+  return {
+    ...body,
+    ssh: {
+      privateKey: stored.privateKey,
+      ...(knownHosts === undefined ? {} : { knownHosts }),
+    },
+  };
 }
 
 function errorStatus(code: GitErrorCode, action: GitAction): number {
@@ -170,7 +215,9 @@ export async function handleGit(deps: HttpDeps, request: HttpRequest): Promise<H
       return json(400, { error: "invalid JSON body", code: "invalid_input" });
     }
     try {
-      const testRequest = await validateGitTestRequest(body);
+      const testRequest = await validateGitTestRequest(
+        withStoredSshDraft(deps, projectId, appKey, body),
+      );
       if (testRequest.kind === "ssh" && testRequest.ssh !== undefined) {
         try {
           validateSshCredential(testRequest.ssh);
