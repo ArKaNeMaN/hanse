@@ -6696,7 +6696,7 @@
     border-block-end: 1px solid var(--line);
   }
 
-  .chat-question__answer:last-child {
+  .chat-question__answer:not(.chat-question__answer--option):last-child {
     padding-block-end: 0;
     border-block-end: 0;
   }
