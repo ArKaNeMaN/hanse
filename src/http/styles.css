@@ -5985,9 +5985,7 @@
   .attachment-card {
     display: grid;
     grid-template-columns: auto minmax(0, 1fr);
-    grid-template-areas:
-      "preview body"
-      "action action";
+    grid-template-areas: "preview body";
     align-items: center;
     gap: var(--space-1) var(--space-2);
     min-inline-size: 0;
@@ -6028,8 +6026,7 @@
     grid-template-columns: minmax(0, 1fr);
     grid-template-areas:
       "preview"
-      "body"
-      "action";
+      "body";
     align-items: stretch;
     gap: var(--space-2);
     padding: var(--space-2);
@@ -6165,7 +6162,17 @@
     min-inline-size: 0;
   }
 
+  .attachment-card__head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+    min-inline-size: 0;
+  }
+
   .attachment-card__name {
+    flex: 1 1 auto;
+    min-inline-size: 0;
     overflow: hidden;
     color: var(--text-1);
     font-size: var(--text-sm);
@@ -6184,10 +6191,10 @@
   }
 
   .attachment-card__action {
-    grid-area: action;
     display: inline-flex;
-    flex-wrap: wrap;
+    flex: none;
     align-items: center;
+    justify-content: flex-end;
     gap: var(--space-1);
     min-inline-size: 0;
     color: var(--text-3);
@@ -6203,6 +6210,7 @@
     min-block-size: 2rem;
     color: var(--brass);
     text-decoration: none;
+    white-space: nowrap;
   }
 
   .attachment-card__download:hover {
@@ -6239,6 +6247,18 @@
 
     .chat-send-button .btn__label {
       display: none;
+    }
+
+    .attachment-card__download-label {
+      display: none;
+    }
+
+    .attachment-card__download {
+      justify-content: center;
+      inline-size: 2rem;
+      block-size: 2rem;
+      min-block-size: 2rem;
+      padding: 0;
     }
   }
 

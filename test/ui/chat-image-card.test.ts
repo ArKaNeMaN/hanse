@@ -32,6 +32,10 @@ describe("ChatAttachmentCard image rendering", () => {
     );
     expect(wrapper.find(".attachment-card__image").attributes("src")).toContain("/agent-media/");
     expect(wrapper.find(".attachment-card__caption").text()).toBe("Settings");
+    const download = wrapper.find(".attachment-card__head [data-attachment-download]");
+    expect(download.exists()).toBe(true);
+    expect(download.attributes("aria-label")).toBe("Download ui.png");
+    expect(download.find(".attachment-card__download-label").text()).toBe("Download");
     await wrapper.find("[data-attachment-open]").trigger("click");
     expect(onOpen).toHaveBeenCalledTimes(1);
     wrapper.unmount();
@@ -52,6 +56,10 @@ describe("ChatAttachmentCard image rendering", () => {
     expect(wrapper.classes()).not.toContain("attachment-card--image");
     expect(wrapper.find("[data-attachment-open]").exists()).toBe(false);
     expect(wrapper.find("[data-attachment-download]").exists()).toBe(true);
+    const download = wrapper.find(".attachment-card__head [data-attachment-download]");
+    expect(download.exists()).toBe(true);
+    expect(download.attributes("aria-label")).toBe("Download ui.png");
+    expect(download.find(".attachment-card__download-label").text()).toBe("Download");
     wrapper.unmount();
   });
 

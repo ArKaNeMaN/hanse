@@ -76,35 +76,40 @@ const caption = computed(() => props.attachment.caption?.trim() ?? "");
       <AppIcon :name="attachment.kind === 'image' ? 'image' : 'file'" />
     </div>
     <div class="attachment-card__body">
-      <span class="attachment-card__name" :title="name">{{ name }}</span>
+      <div class="attachment-card__head">
+        <span class="attachment-card__name" :title="name">{{ name }}</span>
+        <div class="attachment-card__action">
+          <span
+            v-if="attachment.state === 'missing'"
+            class="attachment-card__unavailable"
+            data-attachment-missing
+          >
+            Missing file
+          </span>
+          <span
+            v-else-if="attachment.state === 'in_flight'"
+            class="attachment-card__pending"
+            data-attachment-pending
+          >
+            Sending…
+          </span>
+          <span v-else-if="downloadURL === null" class="attachment-card__unavailable">
+            Unavailable
+          </span>
+          <a
+            v-else
+            class="attachment-card__download"
+            :href="downloadURL"
+            :download="name"
+            :aria-label="`Download ${name}`"
+            data-attachment-download
+          >
+            <AppIcon name="download" /><span class="attachment-card__download-label">Download</span>
+          </a>
+        </div>
+      </div>
       <span class="attachment-card__meta">{{ meta }}</span>
       <span v-if="caption.length > 0" class="attachment-card__caption">{{ caption }}</span>
-    </div>
-    <div class="attachment-card__action">
-      <span
-        v-if="attachment.state === 'missing'"
-        class="attachment-card__unavailable"
-        data-attachment-missing
-      >
-        Missing file
-      </span>
-      <span
-        v-else-if="attachment.state === 'in_flight'"
-        class="attachment-card__pending"
-        data-attachment-pending
-      >
-        Sending…
-      </span>
-      <span v-else-if="downloadURL === null" class="attachment-card__unavailable">Unavailable</span>
-      <a
-        v-else
-        class="attachment-card__download"
-        :href="downloadURL"
-        :download="name"
-        data-attachment-download
-      >
-        <AppIcon name="download" />Download
-      </a>
     </div>
   </article>
 </template>

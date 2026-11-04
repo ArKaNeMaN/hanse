@@ -1447,6 +1447,12 @@ test("SPA renders inline image and file-only attachment cards", async ({ page })
   await expect(inline).toHaveAttribute("data-inline", "true");
   await expect(inline).toHaveAttribute("data-kind", "image");
   await expect(inline.locator(".attachment-card__image")).toBeVisible();
+  const download = inline.locator(".attachment-card__head [data-attachment-download]");
+  await expect(download).toBeVisible();
+  await expect(download.locator(".attachment-card__download-label")).toBeVisible();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(download.locator(".attachment-card__download-label")).toBeHidden();
+  await expect(download).toBeVisible();
   await inline.locator("[data-attachment-open]").click();
   const lightbox = page.locator("[data-chat-lightbox]");
   await expect(lightbox).toHaveAttribute("open", "");
