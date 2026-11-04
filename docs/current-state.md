@@ -836,6 +836,9 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   - The session **Plan** panel shows opencode's Todo list in the context rail (with a `Plan N/M`
     chip below 1360), updates on `todo.updated`, and is read-only. It is hidden until the session
     renders its first Todo. v2 saved permissions are listed and revocable in the context rail.
+    The context rail's **Last handoff** block shows only the most recently updated handoff and keeps
+    the inbox link; the page payload is polled every 5 s so handoffs created or answered elsewhere
+    appear without a reload.
   - A top-bar stamp/count surfaces requests waiting in other sessions of the same app, with
     per-session flags in the sessions rail. Policy warnings from `/prompts` render as a banner/chip;
     `policy_unverified:` verification diagnostics are filtered out (0025).
