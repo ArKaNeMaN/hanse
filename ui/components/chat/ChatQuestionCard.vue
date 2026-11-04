@@ -24,6 +24,7 @@ const emit = defineEmits<{
 }>();
 
 const root = ref<HTMLElement | null>(null);
+const body = ref<HTMLElement | null>(null);
 const selected = ref<string[][]>([]);
 const custom = ref<string[]>([]);
 const index = ref(0);
@@ -37,6 +38,7 @@ const interactive = computed(
 const needsReview = computed(() => questionNeedsReview(questions.value));
 const current = computed(() => questions.value[index.value]);
 const atReview = computed(() => needsReview.value && index.value >= questions.value.length);
+const showSteps = computed(() => props.view.state === "pending");
 
 function resetDraft(): void {
   selected.value = questions.value.map(() => []);
@@ -83,6 +85,30 @@ function advance(delta: number): void {
   const max = questions.value.length;
   index.value = Math.min(max, Math.max(0, index.value + delta));
 }
+
+function onCustomEnter(event: KeyboardEvent): void {
+  if (!interactive.value || event.isComposing || event.ctrlKey || event.metaKey) return;
+  event.preventDefault();
+  if (questions.value.length === 1) {
+    submit();
+    return;
+  }
+  advance(1);
+}
+
+// The dock body scrolls inside a capped height. Moving to a question with more content must keep
+// the bottom edge (the custom-answer field) visible instead of leaving the scroll position behind.
+// A new request resets the index; that is not a step change and must not jump the scroll.
+watch(
+  () => [props.view.key, index.value] as const,
+  ([key], previous) => {
+    if (previous !== undefined && previous[0] !== key) return;
+    void nextTick().then(() => {
+      const node = body.value;
+      if (node !== null) node.scrollTop = node.scrollHeight;
+    });
+  },
+);
 
 function submit(): void {
   if (!interactive.value || props.view.busy) return;
@@ -170,11 +196,18 @@ defineExpose({ submit, reject, focusFirstControl });
     <header class="prompt-dock__head">
       <div class="prompt-dock__identity">
         <span class="overline" :id="`question-title-${view.key}`" tabindex="-1"> Question </span>
-        <span v-if="!atReview && questions.length > 1" class="prompt-dock__step-label">
-          {{ Math.min(index + 1, questions.length) }}
+        <span v-if="showSteps && !atReview && questions.length > 1" class="prompt-dock__step-label">
+          {{ index + 1 }}
           of {{ questions.length }}
         </span>
-        <span v-if="atReview" class="prompt-dock__step-label">Review</span>
+        <span v-if="showSteps && atReview" class="prompt-dock__step-label">Review</span>
+        <span
+          v-if="view.state === 'answered' && questions.length > 1"
+          class="prompt-dock__step-label"
+        >
+          {{ questions.length }}
+          questions
+        </span>
         <span v-if="queueCount !== undefined && queueCount > 0" class="prompt-dock__queue-count">
           {{ queueCount }}
           more waiting
@@ -189,7 +222,7 @@ defineExpose({ submit, reject, focusFirstControl });
       </div>
     </header>
 
-    <div class="prompt-dock__body">
+    <div ref="body" class="prompt-dock__body">
       <template v-if="view.state === 'pending' || view.state === 'tooLarge'">
         <p v-if="view.tooLarge" class="prompt-dock__title">This question is too large to answer.</p>
         <p v-if="view.tooLarge && view.tooLargeReason !== undefined" class="prompt-dock__copy">
@@ -273,6 +306,7 @@ defineExpose({ submit, reject, focusFirstControl });
               :value="custom[index] ?? ''"
               :disabled="view.busy || disabled"
               @input="updateCustom(($event.target as HTMLInputElement).value)"
+              @keydown.enter="onCustomEnter"
             >
           </template>
         </template>
@@ -368,20 +402,23 @@ defineExpose({ submit, reject, focusFirstControl });
           class="btn btn-ghost btn-sm"
           type="button"
           data-question-back
+          :disabled="view.busy"
           @click="advance(-1)"
         >
-          Back
+          Prev
         </button>
         <button
           v-if="needsReview && !atReview"
-          class="btn btn-ghost btn-sm"
+          class="btn btn-primary btn-sm"
           type="button"
           data-question-next
+          :disabled="view.busy"
           @click="advance(1)"
         >
           {{ index === questions.length - 1 ? "Review" : "Next" }}
         </button>
         <button
+          v-if="!needsReview || atReview"
           class="btn btn-primary btn-sm"
           type="button"
           data-question-primary

@@ -165,14 +165,23 @@ describe("chat prompt questions", () => {
     });
     await flushPromises();
     expect(wrapper.text()).toContain("Pick one");
+    expect(wrapper.find("[data-question-primary]").exists()).toBe(false);
     await wrapper.find('[data-question-option][data-label="One"]').trigger("click");
     await flushPromises();
     expect(wrapper.text()).toContain("Explain");
     expect(wrapper.text()).toContain("2 of 2");
+    expect(wrapper.find("[data-question-primary]").exists()).toBe(false);
+    expect(wrapper.find("[data-question-next]").classes()).toContain("btn-primary");
 
     const custom = wrapper.find(".chat-question [data-question-custom]");
     expect(custom.attributes("placeholder")).toBe("Type a custom answer");
     await custom.setValue("Because the fixture says so");
+    await custom.trigger("keydown", { key: "Enter" });
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("Review");
+    expect(wrapper.text()).toContain("Because the fixture says so");
+    expect(wrapper.find("[data-question-next]").exists()).toBe(false);
     await wrapper.find("[data-question-primary]").trigger("click");
     await flushPromises();
 
@@ -181,6 +190,74 @@ describe("chat prompt questions", () => {
       ["One"],
       ["Because the fixture says so"],
     ]);
+    wrapper.unmount();
+  });
+
+  it("submits a custom answer with Enter when the block has one question", async () => {
+    const { wrapper, fetchState } = await mountChat("/chat?app=alpha&project=p&session=s1", {
+      questions: [question()],
+    });
+    await flushPromises();
+
+    const custom = wrapper.find("[data-question-custom]");
+    await custom.setValue("A one-off answer");
+    await custom.trigger("keydown", { key: "Enter" });
+    await flushPromises();
+
+    const reply = replyFor(fetchState, "/questions/q1/reply");
+    expect(JSON.parse(reply?.body ?? "{}").answers).toEqual([["A one-off answer"]]);
+    wrapper.unmount();
+  });
+
+  it("labels an answered multi-question card by its question count", async () => {
+    const { wrapper } = await mountChat("/chat?app=alpha&project=p&session=s1", {
+      messages: [
+        ...FIXTURE_MESSAGES,
+        {
+          info: {
+            id: "msg_question",
+            sessionID: "s1",
+            role: "assistant",
+            parentID: "msg_user",
+            time: { created: 1_760_000_004_000 },
+          },
+          parts: [
+            {
+              id: "prt_question",
+              sessionID: "s1",
+              messageID: "msg_question",
+              callID: "call_question",
+              type: "tool",
+              tool: "question",
+              state: {
+                status: "completed",
+                input: {
+                  questions: [
+                    {
+                      header: "First",
+                      question: "Pick one",
+                      options: [{ label: "One" }],
+                    },
+                    {
+                      header: "Second",
+                      question: "Pick another",
+                      options: [{ label: "Two" }],
+                    },
+                  ],
+                },
+                metadata: { answers: [["One"], ["Two"]] },
+              },
+            },
+          ],
+        },
+      ],
+    });
+    await flushPromises();
+
+    const inline = wrapper.find(".chat-question--inline");
+    expect(inline.exists()).toBe(true);
+    expect(inline.text()).toContain("2 questions");
+    expect(inline.text()).not.toContain("1 of 2");
     wrapper.unmount();
   });
 
