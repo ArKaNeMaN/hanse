@@ -224,7 +224,6 @@ describe("launcher", () => {
         "GIT_SSH",
         "GIT_ASKPASS",
         "GIT_ASKPASS_REQUIRE",
-        "GIT_TERMINAL_PROMPT",
         "GIT_SSL_CAINFO",
         "GIT_DIR",
         "GIT_WORK_TREE",
@@ -236,6 +235,19 @@ describe("launcher", () => {
       ]) {
         expect(env[key]).toBeUndefined();
       }
+      expect(env.GIT_TERMINAL_PROMPT).toBe("0");
+      expect(env.GIT_EDITOR).toBe(":");
+      expect(env.GIT_SEQUENCE_EDITOR).toBe(":");
+      expect(env.GIT_MERGE_AUTOEDIT).toBe("no");
+      expect(env.GIT_PAGER).toBe("cat");
+      expect(env.PAGER).toBe("cat");
+      expect(env.GCM_INTERACTIVE).toBe("never");
+      expect(env.EDITOR).toBe(":");
+      expect(env.VISUAL).toBe("");
+      expect(env.DEBIAN_FRONTEND).toBe("noninteractive");
+      expect(env.npm_config_yes).toBe("true");
+      expect(env.PIP_NO_INPUT).toBe("1");
+      expect(env.YARN_ENABLE_IMMUTABLE_INSTALLS).toBe("false");
       expect(env.GIT_CEILING_DIRECTORIES).not.toBe("/host/git");
       expect(env.HANSE_GIT_OP).toBe("status");
       expect(env.HANSE_GIT_APP_DIR).toBe("/app");

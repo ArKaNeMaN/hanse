@@ -90,6 +90,7 @@ import {
   resolveInstanceEnv,
   sanitizeAppKey,
 } from "./instance.js";
+import { NON_INTERACTIVE_SHELL_ENV } from "./non-interactive-env.js";
 import type { OmoProfileInput, OmoProfileResult } from "./omo-profile.js";
 import { ensureOpencodePassword, opencodePasswordPath, readOpencodePassword } from "./password.js";
 import {
@@ -951,6 +952,7 @@ export class InstanceManager {
       OPENCODE_CONFIG_CONTENT: JSON.stringify(overlay),
       GIT_CEILING_DIRECTORIES: realParentDir(app.appDir),
       HANSE_OPENCODE_PASSWORD_FILE: passwordFile,
+      ...NON_INTERACTIVE_SHELL_ENV,
       ...gitEnv,
       ...(omoProfile === undefined ? {} : { OMO_PROFILE: omoProfile }),
       ...(existsSync(authFile) ? { HANSE_OPENCODE_AUTH_FILE: authFile } : {}),

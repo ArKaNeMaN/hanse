@@ -13,6 +13,7 @@ import {
   type McpLocalServer,
   resolveInstanceEnv,
 } from "./instance.js";
+import { NON_INTERACTIVE_SHELL_ENV } from "./non-interactive-env.js";
 import { opencodePasswordPath } from "./password.js";
 import {
   buildPermissionPolicy,
@@ -117,6 +118,8 @@ export function buildInstanceEnv(input: LaunchInput): NodeJS.ProcessEnv {
     ...isolated,
     OPENCODE_CONFIG_CONTENT: JSON.stringify(overlay),
   });
+  // Applied after scrubbing: the host values are untrusted, these deliberate ones are not.
+  Object.assign(env, NON_INTERACTIVE_SHELL_ENV);
   env.GIT_CEILING_DIRECTORIES = realParentDir(input.appDir);
   if (input.omoProfile !== undefined) {
     env.OMO_PROFILE = input.omoProfile;

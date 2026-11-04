@@ -1893,6 +1893,18 @@ describe("InstanceManager lifecycle", () => {
     expect(spec.env.LC_ALL).toBe("C");
     expect(spec.env.LANG).toBe("C");
     expect(spec.env.GIT_CEILING_DIRECTORIES).toBe("/srv/apps");
+    expect(spec.env.GIT_EDITOR).toBe(":");
+    expect(spec.env.GIT_SEQUENCE_EDITOR).toBe(":");
+    expect(spec.env.GIT_MERGE_AUTOEDIT).toBe("no");
+    expect(spec.env.GIT_PAGER).toBe("cat");
+    expect(spec.env.PAGER).toBe("cat");
+    expect(spec.env.GCM_INTERACTIVE).toBe("never");
+    expect(spec.env.EDITOR).toBe(":");
+    expect(spec.env.VISUAL).toBe("");
+    expect(spec.env.DEBIAN_FRONTEND).toBe("noninteractive");
+    expect(spec.env.npm_config_yes).toBe("true");
+    expect(spec.env.PIP_NO_INPUT).toBe("1");
+    expect(spec.env.YARN_ENABLE_IMMUTABLE_INSTALLS).toBe("false");
     const serialized = JSON.stringify(spec);
     expect(serialized).not.toContain("key-material");
     expect(serialized).not.toContain(token);
