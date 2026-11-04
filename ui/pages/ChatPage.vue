@@ -174,6 +174,9 @@ let contextPollTimer: ReturnType<typeof setInterval> | undefined;
 let contextPollStartedAt = 0;
 const CONTEXT_POLL_MS = 2_000;
 const CONTEXT_POLL_MAX_MS = 10 * 60_000;
+// The context rail reads the latest handoff from this page payload. Poll it so a handoff created,
+// moved, or answered by another application appears without a reload.
+const CHAT_PROPS_POLL_MS = 5_000;
 
 function stopContextPolling(): void {
   if (contextPollTimer !== undefined) {
@@ -916,6 +919,7 @@ const chatQuery = useQuery<ChatResponse>({
   initialData: () => bootProps.value,
   initialDataUpdatedAt: 0,
   staleTime: 30_000,
+  refetchInterval: CHAT_PROPS_POLL_MS,
   retry: false,
   enabled: computed(() => routeState.app.value.length > 0),
 });

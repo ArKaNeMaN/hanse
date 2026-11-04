@@ -1,7 +1,7 @@
 import { QueryClient } from "@tanstack/vue-query";
 import { flushPromises } from "@vue/test-utils";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { FakeEventSource, mountChat } from "./chat-support.js";
+import { FakeEventSource, mountChat, props } from "./chat-support.js";
 
 function permission(): Record<string, unknown> {
   return {
@@ -562,5 +562,49 @@ describe("ChatPage read-only shell", () => {
       ),
     ).toHaveLength(1);
     wrapper.unmount();
+  });
+
+  it("refreshes the Last handoff block from the page payload", async () => {
+    vi.useFakeTimers();
+    let handoffs = [
+      {
+        id: "handoff_old",
+        shortId: "handoff_",
+        state: "delivered",
+        replyState: "none",
+        summary: "Old handoff",
+        updatedAt: "2026-10-29T00:00:00.000Z",
+        href: "/handoffs?q=handoff_old",
+      },
+    ];
+    let wrapper: Awaited<ReturnType<typeof mountChat>>["wrapper"] | undefined;
+    try {
+      ({ wrapper } = await mountChat("/chat?app=alpha&project=p&session=s1", {
+        custom: ({ method, url }) =>
+          method === "GET" && url.startsWith("/api/ui/chat")
+            ? { status: 200, body: { ...props(), handoffs } }
+            : undefined,
+      }));
+      expect(wrapper.find("[data-chat-handoffs]").text()).toContain("Old handoff");
+
+      handoffs = [
+        {
+          id: "handoff_new",
+          shortId: "handoff_",
+          state: "in_progress",
+          replyState: "none",
+          summary: "New handoff",
+          updatedAt: "2026-10-30T00:00:00.000Z",
+          href: "/handoffs?q=handoff_new",
+        },
+      ];
+      await vi.advanceTimersByTimeAsync(5_000);
+      await flushPromises();
+      expect(wrapper.find("[data-chat-handoffs]").text()).toContain("New handoff");
+      expect(wrapper.find("[data-chat-handoffs]").text()).not.toContain("Old handoff");
+    } finally {
+      wrapper?.unmount();
+      vi.useRealTimers();
+    }
   });
 });
