@@ -22,7 +22,7 @@ export const TOOLS = [
   {
     name: "request_sibling_change",
     description:
-      'Ask a sibling application to do work. Returns a handoff id immediately. The coordinator binds the request to this session, applies the project handoff policy, starts a fresh session on the target, and later delivers the target\'s reply back into this session. Do not wait or poll. Call list_apps first and pass application keys (the "appKey" field, for example "hanse-deploy") in "from" and "to" - never full application ids such as "<projectId>:<appKey>". "to" must be another application in the same project.',
+      'Ask a sibling application to do work. Returns a handoff id immediately. The coordinator binds the request to this session, applies the project handoff policy, starts a fresh session on the target, and later delivers the target\'s reply back into this session as a new message. After this tool returns, end your turn: do NOT call handoff_status to wait, do NOT sleep or retry, and do NOT poll - the reply arrives on its own, and polling does not speed it up. Call list_apps first and pass application keys (the "appKey" field, for example "hanse-deploy") in "from" and "to" - never full application ids such as "<projectId>:<appKey>". "to" must be another application in the same project.',
     inputSchema: {
       type: "object",
       properties: {
@@ -62,13 +62,14 @@ export const TOOLS = [
   },
   {
     name: "handoff_status",
-    description: "Look up a handoff that this application sent or received.",
+    description:
+      "Look up a handoff that this application sent or received. Use it only when the operator asks for the status, or to recover state after a restart. Do not poll it after request_sibling_change: the coordinator delivers the reply back into this session automatically as a new message, and repeated calls only return the same in-progress state.",
     inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
   },
   {
     name: "deliver_handoff",
     description:
-      "Record the result of a handoff that was dispatched to this application. Call exactly once when the work is finished. The coordinator routes the result to the source session.",
+      "Record the result of a handoff that was dispatched to this application. Call exactly once when the work is finished. The coordinator routes the result to the source session and resumes it automatically; do not wait for it or poll for it.",
     inputSchema: {
       type: "object",
       properties: {

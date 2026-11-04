@@ -74,6 +74,18 @@ describe("mcp protocol", () => {
     expect(tool?.inputSchema.properties.to?.description).toContain("appKey");
   });
 
+  it("tells agents not to poll for a handoff reply", () => {
+    const service = fixture();
+    const response = handleRpc(service, { jsonrpc: "2.0", id: 6, method: "tools/list" });
+    const tools = (response as { result: { tools: { name: string; description: string }[] } })
+      .result.tools;
+    const description = (name: string): string =>
+      tools.find((candidate) => candidate.name === name)?.description ?? "";
+    expect(description("request_sibling_change")).toMatch(/end your turn/i);
+    expect(description("request_sibling_change")).toMatch(/do not poll/i);
+    expect(description("handoff_status")).toMatch(/do not poll/i);
+  });
+
   it("explains app keys when a full application id is passed as the target", () => {
     const service = fixture();
     expect(() =>
