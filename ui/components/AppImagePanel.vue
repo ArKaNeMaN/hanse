@@ -216,7 +216,9 @@ const baseDigest = computed(() => {
     ? `${stored} → ${current}`
     : (stored ?? current);
 });
-const blocked = computed(() => pick(props.live?.blocked, props.image.blocked));
+// `live.blocked` is the cold-start gate (build configured, no usable image), not a reason to
+// disable image actions. Only the server props carry the deletion-pending flag.
+const blocked = computed(() => props.image.blocked === true);
 const usable = computed(() =>
   props.live !== null && props.live !== undefined && props.live.usableImageRef !== undefined
     ? props.live.usableImageRef != null

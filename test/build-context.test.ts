@@ -378,6 +378,26 @@ describe("createBuildContext", () => {
   });
 
   describe("exclusions", () => {
+    it("drops the generated .opencode/node_modules dependency tree", async () => {
+      const { app } = await makeApp({
+        ".hanse/Dockerfile": "FROM scratch\n",
+        ".opencode/package.json": "{}",
+        ".opencode/plugin/keep.ts": "kept",
+        ".opencode/node_modules/pkg/index.js": "module",
+      });
+      await mkdir(path.join(app, ".opencode/node_modules/.bin"), { recursive: true });
+      await symlink(
+        path.join(app, ".opencode/node_modules/pkg/index.js"),
+        path.join(app, ".opencode/node_modules/.bin/pkg"),
+      );
+
+      const context = await createBuildContext(app);
+      const paths = readTar(context.tar).map((entry) => entry.path);
+
+      expect(paths).toContain(".opencode/plugin/keep.ts");
+      expect(paths.some((entry) => entry.startsWith(".opencode/node_modules"))).toBe(false);
+    });
+
     it("drops only top-level excluded entries and keeps nested source directories", async () => {
       const { app } = await makeApp({
         ".hanse/Dockerfile": "FROM scratch\n",

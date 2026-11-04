@@ -164,7 +164,7 @@ describe("AppImagePanel", () => {
   it("renders the base/drift/blocked/usable/rollback matrix", () => {
     const wrapper = mount(AppImagePanel, {
       props: {
-        image: image({ drift: true }),
+        image: image({ drift: true, blocked: true }),
         live: live({
           state: "rebuild_required",
           status: "stale",
@@ -172,7 +172,6 @@ describe("AppImagePanel", () => {
           hashDrift: true,
           baseDigest: "sha256:old",
           currentBaseDigest: "sha256:new",
-          blocked: true,
           usableImageRef: null,
           previousImageRef: null,
         }),
@@ -187,6 +186,28 @@ describe("AppImagePanel", () => {
     expect(text).toContain("sha256:old → sha256:new");
     expect(wrapper.find("#image-rollback").exists()).toBe(false);
     expect(wrapper.get("#image-build").attributes("disabled")).toBeDefined();
+  });
+
+  it("keeps Build enabled when only the cold-start gate is blocked", () => {
+    const wrapper = mount(AppImagePanel, {
+      props: {
+        image: image({ ref: null, usable: false }),
+        live: live({
+          state: "not_ready",
+          status: "missing",
+          imageRef: null,
+          usableImageRef: null,
+          previousImageRef: null,
+          blocked: true,
+        }),
+      },
+    });
+
+    const text = wrapper.get("#image-panel").text();
+    expect(text).toContain("No usable image");
+    expect(wrapper.findAll(".badge").map((badge) => badge.text())).not.toContain("Blocked");
+    expect(wrapper.find("#image-blocked-reason").exists()).toBe(false);
+    expect(wrapper.get("#image-build").attributes("disabled")).toBeUndefined();
   });
 
   it("shows the default image check action and current/restart states", async () => {

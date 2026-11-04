@@ -126,8 +126,8 @@ a host `opencode` auth file.
   manifests or Dockerfile paths mark the app image `error` without failing the whole project.
 - A human action (`POST /api/apps/:app/build`, the app page Image panel, or `hanse images build`)
   asks the runner to build. The runner tars a contained app context (no symlinks, `.git`, state,
-  agents, or caches) and builds from the resolved base; no build runs at deploy time and nothing
-  auto-builds on file edits.
+  agents, caches, or the generated `.opencode/node_modules`; the rest of `.opencode` is kept) and
+  builds from the resolved base; no build runs at deploy time and nothing auto-builds on file edits.
 - Every built image is validated in a no-network, read-only, cap-drop one-shot container. It must
   provide the Hanse entrypoint, `opencode`, the `hanse agent-host`/MCP CLI, and `git`; image-declared
   volumes are rejected. A failed validation/build keeps the previous image and container and marks
@@ -606,7 +606,10 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   triggers (boot, focus, visibility, selection, send, idle/reconnect).
 - Session switching is optimistic and cancelable: the rail, title, URL, and message skeleton switch
   immediately, the previous draft is flushed in the background, the in-flight message/history read is
-  aborted, and a selection generation makes the last click win. `GET /sessions`, `GET /messages`,
+  aborted, and a selection generation makes the last click win. The thread mutes its current content
+  and shows one explicit spinner while a session's messages load (including first-session discovery),
+  and a still-fresh cached session list is canonicalized on a client-side remount even when the URL
+  carries no `session`. `GET /sessions`, `GET /messages`,
   `GET .../todo`, `/prompts`, `/saved-permissions`, and `/context` attach to an already running agent
   through `endpointFor` and never start a stopped one; a missing endpoint returns `agent_stopped`
   and the client shows the persisted notices plus a Start shell.

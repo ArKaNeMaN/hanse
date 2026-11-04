@@ -30,6 +30,15 @@ const TOP_LEVEL_EXCLUSIONS: ReadonlySet<string> = new Set([
   ".mise",
 ]);
 
+/**
+ * Generated agent-runtime dependency trees that never belong in a build context.
+ *
+ * `.opencode/node_modules` is created by the local opencode plugin install and contains npm `.bin`
+ * symlinks. It is not application source; the rest of `.opencode` (config and plugin sources) is
+ * kept.
+ */
+const NESTED_EXCLUSIONS: ReadonlySet<string> = new Set([".opencode/node_modules"]);
+
 export type BuildContextErrorCode =
   | "INVALID_OPTIONS"
   | "INVALID_APP_DIR"
@@ -100,7 +109,8 @@ interface Limits {
  * - The directory walk never follows symlinks: any symlink or special file (socket, fifo, device)
  *   is rejected instead of skipped.
  * - Only top-level `.git`, `.codegraph`, `node_modules`, `state`, `agents`, `.cache`, and `.mise`
- *   are excluded. Nested directories with those names are kept as source.
+ *   are excluded, plus the generated `.opencode/node_modules` dependency tree. Nested directories
+ *   with those names are kept as source.
  * - Limits are enforced before data is copied, so an oversized context fails closed.
  */
 export async function createBuildContext(
@@ -329,8 +339,12 @@ async function collectEntries(root: string, limits: Limits): Promise<ContextEntr
     for (const name of names) {
       const relative = relativeDirectory === "" ? name : `${relativeDirectory}/${name}`;
 
-      // Excluded roots are dropped before inspection; their contents are never traversed.
-      if (relativeDirectory === "" && TOP_LEVEL_EXCLUSIONS.has(name)) {
+      // Excluded roots and generated dependency trees are dropped before inspection; their
+      // contents are never traversed.
+      if (
+        (relativeDirectory === "" && TOP_LEVEL_EXCLUSIONS.has(name)) ||
+        NESTED_EXCLUSIONS.has(relative)
+      ) {
         continue;
       }
 
