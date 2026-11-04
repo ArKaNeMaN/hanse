@@ -825,8 +825,11 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
     read-only Q&A cards after completion); uncorrelated questions stay in the dock. Empty answers are
     allowed after an explicit "Send without answering?" confirmation. Single-select questions in a
     multi-question block auto-advance with focus and one announcement; multi-select does not
-    auto-advance, and a single-question block does not auto-submit. Custom-answer Enter submits the
-    current step once.
+    auto-advance, and a single-question block does not auto-submit. Multi-question steps show only
+    Prev/Next (Next is the primary action), Send stays on the Review step, and the dock body scrolls
+    to the bottom when the active question changes. Custom-answer Enter advances to the next step,
+    or submits when the block has one question; answered cards show the question count instead of a
+    step counter.
   - **Permissions** show the type, patterns, bounded metadata, and `once`/`always`/`reject` with
     optional feedback. v1 `always` lasts for the app instance until restart; v2 `always` is a durable,
     project-scoped saved permission. A reject also rejects other pending permissions in the same
