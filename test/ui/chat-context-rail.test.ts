@@ -142,6 +142,15 @@ describe("ChatContextRail", () => {
           updatedAt: "2026-10-30T00:00:00.000Z",
           href: "/handoffs?q=handoff_1",
         },
+        {
+          id: "handoff_2",
+          shortId: "handoff_",
+          state: "delivered",
+          replyState: "none",
+          summary: "Older handoff",
+          updatedAt: "2026-10-29T00:00:00.000Z",
+          href: "/handoffs?q=handoff_2",
+        },
       ],
     };
     const { wrapper, handlers } = mountRail({
@@ -150,7 +159,12 @@ describe("ChatContextRail", () => {
       policyWarnings: ["Fixture policy warning."],
     });
     await flushPromises();
-    expect(wrapper.find("[data-chat-handoffs]").text()).toContain("Fixture handoff");
+    const handoffs = wrapper.find("[data-chat-handoffs]");
+    expect(handoffs.findAll(".context-handoff")).toHaveLength(1);
+    expect(handoffs.text()).toContain("Fixture handoff");
+    expect(handoffs.text()).not.toContain("Older handoff");
+    expect(wrapper.find("#context-handoffs-title").text()).toBe("Last handoff");
+    expect(wrapper.find('a[href="/handoffs?q=alpha"]').text()).toBe("Open inbox");
     expect(wrapper.find('[data-preview-key="demo"]').text()).toContain("Demo");
     await wrapper.find("[data-preview-key='demo'] .chat-preview__close").trigger("click");
     expect(handlers.closePreview).toHaveBeenCalledWith("demo");

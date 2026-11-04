@@ -58,6 +58,8 @@ const contextError = computed(() =>
     : contextErrorText(props.snapshot.lastError),
 );
 
+const lastHandoff = computed(() => props.view.handoffs[0] ?? null);
+
 const todoCounts = computed(() => {
   const counts = { completed: 0, total: 0, active: 0 };
   for (const todo of props.todos) {
@@ -414,25 +416,20 @@ function requestRevoke(id: string): void {
       <hr class="rule">
       <section class="chat-context__section" aria-labelledby="context-handoffs-title">
         <div class="cluster summary-row">
-          <h2 class="overline" id="context-handoffs-title">Handoffs</h2>
+          <h2 class="overline" id="context-handoffs-title">Last handoff</h2>
           <a class="btn btn-ghost btn-sm" :href="view.links.handoffs">Open inbox</a>
         </div>
-        <div v-if="view.handoffs.length === 0" class="empty-state" data-chat-handoffs-empty>
+        <div v-if="lastHandoff === null" class="empty-state" data-chat-handoffs-empty>
           <p class="empty-state__title">No handoffs</p>
           <p class="empty-state__body">No handoff routes involve {{ view.app.appKey }} yet.</p>
         </div>
         <div v-else class="stack--tight" data-chat-handoffs>
-          <a
-            v-for="handoff in view.handoffs"
-            :key="handoff.id"
-            class="context-handoff"
-            :href="handoff.href"
-          >
+          <a class="context-handoff" :href="lastHandoff.href">
             <span class="context-handoff__head">
-              <span class="mono table__nowrap">{{ handoff.shortId }}</span>
-              <span class="status" :data-state="handoff.state">{{ handoff.state }}</span>
+              <span class="mono table__nowrap">{{ lastHandoff.shortId }}</span>
+              <span class="status" :data-state="lastHandoff.state">{{ lastHandoff.state }}</span>
             </span>
-            <span class="context-handoff__summary">{{ handoff.summary }}</span>
+            <span class="context-handoff__summary">{{ lastHandoff.summary }}</span>
           </a>
         </div>
       </section>
