@@ -2484,6 +2484,27 @@
     flex: none;
   }
 
+  .tool-call--image {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-block-size: 2rem;
+    padding: var(--space-1) var(--space-3);
+  }
+
+  .tool-call--image .icon {
+    flex: none;
+    inline-size: 0.75rem;
+    block-size: 0.75rem;
+    color: var(--text-3);
+  }
+
+  .tool-call--image .mono,
+  .tool-call--image .badge,
+  .tool-call--image .status {
+    flex: none;
+  }
+
   .tool-call__path {
     flex: 1;
     min-inline-size: 0;

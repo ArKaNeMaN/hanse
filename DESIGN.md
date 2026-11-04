@@ -749,6 +749,9 @@ transparent. No bubbles with tails, no avatars on every row.
 - `.tool-call`: `<details>` with a 32px summary row, mono tool name, `.tool-call__path`
   (flex 1, ellipsis for long paths), state badge, and an inset `<pre>` for output. Hover
   `--wash-1`. No accent side stripe.
+- `.tool-call--image`: the static (non-`<details>`) image-action row. It reuses the summary layout
+  (flex, 8px gap, 2rem min, 4px/12px padding) so the tool icon, tool name, image name (flex 1,
+  ellipsis), and state badge line up as one row, with no disclosure behavior.
 - `.tool-diff` / `.tool-code`: inset mono surfaces inside an open `.tool-call`. One
   `.tool-diff__scroll` / `.tool-code__scroll` owns both axes (`max-block-size: 24rem`,
   `overscroll-behavior: contain`, `scrollbar-gutter: stable`, inset focus-visible ring) and is the
