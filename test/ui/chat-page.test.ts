@@ -300,6 +300,46 @@ describe("ChatPage read-only shell", () => {
     wrapper.unmount();
   });
 
+  it("keeps the open thread visible while a live refresh is in flight", async () => {
+    const { wrapper, fetchState } = await mountChat();
+    const original = fetchState.mock.getMockImplementation();
+    if (original === undefined) throw new Error("missing fetch implementation");
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let gated = false;
+    fetchState.mock.mockImplementation(async (input, init) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (/\/sessions\/s1\/messages\?/.test(url)) {
+        gated = true;
+        await gate;
+      }
+      return original(input, init);
+    });
+    const source = FakeEventSource.instances[0];
+    if (source === undefined) throw new Error("missing source");
+
+    source.open();
+    source.emit({ type: "stream.ready", seq: 0, streamID: "stream-1" });
+    await flushPromises();
+
+    expect(gated).toBe(true);
+    const viewport = wrapper.get(".chat-thread__viewport");
+    expect(viewport.attributes("aria-busy")).toBeUndefined();
+    expect(viewport.attributes("data-loading")).toBeUndefined();
+    expect(wrapper.get(".chat-thread__inner").classes()).not.toContain("is-muted");
+    expect(wrapper.find("[data-chat-loading]").exists()).toBe(false);
+    expect(wrapper.text()).toContain("Hello from the fixture.");
+
+    release();
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("Synthetic assistant reply.");
+    expect(wrapper.find("[data-chat-loading]").exists()).toBe(false);
+    wrapper.unmount();
+  });
+
   it("shows the loading state while the first session list is still pending", async () => {
     let release = () => {};
     const gate = new Promise<void>((resolve) => {

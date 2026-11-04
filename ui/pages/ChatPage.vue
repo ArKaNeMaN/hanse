@@ -1437,7 +1437,11 @@ async function loadMessages(sessionID: string, reset: boolean, attempt = 0): Pro
   abortLoads();
   const controller = new AbortController();
   messageAbort = controller;
-  loadingMessages.value = true;
+  // Only opening a conversation shows the thread spinner. Live tail refreshes (stream ready,
+  // reconnects, reconciles, post-send) update the already-open conversation in place.
+  if (reset) {
+    loadingMessages.value = true;
+  }
   messagesError.value = null;
   historyError.value = null;
   const previousCursor = historyCursor.value;
