@@ -11,12 +11,15 @@ import {
   resolveBaseImage,
 } from "../runtime/base-image.js";
 import {
+  BUILD_SPEC_HASH_VERSION,
   boundedErrorMessage,
   computeBuildSpecHash,
   computeLegacyBuildSpecHashV1,
+  computeLegacyBuildSpecHashV2,
   defaultImageReference,
   resolveBuildDockerfile,
 } from "../runtime/build-spec.js";
+import { readDockerignoreFile } from "../runtime/dockerignore.js";
 import { type Project, safeParseApp } from "../schema/index.js";
 import type { SqliteDatabase } from "../store/index.js";
 
@@ -87,7 +90,7 @@ export interface AppBuildInspection {
   baseRef?: string | null;
   /** Bounded base-configuration error code, when the inspection failed there. */
   baseErrorCode?: BaseImageConfigErrorCode | null;
-  /** Version of {@link specHash}; always 2 for a current inspection. */
+  /** Version of {@link specHash}; always the current version for a current inspection. */
   hashVersion?: number;
 }
 
@@ -318,6 +321,12 @@ export function resolveAppBuild(
   } catch (error) {
     return failedInspection(error, args);
   }
+  let dockerignore: Buffer | null;
+  try {
+    dockerignore = readDockerignoreFile(appDir);
+  } catch (error) {
+    return failedInspection(error, args, resolved.content);
+  }
   try {
     const base = resolveBaseImage({
       dockerfile: resolved.content,
@@ -328,6 +337,7 @@ export function resolveAppBuild(
     });
     const specHash = computeBuildSpecHash({
       dockerfile: resolved.content,
+      dockerignore,
       buildArgs: args,
       baseKind: base.kind,
     });
@@ -343,7 +353,7 @@ export function resolveAppBuild(
       baseKind: base.kind,
       baseRef: base.ref,
       baseErrorCode: null,
-      hashVersion: 2,
+      hashVersion: BUILD_SPEC_HASH_VERSION,
     };
   } catch (error) {
     return failedInspection(error, args, resolved.content);
@@ -455,7 +465,7 @@ export function mergeImageMetadata(
       imageError: null,
       imageBaseRef: null,
       imageBaseKind: null,
-      imageHashVersion: 2,
+      imageHashVersion: BUILD_SPEC_HASH_VERSION,
       imageBuildRejectedRef: null,
     };
   }
@@ -508,7 +518,9 @@ export function mergeImageMetadata(
     imageError: null,
     imageBaseRef: existing.image_base_ref ?? null,
     imageBaseKind: existing.image_base_kind ?? null,
-    imageHashVersion: fillUnbuiltHash ? 2 : (existing.image_hash_version ?? 1),
+    imageHashVersion: fillUnbuiltHash
+      ? BUILD_SPEC_HASH_VERSION
+      : (existing.image_hash_version ?? 1),
     imageBuildRejectedRef: rejectedRef,
   };
 }
@@ -520,8 +532,22 @@ function legacyAwareHashChanged(
   if (existing.image_ref === null) return false;
   if (existing.image_hash === null || inspection.specHash === null) return false;
   const storedVersion = existing.image_hash_version ?? 1;
-  if (storedVersion === 2) {
+  if (storedVersion === BUILD_SPEC_HASH_VERSION) {
     return existing.image_hash !== inspection.specHash;
+  }
+  if (storedVersion === 2) {
+    if (
+      !inspection.dockerfileContent ||
+      inspection.baseKind === null ||
+      inspection.baseKind === undefined
+    )
+      return false;
+    const recomputed = computeLegacyBuildSpecHashV2({
+      dockerfile: inspection.dockerfileContent,
+      buildArgs: inspection.args,
+      baseKind: inspection.baseKind,
+    });
+    return recomputed !== existing.image_hash;
   }
   if (storedVersion !== 1) return false;
   const legacyReference = legacyV1BaseReference(existing.image_base_digest);

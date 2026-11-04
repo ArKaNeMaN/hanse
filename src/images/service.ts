@@ -11,6 +11,7 @@ import {
   BUILD_SPEC_HASH_VERSION,
   boundedErrorMessage,
   computeLegacyBuildSpecHashV1,
+  computeLegacyBuildSpecHashV2,
 } from "../runtime/build-spec.js";
 import type { SqliteDatabase } from "../store/index.js";
 import type {
@@ -1197,8 +1198,22 @@ export class ImageService {
   #versionHashMatches(version: AppImageVersionRow, inspection: AppBuildInspection): boolean | null {
     if (version.spec_hash === null || inspection.specHash === null) return null;
     const hashVersion = version.hash_version ?? 1;
-    if (hashVersion === 2) {
+    if (hashVersion === BUILD_SPEC_HASH_VERSION) {
       return version.spec_hash === inspection.specHash;
+    }
+    if (hashVersion === 2) {
+      if (
+        !inspection.dockerfileContent ||
+        inspection.baseKind === null ||
+        inspection.baseKind === undefined
+      )
+        return null;
+      const recomputed = computeLegacyBuildSpecHashV2({
+        dockerfile: inspection.dockerfileContent,
+        buildArgs: inspection.args,
+        baseKind: inspection.baseKind,
+      });
+      return recomputed === version.spec_hash;
     }
     if (hashVersion !== 1) return null;
     const legacyReference = legacyV1BaseReference(version.base_digest);
@@ -1217,6 +1232,20 @@ export class ImageService {
     const version = app.image_hash_version ?? 1;
     if (version === BUILD_SPEC_HASH_VERSION) {
       return app.image_hash !== inspection.specHash;
+    }
+    if (version === 2) {
+      if (
+        !inspection.dockerfileContent ||
+        inspection.baseKind === null ||
+        inspection.baseKind === undefined
+      )
+        return null;
+      const recomputed = computeLegacyBuildSpecHashV2({
+        dockerfile: inspection.dockerfileContent,
+        buildArgs: inspection.args,
+        baseKind: inspection.baseKind,
+      });
+      return recomputed !== app.image_hash;
     }
     if (version !== 1) return null;
     const legacyReference = legacyV1BaseReference(app.image_base_digest);

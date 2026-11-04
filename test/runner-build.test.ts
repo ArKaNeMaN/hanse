@@ -26,6 +26,7 @@ import {
 import { appContainerName } from "../src/runner/names.js";
 import { RunnerService } from "../src/runner/server.js";
 import type { RunnerConfig } from "../src/runner/validate.js";
+import { BUILD_SPEC_HASH_VERSION } from "../src/runtime/build-spec.js";
 
 const dirs: string[] = [];
 const servers: Server[] = [];
@@ -733,7 +734,20 @@ describe("runner image identity", () => {
     const { f, base } = await harness();
     expect((await postBuild(base, bodyFor(f, { baseImage: "evil:latest" }))).status).toBe(400);
     expect((await postBuild(base, bodyFor(f, { baseKind: "nope" }))).status).toBe(400);
-    expect((await postBuild(base, bodyFor(f, { hashVersion: 3 }))).status).toBe(400);
+    expect((await postBuild(base, bodyFor(f, { hashVersion: 4 }))).status).toBe(400);
+  });
+
+  it("accepts the current hash version", async () => {
+    const { f, base, build } = await harness();
+    const response = await postBuild(
+      base,
+      bodyFor(f, { specHash: "d".repeat(64), hashVersion: BUILD_SPEC_HASH_VERSION }),
+    );
+    expect(response.status).toBe(202);
+    await waitForCalls(build, 1);
+    build.succeed("sha256:ready");
+    const ready = await waitForImage(base, "project:app", (record) => record.status === "ready");
+    expect(ready.hashVersion).toBe(BUILD_SPEC_HASH_VERSION);
   });
 });
 

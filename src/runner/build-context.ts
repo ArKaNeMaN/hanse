@@ -1,7 +1,20 @@
 import { Buffer } from "node:buffer";
 import { constants } from "node:fs";
 import { type FileHandle, lstat, open, readdir, realpath, stat } from "node:fs/promises";
+import { createRequire } from "node:module";
 import path from "node:path";
+import type { Ignore } from "@balena/dockerignore";
+import {
+  DOCKERIGNORE_FILENAME,
+  DockerignoreFileError,
+  readDockerignoreFile,
+} from "../runtime/dockerignore.js";
+
+type DockerignoreFactory = (options?: { ignorecase?: boolean }) => Ignore;
+
+const createDockerignore = createRequire(import.meta.url)(
+  "@balena/dockerignore",
+) as DockerignoreFactory;
 
 /** Default Dockerfile path, relative to the application directory. */
 export const DEFAULT_DOCKERFILE = ".hanse/Dockerfile";
@@ -39,10 +52,18 @@ const TOP_LEVEL_EXCLUSIONS: ReadonlySet<string> = new Set([
  */
 const NESTED_EXCLUSIONS: ReadonlySet<string> = new Set([".opencode/node_modules"]);
 
+function isNestedExcludedPath(relative: string): boolean {
+  for (const excluded of NESTED_EXCLUSIONS) {
+    if (relative === excluded || relative.startsWith(`${excluded}/`)) return true;
+  }
+  return false;
+}
+
 export type BuildContextErrorCode =
   | "INVALID_OPTIONS"
   | "INVALID_APP_DIR"
   | "INVALID_DOCKERFILE"
+  | "INVALID_DOCKERIGNORE"
   | "PATH_ESCAPE"
   | "SYMLINK_REJECTED"
   | "SPECIAL_FILE"
@@ -100,17 +121,25 @@ interface Limits {
   readonly maxEntries: number;
 }
 
+interface DockerIgnoreRules {
+  readonly matcher: Ignore | null;
+  readonly hasNegations: boolean;
+  readonly content: Buffer | null;
+}
+
 /**
  * Build a deterministic, no-follow tar context for one application directory.
  *
  * Security properties:
  * - `appDir` and the Dockerfile are resolved with `realpath`; the app directory itself, the
  *   Dockerfile, and every path component used to reach it must not be a symlink.
- * - The directory walk never follows symlinks: any symlink or special file (socket, fifo, device)
- *   is rejected instead of skipped.
- * - Only top-level `.git`, `.codegraph`, `node_modules`, `state`, `agents`, `.cache`, and `.mise`
- *   are excluded, plus the generated `.opencode/node_modules` dependency tree. Nested directories
- *   with those names are kept as source.
+ * - The directory walk never follows symlinks: a symlink or special file (socket, fifo, device) is
+ *   rejected only when it survives the ignore rules.
+ * - Top-level `.git`, `.codegraph`, `node_modules`, `state`, `agents`, `.cache`, `.mise`, and the
+ *   generated `.opencode/node_modules` dependency tree are a hard floor. `.dockerignore` can exclude
+ *   more, but cannot re-include them; nested directories with those names are kept as source.
+ * - `.dockerignore` follows Docker's pattern rules. The Dockerfile and `.dockerignore` are always
+ *   included, even when a rule matches them.
  * - Limits are enforced before data is copied, so an oversized context fails closed.
  */
 export async function createBuildContext(
@@ -120,7 +149,11 @@ export async function createBuildContext(
   const limits = resolveLimits(options);
   const root = await resolveAppRoot(appDir);
   const dockerfile = await resolveDockerfile(root, options.dockerfile ?? DEFAULT_DOCKERFILE);
-  const entries = await collectEntries(root, limits);
+  const ignoreRules = await loadDockerignore(root);
+  const forcedFiles = new Set<string>([dockerfile]);
+  if (ignoreRules.content !== null) forcedFiles.add(DOCKERIGNORE_FILENAME);
+  const forcedDirectories = ancestorDirectories(forcedFiles);
+  const entries = await collectEntries(root, limits, ignoreRules, forcedFiles, forcedDirectories);
 
   const dockerfileEntry = entries.find(
     (entry) => entry.relative === dockerfile && entry.kind === "file",
@@ -158,6 +191,62 @@ function resolveLimits(options: BuildContextOptions): Limits {
     );
   }
   return { maxBytes, maxEntries };
+}
+
+async function loadDockerignore(root: string): Promise<DockerIgnoreRules> {
+  let content: Buffer | null;
+  try {
+    content = readDockerignoreFile(root);
+  } catch (error) {
+    throw dockerignoreContextError(error);
+  }
+  if (content === null) {
+    return { matcher: null, hasNegations: false, content: null };
+  }
+
+  const text = content.toString("utf8");
+  let matcher: Ignore;
+  try {
+    matcher = createDockerignore().add(text);
+  } catch (error) {
+    throw new BuildContextError(
+      "INVALID_DOCKERIGNORE",
+      `invalid ${DOCKERIGNORE_FILENAME}: ${errorMessage(error)}`,
+      { path: DOCKERIGNORE_FILENAME, cause: error },
+    );
+  }
+  return { matcher, hasNegations: text.includes("!"), content };
+}
+
+function dockerignoreContextError(error: unknown): BuildContextError {
+  if (error instanceof DockerignoreFileError) {
+    return new BuildContextError(
+      error.code === "symlink" ? "SYMLINK_REJECTED" : "INVALID_DOCKERIGNORE",
+      error.message,
+      { path: DOCKERIGNORE_FILENAME, cause: error },
+    );
+  }
+  return new BuildContextError(
+    "INVALID_DOCKERIGNORE",
+    `cannot read ${DOCKERIGNORE_FILENAME}: ${errorMessage(error)}`,
+    { path: DOCKERIGNORE_FILENAME, cause: error },
+  );
+}
+
+function ancestorDirectories(files: ReadonlySet<string>): ReadonlySet<string> {
+  const directories = new Set<string>();
+  for (const file of files) {
+    let current = path.posix.dirname(file);
+    while (current !== "." && current !== "") {
+      directories.add(current);
+      current = path.posix.dirname(current);
+    }
+  }
+  return directories;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 async function resolveAppRoot(appDir: string): Promise<string> {
@@ -224,6 +313,13 @@ async function resolveDockerfile(root: string, value: string): Promise<string> {
     throw new BuildContextError(
       "INVALID_DOCKERFILE",
       `Dockerfile must not be inside an excluded top-level entry: ${value}`,
+      { path: value },
+    );
+  }
+  if (isNestedExcludedPath(relative)) {
+    throw new BuildContextError(
+      "INVALID_DOCKERFILE",
+      `Dockerfile must not be inside an excluded dependency tree: ${value}`,
       { path: value },
     );
   }
@@ -309,7 +405,13 @@ function dockerfileSegments(value: string): string[] {
   return segments;
 }
 
-async function collectEntries(root: string, limits: Limits): Promise<ContextEntry[]> {
+async function collectEntries(
+  root: string,
+  limits: Limits,
+  ignoreRules: DockerIgnoreRules,
+  forcedFiles: ReadonlySet<string>,
+  forcedDirectories: ReadonlySet<string>,
+): Promise<ContextEntry[]> {
   const entries: ContextEntry[] = [];
   let totalBytes = 0;
 
@@ -321,6 +423,19 @@ async function collectEntries(root: string, limits: Limits): Promise<ContextEntr
       );
     }
     entries.push(entry);
+  };
+
+  const isIgnored = (relative: string, forced: boolean): boolean => {
+    if (forced || ignoreRules.matcher === null) return false;
+    try {
+      return ignoreRules.matcher.ignores(relative);
+    } catch (error) {
+      throw new BuildContextError(
+        "INVALID_DOCKERIGNORE",
+        `cannot apply ${DOCKERIGNORE_FILENAME}: ${errorMessage(error)}`,
+        { path: relative, cause: error },
+      );
+    }
   };
 
   const visit = async (directory: string, relativeDirectory: string): Promise<void> => {
@@ -338,17 +453,19 @@ async function collectEntries(root: string, limits: Limits): Promise<ContextEntr
 
     for (const name of names) {
       const relative = relativeDirectory === "" ? name : `${relativeDirectory}/${name}`;
+      assertSafeMember(relative);
 
       // Excluded roots and generated dependency trees are dropped before inspection; their
-      // contents are never traversed.
+      // contents are never traversed and cannot be re-included by .dockerignore.
       if (
         (relativeDirectory === "" && TOP_LEVEL_EXCLUSIONS.has(name)) ||
-        NESTED_EXCLUSIONS.has(relative)
+        isNestedExcludedPath(relative)
       ) {
         continue;
       }
 
-      assertSafeMember(relative);
+      const forced = forcedFiles.has(relative) || forcedDirectories.has(relative);
+      const ignored = isIgnored(relative, forced);
       const absolute = path.join(directory, name);
 
       let stats: Awaited<ReturnType<typeof lstat>>;
@@ -363,6 +480,20 @@ async function collectEntries(root: string, limits: Limits): Promise<ContextEntr
             cause: error,
           },
         );
+      }
+
+      if (ignored) {
+        if (!stats.isDirectory()) continue;
+        // A negated rule can re-include a descendant even when its parent matches. Walk ignored
+        // directories only when the file contains an exception, and keep the parent entry when a
+        // descendant survives.
+        if (!ignoreRules.hasNegations) continue;
+        const before = entries.length;
+        await visit(absolute, relative);
+        if (entries.length > before) {
+          push({ relative, absolute, kind: "directory", size: 0 });
+        }
+        continue;
       }
 
       if (stats.isSymbolicLink()) {

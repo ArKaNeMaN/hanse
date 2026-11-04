@@ -43,11 +43,18 @@ The Dockerfile is a complete Dockerfile. It is resolved under the app directory 
 containment (no `..`, absolute paths, or escaping symlinks); an invalid manifest or Dockerfile marks
 the app image `error` without failing project registration.
 
-The build-spec hash is version 2 and covers the Dockerfile bytes, the sorted build args, and the
-resolved base kind. The base reference/tag/digest is excluded, so a harmless tag move does not mark an
-app stale; base drift is compared separately by manifest digest. A stored version-1 hash is never
-compared with a version-2 hash. A legacy v1 row is recomputed only when its historical full reference
-is reconstructable; otherwise hash drift stays `unknown` until the next successful build.
+The build-spec hash is version 3 and covers the Dockerfile bytes, the `.dockerignore` bytes, the
+sorted build args, and the resolved base kind. The base reference/tag/digest is excluded, so a
+harmless tag move does not mark an app stale; base drift is compared separately by manifest digest. A
+stored version-1 or version-2 hash is never compared with a version-3 hash. A legacy v1 row is
+recomputed only when its historical full reference is reconstructable; a v2 row is recomputed with the
+historical v2 algorithm (no `.dockerignore`). Otherwise hash drift stays `unknown` until the next
+successful build.
+
+An optional `.dockerignore` at the app root filters the build context with Docker's pattern rules.
+Top-level `.git`, `.codegraph`, `node_modules`, `state`, `agents`, `.cache`, `.mise`, and the generated
+`.opencode/node_modules` are a hard floor and cannot be re-included. The Dockerfile and `.dockerignore`
+are always included, and a symlink or special file is rejected only when it survives the ignore rules.
 
 Base selection is `build.base` when set, otherwise the Dockerfile's final-stage root `FROM`:
 

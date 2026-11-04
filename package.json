@@ -37,6 +37,7 @@
     "start": "node dist/index.js"
   },
   "dependencies": {
+    "@balena/dockerignore": "^1.0.2",
     "better-sqlite3": "^13.0.3",
     "ssh2": "^1.17.0",
     "yaml": "^2.5.0",

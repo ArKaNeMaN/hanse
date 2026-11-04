@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { isValidAppId } from "../agent/spec.js";
 import { resolveWithinRoot } from "../runtime/app-path.js";
-import { boundedErrorMessage } from "../runtime/build-spec.js";
+import { BUILD_SPEC_HASH_VERSION, boundedErrorMessage } from "../runtime/build-spec.js";
 import { BuildContextError, createBuildContext, DEFAULT_DOCKERFILE } from "./build-context.js";
 import type { DockerBuildRuntime, DockerImageInspect } from "./docker.js";
 import {
@@ -193,6 +193,7 @@ export class ImageBuildService {
       const baseDigest =
         baseKind === "unknown" ? null : await this.#resolveBaseDigest(request.baseImage);
       const previous = this.#byApp.get(request.appId);
+      // A coordinator that does not send hashVersion predates version 3 and only produces v2 hashes.
       const hashVersion = request.hashVersion ?? (request.specHash === undefined ? null : 2);
       const record: RunnerImageRecord = {
         appId: request.appId,
@@ -550,8 +551,13 @@ function parseBaseKind(value: unknown): RunnerBaseKind | null {
 
 function parseHashVersion(value: unknown): number | null {
   if (value === undefined) return null;
-  if (typeof value !== "number" || !Number.isInteger(value) || value < 1 || value > 2) {
-    throw new ImageBuildError(400, "hashVersion must be 1 or 2");
+  if (
+    typeof value !== "number" ||
+    !Number.isInteger(value) ||
+    value < 1 ||
+    value > BUILD_SPEC_HASH_VERSION
+  ) {
+    throw new ImageBuildError(400, `hashVersion must be between 1 and ${BUILD_SPEC_HASH_VERSION}`);
   }
   return value;
 }

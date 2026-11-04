@@ -378,6 +378,95 @@ describe("createBuildContext", () => {
   });
 
   describe("exclusions", () => {
+    it("applies .dockerignore rules and honors negations", async () => {
+      const { app } = await makeApp({
+        ".hanse/Dockerfile": "FROM scratch\n",
+        ".dockerignore": "dist/\n*.log\n!keep.log\n",
+        "dist/out.js": "out",
+        "debug.log": "log",
+        "keep.log": "keep",
+      });
+
+      const context = await createBuildContext(app);
+      const paths = readTar(context.tar).map((entry) => entry.path);
+
+      expect(paths).toContain(".dockerignore");
+      expect(paths).not.toContain("dist/");
+      expect(paths).not.toContain("dist/out.js");
+      expect(paths).not.toContain("debug.log");
+      expect(paths).toContain("keep.log");
+    });
+
+    it("re-includes a descendant of an ignored directory", async () => {
+      const { app } = await makeApp({
+        ".hanse/Dockerfile": "FROM scratch\n",
+        ".dockerignore": "dist/\n!dist/keep.js\n",
+        "dist/drop.js": "drop",
+        "dist/keep.js": "keep",
+      });
+
+      const context = await createBuildContext(app);
+      const paths = readTar(context.tar).map((entry) => entry.path);
+
+      expect(paths).not.toContain("dist/drop.js");
+      expect(paths).toContain("dist/keep.js");
+      expect(paths).toContain("dist/");
+    });
+
+    it("keeps the hard floor even when .dockerignore tries to re-include it", async () => {
+      const { app } = await makeApp({
+        ".hanse/Dockerfile": "FROM scratch\n",
+        ".dockerignore": "!state/\n!state/secret.txt\n!.opencode/node_modules/pkg/index.js\n",
+        "state/secret.txt": "secret",
+        ".opencode/node_modules/pkg/index.js": "module",
+        ".opencode/plugin/keep.ts": "kept",
+      });
+
+      const context = await createBuildContext(app);
+      const paths = readTar(context.tar).map((entry) => entry.path);
+
+      expect(paths).not.toContain("state/secret.txt");
+      expect(paths.some((entry) => entry.startsWith(".opencode/node_modules"))).toBe(false);
+      expect(paths).toContain(".opencode/plugin/keep.ts");
+    });
+
+    it("always includes the Dockerfile and .dockerignore even when ignored", async () => {
+      const { app } = await makeApp({
+        ".hanse/Dockerfile": "FROM scratch\n",
+        ".dockerignore": "*\n",
+      });
+
+      const context = await createBuildContext(app);
+      const paths = readTar(context.tar).map((entry) => entry.path);
+
+      expect(paths).toContain(".hanse/Dockerfile");
+      expect(paths).toContain(".dockerignore");
+    });
+
+    it("skips symlinks under an ignored path", async () => {
+      const { app } = await makeApp({
+        ".hanse/Dockerfile": "FROM scratch\n",
+        ".dockerignore": "linked/\n",
+        "linked/target.js": "target",
+      });
+      await symlink(path.join(app, "linked/target.js"), path.join(app, "linked/alias.js"));
+
+      const context = await createBuildContext(app);
+      const paths = readTar(context.tar).map((entry) => entry.path);
+
+      expect(paths.some((entry) => entry.startsWith("linked/"))).toBe(false);
+    });
+
+    it("rejects a symlinked .dockerignore", async () => {
+      const { app } = await makeApp({
+        ".hanse/Dockerfile": "FROM scratch\n",
+        "ignore-source": "dist/\n",
+      });
+      await symlink(path.join(app, "ignore-source"), path.join(app, ".dockerignore"));
+
+      await expectCode(createBuildContext(app), "SYMLINK_REJECTED");
+    });
+
     it("drops the generated .opencode/node_modules dependency tree", async () => {
       const { app } = await makeApp({
         ".hanse/Dockerfile": "FROM scratch\n",

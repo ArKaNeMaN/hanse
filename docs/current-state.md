@@ -115,19 +115,24 @@ a host `opencode` auth file.
   coordinator-revision comparison: a Hanse update with unchanged relevant digests marks no agent
   outdated. An unresolvable identity is `unknown` and never produces a false `current`,
   `restart_required`, `rebuild_required`, or `not_ready`.
-- The build-spec hash is version 2: Dockerfile bytes, sorted build args, and the resolved base kind.
-  The base reference/tag/digest is excluded and compared separately, so a harmless tag move does not
-  mark an app stale. A stored version-1 hash is never compared with version 2; a legacy v1 row is
-  recomputed only when its historical full reference is reconstructable, and otherwise hash drift
-  stays `unknown` until the next successful build.
+- The build-spec hash is version 3: Dockerfile bytes, `.dockerignore` bytes, sorted build args, and
+  the resolved base kind. The base reference/tag/digest is excluded and compared separately, so a
+  harmless tag move does not mark an app stale. A stored version-1 or version-2 hash is never compared
+  with version 3: a legacy v1 row is recomputed only when its historical full reference is
+  reconstructable, and a v2 row is recomputed with the historical v2 algorithm (no `.dockerignore`).
+  Otherwise hash drift stays `unknown` until the next successful build.
 - The registry reads `.hanse/app.yaml` directly, records image status/ref, base kind/ref/digest,
   hash version, built-at, and error, and persists durable `build_configured` from the manifest
   inspection (registration, provisioning, image check, and build all write the same value). Invalid
   manifests or Dockerfile paths mark the app image `error` without failing the whole project.
 - A human action (`POST /api/apps/:app/build`, the app page Image panel, or `hanse images build`)
-  asks the runner to build. The runner tars a contained app context (no symlinks, `.git`, state,
-  agents, caches, or the generated `.opencode/node_modules`; the rest of `.opencode` is kept) and
-  builds from the resolved base; no build runs at deploy time and nothing auto-builds on file edits.
+  asks the runner to build. The runner tars a contained app context and builds from the resolved base;
+  no build runs at deploy time and nothing auto-builds on file edits. `.dockerignore` at the app root
+  filters the context with Docker's pattern rules. Top-level `.git`, `.codegraph`, `node_modules`,
+  `state`, `agents`, `.cache`, `.mise`, and the generated `.opencode/node_modules` are a hard floor:
+  `.dockerignore` can exclude more but cannot re-include them. The Dockerfile and `.dockerignore`
+  themselves are always included. A symlink or special file is rejected only when it survives the
+  ignore rules, so an ignored symlink-heavy tree is safe.
 - Every built image is validated in a no-network, read-only, cap-drop one-shot container. It must
   provide the Hanse entrypoint, `opencode`, the `hanse agent-host`/MCP CLI, and `git`; image-declared
   volumes are rejected. A failed validation/build keeps the previous image and container and marks

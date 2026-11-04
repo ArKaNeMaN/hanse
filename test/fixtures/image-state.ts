@@ -23,7 +23,7 @@ export function imageStateView(overrides: Partial<ImageStateView> = {}): ImageSt
     usableImageRef: null,
     targetImageId: null,
     appliedImageId: null,
-    hashVersion: 2,
+    hashVersion: 3,
     currentBaseDigest: null,
     baseKind: null,
     baseRef: null,

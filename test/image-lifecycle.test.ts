@@ -27,7 +27,7 @@ import {
 import { InstanceManager } from "../src/opencode/manager.js";
 import { discoverProject, registerProject, resolveAppBuild } from "../src/registry/index.js";
 import type { ImageGcReport, ImageUsageReport } from "../src/runner/image-gc.js";
-import { defaultImageReference } from "../src/runtime/build-spec.js";
+import { BUILD_SPEC_HASH_VERSION, defaultImageReference } from "../src/runtime/build-spec.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
 import { FakeAgentRuntime } from "./fixtures/fake-runtime.js";
 
@@ -979,7 +979,7 @@ describe("image state service integration", () => {
     setApp(
       f,
       `image_base_kind = 'default', image_base_ref = ?, image_base_digest = ?,
-       image_hash = ?, image_hash_version = 2`,
+       image_hash = ?, image_hash_version = ${BUILD_SPEC_HASH_VERSION}`,
       [defaultImageReference(), digestA, inspection.specHash],
     );
     f.runner.inspections.set(defaultImageReference(), {
@@ -1027,9 +1027,11 @@ describe("image state service integration", () => {
     const f = await fixture();
     await readyBuild(f, "hanse-app-p:web:one", "sha256:one", "2026-01-01T00:00:00.000Z");
     const inspection = resolveAppBuild(f.appDir, defaultImageReference());
-    setApp(f, `image_hash = ?, image_hash_version = 2, image_base_kind = 'unknown'`, [
-      inspection.specHash,
-    ]);
+    setApp(
+      f,
+      `image_hash = ?, image_hash_version = ${BUILD_SPEC_HASH_VERSION}, image_base_kind = 'unknown'`,
+      [inspection.specHash],
+    );
     f.db
       .prepare(
         "INSERT INTO instances (id, app_id, state, image_ref, applied_image_id, updated_at) VALUES (?, ?, 'stopped', ?, ?, ?)",

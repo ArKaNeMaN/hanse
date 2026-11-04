@@ -3,7 +3,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { discoverProject, registerProject, resolveAppBuild } from "../src/registry/index.js";
-import { computeLegacyBuildSpecHashV1 } from "../src/runtime/build-spec.js";
+import {
+  BUILD_SPEC_HASH_VERSION,
+  computeLegacyBuildSpecHashV1,
+  computeLegacyBuildSpecHashV2,
+} from "../src/runtime/build-spec.js";
 import { openDatabase, runMigrations } from "../src/store/index.js";
 
 const FROM_BASE = `FROM \${HANSE_BASE}\n`;
@@ -261,7 +265,7 @@ describe("registry durable image identity", () => {
       build_configured: 1,
       image_base_ref: null,
       image_base_kind: null,
-      image_hash_version: 2,
+      image_hash_version: BUILD_SPEC_HASH_VERSION,
       image_build_id: null,
       image_build_ref: null,
       image_build_started_at: null,
@@ -356,7 +360,7 @@ describe("registry durable image identity", () => {
   });
 });
 
-describe("registry build-spec version 2 rules", () => {
+describe("registry build-spec version 3 rules", () => {
   async function setup(
     dockerfile: string,
     appYaml = "name: web\nbuild:\n  dockerfile: Dockerfile\n",
@@ -381,12 +385,12 @@ describe("registry build-spec version 2 rules", () => {
       status: "missing",
       baseKind: "default",
       baseRef: "agent-default:test",
-      hashVersion: 2,
+      hashVersion: BUILD_SPEC_HASH_VERSION,
     });
 
     const explicit = await setup("FROM node:20\n");
     expect(resolveAppBuild(explicit.webDir, "agent-default:test", "agent-base:test")).toMatchObject(
-      { baseKind: "explicit", baseRef: "node:20", hashVersion: 2 },
+      { baseKind: "explicit", baseRef: "node:20", hashVersion: BUILD_SPEC_HASH_VERSION },
     );
 
     const base = await setup(
@@ -437,7 +441,7 @@ describe("registry build-spec version 2 rules", () => {
     db.close();
   });
 
-  it("writes version 2 for a new row and for an unbuilt row, but never for a built row", async () => {
+  it("writes version 3 for a new row and for an unbuilt row, but never for a built row", async () => {
     const { root, project, rootPath, webDir } = await setup(`ARG HANSE_BASE\n${FROM_BASE}`);
     const db = openDatabase(path.join(root, "db.sqlite"));
     runMigrations(db);
@@ -445,7 +449,7 @@ describe("registry build-spec version 2 rules", () => {
     const first = registerProject(db, project, rootPath, rootPath).apps.find(
       (app) => app.appKey === "web",
     );
-    expect(first?.imageHashVersion).toBe(2);
+    expect(first?.imageHashVersion).toBe(BUILD_SPEC_HASH_VERSION);
     expect(first?.buildSpecHash).toMatch(/^[a-f0-9]{64}$/);
 
     db.prepare(
@@ -457,7 +461,7 @@ describe("registry build-spec version 2 rules", () => {
     expect(built?.imageHash).toBeNull();
     expect(built?.imageHashVersion).toBe(1);
 
-    // A stored v1 hash is never replaced by the current v2 hash at registration.
+    // A stored v1 hash is never replaced by the current v3 hash at registration.
     const legacyHash = computeLegacyBuildSpecHashV1({
       dockerfile: `ARG HANSE_BASE\n${FROM_BASE}`,
       defaultImage: "agent-default:legacy",
@@ -478,6 +482,58 @@ describe("registry build-spec version 2 rules", () => {
     expect(legacy?.imageHash).toBe(legacyHash);
     expect(legacy?.imageHashVersion).toBe(1);
     expect(legacy?.imageStatus).toBe("stale");
+    db.close();
+  });
+
+  it("marks a built image stale when .dockerignore changes", async () => {
+    const { root, project, rootPath, webDir } = await setup(`ARG HANSE_BASE\n${FROM_BASE}`);
+    const db = openDatabase(path.join(root, "db.sqlite"));
+    runMigrations(db);
+    const first = registerProject(db, project, rootPath, rootPath).apps.find(
+      (app) => app.appKey === "web",
+    );
+    if (first?.buildSpecHash === null || first?.buildSpecHash === undefined) {
+      throw new Error("missing build spec hash");
+    }
+    db.prepare(
+      `UPDATE apps SET image_ref = 'built-ref', image_hash = ?, image_status = 'ready',
+         image_hash_version = ? WHERE project_id = ? AND app_key = 'web'`,
+    ).run(first.buildSpecHash, BUILD_SPEC_HASH_VERSION, project.id);
+    expect(
+      registerProject(db, project, rootPath, rootPath).apps.find((app) => app.appKey === "web")
+        ?.imageStatus,
+    ).toBe("ready");
+
+    await writeFile(path.join(webDir, ".dockerignore"), "dist/\n", "utf8");
+    expect(
+      registerProject(db, project, rootPath, rootPath).apps.find((app) => app.appKey === "web")
+        ?.imageStatus,
+    ).toBe("stale");
+    db.close();
+  });
+
+  it("compares a stored version-2 hash with the legacy algorithm", async () => {
+    const { root, project, rootPath, webDir } = await setup(`ARG HANSE_BASE\n${FROM_BASE}`);
+    const inspection = resolveAppBuild(webDir, "agent-default:test", "agent-base:test");
+    if (!inspection.dockerfileContent || inspection.baseKind === null) {
+      throw new Error("missing inspection input");
+    }
+    const legacy = computeLegacyBuildSpecHashV2({
+      dockerfile: inspection.dockerfileContent,
+      buildArgs: inspection.args,
+      baseKind: inspection.baseKind,
+    });
+    const db = openDatabase(path.join(root, "db.sqlite"));
+    runMigrations(db);
+    registerProject(db, project, rootPath, rootPath);
+    db.prepare(
+      `UPDATE apps SET image_ref = 'legacy-ref', image_hash = ?, image_status = 'ready',
+         image_hash_version = 2 WHERE project_id = ? AND app_key = 'web'`,
+    ).run(legacy, project.id);
+    expect(
+      registerProject(db, project, rootPath, rootPath).apps.find((app) => app.appKey === "web")
+        ?.imageStatus,
+    ).toBe("ready");
     db.close();
   });
 });

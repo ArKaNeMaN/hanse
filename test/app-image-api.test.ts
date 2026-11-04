@@ -18,7 +18,11 @@ import type {
 import { ImageNotReadyError, type ImageRunnerClient, ImageService } from "../src/images/service.js";
 import type { InstanceManager } from "../src/opencode/manager.js";
 import { discoverProject, registerProject } from "../src/registry/index.js";
-import { computeBuildSpecHash, defaultImageReference } from "../src/runtime/build-spec.js";
+import {
+  BUILD_SPEC_HASH_VERSION,
+  computeBuildSpecHash,
+  defaultImageReference,
+} from "../src/runtime/build-spec.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
 import { imageStateView } from "./fixtures/image-state.js";
 
@@ -364,7 +368,7 @@ describe("app image API", () => {
       buildArgs: { NODE_VERSION: "22" },
       specHash: expectedHash,
       baseKind: "default",
-      hashVersion: 2,
+      hashVersion: BUILD_SPEC_HASH_VERSION,
     });
     expect(row(f).image_status).toBe("building");
     expect(row(f).image_error).toBeNull();
@@ -678,7 +682,7 @@ describe("app image HTTP view", () => {
       imageBuildId: "build-1",
       buildId: "build-9",
       latestBuildImageId: "sha256:latest-runner",
-      hashVersion: 2,
+      hashVersion: BUILD_SPEC_HASH_VERSION,
     });
     for (const key of [
       "usableImageRef",

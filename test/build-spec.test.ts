@@ -7,6 +7,7 @@ import {
   boundedErrorMessage,
   computeBuildSpecHash,
   computeLegacyBuildSpecHashV1,
+  computeLegacyBuildSpecHashV2,
   defaultImageReference,
   resolveBuildDockerfile,
 } from "../src/runtime/build-spec.js";
@@ -37,7 +38,7 @@ function hashFromApp(
   return computeBuildSpecHash({ dockerfile: dockerfile.content, buildArgs, baseKind });
 }
 
-describe("computeBuildSpecHash (version 2)", () => {
+describe("computeBuildSpecHash (version 3)", () => {
   it("returns a deterministic SHA-256 and ignores build arg insertion order", () => {
     const first = computeBuildSpecHash({
       dockerfile: FROM_BASE,
@@ -125,6 +126,41 @@ describe("computeBuildSpecHash (version 2)", () => {
     await writeFile(path.join(appDir, "Dockerfile"), `${FROM_BASE}RUN true\n`, "utf8");
     expect(hashFromApp(appDir)).not.toBe(before);
   });
+
+  it("changes when the .dockerignore changes and treats an absent file as empty", () => {
+    const base = { dockerfile: FROM_BASE, baseKind: "default" as const };
+    const without = computeBuildSpecHash(base);
+
+    expect(computeBuildSpecHash({ ...base, dockerignore: null })).toBe(without);
+    expect(computeBuildSpecHash({ ...base, dockerignore: "" })).toBe(without);
+    expect(computeBuildSpecHash({ ...base, dockerignore: "dist/\n" })).not.toBe(without);
+  });
+});
+
+describe("legacy version-2 hash", () => {
+  it("recomputes the historical algorithm without .dockerignore", () => {
+    const v2 = computeLegacyBuildSpecHashV2({
+      dockerfile: FROM_BASE,
+      baseKind: "default",
+      buildArgs: { A: "1" },
+    });
+
+    expect(v2).toMatch(/^[a-f0-9]{64}$/);
+    expect(
+      computeLegacyBuildSpecHashV2({
+        dockerfile: FROM_BASE,
+        baseKind: "default",
+        buildArgs: { A: "1" },
+      }),
+    ).toBe(v2);
+    expect(
+      computeBuildSpecHash({
+        dockerfile: FROM_BASE,
+        baseKind: "default",
+        buildArgs: { A: "1" },
+      }),
+    ).not.toBe(v2);
+  });
 });
 
 describe("legacy version-1 hash", () => {
@@ -134,13 +170,13 @@ describe("legacy version-1 hash", () => {
       defaultImage: DEFAULT_IMAGE,
       buildArgs: { A: "1" },
     });
-    const v2 = computeBuildSpecHash({
+    const v3 = computeBuildSpecHash({
       dockerfile: FROM_BASE,
       baseKind: "default",
       buildArgs: { A: "1" },
     });
     expect(v1).toMatch(/^[a-f0-9]{64}$/);
-    expect(v1).not.toBe(v2);
+    expect(v1).not.toBe(v3);
     expect(
       computeLegacyBuildSpecHashV1({
         dockerfile: FROM_BASE,
