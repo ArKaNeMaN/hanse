@@ -62,7 +62,7 @@ export async function handleInternalMcp(
     }
     return json(200, response);
   }
-  const service = new CoordinatorService(deps.db, agent.projectId);
+  const service = new CoordinatorService(deps.db, agent.projectId, deps.dispatcher?.threadLimits);
   const response = await handleRpcAsync(
     service,
     deps.ssh,

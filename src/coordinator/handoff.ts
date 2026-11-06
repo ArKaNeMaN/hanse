@@ -54,6 +54,64 @@ export type HandoffOrigin = "agent" | "operator";
 export type HandoffDispatchMode = "auto" | "approve" | "deny";
 export type HandoffReplyMode = "auto" | "approve";
 
+export type HandoffMode = "one_shot" | "thread";
+export const HANDOFF_MODES: readonly HandoffMode[] = ["one_shot", "thread"];
+
+/** Lifecycle of one row in the ordered `handoff_messages` log. */
+export type HandoffMessageState =
+  | "binding"
+  | "queued"
+  | "dispatching"
+  | "delivered"
+  | "waiting_operator"
+  | "cancelled";
+
+export const HANDOFF_MESSAGE_STATES: readonly HandoffMessageState[] = [
+  "binding",
+  "queued",
+  "dispatching",
+  "delivered",
+  "waiting_operator",
+  "cancelled",
+];
+
+export type HandoffMessageKind = "request" | "message" | "reply";
+export const HANDOFF_MESSAGE_KINDS: readonly HandoffMessageKind[] = ["request", "message", "reply"];
+
+export type HandoffMessageAuthorSide = "source" | "target" | "system";
+export const HANDOFF_MESSAGE_AUTHOR_SIDES: readonly HandoffMessageAuthorSide[] = [
+  "source",
+  "target",
+  "system",
+];
+
+/** One row of the ordered `handoff_messages` log attached to a thread header. */
+export interface HandoffMessage {
+  id: number;
+  handoffId: string;
+  authorPrincipal: string | null;
+  kind: HandoffMessageKind;
+  body: string;
+  createdAt: string;
+  seq: number;
+  authorAppId: string | null;
+  authorSide: HandoffMessageAuthorSide;
+  state: HandoffMessageState;
+  outcome: HandoffOutcome | null;
+  deliverySessionId: string | null;
+  deliveryMessageId: string | null;
+  deliveredAt: string | null;
+  claimedAt: string | null;
+  clientMessageId: string | null;
+  bindingNonce: string | null;
+  boundSessionId: string | null;
+  boundAt: string | null;
+  invokingSessionId: string | null;
+  replyToMessageId: number | null;
+  errorCode: string | null;
+  updatedAt: string | null;
+}
+
 export function normalizeOutcome(value: unknown): HandoffOutcome {
   return value === "blocked" || value === "failed" ? value : "completed";
 }
@@ -78,12 +136,43 @@ const TERMINAL_STATES: readonly HandoffState[] = [
   "cancelled",
 ];
 
+/**
+ * Thread header state machine (design D2). A started thread never enters `delivered`; `rejected` and
+ * `failed` are start outcomes only. One-shot transitions stay on {@link TRANSITIONS}.
+ */
+const THREAD_TRANSITIONS: Record<HandoffState, readonly HandoffState[]> = {
+  queued: ["awaiting_approval", "dispatching", "rejected", "failed", "cancelled"],
+  awaiting_approval: ["dispatching", "rejected", "failed", "cancelled"],
+  dispatching: ["in_progress", "failed", "cancelled"],
+  in_progress: ["expired", "cancelled"],
+  delivered: [],
+  rejected: [],
+  failed: [],
+  expired: [],
+  cancelled: [],
+};
+
+const MESSAGE_TRANSITIONS: Record<HandoffMessageState, readonly HandoffMessageState[]> = {
+  binding: ["queued", "cancelled"],
+  queued: ["dispatching", "waiting_operator", "cancelled"],
+  dispatching: ["delivered", "waiting_operator", "cancelled"],
+  delivered: [],
+  waiting_operator: ["cancelled"],
+  cancelled: [],
+};
+
 export interface Handoff {
   id: string;
   projectId: string;
   fromAppId: string;
   toAppId: string;
   state: HandoffState;
+  mode: HandoffMode;
+  messageSeq: number;
+  messageCount: number;
+  lastMessageAt: string | null;
+  threadIdleExpiresAt: string | null;
+  sourceInvokingSessionId: string | null;
   summary: string;
   spec: string;
   idempotencyKey: string;
@@ -123,14 +212,40 @@ export interface Handoff {
 }
 
 export class HandoffTransitionError extends Error {
-  constructor(from: HandoffState, to: HandoffState) {
+  constructor(from: string, to: string) {
     super(`Invalid handoff transition: ${from} -> ${to}`);
     this.name = "HandoffTransitionError";
   }
 }
 
+/** A compare-and-set transition found no row in the expected source state. */
+export class HandoffTransitionConflictError extends Error {
+  readonly id: string | number;
+  readonly from: string;
+  readonly to: string;
+
+  constructor(id: string | number, from: string, to: string) {
+    super(`Handoff transition conflict: ${id} is no longer ${from} (wanted ${to})`);
+    this.name = "HandoffTransitionConflictError";
+    this.id = id;
+    this.from = from;
+    this.to = to;
+  }
+}
+
 export function canTransition(from: HandoffState, to: HandoffState): boolean {
   return TRANSITIONS[from].includes(to);
+}
+
+export function canTransitionThread(from: HandoffState, to: HandoffState): boolean {
+  return THREAD_TRANSITIONS[from].includes(to);
+}
+
+export function canTransitionHandoffMessage(
+  from: HandoffMessageState,
+  to: HandoffMessageState,
+): boolean {
+  return MESSAGE_TRANSITIONS[from].includes(to);
 }
 
 export function isTerminalHandoffState(state: HandoffState): boolean {
@@ -159,6 +274,12 @@ export interface CreateHandoffInput {
  */
 export interface HandoffPatch {
   state?: HandoffState;
+  mode?: HandoffMode;
+  messageSeq?: number;
+  messageCount?: number;
+  lastMessageAt?: string | null;
+  threadIdleExpiresAt?: string | null;
+  sourceInvokingSessionId?: string | null;
   result?: string | null;
   error?: string | null;
   outcome?: HandoffOutcome | null;
@@ -194,6 +315,12 @@ interface HandoffRow {
   from_app_id: string;
   to_app_id: string;
   state: HandoffState;
+  mode: HandoffMode;
+  message_seq: number;
+  message_count: number;
+  last_message_at: string | null;
+  thread_idle_expires_at: string | null;
+  source_invoking_session_id: string | null;
   summary: string;
   spec: string;
   idempotency_key: string;
@@ -237,6 +364,12 @@ function rowToHandoff(row: HandoffRow): Handoff {
     fromAppId: row.from_app_id,
     toAppId: row.to_app_id,
     state: row.state,
+    mode: row.mode,
+    messageSeq: row.message_seq,
+    messageCount: row.message_count,
+    lastMessageAt: row.last_message_at,
+    threadIdleExpiresAt: row.thread_idle_expires_at,
+    sourceInvokingSessionId: row.source_invoking_session_id,
     summary: row.summary,
     spec: row.spec,
     idempotencyKey: row.idempotency_key,
@@ -276,6 +409,12 @@ function rowToHandoff(row: HandoffRow): Handoff {
 
 const PATCH_COLUMNS: ReadonlyArray<readonly [keyof HandoffPatch, string]> = [
   ["state", "state"],
+  ["mode", "mode"],
+  ["messageSeq", "message_seq"],
+  ["messageCount", "message_count"],
+  ["lastMessageAt", "last_message_at"],
+  ["threadIdleExpiresAt", "thread_idle_expires_at"],
+  ["sourceInvokingSessionId", "source_invoking_session_id"],
   ["result", "result"],
   ["error", "error"],
   ["outcome", "outcome"],
@@ -407,14 +546,17 @@ export function listHandoffs(db: SqliteDatabase, projectId?: string): Handoff[] 
   return rows.map(rowToHandoff);
 }
 
-/** Move any handoff whose expiry has passed into `expired`. Returns the number expired. */
+/**
+ * Move any one-shot handoff whose expiry has passed into `expired`. Returns the number expired.
+ * Threads use `thread_idle_expires_at` and the idle-expiry path instead.
+ */
 export function expireDueHandoffs(
   db: SqliteDatabase,
   now: string = new Date().toISOString(),
 ): number {
   const due = db
     .prepare(
-      "SELECT id FROM handoffs WHERE expires_at IS NOT NULL AND expires_at <= ? AND state IN ('queued','awaiting_approval')",
+      "SELECT id FROM handoffs WHERE mode = 'one_shot' AND expires_at IS NOT NULL AND expires_at <= ? AND state IN ('queued','awaiting_approval')",
     )
     .all(now) as { id: string }[];
   let expired = 0;
@@ -429,7 +571,10 @@ export function expireDueHandoffs(
   return expired;
 }
 
-/** Fail dispatched or running handoffs whose deadline passed. Returns the number failed. */
+/**
+ * Fail dispatched or running one-shot handoffs whose deadline passed, and thread starts that are
+ * still dispatching. An in-progress thread has no run deadline. Returns the number failed.
+ */
 export function failTimedOutHandoffs(
   db: SqliteDatabase,
   now: string = new Date().toISOString(),
@@ -437,9 +582,12 @@ export function failTimedOutHandoffs(
   const due = db
     .prepare(
       `SELECT id FROM handoffs
-       WHERE state IN ('dispatching','in_progress')
-         AND deadline_at IS NOT NULL
-         AND deadline_at <= ?`,
+       WHERE deadline_at IS NOT NULL
+         AND deadline_at <= ?
+         AND (
+           (mode = 'one_shot' AND state IN ('dispatching','in_progress'))
+           OR (mode = 'thread' AND state = 'dispatching')
+         )`,
     )
     .all(now) as { id: string }[];
   let failed = 0;

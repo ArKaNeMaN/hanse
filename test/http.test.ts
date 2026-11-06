@@ -685,6 +685,70 @@ describe("http API and assets", () => {
     expect(projects[0]?.apps).toHaveLength(2);
   });
 
+  it("projects only allowlisted handoff fields on public JSON routes", () => {
+    const f = fixture();
+    const expected = [
+      "createdAt",
+      "fromAppKey",
+      "id",
+      "lastMessageAt",
+      "messageCount",
+      "mode",
+      "state",
+      "summary",
+      "threadIdleExpiresAt",
+      "toAppKey",
+      "updatedAt",
+    ].sort();
+    const forbidden = [
+      "spec",
+      "result",
+      "operatorNote",
+      "error",
+      "sourceSessionId",
+      "targetSessionId",
+    ];
+
+    const projects = handleRequest(deps(f), { method: "GET", path: "/api/projects", headers: {} });
+    expect(projects.status).toBe(200);
+    const projectHandoffs = (
+      JSON.parse(projects.body) as {
+        projects: { handoffs: Record<string, unknown>[] }[];
+      }
+    ).projects[0]?.handoffs;
+    expect(projectHandoffs).toHaveLength(1);
+    expect(Object.keys(projectHandoffs?.[0] ?? {}).sort()).toEqual(expected);
+    for (const key of forbidden) {
+      expect(projectHandoffs?.[0]).not.toHaveProperty(key);
+    }
+
+    const anonymous = handleRequest(deps(f), {
+      method: "GET",
+      path: "/api/handoffs",
+      headers: {},
+    });
+    expect(anonymous.status).toBe(401);
+    const agentToken = createPrincipal(f.db, { kind: "agent", name: "web" }).token;
+    const agent = handleRequest(deps(f), {
+      method: "GET",
+      path: "/api/handoffs",
+      headers: auth(agentToken),
+    });
+    expect(agent.status).toBe(403);
+    const human = handleRequest(deps(f), {
+      method: "GET",
+      path: "/api/handoffs",
+      headers: auth(humanToken(f.db)),
+    });
+    expect(human.status).toBe(200);
+    const handoffs = (JSON.parse(human.body) as { handoffs: Record<string, unknown>[] }).handoffs;
+    expect(handoffs).toHaveLength(1);
+    expect(Object.keys(handoffs[0] ?? {}).sort()).toEqual(expected);
+    for (const key of forbidden) {
+      expect(handoffs[0]).not.toHaveProperty(key);
+    }
+  });
+
   it("rejects an unauthenticated mutation with 401", () => {
     const f = fixture();
     const response = handleRequest(deps(f), {
@@ -797,7 +861,7 @@ describe("http API and assets", () => {
         status: "ok",
         version: expect.any(String),
         revision: "unknown",
-        schemaVersion: 21,
+        schemaVersion: 22,
         deploying: false,
         inFlightLifecycle: 0,
       });

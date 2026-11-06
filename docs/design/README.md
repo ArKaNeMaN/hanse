@@ -58,6 +58,12 @@
   file-part projection, a human-only download route, large inline image cards, and a native
   `<dialog>` lightbox. Status: approved (`oracle` round 6 PASS after five revision rounds);
   implemented and verified (journal 0040); one pre-existing jsdom suite failure remains.
+- [Handoff threads](./handoff-threads.md) - stage-1 agent-originated multi-turn handoffs: one
+  `handoffs` header plus an ordered `handoff_messages` log, start-only approval, exact observed
+  binding, a per-thread/per-destination queue with no retry, idle TTL/message cap/operator cancel,
+  quotas and attempt events, the public handoff allowlist, and the agent-token gate. Deferred:
+  close/retry/relaunch/retarget, shared-session operator paths, target-initiated messages, and thread
+  UI/projection. Status: approved (`oracle` PASS); implemented and verified (journal 0041).
 - [Chat session tree](./chat-session-tree.md) - group `opencode` subagent sessions under their
   parent in the chat rail with disclosure chevrons, multi-level nesting, active-ancestor expansion,
   orphan/cycle handling, subtree delete cleanup, and a deferred realtime follow-up. Status:

@@ -708,7 +708,7 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
       rootPath: row.root_path,
       workspaceRoot: workspace,
       deleting: row.deleting === 1,
-      service: new CoordinatorService(db, row.id),
+      service: new CoordinatorService(db, row.id, handoffDispatcher?.threadLimits),
     }));
   };
   const git = new GitService({

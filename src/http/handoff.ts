@@ -165,7 +165,16 @@ function handleHandoffCancel(
     return fail(request, returnTo, 404, "Handoff not found.");
   }
   try {
-    new CoordinatorService(deps.db, handoff.projectId).cancelHandoff(handoff.id, principal);
+    const service = new CoordinatorService(
+      deps.db,
+      handoff.projectId,
+      deps.dispatcher?.threadLimits,
+    );
+    if (handoff.mode === "thread") {
+      service.cancelThread(handoff.id, principal);
+    } else {
+      service.cancelHandoff(handoff.id, principal);
+    }
     return wantsHtml(request)
       ? redirectWithNotice(returnTo, "Handoff cancelled.", "success")
       : json(200, { ok: true });
@@ -190,6 +199,10 @@ async function handleReplyAction(
   const returnTo = safeLocalPath(fields.return_to, "/handoffs");
   const handoffId = safeDecode(match[1] ?? "");
   const action = match[2];
+  const handoff = getHandoff(deps.db, handoffId);
+  if (handoff?.mode === "thread") {
+    return fail(request, returnTo, 409, "Thread replies are managed by the handoff queue.");
+  }
   if (deps.dispatcher === undefined) {
     return fail(
       request,

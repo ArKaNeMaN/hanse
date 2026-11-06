@@ -3,6 +3,7 @@ import { AuthError } from "../identity/auth.js";
 import type { Principal } from "../identity/principals.js";
 import type { SqliteDatabase } from "../store/index.js";
 import { getHandoff, transitionHandoff, updateHandoff } from "./handoff.js";
+import { ThreadError } from "./thread.js";
 
 export type ApprovalKind = "dispatch" | "reply";
 export type ApprovalState = "pending" | "approved" | "rejected" | "expired";
@@ -149,6 +150,36 @@ export function decideApproval(
       "UPDATE approvals SET state = ?, decided_at = ?, decided_by = ?, reason = ? WHERE id = ?",
     ).run(decision, now, principal.id, reason ?? null, approvalId);
     if (approval.kind === "dispatch") {
+      if (handoff.mode === "thread") {
+        const updated =
+          decision === "approved"
+            ? db
+                .prepare(
+                  "UPDATE handoffs SET state = 'dispatching', updated_at = ? WHERE id = ? AND state = 'awaiting_approval'",
+                )
+                .run(now, handoff.id)
+            : db
+                .prepare(
+                  "UPDATE handoffs SET state = 'rejected', error = ?, updated_at = ? WHERE id = ? AND state = 'awaiting_approval'",
+                )
+                .run("start_rejected", now, handoff.id);
+        if (updated.changes === 0) {
+          const current = getHandoff(db, handoff.id);
+          throw new ThreadError(
+            "approval_stale",
+            `Handoff ${handoff.id} is not awaiting dispatch approval (state: ${current?.state ?? "missing"})`,
+          );
+        }
+        if (decision === "rejected") {
+          db.prepare(
+            `UPDATE handoff_messages
+             SET state = 'cancelled', error_code = 'start_rejected', updated_at = ?
+             WHERE handoff_id = ? AND seq = 1 AND kind = 'request'
+               AND state IN ('binding','queued')`,
+          ).run(now, handoff.id);
+        }
+        return;
+      }
       if (handoff.state !== "awaiting_approval") {
         throw new Error(
           `Handoff ${handoff.id} is not awaiting dispatch approval (state: ${handoff.state})`,

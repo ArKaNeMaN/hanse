@@ -54,14 +54,14 @@ function insertProjectAndApp(db: ReturnType<typeof openDatabase>): void {
 describe("migration v6 app-images", () => {
   it("applies fresh migrations and defaults existing app inserts to missing", () => {
     const db = openDatabase(":memory:");
-    expect(runMigrations(db)).toBe(21);
+    expect(runMigrations(db)).toBe(22);
     expect(runMigrations(db)).toBe(0);
 
     const versions = db.prepare("SELECT version FROM schema_migrations ORDER BY version").all() as {
       version: number;
     }[];
     expect(versions.map((row) => row.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
     ]);
     const secretTables = (
       db
@@ -218,7 +218,7 @@ describe("migration v6 app-images", () => {
     insertProjectAndApp(db);
     expect(appColumns(db)).not.toContain("image_status");
 
-    expect(runMigrations(db)).toBe(16);
+    expect(runMigrations(db)).toBe(17);
 
     const row = db.prepare("SELECT image_status, image_error FROM apps WHERE id = 'a1'").get() as {
       image_status: string;
@@ -246,7 +246,7 @@ describe("migration v6 app-images", () => {
       "INSERT INTO instances (id, app_id, state, runtime_state, updated_at) VALUES ('a1','a1','running','running',?)",
     ).run(now);
 
-    expect(runMigrations(db)).toBe(12);
+    expect(runMigrations(db)).toBe(13);
 
     const row = db
       .prepare(
@@ -278,7 +278,7 @@ describe("migration v6 app-images", () => {
     expect(appColumns(db)).not.toContain("deleting");
     expect(projectColumns(db)).not.toContain("deleting");
 
-    expect(runMigrations(db)).toBe(11);
+    expect(runMigrations(db)).toBe(12);
 
     const app = db.prepare("SELECT deleting FROM apps WHERE id = 'a1'").get() as {
       deleting: number;
@@ -309,7 +309,7 @@ describe("migration v6 app-images", () => {
     insertProjectAndApp(db);
     expect(() => db.prepare("SELECT 1 FROM skills").get()).toThrow();
 
-    expect(runMigrations(db)).toBe(10);
+    expect(runMigrations(db)).toBe(11);
     expect(runMigrations(db)).toBe(0);
 
     const columns = (db.prepare("PRAGMA table_info(skills)").all() as Array<{ name: string }>).map(
@@ -354,7 +354,7 @@ describe("migration v6 app-images", () => {
     );
     db.prepare(
       "INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?, ?, ?, ?)",
-    ).run(22, "future", "future-checksum", now);
+    ).run(23, "future", "future-checksum", now);
 
     expect(() => runMigrations(db)).toThrowError(SchemaTooNewError);
     try {
@@ -362,11 +362,11 @@ describe("migration v6 app-images", () => {
     } catch (error) {
       expect(error).toMatchObject({
         code: "schema_too_new",
-        applied: 22,
-        known: 21,
+        applied: 23,
+        known: 22,
       });
+      expect((error as Error).message).toContain("23");
       expect((error as Error).message).toContain("22");
-      expect((error as Error).message).toContain("21");
     }
     expect(() => db.prepare("SELECT 1 FROM skills").get()).toThrow();
     db.close();
@@ -385,7 +385,7 @@ describe("migration v6 app-images", () => {
       db.exec(migration.sql);
       record.run(migration.version, migration.name, migrationChecksum(migration.sql), now);
     }
-    record.run(22, "future", "future-checksum", now);
+    record.run(23, "future", "future-checksum", now);
 
     expect(() => runMigrations(db)).toThrowError(SchemaTooNewError);
     expect(() => db.prepare("SELECT 1 FROM skills").get()).toThrow();
@@ -410,7 +410,7 @@ describe("migration v6 app-images", () => {
     try {
       runMigrations(db);
     } catch (error) {
-      expect(error).toMatchObject({ code: "unknown_migration", version: 0, knownMax: 21 });
+      expect(error).toMatchObject({ code: "unknown_migration", version: 0, knownMax: 22 });
     }
     db.close();
   });
@@ -459,7 +459,7 @@ describe("migration v6 app-images", () => {
       const reopened = openDatabase(file);
       const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
       try {
-        expect(runMigrations(reopened)).toBe(9);
+        expect(runMigrations(reopened)).toBe(10);
         expect(runMigrations(reopened)).toBe(0);
         expect(warn).not.toHaveBeenCalled();
       } finally {
@@ -468,7 +468,7 @@ describe("migration v6 app-images", () => {
       const max = reopened
         .prepare("SELECT MAX(version) AS version FROM schema_migrations")
         .get() as { version: number };
-      expect(max.version).toBe(21);
+      expect(max.version).toBe(22);
       const skill = reopened
         .prepare("SELECT license, compatibility, metadata_json FROM skills WHERE name = 'review'")
         .get() as { license: string | null; compatibility: string | null; metadata_json: string };
@@ -531,7 +531,7 @@ describe("migration v6 app-images", () => {
     const file = path.join(dir, "coordinator.db");
     try {
       const first = openDatabase(file);
-      expect(runMigrations(first)).toBe(21);
+      expect(runMigrations(first)).toBe(22);
       first.close();
 
       const reopened = openDatabase(file);
@@ -545,7 +545,7 @@ describe("migration v6 app-images", () => {
       const max = reopened
         .prepare("SELECT MAX(version) AS version FROM schema_migrations")
         .get() as { version: number };
-      expect(max.version).toBe(21);
+      expect(max.version).toBe(22);
       reopened.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -556,7 +556,7 @@ describe("migration v6 app-images", () => {
 describe("migration v19 custom model providers", () => {
   it("adds the model_providers table with JSON and npm checks", () => {
     const db = openDatabase(":memory:");
-    expect(runMigrations(db)).toBe(21);
+    expect(runMigrations(db)).toBe(22);
     expect(tableColumns(db, "model_providers")).toEqual([
       "id",
       "name",
@@ -610,7 +610,7 @@ describe("migration v19 custom model providers", () => {
       db.exec(migration.sql);
       record.run(migration.version, migration.name, migrationChecksum(migration.sql), now);
     }
-    expect(runMigrations(db)).toBe(3);
+    expect(runMigrations(db)).toBe(4);
     expect(tableColumns(db, "model_providers")).toContain("id");
     db.close();
   });
@@ -638,7 +638,7 @@ function namedIndexes(db: ReturnType<typeof openDatabase>): string[] {
 describe("migration v15 chat drafts and pending sends", () => {
   it("applies from an empty database with tables, indexes, defaults, and constraints", () => {
     const db = openDatabase(":memory:");
-    expect(runMigrations(db)).toBe(21);
+    expect(runMigrations(db)).toBe(22);
     expect(runMigrations(db)).toBe(0);
 
     const tables = (
@@ -748,13 +748,13 @@ describe("migration v15 chat drafts and pending sends", () => {
 
     expect(() => db.prepare("SELECT 1 FROM message_drafts").get()).toThrow();
 
-    expect(runMigrations(db)).toBe(7);
+    expect(runMigrations(db)).toBe(8);
     expect(runMigrations(db)).toBe(0);
 
     const max = db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as {
       version: number;
     };
-    expect(max.version).toBe(21);
+    expect(max.version).toBe(22);
     expect(namedIndexes(db)).toEqual(["pending_sends_session_state", "session_state_activity"]);
     expect(db.prepare("SELECT id FROM handoffs WHERE id = 'h1'").get()).toEqual({ id: "h1" });
     expect(db.prepare("SELECT id FROM apps WHERE id = 'a1'").get()).toEqual({ id: "a1" });
@@ -788,7 +788,7 @@ function indexColumns(db: ReturnType<typeof openDatabase>, name: string): string
 describe("migration v16 chat attachments and deliveries", () => {
   it("applies from an empty database with tables, columns, and indexes", () => {
     const db = openDatabase(":memory:");
-    expect(runMigrations(db)).toBe(21);
+    expect(runMigrations(db)).toBe(22);
     expect(runMigrations(db)).toBe(0);
 
     const tables = (
@@ -895,13 +895,13 @@ describe("migration v16 chat attachments and deliveries", () => {
     ).run(now);
     expect(() => db.prepare("SELECT 1 FROM app_attachments").get()).toThrow();
 
-    expect(runMigrations(db)).toBe(6);
+    expect(runMigrations(db)).toBe(7);
     expect(runMigrations(db)).toBe(0);
 
     const max = db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as {
       version: number;
     };
-    expect(max.version).toBe(21);
+    expect(max.version).toBe(22);
     expect(db.prepare("SELECT id FROM apps WHERE id = 'a1'").get()).toEqual({ id: "a1" });
     expect(db.prepare("SELECT text FROM message_drafts WHERE app_id = 'a1'").get()).toEqual({
       text: "draft",
@@ -1074,7 +1074,7 @@ describe("migration v16 chat attachments and deliveries", () => {
 describe("migration v18 agent image validity", () => {
   it("adds durable build identity columns with defaults and constraints", () => {
     const db = openDatabase(":memory:");
-    expect(runMigrations(db)).toBe(21);
+    expect(runMigrations(db)).toBe(22);
     insertProjectAndApp(db);
 
     const app = db
@@ -1174,11 +1174,11 @@ describe("migration v18 agent image validity", () => {
     expect(appColumns(db)).not.toContain("build_configured");
     expect(tableColumns(db, "app_image_versions")).not.toContain("hash_version");
 
-    expect(runMigrations(db)).toBe(4);
+    expect(runMigrations(db)).toBe(5);
     expect(runMigrations(db)).toBe(0);
 
     expect(db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get()).toEqual({
-      version: 21,
+      version: 22,
     });
     expect(
       db
@@ -1230,7 +1230,7 @@ describe("migration v18 agent image validity", () => {
 describe("migration v20 agent process protection", () => {
   it("adds instances columns, session tables, indexes, and constraints", () => {
     const db = openDatabase(":memory:");
-    expect(runMigrations(db)).toBe(21);
+    expect(runMigrations(db)).toBe(22);
     expect(runMigrations(db)).toBe(0);
 
     const instanceColumns = tableColumns(db, "instances");
@@ -1370,7 +1370,7 @@ describe("migration v20 agent process protection", () => {
     expect(tableColumns(db, "instances")).not.toContain("applied_rule_hash");
     expect(() => db.prepare("SELECT 1 FROM session_resume").get()).toThrow();
 
-    expect(runMigrations(db)).toBe(2);
+    expect(runMigrations(db)).toBe(3);
     expect(runMigrations(db)).toBe(0);
 
     expect(
@@ -1398,6 +1398,337 @@ describe("migration v20 agent process protection", () => {
     });
     expect(db.prepare("SELECT COUNT(*) AS count FROM session_resume").get()).toEqual({ count: 0 });
     expect(db.prepare("SELECT COUNT(*) AS count FROM session_notices").get()).toEqual({ count: 0 });
+    db.close();
+  });
+});
+
+describe("migration v22 handoff threads", () => {
+  it("adds the handoff header columns and message defaults", () => {
+    const db = openDatabase(":memory:");
+    expect(runMigrations(db)).toBe(22);
+    expect(runMigrations(db)).toBe(0);
+
+    const handoffColumns = tableColumns(db, "handoffs");
+    for (const column of [
+      "mode",
+      "message_seq",
+      "message_count",
+      "last_message_at",
+      "thread_idle_expires_at",
+      "source_invoking_session_id",
+    ]) {
+      expect(handoffColumns).toContain(column);
+    }
+
+    const messageColumns = tableColumns(db, "handoff_messages");
+    for (const column of [
+      "seq",
+      "author_app_id",
+      "author_side",
+      "state",
+      "outcome",
+      "delivery_session_id",
+      "delivery_message_id",
+      "delivered_at",
+      "claimed_at",
+      "client_message_id",
+      "binding_nonce",
+      "bound_session_id",
+      "bound_at",
+      "invoking_session_id",
+      "reply_to_message_id",
+      "error_code",
+      "updated_at",
+    ]) {
+      expect(messageColumns).toContain(column);
+    }
+
+    insertProjectAndApp(db);
+    db.prepare(
+      `INSERT INTO handoffs
+         (id, project_id, from_app_id, to_app_id, state, summary, spec, idempotency_key,
+          created_at, updated_at)
+       VALUES ('h1', 'p', 'a1', 'a1', 'queued', 's', 'spec', 'idem-1', ?, ?)`,
+    ).run(now, now);
+    expect(
+      db
+        .prepare(
+          `SELECT mode, message_seq, message_count, last_message_at, thread_idle_expires_at,
+                  source_invoking_session_id
+           FROM handoffs WHERE id = 'h1'`,
+        )
+        .get(),
+    ).toEqual({
+      mode: "one_shot",
+      message_seq: 0,
+      message_count: 0,
+      last_message_at: null,
+      thread_idle_expires_at: null,
+      source_invoking_session_id: null,
+    });
+
+    db.prepare(
+      "INSERT INTO handoff_messages (handoff_id, seq, kind, body, created_at) VALUES ('h1', 1, 'request', 'body', ?)",
+    ).run(now);
+    expect(
+      db
+        .prepare(
+          "SELECT state, author_side, outcome, delivery_session_id, reply_to_message_id FROM handoff_messages WHERE handoff_id = 'h1'",
+        )
+        .get(),
+    ).toEqual({
+      state: "binding",
+      author_side: "system",
+      outcome: null,
+      delivery_session_id: null,
+      reply_to_message_id: null,
+    });
+    db.close();
+  });
+
+  it("enforces seq, dispatch-session, reply_to, and body triggers", () => {
+    const db = openDatabase(":memory:");
+    runMigrations(db);
+    insertProjectAndApp(db);
+    db.prepare(
+      `INSERT INTO handoffs
+         (id, project_id, from_app_id, to_app_id, state, summary, spec, idempotency_key,
+          created_at, updated_at)
+       VALUES ('h1', 'p', 'a1', 'a1', 'queued', 's', 'spec', 'idem-1', ?, ?)`,
+    ).run(now, now);
+    db.prepare(
+      `INSERT INTO handoffs
+         (id, project_id, from_app_id, to_app_id, state, summary, spec, idempotency_key,
+          created_at, updated_at)
+       VALUES ('h2', 'p', 'a1', 'a1', 'queued', 's', 'spec', 'idem-2', ?, ?)`,
+    ).run(now, now);
+
+    const insert = db.prepare(
+      "INSERT INTO handoff_messages (handoff_id, seq, kind, body, author_side, state, delivery_session_id, reply_to_message_id, created_at) " +
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    );
+
+    expect(() =>
+      insert.run("h1", 0, "request", "body", "source", "binding", null, null, now),
+    ).toThrow();
+    expect(() =>
+      insert.run("h1", -1, "request", "body", "source", "binding", null, null, now),
+    ).toThrow();
+    insert.run("h1", 1, "request", "body", "source", "binding", null, null, now);
+    expect(() =>
+      db.prepare("UPDATE handoff_messages SET seq = 2 WHERE handoff_id = 'h1' AND seq = 1").run(),
+    ).toThrow();
+    expect(() =>
+      db.prepare("UPDATE handoff_messages SET seq = 1 WHERE handoff_id = 'h1' AND seq = 1").run(),
+    ).not.toThrow();
+
+    expect(() =>
+      insert.run("h1", 2, "request", "body", "source", "dispatching", null, null, now),
+    ).toThrow();
+    insert.run("h1", 2, "request", "body", "source", "dispatching", "ses-target", null, now);
+    insert.run("h1", 3, "request", "body", "source", "queued", null, null, now);
+    expect(() =>
+      db
+        .prepare(
+          "UPDATE handoff_messages SET state = 'dispatching' WHERE handoff_id = 'h1' AND seq = 3",
+        )
+        .run(),
+    ).toThrow();
+    db.prepare(
+      "UPDATE handoff_messages SET state = 'dispatching', delivery_session_id = 'ses-target-2' WHERE handoff_id = 'h1' AND seq = 3",
+    ).run();
+
+    insert.run("h1", 4, "reply", "body", "target", "delivered", "ses-source", 2, now);
+    insert.run("h1", 5, "request", "body", "source", "queued", null, null, now);
+    expect(() => insert.run("h1", 6, "reply", "body", "target", "binding", null, 5, now)).toThrow();
+    insert.run("h1", 7, "reply", "body", "target", "delivered", null, null, now);
+    expect(() => insert.run("h1", 8, "reply", "body", "target", "binding", null, 7, now)).toThrow();
+    insert.run("h2", 1, "request", "body", "source", "delivered", null, null, now);
+    const otherThreadParent = Number(
+      (
+        db.prepare("SELECT id FROM handoff_messages WHERE handoff_id = 'h2' AND seq = 1").get() as {
+          id: number;
+        }
+      ).id,
+    );
+    expect(() =>
+      insert.run("h1", 9, "reply", "body", "target", "binding", null, otherThreadParent, now),
+    ).toThrow();
+
+    insert.run("h1", 10, "request", "x".repeat(32768), "source", "binding", null, null, now);
+    expect(() =>
+      insert.run("h1", 11, "request", "x".repeat(32769), "source", "binding", null, null, now),
+    ).toThrow();
+    expect(() =>
+      db
+        .prepare("UPDATE handoff_messages SET body = ? WHERE handoff_id = 'h1' AND seq = 10")
+        .run("x".repeat(32769)),
+    ).toThrow();
+    db.close();
+  });
+
+  it("creates all v22 indexes", () => {
+    const db = openDatabase(":memory:");
+    runMigrations(db);
+    const expected = [
+      "events_scope_type_created",
+      "handoff_messages_author_created",
+      "handoff_messages_client",
+      "handoff_messages_delivery_message",
+      "handoff_messages_delivery_session",
+      "handoff_messages_due",
+      "handoff_messages_one_dispatch_per_session",
+      "handoff_messages_reply_once",
+      "handoff_messages_reply_to",
+      "handoff_messages_thread_seq",
+      "handoffs_active_thread_pair",
+      "handoffs_deadline",
+      "handoffs_thread_gc",
+      "handoffs_thread_idle",
+      "handoffs_thread_source_app",
+      "handoffs_thread_target_app",
+    ];
+    const rows = db
+      .prepare(
+        `SELECT name FROM sqlite_master
+         WHERE type = 'index' AND name IN (${expected.map(() => "?").join(", ")})
+         ORDER BY name`,
+      )
+      .all(...expected) as Array<{ name: string }>;
+    expect(rows.map((row) => row.name)).toEqual([...expected].sort());
+    db.close();
+  });
+
+  it("upgrades a v21 database without rebuilding and preserves one-shot rows", () => {
+    const db = openDatabase(":memory:");
+    db.exec(
+      "CREATE TABLE schema_migrations (" +
+        "version INTEGER PRIMARY KEY, name TEXT NOT NULL, checksum TEXT NOT NULL, applied_at TEXT NOT NULL)",
+    );
+    const record = db.prepare(
+      "INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?, ?, ?, ?)",
+    );
+    for (const migration of MIGRATIONS.filter((candidate) => candidate.version <= 21)) {
+      db.exec(migration.sql);
+      record.run(migration.version, migration.name, migrationChecksum(migration.sql), now);
+    }
+    insertProjectAndApp(db);
+    db.prepare(
+      `INSERT INTO handoffs
+         (id, project_id, from_app_id, to_app_id, state, summary, spec, idempotency_key,
+          created_at, updated_at, source_session_id, target_session_id)
+       VALUES ('h1', 'p', 'a1', 'a1', 'in_progress', 's', 'spec', 'idem-1', ?, ?, 'ses-src', 'ses-tgt')`,
+    ).run(now, now);
+    expect(tableColumns(db, "handoffs")).not.toContain("mode");
+    expect(db.prepare("SELECT COUNT(*) AS count FROM handoff_messages").get()).toEqual({
+      count: 0,
+    });
+
+    expect(runMigrations(db)).toBe(1);
+    expect(runMigrations(db)).toBe(0);
+
+    expect(tableColumns(db, "handoffs")).toContain("mode");
+    expect(db.prepare("SELECT COUNT(*) AS count FROM handoff_messages").get()).toEqual({
+      count: 0,
+    });
+    expect(
+      db
+        .prepare(
+          `SELECT id, state, source_session_id, target_session_id, mode, message_seq,
+                  message_count, last_message_at, thread_idle_expires_at,
+                  source_invoking_session_id
+           FROM handoffs WHERE id = 'h1'`,
+        )
+        .get(),
+    ).toEqual({
+      id: "h1",
+      state: "in_progress",
+      source_session_id: "ses-src",
+      target_session_id: "ses-tgt",
+      mode: "one_shot",
+      message_seq: 0,
+      message_count: 0,
+      last_message_at: null,
+      thread_idle_expires_at: null,
+      source_invoking_session_id: null,
+    });
+    db.close();
+  });
+
+  it("sets author_app_id and reply_to_message_id to null on delete", () => {
+    const db = openDatabase(":memory:");
+    runMigrations(db);
+    insertProjectAndApp(db);
+    for (const [id, key] of [
+      ["a2", "b"],
+      ["a3", "c"],
+      ["a4", "d"],
+    ]) {
+      db.prepare(
+        "INSERT INTO apps (id,project_id,app_key,path,contract,created_at) VALUES (?, 'p', ?, 'apps/x', 'AGENTS.md', ?)",
+      ).run(id, key, now);
+    }
+    db.prepare(
+      `INSERT INTO handoffs
+         (id, project_id, from_app_id, to_app_id, state, summary, spec, idempotency_key,
+          created_at, updated_at)
+       VALUES ('h1', 'p', 'a1', 'a2', 'queued', 's', 'spec', 'idem-1', ?, ?)`,
+    ).run(now, now);
+    db.prepare(
+      `INSERT INTO handoff_messages
+         (handoff_id, seq, kind, body, author_side, author_app_id, state, delivery_session_id,
+          created_at)
+       VALUES ('h1', 1, 'request', 'body', 'source', 'a3', 'dispatching', 'ses-target', ?)`,
+    ).run(now);
+    const parentId = Number(
+      (
+        db.prepare("SELECT id FROM handoff_messages WHERE handoff_id = 'h1' AND seq = 1").get() as {
+          id: number;
+        }
+      ).id,
+    );
+    db.prepare(
+      `INSERT INTO handoff_messages
+         (handoff_id, seq, kind, body, author_side, author_app_id, state, reply_to_message_id,
+          created_at)
+       VALUES ('h1', 2, 'reply', 'reply', 'target', 'a4', 'delivered', ?, ?)`,
+    ).run(parentId, now);
+
+    db.prepare("DELETE FROM apps WHERE id = 'a3'").run();
+    expect(db.prepare("SELECT author_app_id FROM handoff_messages WHERE seq = 1").get()).toEqual({
+      author_app_id: null,
+    });
+    db.prepare("DELETE FROM apps WHERE id = 'a4'").run();
+    expect(db.prepare("SELECT author_app_id FROM handoff_messages WHERE seq = 2").get()).toEqual({
+      author_app_id: null,
+    });
+    db.prepare("DELETE FROM handoff_messages WHERE id = ?").run(parentId);
+    expect(
+      db.prepare("SELECT reply_to_message_id FROM handoff_messages WHERE seq = 2").get(),
+    ).toEqual({ reply_to_message_id: null });
+    db.close();
+  });
+
+  it("keeps the active-pair index inert for distinct fresh targets", () => {
+    const db = openDatabase(":memory:");
+    runMigrations(db);
+    insertProjectAndApp(db);
+    const insert = db.prepare(
+      `INSERT INTO handoffs
+         (id, project_id, from_app_id, to_app_id, state, summary, spec, idempotency_key,
+          source_session_id, target_session_id, mode, created_at, updated_at)
+       VALUES (?, 'p', 'a1', 'a1', 'in_progress', 's', 'spec', ?, 'ses-src', ?, 'thread', ?, ?)`,
+    );
+    insert.run("h1", "idem-1", "ses-tgt-1", now, now);
+    insert.run("h2", "idem-2", "ses-tgt-2", now, now);
+    expect(
+      db.prepare("SELECT COUNT(*) AS count FROM handoffs WHERE mode = 'thread'").get(),
+    ).toEqual({ count: 2 });
+
+    const index = indexDetails(db, "handoffs").find(
+      (row) => row.name === "handoffs_active_thread_pair",
+    );
+    expect(index).toMatchObject({ name: "handoffs_active_thread_pair", unique: 1, partial: 1 });
     db.close();
   });
 });

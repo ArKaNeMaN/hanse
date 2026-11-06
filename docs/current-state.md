@@ -1,6 +1,6 @@
 # Hanse - Current State (read this first)
 
-> Last updated: 2026-11-01. This is the canonical description of what is **implemented right now**.
+> Last updated: 2026-11-06. This is the canonical description of what is **implemented right now**.
 > If this document and the code disagree, the code wins - update this document.
 > History and rationale: `docs/design/overview.md`, `docs/plans/0001-core.md`,
 > `docs/journal/0001-core.md`. Deployment: `docs/deployment.md`.
@@ -504,10 +504,11 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   order; migrations v10 (applied settings/profile state), v11 (deletion markers), v12 (skills),
   v13 (skill bundles), v14 (session-bound handoffs, reply routing, and handoff policy), and v15
   (chat drafts, session state, and pending sends) and v16 (file-only attachments and deliveries)
-  follow. The current schema versions are `[1..21]` (v17 adds handoff message-id lookup indexes;
+  follow. The current schema versions are `[1..22]` (v17 adds handoff message-id lookup indexes;
   v18 adds agent image validity; v19 adds the global custom model provider registry; v20 adds the
   process-rule hash, runtime epoch/exit fields, and the session resume/notice tables; v21 adds
-  `agent_media` for agent-published chat images).
+  `agent_media` for agent-published chat images; v22 adds the handoff-thread header fields, ordered
+  `handoff_messages` columns, triggers, and indexes).
 - Live on `deployment-host` (`sha-e2d89a2`): a temporary SSH target pinned and authenticated, an approval was
   approved, `echo QA_OK` and a 65 s `sleep` succeeded, upload/download round-tripped, a real
   `opencode` turn called `hanse_ssh_exec` and received the result after 65 s, and audit rows survived
@@ -1155,6 +1156,29 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   coordinator (5 s tick), starts a stopped target app, creates a session titled after the handoff, and
   enforces a 5-minute dispatch-start deadline, a 2-hour run deadline, a 10-minute source-binding
   deadline, and an 8-hop chain depth limit.
+- **Stage-1 threads.** `request_sibling_change(mode="thread")` creates one `handoffs` header plus an
+  ordered `handoff_messages` log: the initial request has `seq=1`, body equal to the exact validated
+  spec bytes, and state `binding`. Source follow-ups use `send_handoff_message`; target replies use
+  `deliver_handoff` with required `reply_to`, one non-cancelled reply per source-authored message.
+  Thread headers use `queued -> awaiting_approval|dispatching -> in_progress -> expired|cancelled`;
+  `rejected`/`failed` are start outcomes only. A start failure is the only thread `failed` path;
+  a delivery failure parks the message in `waiting_operator`. The initial request and later messages
+  are delivered by a generic queue with strict per-thread head-of-line ordering, one dispatching
+  message per destination, and no retry/requeue.
+- Thread binding observes the exact managed MCP tool name, exact completed tool part, and a
+  coordinator nonce; it resolves the observed session to its durable root through a bounded,
+  cycle-safe `listSessions` parent walk (`parentID`, depth 8). Wrong session/nonce cancels only the
+  submitted message; the initial request is the exception and fails the start. Source sessions are
+  never renamed; threads record `source_session_title`, one-shot keeps it null.
+- Thread limits: 24 h idle TTL, 32 messages including seq 1, 32 KiB spec/body, 512-byte summary,
+  5-minute stale dispatch, 8 active threads per source app, 32 pending starts plus queued messages
+  per target app, 10 starts+messages/min per app, 20 failure events/hour, and 30-day terminal GC in
+  batches of 100. Mutating thread tools write count-only `handoff.thread.attempt` events
+  `{appId,tool,outcome}`; `handoff_status` and one-shot writes none.
+- Threads end only by idle TTL, the 32-message cap (further appends reject; the thread stays open),
+  or human operator cancel. Cancel is soft and atomic. Operator handoffs remain one-shot; thread
+  close/retry/relaunch/retarget/shared-session and target-initiated messages are not implemented.
+
 - Policy lives in the `handoff_policies` table (project default plus directed pair rules with `*`
   wildcards). Dispatch modes are `auto`, `approve`, and `deny`; reply modes are `auto` and `approve`.
   Precedence is exact pair > one wildcard > project default > built-in `auto/auto`. A rule always wins
@@ -1179,12 +1203,21 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
 - Human-only API: `POST /api/handoffs/:id/decision` (optional `approval_kind=dispatch|reply`),
   `POST /api/handoffs/:id/reply/relaunch|deliver|cancel`, `POST /api/handoffs/:id/cancel`,
   `POST /api/projects/:id/handoff-policy`, `POST /api/projects/:id/handoff-policy/delete`, and
-  `GET /api/projects/:id/handoff-policy`. Agent tokens get `403` outside `/internal/mcp`.
-- Not implemented: multi-turn negotiation (one reply per handoff), cross-project handoffs, worktree
-  isolation between concurrent target sessions, automatic routing of the target's interactive
-  questions, failure/rejection notifications back into the source session (the operator sees failed
-  or rejected handoffs), and hard cancellation (there is no abort wrapper for an opencode turn; cancel
-  is soft).
+  `GET /api/projects/:id/handoff-policy`. Thread cancel is the same human-only cancel route.
+- Public JSON: `GET /api/projects` stays public but every `projects[].handoffs` entry uses
+  `publicHandoffProjection` (`id`, `state`, `summary`, `fromAppKey`, `toAppKey`, `createdAt`,
+  `updatedAt`, `lastMessageAt`, `threadIdleExpiresAt`, `mode`, `messageCount`). `GET /api/handoffs`
+  is human-only and returns the same allowlist. Human `/api/ui/*` props keep full operator fields.
+- Agent-token gate: a valid per-app agent token is rejected with `403` on every non-MCP HTTP route and
+  every WebSocket upgrade; exact `/internal/mcp` is exempt. A valid agent token wins over a human
+  cookie; invalid tokens do not trigger the gate. The handler-level check remains defense in depth.
+- Not implemented: thread close/`close_handoff`, per-message retry/resend, relaunch/retarget/
+  failThread, the shared-session operator path, target-initiated messages, thread chat projection/UI,
+  cross-project or same-app threads, worktree isolation between concurrent target sessions, automatic
+  routing of the target's interactive questions, failure/rejection notifications back into the source
+  session (the operator sees failed/rejected handoffs), and hard cancellation (there is no abort
+  wrapper for an opencode turn; cancel is soft). The one-shot envelope/security redesign remains
+  deferred; its pre-existing note/redaction risks remain residual.
 
 ## Web IDE
 

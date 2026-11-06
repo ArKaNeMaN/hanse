@@ -56,6 +56,30 @@ describe("CoordinatorService", () => {
     db.close();
   });
 
+  it("keeps legacy one-shot input compatibility for long content and keys", () => {
+    const { db, service } = fixture();
+    const summary = "s".repeat(2_000);
+    const spec = "x".repeat(64 * 1024);
+    const idempotencyKey = "legacy key/with spaces+ü";
+    const result = service.requestSiblingChange({
+      fromAppKey: "a",
+      toAppKey: "b",
+      summary,
+      spec,
+      idempotencyKey,
+    });
+    const handoff = getHandoff(db, result.handoffId);
+    expect(handoff).toMatchObject({
+      mode: "one_shot",
+      summary,
+      spec,
+      idempotencyKey,
+      messageSeq: 0,
+      messageCount: 0,
+    });
+    db.close();
+  });
+
   it("opens an approval when approval is required", () => {
     const { db, service } = fixture();
     const { handoffId } = service.requestSiblingChange({

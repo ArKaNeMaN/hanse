@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { getPendingApproval } from "../src/coordinator/approval.js";
 import {
   deleteHandoffPolicy,
   HandoffPolicyError,
@@ -9,6 +10,7 @@ import {
   resolveHandoffPolicy,
   setHandoffPolicy,
 } from "../src/coordinator/policy.js";
+import { CoordinatorService } from "../src/coordinator/service.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
 
 const dirs: string[] = [];
@@ -143,6 +145,92 @@ describe("handoff policy", () => {
     expect(deleteHandoffPolicy(db, "p", "a", "b")).toBe(true);
     expect(deleteHandoffPolicy(db, "p", "a", "b")).toBe(false);
     expect(listHandoffPolicies(db, "p")).toEqual([]);
+    db.close();
+  });
+
+  it("folds reply approval into a thread start and keeps deny authoritative", () => {
+    const db = fixture();
+    const service = new CoordinatorService(db, "p");
+    const cases: Array<{
+      dispatch: "auto" | "approve" | "deny";
+      reply: "auto" | "approve";
+      requiresApproval: boolean;
+      status: string;
+      approval: boolean;
+    }> = [
+      {
+        dispatch: "auto",
+        reply: "auto",
+        requiresApproval: false,
+        status: "queued",
+        approval: false,
+      },
+      {
+        dispatch: "auto",
+        reply: "approve",
+        requiresApproval: false,
+        status: "awaiting_approval",
+        approval: true,
+      },
+      {
+        dispatch: "approve",
+        reply: "auto",
+        requiresApproval: false,
+        status: "awaiting_approval",
+        approval: true,
+      },
+      {
+        dispatch: "deny",
+        reply: "approve",
+        requiresApproval: false,
+        status: "denied",
+        approval: false,
+      },
+      {
+        dispatch: "auto",
+        reply: "auto",
+        requiresApproval: true,
+        status: "awaiting_approval",
+        approval: true,
+      },
+      {
+        dispatch: "approve",
+        reply: "auto",
+        requiresApproval: false,
+        status: "awaiting_approval",
+        approval: true,
+      },
+      {
+        dispatch: "deny",
+        reply: "auto",
+        requiresApproval: true,
+        status: "denied",
+        approval: false,
+      },
+    ];
+
+    cases.forEach((entry, index) => {
+      setHandoffPolicy(db, {
+        projectId: "p",
+        fromAppKey: "a",
+        toAppKey: "b",
+        dispatchMode: entry.dispatch,
+        replyMode: entry.reply,
+      });
+      const result = service.requestSiblingChange({
+        fromAppKey: "a",
+        toAppKey: "b",
+        summary: `policy ${index}`,
+        spec: `spec ${index}`,
+        mode: "thread",
+        idempotencyKey: `policy-${index}`,
+        requiresApproval: entry.requiresApproval,
+      });
+      expect(result.status).toBe(entry.status);
+      expect(getPendingApproval(db, result.handoffId, "dispatch") !== undefined).toBe(
+        entry.approval,
+      );
+    });
     db.close();
   });
 });

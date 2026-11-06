@@ -4,7 +4,7 @@ import { type ApprovalKind, decideApproval, getPendingApproval } from "../coordi
 import type { DeletionService } from "../coordinator/deletion.js";
 import type { DeploymentLock } from "../coordinator/deployment-lock.js";
 import type { HandoffDispatcher } from "../coordinator/dispatcher.js";
-import { getHandoff } from "../coordinator/handoff.js";
+import { getHandoff, type Handoff } from "../coordinator/handoff.js";
 import type { LifecycleActivity } from "../coordinator/lifecycle-activity.js";
 import {
   addApplication,
@@ -384,6 +384,47 @@ function pendingApprovalId(
 
 function projectViews(deps: HttpDeps): ReturnType<typeof buildSite>["projects"] {
   return buildSite(deps).projects;
+}
+
+export interface PublicHandoffProjection {
+  id: string;
+  state: Handoff["state"];
+  summary: string;
+  fromAppKey: string;
+  toAppKey: string;
+  createdAt: string;
+  updatedAt: string;
+  lastMessageAt: string | null;
+  threadIdleExpiresAt: string | null;
+  mode: Handoff["mode"];
+  messageCount: number;
+}
+
+function appKeyFor(db: SqliteDatabase, appId: string): string {
+  const row = db.prepare("SELECT app_key FROM apps WHERE id = ?").get(appId) as
+    | { app_key: string }
+    | undefined;
+  return row?.app_key ?? appId;
+}
+
+/** The exact allowlist for handoffs on unauthenticated JSON surfaces. */
+export function publicHandoffProjection(
+  db: SqliteDatabase,
+  handoff: Handoff,
+): PublicHandoffProjection {
+  return {
+    id: handoff.id,
+    state: handoff.state,
+    summary: handoff.summary,
+    fromAppKey: appKeyFor(db, handoff.fromAppId),
+    toAppKey: appKeyFor(db, handoff.toAppId),
+    createdAt: handoff.createdAt,
+    updatedAt: handoff.updatedAt,
+    lastMessageAt: handoff.lastMessageAt,
+    threadIdleExpiresAt: handoff.threadIdleExpiresAt,
+    mode: handoff.mode,
+    messageCount: handoff.messageCount,
+  };
 }
 
 function decisionFor(
@@ -941,13 +982,28 @@ function route(deps: HttpDeps, request: HttpRequest): HttpResponse {
   }
 
   if (request.method === "GET" && request.path === "/api/projects") {
-    return json(200, {
-      projects: projectViews(deps).filter((project) => project.builtin !== true),
-    });
+    const projects = projectViews(deps)
+      .filter((project) => project.builtin !== true)
+      .map((project) => ({
+        ...project,
+        handoffs: project.handoffs.map((handoff) => publicHandoffProjection(deps.db, handoff)),
+      }));
+    return json(200, { projects });
   }
   if (request.method === "GET" && request.path === "/api/handoffs") {
+    const principal = principalFrom(deps, request);
+    if (principal === undefined) {
+      return json(401, { error: "sign in required" });
+    }
+    if (principal.kind !== "human") {
+      return json(403, { error: "only a human principal may list handoffs" });
+    }
     const site = buildSite(deps);
-    return json(200, { handoffs: site.projects.flatMap((project) => project.handoffs) });
+    return json(200, {
+      handoffs: site.projects.flatMap((project) =>
+        project.handoffs.map((handoff) => publicHandoffProjection(deps.db, handoff)),
+      ),
+    });
   }
 
   if (request.method === "POST" && decisionFor(request.method, request.path) !== undefined) {

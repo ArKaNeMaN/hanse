@@ -8,6 +8,7 @@ import net from "node:net";
 import path from "node:path";
 import type { Duplex } from "node:stream";
 import { gzipSync } from "node:zlib";
+import { verifyAgentToken } from "../mcp/agent-tokens.js";
 import { handleAgentMediaDownload } from "./agent-media.js";
 import { findApp } from "./apps.js";
 import { isHumanCookie } from "./auth.js";
@@ -118,6 +119,27 @@ function readBody(request: IncomingMessage, maxBytes: number): Promise<string> {
       }
     });
   });
+}
+
+function presentedBearer(request: IncomingMessage): string | undefined {
+  const match = /^Bearer\s+(.+)$/i.exec(request.headers.authorization?.trim() ?? "");
+  const token = match?.[1]?.trim();
+  return token === undefined || token.length === 0 ? undefined : token;
+}
+
+function isManagedAgentToken(deps: HttpDeps, request: IncomingMessage): boolean {
+  const token = presentedBearer(request);
+  return token !== undefined && verifyAgentToken(deps.db, token) !== undefined;
+}
+
+function rejectAgentToken(response: ServerResponse): void {
+  response.writeHead(403, { "content-type": "application/json; charset=utf-8" });
+  response.end(
+    JSON.stringify({
+      error: "agent tokens may only call the MCP endpoint",
+      code: "agent_token_forbidden",
+    }),
+  );
 }
 
 function httpRequestFor(request: IncomingMessage, url: URL, body: string): HttpRequest {
@@ -242,6 +264,11 @@ export function createHttpServer(deps: HttpDeps): Server {
   }
   const server = createServer((request: IncomingMessage, response: ServerResponse) => {
     const url = new URL(request.url ?? "/", "http://localhost");
+
+    if (url.pathname !== "/internal/mcp" && isManagedAgentToken(deps, request)) {
+      rejectAgentToken(response);
+      return;
+    }
 
     if (url.pathname === "/ide" || url.pathname.startsWith("/ide/")) {
       if (!isHumanCookie(deps, request.headers.cookie)) {
@@ -473,6 +500,10 @@ export function createHttpServer(deps: HttpDeps): Server {
   });
 
   server.on("upgrade", (request: IncomingMessage, socket: Duplex, head: Buffer) => {
+    if (isManagedAgentToken(deps, request)) {
+      rejectUpgrade(socket, 403, "Forbidden");
+      return;
+    }
     const url = request.url ?? "";
     if (/^\/api\/apps\/[^/]+\/terminal(?:\?|$)/.test(url)) {
       void proxyTerminalUpgrade(deps, request, socket, head).catch(() => socket.destroy());

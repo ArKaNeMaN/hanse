@@ -1,4 +1,5 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -7,6 +8,7 @@ import { GitService } from "../src/git/service.js";
 import { type HttpDeps, type HttpRequest, handleRequest } from "../src/http/handler.js";
 import { handleInternalMcp } from "../src/http/internal-mcp.js";
 import { createHttpServer } from "../src/http/server.js";
+import { createPrincipal } from "../src/identity/principals.js";
 import { ensureMasterAgent } from "../src/master/bootstrap.js";
 import { MASTER_APP_ID } from "../src/master/constants.js";
 import { MASTER_TOOLS } from "../src/master/tools.js";
@@ -138,6 +140,76 @@ describe("internal MCP over HTTP", () => {
 
       const unauthorized = await fetch(url, { method: "POST", body });
       expect(unauthorized.status).toBe(401);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("rejects a valid agent token on every non-MCP route and upgrade", async () => {
+    const f = fixture();
+    const token = mintAgentToken(f.db, "p:a");
+    const human = createPrincipal(f.db, { kind: "human", name: "operator" }).token;
+    const server = createHttpServer(deps(f));
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    const port = typeof address === "object" && address !== null ? address.port : 0;
+    const base = `http://127.0.0.1:${port}`;
+    const headers = { authorization: `Bearer ${token}` };
+    try {
+      for (const route of [
+        "/healthz",
+        "/readyz",
+        "/api/projects",
+        "/api/handoffs",
+        "/assets/app.css",
+        "/handoffs",
+        "/chat",
+        "/ide",
+        "/preview/p/a/key",
+        "/api/apps/p:a/attachments/missing",
+        "/api/apps/p:a/events",
+      ]) {
+        const response = await fetch(`${base}${route}`, { headers });
+        expect(response.status, route).toBe(403);
+      }
+
+      const mixed = await fetch(`${base}/healthz`, {
+        headers: { ...headers, cookie: `hanse_token=${encodeURIComponent(human)}` },
+      });
+      expect(mixed.status).toBe(403);
+
+      const invalid = await fetch(`${base}/healthz`, {
+        headers: { authorization: "Bearer not-a-real-token" },
+      });
+      expect(invalid.status).toBe(200);
+
+      const mcp = await fetch(`${base}/internal/mcp`, {
+        method: "POST",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+      });
+      expect(mcp.status).toBe(200);
+
+      const upgradeStatus = await new Promise<number>((resolve, reject) => {
+        const upgrade = httpRequest({
+          host: "127.0.0.1",
+          port,
+          path: "/ide",
+          headers: {
+            Connection: "Upgrade",
+            Upgrade: "websocket",
+            authorization: `Bearer ${token}`,
+          },
+        });
+        upgrade.on("response", (response) => {
+          response.resume();
+          resolve(response.statusCode ?? 0);
+        });
+        upgrade.on("upgrade", () => resolve(101));
+        upgrade.on("error", reject);
+        upgrade.end();
+      });
+      expect(upgradeStatus).toBe(403);
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }

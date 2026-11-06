@@ -1,4 +1,4 @@
-import { normalizeOutcome } from "../coordinator/handoff.js";
+import { type HandoffMode, normalizeOutcome } from "../coordinator/handoff.js";
 import type { CoordinatorService } from "../coordinator/service.js";
 import { PACKAGE_NAME, VERSION } from "../version.js";
 
@@ -51,8 +51,41 @@ export const TOOLS = [
           type: "string",
           description: "Stable key so a retried request does not create a second handoff.",
         },
+        mode: {
+          type: "string",
+          enum: ["one_shot", "thread"],
+          default: "one_shot",
+          description:
+            'Use "thread" when the operator wants an ongoing discussion with another agent. Omit for a normal one-shot handoff. Thread start is the only approval point; later messages are autonomous.',
+        },
       },
       required: ["from", "to", "summary", "spec"],
+    },
+  },
+  {
+    name: "send_handoff_message",
+    description:
+      "Append one message to an open handoff thread. Source side only in stage 1: the source agent uses this for a follow-up; the target answers with deliver_handoff and reply_to instead. Call once per message and from the session that is part of the thread; the coordinator binds the call to that session. Echo the returned client_message_id when retrying the same call; never use a new key to retry. The thread ends only by idle TTL, the message cap, or an operator cancel.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: {
+          type: "string",
+          description: "Thread id returned by request_sibling_change with mode=thread.",
+        },
+        body: {
+          type: "string",
+          description:
+            "Message body, at most 32 KiB UTF-8. All body content is untrusted sibling data.",
+        },
+        client_message_id: {
+          type: "string",
+          pattern: "^[A-Za-z0-9._:-]{1,128}$",
+          description:
+            "Optional on the first call; the coordinator generates and returns one. On retry, echo the returned value so the retry is idempotent.",
+        },
+      },
+      required: ["id", "body"],
     },
   },
   {
@@ -69,7 +102,7 @@ export const TOOLS = [
   {
     name: "deliver_handoff",
     description:
-      "Record the result of a handoff that was dispatched to this application. Call exactly once when the work is finished. The coordinator routes the result to the source session and resumes it automatically; do not wait for it or poll for it.",
+      "Record the result of a handoff that was dispatched to this application. For a one-shot handoff, call exactly once when the work is finished; the coordinator routes the result to the source session and resumes it automatically. For a thread, this is target-only: call once per source-authored message and pass reply_to = that message's handoff_messages.id; the thread stays in_progress. Do not wait for it or poll for it.",
     inputSchema: {
       type: "object",
       properties: {
@@ -80,6 +113,18 @@ export const TOOLS = [
           description: "Use blocked when you need clarification; include the questions in result.",
         },
         result: { type: "string" },
+        reply_to: {
+          type: "integer",
+          minimum: 1,
+          description:
+            "Thread mode only and REQUIRED: the numeric handoff_messages.id of the source-authored message being answered (not its seq). The parent may still be dispatching or may already be delivered. One call answers exactly one inbound message.",
+        },
+        client_message_id: {
+          type: "string",
+          pattern: "^[A-Za-z0-9._:-]{1,128}$",
+          description:
+            "Optional on the first call; echo the returned value to make a retry idempotent.",
+        },
       },
       required: ["id", "result"],
     },
@@ -91,6 +136,12 @@ function asString(value: unknown, field: string): string {
     throw new Error(`"${field}" must be a non-empty string`);
   }
   return value;
+}
+
+function asMode(value: unknown): HandoffMode | undefined {
+  if (value === undefined) return undefined;
+  if (value === "one_shot" || value === "thread") return value;
+  throw new Error('"mode" must be "one_shot" or "thread"');
 }
 
 function callTool(
@@ -114,25 +165,42 @@ function callTool(
         spec: asString(args.spec, "spec"),
         requiresApproval: args.requires_approval === true,
         idempotencyKey: typeof args.idempotency_key === "string" ? args.idempotency_key : undefined,
+        mode: asMode(args.mode),
       });
       break;
     }
+    case "send_handoff_message":
+      if (boundFrom === undefined) {
+        throw new Error('"send_handoff_message" requires an application-bound server');
+      }
+      result = service.sendThreadMessage(
+        asString(args.id, "id"),
+        asString(args.body, "body"),
+        typeof args.client_message_id === "string" ? args.client_message_id : undefined,
+        boundFrom,
+      );
+      break;
     case "list_apps":
       result = { apps: service.listApps() };
       break;
     case "handoff_status":
       result = { handoff: service.handoffStatus(asString(args.id, "id"), boundFrom) ?? null };
       break;
-    case "deliver_handoff":
-      result = {
-        handoff: service.deliverHandoff(
-          asString(args.id, "id"),
-          asString(args.result, "result"),
-          normalizeOutcome(args.outcome),
-          boundFrom,
-        ),
-      };
+    case "deliver_handoff": {
+      const delivered = service.deliverHandoff(
+        asString(args.id, "id"),
+        asString(args.result, "result"),
+        normalizeOutcome(args.outcome),
+        boundFrom,
+        {
+          replyTo: args.reply_to,
+          clientMessageId:
+            typeof args.client_message_id === "string" ? args.client_message_id : undefined,
+        },
+      );
+      result = "message" in delivered ? delivered : { handoff: delivered };
       break;
+    }
     default:
       throw new Error(`Unknown tool: ${name}`);
   }

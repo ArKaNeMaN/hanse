@@ -73,3 +73,4 @@
   nested tool-attachment base64 stripping, a human-only download route, cleanup/quota, and the
   compact tool card. Status: design PASS (`oracle` round 6); plan PASS (`momus` round 2);
   implemented and verified (journal 0040); one pre-existing jsdom suite failure remains.
+- [0034 - Stage-1 handoff threads](./0034-handoff-threads.md) - explicit agent-originated thread mode on `request_sibling_change`, one header plus an ordered `handoff_messages` log, `send_handoff_message`, thread `deliver_handoff` with `reply_to`, observed binding, per-thread/per-destination dispatch with no retry, idle TTL/message cap/operator cancel, quotas/attempt events, public allowlist, and the agent-token gate. Status: design approved (`oracle` PASS); plan PASS (`momus`); implemented and verified (journal 0041); commit `<commit-hash>`.

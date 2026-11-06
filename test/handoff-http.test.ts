@@ -167,6 +167,28 @@ describe("handoff HTTP actions", () => {
     expect(getHandoff(f.db, handoffId)?.state).toBe("cancelled");
   });
 
+  it("cancels a thread atomically through the human-only cancel route", async () => {
+    const f = fixture();
+    const result = f.service.requestSiblingChange({
+      fromAppKey: "a",
+      toAppKey: "b",
+      summary: "thread",
+      spec: "thread spec",
+      mode: "thread",
+      idempotencyKey: "http-thread-cancel",
+    });
+    const response = await handleHandoffHttp(
+      f.deps,
+      request("POST", `/api/handoffs/${result.handoffId}/cancel`, f.token),
+    );
+    expect(response?.status).toBe(200);
+    expect(getHandoff(f.db, result.handoffId)?.state).toBe("cancelled");
+    const message = f.db
+      .prepare("SELECT state, error_code AS errorCode FROM handoff_messages WHERE handoff_id = ?")
+      .get(result.handoffId) as { state: string; errorCode: string | null };
+    expect(message).toEqual({ state: "cancelled", errorCode: "operator_cancel" });
+  });
+
   it("rejects an agent principal", async () => {
     const f = fixture();
     const agentToken = createPrincipal(f.db, { kind: "agent", name: "a" }).token;

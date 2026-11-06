@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { transitionHandoff, updateHandoff } from "../src/coordinator/handoff.js";
+import { getHandoff, transitionHandoff, updateHandoff } from "../src/coordinator/handoff.js";
 import {
   createHandoffEventResolver,
   type HandoffProjectableMessage,
@@ -115,6 +115,44 @@ describe("handoff chat message projection", () => {
     db.close();
   });
 
+  it("keeps the one-shot HandoffCard metadata byte shape", () => {
+    const { db, service } = fixture();
+    const handoffId = deliveredHandoff(db, service);
+    const dispatch = message("msg_dispatch");
+    const reply = message("msg_reply");
+
+    projectHandoffMessages(db, "ses_target", [dispatch]);
+    projectHandoffMessages(db, "ses_source", [reply]);
+
+    expect(handoffMeta(dispatch)).toEqual({
+      id: handoffId,
+      direction: "request",
+      agent: "a",
+      from: "a",
+      to: "b",
+      state: "delivered",
+      summary: "need X",
+      outcome: null,
+      replyState: "delivered",
+      origin: "agent",
+      body: "do **X**",
+    });
+    expect(handoffMeta(reply)).toEqual({
+      id: handoffId,
+      direction: "reply",
+      agent: "b",
+      from: "a",
+      to: "b",
+      state: "delivered",
+      summary: "need X",
+      outcome: "completed",
+      replyState: "delivered",
+      origin: "agent",
+      body: "done **Y**",
+    });
+    db.close();
+  });
+
   it("keeps existing info.hanse fields and skips unrelated sessions", () => {
     const { db, service } = fixture();
     deliveredHandoff(db, service);
@@ -149,6 +187,35 @@ describe("handoff chat message projection", () => {
       id: handoff.id,
       direction: "reply",
       agent: "b",
+    });
+    db.close();
+  });
+
+  it("does not annotate thread messages as HandoffCard", () => {
+    const { db, service } = fixture();
+    const result = service.requestSiblingChange({
+      fromAppKey: "a",
+      toAppKey: "b",
+      summary: "thread",
+      spec: "thread spec",
+      mode: "thread",
+      idempotencyKey: "thread-projection",
+    });
+    updateHandoff(db, result.handoffId, {
+      state: "in_progress",
+      sourceSessionId: "ses_source",
+      targetSessionId: "ses_target",
+    });
+    service.sendThreadMessage(result.handoffId, "follow up", undefined, "a");
+
+    const threadMessage = message("msg_thread");
+    projectHandoffMessages(db, "ses_target", [threadMessage]);
+    expect(handoffMeta(threadMessage)).toBeUndefined();
+    expect(getHandoff(db, result.handoffId)).toMatchObject({
+      dispatchMessageId: null,
+      replyMessageId: null,
+      replyState: "none",
+      replyDeliveredSessionId: null,
     });
     db.close();
   });

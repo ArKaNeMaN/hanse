@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  canTransitionThread,
   createHandoff,
   expireDueHandoffs,
   HandoffTransitionError,
@@ -83,5 +84,16 @@ describe("handoff", () => {
     });
     expect(expireDueHandoffs(db)).toBe(1);
     db.close();
+  });
+
+  it("keeps the thread header state machine separate from one-shot", () => {
+    expect(canTransitionThread("queued", "dispatching")).toBe(true);
+    expect(canTransitionThread("queued", "expired")).toBe(false);
+    expect(canTransitionThread("awaiting_approval", "rejected")).toBe(true);
+    expect(canTransitionThread("dispatching", "in_progress")).toBe(true);
+    expect(canTransitionThread("in_progress", "expired")).toBe(true);
+    expect(canTransitionThread("in_progress", "delivered")).toBe(false);
+    expect(canTransitionThread("in_progress", "failed")).toBe(false);
+    expect(canTransitionThread("delivered", "in_progress")).toBe(false);
   });
 });

@@ -748,4 +748,112 @@ CREATE UNIQUE INDEX agent_media_message_part
   WHERE message_id IS NOT NULL AND part_id IS NOT NULL;
 `,
   },
+  {
+    version: 22,
+    name: "handoff-threads",
+    sql: `
+-- v22: stage-1 handoff threads
+ALTER TABLE handoffs ADD COLUMN mode TEXT NOT NULL DEFAULT 'one_shot' CHECK (mode IN ('one_shot','thread'));
+ALTER TABLE handoffs ADD COLUMN message_seq INTEGER NOT NULL DEFAULT 0 CHECK (message_seq >= 0);
+ALTER TABLE handoffs ADD COLUMN message_count INTEGER NOT NULL DEFAULT 0 CHECK (message_count >= 0);
+ALTER TABLE handoffs ADD COLUMN last_message_at TEXT;
+ALTER TABLE handoffs ADD COLUMN thread_idle_expires_at TEXT;
+ALTER TABLE handoffs ADD COLUMN source_invoking_session_id TEXT;
+
+ALTER TABLE handoff_messages ADD COLUMN seq INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE handoff_messages ADD COLUMN author_app_id TEXT REFERENCES apps(id) ON DELETE SET NULL;
+ALTER TABLE handoff_messages ADD COLUMN author_side TEXT NOT NULL DEFAULT 'system' CHECK (author_side IN ('source','target','system'));
+ALTER TABLE handoff_messages ADD COLUMN state TEXT NOT NULL DEFAULT 'binding' CHECK (state IN ('binding','queued','dispatching','delivered','waiting_operator','cancelled'));
+ALTER TABLE handoff_messages ADD COLUMN outcome TEXT CHECK (outcome IS NULL OR outcome IN ('completed','blocked','failed'));
+ALTER TABLE handoff_messages ADD COLUMN delivery_session_id TEXT;
+ALTER TABLE handoff_messages ADD COLUMN delivery_message_id TEXT;
+ALTER TABLE handoff_messages ADD COLUMN delivered_at TEXT;
+ALTER TABLE handoff_messages ADD COLUMN claimed_at TEXT;
+ALTER TABLE handoff_messages ADD COLUMN client_message_id TEXT CHECK (client_message_id IS NULL OR length(client_message_id) BETWEEN 1 AND 128);
+ALTER TABLE handoff_messages ADD COLUMN binding_nonce TEXT CHECK (binding_nonce IS NULL OR length(binding_nonce) BETWEEN 1 AND 64);
+ALTER TABLE handoff_messages ADD COLUMN bound_session_id TEXT;
+ALTER TABLE handoff_messages ADD COLUMN bound_at TEXT;
+ALTER TABLE handoff_messages ADD COLUMN invoking_session_id TEXT;
+ALTER TABLE handoff_messages ADD COLUMN reply_to_message_id INTEGER REFERENCES handoff_messages(id) ON DELETE SET NULL CHECK (reply_to_message_id IS NULL OR reply_to_message_id > 0);
+ALTER TABLE handoff_messages ADD COLUMN error_code TEXT CHECK (error_code IS NULL OR length(error_code) BETWEEN 1 AND 64);
+ALTER TABLE handoff_messages ADD COLUMN updated_at TEXT;
+
+-- Defensive legacy backfill: production table is empty; new rows must set positive seq.
+UPDATE handoff_messages SET state = 'delivered';
+UPDATE handoff_messages SET seq = (
+  SELECT COUNT(*) FROM handoff_messages AS earlier
+  WHERE earlier.handoff_id = handoff_messages.handoff_id
+    AND (earlier.created_at < handoff_messages.created_at
+      OR (earlier.created_at = handoff_messages.created_at AND earlier.id <= handoff_messages.id))
+);
+UPDATE handoff_messages SET updated_at = created_at WHERE updated_at IS NULL;
+
+CREATE TRIGGER handoff_messages_seq_positive BEFORE INSERT ON handoff_messages
+WHEN NEW.seq <= 0 BEGIN SELECT RAISE(ABORT, 'handoff_messages.seq must be positive'); END;
+CREATE TRIGGER handoff_messages_seq_immutable BEFORE UPDATE OF seq ON handoff_messages
+WHEN NEW.seq <> OLD.seq BEGIN SELECT RAISE(ABORT, 'handoff_messages.seq is immutable'); END;
+CREATE TRIGGER handoff_messages_dispatch_requires_session_insert BEFORE INSERT ON handoff_messages
+WHEN NEW.state = 'dispatching' AND NEW.delivery_session_id IS NULL
+BEGIN SELECT RAISE(ABORT, 'dispatching message requires delivery_session_id'); END;
+CREATE TRIGGER handoff_messages_dispatch_requires_session_update
+BEFORE UPDATE OF state, delivery_session_id ON handoff_messages
+WHEN NEW.state = 'dispatching' AND NEW.delivery_session_id IS NULL
+BEGIN SELECT RAISE(ABORT, 'dispatching message requires delivery_session_id'); END;
+
+CREATE TRIGGER handoff_messages_reply_to_valid_insert BEFORE INSERT ON handoff_messages
+WHEN NEW.reply_to_message_id IS NOT NULL BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM handoff_messages AS p
+    WHERE p.id = NEW.reply_to_message_id AND p.handoff_id = NEW.handoff_id
+      AND p.author_side = 'source' AND p.kind IN ('request','message')
+      AND p.state IN ('dispatching','delivered')
+  ) THEN RAISE(ABORT, 'reply_to must reference a dispatching or delivered source message in the same thread') END;
+END;
+CREATE TRIGGER handoff_messages_reply_to_valid_update
+BEFORE UPDATE OF reply_to_message_id ON handoff_messages
+WHEN NEW.reply_to_message_id IS NOT NULL BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM handoff_messages AS p
+    WHERE p.id = NEW.reply_to_message_id AND p.handoff_id = NEW.handoff_id
+      AND p.author_side = 'source' AND p.kind IN ('request','message')
+      AND p.state IN ('dispatching','delivered')
+  ) THEN RAISE(ABORT, 'reply_to must reference a dispatching or delivered source message in the same thread') END;
+END;
+
+CREATE TRIGGER handoff_messages_body_size_insert BEFORE INSERT ON handoff_messages
+WHEN length(CAST(NEW.body AS BLOB)) > 32768
+BEGIN SELECT RAISE(ABORT, 'handoff_messages.body exceeds 32768 bytes'); END;
+CREATE TRIGGER handoff_messages_body_size_update BEFORE UPDATE OF body ON handoff_messages
+WHEN length(CAST(NEW.body AS BLOB)) > 32768
+BEGIN SELECT RAISE(ABORT, 'handoff_messages.body exceeds 32768 bytes'); END;
+
+CREATE UNIQUE INDEX handoff_messages_thread_seq ON handoff_messages(handoff_id, seq);
+CREATE UNIQUE INDEX handoff_messages_client ON handoff_messages(handoff_id, author_side, client_message_id)
+  WHERE client_message_id IS NOT NULL;
+CREATE UNIQUE INDEX handoff_messages_reply_once ON handoff_messages(handoff_id, reply_to_message_id)
+  WHERE kind = 'reply' AND reply_to_message_id IS NOT NULL AND state <> 'cancelled';
+CREATE INDEX handoff_messages_due ON handoff_messages(state, id);
+CREATE INDEX handoff_messages_delivery_session ON handoff_messages(delivery_session_id, state);
+CREATE UNIQUE INDEX handoff_messages_delivery_message ON handoff_messages(delivery_message_id)
+  WHERE delivery_message_id IS NOT NULL;
+CREATE UNIQUE INDEX handoff_messages_one_dispatch_per_session
+  ON handoff_messages(delivery_session_id)
+  WHERE state = 'dispatching' AND delivery_session_id IS NOT NULL;
+CREATE INDEX handoff_messages_reply_to ON handoff_messages(reply_to_message_id)
+  WHERE reply_to_message_id IS NOT NULL;
+CREATE INDEX handoff_messages_author_created ON handoff_messages(author_app_id, created_at);
+
+CREATE UNIQUE INDEX handoffs_active_thread_pair ON handoffs(source_session_id, target_session_id)
+  WHERE mode = 'thread' AND state IN ('queued','awaiting_approval','dispatching','in_progress')
+    AND source_session_id IS NOT NULL AND target_session_id IS NOT NULL;
+CREATE INDEX handoffs_thread_source_app ON handoffs(from_app_id, mode, state) WHERE mode = 'thread';
+CREATE INDEX handoffs_thread_target_app ON handoffs(to_app_id, mode, state) WHERE mode = 'thread';
+CREATE INDEX handoffs_thread_idle ON handoffs(state, thread_idle_expires_at)
+  WHERE mode = 'thread' AND state = 'in_progress';
+CREATE INDEX handoffs_thread_gc ON handoffs(mode, updated_at)
+  WHERE mode = 'thread' AND state IN ('rejected','failed','expired','cancelled');
+CREATE INDEX handoffs_deadline ON handoffs(deadline_at) WHERE deadline_at IS NOT NULL;
+CREATE INDEX events_scope_type_created ON events(scope, type, created_at);
+`,
+  },
 ];

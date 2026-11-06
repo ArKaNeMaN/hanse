@@ -1,5 +1,47 @@
 # Open questions
 
+> Stage: `0034-handoff-threads`. Owner decisions were collected on 2026-11-06, before the design
+> was written. There are no open items for this stage.
+
+## Stage `0034-handoff-threads` - resolved owner decisions
+
+1. **Model** - variant B: a first-class handoff thread with an ordered message log, not a chain of
+   one-shot handoffs.
+2. **Multiple messages** - allowed; messages queue like operator messages and are delivered between
+   agent turns.
+3. **Opt-in** - thread mode is an explicit argument chosen by the source agent. Ordinary handoffs
+   stay one-shot: an operator instruction such as "discuss this with agent X" opens a thread, while
+   "give this task and forget" does not.
+4. **Approval** - only at thread start, through the existing dispatch policy (`auto`, `approve`, or
+   `deny`, and optional as today). After the thread starts, agent-to-agent messages are autonomous;
+   there is no per-message approval. The one-shot reply-approval behavior is unchanged.
+5. **Concurrency** - multiple threads may target one session and share it through a delivery queue;
+   at most one active thread per (source session, target session) pair.
+6. **UI** - the handoffs-page transcript view is deferred; chat tool-call blocks plus the
+   handoff-message projection are the first surface. The deferred UI is recorded as follow-up work.
+7. **Titles** - informative session titles with a short `[HO]` prefix; the summary must survive
+   truncation.
+8. **Scope** - same-application session handoffs remain out of scope; the model stays
+   cross-application.
+9. **Priority** - correctness over the smallest diff.
+10. **`reply_mode='approve'` for threads** - design resolution, not a new owner fork: because
+    per-message approval is excluded, a pair whose reply policy is `approve` requires approval at
+    thread start instead (the reply gate is folded into the one allowed human gate). `deny` still
+    wins, and one-shot reply approval is unchanged. This preserves the configured reply protection
+    rather than silently ignoring it.
+11. **Scope reduction** - after four design-review rounds, the owner chose a compact stage 1: core
+    thread start, ordered messages, queued delivery, start approval, idle TTL, message cap, operator
+    cancel, `[HO]` titles, session binding, quotas, public-read allowlist, and agent-token gate.
+    Deferred to later stages: `close_handoff`, per-message retry/resend, relaunch/retarget/failThread,
+    the shared-session operator path, target unsolicited messages, thread chat projection/client
+    parser changes, and the one-shot envelope/security redesign. One-shot lifecycle, prompts,
+    projection, dispatch/reply behavior, and one-shot-specific input validation stay as today; the
+    intentional one-shot-visible exceptions are the `[HO]` session titles and the public-read
+    allowlist/agent-token hardening on `/api/projects`, `/api/handoffs`, and non-MCP routes.
+
+> Design review: `oracle` PASS on the reduced stage-1 design (2026-11-06); the exact v22 SQL passed
+> a temporary-DB validation (41/41). Plan: `docs/plans/0034-handoff-threads.md` (`momus` PASS).
+
 > Stage: `0033-chat-image-display`. The owner delegated decisions on 2026-11-02 and asked for
 > autonomous delivery. There are no open items for this stage.
 

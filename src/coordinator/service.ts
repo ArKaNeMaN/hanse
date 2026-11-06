@@ -8,12 +8,25 @@ import {
   createHandoff,
   getHandoff,
   type Handoff,
+  type HandoffMode,
   type HandoffOutcome,
   type HandoffState,
   transitionHandoff,
   updateHandoff,
 } from "./handoff.js";
 import { resolveHandoffPolicy } from "./policy.js";
+import {
+  appendThreadMessage,
+  appendThreadReply,
+  cancelThread as cancelThreadRecord,
+  createThread,
+  DEFAULT_THREAD_LIMITS,
+  ThreadError,
+  type ThreadInitialMessage,
+  type ThreadLimits,
+  type ThreadMessageView,
+  toThreadMessageView,
+} from "./thread.js";
 
 export type HandoffRequestStatus = "queued" | "awaiting_approval" | "denied" | "existing";
 
@@ -26,12 +39,109 @@ export interface RequestSiblingChangeInput {
   idempotencyKey?: string;
   expiresAt?: string;
   origin?: "agent" | "operator";
+  mode?: HandoffMode;
 }
 
 export interface RequestSiblingChangeResult {
   handoffId: string;
   status: HandoffRequestStatus;
   state: HandoffState;
+  mode?: HandoffMode;
+  threadId?: string;
+  initialMessage?: ThreadInitialMessage;
+}
+
+export interface ThreadMessageResult {
+  threadId: string;
+  message: ThreadMessageView;
+  handoff: { id: string; state: HandoffState; messageCount: number };
+}
+
+export interface ThreadReplyResult {
+  handoff: { id: string; state: HandoffState; messageCount: number };
+  message: ThreadMessageView;
+  replyTo: { id: number; seq: number };
+}
+
+type NewThreadHeaderKey =
+  | "mode"
+  | "messageSeq"
+  | "messageCount"
+  | "lastMessageAt"
+  | "threadIdleExpiresAt"
+  | "sourceInvokingSessionId";
+
+export type OneShotAgentHandoffStatus = Omit<Handoff, NewThreadHeaderKey>;
+
+export interface ThreadAgentHandoffStatus {
+  id: string;
+  mode: HandoffMode;
+  state: HandoffState;
+  messageCount: number;
+  lastMessageAt: string | null;
+  threadIdleExpiresAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type AgentHandoffStatus = OneShotAgentHandoffStatus | ThreadAgentHandoffStatus;
+export type HandoffStatus = Handoff | AgentHandoffStatus;
+
+function oneShotAgentStatus(handoff: Handoff): OneShotAgentHandoffStatus {
+  return {
+    id: handoff.id,
+    projectId: handoff.projectId,
+    fromAppId: handoff.fromAppId,
+    toAppId: handoff.toAppId,
+    state: handoff.state,
+    summary: handoff.summary,
+    spec: handoff.spec,
+    idempotencyKey: handoff.idempotencyKey,
+    attempts: handoff.attempts,
+    nextAttemptAt: handoff.nextAttemptAt,
+    expiresAt: handoff.expiresAt,
+    targetTaskId: handoff.targetTaskId,
+    result: handoff.result,
+    error: handoff.error,
+    outcome: handoff.outcome,
+    origin: handoff.origin,
+    sourceSessionId: handoff.sourceSessionId,
+    sourceSessionTitle: handoff.sourceSessionTitle,
+    sourceSessionDeletedAt: handoff.sourceSessionDeletedAt,
+    targetSessionId: handoff.targetSessionId,
+    targetSessionTitle: handoff.targetSessionTitle,
+    replyState: handoff.replyState,
+    replyMessageId: handoff.replyMessageId,
+    replyDeliveredSessionId: handoff.replyDeliveredSessionId,
+    replyDeliveredAt: handoff.replyDeliveredAt,
+    replyError: handoff.replyError,
+    replyAttempts: handoff.replyAttempts,
+    dispatchMessageId: handoff.dispatchMessageId,
+    dispatchStartedAt: handoff.dispatchStartedAt,
+    deadlineAt: handoff.deadlineAt,
+    operatorNote: handoff.operatorNote,
+    deliveredVia: handoff.deliveredVia,
+    parentHandoffId: handoff.parentHandoffId,
+    rootHandoffId: handoff.rootHandoffId,
+    depth: handoff.depth,
+    policyDispatchMode: handoff.policyDispatchMode,
+    policyReplyMode: handoff.policyReplyMode,
+    createdAt: handoff.createdAt,
+    updatedAt: handoff.updatedAt,
+  };
+}
+
+function threadAgentStatus(handoff: Handoff): ThreadAgentHandoffStatus {
+  return {
+    id: handoff.id,
+    mode: handoff.mode,
+    state: handoff.state,
+    messageCount: handoff.messageCount,
+    lastMessageAt: handoff.lastMessageAt,
+    threadIdleExpiresAt: handoff.threadIdleExpiresAt,
+    createdAt: handoff.createdAt,
+    updatedAt: handoff.updatedAt,
+  };
 }
 
 const DELIVERABLE_STATES: readonly HandoffState[] = ["dispatching", "in_progress", "delivered"];
@@ -40,10 +150,16 @@ const DELIVERABLE_STATES: readonly HandoffState[] = ["dispatching", "in_progress
 export class CoordinatorService {
   readonly #db: SqliteDatabase;
   readonly #projectId: string;
+  readonly #threadLimits: ThreadLimits;
 
-  constructor(db: SqliteDatabase, projectId: string) {
+  constructor(
+    db: SqliteDatabase,
+    projectId: string,
+    threadLimits: ThreadLimits = DEFAULT_THREAD_LIMITS,
+  ) {
     this.#db = db;
     this.#projectId = projectId;
+    this.#threadLimits = threadLimits;
   }
 
   listApps(): RegisteredApp[] {
@@ -134,6 +250,32 @@ export class CoordinatorService {
       policy.dispatchMode === "auto" && input.requiresApproval === true
         ? "approve"
         : policy.dispatchMode;
+    if (input.mode === "thread") {
+      const thread = createThread(
+        this.#db,
+        {
+          projectId: this.#projectId,
+          fromAppId,
+          toAppId,
+          summary: input.summary,
+          spec: input.spec,
+          idempotencyKey: input.idempotencyKey,
+          requiresApproval: input.requiresApproval,
+          policyDispatchMode: dispatchMode,
+          policyReplyMode: policy.replyMode,
+          origin: input.origin ?? "agent",
+        },
+        this.#threadLimits,
+      );
+      return {
+        handoffId: thread.handoff.id,
+        status: thread.status,
+        state: thread.handoff.state,
+        mode: "thread",
+        threadId: thread.handoff.id,
+        initialMessage: thread.initialMessage,
+      };
+    }
     const handoff = createHandoff(this.#db, {
       projectId: this.#projectId,
       fromAppId,
@@ -208,14 +350,48 @@ export class CoordinatorService {
     return true;
   }
 
-  handoffStatus(id: string, callerAppKey?: string): Handoff | undefined {
+  handoffStatus(id: string, callerAppKey?: string): HandoffStatus | undefined {
     const handoff = getHandoff(this.#db, id);
     if (handoff === undefined) return undefined;
     if (callerAppKey === undefined) return handoff;
     const callerId = this.#tryAppIdByKey(callerAppKey);
     if (callerId === undefined) return undefined;
     if (handoff.fromAppId !== callerId && handoff.toAppId !== callerId) return undefined;
-    return handoff;
+    return handoff.mode === "thread" ? threadAgentStatus(handoff) : oneShotAgentStatus(handoff);
+  }
+
+  sendThreadMessage(
+    id: string,
+    body: string,
+    clientMessageId: string | undefined,
+    callerAppKey?: string,
+  ): ThreadMessageResult {
+    const callerAppId = callerAppKey === undefined ? undefined : this.#tryAppIdByKey(callerAppKey);
+    if (callerAppKey !== undefined && callerAppId === undefined) {
+      throw new ThreadError(
+        "wrong_app",
+        `Unknown application "${callerAppKey}" in project ${this.#projectId}`,
+      );
+    }
+    const appended = appendThreadMessage(
+      this.#db,
+      {
+        handoffId: id,
+        body,
+        clientMessageId,
+        callerAppId,
+      },
+      this.#threadLimits,
+    );
+    return {
+      threadId: appended.handoff.id,
+      message: toThreadMessageView(appended.message),
+      handoff: {
+        id: appended.handoff.id,
+        state: appended.handoff.state,
+        messageCount: appended.handoff.messageCount,
+      },
+    };
   }
 
   /**
@@ -227,10 +403,45 @@ export class CoordinatorService {
     result: string,
     outcome: HandoffOutcome = "completed",
     callerAppKey?: string,
-  ): Handoff {
+    thread: { replyTo?: unknown; clientMessageId?: string | null } = {},
+  ): Handoff | ThreadReplyResult {
     const handoff = getHandoff(this.#db, id);
     if (handoff === undefined) {
       throw new Error(`Handoff not found: ${id}`);
+    }
+    if (handoff.mode === "thread") {
+      const callerAppId =
+        callerAppKey === undefined ? undefined : this.#tryAppIdByKey(callerAppKey);
+      if (callerAppKey !== undefined && callerAppId === undefined) {
+        throw new ThreadError(
+          "wrong_app",
+          `Unknown application "${callerAppKey}" in project ${this.#projectId}`,
+        );
+      }
+      if (callerAppId !== undefined && callerAppId !== handoff.toAppId) {
+        throw new ThreadError("wrong_side", "only the target application may reply");
+      }
+      const appended = appendThreadReply(
+        this.#db,
+        {
+          handoffId: id,
+          body: result,
+          outcome,
+          replyTo: thread.replyTo,
+          clientMessageId: thread.clientMessageId,
+          callerAppId,
+        },
+        this.#threadLimits,
+      );
+      return {
+        handoff: {
+          id: appended.handoff.id,
+          state: appended.handoff.state,
+          messageCount: appended.handoff.messageCount,
+        },
+        message: toThreadMessageView(appended.message),
+        replyTo: appended.replyTo,
+      };
     }
     if (callerAppKey !== undefined) {
       const callerId = this.#tryAppIdByKey(callerAppKey);
@@ -291,6 +502,14 @@ export class CoordinatorService {
     }
     expirePendingApprovals(this.#db, id);
     return transitionHandoff(this.#db, id, "cancelled", { error: "cancelled by operator" });
+  }
+
+  /** Cancel a thread atomically. Human-only. One-shot cancel stays on {@link cancelHandoff}. */
+  cancelThread(id: string, principal: Principal): Handoff {
+    if (principal.kind !== "human") {
+      throw new AuthError("only a human principal may cancel a handoff");
+    }
+    return cancelThreadRecord(this.#db, id);
   }
 
   #hasApproval(handoffId: string, kind: "dispatch" | "reply"): boolean {
