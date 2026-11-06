@@ -19,6 +19,18 @@ async function sendText(wrapper: Awaited<ReturnType<typeof mountChat>>["wrapper"
   await flushPromises();
 }
 
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve = (): void => {};
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+function composerValue(wrapper: Awaited<ReturnType<typeof mountChat>>["wrapper"]): string {
+  return (wrapper.find("[data-chat-composer-input]").element as HTMLTextAreaElement).value;
+}
+
 describe("chat send and delivery", () => {
   it("rekeys the optimistic row to the accepted server id", async () => {
     const { wrapper, fetchState, pinia } = await mountChat();
@@ -27,6 +39,7 @@ describe("chat send and delivery", () => {
     expect(wrapper.find('[data-message-id="msg_sent_1"]').exists()).toBe(true);
     expect(wrapper.findAll('[data-message-id^="local_"]')).toHaveLength(0);
     expect(useChatComposerStore(pinia).delivery).toBe("accepted");
+    expect(composerValue(wrapper)).toBe("");
     expect(
       fetchState.requests.filter(
         (request) => request.method === "POST" && request.url.includes("/messages"),
@@ -78,6 +91,7 @@ describe("chat send and delivery", () => {
     vi.useFakeTimers();
     await sendText(wrapper, "Unknown delivery");
     expect(wrapper.find('[data-message-id="msg_unknown"]').text()).toContain("Unknown delivery");
+    expect(composerValue(wrapper)).toBe("Unknown delivery");
     expect(wrapper.find("[data-chat-send-recovery]").exists()).toBe(false);
 
     await vi.advanceTimersByTimeAsync(2_000);
@@ -158,9 +172,43 @@ describe("chat send and delivery", () => {
 
     expect(wrapper.find("[data-chat-send-error]").text()).toContain("pending deletion");
     expect(wrapper.find('[data-message-id^="local_"]').exists()).toBe(false);
-    expect((wrapper.find("[data-chat-composer-input]").element as HTMLTextAreaElement).value).toBe(
-      "Rejected draft",
-    );
+    expect(composerValue(wrapper)).toBe("Rejected draft");
+    wrapper.unmount();
+  });
+
+  it("keeps a newer draft typed while the send is in flight", async () => {
+    const gate = deferred();
+    const { wrapper } = await mountChat("/chat?app=alpha&project=p&session=s1", {
+      sendGate: gate.promise,
+    });
+    const input = wrapper.find("[data-chat-composer-input]");
+    await input.setValue("First draft");
+    await wrapper.find("[data-chat-send]").trigger("click");
+    await flushPromises();
+
+    expect(composerValue(wrapper)).toBe("First draft");
+    await input.setValue("Second draft");
+    gate.resolve();
+    await flushPromises();
+
+    expect(composerValue(wrapper)).toBe("Second draft");
+    wrapper.unmount();
+  });
+
+  it("keeps the composer text while a send is in flight", async () => {
+    const gate = deferred();
+    const { wrapper } = await mountChat("/chat?app=alpha&project=p&session=s1", {
+      sendGate: gate.promise,
+    });
+    const input = wrapper.find("[data-chat-composer-input]");
+    await input.setValue("In flight");
+    await wrapper.find("[data-chat-send]").trigger("click");
+    await flushPromises();
+
+    expect(composerValue(wrapper)).toBe("In flight");
+    gate.resolve();
+    await flushPromises();
+    expect(composerValue(wrapper)).toBe("");
     wrapper.unmount();
   });
 

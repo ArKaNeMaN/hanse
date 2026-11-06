@@ -84,6 +84,7 @@ export interface ChatFixture {
   readonly sentMessageID?: string;
   readonly sendStatus?: number;
   readonly sendBody?: unknown;
+  readonly sendGate?: Promise<void>;
   readonly blockingStatus?: number;
   readonly blockingBody?: unknown;
   readonly abortStatus?: number;
@@ -446,6 +447,9 @@ export function installFetch(fixture: ChatFixture = {}): InstalledFetch {
     }
     const sendMatch = /^\/api\/apps\/alpha\/sessions\/([^/?]+)\/messages(?:\?|$)/.exec(url);
     if (sendMatch !== null && method === "POST") {
+      if (fixture.sendGate !== undefined) {
+        await fixture.sendGate;
+      }
       const parsedUrl = new URL(url, "http://localhost");
       const async = parsedUrl.searchParams.get("async") === "1";
       const status = async ? (fixture.sendStatus ?? 200) : (fixture.blockingStatus ?? 200);

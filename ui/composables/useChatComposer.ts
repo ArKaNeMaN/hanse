@@ -387,17 +387,6 @@ export function useChatComposer(options: UseChatComposerOptions) {
     store.setAttachments(next);
   }
 
-  function restoreAttachmentChips(views: readonly (AttachmentView | null)[]): void {
-    if (store.attachments.length > 0) {
-      return;
-    }
-    const restored: AttachmentChip[] = [];
-    for (const view of views) {
-      if (view !== null) restored.push(chipFromView(view));
-    }
-    store.setAttachments(restored);
-  }
-
   function startPendingUploads(): void {
     const pending = store.attachments.filter(
       (chip) => chip.status === "uploading" && !chip.started,
@@ -786,6 +775,14 @@ export function useChatComposer(options: UseChatComposerOptions) {
     }
   }
 
+  function clearSentDraft(session: string, sentText: string): void {
+    if (store.draft !== sentText) {
+      return;
+    }
+    store.setDraft("");
+    store.setLastSaved(session, "");
+  }
+
   async function send(): Promise<boolean> {
     if (disposed || options.stopped.value || options.deletionPending.value) {
       return false;
@@ -826,7 +823,9 @@ export function useChatComposer(options: UseChatComposerOptions) {
         session = await createSession();
         if (session === null || seq !== actionSeq) {
           store.clearAcceptance();
-          store.setDraft(restore);
+          if (store.draft.length === 0) {
+            store.setDraft(restore);
+          }
           return false;
         }
       }
@@ -843,9 +842,7 @@ export function useChatComposer(options: UseChatComposerOptions) {
       tempID = localMessageID();
       feed.insertOptimisticMessage({ id: tempID, text, attachments: sentViews });
       store.beginAcceptance({ tempID, text, sessionID: session });
-      store.setDraft("");
       store.setLastSaved(session, "");
-      store.setAttachments([]);
       let response: unknown;
       try {
         response = await postPrompt(
@@ -887,7 +884,11 @@ export function useChatComposer(options: UseChatComposerOptions) {
         feed.clearOptimisticState(serverID);
       }
       unblockQueuePromotion(scope(), session);
-      store.setLastSaved(session, "");
+      clearSentDraft(session, text);
+      const sentKeys = new Set(sentChips.map((chip) => chip.key));
+      if (store.attachments.some((chip) => sentKeys.has(chip.key))) {
+        store.setAttachments(store.attachments.filter((chip) => !sentKeys.has(chip.key)));
+      }
       forwardSent(session);
       return true;
     } catch (caught) {
@@ -932,12 +933,6 @@ export function useChatComposer(options: UseChatComposerOptions) {
       store.clearAcceptance();
       store.setDelivery("failed");
       store.setError(failure.message);
-      store.setDraft(restore);
-      restoreAttachmentChips(sentViews);
-      if (session !== null) {
-        store.setLastSaved(session, draftTextForSave(restore));
-        scheduleDraftSave(session, restore);
-      }
       return false;
     }
   }
@@ -965,6 +960,7 @@ export function useChatComposer(options: UseChatComposerOptions) {
       store.setServerID(target);
       store.setAcceptanceState("accepted");
       store.setError(null);
+      clearSentDraft(session, current.text);
       return;
     }
     if (target !== null && record !== undefined && record.optimistic === "accepted") {
@@ -972,6 +968,7 @@ export function useChatComposer(options: UseChatComposerOptions) {
       store.setServerID(target);
       store.setAcceptanceState("accepted");
       store.setError(null);
+      clearSentDraft(session, current.text);
       return;
     }
     store.exposeRecovery(true);

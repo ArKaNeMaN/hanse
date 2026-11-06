@@ -49,6 +49,10 @@
   storage, inline image/video/PDF delivery gated by model capabilities, file-only paths for the
   agent, history/SSE base64 projection, server-side message drafts, eager empty-session creation,
   and delete-if-empty semantics. Status: implemented/verified - design review PASS (round 16); Stages A/B/C complete (2198 tests, Stage A/B/C browser QA, security findings fixed).
+- [Composer draft retention until send response](./local-draft-recovery.md) - minimal client-only fix:
+  keep the composer text and sent attachment chips until the send response; clear on success, keep on
+  failed/unknown, preserve a newer draft typed during the request. No local storage, attempt id, or
+  migration. Status: accepted (owner chose it after six reviews of larger designs).
 - [Chat image display and agent-sent images](./chat-image-display.md) - an explicit `show_image`
   MCP tool (the model decides), a durable per-app `agent_media` store, live/history synthetic
   file-part projection, a human-only download route, large inline image cards, and a native
