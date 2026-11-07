@@ -121,6 +121,7 @@ import {
   listMessages,
   listSessions,
   listSessionsBounded,
+  MESSAGES_EMPTY_CHECK_MAX_BYTES,
   OpencodeHttpError,
   type OpencodeMessage,
   patchSessionTitle,
@@ -684,6 +685,7 @@ async function handleDeleteIfEmpty(
     try {
       const page = await listMessagePage(endpoint, sessionId, {
         limit: 1,
+        maxBytes: MESSAGES_EMPTY_CHECK_MAX_BYTES,
         timeoutMs: 5_000,
       });
       if (page.messages.length > 0) {
