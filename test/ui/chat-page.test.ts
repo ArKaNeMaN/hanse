@@ -772,6 +772,17 @@ describe("ChatPage read-only shell", () => {
     wrapper.unmount();
   });
 
+  it("focuses the composer when the page shell has focus", async () => {
+    const { wrapper } = await mountChat();
+    const main = document.getElementById("main");
+    if (main === null) throw new Error("missing main");
+    main.focus();
+    keydown(main, { key: "a" });
+    await flushPromises();
+    expect(document.activeElement).toBe(wrapper.find("[data-chat-composer-input]").element);
+    wrapper.unmount();
+  });
+
   it("keeps focus in the session search field", async () => {
     const { wrapper } = await mountChat();
     const search = wrapper.find("[data-chat-session-search]").element as HTMLInputElement;

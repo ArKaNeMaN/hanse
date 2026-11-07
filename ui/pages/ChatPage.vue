@@ -2077,7 +2077,8 @@ function hasBlockingDialog(): boolean {
 }
 
 function isChatWindowTarget(target: EventTarget | null): boolean {
-  if (target instanceof Element && target.closest("#chat-shell") !== null) {
+  // Clicking non-focusable chat content focuses the shell's `<main tabindex="-1">`, not `body`.
+  if (target instanceof Element && target.closest("#chat-shell, #main") !== null) {
     return true;
   }
   const active = document.activeElement;
