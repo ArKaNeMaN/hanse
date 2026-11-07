@@ -5173,6 +5173,30 @@
     text-transform: uppercase;
   }
 
+  .prompt-dock__progress {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: var(--space-2);
+    margin-inline-start: auto;
+  }
+
+  .prompt-dock__progress-track {
+    inline-size: 5.5rem;
+    block-size: var(--space-1);
+    overflow: hidden;
+    border-radius: var(--radius-pill);
+    background: var(--wash-2);
+  }
+
+  .prompt-dock__progress-fill {
+    display: block;
+    block-size: 100%;
+    border-radius: inherit;
+    background: var(--brass);
+    transition: inline-size var(--dur-emphasis) var(--ease-out);
+  }
+
   .prompt-question {
     display: flex;
     flex-direction: column;

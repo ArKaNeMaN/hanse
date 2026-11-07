@@ -458,4 +458,54 @@ describe("chat prompt questions", () => {
     expect(wrapper.find(".prompt-dock__title").text()).toBe("First question text?");
     wrapper.unmount();
   });
+
+  it("shows step progress and opens review after the last answer", async () => {
+    const { wrapper } = await mountChat("/chat?app=alpha&project=p&session=s1", {
+      questions: [
+        question({
+          key: "v1:qprogress",
+          id: "qprogress",
+          questions: [
+            {
+              header: "First",
+              question: "First question text?",
+              options: [{ label: "A", description: "" }],
+              multiple: false,
+              custom: false,
+            },
+            {
+              header: "Second",
+              question: "Second question text?",
+              options: [{ label: "B", description: "" }],
+              multiple: false,
+              custom: false,
+            },
+          ],
+        }),
+      ],
+    });
+    await flushPromises();
+
+    const progress = wrapper.find(".prompt-dock__progress");
+    expect(progress.exists()).toBe(true);
+    expect(progress.text()).toContain("1 of 2");
+    expect(wrapper.find('[role="progressbar"]').attributes("aria-valuenow")).toBe("1");
+    expect(wrapper.find('[role="progressbar"]').attributes("aria-valuemax")).toBe("2");
+    expect(wrapper.find(".prompt-dock__progress-fill").attributes("style")).toContain("50%");
+
+    await wrapper.find('[data-question-option][data-label="A"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.find(".prompt-dock__title").text()).toBe("Second question text?");
+    expect(wrapper.find(".prompt-dock__progress").text()).toContain("2 of 2");
+    expect(wrapper.find('[role="progressbar"]').attributes("aria-valuenow")).toBe("2");
+    expect(wrapper.find(".prompt-dock__progress-fill").attributes("style")).toContain("100%");
+
+    await wrapper.find('[data-question-option][data-label="B"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.find(".prompt-dock__title").exists()).toBe(false);
+    expect(wrapper.find("[data-question-tab-review]").attributes("aria-selected")).toBe("true");
+    expect(wrapper.find(".prompt-dock__progress").text()).toContain("Review");
+    expect(wrapper.find("[data-question-primary]").exists()).toBe(true);
+    wrapper.unmount();
+  });
 });

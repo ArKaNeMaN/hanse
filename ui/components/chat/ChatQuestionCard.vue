@@ -46,6 +46,17 @@ const panelLabelledBy = computed(() => {
     ? `question-tab-${props.view.key}-${index.value}`
     : `question-tab-${props.view.key}-review`;
 });
+const progressValue = computed(() =>
+  atReview.value ? questions.value.length : Math.min(index.value + 1, questions.value.length),
+);
+const stepLabel = computed(() =>
+  atReview.value ? "Review" : `${progressValue.value} of ${questions.value.length}`,
+);
+const progressPercent = computed(() =>
+  questions.value.length === 0
+    ? "0%"
+    : `${Math.round((progressValue.value / questions.value.length) * 100)}%`,
+);
 
 function resetDraft(): void {
   selected.value = questions.value.map(() => []);
@@ -82,8 +93,8 @@ function selectOption(questionIndex: number, label: string): void {
     deactivateCustom(questionIndex);
   }
   selected.value = next;
-  if (!question.multiple && questionIndex < questions.value.length - 1) {
-    index.value = questionIndex + 1;
+  if (!question.multiple && questions.value.length > 1) {
+    index.value = Math.min(questions.value.length, questionIndex + 1);
   }
 }
 
@@ -273,11 +284,6 @@ defineExpose({ submit, reject, focusFirstControl });
     <header class="prompt-dock__head">
       <div class="prompt-dock__identity">
         <span class="overline" :id="`question-title-${view.key}`" tabindex="-1"> Question </span>
-        <span v-if="showSteps && !atReview && questions.length > 1" class="prompt-dock__step-label">
-          {{ index + 1 }}
-          of {{ questions.length }}
-        </span>
-        <span v-if="showSteps && atReview" class="prompt-dock__step-label">Review</span>
         <span
           v-if="view.state === 'answered' && questions.length > 1"
           class="prompt-dock__step-label"
@@ -296,6 +302,20 @@ defineExpose({ submit, reject, focusFirstControl });
         >
           {{ view.stateLabel }}
         </span>
+      </div>
+      <div v-if="showSteps && questions.length > 1" class="prompt-dock__progress">
+        <span class="prompt-dock__step-label" data-question-step-label>{{ stepLabel }}</span>
+        <div
+          class="prompt-dock__progress-track"
+          role="progressbar"
+          aria-label="Question progress"
+          aria-valuemin="0"
+          :aria-valuemax="questions.length"
+          :aria-valuenow="progressValue"
+          :aria-valuetext="stepLabel"
+        >
+          <span class="prompt-dock__progress-fill" :style="{ inlineSize: progressPercent }"></span>
+        </div>
       </div>
     </header>
 
