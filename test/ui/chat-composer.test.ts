@@ -153,6 +153,15 @@ describe("ChatComposer", () => {
     const { wrapper } = await mountChat("/chat?app=alpha&project=p&session=keep", {
       sessionsStatus: 503,
       sessionsCode: "agent_stopped",
+      process: {
+        state: "stopped",
+        phase: "stopped",
+        attemptId: null,
+        startedAt: null,
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        error: null,
+        lastEventId: 0,
+      },
     });
     expect(wrapper.find("[data-chat-composer-input]").attributes("disabled")).toBeDefined();
     expect(wrapper.find("[data-chat-send]").attributes("disabled")).toBeDefined();

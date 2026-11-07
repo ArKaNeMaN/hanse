@@ -82,10 +82,12 @@ import ChatScrim from "../components/chat/ChatScrim.vue";
 import ChatSessionsRail from "../components/chat/ChatSessionsRail.vue";
 import ChatSshApprovals from "../components/chat/ChatSshApprovals.vue";
 import ChatThread from "../components/chat/ChatThread.vue";
+import { useAgentProcess } from "../composables/useAgentProcess.js";
 import { useChatComposer } from "../composables/useChatComposer.js";
 import { useChatStream } from "../composables/useChatStream.js";
 import { applyChrome } from "../composables/useChrome.js";
 import { useWorkspaceShell } from "../composables/useWorkspaceShell.js";
+import type { ProcessError, ProcessPhase, ProcessState } from "../process/types.js";
 import { useChatContextStore } from "../stores/chat-context.js";
 import { useChatFeedStore } from "../stores/chat-feed.js";
 import { type PromptEntry, useChatPromptsStore } from "../stores/chat-prompts.js";
@@ -653,19 +655,22 @@ async function compactSession(): Promise<void> {
 }
 
 async function startAgent(): Promise<void> {
-  if (startingAgent.value) {
+  if (startingAgent.value || processBusy.value) {
     return;
   }
   startingAgent.value = true;
   try {
     await apiMutation<unknown>(withProject(`${apiBase.value}/start`), { json: {} });
-    await Promise.all([chatQuery.refetch(), sessionsQuery.refetch()]);
+    await Promise.all([chatQuery.refetch(), sessionsQuery.refetch(), agentProcess.refetch()]);
     const sessionID = routeState.session.value;
     if (sessionID !== null) {
       await loadMessages(sessionID, true);
     }
-    toasts.push("Agent starting.", "success");
+    if (processState.value === "starting") {
+      toasts.push("Agent starting.", "success");
+    }
   } catch (error) {
+    await agentProcess.refetch();
     toasts.push(errorText(error, "Could not start the agent."), "error");
   } finally {
     startingAgent.value = false;
@@ -675,8 +680,7 @@ async function startAgent(): Promise<void> {
 async function restartAgent(): Promise<void> {
   try {
     await apiMutation<unknown>(withProject(`${apiBase.value}/restart`), { json: {} });
-    await chatQuery.refetch();
-    await sessionsQuery.refetch();
+    await Promise.all([chatQuery.refetch(), sessionsQuery.refetch(), agentProcess.refetch()]);
     toasts.push("Agent restart requested.", "success");
   } catch (error) {
     toasts.push(errorText(error, "Could not restart the agent."), "error");
@@ -927,6 +931,13 @@ const chatQuery = useQuery<ChatResponse>({
 
 const view = computed(() => chatQuery.data.value);
 
+const agentProcess = useAgentProcess({
+  appKey: () => routeState.app.value,
+  project: () => routeState.project.value,
+  initial: () =>
+    view.value?.app.appKey === routeState.app.value ? (view.value?.runtime.process ?? null) : null,
+});
+
 watch(
   () => view.value?.chrome,
   (chrome) => {
@@ -1071,16 +1082,59 @@ const sessionsQuery = useQuery<ChatSessionsResponse>({
   enabled: computed(() => routeState.app.value.length > 0),
 });
 
-function isStopped(error: unknown): boolean {
-  return error instanceof ApiError && (error.code === "agent_stopped" || error.status === 503);
-}
+const legacyProcess = computed<{
+  readonly state: ProcessState;
+  readonly phase: ProcessPhase | null;
+  readonly error: ProcessError | null;
+} | null>(() => {
+  const error = sessionsQuery.error.value;
+  if (error instanceof ApiError && error.status === 503) {
+    if (error.code === "agent_stopped") {
+      return { state: "stopped", phase: "stopped", error: null };
+    }
+    if (error.code === "agent_starting") {
+      return { state: "starting", phase: "waiting_ready", error: null };
+    }
+    if (error.code === "agent_unavailable" || error.code === "default_image_unavailable") {
+      return {
+        state: "error",
+        phase: "failed",
+        error: { code: error.code, message: error.message, at: null },
+      };
+    }
+    return null;
+  }
+  const runtime = view.value?.runtime.state;
+  if (runtime === "stopped") {
+    return { state: "stopped", phase: "stopped", error: null };
+  }
+  if (runtime === "starting") {
+    return { state: "starting", phase: "requested", error: null };
+  }
+  if (runtime === "error") {
+    return { state: "error", phase: "failed", error: null };
+  }
+  return null;
+});
 
-const stopped = computed(
-  () =>
-    isStopped(sessionsQuery.error.value) ||
-    view.value?.runtime.state === "stopped" ||
-    view.value?.runtime.state === "error",
+const activeProcess = computed(
+  () => agentProcess.current.value ?? view.value?.runtime.process ?? null,
 );
+const processState = computed<ProcessState | null>(
+  () => activeProcess.value?.state ?? legacyProcess.value?.state ?? null,
+);
+const processPhase = computed<ProcessPhase | null>(
+  () => activeProcess.value?.phase ?? legacyProcess.value?.phase ?? null,
+);
+const processError = computed<ProcessError | null>(
+  () => activeProcess.value?.error ?? legacyProcess.value?.error ?? null,
+);
+const processBusy = computed(() => processState.value === "starting");
+const processElapsed = computed(() => agentProcess.elapsed.value);
+const processHistoryHref = computed(() =>
+  view.value === undefined ? undefined : `${view.value.links.app}#process-history`,
+);
+const stopped = computed(() => processState.value !== null && processState.value !== "running");
 
 // `immediate` matters after a client-side remount: TanStack reuses a still-fresh cached session
 // list, so `data` is already set before this watcher is registered. Without the immediate run the
@@ -2236,6 +2290,12 @@ onBeforeUnmount(() => {
           :error="stopped ? null : (messagesError ?? historyError)"
           :empty="empty"
           :stopped="stopped"
+          :process-state="processState"
+          :process-phase="processPhase"
+          :process-elapsed="processElapsed"
+          :process-error="processError"
+          :process-history-href="processHistoryHref"
+          :process-busy="processBusy"
           :load-earlier-enabled="historyCursor !== null"
           :message-count="messageCountText"
           :generating-label="generatingLabel"

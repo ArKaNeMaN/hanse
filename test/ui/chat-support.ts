@@ -28,6 +28,15 @@ export const CHAT_PROPS: ChatResponse = {
   runtime: {
     state: "running",
     runtimeUrl: "/api/apps/alpha/runtime?project=p",
+    process: {
+      state: "running",
+      phase: "ready",
+      attemptId: "attempt-1",
+      startedAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:01.000Z",
+      error: null,
+      lastEventId: 1,
+    },
   },
   appOptions: [],
   pendingRestart: false,
@@ -57,7 +66,13 @@ export const CHAT_PROPS: ChatResponse = {
   },
 };
 
+type ProcessSnapshot = ChatResponse["runtime"]["process"];
+
 export interface ChatFixture {
+  readonly process?: ProcessSnapshot | null;
+  readonly processAfterStart?: ProcessSnapshot | null;
+  readonly processMissing?: boolean;
+  readonly runtimeState?: ChatResponse["runtime"]["state"];
   readonly sessions?: readonly { id: string; title?: string; parentID?: string }[];
   readonly sessionsStatus?: number;
   readonly sessionsCode?: string;
@@ -142,8 +157,15 @@ export function boot(overrides: Partial<BootPayload> = {}): BootPayload {
 }
 
 export function props(fixture: ChatFixture = {}): ChatResponse {
+  const process = fixture.process === undefined ? CHAT_PROPS.runtime.process : fixture.process;
+  const runtime = {
+    runtimeUrl: CHAT_PROPS.runtime.runtimeUrl,
+    state: fixture.runtimeState ?? CHAT_PROPS.runtime.state,
+    ...(process === null || fixture.processMissing === true ? {} : { process }),
+  } as ChatResponse["runtime"];
   return {
     ...CHAT_PROPS,
+    runtime,
     appOptions: fixture.appOptions ?? CHAT_PROPS.appOptions,
     deleting: {
       app: fixture.deletingPending === true,
@@ -151,6 +173,17 @@ export function props(fixture: ChatFixture = {}): ChatResponse {
       pending: fixture.deletingPending === true,
     },
   };
+}
+
+/** The chat app stream (as opposed to the process stream added by the process view). */
+export function chatEventSource(): FakeEventSource | undefined {
+  return FakeEventSource.instances.find(
+    (instance) => instance.url.includes("/events?") && !instance.url.includes("/process/events"),
+  );
+}
+
+export function processEventSource(): FakeEventSource | undefined {
+  return FakeEventSource.instances.find((instance) => instance.url.includes("/process/events"));
 }
 
 function json(status: number, body: unknown): Response {
@@ -254,6 +287,12 @@ export function installFetch(fixture: ChatFixture = {}): InstalledFetch {
   const drafts = new Map<string, string>(
     Object.entries(fixture.drafts ?? { s1: fixture.draftText ?? "" }),
   );
+  let currentProcess =
+    fixture.processMissing === true
+      ? null
+      : fixture.process === undefined
+        ? CHAT_PROPS.runtime.process
+        : fixture.process;
   const mock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
     const method = init?.method ?? "GET";
@@ -271,6 +310,16 @@ export function installFetch(fixture: ChatFixture = {}): InstalledFetch {
     if (url.startsWith("/api/ui/chat")) {
       const status = fixture.chatStatus ?? 200;
       return status === 200 ? json(200, props(fixture)) : json(status, { error: "not found" });
+    }
+    if (/^\/api\/apps\/alpha\/process(?:\?|$)/.test(url)) {
+      if (fixture.processMissing === true || currentProcess === null) {
+        return json(404, { error: "not found" });
+      }
+      return json(200, {
+        current: currentProcess,
+        events: [],
+        nextCursor: null,
+      });
     }
     if (url.startsWith("/api/apps/alpha/prompts")) {
       const status = fixture.promptsStatus ?? 200;
@@ -340,7 +389,13 @@ export function installFetch(fixture: ChatFixture = {}): InstalledFetch {
     }
     if (/\/api\/apps\/alpha\/start/.test(url) && method === "POST") {
       const status = fixture.startStatus ?? 200;
-      return json(status, status === 200 ? { state: "running" } : { error: "start failed" });
+      if (fixture.processAfterStart !== undefined) {
+        currentProcess = fixture.processAfterStart;
+      }
+      return json(
+        status,
+        status === 200 ? { state: "running" } : { error: "start failed", code: "agent_starting" },
+      );
     }
     if (url.startsWith("/api/apps/alpha/commands")) {
       const status = fixture.commandsStatus ?? 200;
@@ -416,10 +471,16 @@ export function installFetch(fixture: ChatFixture = {}): InstalledFetch {
         await fixture.sessionsGate;
       }
       if (status !== 200) {
-        return json(status, {
-          error: "agent is stopped",
-          code: fixture.sessionsCode ?? "agent_stopped",
-        });
+        const code = fixture.sessionsCode ?? "agent_stopped";
+        const message =
+          code === "agent_starting"
+            ? "agent is starting"
+            : code === "agent_unavailable"
+              ? "agent is unavailable"
+              : code === "default_image_unavailable"
+                ? "default agent image is unavailable"
+                : "agent is stopped";
+        return json(status, { error: message, code });
       }
       return json(200, { sessions });
     }
@@ -679,7 +740,7 @@ export async function mountChat(
     options.queryClient ?? new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const pinia = createPinia();
   const wrapper = mount(ChatPage, {
-    props: { boot: boot() },
+    props: { boot: boot({ props: props(fixture) }) },
     attachTo: document.getElementById("main") ?? document.body,
     global: { plugins: [pinia, [VueQueryPlugin, { queryClient }], router] },
   });

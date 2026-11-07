@@ -1,5 +1,26 @@
 # Open questions
 
+> Stage: `0036-agent-process-status`. Owner decisions were collected on 2026-11-07. There are no
+> open items for this stage.
+
+## Stage `0036-agent-process-status` - resolved owner decisions
+
+1. **Scope** - all process lifecycle events with durable history: start, lazy start, reconnect,
+   restart, stop, crash, OOM, out-of-band stop, and readiness failure.
+2. **Surfaces** - chat and the application page, plus a compact fleet-overview summary.
+3. **Delivery** - SSE with a snapshot and a per-app `lastEventId`; polling remains a fallback.
+4. **Retention** - 1,000 events per app and 30 days, whichever comes first.
+5. **Overview** - compact block with counts and up to five affected apps (starting, stopping, error).
+6. **Error text** - sanitized runner/container text is visible; no secrets; unknown errors show a
+   generic message keyed by code.
+7. **Lazy starts** - recorded as a new attempt with source `system` and a caller reason.
+8. **Stopping count** - the existing coarse `starting` count may include `stopping`; the new block
+   splits them by phase.
+9. **Restart-on-stopped** - no-op, no attempt (current behavior).
+10. **Stop from error** - clears the current error fields; the error event stays in history.
+11. **Reviews** - design `oracle` round 3 PASS; plan `momus` round 2 OKAY; implementation verified
+    (journal 0043). No open questions remain.
+
 > Stage: `0035-thread-chat-rendering`. Owner decisions were collected on 2026-11-06. There are no
 > open items for this stage.
 

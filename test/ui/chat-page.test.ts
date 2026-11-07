@@ -1,7 +1,13 @@
 import { QueryClient } from "@tanstack/vue-query";
 import { flushPromises } from "@vue/test-utils";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { FakeEventSource, mountChat, props } from "./chat-support.js";
+import {
+  chatEventSource,
+  FakeEventSource,
+  mountChat,
+  processEventSource,
+  props,
+} from "./chat-support.js";
 
 function permission(): Record<string, unknown> {
   return {
@@ -90,10 +96,11 @@ describe("ChatPage read-only shell", () => {
     wrapper.unmount();
   });
 
-  it("has exactly one EventSource and renders the boot sessions and messages", async () => {
+  it("opens one chat stream plus one process stream and renders the boot sessions and messages", async () => {
     const { wrapper } = await mountChat();
-    expect(FakeEventSource.instances).toHaveLength(1);
-    expect(FakeEventSource.instances[0]?.url).toBe("/api/apps/alpha/events?project=p");
+    expect(FakeEventSource.instances).toHaveLength(2);
+    expect(chatEventSource()?.url).toBe("/api/apps/alpha/events?project=p");
+    expect(processEventSource()?.url).toBe("/api/apps/alpha/process/events?project=p");
     expect(wrapper.find('[data-session-id="s1"]').exists()).toBe(true);
     expect(wrapper.text()).toContain("Hello from the fixture.");
     expect(wrapper.text()).toContain("Synthetic assistant reply.");
@@ -102,7 +109,7 @@ describe("ChatPage read-only shell", () => {
 
   it("applies a live delta, tool part, and session status through the reducer", async () => {
     const { wrapper } = await mountChat();
-    const source = FakeEventSource.instances[0];
+    const source = chatEventSource();
     if (source === undefined) throw new Error("missing source");
     source.open();
     source.emit({ type: "stream.ready", seq: 0, streamID: "stream-1" });
@@ -148,7 +155,7 @@ describe("ChatPage read-only shell", () => {
 
   it("renders a stream warning notice and requests a resync", async () => {
     const { wrapper } = await mountChat();
-    const source = FakeEventSource.instances[0];
+    const source = chatEventSource();
     if (source === undefined) throw new Error("missing source");
     source.open();
     source.emit({ type: "stream.ready", seq: 0, streamID: "stream-1" });
@@ -184,7 +191,7 @@ describe("ChatPage read-only shell", () => {
 
   it("refreshes context when the active session becomes idle", async () => {
     const { wrapper, fetchState } = await mountChat();
-    const source = FakeEventSource.instances[0];
+    const source = chatEventSource();
     if (source === undefined) throw new Error("missing source");
     source.open();
     source.emit({ type: "stream.ready", seq: 0, streamID: "stream-idle" });
@@ -340,7 +347,7 @@ describe("ChatPage read-only shell", () => {
       }
       return original(input, init);
     });
-    const source = FakeEventSource.instances[0];
+    const source = chatEventSource();
     if (source === undefined) throw new Error("missing source");
 
     source.open();
@@ -385,7 +392,19 @@ describe("ChatPage read-only shell", () => {
   it("shows the stopped shell and preserves the requested session", async () => {
     const { wrapper, router, fetchState } = await mountChat(
       "/chat?app=alpha&project=p&session=keep",
-      { sessionsStatus: 503, sessionsCode: "agent_stopped" },
+      {
+        sessionsStatus: 503,
+        sessionsCode: "agent_stopped",
+        process: {
+          state: "stopped",
+          phase: "stopped",
+          attemptId: null,
+          startedAt: null,
+          updatedAt: "2026-01-01T00:00:00.000Z",
+          error: null,
+          lastEventId: 0,
+        },
+      },
     );
     expect(wrapper.find("[data-chat-stopped]").exists()).toBe(true);
     expect(wrapper.find("[data-chat-start-agent]").exists()).toBe(true);
@@ -398,6 +417,268 @@ describe("ChatPage read-only shell", () => {
         (request) => request.method === "POST" && request.url.includes("/start"),
       ),
     ).toBe(true);
+    wrapper.unmount();
+  });
+
+  it("keeps a running process usable through a transient sessions 503", async () => {
+    const { wrapper } = await mountChat("/chat?app=alpha&project=p&session=keep", {
+      sessionsStatus: 503,
+      sessionsCode: "agent_unavailable",
+      process: {
+        state: "running",
+        phase: "ready",
+        attemptId: "attempt-1",
+        startedAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:05.000Z",
+        error: null,
+        lastEventId: 4,
+      },
+    });
+    expect(wrapper.find("[data-chat-stopped]").exists()).toBe(false);
+    expect(wrapper.find("[data-chat-process-error]").exists()).toBe(false);
+    expect(wrapper.find("[data-chat-composer-input]").attributes("disabled")).toBeUndefined();
+    expect(wrapper.text()).not.toContain("Agent is not running");
+    wrapper.unmount();
+  });
+
+  it("shows the stopped panel only for agent_stopped with a stopped process", async () => {
+    const { wrapper } = await mountChat("/chat?app=alpha&project=p&session=keep", {
+      sessionsStatus: 503,
+      sessionsCode: "agent_stopped",
+      process: {
+        state: "stopped",
+        phase: "stopped",
+        attemptId: null,
+        startedAt: null,
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        error: null,
+        lastEventId: 0,
+      },
+    });
+    expect(wrapper.find("[data-chat-stopped]").exists()).toBe(true);
+    expect(wrapper.find("[data-chat-start-agent]").exists()).toBe(true);
+    wrapper.unmount();
+  });
+
+  it("renders a starting panel with the phase, elapsed time, and no Start button", async () => {
+    const { wrapper } = await mountChat("/chat?app=alpha&project=p&session=keep", {
+      sessionsStatus: 503,
+      process: {
+        state: "starting",
+        phase: "waiting_ready",
+        attemptId: "attempt-2",
+        startedAt: new Date(Date.now() - 5_000).toISOString(),
+        updatedAt: new Date().toISOString(),
+        error: null,
+        lastEventId: 2,
+      },
+    });
+    const panel = wrapper.find("[data-chat-starting]");
+    expect(panel.exists()).toBe(true);
+    expect(panel.text()).toContain("Starting agent");
+    expect(panel.text()).toContain("Waiting for readiness");
+    expect(panel.find("[data-chat-process-elapsed]").exists()).toBe(true);
+    expect(wrapper.find("[data-chat-start-agent]").exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("renders a stopping panel that is never labelled Starting", async () => {
+    const { wrapper } = await mountChat("/chat?app=alpha&project=p&session=keep", {
+      sessionsStatus: 503,
+      process: {
+        state: "starting",
+        phase: "stopping",
+        attemptId: "attempt-2",
+        startedAt: new Date(Date.now() - 3_000).toISOString(),
+        updatedAt: new Date().toISOString(),
+        error: null,
+        lastEventId: 3,
+      },
+    });
+    const panel = wrapper.find("[data-chat-stopping]");
+    expect(panel.exists()).toBe(true);
+    expect(panel.text()).toContain("Stopping agent");
+    expect(panel.text()).not.toContain("Starting agent");
+    expect(wrapper.find("[data-chat-start-agent]").exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("renders a failed process with the sanitized message, Retry, and history", async () => {
+    const { wrapper } = await mountChat("/chat?app=alpha&project=p&session=keep", {
+      process: {
+        state: "error",
+        phase: "failed",
+        attemptId: "attempt-2",
+        startedAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:30.000Z",
+        error: {
+          code: "readiness_timeout",
+          message: "The readiness probe timed out after 30s.",
+          at: "2026-01-01T00:00:30.000Z",
+        },
+        lastEventId: 6,
+      },
+    });
+    const panel = wrapper.find("[data-chat-process-error]");
+    expect(panel.exists()).toBe(true);
+    expect(panel.text()).toContain("Agent failed to start");
+    expect(panel.text()).toContain("The readiness probe timed out after 30s.");
+    expect(panel.find("[data-chat-retry-agent]").exists()).toBe(true);
+    expect(panel.find("[data-chat-process-history]").attributes("href")).toBe(
+      "/projects/p/apps/alpha#process-history",
+    );
+    expect(wrapper.find("[data-chat-stopped]").exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("shows the generic fallback for a legacy error without a message", async () => {
+    const { wrapper } = await mountChat("/chat?app=alpha&project=p&session=keep", {
+      process: {
+        state: "error",
+        phase: "failed",
+        attemptId: "attempt-2",
+        startedAt: null,
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        error: { code: "readiness_timeout", message: null, at: null },
+        lastEventId: 1,
+      },
+    });
+    expect(wrapper.find("[data-chat-process-error]").text()).toContain(
+      "The agent failed to start. No error details were recorded.",
+    );
+    wrapper.unmount();
+  });
+
+  it("maps legacy session codes to their own panels instead of the stopped shell", async () => {
+    const starting = await mountChat("/chat?app=alpha&project=p&session=keep", {
+      processMissing: true,
+      sessionsStatus: 503,
+      sessionsCode: "agent_starting",
+    });
+    expect(starting.wrapper.find("[data-chat-starting]").exists()).toBe(true);
+    expect(starting.wrapper.find("[data-chat-stopped]").exists()).toBe(false);
+    starting.wrapper.unmount();
+
+    const unavailable = await mountChat("/chat?app=alpha&project=p&session=keep", {
+      processMissing: true,
+      sessionsStatus: 503,
+      sessionsCode: "agent_unavailable",
+    });
+    expect(unavailable.wrapper.find("[data-chat-process-error]").text()).toContain(
+      "agent is unavailable",
+    );
+    unavailable.wrapper.unmount();
+
+    const image = await mountChat("/chat?app=alpha&project=p&session=keep", {
+      processMissing: true,
+      sessionsStatus: 503,
+      sessionsCode: "default_image_unavailable",
+    });
+    expect(image.wrapper.find("[data-chat-process-error]").text()).toContain(
+      "default agent image is unavailable",
+    );
+    image.wrapper.unmount();
+  });
+
+  it("keeps the starting panel and Start disabled after a remount during a slow start", async () => {
+    const starting = {
+      state: "starting" as const,
+      phase: "preparing" as const,
+      attemptId: "attempt-3",
+      startedAt: new Date(Date.now() - 4_000).toISOString(),
+      updatedAt: new Date().toISOString(),
+      error: null,
+      lastEventId: 7,
+    };
+    const first = await mountChat("/chat?app=alpha&project=p&session=keep", {
+      sessionsStatus: 503,
+      process: starting,
+    });
+    expect(first.wrapper.find("[data-chat-start-agent]").exists()).toBe(false);
+    first.wrapper.unmount();
+
+    const second = await mountChat("/chat?app=alpha&project=p&session=keep", {
+      sessionsStatus: 503,
+      process: starting,
+    });
+    expect(second.wrapper.find("[data-chat-starting]").exists()).toBe(true);
+    expect(second.wrapper.find("[data-chat-start-agent]").exists()).toBe(false);
+    second.wrapper.unmount();
+  });
+
+  it("refetches the process view after a failed start and shows the persisted error", async () => {
+    const stopped = {
+      state: "stopped" as const,
+      phase: "stopped" as const,
+      attemptId: null,
+      startedAt: null,
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      error: null,
+      lastEventId: 1,
+    };
+    const failed = {
+      state: "error" as const,
+      phase: "failed" as const,
+      attemptId: "attempt-4",
+      startedAt: "2026-01-01T00:00:10.000Z",
+      updatedAt: "2026-01-01T00:00:40.000Z",
+      error: {
+        code: "readiness_timeout",
+        message: "Readiness timed out after 30s.",
+        at: "2026-01-01T00:00:40.000Z",
+      },
+      lastEventId: 2,
+    };
+    const { wrapper, fetchState } = await mountChat("/chat?app=alpha&project=p&session=keep", {
+      process: stopped,
+      processAfterStart: failed,
+      startStatus: 503,
+    });
+    await wrapper.find("[data-chat-start-agent]").trigger("click");
+    for (let index = 0; index < 4; index += 1) {
+      await flushPromises();
+    }
+    expect(wrapper.find("[data-chat-process-error]").text()).toContain(
+      "Readiness timed out after 30s.",
+    );
+    expect(
+      fetchState.requests.some(
+        (request) => request.method === "GET" && request.url.includes("/process?"),
+      ),
+    ).toBe(true);
+    wrapper.unmount();
+  });
+
+  it("does not announce starting when the awaited start already returned running", async () => {
+    const stopped = {
+      state: "stopped" as const,
+      phase: "stopped" as const,
+      attemptId: null,
+      startedAt: null,
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      error: null,
+      lastEventId: 1,
+    };
+    const running = {
+      state: "running" as const,
+      phase: "ready" as const,
+      attemptId: "attempt-5",
+      startedAt: "2026-01-01T00:00:10.000Z",
+      updatedAt: "2026-01-01T00:00:20.000Z",
+      error: null,
+      lastEventId: 2,
+    };
+    const { wrapper } = await mountChat("/chat?app=alpha&project=p&session=keep", {
+      process: stopped,
+      processAfterStart: running,
+    });
+    expect(wrapper.find("[data-chat-start-agent]").exists()).toBe(true);
+    await wrapper.find("[data-chat-start-agent]").trigger("click");
+    for (let index = 0; index < 4; index += 1) {
+      await flushPromises();
+    }
+    expect(wrapper.find("[data-chat-stopped]").exists()).toBe(false);
+    expect(wrapper.text()).not.toContain("Agent starting.");
     wrapper.unmount();
   });
 
@@ -439,7 +720,7 @@ describe("ChatPage read-only shell", () => {
       ],
     });
     await flushPromises();
-    const source = FakeEventSource.instances[0];
+    const source = chatEventSource();
     if (source === undefined) throw new Error("missing source");
     source.open();
     source.emit({ type: "stream.ready", seq: 0, streamID: "stream-meta" });

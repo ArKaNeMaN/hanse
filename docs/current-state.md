@@ -1,6 +1,6 @@
 # Hanse - Current State (read this first)
 
-> Last updated: 2026-11-06. This is the canonical description of what is **implemented right now**.
+> Last updated: 2026-11-07. This is the canonical description of what is **implemented right now**.
 > If this document and the code disagree, the code wins - update this document.
 > History and rationale: `docs/design/overview.md`, `docs/plans/0001-core.md`,
 > `docs/journal/0001-core.md`. Deployment: `docs/deployment.md`.
@@ -471,6 +471,117 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   redacted warnings. A stopped app is `409 not_running`; a container or managed directory that predates
   the feature is `409 restart_required`.
 
+## Agent process lifecycle and status
+
+- Migration v23 (`agent-process-status`) adds the current process fields to `instances`
+  (`process_attempt_id`, `process_phase`, `process_started_at`, `process_error_code`,
+  `process_error_message`, `process_error_at`, `process_updated_at`) and backfills `process_phase`
+  from the coarse state (`running -> ready`, `starting -> requested`, `stopped -> stopped`,
+  `failed`/`error` -> `failed`) plus `process_updated_at = updated_at`. `process_phase` is nullable
+  and validated by the writer; `process_attempt_id` is `NULL` for legacy rows and is set on the next
+  explicit or lazy start. `instances.started_at` keeps its meaning (the last transition to running).
+- `agent_run_events` is append-only history: `id` (global autoincrement), `app_id` (FK, cascade),
+  `attempt_id`, positive `seq`, normalized `state`, nullable `phase`, `source`
+  (`operator|runtime|reconciler|system`), bounded `reason`/`error_code` (200) and `message` (2000),
+  and `created_at`. `(app_id, attempt_id, seq)` is unique; `(app_id, id DESC)` serves history reads;
+  `created_at` serves the 30-day prune.
+- `InstanceManager.#transitionProcess` is the single process writer. It never acquires the per-app
+  lock; every caller holds it. One transaction upserts the `instances` row (process fields plus the
+  existing runtime identity/lifecycle columns and COALESCE/`started_at` semantics), inserts the
+  history row, and allocates `seq = MAX(seq)+1` for the attempt. It validates the phase/state
+  pairing, normalizes legacy `failed -> error`, and sanitizes the message before storage. After
+  commit it queues the existing runtime observation and emits the process event to the module-level
+  bus.
+- `#launches: Map<string, Promise<string>>` is the launch/idempotency boundary and resolves the
+  endpoint. `ensure`, `beginRestart`, `restartIfRunning`, and `rollbackImage` register the promise
+  synchronously before their locks/202; `#restartLocked` does not register. A duplicate start returns
+  the in-flight promise; a restart during a start chains after it; a start during a restart joins it.
+- Attempt boundary: an explicit start, an explicit restart of a running/starting app, and a lazy
+  start each create an attempt; a reconnect does not (it is visible), a plain or deletion stop closes
+  the current attempt, restart of a stopped app is a no-op with no attempt, and an out-of-band restart
+  creates a runtime-keyed attempt. A pre-attempt refusal (deletion pending, deployment lock, state
+  collision) writes no attempt; an image-preflight failure does.
+- Write order: after the cheap guards and the runtime status probe, before the image preflight and
+  heavy preparation, the destructive branch upserts `starting`/`requested` with a new attempt id and
+  clears the current error. It then writes `preparing`, `creating`, `waiting_ready`, and, only after
+  the readiness probe succeeds, `running`/`ready` with `instances.started_at = now`. A failure from
+  that point writes `error`/`failed` with a sanitized code and rethrows the original error for the
+  existing HTTP mapping.
+- Reconnect: when the persisted state is not `running`, the manager writes
+  `starting`/`waiting_ready` before token reconciliation and readiness; success writes
+  `running`/`ready` and clears the error, and a token/readiness failure writes `error`/`failed` with
+  `token_reconcile_failed` or `readiness_timeout`. No new attempt is created.
+- Restart is one attempt: `requested -> stopping -> preparing -> creating -> waiting_ready -> ready`.
+  The stop half uses `terminal=false`, so it writes `stopping` but suppresses the generic terminal
+  `stopped` write, its event, coarse-state change, and observation. A restart stop failure writes
+  `error`/`runtime_unavailable`; `#handleRestartFailure` treats the same attempt/state/code as a
+  no-op and does not append a second event.
+- Plain operator and deletion stops write `stopping` before `runtime.delete`; a successful terminal
+  stop writes `stopped` and clears the current error (history keeps the error event), and a delete
+  failure writes `error`/`runtime_unavailable`.
+- Reconciler authority: the attempt owner or a successful readiness probe is the only writer of
+  `ready`. The 15 s reconciler never promotes `error` or an ownerless `starting` from Docker state
+  alone; it runs a bounded readiness probe first. A propagated `error` is sticky. A stale ownerless
+  `starting` becomes `error`/`interrupted` only after the probe fails and `process_updated_at` is at
+  least 90 s old, or when the runtime is absent; a healthy probe promotes it to `running`/`ready`.
+  An out-of-band restart appends a runtime-keyed attempt even when the coarse state stays `running`;
+  an out-of-band stop or crash/OOM writes `stopped` or `error` with the observation reason. A status
+  transport failure keeps the last known state.
+- Current errors clear on a new attempt, a successful reconnect or readiness recovery, and an
+  explicit stop; history is append-only. The stable codes are `image_unavailable`,
+  `default_image_unavailable`, `token_reconcile_failed`, `skills_materialize_failed`,
+  `readiness_timeout`, `runtime_unavailable`, and `interrupted`; `external_restart` and
+  `out_of_band_stop` are reasons, not codes. `sanitizeProcessError` keeps the first line, strips ANSI
+  and control characters, redacts Bearer/Authorization values, credential-shaped tokens, private-key
+  blocks, and caller-supplied secrets, caps at 2,000 characters, and substitutes a generic
+  code-keyed message for an unknown internal exception. Redaction happens at write, not at read.
+- Retention: an insert prunes the app to its newest 1,000 events, and every reconciler tick prunes
+  rows older than 30 days for every app regardless of state, in batches of 500. Pruning is
+  idempotent and does not depend on the app being running.
+- `GET /api/apps/:app/runtime` keeps every existing field and adds `process`
+  (`attemptId`, `phase`, `startedAt`, `updatedAt`, `error {code,message,at}|null`, `lastEventId`).
+  It stays DB-only; `restarting` remains the in-memory manager flag. `GET /api/apps/:app/process`
+  returns `{current, events, nextCursor}` with newest-first history, `limit` 1..100 (default 50), a
+  positive-integer `before`, and a string or null cursor. Both routes are human-only, require
+  `?project`, reject an agent principal with `403`, a missing project with `400`, an unknown app with
+  `404`, and a deleting app with `409 deletion_pending`; they never probe the agent runtime.
+- `GET /api/apps/:app/process/events` is an always-on process SSE that works while stopped, starting,
+  stopping, or in error and does not need the agent endpoint. It sends `stream.ready` (`seq: 0`),
+  `process.snapshot` (`seq: 1`, `{current, lastEventId}`), and `process.transition` (`seq: 2+`) in the
+  existing `{seq, streamID}` envelope. The route subscribes into a bounded 256-frame buffer before
+  reading the one-statement snapshot, then flushes transitions with `id > lastEventId` and filters
+  or dedupes every later delivery by id. Global event ids are not per-app contiguous, so no `id+1`
+  gap assumption is made. `stream.warning` reports `process_buffer_overflow`,
+  `process_snapshot_failed`, or `process_slow_consumer` (over 1 MiB queued), and each warning triggers
+  one `/process` refetch. A separate registry allows 4 process streams per app; the fifth gets
+  `429 stream_limit`, and the client closes the `EventSource` and falls back to polling with backoff.
+  The route is dispatched before the `/api/apps/` chat catch-all; a missing manager still serves the
+  DB snapshot. Cookies are required for the SSE since `EventSource` cannot send a bearer header.
+- Chat: the process state is authoritative over a transport `503`. Only `agent_stopped` confirms
+  stopped; `agent_starting` maps to starting, and `agent_unavailable`/`default_image_unavailable` map
+  to their own error presentation instead of the generic stopped shell. `running`, `starting`,
+  `stopping`, `stopped`, and `error` render distinct panels; `stopping` is never labelled Starting and
+  shows elapsed time. Start/Retry is disabled from server state while `starting`/`stopping`, including
+  after a remount; the local `startingAgent` flag is only an immediate double-click guard. A failed
+  POST refetches the process view so the persisted error appears, and a legacy error row with no
+  message shows the generic no-details text.
+- Application page: the Runtime strip shows the coarse state plus the phase and elapsed time for
+  `starting`/`stopping`. An `error` shows the sanitized message and time plus a **Process history**
+  disclosure at `#process-history`, which fetches
+  `/api/apps/:app/process?limit=50&project=<id>`, renders newest first, dedupes by event id, and
+  supports **Load older** until the cursor is null. The page keeps its 10 s runtime poll as the
+  fallback and subscribes to the process SSE while visible.
+- Overview: the **Agent processes** block shows `starting`, `stopping`, and `error` counts and up to
+  five affected applications (starting or error states), ordered by `process_updated_at` descending,
+  with chat/application links. It excludes the built-in master and is hidden when empty. The existing
+  watch strip and its coarse `starting` count are unchanged.
+- Accepted consequences and limits: the coarse `starting` count and coarse-state readers include
+  `stopping` (by design; the new block splits by phase); history is capped at 1,000 events per app and
+  30 days with no pre-v23 backfill; there is no container-log streaming, no turn-level error history,
+  and no cancellation of an in-flight start; a legacy row without an attempt has no attempt id and a
+  null phase until its next event, so the UI falls back to the coarse state; the process SSE is
+  best-effort and polling remains the correctness fallback.
+
 ## SSH host access
 
 - Global operator-defined hosts live in `ssh_hosts` with an AES-256-GCM-sealed private key in
@@ -504,11 +615,12 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   order; migrations v10 (applied settings/profile state), v11 (deletion markers), v12 (skills),
   v13 (skill bundles), v14 (session-bound handoffs, reply routing, and handoff policy), and v15
   (chat drafts, session state, and pending sends) and v16 (file-only attachments and deliveries)
-  follow. The current schema versions are `[1..22]` (v17 adds handoff message-id lookup indexes;
+  follow. The current schema versions are `[1..23]` (v17 adds handoff message-id lookup indexes;
   v18 adds agent image validity; v19 adds the global custom model provider registry; v20 adds the
   process-rule hash, runtime epoch/exit fields, and the session resume/notice tables; v21 adds
   `agent_media` for agent-published chat images; v22 adds the handoff-thread header fields, ordered
-  `handoff_messages` columns, triggers, and indexes).
+  `handoff_messages` columns, triggers, and indexes; v23 adds the `instances.process_*` current
+  fields and the durable `agent_run_events` history).
 - Live on `deployment-host` (`sha-e2d89a2`): a temporary SSH target pinned and authenticated, an approval was
   approved, `echo QA_OK` and a 65 s `sleep` succeeded, upload/download round-tripped, a real
   `opencode` turn called `hanse_ssh_exec` and received the result after 65 s, and audit rows survived
@@ -1374,6 +1486,11 @@ coordinator; operators do not set them.
 
 `npm run lint && npm run typecheck && npm run typecheck:ui && npm test && npm run build &&
 npm run check:ui` (all green; 2758 tests in 148 files; the suite includes the jsdom UI project).
+The agent process lifecycle stage (journal 0043) passes `npm run lint` (806 files),
+`npm run typecheck`, `npm run typecheck:ui`, `npm test` (238 files, 3,580 tests), `npm run build`,
+`npm run check:sensitive`, and `npm run test:e2e` (223 passed, 6 skipped). The deterministic
+navigation assertion was corrected in a test-only change to account for the application page's
+process stream; no product behavior changed.
 The UX polish pass deployed as `sha-88faab7`; the settings live-save follow-up deployed as
 `sha-d2fcc3b`; the runtime-state reconciliation fix deployed as coordinator `sha-98033f5` on
 2026-10-21. The project/application deletion stage is verified by the four gates; it has not been

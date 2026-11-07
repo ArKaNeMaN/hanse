@@ -856,4 +856,52 @@ CREATE INDEX handoffs_deadline ON handoffs(deadline_at) WHERE deadline_at IS NOT
 CREATE INDEX events_scope_type_created ON events(scope, type, created_at);
 `,
   },
+  {
+    version: 23,
+    name: "agent-process-status",
+    sql: `
+-- v23: agent process lifecycle current state and durable history
+ALTER TABLE instances ADD COLUMN process_attempt_id TEXT;
+ALTER TABLE instances ADD COLUMN process_phase TEXT;
+ALTER TABLE instances ADD COLUMN process_started_at TEXT;
+ALTER TABLE instances ADD COLUMN process_error_code TEXT;
+ALTER TABLE instances ADD COLUMN process_error_message TEXT;
+ALTER TABLE instances ADD COLUMN process_error_at TEXT;
+ALTER TABLE instances ADD COLUMN process_updated_at TEXT;
+
+UPDATE instances SET
+  process_phase = CASE COALESCE(runtime_state, state)
+    WHEN 'running' THEN 'ready'
+    WHEN 'starting' THEN 'requested'
+    WHEN 'stopped' THEN 'stopped'
+    WHEN 'failed' THEN 'failed'
+    WHEN 'error' THEN 'failed'
+    ELSE NULL
+  END,
+  process_updated_at = updated_at
+WHERE process_phase IS NULL;
+
+CREATE TABLE agent_run_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+  attempt_id TEXT NOT NULL CHECK (length(attempt_id) BETWEEN 1 AND 128),
+  seq INTEGER NOT NULL CHECK (seq > 0),
+  state TEXT NOT NULL CHECK (state IN ('starting','running','stopped','error')),
+  phase TEXT CHECK (phase IS NULL OR phase IN (
+    'requested','preparing','creating','waiting_ready','ready',
+    'stopping','stopped','failed','interrupted')),
+  source TEXT NOT NULL CHECK (source IN ('operator','runtime','reconciler','system')),
+  reason TEXT CHECK (reason IS NULL OR length(reason) <= 200),
+  error_code TEXT CHECK (error_code IS NULL OR length(error_code) <= 200),
+  message TEXT CHECK (message IS NULL OR length(message) <= 2000),
+  created_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX agent_run_events_attempt_seq
+  ON agent_run_events(app_id, attempt_id, seq);
+CREATE INDEX agent_run_events_app_id
+  ON agent_run_events(app_id, id DESC);
+CREATE INDEX agent_run_events_created
+  ON agent_run_events(created_at);
+`,
+  },
 ];

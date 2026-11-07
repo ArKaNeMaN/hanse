@@ -5,6 +5,7 @@ import { isMasterProject } from "../master/constants.js";
 import type { InstanceManager } from "../opencode/manager.js";
 import type { RegisteredApp } from "../registry/index.js";
 import type { SqliteDatabase } from "../store/index.js";
+import { type ProcessCurrent, readProcessSnapshot } from "../store/process.js";
 import { buildHandoffsProps, type HandoffFilterProps } from "./props/handoffs.js";
 import { buildOverviewProps } from "./props/overview.js";
 import {
@@ -63,10 +64,14 @@ export interface AppRef {
   deleting: boolean;
 }
 
+/** Current process detail plus the newest history id (design §8.1-8.2). */
+export type ProcessDetail = ProcessCurrent & { lastEventId: number };
+
 export interface SiteModel {
   projects: ProjectView[];
   apps: Map<string, AppRef>;
   runtime: Map<string, RuntimeState>;
+  process: Map<string, ProcessDetail>;
   pendingRestart: Map<string, boolean>;
   pendingRestartReasons: Map<string, string[]>;
   pendingCount: number;
@@ -172,6 +177,13 @@ export function buildSite(deps: DashboardDeps): SiteModel {
     };
   });
 
+  const process = new Map<string, ProcessDetail>();
+  for (const project of projects) {
+    for (const app of project.apps) {
+      process.set(app.id, readProcessSnapshot(deps.db, app.id));
+    }
+  }
+
   let pendingCount = 0;
   let sshPendingCount = 0;
   const sshPendingByApp = new Map<string, number>();
@@ -234,6 +246,7 @@ export function buildSite(deps: DashboardDeps): SiteModel {
     projects,
     apps,
     runtime,
+    process,
     pendingRestart,
     pendingRestartReasons,
     pendingCount,

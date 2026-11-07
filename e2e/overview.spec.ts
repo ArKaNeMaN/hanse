@@ -1,14 +1,26 @@
-import { expect, test } from "@playwright/test";
+import { expect, type Page, test } from "@playwright/test";
 import {
   collectPageErrors,
   expectNoPageErrors,
   PROJECT_ONE,
+  PROJECT_TWO,
   settle,
   signIn,
+  upstreamInfo,
 } from "./support/helpers.js";
 
 function isSpaProject(): boolean {
   return test.info().project.name === "spa";
+}
+
+async function control(page: Page, body: Record<string, unknown>): Promise<void> {
+  const port = Number(new URL(page.url()).port);
+  const response = await fetch(`${upstreamInfo(port).url}/__control`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  expect(response.ok).toBe(true);
 }
 
 test("renders the fleet overview with counts, ledger, handoffs, waiting, and runtime", async ({
@@ -125,4 +137,58 @@ test("an overview project link opens the project page", async ({ page }) => {
 
   await settle(page);
   expectNoPageErrors(errors);
+});
+
+test("SPA shows the agent processes block for affected applications", async ({ page }) => {
+  test.skip(!isSpaProject(), "the process block is a Vue surface");
+  const errors = collectPageErrors(page);
+  const beta = `${PROJECT_ONE}:beta`;
+  const gamma = `${PROJECT_TWO}:gamma`;
+  await signIn(page, "/");
+  try {
+    await control(page, {
+      event: {
+        processSnapshot: {
+          appId: beta,
+          state: "starting",
+          phase: "waiting_ready",
+          attemptId: "e2e-overview-start",
+          startedAt: new Date(Date.now() - 5_000).toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+      },
+    });
+    await control(page, {
+      event: {
+        processSnapshot: {
+          appId: gamma,
+          state: "error",
+          phase: "failed",
+          attemptId: "e2e-overview-error",
+          errorCode: "readiness_timeout",
+          errorMessage: "The fixture overview start failed.",
+          updatedAt: new Date().toISOString(),
+        },
+      },
+    });
+
+    await page.goto("/");
+    const block = page.locator("#agent-processes");
+    await expect(block).toBeVisible({ timeout: 15_000 });
+    await expect(block.locator("#process-count-starting")).toHaveText("1");
+    await expect(block.locator("#process-count-stopping")).toHaveText("0");
+    await expect(block.locator("#process-count-error")).toHaveText("1");
+    await expect(block).toContainText("beta");
+    await expect(block).toContainText("gamma");
+    await expect(block).not.toContainText("master");
+    await page.waitForTimeout(400);
+    expectNoPageErrors(errors);
+  } finally {
+    await control(page, {
+      event: { processSnapshot: { appId: beta, state: "stopped", phase: "stopped" } },
+    });
+    await control(page, {
+      event: { processSnapshot: { appId: gamma, state: "stopped", phase: "stopped" } },
+    });
+  }
 });

@@ -37,6 +37,7 @@ function siteModel(projects: ProjectsSourceProject[]): SiteModel {
     projects: projects as unknown as ProjectView[],
     apps: new Map(),
     runtime: new Map(),
+    process: new Map(),
     pendingRestart: new Map(),
     pendingRestartReasons: new Map(),
     pendingCount: 0,

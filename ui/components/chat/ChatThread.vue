@@ -17,6 +17,9 @@ import {
 } from "../../chat/scroll-memory.js";
 import type { ChatStreamStatusKind } from "../../chat/stream.js";
 import type { ChatMessagePartView, ChatThreadItem, InlineQuestionView } from "../../chat/types.js";
+import { absoluteTime, timeAgo } from "../../format.js";
+import type { ProcessError, ProcessPhase, ProcessState } from "../../process/types.js";
+import { processPhasePill, processPill, runtimePill } from "../../status.js";
 import AppIcon from "../AppIcon.vue";
 import ChatGeneratingRow from "./ChatGeneratingRow.vue";
 import ChatMessage from "./ChatMessage.vue";
@@ -39,6 +42,12 @@ const props = defineProps<{
   startingAgent?: boolean;
   sessionTitle?: string;
   streamStatus?: ChatStreamStatusKind;
+  processState?: ProcessState | null;
+  processPhase?: ProcessPhase | null;
+  processElapsed?: string;
+  processError?: ProcessError | null;
+  processHistoryHref?: string;
+  processBusy?: boolean;
   waiting?: boolean;
   todos?: readonly NormalizedTodo[];
   contextSnapshot?: ContextSnapshot | null;
@@ -73,6 +82,33 @@ const liveLabel = computed(() => {
   if (props.streamStatus === "paused") return "Paused";
   return "Connecting";
 });
+const hasProcess = computed(() => props.processState !== undefined && props.processState !== null);
+const processStarting = computed(
+  () => hasProcess.value && props.processState === "starting" && props.processPhase !== "stopping",
+);
+const processStopping = computed(() => hasProcess.value && props.processPhase === "stopping");
+const processFailed = computed(() => hasProcess.value && props.processState === "error");
+const stoppedPanel = computed(() =>
+  hasProcess.value ? props.processState === "stopped" : props.stopped,
+);
+const processPillSpec = computed(() => {
+  const state = props.processState;
+  if (state === "error") return processPill("error", props.processPhase ?? null);
+  if (state === "running") return processPill("running", props.processPhase ?? null);
+  if (state === "stopped") return runtimePill("stopped");
+  return processPhasePill(props.processPhase ?? null) ?? runtimePill("starting");
+});
+const processErrorText = computed(() => {
+  const message = props.processError?.message?.trim();
+  return message !== undefined && message.length > 0
+    ? message
+    : "The agent failed to start. No error details were recorded.";
+});
+const processErrorAt = computed(() => props.processError?.at ?? null);
+const processRetryDisabled = computed(
+  () => props.startingAgent === true || props.processBusy === true,
+);
+const processElapsedText = computed(() => props.processElapsed?.trim() ?? "");
 const planCounts = computed(() => {
   const counts = { completed: 0, total: 0 };
   for (const todo of props.todos ?? []) {
@@ -485,7 +521,87 @@ defineExpose({ captureAnchor, restoreAnchor, scrollToBottom, onScroll, unseen })
           </p>
 
           <p v-if="error !== null" class="form-error" role="alert">{{ error }}</p>
-          <div v-else-if="stopped" class="empty-state" data-chat-stopped>
+          <div
+            v-else-if="processStarting"
+            class="chat-stopped"
+            data-chat-starting
+            role="status"
+            aria-live="polite"
+          >
+            <span class="status" :data-state="processPillSpec.dataState">
+              <AppIcon :name="processPillSpec.icon" />{{ processPillSpec.label }}
+            </span>
+            <h3 class="chat-stopped__title">Starting agent…</h3>
+            <p class="chat-stopped__body">
+              The agent is starting. This panel updates automatically and the conversation is
+              preserved.
+            </p>
+            <p v-if="processElapsedText.length > 0" class="caption mono" data-chat-process-elapsed>
+              {{ processElapsedText }} elapsed
+            </p>
+          </div>
+          <div
+            v-else-if="processStopping"
+            class="chat-stopped"
+            data-chat-stopping
+            role="status"
+            aria-live="polite"
+          >
+            <span class="status" :data-state="processPillSpec.dataState">
+              <AppIcon :name="processPillSpec.icon" />{{ processPillSpec.label }}
+            </span>
+            <h3 class="chat-stopped__title">Stopping agent…</h3>
+            <p class="chat-stopped__body">
+              The agent is shutting down. The conversation stays preserved and will reopen when the
+              process is available again.
+            </p>
+            <p v-if="processElapsedText.length > 0" class="caption mono" data-chat-process-elapsed>
+              {{ processElapsedText }} elapsed
+            </p>
+          </div>
+          <div
+            v-else-if="processFailed"
+            class="error-state chat-error"
+            data-chat-process-error
+            role="alert"
+          >
+            <span class="error-state__mark"><AppIcon name="alert-triangle" /></span>
+            <div>
+              <h3 class="error-state__title">Agent failed to start</h3>
+              <p class="error-state__body" data-chat-process-error-message>
+                {{ processErrorText }}
+              </p>
+              <p v-if="processErrorAt !== null" class="mono">
+                <time
+                  :datetime="processErrorAt"
+                  :title="absoluteTime(processErrorAt)"
+                  data-chat-process-error-time
+                >
+                  {{ timeAgo(processErrorAt) }}
+                </time>
+              </p>
+              <div class="chat-stopped__actions">
+                <button
+                  class="btn btn-primary btn-sm"
+                  type="button"
+                  data-chat-retry-agent
+                  :disabled="processRetryDisabled"
+                  @click="emit('start')"
+                >
+                  <AppIcon name="refresh" />Retry
+                </button>
+                <a
+                  v-if="processHistoryHref !== undefined"
+                  class="btn btn-ghost btn-sm"
+                  :href="processHistoryHref"
+                  data-chat-process-history
+                >
+                  Process history
+                </a>
+              </div>
+            </div>
+          </div>
+          <div v-else-if="stoppedPanel" class="empty-state" data-chat-stopped>
             <h3 class="empty-state__title">Agent is not running</h3>
             <p class="empty-state__body">
               The conversation is preserved. Start the agent to read live updates; nothing starts
@@ -496,7 +612,7 @@ defineExpose({ captureAnchor, restoreAnchor, scrollToBottom, onScroll, unseen })
                 class="btn btn-primary btn-sm"
                 type="button"
                 data-chat-start-agent
-                :disabled="startingAgent === true"
+                :disabled="processRetryDisabled"
                 @click="emit('start')"
               >
                 <AppIcon name="refresh" />{{ startingAgent === true ? "Starting…" : "Start agent" }}

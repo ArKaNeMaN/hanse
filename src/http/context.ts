@@ -110,7 +110,7 @@ export async function handleContext(deps: HttpDeps, request: HttpRequest): Promi
   }
 
   try {
-    await deps.manager.ensure(toManagedApp(found));
+    await deps.manager.ensure(toManagedApp(found), { origin: "system", reason: "context" });
   } catch (error) {
     if (error instanceof DeletionPendingError) {
       return deletionPending();

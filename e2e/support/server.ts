@@ -21,7 +21,13 @@ import {
 import type { InstanceManager } from "../../src/opencode/manager.js";
 import type { PreviewView } from "../../src/preview/types.js";
 import { startOpencodeUpstream } from "./opencode-upstream.js";
-import { E2E_CHAT_MESSAGES, E2E_CHAT_SESSIONS, seed } from "./seed.js";
+import {
+  E2E_CHAT_MESSAGES,
+  E2E_CHAT_SESSIONS,
+  type ProcessSnapshotSeed,
+  seed,
+  seedProcessSnapshot,
+} from "./seed.js";
 
 const port = Number(process.env.HANSE_E2E_PORT ?? 4310);
 const mode = process.env.HANSE_E2E_MODE === "legacy" ? "legacy" : "spa";
@@ -272,6 +278,11 @@ const upstream = await startOpencodeUpstream({
     ],
   },
   onControl: (event) => {
+    const processSnapshot = (event as { processSnapshot?: unknown }).processSnapshot;
+    if (typeof processSnapshot === "object" && processSnapshot !== null) {
+      seedProcessSnapshot(fixture.db, processSnapshot as ProcessSnapshotSeed);
+      return true;
+    }
     if ((event as { seedChatApprovals?: unknown }).seedChatApprovals === true) {
       const hostRow = fixture.db
         .prepare("SELECT id FROM ssh_hosts WHERE name = 'app-host'")

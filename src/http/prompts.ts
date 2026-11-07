@@ -597,7 +597,10 @@ export async function handlePrompts(deps: HttpDeps, request: HttpRequest): Promi
     endpoint = attached;
   } else {
     try {
-      endpoint = await deps.manager.ensure(toManagedApp(found));
+      endpoint = await deps.manager.ensure(toManagedApp(found), {
+        origin: "system",
+        reason: "prompt",
+      });
     } catch (error) {
       return startFailure(error);
     }

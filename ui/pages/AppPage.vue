@@ -15,11 +15,13 @@ import AppRestartDialog from "../components/AppRestartDialog.vue";
 import AppSshPanel from "../components/AppSshPanel.vue";
 import AppStateStrip from "../components/AppStateStrip.vue";
 import SmartLink from "../components/SmartLink.vue";
+import { useAgentProcess } from "../composables/useAgentProcess.js";
 import { useAppGit } from "../composables/useAppGit.js";
 import { useAppGroups } from "../composables/useAppGroups.js";
 import { useAppImage } from "../composables/useAppImage.js";
 import { applyChrome } from "../composables/useChrome.js";
 import { absoluteTime, timeAgo } from "../format.js";
+import type { ProcessEvent, ProcessResponse, ProcessSnapshot } from "../process/types.js";
 import type { RuntimeState } from "../status.js";
 import { useToastStore } from "../stores/toasts.js";
 
@@ -149,6 +151,82 @@ watch(
   { immediate: true },
 );
 
+const processFallback = ref<ProcessSnapshot | null>(null);
+
+watch(
+  () => view.value?.runtime.process,
+  (process) => {
+    if (process !== undefined) {
+      processFallback.value = process;
+    }
+  },
+  { immediate: true },
+);
+
+const agentProcess = useAgentProcess({
+  appKey: () => appKey.value,
+  project: () => projectId.value,
+  initial: () => processFallback.value,
+});
+
+const processState = computed<RuntimeState>(() => agentProcess.state.value ?? runtimeState.value);
+const processPhase = computed(() => agentProcess.phase.value);
+const processElapsed = computed(() => agentProcess.elapsed.value);
+const processError = computed(() => agentProcess.error.value);
+
+const historyEvents = ref<ProcessEvent[]>([]);
+const historyCursor = ref<string | null>(null);
+const historyLoading = ref(false);
+const historyLoaded = ref(false);
+const historyError = ref<string | null>(null);
+const historyHasMore = computed(() => historyCursor.value !== null);
+
+watch([projectId, appKey], () => {
+  historyEvents.value = [];
+  historyCursor.value = null;
+  historyLoading.value = false;
+  historyLoaded.value = false;
+  historyError.value = null;
+});
+
+function processHistoryPath(before: string | null): string {
+  const query = new URLSearchParams({ limit: "50", project: projectId.value });
+  if (before !== null) {
+    query.set("before", before);
+  }
+  return `/api/apps/${encodeURIComponent(appKey.value)}/process?${query.toString()}`;
+}
+
+async function loadProcessHistory(mode: "initial" | "older"): Promise<void> {
+  if (historyLoading.value) return;
+  if (mode === "initial" && historyLoaded.value) return;
+  if (mode === "older" && historyCursor.value === null) return;
+  historyLoading.value = true;
+  historyError.value = null;
+  try {
+    const before = mode === "older" ? historyCursor.value : null;
+    const page = await apiQuery<ProcessResponse>(processHistoryPath(before));
+    if (mode === "older") {
+      const known = new Set(historyEvents.value.map((event) => event.id));
+      historyEvents.value = [
+        ...historyEvents.value,
+        ...page.events.filter((event) => !known.has(event.id)),
+      ];
+    } else {
+      historyEvents.value = [...page.events];
+    }
+    historyLoaded.value = true;
+    historyCursor.value = page.nextCursor;
+  } catch (error) {
+    historyError.value =
+      error instanceof ApiError || error instanceof Error
+        ? error.message
+        : "Process history is unavailable.";
+  } finally {
+    historyLoading.value = false;
+  }
+}
+
 const runtimeHref = computed(() => view.value?.image.hrefs.runtime ?? "");
 
 async function refreshRuntime(): Promise<void> {
@@ -161,6 +239,22 @@ async function refreshRuntime(): Promise<void> {
     }
     runtimeImageRef.value =
       typeof data.imageRef === "string" && data.imageRef.length > 0 ? data.imageRef : null;
+    if (data.process !== undefined) {
+      const live = data.process;
+      processFallback.value = {
+        state: isRuntimeState(live.state)
+          ? live.state
+          : isRuntimeState(data.state)
+            ? data.state
+            : runtimeState.value,
+        phase: live.phase ?? null,
+        attemptId: live.attemptId ?? null,
+        startedAt: live.startedAt ?? null,
+        updatedAt: live.updatedAt ?? null,
+        error: live.error ?? null,
+        lastEventId: typeof live.lastEventId === "number" ? live.lastEventId : 0,
+      };
+    }
     runtimeError.value = null;
   } catch (error) {
     // Runtime is secondary here; keep the last known state and surface the read failure.
@@ -215,7 +309,8 @@ const canRestart = computed(() => {
   const current = view.value;
   if (current === undefined) return false;
   if (current.delete.pending) return false;
-  return runtimeState.value === "running" || runtimeState.value === "starting";
+  if (processPhase.value === "stopping") return false;
+  return processState.value === "running" || processState.value === "starting";
 });
 
 const lastCommit = computed(() => gitSummary.value.lastCommit ?? null);
@@ -400,11 +495,20 @@ async function restartAgent(): Promise<void> {
         Updating application…
       </p>
       <AppStateStrip
-        :runtime-state="runtimeState"
+        :runtime-state="processState"
         :settings="view.settings"
         :can-restart="canRestart"
         :runtime-error="runtimeError"
+        :process-phase="processPhase"
+        :process-elapsed="processElapsed"
+        :process-error="processError"
+        :history-events="historyEvents"
+        :history-loading="historyLoading"
+        :history-error="historyError"
+        :history-has-more="historyHasMore"
         @restart="restartDialog?.open()"
+        @load-history="loadProcessHistory('initial')"
+        @load-older="loadProcessHistory('older')"
       />
       <section class="card section" id="master-panel" aria-labelledby="master-panel-title">
         <div class="card__head">
@@ -498,11 +602,20 @@ async function restartAgent(): Promise<void> {
       </div>
 
       <AppStateStrip
-        :runtime-state="runtimeState"
+        :runtime-state="processState"
         :settings="view.settings"
         :can-restart="canRestart"
         :runtime-error="runtimeError"
+        :process-phase="processPhase"
+        :process-elapsed="processElapsed"
+        :process-error="processError"
+        :history-events="historyEvents"
+        :history-loading="historyLoading"
+        :history-error="historyError"
+        :history-has-more="historyHasMore"
         @restart="restartDialog?.open()"
+        @load-history="loadProcessHistory('initial')"
+        @load-older="loadProcessHistory('older')"
       />
 
       <AppGroup

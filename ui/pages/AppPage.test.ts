@@ -9,6 +9,7 @@ import type {
   AppGitSummaryProps,
   AppImageProps,
   AppImageState,
+  AppProcessProps,
   AppProps,
   AppSshProps,
 } from "../app-types.js";
@@ -218,6 +219,15 @@ function props(overrides: Partial<AppProps> = {}): AppProps {
     },
     runtime: {
       state: "running",
+      process: {
+        state: "running",
+        phase: "ready",
+        attemptId: "attempt-running",
+        startedAt: null,
+        updatedAt: null,
+        error: null,
+        lastEventId: 0,
+      },
       label: "Running",
       glyph: "activity",
       tone: "in_progress",
@@ -395,13 +405,55 @@ function testRouter(): Router {
   });
 }
 
+function processFor(
+  state: AppProcessProps["state"],
+  overrides: Partial<AppProcessProps> = {},
+): AppProcessProps {
+  const phase =
+    state === "running"
+      ? "ready"
+      : state === "stopped"
+        ? "stopped"
+        : state === "error"
+          ? "failed"
+          : "requested";
+  return {
+    state,
+    phase,
+    attemptId: state === "stopped" ? null : `attempt-${state}`,
+    startedAt: null,
+    updatedAt: null,
+    error: null,
+    lastEventId: 0,
+    ...overrides,
+  };
+}
+
 function installQueries(
   appProps: AppProps,
-  live: { image?: unknown; runtime?: unknown; git?: GitStatus | null; gitError?: unknown } = {},
+  live: {
+    image?: unknown;
+    runtime?: unknown;
+    process?: unknown | ((path: string) => unknown);
+    git?: GitStatus | null;
+    gitError?: unknown;
+  } = {},
 ) {
   mocks.apiQuery.mockImplementation((path: string) => {
     if (path.startsWith("/api/ui/apps/")) {
       return Promise.resolve({ ...appProps, chrome: CHROME });
+    }
+    if (path.includes("/process")) {
+      if (typeof live.process === "function") {
+        return Promise.resolve(live.process(path));
+      }
+      return Promise.resolve(
+        live.process ?? {
+          current: appProps.runtime.process,
+          events: [],
+          nextCursor: null,
+        },
+      );
     }
     if (path.endsWith("/git/status")) {
       if (live.gitError !== undefined) {
@@ -520,6 +572,7 @@ describe("AppPage", () => {
       runtime: {
         ...props().runtime,
         state,
+        process: processFor(state),
         canRestart: state === "running" || state === "starting",
       },
     });
@@ -528,6 +581,171 @@ describe("AppPage", () => {
 
     expect(wrapper.get("#runtime-state").text()).toContain(label);
     expect(wrapper.find("#app-restart").exists()).toBe(state === "running" || state === "starting");
+  });
+
+  it("renders the phase and elapsed time while starting", async () => {
+    const startedAt = new Date(Date.now() - 5_000).toISOString();
+    const appProps = props({
+      runtime: {
+        ...props().runtime,
+        state: "starting",
+        canRestart: true,
+        process: processFor("starting", {
+          phase: "waiting_ready",
+          startedAt,
+          updatedAt: new Date().toISOString(),
+          lastEventId: 7,
+        }),
+      },
+    });
+    installQueries(appProps);
+    const wrapper = await mountPage(boot(appProps));
+
+    const activity = wrapper.get("#process-activity").text();
+    expect(activity).toContain("Starting…");
+    expect(activity).toContain("Waiting for readiness");
+    expect(activity).toMatch(/\d+s/);
+  });
+
+  it("renders Stopping… instead of Starting while a stop is in progress", async () => {
+    const appProps = props({
+      runtime: {
+        ...props().runtime,
+        state: "starting",
+        canRestart: true,
+        process: processFor("starting", {
+          phase: "stopping",
+          startedAt: new Date(Date.now() - 3_000).toISOString(),
+          lastEventId: 8,
+        }),
+      },
+    });
+    installQueries(appProps);
+    const wrapper = await mountPage(boot(appProps));
+
+    const state = wrapper.get("#runtime-state").text();
+    expect(state).toContain("Stopping…");
+    expect(state).not.toContain("Starting");
+    expect(wrapper.find("#app-restart").exists()).toBe(false);
+  });
+
+  it("renders the process error message and the history disclosure", async () => {
+    const errorAt = new Date().toISOString();
+    const appProps = props({
+      runtime: {
+        ...props().runtime,
+        state: "error",
+        canRestart: false,
+        process: processFor("error", {
+          error: {
+            code: "readiness_timeout",
+            message: "The fixture readiness probe timed out.",
+            at: errorAt,
+          },
+          lastEventId: 9,
+        }),
+      },
+    });
+    installQueries(appProps);
+    const wrapper = await mountPage(boot(appProps));
+
+    expect(wrapper.get("#process-error").text()).toContain(
+      "The fixture readiness probe timed out.",
+    );
+    expect(wrapper.get("#process-error").text()).toContain("just now");
+    const history = wrapper.get("#process-history");
+    expect(history.element.tagName).toBe("DETAILS");
+    expect(history.text()).toContain("Process history");
+  });
+
+  it("loads history newest first and appends older pages without duplicates", async () => {
+    const errorAt = new Date().toISOString();
+    const appProps = props({
+      runtime: {
+        ...props().runtime,
+        state: "error",
+        canRestart: false,
+        process: processFor("error", {
+          error: { code: "readiness_timeout", message: "Start failed.", at: errorAt },
+          lastEventId: 3,
+        }),
+      },
+    });
+    const event = (
+      id: number,
+      state: "starting" | "error",
+      phase: "requested" | "preparing" | "failed",
+      message: string,
+    ) => ({
+      id,
+      attemptId: "attempt-error",
+      seq: id,
+      state,
+      phase,
+      source: state === "error" ? "runtime" : "system",
+      reason: phase === "failed" ? "readiness_timeout" : null,
+      errorCode: phase === "failed" ? "readiness_timeout" : null,
+      message,
+      createdAt: new Date(Date.now() - id * 1_000).toISOString(),
+    });
+    const newest = event(3, "error", "failed", "Newest failure");
+    const middle = event(2, "starting", "preparing", "Preparing credentials");
+    const oldest = event(1, "starting", "requested", "Requested start");
+    installQueries(appProps, {
+      process: (path: string) =>
+        path.includes("before=2")
+          ? { current: appProps.runtime.process, events: [newest, oldest], nextCursor: null }
+          : { current: appProps.runtime.process, events: [newest, middle], nextCursor: "2" },
+    });
+    const wrapper = await mountPage(boot(appProps));
+
+    const details = wrapper.get("#process-history");
+    (details.element as HTMLDetailsElement).open = true;
+    await details.trigger("toggle");
+    await flushPromises();
+
+    expect(mocks.apiQuery).toHaveBeenCalledWith("/api/apps/alpha/process?limit=50&project=p");
+    const firstPage = wrapper.findAll("[data-process-event]").map((row) => row.text());
+    expect(firstPage).toHaveLength(2);
+    expect(firstPage.at(0)).toContain("Newest failure");
+    expect(firstPage.at(1)).toContain("Preparing credentials");
+
+    await wrapper.get("#process-history-load-older").trigger("click");
+    await flushPromises();
+
+    expect(mocks.apiQuery).toHaveBeenCalledWith(
+      "/api/apps/alpha/process?limit=50&project=p&before=2",
+    );
+    const all = wrapper.findAll("[data-process-event]");
+    expect(all).toHaveLength(3);
+    expect(all.map((row) => row.text())).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("Newest failure"),
+        expect.stringContaining("Preparing credentials"),
+        expect.stringContaining("Requested start"),
+      ]),
+    );
+    expect(wrapper.find("#process-history-load-older").exists()).toBe(false);
+  });
+
+  it("keeps the 10s runtime poll as the fallback", async () => {
+    const appProps = props();
+    installQueries(appProps);
+    const intervalSpy = vi.spyOn(globalThis, "setInterval");
+    const wrapper = await mountPage(boot(appProps));
+
+    const poll = intervalSpy.mock.calls.find(([, delay]) => delay === 10_000);
+    expect(poll).toBeDefined();
+    mocks.apiQuery.mockClear();
+    const callback = poll?.[0];
+    if (typeof callback === "function") {
+      callback();
+    }
+    await flushPromises();
+
+    expect(mocks.apiQuery).toHaveBeenCalledWith("/api/apps/alpha/runtime?project=p");
+    intervalSpy.mockRestore();
+    wrapper.unmount();
   });
 
   it.each([
@@ -904,6 +1122,13 @@ describe("AppPage", () => {
         }
         if (path.includes("/image")) {
           return Promise.resolve({ status: "ready", state: "current" });
+        }
+        if (path.includes("/process")) {
+          return Promise.resolve({
+            current: appProps.runtime.process,
+            events: [],
+            nextCursor: null,
+          });
         }
         if (path.includes("/runtime")) {
           return Promise.resolve({ state: "running" });

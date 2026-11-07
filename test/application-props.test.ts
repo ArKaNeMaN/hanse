@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { GitStatus } from "../src/git/service.js";
-import type { SiteModel } from "../src/http/dashboard.js";
+import type { ProcessDetail, SiteModel } from "../src/http/dashboard.js";
 import { appGitSummary, type BuildAppPropsInput, buildAppProps } from "../src/http/props/app.js";
 import type { RegisteredApp } from "../src/registry/index.js";
 import type { SshApprovalView, SshAuditEntry, SshGrant } from "../src/ssh/types.js";
@@ -57,6 +57,7 @@ function makeSite(
   options: {
     projectDeleting?: boolean;
     runtime?: SiteModel["runtime"];
+    process?: SiteModel["process"];
     pendingRestart?: SiteModel["pendingRestart"];
     pendingRestartReasons?: SiteModel["pendingRestartReasons"];
     sshHosts?: number;
@@ -96,6 +97,7 @@ function makeSite(
       ],
     ]),
     runtime: options.runtime ?? new Map(),
+    process: options.process ?? new Map(),
     pendingRestart: options.pendingRestart ?? new Map(),
     pendingRestartReasons: options.pendingRestartReasons ?? new Map(),
     pendingCount: 0,
@@ -204,6 +206,28 @@ describe("buildAppProps", () => {
       banner: null,
     });
     expect(result.profileWarnings).toEqual([]);
+  });
+
+  it("carries the process detail in the runtime props", () => {
+    const process: ProcessDetail = {
+      state: "starting",
+      phase: "waiting_ready",
+      attemptId: "attempt-1",
+      startedAt: "2026-11-07T10:00:00.000Z",
+      updatedAt: "2026-11-07T10:00:04.000Z",
+      error: null,
+      lastEventId: 7,
+    };
+    const result = props(
+      makeApp(),
+      {},
+      {
+        runtime: new Map([["p:web", "starting"]]),
+        process: new Map([["p:web", process]]),
+      },
+    );
+
+    expect(result?.runtime).toMatchObject({ state: "starting", process });
   });
 
   it("derives the settings state matrix from runtime, configuration, and pending reasons", () => {

@@ -4,6 +4,7 @@ import {
   E2E_TOKEN,
   expectNoPageErrors,
   PROJECT_ONE,
+  PROJECT_TWO,
   signIn,
   upstreamInfo,
 } from "./support/helpers.js";
@@ -125,7 +126,7 @@ test("SPA direct load renders the chat shell, boot props, sessions, and messages
   await expect(page.locator(".topbar__actions [data-chat-context-toggle]")).toHaveCount(1);
   await expect(page.locator(".topbar__actions a")).toHaveCount(1);
 
-  await expect.poll(async () => (await eventSourceStats(page)).active).toBe(1);
+  await expect.poll(async () => (await eventSourceStats(page)).active).toBe(2);
   await page.waitForTimeout(400);
   expectNoPageErrors(errors);
 });
@@ -143,8 +144,10 @@ test("SPA client navigation resolves to ChatPage and does not duplicate the surf
     await expect(page).toHaveURL(new RegExp(`/chat\\?app=alpha&project=${PROJECT_ONE}`));
     await expect(page.locator("#chat-shell")).toHaveCount(1);
     await expect(page.locator("#chat-scroll")).toHaveCount(1);
-    await expect.poll(async () => (await eventSourceStats(page)).active).toBe(1);
-    await expect.poll(async () => (await eventSourceStats(page)).created).toBe(cycle + 1);
+    await expect.poll(async () => (await eventSourceStats(page)).active).toBe(2);
+    // The application page opens one process stream; each chat visit adds the chat stream and its
+    // process stream. Going back re-opens the application page process stream.
+    await expect.poll(async () => (await eventSourceStats(page)).created).toBe((cycle + 1) * 3);
 
     const ids = await page
       .locator("#chat-scroll [data-message-id]")
@@ -153,7 +156,7 @@ test("SPA client navigation resolves to ChatPage and does not duplicate the surf
 
     await page.goBack();
     await expect(page).toHaveURL(new RegExp(`/projects/${PROJECT_ONE}/apps/alpha$`));
-    await expect.poll(async () => (await eventSourceStats(page)).active).toBe(0);
+    await expect.poll(async () => (await eventSourceStats(page)).active).toBe(1);
   }
 
   await page.waitForTimeout(400);
@@ -253,8 +256,8 @@ test("SPA reconnects after the upstream stream closes without a second EventSour
 
   await control(page, { streamClose: true });
   await expect(page.locator(".chat-runtime")).toContainText("Live", { timeout: 20_000 });
-  await expect.poll(async () => (await eventSourceStats(page)).created).toBe(1);
-  await expect.poll(async () => (await eventSourceStats(page)).active).toBe(1);
+  await expect.poll(async () => (await eventSourceStats(page)).created).toBe(2);
+  await expect.poll(async () => (await eventSourceStats(page)).active).toBe(2);
   await page.waitForTimeout(400);
   expectNoPageErrors(errors);
 });
@@ -264,13 +267,13 @@ test("SPA bfcache pagehide/pageshow keeps one surface and one live source", asyn
   await installEventSourceCounter(page);
   await signIn(page, CHAT_PATH);
   await expect(page.locator(".chat-runtime")).toContainText("Live");
-  await expect.poll(async () => (await eventSourceStats(page)).active).toBe(1);
+  await expect.poll(async () => (await eventSourceStats(page)).active).toBe(2);
 
   await page.evaluate(() => window.dispatchEvent(new Event("pagehide")));
   await expect.poll(async () => (await eventSourceStats(page)).active).toBe(0);
   await page.evaluate(() => window.dispatchEvent(new Event("pageshow")));
-  await expect.poll(async () => (await eventSourceStats(page)).active).toBe(1);
-  await expect.poll(async () => (await eventSourceStats(page)).created).toBe(2);
+  await expect.poll(async () => (await eventSourceStats(page)).active).toBe(2);
+  await expect.poll(async () => (await eventSourceStats(page)).created).toBe(4);
   await expect(page.locator("#chat-shell")).toHaveCount(1);
   const ids = await page
     .locator("#chat-scroll [data-message-id]")
@@ -295,6 +298,83 @@ test("SPA shows the stopped shell and preserves a requested session", async ({ p
   await expect(page).toHaveURL(/session=ses_keep_me/);
   await page.waitForTimeout(400);
   expectNoUnexpected(errors, [/503/, /500/]);
+});
+
+test("SPA chat remounts during a slow start with the starting panel and no Start", async ({
+  page,
+}) => {
+  const errors = collectPageErrors(page);
+  const appId = `${PROJECT_ONE}:beta`;
+  await signIn(page, "/");
+  try {
+    await control(page, {
+      event: {
+        processSnapshot: {
+          appId,
+          state: "starting",
+          phase: "waiting_ready",
+          attemptId: "e2e-slow-start",
+          startedAt: new Date(Date.now() - 5_000).toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+      },
+    });
+
+    await page.goto(`/chat?app=beta&project=${PROJECT_ONE}&session=ses_keep_me`);
+    await expect(page.locator("[data-chat-starting]")).toBeVisible({ timeout: 15_000 });
+    await expect(page.locator("[data-chat-starting]")).toContainText("Starting agent");
+    await expect(page.locator("[data-chat-process-elapsed]")).toBeVisible();
+    await expect(page.locator("[data-chat-start-agent]")).toHaveCount(0);
+
+    await page.reload();
+    await expect(page.locator("[data-chat-starting]")).toBeVisible({ timeout: 15_000 });
+    await expect(page.locator("[data-chat-start-agent]")).toHaveCount(0);
+    await page.waitForTimeout(400);
+    expectNoUnexpected(errors, [/503/]);
+  } finally {
+    await control(page, {
+      event: { processSnapshot: { appId, state: "stopped", phase: "stopped" } },
+    });
+  }
+});
+
+test("SPA chat shows the persisted process error with Retry and history", async ({ page }) => {
+  const errors = collectPageErrors(page);
+  const appId = `${PROJECT_TWO}:gamma`;
+  await signIn(page, "/");
+  try {
+    await control(page, {
+      event: {
+        processSnapshot: {
+          appId,
+          state: "error",
+          phase: "failed",
+          attemptId: "e2e-error-start",
+          errorCode: "readiness_timeout",
+          errorMessage: "The fixture readiness probe timed out.",
+          updatedAt: new Date().toISOString(),
+        },
+      },
+    });
+
+    await page.goto(`/chat?app=gamma&project=${PROJECT_TWO}`);
+    await expect(page.locator("[data-chat-process-error]")).toBeVisible({ timeout: 15_000 });
+    await expect(page.locator("[data-chat-process-error-message]")).toContainText(
+      "The fixture readiness probe timed out.",
+    );
+    await expect(page.locator("[data-chat-retry-agent]")).toBeVisible();
+    await expect(page.locator("[data-chat-process-history]")).toHaveAttribute(
+      "href",
+      `/projects/${PROJECT_TWO}/apps/gamma#process-history`,
+    );
+    await expect(page.locator("[data-chat-stopped]")).toHaveCount(0);
+    await page.waitForTimeout(400);
+    expectNoUnexpected(errors, [/503/]);
+  } finally {
+    await control(page, {
+      event: { processSnapshot: { appId, state: "stopped", phase: "stopped" } },
+    });
+  }
 });
 
 test("?legacy=1 and legacy servers still serve the SPA chat", async ({ page }) => {

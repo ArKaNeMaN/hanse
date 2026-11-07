@@ -14,7 +14,7 @@ import type { Handoff, HandoffReplyState, HandoffState } from "../../coordinator
 import { isMasterApp } from "../../master/constants.js";
 import type { PreviewView } from "../../preview/types.js";
 import { appDir } from "../apps.js";
-import type { SiteModel } from "../dashboard.js";
+import type { ProcessDetail, SiteModel } from "../dashboard.js";
 import { type Crumb, ideFolderUrl, type RuntimeState } from "../ui.js";
 
 export interface ChatAppIdentityProps {
@@ -39,6 +39,7 @@ export interface ChatLinksProps {
 export interface ChatRuntimeProps {
   readonly state: RuntimeState;
   readonly runtimeUrl: string;
+  readonly process: ProcessDetail;
 }
 
 export interface ChatAppOptionProps {
@@ -139,6 +140,15 @@ export function buildChatProps(input: BuildChatPropsInput): ChatProps | undefine
   }
 
   const runtime = input.site.runtime.get(app.id) ?? "stopped";
+  const process = input.site.process.get(app.id) ?? {
+    state: runtime,
+    phase: null,
+    attemptId: null,
+    startedAt: null,
+    updatedAt: null,
+    error: null,
+    lastEventId: 0,
+  };
   const folder = appDir(project, app);
   const appHref = `/projects/${encoded(project.id)}/apps/${encoded(app.appKey)}`;
   const settingsHref = `${appHref}/settings`;
@@ -173,6 +183,7 @@ export function buildChatProps(input: BuildChatPropsInput): ChatProps | undefine
     runtime: {
       state: runtime,
       runtimeUrl: `/api/apps/${encoded(app.appKey)}/runtime?project=${encoded(project.id)}`,
+      process,
     },
     appOptions: appGroups(input.site, project.id, app.appKey),
     pendingRestart: input.site.pendingRestart.get(app.id) ?? false,

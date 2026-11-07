@@ -21,7 +21,7 @@ import type {
   SshGrant,
 } from "../../ssh/types.js";
 import { appDir } from "../apps.js";
-import type { SiteModel } from "../dashboard.js";
+import type { ProcessDetail, SiteModel } from "../dashboard.js";
 import { type IconName, ideFolderUrl, type RuntimeState } from "../ui.js";
 
 export type AppImageState = "default" | "missing" | "building" | "ready" | "stale" | "error";
@@ -41,6 +41,7 @@ export interface AppIdentityProps {
 
 export interface AppRuntimeProps {
   readonly state: RuntimeState;
+  readonly process: ProcessDetail;
   readonly label: string;
   readonly glyph: IconName;
   /** Value of the status pill `data-state` attribute. */
@@ -757,6 +758,15 @@ export function buildAppProps(input: BuildAppPropsInput): AppProps | undefined {
   const now = input.now ?? new Date();
   const master = isMasterApp(project.id, app.appKey);
   const runtime = input.site.runtime.get(app.id) ?? "stopped";
+  const process = input.site.process.get(app.id) ?? {
+    state: runtime,
+    phase: null,
+    attemptId: null,
+    startedAt: null,
+    updatedAt: null,
+    error: null,
+    lastEventId: 0,
+  };
   const runtimeConfigured = input.runtimeConfigured ?? false;
   const deletionPending = app.deleting || project.deleting;
   const pendingRestart = input.site.pendingRestart.get(app.id) ?? false;
@@ -798,6 +808,7 @@ export function buildAppProps(input: BuildAppPropsInput): AppProps | undefined {
     },
     runtime: {
       state: runtime,
+      process,
       label: RUNTIME_META[runtime].label,
       glyph: RUNTIME_META[runtime].glyph,
       tone: RUNTIME_META[runtime].tone,

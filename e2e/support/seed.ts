@@ -537,6 +537,80 @@ export interface SeedResult {
   cleanup: () => void;
 }
 
+export type SeededProcessState = "starting" | "running" | "stopped" | "error";
+export type SeededProcessPhase =
+  | "requested"
+  | "preparing"
+  | "creating"
+  | "waiting_ready"
+  | "ready"
+  | "stopping"
+  | "stopped"
+  | "failed"
+  | "interrupted";
+
+export interface ProcessSnapshotSeed {
+  readonly appId: string;
+  readonly state: SeededProcessState;
+  readonly phase?: SeededProcessPhase | null;
+  readonly attemptId?: string | null;
+  readonly startedAt?: string | null;
+  readonly errorCode?: string | null;
+  readonly errorMessage?: string | null;
+  readonly errorAt?: string | null;
+  readonly updatedAt?: string;
+}
+
+function defaultPhase(state: SeededProcessState): SeededProcessPhase {
+  if (state === "running") return "ready";
+  if (state === "stopped") return "stopped";
+  if (state === "error") return "failed";
+  return "requested";
+}
+
+/**
+ * Persist a process snapshot for an E2E scenario. The process SSE reads the same row, so no
+ * fake-manager event is required after this update.
+ */
+export function seedProcessSnapshot(db: SqliteDatabase, snapshot: ProcessSnapshotSeed): void {
+  const now = new Date().toISOString();
+  const updatedAt = snapshot.updatedAt ?? now;
+  const phase = snapshot.phase === undefined ? defaultPhase(snapshot.state) : snapshot.phase;
+  const attemptId =
+    snapshot.attemptId === undefined
+      ? snapshot.state === "stopped"
+        ? null
+        : `e2e-${snapshot.state}-${updatedAt}`
+      : snapshot.attemptId;
+  const startedAt =
+    snapshot.startedAt === undefined
+      ? snapshot.state === "running" || snapshot.state === "starting"
+        ? now
+        : null
+      : snapshot.startedAt;
+  const errorAt =
+    snapshot.errorAt === undefined ? (snapshot.state === "error" ? now : null) : snapshot.errorAt;
+  db.prepare(
+    `UPDATE instances
+       SET state = ?, runtime_state = ?, process_phase = ?, process_attempt_id = ?,
+           process_started_at = ?, process_error_code = ?, process_error_message = ?,
+           process_error_at = ?, process_updated_at = ?, updated_at = ?
+     WHERE app_id = ?`,
+  ).run(
+    snapshot.state,
+    snapshot.state,
+    phase,
+    attemptId,
+    startedAt,
+    snapshot.errorCode ?? null,
+    snapshot.errorMessage ?? null,
+    errorAt,
+    updatedAt,
+    updatedAt,
+    snapshot.appId,
+  );
+}
+
 function gitEnv(): NodeJS.ProcessEnv {
   return {
     ...process.env,
@@ -686,7 +760,10 @@ export function seed(options: SeedOptions = {}): SeedResult {
     "INSERT INTO apps (id,project_id,app_key,path,kind,contract,created_at) VALUES (?,?,?,?,?, 'AGENTS.md', ?)",
   );
   const insertInstance = db.prepare(
-    "INSERT INTO instances (id,app_id,state,runtime_state,updated_at) VALUES (?,?,?,?,?)",
+    `INSERT INTO instances
+       (id, app_id, state, runtime_state, process_phase, process_attempt_id, process_started_at,
+        process_updated_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
 
   for (const project of projects) {
@@ -704,9 +781,39 @@ export function seed(options: SeedOptions = {}): SeedResult {
     }
   }
 
-  insertInstance.run(`${PROJECT_ONE}:alpha`, `${PROJECT_ONE}:alpha`, "running", "running", now);
-  insertInstance.run(`${PROJECT_ONE}:beta`, `${PROJECT_ONE}:beta`, "stopped", "stopped", now);
-  insertInstance.run(`${PROJECT_TWO}:gamma`, `${PROJECT_TWO}:gamma`, "stopped", "stopped", now);
+  insertInstance.run(
+    `${PROJECT_ONE}:alpha`,
+    `${PROJECT_ONE}:alpha`,
+    "running",
+    "running",
+    "ready",
+    "e2e-alpha-attempt",
+    now,
+    now,
+    now,
+  );
+  insertInstance.run(
+    `${PROJECT_ONE}:beta`,
+    `${PROJECT_ONE}:beta`,
+    "stopped",
+    "stopped",
+    "stopped",
+    null,
+    null,
+    now,
+    now,
+  );
+  insertInstance.run(
+    `${PROJECT_TWO}:gamma`,
+    `${PROJECT_TWO}:gamma`,
+    "stopped",
+    "stopped",
+    "stopped",
+    null,
+    null,
+    now,
+    now,
+  );
 
   // Beta is the deterministic custom-image fixture: a failed build with a previous image to roll
   // back to, which the app E2E drives forward through build/rollback. Gamma starts out of date.
@@ -751,6 +858,10 @@ export function seed(options: SeedOptions = {}): SeedResult {
     `${MASTER_PROJECT_ID}:${MASTER_APP_KEY}`,
     "running",
     "running",
+    "ready",
+    "e2e-master-attempt",
+    now,
+    now,
     now,
   );
 

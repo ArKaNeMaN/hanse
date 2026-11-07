@@ -2,6 +2,7 @@
 import { useQuery } from "@tanstack/vue-query";
 import { computed, ref } from "vue";
 import { ApiError, apiQuery } from "../api.js";
+import type { OverviewProcessesProps } from "../app-types.js";
 import type { BootChrome, BootPayload } from "../boot.js";
 import AppIcon from "../components/AppIcon.vue";
 import NewProjectDialog from "../components/NewProjectDialog.vue";
@@ -13,6 +14,8 @@ import { absoluteTime, timeAgo } from "../format.js";
 import {
   type HandoffReplyState,
   type HandoffState,
+  processPhaseLabel,
+  processPill,
   replyPill,
   runtimePill,
   statusPill,
@@ -58,6 +61,7 @@ interface OverviewWaitingHandoff extends OverviewHandoffRow {
 
 interface OverviewProps {
   readonly counts: OverviewCounts;
+  readonly processes: OverviewProcessesProps;
   readonly projects: readonly OverviewProjectRow[];
   readonly recentHandoffs: readonly OverviewHandoffRow[];
   readonly waitingHandoffs: readonly OverviewWaitingHandoff[];
@@ -77,6 +81,12 @@ const EMPTY: OverviewProps = {
     error: 0,
     handoffsWaiting: 0,
     handoffsTotal: 0,
+  },
+  processes: {
+    starting: 0,
+    stopping: 0,
+    error: 0,
+    apps: [],
   },
   projects: [],
   recentHandoffs: [],
@@ -115,6 +125,13 @@ const runtime = computed(() => [
   { label: "Stopped", count: view.value.counts.stopped, pill: runtimePill("stopped") },
   { label: "Error", count: view.value.counts.error, pill: runtimePill("error") },
 ]);
+
+const processApps = computed(() =>
+  [...view.value.processes.apps]
+    .filter((row) => !(row.projectId === "hanse-master" && row.appKey === "master"))
+    .sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""))
+    .slice(0, 5),
+);
 
 const recentRows = computed(() =>
   view.value.recentHandoffs.map((handoff) => ({
@@ -224,6 +241,51 @@ function projectHref(row: OverviewProjectRow): string {
           <p class="watch__label">Handoffs waiting</p>
         </div>
       </div>
+
+      <section
+        v-if="processApps.length > 0"
+        class="card section"
+        id="agent-processes"
+        aria-labelledby="agent-processes-title"
+      >
+        <div class="card__head">
+          <h2 class="card__title" id="agent-processes-title">Agent processes</h2>
+          <span class="mono">Recent transitions</span>
+        </div>
+        <div class="card__body stack--tight">
+          <div class="cluster" id="agent-process-counts">
+            <span class="small">
+              Starting
+              <span class="mono" id="process-count-starting">{{ view.processes.starting }}</span>
+            </span>
+            <span class="small">
+              Stopping
+              <span class="mono" id="process-count-stopping">{{ view.processes.stopping }}</span>
+            </span>
+            <span class="small">
+              Error <span class="mono" id="process-count-error">{{ view.processes.error }}</span>
+            </span>
+          </div>
+          <ul class="stack--tight" id="agent-process-list">
+            <li v-for="row in processApps" :key="row.appId" class="cluster" data-process-app>
+              <StatusPill :pill="processPill(row.state, row.phase)" />
+              <span class="mono">{{ row.appKey }}</span>
+              <span class="small">{{ row.projectName }}</span>
+              <span class="caption">{{ processPhaseLabel(row.phase) }}</span>
+              <time
+                v-if="row.updatedAt !== null"
+                class="caption"
+                :datetime="row.updatedAt"
+                :title="absoluteTime(row.updatedAt)"
+              >
+                {{ timeAgo(row.updatedAt) }}
+              </time>
+              <SmartLink class="btn btn-ghost btn-sm" :to="row.chatHref">Chat</SmartLink>
+              <SmartLink class="btn btn-ghost btn-sm" :to="row.appHref">Application</SmartLink>
+            </li>
+          </ul>
+        </div>
+      </section>
 
       <div class="workbench-grid section">
         <div class="stack">

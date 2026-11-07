@@ -1052,7 +1052,10 @@ export async function callMasterTool(
         const found = lookupApp(context, projectId, appKey);
         assertNotDeleting(found.project, found.app);
         const manager = requireManager(context);
-        await manager.ensure(managedApp(context.workspaceRoot, found.project, found.app));
+        await manager.ensure(managedApp(context.workspaceRoot, found.project, found.app), {
+          origin: "system",
+          reason: "master",
+        });
         recordEvent(context.db, "master", "master.app_started", {
           projectId: found.project.id,
           appKey: found.app.app_key,

@@ -242,6 +242,7 @@ describe("SPA shell inputs and content script forwarding", () => {
       projects: [],
       apps: new Map(),
       runtime: new Map(),
+      process: new Map(),
       pendingRestart: new Map(),
       pendingRestartReasons: new Map(),
       pendingCount: 0,

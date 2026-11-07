@@ -16,7 +16,7 @@ import {
 } from "../opencode/client.js";
 import type { BoundedQuestionRequest, HanseEvent } from "../opencode/events.js";
 import { COORDINATOR_MCP_NAME } from "../opencode/instance.js";
-import type { ManagedApp } from "../opencode/manager.js";
+import type { EnsureOptions, ManagedApp } from "../opencode/manager.js";
 import type { AppImageStatus } from "../registry/index.js";
 import { resolveAppPath } from "../runtime/app-path.js";
 import type { SqliteDatabase } from "../store/index.js";
@@ -82,7 +82,7 @@ export interface HandoffDispatcherClient {
 }
 
 export interface HandoffDispatcherManager {
-  ensure(app: ManagedApp): Promise<string>;
+  ensure(app: ManagedApp, options?: EnsureOptions): Promise<string>;
   endpointFor?(appId: string): string | undefined;
 }
 
@@ -479,7 +479,10 @@ export class HandoffDispatcher {
     if (source === undefined) throw new Error("source application is not available");
     const fromKey = this.#appKey(handoff.fromAppId);
     const toKey = this.#appKey(handoff.toAppId);
-    const endpoint = await this.#manager.ensure(source.managed);
+    const endpoint = await this.#manager.ensure(source.managed, {
+      origin: "system",
+      reason: "handoff",
+    });
     const title = handoffTitle(fromKey, toKey, handoff.summary, true);
     const session = await this.#client.createSession(endpoint, title);
     const id = messageId();
@@ -633,7 +636,10 @@ export class HandoffDispatcher {
     const fromKey = this.#appKey(handoff.fromAppId);
     const toKey = target.appKey;
     try {
-      const endpoint = await this.#manager.ensure(target.managed);
+      const endpoint = await this.#manager.ensure(target.managed, {
+        origin: "system",
+        reason: "handoff",
+      });
       const title = handoffTitle(fromKey, toKey, handoff.summary);
       const session = await this.#client.createSession(endpoint, title);
       this.#completeThreadStart(handoff.id, session.id, session.title ?? title);
@@ -824,7 +830,10 @@ export class HandoffDispatcher {
     }
     const fromKey = this.#appKey(handoff.fromAppId);
     const toKey = target.appKey;
-    const endpoint = await this.#manager.ensure(target.managed);
+    const endpoint = await this.#manager.ensure(target.managed, {
+      origin: "system",
+      reason: "handoff",
+    });
     const title = handoffTitle(fromKey, toKey, handoff.summary);
     const session = await this.#client.createSession(endpoint, title);
     updateHandoff(this.#db, handoff.id, {
@@ -895,7 +904,10 @@ export class HandoffDispatcher {
     const toKey = this.#appKey(handoff.toAppId);
     let endpoint: string;
     try {
-      endpoint = await this.#manager.ensure(source.managed);
+      endpoint = await this.#manager.ensure(source.managed, {
+        origin: "system",
+        reason: "handoff",
+      });
     } catch (error) {
       updateHandoff(this.#db, handoff.id, {
         replyState: "waiting_operator",

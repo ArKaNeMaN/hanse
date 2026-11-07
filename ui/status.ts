@@ -6,6 +6,8 @@
  * straight through.
  */
 
+import type { ProcessPhase } from "./process/types.js";
+
 export type HandoffState =
   | "queued"
   | "awaiting_approval"
@@ -92,4 +94,49 @@ export function runtimePill(state: RuntimeState): PillSpec {
     return { variant: "status", dataState: "failed", icon: "alert-triangle", label: "Error" };
   }
   return { variant: "status", dataState: "queued", icon: "clock", label: "Stopped" };
+}
+
+/**
+ * Phase vocabulary for the process panels. The coarse runtime states stay `starting | running |
+ * stopped | error`; the phase only labels what the attempt is doing inside them.
+ */
+const PROCESS_PHASE: Record<
+  ProcessPhase,
+  { readonly label: string; readonly dataState: string; readonly icon: string }
+> = {
+  requested: { label: "Requested", dataState: "queued", icon: "clock" },
+  preparing: { label: "Preparing", dataState: "dispatching", icon: "loader" },
+  creating: { label: "Creating", dataState: "dispatching", icon: "loader" },
+  waiting_ready: { label: "Waiting for readiness", dataState: "dispatching", icon: "loader" },
+  ready: { label: "Ready", dataState: "in_progress", icon: "activity" },
+  stopping: { label: "Stopping", dataState: "dispatching", icon: "loader" },
+  stopped: { label: "Stopped", dataState: "queued", icon: "clock" },
+  failed: { label: "Failed", dataState: "failed", icon: "alert-triangle" },
+  interrupted: { label: "Interrupted", dataState: "failed", icon: "alert-triangle" },
+};
+
+export function processPhaseLabel(phase: ProcessPhase | null | undefined): string {
+  if (phase === null || phase === undefined) {
+    return "Starting";
+  }
+  return PROCESS_PHASE[phase].label;
+}
+
+/** Phase pill, or `undefined` when the server did not persist a phase (legacy rows). */
+export function processPhasePill(phase: ProcessPhase | null | undefined): PillSpec | undefined {
+  if (phase === null || phase === undefined) {
+    return undefined;
+  }
+  const spec = PROCESS_PHASE[phase];
+  return {
+    variant: "status",
+    dataState: spec.dataState,
+    icon: spec.icon,
+    label: spec.label,
+  };
+}
+
+/** Status pill for a process snapshot, preferring the phase over the coarse runtime state. */
+export function processPill(state: RuntimeState, phase?: ProcessPhase | null): PillSpec {
+  return processPhasePill(phase ?? null) ?? runtimePill(state);
 }

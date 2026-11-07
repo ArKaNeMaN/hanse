@@ -26,6 +26,7 @@ import type { SettingsService } from "../settings/index.js";
 import type { SkillService } from "../skills/index.js";
 import type { SshService } from "../ssh/service.js";
 import type { SqliteDatabase } from "../store/index.js";
+import { readProcessSnapshot } from "../store/process.js";
 import { VERSION } from "../version.js";
 import { renderApplication } from "./application.js";
 import { humanFrom, principalFrom } from "./auth.js";
@@ -869,6 +870,7 @@ function routeRuntimeStatus(deps: HttpDeps, request: HttpRequest): HttpResponse 
       }
     | undefined;
   const storedState = row?.runtimeState ?? row?.state ?? "stopped";
+  const process = readProcessSnapshot(deps.db, app.id);
   return json(200, {
     appId: app.id,
     state: storedState === "failed" ? "error" : storedState,
@@ -880,6 +882,14 @@ function routeRuntimeStatus(deps: HttpDeps, request: HttpRequest): HttpResponse 
     startedAt: row?.startedAt ?? null,
     updatedAt: row?.updatedAt ?? null,
     restarting: deps.manager?.isRestarting?.(app.id) ?? false,
+    process: {
+      attemptId: process.attemptId,
+      phase: process.phase,
+      startedAt: process.startedAt,
+      updatedAt: process.updatedAt,
+      error: process.error,
+      lastEventId: process.lastEventId,
+    },
   });
 }
 

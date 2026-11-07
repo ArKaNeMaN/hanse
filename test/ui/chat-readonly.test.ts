@@ -7,12 +7,16 @@ afterEach(() => {
   document.body.innerHTML = "";
 });
 
+function activeSources(): number {
+  return FakeEventSource.instances.filter((source) => !source.closed).length;
+}
+
 describe("read-only chat lifecycle", () => {
-  it("opens one EventSource per mount and closes it on unmount across enter/leave cycles", async () => {
+  it("opens one chat and one process EventSource per mount and closes both on unmount", async () => {
     const total = 20;
     for (let index = 0; index < total; index += 1) {
       const { wrapper } = await mountChat();
-      expect(FakeEventSource.instances).toHaveLength(1);
+      expect(FakeEventSource.instances).toHaveLength(2);
       wrapper.unmount();
       expect(FakeEventSource.instances.every((source) => source.closed)).toBe(true);
     }
@@ -25,14 +29,15 @@ describe("read-only chat lifecycle", () => {
 
     window.dispatchEvent(new Event("pagehide"));
     expect(first.closed).toBe(true);
-    expect(FakeEventSource.instances).toHaveLength(1);
+    expect(FakeEventSource.instances).toHaveLength(2);
+    expect(FakeEventSource.instances.every((source) => source.closed)).toBe(true);
 
     window.dispatchEvent(new Event("pageshow"));
-    expect(FakeEventSource.instances).toHaveLength(2);
-    expect(FakeEventSource.instances[1]?.closed).toBe(false);
+    expect(FakeEventSource.instances).toHaveLength(4);
+    expect(activeSources()).toBe(2);
 
     window.dispatchEvent(new Event("pageshow"));
-    expect(FakeEventSource.instances).toHaveLength(2);
+    expect(FakeEventSource.instances).toHaveLength(4);
     wrapper.unmount();
   });
 

@@ -35,6 +35,12 @@ import {
   rejectUpgrade,
 } from "./preview-proxy.js";
 import { handlePreviews, isPreviewsRoute } from "./previews.js";
+import {
+  handleProcess,
+  isProcessEventsRoute,
+  isProcessRoute,
+  streamProcessEvents,
+} from "./process.js";
 import { handlePrompts, streamAppEvents } from "./prompts.js";
 import { handleSettings, isSettingsRoute } from "./settings.js";
 import { handleSkills, isSkillsRoute } from "./skills.js";
@@ -433,6 +439,10 @@ export function createHttpServer(deps: HttpDeps): Server {
           await streamAppEvents(deps, httpRequest, response);
           return;
         }
+        if (isProcessEventsRoute(httpRequest.method, url.pathname)) {
+          await streamProcessEvents(deps, httpRequest, response);
+          return;
+        }
         const isImages =
           url.pathname === "/api/images/usage" ||
           url.pathname === "/api/images/gc" ||
@@ -451,9 +461,12 @@ export function createHttpServer(deps: HttpDeps): Server {
         const isCommands = isCommandsRoute(httpRequest.method, url.pathname);
         const isRuntime = /^\/api\/apps\/[^/]+\/runtime$/.test(url.pathname);
         const isPreviews = isPreviewsRoute(httpRequest.method, url.pathname);
+        const isProcess = isProcessRoute(httpRequest.method, url.pathname);
         const isStart = isStartRoute(httpRequest.method, url.pathname);
         const isChat =
-          !isRuntime && (url.pathname === "/chat" || url.pathname.startsWith("/api/apps/"));
+          !isRuntime &&
+          !isProcess &&
+          (url.pathname === "/chat" || url.pathname.startsWith("/api/apps/"));
         const result = isImages
           ? await handleImages(deps, httpRequest)
           : isGit
@@ -474,11 +487,13 @@ export function createHttpServer(deps: HttpDeps): Server {
                           ? await handleCommands(deps, httpRequest)
                           : isPreviews
                             ? await handlePreviews(deps, httpRequest)
-                            : isStart
-                              ? await handleStart(deps, httpRequest)
-                              : isChat
-                                ? await handleChat(deps, httpRequest)
-                                : handleRequest(deps, httpRequest);
+                            : isProcess
+                              ? handleProcess(deps, httpRequest)
+                              : isStart
+                                ? await handleStart(deps, httpRequest)
+                                : isChat
+                                  ? await handleChat(deps, httpRequest)
+                                  : handleRequest(deps, httpRequest);
         writeHttpResponse(request, response, result);
       })
       .catch((error: unknown) => {

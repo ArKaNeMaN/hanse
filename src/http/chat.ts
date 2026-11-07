@@ -491,7 +491,7 @@ export async function handleStart(deps: HttpDeps, request: HttpRequest): Promise
     return json(503, { error: "agent runtime is not configured", code: "agent_unavailable" });
   }
   try {
-    await manager.ensure(toManagedApp(found));
+    await manager.ensure(toManagedApp(found), { origin: "operator" });
   } catch (error) {
     if (error instanceof DeletionPendingError) {
       return json(409, { error: error.message, code: error.code });
@@ -1497,7 +1497,10 @@ export async function handleAttachmentUpload(
   }
   let endpoint: string;
   try {
-    endpoint = await manager.ensure(toManagedApp(found));
+    endpoint = await manager.ensure(toManagedApp(found), {
+      origin: "system",
+      reason: "attachment",
+    });
   } catch (error) {
     request.resume();
     const mapped = uploadLifecycleError(error);
@@ -2265,7 +2268,10 @@ export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<
   }
   let endpoint: string;
   try {
-    endpoint = await deps.manager.ensure(toManagedApp(found));
+    endpoint = await deps.manager.ensure(toManagedApp(found), {
+      origin: "system",
+      reason: "chat",
+    });
   } catch (error) {
     if (error instanceof DeletionPendingError) {
       return json(409, { error: error.message, code: error.code });

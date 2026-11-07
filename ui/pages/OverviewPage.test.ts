@@ -63,8 +63,40 @@ const COUNTS = {
   handoffsTotal: 1,
 };
 
+function processRow(
+  appKey: string,
+  state: "starting" | "stopping" | "error",
+  phase: string,
+  updatedAt: string,
+) {
+  return {
+    appId: `${PROJECT_ONE.id}:${appKey}`,
+    appKey,
+    projectId: PROJECT_ONE.id,
+    projectName: "Project One",
+    state,
+    phase,
+    updatedAt,
+    chatHref: `/chat?app=${appKey}&project=${PROJECT_ONE.id}`,
+    appHref: `/projects/${PROJECT_ONE.id}/apps/${appKey}`,
+  };
+}
+
+const PROCESSES: {
+  starting: number;
+  stopping: number;
+  error: number;
+  apps: readonly ReturnType<typeof processRow>[];
+} = {
+  starting: 0,
+  stopping: 0,
+  error: 0,
+  apps: [],
+};
+
 const PROPS = {
   counts: COUNTS,
+  processes: PROCESSES,
   projects: [PROJECT_ONE, PROJECT_TWO],
   recentHandoffs: [HANDOFF],
   waitingHandoffs: [{ ...HANDOFF, displayState: "awaiting_approval" as const }],
@@ -170,6 +202,69 @@ describe("OverviewPage", () => {
     expect(mocks.apiQuery).not.toHaveBeenCalled();
   });
 
+  it("hides the agent processes block when no application is affected", async () => {
+    const wrapper = await mountPage(boot());
+
+    expect(wrapper.find("#agent-processes").exists()).toBe(false);
+    expect(wrapper.find("#agent-process-list").exists()).toBe(false);
+  });
+
+  it("renders process counts and affected apps newest first, capped at five, master excluded", async () => {
+    const master = {
+      ...processRow("master", "error", "failed", "2026-10-28T06:00:00.000Z"),
+      appId: "hanse-master:master",
+      projectId: "hanse-master",
+      projectName: "Hanse master",
+      chatHref: "/chat?app=master&project=hanse-master",
+      appHref: "/projects/hanse-master/apps/master",
+    };
+    const apps = [
+      master,
+      processRow("alpha", "error", "failed", "2026-10-28T05:00:00.000Z"),
+      processRow("beta", "starting", "waiting_ready", "2026-10-28T04:00:00.000Z"),
+      processRow("gamma", "stopping", "stopping", "2026-10-28T03:00:00.000Z"),
+      processRow("delta", "error", "failed", "2026-10-28T02:00:00.000Z"),
+      processRow("epsilon", "starting", "requested", "2026-10-28T01:00:00.000Z"),
+      processRow("zeta", "error", "failed", "2026-10-28T00:00:00.000Z"),
+    ];
+    const wrapper = await mountPage(
+      boot({
+        processes: {
+          starting: 2,
+          stopping: 1,
+          error: 3,
+          apps,
+        },
+      }),
+    );
+
+    const block = wrapper.get("#agent-processes");
+    expect(block.get("#agent-processes-title").text()).toBe("Agent processes");
+    expect(block.get("#process-count-starting").text()).toBe("2");
+    expect(block.get("#process-count-stopping").text()).toBe("1");
+    expect(block.get("#process-count-error").text()).toBe("3");
+
+    const rows = wrapper.findAll("[data-process-app]");
+    expect(rows).toHaveLength(5);
+    expect(rows.map((row) => row.text())).toEqual([
+      expect.stringContaining("alpha"),
+      expect.stringContaining("beta"),
+      expect.stringContaining("gamma"),
+      expect.stringContaining("delta"),
+      expect.stringContaining("epsilon"),
+    ]);
+    expect(block.text()).not.toContain("zeta");
+    expect(block.text()).not.toContain("master");
+    expect(rows.at(1)?.text()).toContain("Waiting for readiness");
+    expect(rows.at(2)?.text()).toContain("Stopping");
+
+    const firstRow = rows.at(0);
+    const firstChat = firstRow?.findAll("a").find((link) => link.text() === "Chat");
+    const firstApp = firstRow?.findAll("a").find((link) => link.text() === "Application");
+    expect(firstChat?.attributes("href")).toBe(`/chat?app=alpha&project=${PROJECT_ONE.id}`);
+    expect(firstApp?.attributes("href")).toBe(`/projects/${PROJECT_ONE.id}/apps/alpha`);
+  });
+
   it("renders the empty state with a dialog and no header action", async () => {
     const wrapper = await mountPage(
       boot({
@@ -181,6 +276,7 @@ describe("OverviewPage", () => {
           stopped: 0,
           handoffsWaiting: 0,
         },
+        processes: PROCESSES,
         projects: [],
         recentHandoffs: [],
         waitingHandoffs: [],

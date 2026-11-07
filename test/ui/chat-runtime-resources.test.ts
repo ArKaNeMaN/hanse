@@ -217,7 +217,7 @@ describe("chat runtime resource ownership", () => {
         await flushPromises();
         expectOneSurface();
         expectNoEagerVendor();
-        expect(activeSources()).toBe(1);
+        expect(activeSources()).toBe(2);
         expect(workers.count).toBe(baseline.workers);
 
         wrapper.unmount();
@@ -254,7 +254,7 @@ describe("chat runtime resource ownership", () => {
         const { wrapper, queryClient } = await mountChat(`/chat?app=${app}&project=p`);
         await flushPromises();
         expect(domCounts().shell).toBe(1);
-        expect(activeSources()).toBe(1);
+        expect(activeSources()).toBe(2);
         wrapper.unmount();
         queryClient.clear();
         await flushPromises();
@@ -318,7 +318,7 @@ describe("chat runtime resource ownership", () => {
         await flushPromises();
         expectOneSurface();
         expectNoEagerVendor();
-        expect(activeSources()).toBe(1);
+        expect(activeSources()).toBe(2);
         expect(listeners.records).toHaveLength(baselineListeners);
         expect(timers.intervals.size).toBe(baselineIntervals);
         expect(timers.timeouts.size).toBeLessThanOrEqual(baselineTimers + 1);
@@ -346,8 +346,8 @@ describe("chat runtime resource ownership", () => {
     if (first === undefined) throw new Error("missing source");
     first.close();
     window.dispatchEvent(new Event("online"));
-    expect(FakeEventSource.instances).toHaveLength(2);
-    expect(activeSources()).toBe(1);
+    expect(FakeEventSource.instances).toHaveLength(3);
+    expect(activeSources()).toBe(2);
     wrapper.unmount();
     expect(activeSources()).toBe(0);
     listeners.restore();

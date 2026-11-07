@@ -144,7 +144,10 @@ async function handleList(deps: HttpDeps, found: FoundApp): Promise<HttpResponse
     warnings = [{ code: "agent_stopped" }];
   } else {
     try {
-      const endpoint = await deps.manager.ensure(toManagedApp(found));
+      const endpoint = await deps.manager.ensure(toManagedApp(found), {
+        origin: "system",
+        reason: "command",
+      });
       const whitelisted = await whitelistedSummaries(endpoint);
       entries = whitelisted.commands;
       warnings = whitelisted.warnings;
@@ -217,7 +220,10 @@ async function handleSend(
 
   let endpoint: string;
   try {
-    endpoint = await deps.manager.ensure(toManagedApp(found));
+    endpoint = await deps.manager.ensure(toManagedApp(found), {
+      origin: "system",
+      reason: "command",
+    });
   } catch (error) {
     if (error instanceof DeletionPendingError) {
       return reject(deps, true, 409, "deletion_pending", MESSAGES.deletion_pending, {

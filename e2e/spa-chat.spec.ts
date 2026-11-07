@@ -293,7 +293,7 @@ test("SPA session switching keeps one stream and no duplicate messages", async (
   await page.locator('.session-item[data-session-id="ses_e2ehistory"]').click();
   await expect(page).toHaveURL(/session=ses_e2ehistory/);
   await expect(page.locator("#chat-scroll [data-message-id]")).toHaveCount(30);
-  await expect.poll(async () => (await eventSourceStats(page)).active).toBe(1);
+  await expect.poll(async () => (await eventSourceStats(page)).active).toBe(2);
 
   await page.locator('.session-item[data-session-id="ses_e2ealpha"]').click();
   await expect(page).toHaveURL(/session=ses_e2ealpha/);
@@ -309,8 +309,8 @@ test("SPA session switching keeps one stream and no duplicate messages", async (
     .locator("#chat-scroll [data-message-id]")
     .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-message-id")));
   expect(new Set(ids).size).toBe(ids.length);
-  await expect.poll(async () => (await eventSourceStats(page)).active).toBe(1);
-  await expect.poll(async () => (await eventSourceStats(page)).created).toBe(1);
+  await expect.poll(async () => (await eventSourceStats(page)).active).toBe(2);
+  await expect.poll(async () => (await eventSourceStats(page)).created).toBe(2);
 
   await page.waitForTimeout(400);
   expectNoPageErrors(errors);
@@ -419,8 +419,8 @@ test("SPA send shows one optimistic row, streams a reply, and keeps one EventSou
     },
   });
   await expect(page.getByText("Streamed E2E reply.")).toBeVisible({ timeout: 15_000 });
-  await expect.poll(async () => (await eventSourceStats(page)).active).toBe(1);
-  await expect.poll(async () => (await eventSourceStats(page)).created).toBe(1);
+  await expect.poll(async () => (await eventSourceStats(page)).active).toBe(2);
+  await expect.poll(async () => (await eventSourceStats(page)).created).toBe(2);
   await page.waitForTimeout(400);
   expectNoPageErrors(errors);
 });

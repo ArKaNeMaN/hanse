@@ -124,6 +124,15 @@ describe("/api/ui/chat", () => {
     expect(payload.runtime).toEqual({
       state: "stopped",
       runtimeUrl: "/api/apps/web/runtime?project=p",
+      process: {
+        state: "stopped",
+        phase: null,
+        attemptId: null,
+        startedAt: null,
+        updatedAt: null,
+        error: null,
+        lastEventId: 0,
+      },
     });
     expect(payload.appOptions).toEqual([
       {

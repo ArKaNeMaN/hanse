@@ -106,6 +106,7 @@
 - [Architecture overview](./overview.md) - the coordinator architecture and stage plan.
 - [Agent runtime isolation and per-app toolchains](./agent-runtime.md) - staged B0/B1/B2 runtime split, layered agent images, per-app containers, app image builds, and deployment constraints. Status: proposed, revised after design review.
 - [Agent process protection and interrupted-turn recovery](./agent-process-protection.md) - safe-test instructions, narrow bash self-kill denies, runtime-epoch stop detection, persisted system notices, subagent parent signals, and recency-guarded top-level session resume. Status: deployed (design `oracle` round 10 PASS; journal 0037; commit `25e5c81`).
+- [Agent process lifecycle and status tracking](./agent-process-status.md) - durable current process state and history, a human-only read API and an always-on process SSE, and distinct starting/stopping/error surfaces in chat, the application page, and the overview. Status: design `oracle` round 3 PASS; plan `momus` round 2 OKAY; implemented and verified (journal 0043).
 
 ## Run the showcase
 

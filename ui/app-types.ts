@@ -7,6 +7,7 @@
  */
 
 import type { BootChrome } from "./boot.js";
+import type { ProcessError, ProcessPhase, ProcessState } from "./process/types.js";
 import type { RuntimeState } from "./status.js";
 
 export type AppImageState = "default" | "missing" | "building" | "ready" | "stale" | "error";
@@ -28,8 +29,20 @@ export interface AppIdentityProps {
   readonly master: boolean;
 }
 
+/** Durable process detail for one application (mirrors `ProcessDetail` on the server). */
+export interface AppProcessProps {
+  readonly state: ProcessState;
+  readonly phase: ProcessPhase | null;
+  readonly attemptId: string | null;
+  readonly startedAt: string | null;
+  readonly updatedAt: string | null;
+  readonly error: ProcessError | null;
+  readonly lastEventId: number;
+}
+
 export interface AppRuntimeProps {
   readonly state: RuntimeState;
+  readonly process: AppProcessProps;
   readonly label: string;
   readonly glyph: string;
   readonly tone: string;
@@ -298,11 +311,44 @@ export interface AppResponse extends AppProps {
   readonly chrome?: BootChrome;
 }
 
+/** One affected application row in the overview process summary. */
+export interface OverviewProcessRowProps {
+  readonly appId: string;
+  readonly appKey: string;
+  readonly projectId: string;
+  readonly projectName: string;
+  readonly state: ProcessState;
+  readonly phase: ProcessPhase | null;
+  readonly updatedAt: string | null;
+  readonly chatHref: string;
+  readonly appHref: string;
+}
+
+/** Compact overview process summary; the server excludes the master and caps `apps` at five. */
+export interface OverviewProcessesProps {
+  readonly starting: number;
+  readonly stopping: number;
+  readonly error: number;
+  readonly apps: readonly OverviewProcessRowProps[];
+}
+
+/** Live process detail from the runtime poll; `/runtime` omits `state` inside `process`. */
+export interface AppProcessLive {
+  readonly state?: ProcessState;
+  readonly phase?: ProcessPhase | null;
+  readonly attemptId?: string | null;
+  readonly startedAt?: string | null;
+  readonly updatedAt?: string | null;
+  readonly error?: ProcessError | null;
+  readonly lastEventId?: number;
+}
+
 /** Live runtime read used by the page poll (`GET /api/apps/:app/runtime`). */
 export interface AppRuntimeLive {
   readonly state?: string;
   readonly imageRef?: string | null;
   readonly restarting?: boolean;
+  readonly process?: AppProcessLive;
 }
 
 /**

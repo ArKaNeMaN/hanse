@@ -34,6 +34,7 @@ import type {
 import { authorizationFor, setEndpointAuthorization } from "../src/opencode/endpoint-auth.js";
 import { resolveInstanceEnv } from "../src/opencode/instance.js";
 import {
+  AgentStartingError,
   AgentTokenReconcileError,
   DeletionPendingError,
   ImageRollbackIncompleteError,
@@ -54,6 +55,7 @@ import {
   credentialDenyPatterns,
   type VerifyPolicyOptions,
 } from "../src/opencode/policy.js";
+import { processEvents } from "../src/opencode/process-events.js";
 import {
   hashFileContent,
   PROCESS_RULE_HASH,
@@ -83,6 +85,7 @@ import {
   type SkillWarning,
 } from "../src/skills/index.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
+import { type ProcessEvent, readProcess, readProcessEvents } from "../src/store/process.js";
 import type { WebToolConfig } from "../src/web/types.js";
 import { FakeAgentRuntime } from "./fixtures/fake-runtime.js";
 
@@ -345,6 +348,7 @@ function fixture(
     model?: string,
     parts?: Array<{ type: string; text?: string; [key: string]: unknown }>,
   ) => Promise<void>,
+  waitForReady?: (appId: string, endpoint: string) => Promise<void>,
 ): Fixture {
   const dir = mkdtempSync(path.join(tmpdir(), "hanse-manager-"));
   dirs.push(dir);
@@ -375,6 +379,7 @@ function fixture(
     ...(logger === undefined ? {} : { logger }),
     ...(previews === undefined ? {} : { previews }),
     ...(dispatch === undefined ? {} : { sendPromptAsync: dispatch }),
+    ...(waitForReady === undefined ? {} : { waitForReady }),
   });
   return { manager, runtime, db, dir };
 }
@@ -400,6 +405,24 @@ function instanceState(db: SqliteDatabase): string | undefined {
     .prepare("SELECT COALESCE(runtime_state, state) AS state FROM instances WHERE app_id = 'p:web'")
     .get() as { state: string } | undefined;
   return row?.state;
+}
+
+function maxProcessEventId(db: SqliteDatabase): number {
+  const row = db
+    .prepare("SELECT COALESCE(MAX(id), 0) AS id FROM agent_run_events WHERE app_id = ?")
+    .get(APP.id) as { id: number };
+  return row.id;
+}
+
+function processEventsAfter(db: SqliteDatabase, afterId: number): ProcessEvent[] {
+  return readProcessEvents(db, APP.id, { limit: 100 }).events.filter((event) => event.id > afterId);
+}
+
+function processEventCount(db: SqliteDatabase): number {
+  const row = db
+    .prepare("SELECT COUNT(*) AS count FROM agent_run_events WHERE app_id = ?")
+    .get(APP.id) as { count: number };
+  return row.count;
 }
 
 function overlayOf(spec: { env: Record<string, string> }): Record<string, unknown> {
@@ -4101,5 +4124,444 @@ describe("InstanceManager process rule materialization", () => {
       reasons: ["settings_changed"],
     });
     expect(runtime.ensured).toHaveLength(1);
+  });
+});
+
+describe("InstanceManager process lifecycle", () => {
+  class BlockedRuntime extends FakeAgentRuntime {
+    readonly entered = deferred<void>();
+    readonly gate = deferred<void>();
+
+    override async ensure(
+      spec: Parameters<FakeAgentRuntime["ensure"]>[0],
+    ): ReturnType<FakeAgentRuntime["ensure"]> {
+      this.entered.resolve();
+      await this.gate.promise;
+      return super.ensure(spec);
+    }
+  }
+
+  function insertStartingRow(
+    db: SqliteDatabase,
+    attemptId: string,
+    phase: string,
+    updatedAt: string,
+  ): void {
+    db.prepare(
+      `INSERT INTO instances
+         (id, app_id, endpoint, state, runtime_state, updated_at,
+          process_attempt_id, process_phase, process_started_at, process_updated_at)
+       VALUES (?, ?, ?, 'starting', 'starting', ?, ?, ?, ?, ?)`,
+    ).run(APP.id, APP.id, "http://127.0.0.1:77", updatedAt, attemptId, phase, updatedAt, updatedAt);
+  }
+
+  it("writes starting before a blocked runtime.ensure resolves", async () => {
+    const runtime = new BlockedRuntime();
+    const f = fixture(runtime, fakeSettings(), fakeProfiles().source);
+
+    const pending = f.manager.ensure(APP);
+    await runtime.entered.promise;
+
+    const blocked = readProcess(f.db, APP.id);
+    expect(blocked.state).toBe("starting");
+    expect(blocked.attemptId).not.toBeNull();
+    expect(["requested", "preparing", "creating"]).toContain(blocked.phase);
+
+    runtime.gate.resolve();
+    await pending;
+    expect(readProcess(f.db, APP.id)).toMatchObject({ state: "running", phase: "ready" });
+  });
+
+  it("persists a readiness failure across reconcile ticks", async () => {
+    const runtime = new FakeAgentRuntime();
+    const f = fixture(
+      runtime,
+      fakeSettings(),
+      fakeProfiles().source,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      async () => {
+        throw new AgentStartingError(APP.id);
+      },
+    );
+
+    await expect(f.manager.ensure(APP)).rejects.toBeInstanceOf(AgentStartingError);
+    const failed = readProcess(f.db, APP.id);
+    expect(failed).toMatchObject({
+      state: "error",
+      phase: "failed",
+      error: { code: "readiness_timeout" },
+    });
+    const eventsAfterFailure = processEventCount(f.db);
+
+    await f.manager.reconcileStatuses();
+    await f.manager.reconcileStatuses();
+
+    expect(readProcess(f.db, APP.id)).toMatchObject({
+      state: "error",
+      phase: "failed",
+      error: { code: "readiness_timeout" },
+    });
+    expect(processEventCount(f.db)).toBe(eventsAfterFailure);
+    expect(runtime.ensured).toHaveLength(1);
+  });
+
+  it("interrupts a stale ownerless start after a failed probe and promotes a ready runtime", async () => {
+    const old = new Date(Date.now() - 120_000).toISOString();
+    const failing = fixture(
+      new FakeAgentRuntime(() => "http://127.0.0.1:77"),
+      fakeSettings(),
+      fakeProfiles().source,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      async () => {
+        throw new AgentStartingError(APP.id);
+      },
+    );
+    insertStartingRow(failing.db, "att-stale", "waiting_ready", old);
+    failing.runtime.statuses.set(APP.id, {
+      appId: APP.id,
+      endpoint: "http://127.0.0.1:77",
+      state: "running",
+      specHash: null,
+      version: null,
+    });
+
+    await failing.manager.reconcileStatuses();
+
+    expect(readProcess(failing.db, APP.id)).toMatchObject({
+      state: "error",
+      phase: "interrupted",
+      error: { code: "interrupted" },
+    });
+
+    const healthy = fixture(
+      new FakeAgentRuntime(() => "http://127.0.0.1:77"),
+      fakeSettings(),
+      fakeProfiles().source,
+    );
+    insertStartingRow(healthy.db, "att-live", "waiting_ready", old);
+    healthy.runtime.statuses.set(APP.id, {
+      appId: APP.id,
+      endpoint: "http://127.0.0.1:77",
+      state: "running",
+      specHash: null,
+      version: null,
+    });
+
+    await healthy.manager.reconcileStatuses();
+
+    expect(readProcess(healthy.db, APP.id)).toMatchObject({ state: "running", phase: "ready" });
+  });
+
+  it("reconnects a stopped row to running", async () => {
+    const f = fixture(new FakeAgentRuntime(), fakeSettings(), fakeProfiles().source);
+    await f.manager.ensure(APP);
+    f.manager.detach();
+    f.db
+      .prepare(
+        "UPDATE instances SET state = 'stopped', runtime_state = 'stopped', process_phase = 'stopped' WHERE app_id = ?",
+      )
+      .run(APP.id);
+    const before = maxProcessEventId(f.db);
+
+    await f.manager.ensure(APP);
+
+    const events = processEventsAfter(f.db, before);
+    expect(events.some((event) => event.state === "starting" && event.reason === "reconnect")).toBe(
+      true,
+    );
+    expect(events.some((event) => event.state === "running" && event.reason === "reconnect")).toBe(
+      true,
+    );
+    expect(readProcess(f.db, APP.id)).toMatchObject({ state: "running", phase: "ready" });
+  });
+
+  it("records a reconnect token failure", async () => {
+    const f = fixture(new FakeAgentRuntime(), fakeSettings(), fakeProfiles().source);
+    await f.manager.ensure(APP);
+    const tokenFile = path.join(f.dir, "p", "web", "mcp-token");
+    rmSync(tokenFile);
+    mkdirSync(tokenFile);
+    f.manager.detach();
+    f.db
+      .prepare(
+        "UPDATE instances SET state = 'stopped', runtime_state = 'stopped', process_phase = 'stopped' WHERE app_id = ?",
+      )
+      .run(APP.id);
+
+    await expect(f.manager.ensure(APP)).rejects.toBeInstanceOf(AgentTokenReconcileError);
+    expect(readProcess(f.db, APP.id)).toMatchObject({
+      state: "error",
+      phase: "failed",
+      error: { code: "token_reconcile_failed" },
+    });
+  });
+
+  it("records a reconnect readiness failure", async () => {
+    let waits = 0;
+    const f = fixture(
+      new FakeAgentRuntime(),
+      fakeSettings(),
+      fakeProfiles().source,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      async () => {
+        waits += 1;
+        if (waits > 1) throw new AgentStartingError(APP.id);
+      },
+    );
+    await f.manager.ensure(APP);
+    f.manager.detach();
+    f.db
+      .prepare(
+        "UPDATE instances SET state = 'stopped', runtime_state = 'stopped', process_phase = 'stopped' WHERE app_id = ?",
+      )
+      .run(APP.id);
+
+    await expect(f.manager.ensure(APP)).rejects.toBeInstanceOf(AgentStartingError);
+    expect(readProcess(f.db, APP.id)).toMatchObject({
+      state: "error",
+      phase: "failed",
+      error: { code: "readiness_timeout" },
+    });
+  });
+
+  it("restarts with one attempt and no terminal stopped event", async () => {
+    const f = fixture(new FakeAgentRuntime(), fakeSettings(), fakeProfiles().source);
+    await f.manager.ensure(APP);
+    const before = maxProcessEventId(f.db);
+
+    await expect(f.manager.restartIfRunning(APP)).resolves.toBe(true);
+
+    const events = processEventsAfter(f.db, before);
+    expect(new Set(events.map((event) => event.attemptId)).size).toBe(1);
+    expect(events.filter((event) => event.phase === "requested")).toHaveLength(1);
+    expect(events.some((event) => event.state === "stopped")).toBe(false);
+    expect(events.some((event) => event.phase === "ready")).toBe(true);
+  });
+
+  it("treats restart of a stopped app as a no-op with no attempt or event", async () => {
+    const f = fixture(new FakeAgentRuntime(), fakeSettings(), fakeProfiles().source);
+    await f.manager.ensure(APP);
+    await f.manager.stopApp(APP.id);
+    const before = processEventCount(f.db);
+
+    await expect(f.manager.restartIfRunning(APP)).resolves.toBe(false);
+
+    expect(processEventCount(f.db)).toBe(before);
+    expect(readProcess(f.db, APP.id)).toMatchObject({ state: "stopped" });
+  });
+
+  it("returns the same in-flight launch promise for a concurrent start", async () => {
+    const runtime = new BlockedRuntime();
+    const f = fixture(runtime, fakeSettings(), fakeProfiles().source);
+
+    const first = f.manager.ensure(APP);
+    const second = f.manager.ensure(APP);
+    expect(second).toBe(first);
+
+    runtime.gate.resolve();
+    await Promise.all([first, second]);
+
+    expect(runtime.ensured).toHaveLength(1);
+    const events = readProcessEvents(f.db, APP.id, { limit: 100 }).events;
+    expect(events.filter((event) => event.phase === "requested")).toHaveLength(1);
+  });
+
+  it("chains a restart during a start", async () => {
+    const runtime = new BlockedRuntime();
+    const f = fixture(runtime, fakeSettings(), fakeProfiles().source);
+
+    const starting = f.manager.ensure(APP);
+    await runtime.entered.promise;
+    const restarting = f.manager.restartIfRunning(APP);
+    runtime.gate.resolve();
+
+    await expect(starting).resolves.toContain("127.0.0.1");
+    await expect(restarting).resolves.toBe(true);
+
+    expect(runtime.ensured).toHaveLength(2);
+    expect(runtime.deleted).toEqual([APP.id]);
+    const attempts = new Set(
+      readProcessEvents(f.db, APP.id, { limit: 100 }).events.map((event) => event.attemptId),
+    );
+    expect(attempts.size).toBe(2);
+  });
+
+  it("appends history for an out-of-band restart while coarse state stays running", async () => {
+    const runtime = new EpochRuntime();
+    runtime.startedAt = RECOVERY_START;
+    const f = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    await f.manager.ensure(APP);
+    const before = maxProcessEventId(f.db);
+    const status = runtime.statuses.get(APP.id);
+    if (status === undefined) throw new Error("missing runtime status");
+    runtime.statuses.set(APP.id, { ...status, startedAt: RECOVERY_NEXT, restartCount: 1 });
+
+    await f.manager.reconcileStatuses();
+
+    expect(instanceState(f.db)).toBe("running");
+    const events = processEventsAfter(f.db, before);
+    const restart = events.find((event) => event.reason === "external_restart");
+    expect(restart).toMatchObject({ state: "running", phase: "ready" });
+    expect(restart?.attemptId.startsWith("runtime:")).toBe(true);
+  });
+
+  it("records one attempt and one image error when settings preflight fails, and retries anew", async () => {
+    const builtRef = "hanse-app-p:web:build-1";
+    const images = new FakeImages(imageStateView({ usableImageRef: builtRef }));
+    const f = imageFixture("ready", builtRef, true, {}, images);
+    await f.manager.ensure(f.app);
+    const beforeFailure = maxProcessEventId(f.db);
+    images.view = imageStateView({
+      state: "not_ready",
+      usableImageRef: null,
+      targetImageId: null,
+    });
+
+    await expect(f.manager.preflightRestart(f.app)).rejects.toBeInstanceOf(ImageNotReadyError);
+
+    const failed = processEventsAfter(f.db, beforeFailure);
+    expect(new Set(failed.map((event) => event.attemptId)).size).toBe(1);
+    expect(failed.filter((event) => event.phase === "requested")).toHaveLength(1);
+    expect(failed.filter((event) => event.errorCode === "image_unavailable")).toHaveLength(1);
+
+    const beforeRetry = maxProcessEventId(f.db);
+    images.view = imageStateView({ usableImageRef: builtRef });
+    await expect(f.manager.preflightRestart(f.app)).resolves.toBe(true);
+    const claim = f.manager.beginRestart(f.app);
+    await expect(claim.completion).resolves.toBe(true);
+
+    const retried = processEventsAfter(f.db, beforeRetry);
+    expect(new Set(retried.map((event) => event.attemptId)).size).toBe(1);
+    expect(retried.filter((event) => event.phase === "requested")).toHaveLength(1);
+    expect(retried.some((event) => event.phase === "ready")).toBe(true);
+  });
+
+  it("records one error event when a stop fails", async () => {
+    class FailingDeleteRuntime extends FakeAgentRuntime {
+      failDelete = false;
+
+      override async delete(appId: string) {
+        if (this.failDelete) throw new Error("runtime unavailable");
+        return super.delete(appId);
+      }
+    }
+    const runtime = new FailingDeleteRuntime();
+    const f = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    await f.manager.ensure(APP);
+    const before = maxProcessEventId(f.db);
+    runtime.failDelete = true;
+
+    await expect(f.manager.stopApp(APP.id)).rejects.toThrow("runtime unavailable");
+
+    const events = processEventsAfter(f.db, before);
+    expect(events.filter((event) => event.state === "error")).toHaveLength(1);
+    expect(events.find((event) => event.state === "error")?.errorCode).toBe("runtime_unavailable");
+  });
+
+  it("prunes history to 1,000 rows and by the 30-day window even for stopped apps", async () => {
+    const f = fixture(new FakeAgentRuntime(), fakeSettings(), fakeProfiles().source);
+    await f.manager.ensure(APP);
+    const insert = f.db.prepare(
+      `INSERT INTO agent_run_events
+         (app_id, attempt_id, seq, state, phase, source, created_at)
+       VALUES (?, ?, ?, 'stopped', 'stopped', 'system', ?)`,
+    );
+    const now = new Date().toISOString();
+    f.db.transaction(() => {
+      for (let seq = 1; seq <= 1_001; seq += 1) {
+        insert.run(APP.id, "retention-attempt", seq, now);
+      }
+    })();
+
+    await f.manager.stopApp(APP.id);
+
+    expect(processEventCount(f.db)).toBe(1_000);
+
+    const otherId = "p:other";
+    f.db
+      .prepare(
+        "INSERT INTO apps (id, project_id, app_key, path, contract, created_at) VALUES (?, 'p', 'other', 'apps/other', 'AGENTS.md', ?)",
+      )
+      .run(otherId, now);
+    const old = new Date(Date.now() - 31 * 24 * 60 * 60 * 1_000).toISOString();
+    const insertOther = f.db.prepare(
+      `INSERT INTO agent_run_events
+         (app_id, attempt_id, seq, state, phase, source, created_at)
+       VALUES (?, ?, ?, ?, ?, 'system', ?)`,
+    );
+    insertOther.run(APP.id, "old-attempt", 1, "stopped", "stopped", old);
+    insertOther.run(otherId, "fresh-attempt", 1, "running", "ready", now);
+
+    await f.manager.reconcileStatuses();
+
+    const oldRows = f.db
+      .prepare("SELECT COUNT(*) AS count FROM agent_run_events WHERE created_at = ?")
+      .get(old) as { count: number };
+    const otherRows = f.db
+      .prepare("SELECT COUNT(*) AS count FROM agent_run_events WHERE app_id = ?")
+      .get(otherId) as { count: number };
+    expect(oldRows.count).toBe(0);
+    expect(otherRows.count).toBe(1);
+  });
+
+  it("never stores a raw internal error message", async () => {
+    class ThrowingRuntime extends FakeAgentRuntime {
+      override async ensure(): ReturnType<FakeAgentRuntime["ensure"]> {
+        throw new Error("Authorization: Bearer super-secret-token");
+      }
+    }
+    const f = fixture(new ThrowingRuntime(), fakeSettings(), fakeProfiles().source);
+
+    await expect(f.manager.ensure(APP)).rejects.toThrow();
+
+    const events = readProcessEvents(f.db, APP.id, { limit: 100 }).events;
+    const errorEvent = events.find((event) => event.state === "error");
+    expect(errorEvent?.errorCode).toBe("runtime_unavailable");
+    expect(errorEvent?.message).toBe("The agent runtime is unavailable.");
+    expect(JSON.stringify(events)).not.toContain("super-secret-token");
+  });
+
+  it("emits each committed transition on the module-level process bus", async () => {
+    const f = fixture(new FakeAgentRuntime(), fakeSettings(), fakeProfiles().source);
+    const seen: ProcessEvent[] = [];
+    processEvents.reset();
+    const unsubscribe = processEvents.subscribe(APP.id, (event) => seen.push(event));
+    try {
+      await f.manager.ensure(APP);
+    } finally {
+      unsubscribe();
+    }
+
+    expect(seen.map((event) => event.phase)).toEqual([
+      "requested",
+      "preparing",
+      "creating",
+      "waiting_ready",
+      "ready",
+    ]);
   });
 });
