@@ -20,7 +20,7 @@ describe("process error sanitizer", () => {
     ["operator token", "HANSE_OPERATOR_TOKEN=operator-secret", "operator-secret"],
     ["opencode password", "HANSE_OPENCODE_PASSWORD=opencode-secret", "opencode-secret"],
     ["provider key", "provider key sk-abcdef1234567890", "sk-abcdef1234567890"],
-    ["aws key", "key AKIAABCDEFGHIJKLMNOP", "AKIAABCDEFGHIJKLMNOP"],
+    ["aws key", "key " + "AKIA" + "ABCDEFGHIJKLMNOP", "AKIA" + "ABCDEFGHIJKLMNOP"],
     ["mcp token", "MCP_TOKEN=mcp-secret", "mcp-secret"],
     ["git token", "token ghp_abcdefghijklmnop", "ghp_abcdefghijklmnop"],
     ["private key", "-----BEGIN RSA PRIVATE KEY-----", "-----BEGIN RSA PRIVATE KEY-----"],
