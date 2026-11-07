@@ -64,6 +64,10 @@
   quotas and attempt events, the public handoff allowlist, and the agent-token gate. Deferred:
   close/retry/relaunch/retarget, shared-session operator paths, target-initiated messages, and thread
   UI/projection. Status: approved (`oracle` PASS); implemented and verified (journal 0041).
+- [Thread chat rendering](./thread-chat-rendering.md) - additive thread chat projection and the
+  `HandoffCard` thread variant, first-line thread body extraction, the target-session question guard,
+  SSE/prompts visibility filtering, and the target-only prompt line. Status: approved (`oracle`
+  PASS); plan PASS (`momus`); implemented and verified (journal 0042); commit `<commit-hash>`.
 - [Chat session tree](./chat-session-tree.md) - group `opencode` subagent sessions under their
   parent in the chat rail with disclosure chevrons, multi-level nesting, active-ancestor expansion,
   orphan/cycle handling, subtree delete cleanup, and a deferred realtime follow-up. Status:

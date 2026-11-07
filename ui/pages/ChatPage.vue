@@ -49,6 +49,7 @@ import { clearChatSessionState, clearChatWorkspaceState } from "../chat/session-
 import { applyChatActions, type RenderIntent } from "../chat/state-actions.js";
 import type {
   ChatCommandsResponse,
+  ChatHandoffView,
   ChatMessagePartView,
   ChatMessagesResponse,
   ChatMessageView,
@@ -1764,7 +1765,7 @@ function recordTextContent(record: FeedMessageRecord): string {
   return chunks.join("\n");
 }
 
-function normalizeHandoffMetadata(record: FeedMessageRecord) {
+function normalizeHandoffMetadata(record: FeedMessageRecord): ChatHandoffView | null {
   const normalized = normalizeHandoffMeta(record.handoff);
   if (normalized === null) {
     return null;
@@ -1775,12 +1776,33 @@ function normalizeHandoffMetadata(record: FeedMessageRecord) {
     typeof normalized.body === "string" && normalized.body.length > 0
       ? normalized.body
       : handoffBodyFromText(raw, direction);
+  const mode = normalized.mode === "thread" ? "thread" : undefined;
   const note =
-    typeof normalized.operatorNote === "string" && normalized.operatorNote.length > 0
-      ? normalized.operatorNote
-      : direction === "reply"
-        ? handoffNoteFromText(raw)
-        : "";
+    mode === "thread"
+      ? ""
+      : typeof normalized.operatorNote === "string" && normalized.operatorNote.length > 0
+        ? normalized.operatorNote
+        : direction === "reply"
+          ? handoffNoteFromText(raw)
+          : "";
+  const kind =
+    normalized.kind === "request" || normalized.kind === "message" || normalized.kind === "reply"
+      ? normalized.kind
+      : undefined;
+  const authorSide =
+    normalized.authorSide === "source" || normalized.authorSide === "target"
+      ? normalized.authorSide
+      : undefined;
+  const messageId =
+    typeof normalized.messageId === "number" &&
+    Number.isInteger(normalized.messageId) &&
+    normalized.messageId > 0
+      ? normalized.messageId
+      : undefined;
+  const seq =
+    typeof normalized.seq === "number" && Number.isInteger(normalized.seq) && normalized.seq > 0
+      ? normalized.seq
+      : undefined;
   return {
     id: String(normalized.id),
     direction: direction as "request" | "reply",
@@ -1800,6 +1822,11 @@ function normalizeHandoffMetadata(record: FeedMessageRecord) {
           ? null
           : undefined,
     replyState: typeof normalized.replyState === "string" ? normalized.replyState : undefined,
+    ...(mode === undefined ? {} : { mode }),
+    ...(kind === undefined ? {} : { kind }),
+    ...(authorSide === undefined ? {} : { authorSide }),
+    ...(messageId === undefined ? {} : { messageId }),
+    ...(seq === undefined ? {} : { seq }),
   };
 }
 

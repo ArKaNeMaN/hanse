@@ -1,10 +1,11 @@
 import { mkdtempSync, rmSync } from "node:fs";
-import { createServer, type Server } from "node:http";
+import { createServer, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { DeploymentInProgressError } from "../src/coordinator/deployment-lock.js";
+import type { HandoffDispatcher } from "../src/coordinator/dispatcher.js";
 import { CoordinatorService } from "../src/coordinator/service.js";
 import { GitService } from "../src/git/service.js";
 import type { HttpDeps, HttpRequest } from "../src/http/handler.js";
@@ -1258,5 +1259,224 @@ describe("prompts typed image failures", () => {
       appId: "p1:storefront",
       state: "unknown",
     });
+  });
+});
+
+interface EventUpstream {
+  endpoint: string;
+  send(chunk: string): void;
+  close(): void;
+}
+
+async function fakeEventUpstream(): Promise<EventUpstream> {
+  let respond: ServerResponse | undefined;
+  const server = createServer((incoming, outgoing) => {
+    if (incoming.url !== "/event") {
+      outgoing.writeHead(404, { "content-type": "application/json" });
+      outgoing.end(JSON.stringify({ error: "not found" }));
+      return;
+    }
+    outgoing.writeHead(200, { "content-type": "text/event-stream" });
+    outgoing.flushHeaders();
+    respond = outgoing;
+  });
+  servers.push(server);
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address() as AddressInfo;
+  return {
+    endpoint: `http://127.0.0.1:${address.port}`,
+    send(chunk) {
+      respond?.write(chunk);
+    },
+    close() {
+      respond?.end();
+    },
+  };
+}
+
+function jsonFrame(value: unknown): string {
+  return `data: ${JSON.stringify(value)}\n\n`;
+}
+
+function frameEvents(buffer: string): Array<Record<string, unknown>> {
+  return buffer
+    .split("\n\n")
+    .map((block) =>
+      block
+        .split("\n")
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice(5).trimStart())
+        .join("\n"),
+    )
+    .filter((data) => data.length > 0)
+    .flatMap((data) => {
+      try {
+        return [JSON.parse(data) as Record<string, unknown>];
+      } catch {
+        return [];
+      }
+    });
+}
+
+async function collectEventStream(
+  f: Fixture,
+  upstream: EventUpstream,
+  payload: string,
+): Promise<Array<Record<string, unknown>>> {
+  const server = createHttpServer(f.deps);
+  servers.push(server);
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address() as AddressInfo;
+  const response = await fetch(`http://127.0.0.1:${address.port}/api/apps/storefront/events`, {
+    headers: auth(f.token),
+  });
+  expect(response.status).toBe(200);
+  upstream.send(payload);
+  upstream.close();
+  return frameEvents(await response.text());
+}
+
+describe("thread question suppression", () => {
+  it("drops target-root v1 and v2 questions from the prompts read with a dispatcher", async () => {
+    const f = fixture();
+    const upstream = await fakeOpencode();
+    upstream.reply("GET", "/question", [
+      question({ id: "q1", sessionID: "ses_target" }),
+      question({ id: "q3", sessionID: "ses_source" }),
+    ]);
+    upstream.reply("GET", "/permission", [permission()]);
+    upstream.reply("GET", "/api/question/request", {
+      data: [question({ id: "q2", sessionID: "ses_target" })],
+    });
+    upstream.reply("GET", "/api/permission/request", { data: [v2Permission()] });
+    useUpstream(f.deps, upstream.endpoint);
+    const shouldSuppressQuestion = vi.fn(
+      async (_appId: string, sessionId: string) => sessionId === "ses_target",
+    );
+    f.deps.dispatcher = { shouldSuppressQuestion } as unknown as HandoffDispatcher;
+
+    const response = await handlePrompts(
+      f.deps,
+      request({ query: { project: "p1" }, headers: auth(f.token) }),
+    );
+
+    expect(response.status).toBe(200);
+    const body = JSON.parse(response.body) as {
+      questions: Array<{ key: string }>;
+      permissions: Array<{ key: string }>;
+    };
+    expect(body.questions.map((item) => item.key)).toEqual(["v1:q3"]);
+    expect(body.permissions.map((item) => item.key)).toEqual(["v1:p1", "v2:p2"]);
+    expect(shouldSuppressQuestion).toHaveBeenCalledWith("p1:storefront", "ses_target");
+  });
+
+  it("forwards target-root questions without a dispatcher", async () => {
+    const f = fixture();
+    const upstream = await fakeOpencode();
+    upstream.reply("GET", "/question", [question({ id: "q1", sessionID: "ses_target" })]);
+    upstream.reply("GET", "/permission", []);
+    upstream.reply("GET", "/api/question/request", { data: [] });
+    upstream.reply("GET", "/api/permission/request", { data: [] });
+    useUpstream(f.deps, upstream.endpoint);
+
+    const response = await handlePrompts(
+      f.deps,
+      request({ query: { project: "p1" }, headers: auth(f.token) }),
+    );
+
+    expect(response.status).toBe(200);
+    const body = JSON.parse(response.body) as { questions: Array<{ key: string }> };
+    expect(body.questions.map((item) => item.key)).toEqual(["v1:q1"]);
+  });
+
+  it("drops only target-root question.asked frames from the SSE stream", async () => {
+    const f = fixture();
+    const upstream = await fakeEventUpstream();
+    useUpstream(f.deps, upstream.endpoint);
+    const shouldSuppressQuestion = vi.fn(
+      async (_appId: string, sessionId: string) => sessionId === "ses_target",
+    );
+    f.deps.dispatcher = { shouldSuppressQuestion } as unknown as HandoffDispatcher;
+
+    const events = await collectEventStream(
+      f,
+      upstream,
+      [
+        jsonFrame({
+          id: "q_target",
+          type: "question.asked",
+          properties: {
+            id: "q1",
+            sessionID: "ses_target",
+            questions: [{ header: "H", question: "Q?", options: [] }],
+          },
+        }),
+        jsonFrame({
+          id: "q_source",
+          type: "question.asked",
+          properties: {
+            id: "q2",
+            sessionID: "ses_source",
+            questions: [{ header: "H", question: "Q?", options: [] }],
+          },
+        }),
+        jsonFrame({
+          id: "reply_target",
+          type: "question.replied",
+          properties: { sessionID: "ses_target", requestID: "q1" },
+        }),
+        jsonFrame({
+          id: "perm_target",
+          type: "permission.asked",
+          properties: {
+            id: "p1",
+            sessionID: "ses_target",
+            permission: "bash",
+            patterns: ["ls*"],
+            always: ["ls*"],
+            metadata: {},
+          },
+        }),
+        jsonFrame({
+          id: "end",
+          type: "session.status",
+          properties: { sessionID: "ses_end" },
+        }),
+      ].join(""),
+    );
+
+    const asked = events.filter((event) => event.type === "question.asked");
+    expect(asked.map((event) => (event.request as { sessionID: string }).sessionID)).toEqual([
+      "ses_source",
+    ]);
+    expect(events.some((event) => event.type === "question.replied")).toBe(true);
+    expect(events.some((event) => event.type === "permission.asked")).toBe(true);
+    expect(shouldSuppressQuestion).toHaveBeenCalledWith("p1:storefront", "ses_target");
+  });
+
+  it("forwards target-root question.asked frames when no dispatcher is present", async () => {
+    const f = fixture();
+    const upstream = await fakeEventUpstream();
+    useUpstream(f.deps, upstream.endpoint);
+
+    const events = await collectEventStream(
+      f,
+      upstream,
+      jsonFrame({
+        id: "q_target",
+        type: "question.asked",
+        properties: {
+          id: "q1",
+          sessionID: "ses_target",
+          questions: [{ header: "H", question: "Q?", options: [] }],
+        },
+      }),
+    );
+
+    const asked = events.filter((event) => event.type === "question.asked");
+    expect(asked).toHaveLength(1);
+    const first = asked[0];
+    if (first === undefined) throw new Error("missing question event");
+    expect((first.request as { sessionID: string }).sessionID).toBe("ses_target");
   });
 });

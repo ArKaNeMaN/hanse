@@ -539,6 +539,14 @@ async function handlePromptsList(
   if (failed === 4) {
     return errorResponse(502, "prompt sources are unavailable", "prompts_unavailable");
   }
+  if (deps.dispatcher !== undefined) {
+    const kept: NormalizedQuestionRequest[] = [];
+    for (const item of questions) {
+      if (await deps.dispatcher.shouldSuppressQuestion(found.app.id, item.sessionID)) continue;
+      kept.push(item);
+    }
+    questions.splice(0, questions.length, ...kept);
+  }
   const policyWarnings = deps.manager?.policyWarnings(found.app.id) ?? [];
   warnings.push(...policyWarnings);
   const visibleWarnings = warnings.filter(
@@ -826,6 +834,13 @@ export async function streamAppEvents(
     for await (const event of stream.events) {
       if (response.destroyed || response.writableEnded) {
         break;
+      }
+      if (
+        event.type === "question.asked" &&
+        deps.dispatcher !== undefined &&
+        (await deps.dispatcher.shouldSuppressQuestion(found.app.id, event.request.sessionID))
+      ) {
+        continue;
       }
       await write(emit(event));
     }

@@ -89,6 +89,47 @@ describe("ChatMessage part surfaces", () => {
     wrapper.unmount();
   });
 
+  it("renders a thread handoff without the operator bubble, meta row, or parts", async () => {
+    const wrapper = render(
+      [
+        part({
+          id: "thread",
+          type: "text",
+          text: "Envelope text",
+          data: { text: "Envelope text" },
+        }),
+      ],
+      {
+        role: "user",
+        handoff: {
+          id: "handoff_thread",
+          direction: "request",
+          agent: "alpha",
+          from: "alpha",
+          to: "beta",
+          summary: "Reconcile invoice totals",
+          body: "The March totals still disagree by 0.02.",
+          note: "",
+          outcome: null,
+          replyState: "none",
+          mode: "thread",
+          kind: "message",
+          authorSide: "source",
+          messageId: 17,
+          seq: 5,
+        },
+      },
+    );
+    await nextTick();
+    expect(wrapper.classes()).toContain("message--handoff");
+    expect(wrapper.classes()).not.toContain("message--user");
+    expect(wrapper.find("[data-message-meta]").exists()).toBe(false);
+    expect(wrapper.find("[data-part-id]").exists()).toBe(false);
+    expect(wrapper.find("[data-handoff-card][data-mode='thread']").exists()).toBe(true);
+    expect(wrapper.text()).not.toContain("Envelope text");
+    wrapper.unmount();
+  });
+
   it("renders tool, patch, file, and subtask views", async () => {
     const wrapper = render([
       part({

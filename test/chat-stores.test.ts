@@ -166,4 +166,52 @@ describe("chat feed store", () => {
     expect(system?.kind).toBe("System reminder");
     expect(feed.message("msg_omo")?.system).toBeDefined();
   });
+
+  it("keeps a projected thread body when a body-less live frame arrives and invents no note", () => {
+    const feed = useChatFeedStore();
+    feed.reset("ses_feed");
+    const history = {
+      id: "handoff_thread",
+      direction: "request" as const,
+      agent: "alpha",
+      from: "alpha",
+      to: "beta",
+      summary: "Reconcile invoice totals",
+      body: "History thread body.",
+      outcome: null,
+      replyState: "none",
+      origin: "agent" as const,
+      state: "in_progress" as const,
+      mode: "thread" as const,
+      kind: "message" as const,
+      authorSide: "source" as const,
+      messageId: 17,
+      seq: 5,
+    };
+    feed.upsertMessage({
+      type: "message/upsert",
+      sessionID: "ses_feed",
+      messageID: "msg_thread",
+      role: "user",
+      handoff: history,
+    });
+    feed.upsertMessage({
+      type: "message/upsert",
+      sessionID: "ses_feed",
+      messageID: "msg_thread",
+      role: "user",
+      handoff: { ...history, body: undefined },
+    });
+
+    const record = feed.message("msg_thread");
+    expect(record?.handoff).toMatchObject({
+      mode: "thread",
+      kind: "message",
+      authorSide: "source",
+      messageId: 17,
+      seq: 5,
+    });
+    expect(record?.handoff?.body).toBe("History thread body.");
+    expect(record?.handoff?.operatorNote).toBeUndefined();
+  });
 });

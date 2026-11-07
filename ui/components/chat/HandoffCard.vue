@@ -21,6 +21,18 @@ function tone(outcome: string | null | undefined): string {
 }
 
 const initials = computed(() => agentInitials(props.handoff.agent));
+const kindLabel = computed(() => {
+  switch (props.handoff.kind) {
+    case "request":
+      return "Request";
+    case "message":
+      return "Message";
+    case "reply":
+      return "Reply";
+    default:
+      return props.handoff.direction === "request" ? "Request" : "Reply";
+  }
+});
 const needsDetails = computed(
   () =>
     props.handoff.body.length > HANDOFF_CARD_DETAIL_CHARS ||
@@ -37,7 +49,70 @@ const preview = computed(() => {
 </script>
 
 <template>
+  <!-- biome-ignore lint/a11y/useSemanticElements: the thread card is a labelled group, not a form -->
   <div
+    v-if="handoff.mode === 'thread'"
+    class="handoff-card"
+    data-handoff-card
+    data-mode="thread"
+    :data-direction="handoff.direction"
+    :data-kind="handoff.kind"
+    :data-seq="handoff.seq"
+    :data-outcome="handoff.kind === 'reply' ? (handoff.outcome ?? undefined) : undefined"
+    role="group"
+    :aria-label="`Message from agent ${handoff.agent} in thread ${handoff.id.slice(0, 8)}`"
+  >
+    <div class="handoff-card__head">
+      <span class="avatar avatar--sm" aria-hidden="true">{{ initials }}</span>
+      <span class="badge badge--mono" data-thread-chip>Thread</span>
+      <span class="handoff-card__author mono" data-thread-author>{{ handoff.agent }}</span>
+      <span class="handoff-card__kind" data-thread-kind>{{ kindLabel }}</span>
+      <span class="handoff-card__seq mono" data-thread-seq>#{{ handoff.seq }}</span>
+      <span class="handoff-card__route">
+        <span class="mono">{{ handoff.from }}</span>
+        <span aria-hidden="true">→</span>
+        <span class="mono">{{ handoff.to }}</span>
+      </span>
+      <span
+        v-if="handoff.kind === 'reply' && handoff.outcome != null"
+        class="handoff-card__outcome"
+        :data-tone="tone(handoff.outcome)"
+      >
+        {{ handoff.outcome }}
+      </span>
+      <a
+        class="handoff-card__link mono"
+        :href="`/handoffs?q=${encodeURIComponent(handoff.id)}`"
+        target="_blank"
+        rel="noreferrer noopener"
+        :title="`Open handoff ${handoff.id} in the inbox`"
+      >
+        #{{ handoff.id.slice(0, 8) }}
+      </a>
+    </div>
+    <p class="handoff-card__summary">{{ handoff.summary }}</p>
+    <details v-if="needsDetails" class="handoff-card__details">
+      <summary class="handoff-card__preview">
+        {{ preview || (handoff.direction === "request" ? "Request body" : "Reply body") }}
+      </summary>
+      <MarkdownBlock
+        v-if="handoff.body.length > 0"
+        :text="handoff.body"
+        class="message__body handoff-card__body"
+        sealed
+      />
+      <p v-else class="hint">No handoff body is available yet.</p>
+    </details>
+    <MarkdownBlock
+      v-else-if="handoff.body.length > 0"
+      :text="handoff.body"
+      class="message__body handoff-card__body"
+      sealed
+    />
+    <p v-else class="hint">No handoff body is available yet.</p>
+  </div>
+  <div
+    v-else
     class="handoff-card"
     data-handoff-card
     :data-direction="handoff.direction"

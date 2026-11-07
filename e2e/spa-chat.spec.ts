@@ -612,8 +612,22 @@ test("SPA feed renders markdown tables, reasoning, tools, bash, OMO, handoff, no
   await expect(scroll.locator(".chat-reasoning")).toHaveCount(1);
   await expect(scroll.locator('[data-tool="bash"]')).toContainText("fixture tests passed");
   await expect(scroll.locator("[data-omo-card]")).toContainText("BACKGROUND TASK COMPLETED");
-  await expect(scroll.locator("[data-handoff-card]")).toContainText("Fixture handoff reply");
-  await expect(scroll.locator("[data-handoff-card]")).toContainText("Reviewed in the fixture.");
+  await expect(scroll.locator('[data-handoff-card]:not([data-mode="thread"])')).toContainText(
+    "Fixture handoff reply",
+  );
+  await expect(scroll.locator('[data-handoff-card]:not([data-mode="thread"])')).toContainText(
+    "Reviewed in the fixture.",
+  );
+  const threadCard = scroll.locator('[data-handoff-card][data-mode="thread"]');
+  await expect(threadCard).toHaveCount(1);
+  await expect(threadCard.locator("[data-thread-author]")).toHaveText("alpha");
+  await expect(threadCard.locator("[data-thread-chip]")).toHaveText("Thread");
+  await expect(threadCard.locator("[data-thread-seq]")).toHaveText("#1");
+  await expect(threadCard).toContainText("E2E thread body.");
+  await expect(threadCard).toContainText("E2E thread request");
+  const threadMessage = page.locator('[data-message-id="msg_e2e_render_thread"]');
+  await expect(threadMessage).toHaveClass(/(^|\s)message--handoff(\s|$)/);
+  await expect(threadMessage).not.toHaveClass(/(^|\s)message--user(\s|$)/);
   await expect(scroll).toContainText("Unsupported content: mystery");
   await expect(scroll).toContainText("<script>window.__bad = true</script>");
   expect(

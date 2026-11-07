@@ -9,9 +9,11 @@ import {
   type OpencodeMessage,
   type OpencodeSession,
   type OpencodeSessionStatusMap,
+  rejectQuestion,
+  rejectQuestionV2,
   sendPromptAsync,
 } from "../opencode/client.js";
-import type { HanseEvent } from "../opencode/events.js";
+import type { BoundedQuestionRequest, HanseEvent } from "../opencode/events.js";
 import { COORDINATOR_MCP_NAME } from "../opencode/instance.js";
 import type { ManagedApp } from "../opencode/manager.js";
 import type { AppImageStatus } from "../registry/index.js";
@@ -74,6 +76,8 @@ export interface HandoffDispatcherClient {
   listSessions(endpoint: string): Promise<OpencodeSession[]>;
   listMessages(endpoint: string, sessionId: string): Promise<OpencodeMessage[]>;
   listSessionStatuses(endpoint: string): Promise<OpencodeSessionStatusMap>;
+  rejectQuestion(endpoint: string, requestId: string): Promise<boolean>;
+  rejectQuestionV2(endpoint: string, sessionId: string, requestId: string): Promise<void>;
 }
 
 export interface HandoffDispatcherManager {
@@ -127,6 +131,8 @@ const DEFAULT_CLIENT: HandoffDispatcherClient = {
   listSessions,
   listMessages,
   listSessionStatuses,
+  rejectQuestion,
+  rejectQuestionV2,
 };
 
 type ManagedHandoffTool = "request_sibling_change" | "send_handoff_message" | "deliver_handoff";
@@ -244,6 +250,7 @@ export class HandoffDispatcher {
   readonly #now: () => number;
   readonly #threadLimits: ThreadLimits;
   readonly #seenToolParts = new Set<string>();
+  readonly #seenQuestions = new Set<string>();
   readonly #pendingBindings: ThreadBindingObservation[] = [];
   #timer: ReturnType<typeof setInterval> | undefined;
   #reconcileTimer: ReturnType<typeof setTimeout> | undefined;
@@ -314,6 +321,10 @@ export class HandoffDispatcher {
    * session id that invoked `request_sibling_change`, which is the binding the agent cannot spoof.
    */
   observe(app: { id: string; projectId: string; appKey: string }, event: HanseEvent): void {
+    if (event.type === "question.asked") {
+      this.#observeThreadQuestion(app, event.request);
+      return;
+    }
     if (event.type !== "message.part.updated" || event.partType !== "tool") return;
     const part = event.part;
     const tool = typeof part.tool === "string" ? part.tool : undefined;
@@ -362,6 +373,72 @@ export class HandoffDispatcher {
       sessionId: event.sessionID,
       tool: managedTool,
     });
+  }
+
+  #observeThreadQuestion(app: { id: string }, request: BoundedQuestionRequest): void {
+    const key = `${app.id}:${request.key}`;
+    if (this.#seenQuestions.has(key)) return;
+    rememberBounded(this.#seenQuestions, key);
+    void this.#rejectThreadQuestion(app, request).catch(() => {
+      this.#log(`thread question failed app=${app.id} status=error`);
+    });
+  }
+
+  async #rejectThreadQuestion(app: { id: string }, request: BoundedQuestionRequest): Promise<void> {
+    const log = (status: string): void =>
+      this.#log(
+        `thread question app=${app.id} session=${shortId(request.sessionID)} source=${request.source} status=${status}`,
+      );
+    const endpoint = this.#manager.endpointFor?.(app.id);
+    if (endpoint === undefined) return log("no_endpoint");
+    const resolved = await this.#resolveSessionRoot(app.id, request.sessionID);
+    if (resolved === undefined) return log("unresolved");
+    const root = resolved.rootId;
+    if (this.#isThreadSourceRoot(root)) return log("source");
+    if (!this.#isThreadTargetRoot(root)) return;
+    try {
+      if (request.source === "v2") {
+        await this.#client.rejectQuestionV2(endpoint, request.sessionID, request.id);
+      } else {
+        await this.#client.rejectQuestion(endpoint, request.id);
+      }
+      log("rejected");
+    } catch (error) {
+      const status = error instanceof OpencodeHttpError ? error.status : undefined;
+      log(`${status ?? "error"}`);
+    }
+  }
+
+  async shouldSuppressQuestion(appId: string, sessionId: string): Promise<boolean> {
+    const resolved = await this.#resolveSessionRoot(appId, sessionId);
+    if (resolved === undefined) return false;
+    const root = resolved.rootId;
+    if (this.#isThreadSourceRoot(root)) return false;
+    return this.#isThreadTargetRoot(root);
+  }
+
+  #isThreadSourceRoot(rootId: string): boolean {
+    return (
+      this.#db
+        .prepare(
+          `SELECT 1 FROM handoffs
+           WHERE mode = 'thread' AND state = 'in_progress' AND source_session_id = ?
+           LIMIT 1`,
+        )
+        .get(rootId) !== undefined
+    );
+  }
+
+  #isThreadTargetRoot(rootId: string): boolean {
+    return (
+      this.#db
+        .prepare(
+          `SELECT 1 FROM handoffs
+           WHERE mode = 'thread' AND state = 'in_progress' AND target_session_id = ?
+           LIMIT 1`,
+        )
+        .get(rootId) !== undefined
+    );
   }
 
   #queueBinding(observation: ThreadBindingObservation): void {
@@ -1106,7 +1183,14 @@ export class HandoffDispatcher {
   async #resolveObservedRoot(
     observation: ThreadBindingObservation,
   ): Promise<{ rootId: string; title: string | null } | undefined> {
-    const endpoint = this.#manager.endpointFor?.(observation.appId);
+    return this.#resolveSessionRoot(observation.appId, observation.sessionId);
+  }
+
+  async #resolveSessionRoot(
+    appId: string,
+    sessionId: string,
+  ): Promise<{ rootId: string; title: string | null } | undefined> {
+    const endpoint = this.#manager.endpointFor?.(appId);
     if (endpoint === undefined) return undefined;
     let sessions: OpencodeSession[];
     try {
@@ -1115,7 +1199,7 @@ export class HandoffDispatcher {
       return undefined;
     }
     const byId = new Map(sessions.map((session) => [session.id, session]));
-    let current = byId.get(observation.sessionId);
+    let current = byId.get(sessionId);
     if (current === undefined) return undefined;
     const seen = new Set<string>();
     let depth = 0;
@@ -1585,6 +1669,7 @@ export class HandoffDispatcher {
       '- outcome: "completed" | "blocked" | "failed"',
       "- result: a concise summary of what you changed, verified, or what blocks you.",
       "Do not call send_handoff_message; the target side replies only.",
+      'Do not use the interactive question tool in this thread. If you are blocked, reply with deliver_handoff using outcome "blocked" and put your question in result.',
       "",
       `UNTRUSTED CONTENT BEGIN ${nonce}`,
       `Summary: ${escapeFenceMarkers(capText(handoff.summary, this.#threadLimits.maxSummaryBytes))}`,
@@ -1616,6 +1701,7 @@ export class HandoffDispatcher {
       '- outcome: "completed" | "blocked" | "failed"',
       "- result: a concise summary of what you changed, verified, or what blocks you.",
       "Do not call send_handoff_message; the target side replies only.",
+      'Do not use the interactive question tool in this thread. If you are blocked, reply with deliver_handoff using outcome "blocked" and put your question in result.',
       "",
       `UNTRUSTED CONTENT BEGIN ${nonce}`,
       escapeFenceMarkers(capText(message.body, this.#threadLimits.maxBodyBytes)),

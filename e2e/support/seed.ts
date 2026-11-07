@@ -138,6 +138,23 @@ function renderMessages(): readonly FixtureMessage[] {
     },
     {
       info: {
+        id: "msg_e2e_render_thread",
+        sessionID: session,
+        role: "user",
+        time: { created: createdAt + 2.25 },
+      },
+      parts: [
+        {
+          id: "prt_e2e_render_thread",
+          sessionID: session,
+          messageID: "msg_e2e_render_thread",
+          type: "text",
+          text: "[Hanse handoff thread request]\nE2E thread envelope fixture.",
+        },
+      ],
+    },
+    {
+      info: {
         id: "msg_e2e_render_attachment_file",
         sessionID: session,
         role: "user",
@@ -949,6 +966,34 @@ export function seed(options: SeedOptions = {}): SeedResult {
     summary: "E2E cancel handoff",
     spec: "E2E cancel spec",
   });
+
+  const thread = projectOne.requestSiblingChange({
+    fromAppKey: "alpha",
+    toAppKey: "beta",
+    mode: "thread",
+    summary: "E2E thread request",
+    spec: "E2E thread body.",
+    idempotencyKey: "e2e-thread-render",
+  });
+  transitionHandoff(db, thread.handoffId, "dispatching");
+  transitionHandoff(db, thread.handoffId, "in_progress");
+  updateHandoff(db, thread.handoffId, {
+    sourceSessionId: "ses_e2e_thread_source",
+    targetSessionId: E2E_CHAT_RENDER_SESSION_ID,
+  });
+  if (thread.initialMessage === undefined) {
+    throw new Error("E2E thread fixture is missing its initial message");
+  }
+  db.prepare(
+    `UPDATE handoff_messages
+     SET delivery_session_id = ?, delivery_message_id = ?, state = 'delivered', delivered_at = ?
+     WHERE id = ?`,
+  ).run(
+    E2E_CHAT_RENDER_SESSION_ID,
+    "msg_e2e_render_thread",
+    new Date().toISOString(),
+    thread.initialMessage.id,
+  );
 
   // Dedicated inbox rows for the handoffs spec. Their timestamps are older so the overview's
   // recent-handoffs list and project ordering keep the rows the other specs assert on.

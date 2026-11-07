@@ -6517,6 +6517,21 @@
     margin: 0 0 var(--space-1);
   }
 
+  .handoff-card[data-mode="thread"] {
+    background: var(--surface-1);
+  }
+
+  .handoff-card__author,
+  .handoff-card__seq {
+    color: var(--text-2);
+  }
+
+  .handoff-card[data-mode="thread"] .handoff-card__kind {
+    background: var(--wash-1);
+    border-color: var(--line);
+    color: var(--text-2);
+  }
+
   .omo-card {
     display: flex;
     flex-direction: column;

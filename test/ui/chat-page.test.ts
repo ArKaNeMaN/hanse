@@ -607,4 +607,116 @@ describe("ChatPage read-only shell", () => {
       vi.useRealTimers();
     }
   });
+
+  it("passes thread handoff fields through and extracts a live body without a note", async () => {
+    const threadText = [
+      "[Hanse handoff thread message]",
+      "Thread ID: handoff_thread_1",
+      "",
+      "UNTRUSTED CONTENT BEGIN nonce",
+      "The March totals still disagree by 0.02.",
+      "UNTRUSTED CONTENT END nonce",
+      "",
+      "Operator note (trusted):",
+      "This text must not become a note.",
+    ].join("\n");
+    const { wrapper } = await mountChat("/chat?app=alpha&project=p&session=s1", {
+      messages: [
+        {
+          info: {
+            id: "msg_thread_live",
+            sessionID: "s1",
+            role: "user",
+            hanse: {
+              handoff: {
+                id: "handoff_thread_1",
+                direction: "request",
+                agent: "alpha",
+                from: "alpha",
+                to: "beta",
+                summary: "Reconcile invoice totals",
+                state: "in_progress",
+                outcome: null,
+                replyState: "none",
+                origin: "agent",
+                mode: "thread",
+                kind: "message",
+                authorSide: "source",
+                messageId: 17,
+                seq: 5,
+                operatorNote: "Thread metadata never carries a note.",
+              },
+            },
+          },
+          parts: [
+            {
+              id: "prt_thread_live",
+              sessionID: "s1",
+              messageID: "msg_thread_live",
+              type: "text",
+              text: threadText,
+            },
+          ],
+        },
+      ],
+    });
+    const card = wrapper.get("[data-handoff-card]");
+    expect(card.attributes("data-mode")).toBe("thread");
+    expect(card.attributes("data-kind")).toBe("message");
+    expect(card.attributes("data-seq")).toBe("5");
+    expect(wrapper.get("[data-thread-author]").text()).toBe("alpha");
+    expect(wrapper.get("[data-thread-kind]").text()).toBe("Message");
+    expect(wrapper.get("[data-thread-seq]").text()).toBe("#5");
+    expect(wrapper.get(".handoff-card__body").text()).toContain(
+      "The March totals still disagree by 0.02.",
+    );
+    expect(wrapper.find(".handoff-card__note").exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("prefers a projected thread body over the envelope text", async () => {
+    const { wrapper } = await mountChat("/chat?app=alpha&project=p&session=s1", {
+      messages: [
+        {
+          info: {
+            id: "msg_thread_history",
+            sessionID: "s1",
+            role: "user",
+            hanse: {
+              handoff: {
+                id: "handoff_thread_2",
+                direction: "request",
+                agent: "alpha",
+                from: "alpha",
+                to: "beta",
+                summary: "Reconcile invoice totals",
+                state: "in_progress",
+                outcome: null,
+                replyState: "none",
+                origin: "agent",
+                mode: "thread",
+                kind: "request",
+                authorSide: "source",
+                messageId: 18,
+                seq: 1,
+                body: "Projected history body.",
+              },
+            },
+          },
+          parts: [
+            {
+              id: "prt_thread_history",
+              sessionID: "s1",
+              messageID: "msg_thread_history",
+              type: "text",
+              text: "[Hanse handoff thread start]\nEnvelope body.",
+            },
+          ],
+        },
+      ],
+    });
+    expect(wrapper.get(".handoff-card__body").text()).toContain("Projected history body.");
+    expect(wrapper.get(".handoff-card__body").text()).not.toContain("Envelope body.");
+    wrapper.unmount();
+  });
 });

@@ -592,7 +592,21 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   web search/fetch, and master tools; unknown JSON falls back to pretty-printed JSON instead of a
   raw one-line string. Handoff-dispatcher messages are annotated by the coordinator
   (`info.hanse.handoff`) and render as a sender-agent card with the request/reply body as safe
-  Markdown; they are excluded from the operator queue. Diff highlighting is lazy and open-only: a checked-in
+  Markdown; they are excluded from the operator queue. One-shot card DOM, metadata, projection,
+  prompts, lifecycle, dispatch, and reply remain unchanged.
+  Thread rows project additively: the live resolver checks `handoff_messages.delivery_message_id`
+  first, history uses `delivery_session_id` plus the page ids with thread-first precedence, and the
+  `HandoffCard` thread variant adds a `Thread` badge, author, kind, `#<seq>`, route, reply-only
+  outcome, and an accessible group label with no operator-note block. History carries the DB body;
+  live frames omit it and the client extracts the display body from the thread envelope only when
+  the first non-empty line is a thread marker. Thread identity always comes from server metadata.
+  A target-session question guard auto-rejects `question.asked` v1/v2 (including target subagents)
+  only for an `in_progress` thread target root, with source-first precedence, dedupe, fail-open root
+  resolution, and swallowed 404/409 races. `streamAppEvents` and `/api/apps/:app/prompts` hide those
+  target-root questions when a dispatcher is present, and thread start/follow-up prompts carry the
+  target-only question-ban line. `.handoff-card[data-mode="thread"]` styles use existing tokens.
+  Deferred: thread-management UI/routes, operator-created threads, target-initiated messages,
+  thread attachments, worktree isolation, session reuse, and per-thread agents. Diff highlighting is lazy and open-only: a checked-in
   PrismJS 1.30.0 bundle runs in a module Web Worker with a 250 ms per-stream budget, 8/64 KiB
   language-aware stream caps, a 120k-node page budget, and plain fallback. Diffs are capped at
   64 KiB per file / 128 KiB total / 50 files / 2,000 rendered lines; highlighting is hunk-local and

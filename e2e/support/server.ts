@@ -583,6 +583,9 @@ const dispatcher = {
   cancelReply(handoffId: string) {
     return updateHandoff(fixture.db, handoffId, { replyState: "cancelled", replyError: null });
   },
+  async shouldSuppressQuestion() {
+    return false;
+  },
 } as unknown as HandoffDispatcher;
 
 /** Contract-only deletion: validates the exact name and never removes fixture data. */

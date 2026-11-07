@@ -76,6 +76,11 @@ export interface ChatHandoffView {
   readonly note: string;
   readonly outcome?: "completed" | "blocked" | "failed" | null;
   readonly replyState?: string;
+  readonly mode?: "thread";
+  readonly kind?: "request" | "message" | "reply";
+  readonly authorSide?: "source" | "target";
+  readonly messageId?: number;
+  readonly seq?: number;
 }
 
 export interface ChatMessageView {

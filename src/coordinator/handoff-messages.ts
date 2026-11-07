@@ -1,5 +1,12 @@
 import type { SqliteDatabase } from "../store/index.js";
-import type { HandoffOrigin, HandoffOutcome, HandoffReplyState, HandoffState } from "./handoff.js";
+import type {
+  HandoffMessageAuthorSide,
+  HandoffMessageKind,
+  HandoffOrigin,
+  HandoffOutcome,
+  HandoffReplyState,
+  HandoffState,
+} from "./handoff.js";
 
 /**
  * Chat-facing metadata for a message that the handoff dispatcher injected into an opencode
@@ -24,6 +31,12 @@ export interface HandoffMessageMeta {
   replyState: HandoffReplyState;
   origin: HandoffOrigin;
   operatorNote?: string | null;
+  /** Thread marker. One-shot metadata never sets any of the thread fields below. */
+  mode?: "thread";
+  kind?: "request" | "message" | "reply";
+  authorSide?: "source" | "target";
+  messageId?: number;
+  seq?: number;
 }
 
 /** Structural view of an opencode message; avoids importing the projection module here. */
@@ -125,6 +138,144 @@ function messageMap(
   return result;
 }
 
+interface HandoffThreadMessageRow {
+  message_pk: number;
+  handoff_id: string;
+  kind: HandoffMessageKind;
+  author_side: HandoffMessageAuthorSide;
+  author_app_id: string | null;
+  body: string;
+  outcome: HandoffOutcome | null;
+  seq: number;
+  delivery_message_id: string | null;
+  header_state: HandoffState;
+  header_summary: string;
+  header_origin: HandoffOrigin;
+  header_reply_state: HandoffReplyState;
+  from_app_id: string;
+  to_app_id: string;
+  author_key: string;
+  from_key: string;
+  to_key: string;
+}
+
+type HandoffThreadKind = "request" | "message" | "reply";
+type HandoffThreadSide = "source" | "target";
+
+type ValidHandoffThreadRow = HandoffThreadMessageRow & {
+  kind: HandoffThreadKind;
+  author_side: HandoffThreadSide;
+};
+
+const THREAD_PAGE_CHUNK = 500;
+
+const THREAD_SELECT_COLUMNS = `m.id AS message_pk, m.handoff_id, m.kind, m.author_side,
+  m.author_app_id, m.body, m.outcome, m.seq, m.delivery_message_id,
+  h.state AS header_state, h.summary AS header_summary, h.origin AS header_origin,
+  h.reply_state AS header_reply_state, h.from_app_id, h.to_app_id,
+  COALESCE(
+    a.app_key,
+    CASE m.author_side WHEN 'source' THEN f.app_key ELSE t.app_key END,
+    CASE m.author_side WHEN 'source' THEN h.from_app_id ELSE h.to_app_id END
+  ) AS author_key,
+  COALESCE(f.app_key, h.from_app_id) AS from_key,
+  COALESCE(t.app_key, h.to_app_id) AS to_key`;
+
+const THREAD_SELECT_FROM = `FROM handoff_messages m
+  JOIN handoffs h ON h.id = m.handoff_id
+  LEFT JOIN apps a ON a.id = m.author_app_id
+  LEFT JOIN apps f ON f.id = h.from_app_id
+  LEFT JOIN apps t ON t.id = h.to_app_id`;
+
+const THREAD_SELECT_FILTER = `m.kind IN ('request', 'message', 'reply')
+  AND m.author_side IN ('source', 'target')`;
+
+function isThreadKind(value: HandoffMessageKind): value is HandoffThreadKind {
+  return value === "request" || value === "message" || value === "reply";
+}
+
+function isThreadSide(value: HandoffMessageAuthorSide): value is HandoffThreadSide {
+  return value === "source" || value === "target";
+}
+
+function threadMetaFor(row: ValidHandoffThreadRow, includeBody: boolean): HandoffMessageMeta {
+  const meta: HandoffMessageMeta = {
+    id: row.handoff_id,
+    direction: row.author_side === "target" ? "reply" : "request",
+    agent: row.author_key,
+    from: row.from_key,
+    to: row.to_key,
+    state: row.header_state,
+    summary: boundedSummary(row.header_summary),
+    outcome: row.kind === "reply" ? row.outcome : null,
+    replyState: row.header_reply_state,
+    origin: row.header_origin,
+    mode: "thread",
+    kind: row.kind,
+    authorSide: row.author_side,
+    messageId: row.message_pk,
+    seq: row.seq,
+  };
+  if (includeBody) {
+    meta.body = capUtf8(row.body, BODY_MAX_BYTES);
+  }
+  return meta;
+}
+
+function threadMessageMap(
+  rows: HandoffThreadMessageRow[],
+  includeBody: boolean,
+): Map<string, HandoffMessageMeta> {
+  const result = new Map<string, HandoffMessageMeta>();
+  for (const row of rows) {
+    if (row.delivery_message_id === null) continue;
+    const kind = row.kind;
+    const authorSide = row.author_side;
+    if (!isThreadKind(kind) || !isThreadSide(authorSide)) continue;
+    result.set(
+      row.delivery_message_id,
+      threadMetaFor({ ...row, kind, author_side: authorSide }, includeBody),
+    );
+  }
+  return result;
+}
+
+function threadRowsForSessionPage(
+  db: SqliteDatabase,
+  sessionId: string,
+  messageIds: string[],
+): HandoffThreadMessageRow[] {
+  const rows: HandoffThreadMessageRow[] = [];
+  for (let index = 0; index < messageIds.length; index += THREAD_PAGE_CHUNK) {
+    const chunk = messageIds.slice(index, index + THREAD_PAGE_CHUNK);
+    const placeholders = chunk.map(() => "?").join(", ");
+    const part = db
+      .prepare(
+        `SELECT ${THREAD_SELECT_COLUMNS} ${THREAD_SELECT_FROM}
+         WHERE m.delivery_session_id = ?
+           AND m.delivery_message_id IN (${placeholders})
+           AND ${THREAD_SELECT_FILTER}`,
+      )
+      .all(sessionId, ...chunk) as HandoffThreadMessageRow[];
+    rows.push(...part);
+  }
+  return rows;
+}
+
+function threadRowForDelivery(
+  db: SqliteDatabase,
+  messageId: string,
+): HandoffThreadMessageRow | undefined {
+  return db
+    .prepare(
+      `SELECT ${THREAD_SELECT_COLUMNS} ${THREAD_SELECT_FROM}
+       WHERE m.delivery_message_id = ?
+         AND ${THREAD_SELECT_FILTER}
+       LIMIT 1`,
+    )
+    .get(messageId) as HandoffThreadMessageRow | undefined;
+}
+
 /**
  * Annotate a page of chat history in place with `info.hanse.handoff` for dispatcher-inserted
  * messages. Messages whose id does not match a stored handoff message are left untouched.
@@ -144,10 +295,19 @@ export function projectHandoffMessages(
     )
     .all(sessionId, sessionId, sessionId) as HandoffMessageRow[];
   if (rows.length === 0) return;
-  const byMessage = messageMap(rows, options.includeBody !== false);
+  const includeBody = options.includeBody !== false;
+  const oneShotMap = messageMap(rows, includeBody);
+  const threadMap = threadMessageMap(
+    threadRowsForSessionPage(
+      db,
+      sessionId,
+      Array.from(new Set(messages.map((message) => message.info.id))),
+    ),
+    includeBody,
+  );
   for (const message of messages) {
     if (message.info.role !== "user") continue;
-    const meta = byMessage.get(message.info.id);
+    const meta = threadMap.get(message.info.id) ?? oneShotMap.get(message.info.id);
     if (meta === undefined) continue;
     const existing =
       typeof message.info.hanse === "object" &&
@@ -171,13 +331,18 @@ export function createHandoffEventResolver(db: SqliteDatabase): HandoffEventReso
       if (messageId.length === 0) return undefined;
       const cached = cache.get(messageId);
       if (cached !== undefined) return cached;
-      const rows = db
-        .prepare(
-          `SELECT ${SELECT_COLUMNS} ${SELECT_JOINS}
-           WHERE h.dispatch_message_id = ? OR h.reply_message_id = ?`,
-        )
-        .all(messageId, messageId) as HandoffMessageRow[];
-      const meta = messageMap(rows, false).get(messageId);
+      const threadRow = threadRowForDelivery(db, messageId);
+      let meta =
+        threadRow === undefined ? undefined : threadMessageMap([threadRow], false).get(messageId);
+      if (meta === undefined) {
+        const rows = db
+          .prepare(
+            `SELECT ${SELECT_COLUMNS} ${SELECT_JOINS}
+             WHERE h.dispatch_message_id = ? OR h.reply_message_id = ?`,
+          )
+          .all(messageId, messageId) as HandoffMessageRow[];
+        meta = messageMap(rows, false).get(messageId);
+      }
       if (meta === undefined) return undefined;
       cache.set(messageId, meta);
       if (cache.size > RESOLVER_CACHE_LIMIT) {

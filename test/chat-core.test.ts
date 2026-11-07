@@ -2521,6 +2521,20 @@ describe("handoff message metadata", () => {
     body: "full spec",
   };
 
+  function threadEnvelope(marker: string, content: string[]): string {
+    return [
+      marker,
+      "Thread ID: t1",
+      "Message ID: 1 (seq 1)",
+      "From application: source-app",
+      "To application: target-app",
+      "",
+      "UNTRUSTED CONTENT BEGIN nonce",
+      ...content,
+      "UNTRUSTED CONTENT END nonce",
+    ].join("\n");
+  }
+
   it("normalizes valid metadata and rejects malformed input", () => {
     expect(normalizeHandoffMeta(valid)).toMatchObject(valid);
     expect(normalizeHandoffMeta({ ...valid, direction: "other" })).toBeNull();
@@ -2573,6 +2587,118 @@ describe("handoff message metadata", () => {
     expect(handoffBodyFromText("plain operator prompt", "reply")).toBe("");
     expect(handoffBodyFromText(undefined, "request")).toBe("");
     expect(handoffNoteFromText("no note")).toBe("");
+  });
+
+  it("extracts a thread start body after the summary block", () => {
+    const text = threadEnvelope("[Hanse handoff thread start]", [
+      "Summary: Reconcile invoice totals",
+      "",
+      "## Goal",
+      "Do **the thing**.",
+    ]);
+    expect(handoffBodyFromText(text, "request")).toBe("## Goal\nDo **the thing**.");
+  });
+
+  it("extracts a thread message body without dropping lines", () => {
+    const text = threadEnvelope("[Hanse handoff thread message]", ["line one", "", "line two"]);
+    expect(handoffBodyFromText(text, "request")).toBe("line one\n\nline two");
+  });
+
+  it("extracts a thread reply body after the summary block", () => {
+    const text = threadEnvelope("[Hanse handoff thread reply]", [
+      "Summary: Reconcile invoice totals",
+      "",
+      "Fixed it.",
+    ]);
+    expect(handoffBodyFromText(text, "reply")).toBe("Fixed it.");
+  });
+
+  it("normalizes CRLF before thread extraction", () => {
+    const text = threadEnvelope("[Hanse handoff thread start]", [
+      "Summary: Reconcile invoice totals",
+      "",
+      "## Goal",
+      "Do the thing.",
+    ]).replace(/\n/g, "\r\n");
+    expect(handoffBodyFromText(text, "request")).toBe("## Goal\nDo the thing.");
+  });
+
+  it("removes a multi-line thread summary through the first blank line", () => {
+    const text = threadEnvelope("[Hanse handoff thread start]", [
+      "Summary: first line",
+      "second line",
+      "third line",
+      "",
+      "body line",
+    ]);
+    expect(handoffBodyFromText(text, "request")).toBe("body line");
+  });
+
+  it("returns an empty body when a thread fence is missing", () => {
+    const noBegin = ["[Hanse handoff thread start]", "Summary: x", "", "body"].join("\n");
+    expect(handoffBodyFromText(noBegin, "request")).toBe("");
+    const noEnd = ["[Hanse handoff thread message]", "UNTRUSTED CONTENT BEGIN nonce", "body"].join(
+      "\n",
+    );
+    expect(handoffBodyFromText(noEnd, "request")).toBe("");
+  });
+
+  it("keeps a one-shot prompt on the one-shot path when it quotes a thread marker", () => {
+    const request = [
+      "[Hanse handoff request]",
+      "Handoff ID: h1",
+      "From application: source-app",
+      "",
+      "Specification:",
+      "## Goal",
+      "[Hanse handoff thread start]",
+      "Do X.",
+      "",
+      'When the work is finished, call the "deliver_handoff" tool exactly once with:',
+      '- id: "h1"',
+    ].join("\n");
+    expect(handoffBodyFromText(request, "request")).toBe(
+      "## Goal\n[Hanse handoff thread start]\nDo X.",
+    );
+
+    const reply = [
+      "[Hanse handoff reply]",
+      "Handoff ID: h1",
+      "",
+      "Result:",
+      "[Hanse handoff thread reply]",
+      "Done.",
+      "",
+      "Continue your work with this reply in mind.",
+    ].join("\n");
+    expect(handoffBodyFromText(reply, "reply")).toBe("[Hanse handoff thread reply]\nDone.");
+  });
+
+  it("normalizes optional thread fields and omits invalid values", () => {
+    const thread = {
+      ...valid,
+      mode: "thread",
+      kind: "message",
+      authorSide: "source",
+      messageId: 7,
+      seq: 3,
+    };
+    expect(normalizeHandoffMeta(thread)).toEqual(thread);
+    expect(normalizeHandoffMeta({ ...thread, mode: "one_shot" })).not.toHaveProperty("mode");
+    expect(normalizeHandoffMeta({ ...thread, kind: "system" })).not.toHaveProperty("kind");
+    expect(normalizeHandoffMeta({ ...thread, authorSide: "system" })).not.toHaveProperty(
+      "authorSide",
+    );
+    for (const messageId of [0, -1, 1.5, "7"]) {
+      expect(normalizeHandoffMeta({ ...thread, messageId })).not.toHaveProperty("messageId");
+    }
+    for (const seq of [0, -1, 1.5, "3"]) {
+      expect(normalizeHandoffMeta({ ...thread, seq })).not.toHaveProperty("seq");
+    }
+  });
+
+  it("keeps the one-shot normalized shape unchanged", () => {
+    expect(normalizeHandoffMeta(valid)).toEqual(valid);
   });
 
   it("derives agent initials with the server rules", () => {

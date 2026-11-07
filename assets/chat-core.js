@@ -1360,6 +1360,11 @@ function mergeOptimisticRecord(server, local) {
  * @property {string} [replyState]
  * @property {"agent" | "operator"} [origin]
  * @property {string | null} [operatorNote]
+ * @property {"thread"} [mode]
+ * @property {"request" | "message" | "reply"} [kind]
+ * @property {"source" | "target"} [authorSide]
+ * @property {number} [messageId]
+ * @property {number} [seq]
  */
 
 const HANDOFF_KEY_MAX = 200;
@@ -1406,6 +1411,15 @@ export function normalizeHandoffMeta(value) {
   if (value.origin === "agent" || value.origin === "operator") meta.origin = value.origin;
   const operatorNote = boundedNullableString(value.operatorNote, HANDOFF_NOTE_MAX);
   if (operatorNote !== undefined) meta.operatorNote = operatorNote;
+  if (value.mode === "thread") meta.mode = "thread";
+  if (value.kind === "request" || value.kind === "message" || value.kind === "reply") {
+    meta.kind = value.kind;
+  }
+  if (value.authorSide === "source" || value.authorSide === "target") {
+    meta.authorSide = value.authorSide;
+  }
+  if (Number.isInteger(value.messageId) && value.messageId > 0) meta.messageId = value.messageId;
+  if (Number.isInteger(value.seq) && value.seq > 0) meta.seq = value.seq;
   return meta;
 }
 
@@ -1422,10 +1436,49 @@ export function handoffFromInfo(info) {
   return normalizeHandoffMeta(hanse.handoff);
 }
 
+const THREAD_START_MARKER = "[Hanse handoff thread start]";
+const THREAD_MESSAGE_MARKER = "[Hanse handoff thread message]";
+const THREAD_REPLY_MARKER = "[Hanse handoff thread reply]";
+const THREAD_FENCE_BEGIN = /^UNTRUSTED CONTENT BEGIN \S+$/;
+const THREAD_FENCE_END = /^UNTRUSTED CONTENT END \S+$/;
+
+function firstNonEmptyLine(source) {
+  for (const line of source.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed.length > 0) return trimmed;
+  }
+  return "";
+}
+
+function threadFenceLines(source) {
+  const lines = source.split("\n");
+  let begin = -1;
+  for (let index = 0; index < lines.length; index += 1) {
+    if (begin < 0) {
+      if (THREAD_FENCE_BEGIN.test(lines[index])) begin = index;
+      continue;
+    }
+    if (THREAD_FENCE_END.test(lines[index])) {
+      return lines.slice(begin + 1, index);
+    }
+  }
+  return null;
+}
+
+function dropThreadSummary(lines) {
+  let index = 0;
+  while (index < lines.length && lines[index].trim().length === 0) index += 1;
+  if (index >= lines.length || !lines[index].startsWith("Summary:")) return lines;
+  index += 1;
+  while (index < lines.length && lines[index].trim().length !== 0) index += 1;
+  while (index < lines.length && lines[index].trim().length === 0) index += 1;
+  return lines.slice(index);
+}
+
 /**
  * Extract the human body from a dispatcher-generated handoff prompt. The envelopes are stable
- * (`[Hanse handoff request]` / `[Hanse handoff reply]`); this is the live-event fallback because
- * typed events carry only lightweight handoff metadata.
+ * (`[Hanse handoff request]` / `[Hanse handoff reply]` / the thread markers); this is the
+ * live-event fallback because typed events carry only lightweight handoff metadata.
  *
  * @param {string} text
  * @param {"request" | "reply"} direction
@@ -1434,6 +1487,17 @@ export function handoffFromInfo(info) {
 export function handoffBodyFromText(text, direction) {
   const source = typeof text === "string" ? text.replace(/\r\n?/g, "\n") : "";
   if (source.length === 0) return "";
+  const firstLine = firstNonEmptyLine(source);
+  if (
+    firstLine === THREAD_START_MARKER ||
+    firstLine === THREAD_MESSAGE_MARKER ||
+    firstLine === THREAD_REPLY_MARKER
+  ) {
+    const fenced = threadFenceLines(source);
+    if (fenced === null) return "";
+    const lines = firstLine === THREAD_MESSAGE_MARKER ? fenced : dropThreadSummary(fenced);
+    return lines.join("\n").trim();
+  }
   if (direction === "request") {
     const marker = "\nSpecification:\n";
     const start = source.indexOf(marker);

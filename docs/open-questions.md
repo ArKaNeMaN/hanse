@@ -1,5 +1,28 @@
 # Open questions
 
+> Stage: `0035-thread-chat-rendering`. Owner decisions were collected on 2026-11-06. There are no
+> open items for this stage.
+
+## Stage `0035-thread-chat-rendering` - resolved owner decisions
+
+1. **Rendering** - thread messages appear in chat as messages from the sending agent, with a
+   subtle visual distinction from operator input. Use the existing handoff card vocabulary and a
+   `Thread` marker; do not add a separate thread-management UI.
+2. **Question ban** - agent-to-agent interactive questions are forbidden, not merely discouraged.
+   The coordinator auto-rejects the interactive question tool in thread target sessions; source and
+   operator sessions keep their question flow.
+3. **Operator surface** - operator-created threads/handoffs are not needed. The operator writes
+   directly in chat; no operator thread creation, close, retry, relaunch, retarget, or list.
+4. **Sessions** - keep a fresh target session per thread; do not reuse or share sessions between
+   threads.
+5. **Future work** - target-initiated messages and attachments through handoffs/threads are future
+   work; worktree isolation is a separate future plan. Neither is part of this stage.
+6. **One-shot compatibility** - one-shot handoff cards, projection, prompts, and lifecycle remain
+   unchanged; thread metadata and rendering are additive.
+7. **Design review** - `oracle` PASS after blocker fixes (thread-marker first-line gate, mandatory
+   `test:e2e`, `{rootId,title}` guard shape). Plan: `docs/plans/0035-thread-chat-rendering.md`
+   (`momus` PASS).
+
 > Stage: `0034-handoff-threads`. Owner decisions were collected on 2026-11-06, before the design
 > was written. There are no open items for this stage.
 

@@ -58,6 +58,8 @@ interface Fixture {
     sendPromptAsync: ReturnType<typeof vi.fn>;
     listMessages: ReturnType<typeof vi.fn>;
     listSessionStatuses: ReturnType<typeof vi.fn>;
+    rejectQuestion: ReturnType<typeof vi.fn>;
+    rejectQuestionV2: ReturnType<typeof vi.fn>;
   };
   prompts: Prompt[];
   ensured: string[];
@@ -118,6 +120,8 @@ function fixture(
     ),
     listMessages: vi.fn(async () => []),
     listSessionStatuses: vi.fn(async (endpoint: string) => statuses.get(endpoint) ?? {}),
+    rejectQuestion: vi.fn(async () => true),
+    rejectQuestionV2: vi.fn(async () => undefined),
   };
   const manager = {
     ensure: vi.fn(async (app: ManagedApp) => {
@@ -265,6 +269,36 @@ function replyEvent(
   return threadEvent("deliver_handoff", delivered, sessionId, `reply_${delivered.message.id}`);
 }
 
+const QUESTION_BAN_LINE =
+  'Do not use the interactive question tool in this thread. If you are blocked, reply with deliver_handoff using outcome "blocked" and put your question in result.';
+
+function questionEvent(
+  sessionId: string,
+  options: { source?: "v1" | "v2"; id?: string; key?: string; text?: string } = {},
+): HanseEvent {
+  const source = options.source ?? "v1";
+  const id = options.id ?? "q1";
+  return {
+    type: "question.asked",
+    request: {
+      key: options.key ?? `${source}:${id}`,
+      id,
+      sessionID: sessionId,
+      questions: [
+        {
+          header: "Question",
+          question: options.text ?? "Which option?",
+          options: [],
+          multiple: false,
+          custom: false,
+        },
+      ],
+      source,
+      tooLarge: false,
+    },
+  } as HanseEvent;
+}
+
 async function boundThread(f: Fixture, overrides: Record<string, unknown> = {}): Promise<string> {
   const result = startThread(f, overrides);
   f.dispatcher.observe(appA, initialEvent(result));
@@ -331,6 +365,7 @@ describe("handoff dispatcher", () => {
       'When the work is finished, call the "deliver_handoff" tool exactly once with:',
     );
     expect(dispatch).not.toContain("[Hanse handoff thread");
+    expect(dispatch).not.toContain(QUESTION_BAN_LINE);
 
     f.service.deliverHandoff(id, "done", "completed", "b");
     await f.dispatcher.tickNow();
@@ -342,6 +377,7 @@ describe("handoff dispatcher", () => {
     expect(reply).toContain("Outcome: completed");
     expect(reply).toContain("Result:\ndone");
     expect(reply).not.toContain("[Hanse handoff thread");
+    expect(reply).not.toContain(QUESTION_BAN_LINE);
   });
 
   it("routes the target reply back into the source session", async () => {
@@ -1066,11 +1102,12 @@ describe("handoff thread lifecycle", () => {
   it("garbage-collects terminal threads in bounded batches and leaves one-shot rows", async () => {
     const f = fixture({ threadLimits: { terminalRetentionMs: 1000, gcBatch: 1 } });
     const old = new Date(Date.now() - 60_000).toISOString();
+    const older = new Date(Date.now() - 61_000).toISOString();
     const first = startThread(f, { idempotencyKey: "gc-first" }).handoffId;
     const second = startThread(f, { idempotencyKey: "gc-second" }).handoffId;
     f.db
       .prepare("UPDATE handoffs SET state = 'cancelled', updated_at = ? WHERE id = ?")
-      .run(old, first);
+      .run(older, first);
     f.db
       .prepare("UPDATE handoffs SET state = 'failed', updated_at = ? WHERE id = ?")
       .run(old, second);
@@ -1131,5 +1168,235 @@ describe("handoff thread lifecycle", () => {
     expect(joined).not.toContain("secret-token");
     expect(joined).not.toContain("do-not-log");
     expect(getHandoff(f.db, handoffId)?.state).toBe("in_progress");
+  });
+});
+
+describe("handoff thread question guard", () => {
+  it("rejects a v2 target-root question once with the observed session", async () => {
+    const f = fixture();
+    await boundThread(f);
+
+    f.dispatcher.observe(appB, questionEvent("ses_1", { source: "v2" }));
+
+    await vi.waitFor(() => expect(f.client.rejectQuestionV2).toHaveBeenCalledTimes(1));
+    expect(f.client.rejectQuestionV2).toHaveBeenCalledWith("http://b.test", "ses_1", "q1");
+    expect(f.client.rejectQuestion).not.toHaveBeenCalled();
+  });
+
+  it("rejects a v1 target-root question once with the request id", async () => {
+    const f = fixture();
+    await boundThread(f);
+
+    f.dispatcher.observe(appB, questionEvent("ses_1", { source: "v1" }));
+
+    await vi.waitFor(() => expect(f.client.rejectQuestion).toHaveBeenCalledTimes(1));
+    expect(f.client.rejectQuestion).toHaveBeenCalledWith("http://b.test", "q1");
+    expect(f.client.rejectQuestionV2).not.toHaveBeenCalled();
+  });
+
+  it("resolves a target subagent to its root and keeps the observed session for v2", async () => {
+    const f = fixture();
+    await boundThread(f);
+    f.sessions.set("http://b.test", [
+      ...(f.sessions.get("http://b.test") ?? []),
+      { id: "ses_child", parentID: "ses_1", title: "Child" },
+    ]);
+
+    f.dispatcher.observe(appB, questionEvent("ses_child", { source: "v2", id: "q_child" }));
+
+    await vi.waitFor(() => expect(f.client.rejectQuestionV2).toHaveBeenCalledTimes(1));
+    expect(f.client.rejectQuestionV2).toHaveBeenCalledWith("http://b.test", "ses_child", "q_child");
+    expect(f.client.rejectQuestion).not.toHaveBeenCalled();
+  });
+
+  it("never rejects a source root and prefers source over target on overlap", async () => {
+    const logs: string[] = [];
+    const f = fixture({ logger: (message) => logs.push(message) });
+    const handoffId = await boundThread(f);
+
+    f.dispatcher.observe(appA, questionEvent("ses_source", { source: "v2" }));
+    await vi.waitFor(() =>
+      expect(logs).toContain("thread question app=p:a session=ses_sour source=v2 status=source"),
+    );
+
+    updateHandoff(f.db, handoffId, { sourceSessionId: "ses_1" });
+    f.dispatcher.observe(appB, questionEvent("ses_1", { source: "v2" }));
+    await vi.waitFor(() =>
+      expect(logs).toContain("thread question app=p:b session=ses_1 source=v2 status=source"),
+    );
+
+    expect(f.client.rejectQuestion).not.toHaveBeenCalled();
+    expect(f.client.rejectQuestionV2).not.toHaveBeenCalled();
+  });
+
+  it("does not reject operator, unrelated, terminal, one-shot, or permission events", async () => {
+    const f = fixture();
+    const threadId = await boundThread(f);
+    f.sessions.set("http://b.test", [
+      ...(f.sessions.get("http://b.test") ?? []),
+      { id: "ses_other", title: "Other" },
+    ]);
+
+    let before = f.client.listSessions.mock.calls.length;
+    f.dispatcher.observe(appB, questionEvent("ses_other", { id: "q_other" }));
+    await vi.waitFor(() => expect(f.client.listSessions.mock.calls.length).toBeGreaterThan(before));
+
+    updateHandoff(f.db, threadId, { state: "delivered" });
+    before = f.client.listSessions.mock.calls.length;
+    f.dispatcher.observe(appB, questionEvent("ses_1", { id: "q_terminal" }));
+    await vi.waitFor(() => expect(f.client.listSessions.mock.calls.length).toBeGreaterThan(before));
+
+    const oneShot = await createBound(f);
+    const oneShotTarget = getHandoff(f.db, oneShot)?.targetSessionId ?? "ses_1";
+    before = f.client.listSessions.mock.calls.length;
+    f.dispatcher.observe(appB, questionEvent(oneShotTarget, { id: "q_oneshot" }));
+    await vi.waitFor(() => expect(f.client.listSessions.mock.calls.length).toBeGreaterThan(before));
+
+    const permissionEvent = {
+      type: "permission.asked",
+      request: {
+        key: "v1:p1",
+        id: "p1",
+        sessionID: "ses_1",
+        permission: "bash",
+        patterns: ["ls*"],
+        metadata: {},
+        always: ["ls*"],
+        source: "v1",
+      },
+    } as HanseEvent;
+    f.dispatcher.observe(appB, permissionEvent);
+    await Promise.resolve();
+
+    expect(f.client.rejectQuestion).not.toHaveBeenCalled();
+    expect(f.client.rejectQuestionV2).not.toHaveBeenCalled();
+  });
+
+  it("deduplicates one question key", async () => {
+    const f = fixture();
+    await boundThread(f);
+    const event = questionEvent("ses_1", { source: "v2" });
+
+    f.dispatcher.observe(appB, event);
+    f.dispatcher.observe(appB, event);
+
+    await vi.waitFor(() => expect(f.client.rejectQuestionV2).toHaveBeenCalledTimes(1));
+    await Promise.resolve();
+    expect(f.client.rejectQuestionV2).toHaveBeenCalledTimes(1);
+  });
+
+  it("swallows 404 and 409 reject responses without retrying", async () => {
+    const logs: string[] = [];
+    const f = fixture({ logger: (message) => logs.push(message) });
+    f.client.rejectQuestion.mockRejectedValueOnce(
+      new OpencodeHttpError("/question/q1/reject", 404, "gone"),
+    );
+    await boundThread(f);
+
+    f.dispatcher.observe(appB, questionEvent("ses_1", { source: "v1" }));
+    await vi.waitFor(() =>
+      expect(logs).toContain("thread question app=p:b session=ses_1 source=v1 status=404"),
+    );
+
+    f.client.rejectQuestionV2.mockRejectedValueOnce(
+      new OpencodeHttpError("/question/q1/reject", 409, "answered"),
+    );
+    f.dispatcher.observe(appB, questionEvent("ses_1", { source: "v2", id: "q2" }));
+    await vi.waitFor(() =>
+      expect(logs).toContain("thread question app=p:b session=ses_1 source=v2 status=409"),
+    );
+
+    expect(f.client.rejectQuestion).toHaveBeenCalledTimes(1);
+    expect(f.client.rejectQuestionV2).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails open on an unresolved endpoint or root with one bounded warning", async () => {
+    const logs: string[] = [];
+    const f = fixture({ logger: (message) => logs.push(message) });
+    await boundThread(f);
+
+    f.manager.endpointFor.mockReturnValue(undefined);
+    f.dispatcher.observe(appB, questionEvent("ses_1", { source: "v2" }));
+    await vi.waitFor(() =>
+      expect(logs).toContain("thread question app=p:b session=ses_1 source=v2 status=no_endpoint"),
+    );
+
+    f.manager.endpointFor.mockImplementation(
+      (appId: string) => `http://${appId.split(":").pop()}.test`,
+    );
+    f.dispatcher.observe(appB, questionEvent("ses_missing", { source: "v2", id: "q3" }));
+    await vi.waitFor(() =>
+      expect(logs).toContain(
+        "thread question app=p:b session=ses_miss source=v2 status=unresolved",
+      ),
+    );
+
+    expect(f.client.rejectQuestion).not.toHaveBeenCalled();
+    expect(f.client.rejectQuestionV2).not.toHaveBeenCalled();
+    const questionLogs = logs.filter((message) => message.startsWith("thread question"));
+    expect(questionLogs).toHaveLength(2);
+  });
+
+  it("logs only fixed metadata and never question or request details", async () => {
+    const logs: string[] = [];
+    const f = fixture({ logger: (message) => logs.push(message) });
+    const secret = "never-log-this-question";
+    const sessionId = "ses_target_long_value";
+    const handoffId = await boundThread(f);
+    updateHandoff(f.db, handoffId, { targetSessionId: sessionId });
+    f.sessions.set("http://b.test", [{ id: sessionId, title: "Target" }]);
+
+    f.dispatcher.observe(
+      appB,
+      questionEvent(sessionId, { source: "v2", id: "secret_request_id", text: secret }),
+    );
+
+    await vi.waitFor(() => expect(f.client.rejectQuestionV2).toHaveBeenCalledTimes(1));
+    const joined = logs.join("\n");
+    expect(joined).toContain("thread question app=p:b");
+    expect(joined).toContain("session=ses_targ");
+    expect(joined).toContain("source=v2");
+    expect(joined).toContain("status=rejected");
+    expect(joined).not.toContain(sessionId);
+    expect(joined).not.toContain("secret_request_id");
+    expect(joined).not.toContain(secret);
+  });
+
+  it("suppresses only in-progress thread target roots", async () => {
+    const f = fixture();
+    const handoffId = await boundThread(f);
+
+    await expect(f.dispatcher.shouldSuppressQuestion("p:b", "ses_1")).resolves.toBe(true);
+    await expect(f.dispatcher.shouldSuppressQuestion("p:a", "ses_source")).resolves.toBe(false);
+    await expect(f.dispatcher.shouldSuppressQuestion("p:b", "ses_missing")).resolves.toBe(false);
+
+    updateHandoff(f.db, handoffId, { state: "delivered" });
+    await expect(f.dispatcher.shouldSuppressQuestion("p:b", "ses_1")).resolves.toBe(false);
+  });
+
+  it("adds the question ban to start and follow-up prompts only", async () => {
+    const f = fixture();
+    const handoffId = await boundThread(f);
+    const start = f.prompts[0]?.text ?? "";
+    expect(start).toContain("[Hanse handoff thread start]");
+    expect(start).toContain(QUESTION_BAN_LINE);
+
+    const followUp = f.service.sendThreadMessage(handoffId, "follow up", undefined, "a");
+    f.dispatcher.observe(appA, sendEvent(handoffId, followUp.message));
+    await f.dispatcher.tickNow();
+    const followUpPrompt = f.prompts.at(-1)?.text ?? "";
+    expect(followUpPrompt).toContain("[Hanse handoff thread message]");
+    expect(followUpPrompt).toContain(QUESTION_BAN_LINE);
+
+    const initial = listHandoffMessages(f.db, handoffId)[0];
+    const reply = f.service.deliverHandoff(handoffId, "done", "completed", "b", {
+      replyTo: initial?.id,
+    });
+    if (!("message" in reply)) throw new Error("expected thread reply");
+    f.dispatcher.observe(appB, replyEvent(reply, "ses_1"));
+    await f.dispatcher.tickNow();
+    const replyPrompt = f.prompts.at(-1)?.text ?? "";
+    expect(replyPrompt).toContain("[Hanse handoff thread reply]");
+    expect(replyPrompt).not.toContain(QUESTION_BAN_LINE);
   });
 });
