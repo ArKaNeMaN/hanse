@@ -185,6 +185,8 @@ export interface OpencodeMessageReadOptions extends OpencodeRequestOptions {
   onParsed?: (messages: OpencodeMessage[]) => void;
   /** Projection applied after parse and before the caller sees the messages. */
   project?: MessageProjector;
+  /** Override the shared budget wait (interactive reads wait longer than background checks). */
+  budgetWaitMs?: number;
 }
 
 export const OPENCODE_READ_TIMEOUT_MS = 5_000;
@@ -197,6 +199,8 @@ export const OPENCODE_MAX_BODY_BYTES = 1024 * 1024;
 export const MESSAGES_RESPONSE_MAX_BYTES = 8 * 1024 * 1024;
 /** Raw history cap; the fallback path may read one message at a time above this. */
 export const MESSAGES_HISTORY_MAX_BYTES = 48 * 1024 * 1024;
+/** A single-message "is this session empty?" probe; a larger message already proves it is not. */
+export const MESSAGES_EMPTY_CHECK_MAX_BYTES = 512 * 1024;
 export const MESSAGES_RESPONSE_TIMEOUT_MS = 30_000;
 export const BLOCKING_RESPONSE_MAX_BYTES = 8 * 1024 * 1024;
 export const PROVIDERS_RESPONSE_MAX_BYTES = 4 * 1024 * 1024;
@@ -507,9 +511,10 @@ export async function getMessage(
 async function withHistoryBudget<T>(
   path: string,
   maxBytes: number,
+  waitMs: number | undefined,
   read: () => Promise<T>,
 ): Promise<T> {
-  const release = await historyReadBudget.acquire(maxBytes * 4);
+  const release = await historyReadBudget.acquire(maxBytes * 4, waitMs);
   if (release === undefined) {
     throw new OpencodeHttpError(path, 0, "history read budget exhausted", "history_busy");
   }
@@ -535,7 +540,7 @@ export async function listMessages(
 ): Promise<OpencodeMessage[]> {
   const path = `/session/${encodeURIComponent(sessionId)}/message`;
   const maxBytes = options?.maxBytes ?? MESSAGES_HISTORY_MAX_BYTES;
-  return withHistoryBudget(path, maxBytes, async () => {
+  return withHistoryBudget(path, maxBytes, options?.budgetWaitMs, async () => {
     const response = await requestResponse(
       endpoint,
       path,
@@ -558,7 +563,7 @@ export async function listMessagePage(
   if (options.before !== undefined) params.set("before", options.before);
   const path = `/session/${encodeURIComponent(sessionId)}/message?${params.toString()}`;
   const maxBytes = options.maxBytes ?? MESSAGES_HISTORY_MAX_BYTES;
-  return withHistoryBudget(path, maxBytes, async () => {
+  return withHistoryBudget(path, maxBytes, options.budgetWaitMs, async () => {
     const response = await requestResponse(
       endpoint,
       path,

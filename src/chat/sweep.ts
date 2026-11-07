@@ -6,6 +6,7 @@ import {
   deleteSession,
   getSession,
   listMessagePage,
+  MESSAGES_EMPTY_CHECK_MAX_BYTES,
   OpencodeHttpError,
 } from "../opencode/client.js";
 import { SessionNoticeStore, SessionResumeStore } from "../opencode/recovery.js";
@@ -222,6 +223,7 @@ export class ChatSweep {
       try {
         const page = await listMessagePage(endpoint, candidate.sessionId, {
           limit: 1,
+          maxBytes: MESSAGES_EMPTY_CHECK_MAX_BYTES,
           timeoutMs: SWEEP_EMPTY_CHECK_TIMEOUT_MS,
         });
         if (page.messages.length > 0) return;

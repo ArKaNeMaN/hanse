@@ -438,6 +438,37 @@ describe("read budgets and frames", () => {
     second?.();
   });
 
+  it("honours a per-call wait longer than the instance default", async () => {
+    const budget = new HistoryReadBudget(100, 5);
+    const held = await budget.acquire(100);
+    const waiting = budget.acquire(10, 100);
+    setTimeout(() => held?.(), 30);
+    const release = await waiting;
+    expect(release).toBeTypeOf("function");
+    release?.();
+  });
+
+  it("admits a smaller waiter past a larger one that does not fit", async () => {
+    const budget = new HistoryReadBudget(100, 500);
+    const first = await budget.acquire(60);
+    const second = await budget.acquire(40);
+    const large = budget.acquire(100);
+    const small = budget.acquire(30);
+    second?.();
+    const smallRelease = await small;
+    expect(smallRelease).toBeTypeOf("function");
+    let largeResolved = false;
+    void large.then((release) => {
+      largeResolved = true;
+      release?.();
+    });
+    await Promise.resolve();
+    expect(largeResolved).toBe(false);
+    smallRelease?.();
+    first?.();
+    await large;
+  });
+
   it("admits a 31.9 MiB frame and drops a 32.1 MiB frame", () => {
     const accepted = new SseParser({ maxFrameBytes: APP_STREAM_MAX_FRAME_BYTES });
     const below = `data: ${"x".repeat(31.9 * 1024 * 1024)}\n\n`;

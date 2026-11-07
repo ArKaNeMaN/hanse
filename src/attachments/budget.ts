@@ -9,6 +9,8 @@
 
 export const HISTORY_READ_BUDGET_BYTES = 192 * 1024 * 1024;
 export const HISTORY_READ_WAIT_MS = 2_000;
+/** Interactive history reads (chat page/hydration) may wait longer than background checks. */
+export const HISTORY_READ_INTERACTIVE_WAIT_MS = 10_000;
 export const APP_STREAM_FRAME_BUDGET_BYTES = 32 * 1024 * 1024;
 export const APP_STREAM_HEAP_MULTIPLIER = 3;
 export const BLOCKING_RESPONSE_BUDGET_BYTES = 32 * 1024 * 1024;
@@ -56,8 +58,11 @@ export class HistoryReadBudget {
     return this.#waiters.length;
   }
 
-  /** Reserve `bytes`, or wait up to `waitMs` for room. Returns undefined on timeout. */
-  async acquire(bytes: number): Promise<(() => void) | undefined> {
+  /**
+   * Reserve `bytes`, or wait up to `waitMs` (defaulting to the constructor value) for room.
+   * Returns undefined on timeout.
+   */
+  async acquire(bytes: number, waitMs = this.#waitMs): Promise<(() => void) | undefined> {
     if (this.#disposed) return undefined;
     const amount = Math.max(0, bytes);
     if (amount > this.#limit) return undefined;
@@ -69,10 +74,13 @@ export class HistoryReadBudget {
       const waiter: Waiter = {
         bytes: amount,
         resolve,
-        timer: setTimeout(() => {
-          this.#removeWaiter(waiter);
-          resolve(undefined);
-        }, this.#waitMs),
+        timer: setTimeout(
+          () => {
+            this.#removeWaiter(waiter);
+            resolve(undefined);
+          },
+          Math.max(0, waitMs),
+        ),
       };
       waiter.timer.unref?.();
       this.#waiters.push(waiter);
@@ -102,16 +110,23 @@ export class HistoryReadBudget {
     if (index >= 0) this.#waiters.splice(index, 1);
   }
 
+  /**
+   * Admit any waiter that fits, not only the queue head. With variable reservation sizes a large
+   * waiter must not block smaller ones that still fit.
+   */
   #drain(): void {
-    while (this.#waiters.length > 0) {
-      const waiter = this.#waiters[0];
-      if (waiter === undefined) return;
-      if (this.#used + waiter.bytes > this.#limit) return;
-      this.#waiters.shift();
+    if (this.#waiters.length === 0) return;
+    const remaining: Waiter[] = [];
+    for (const waiter of this.#waiters) {
+      if (this.#used + waiter.bytes > this.#limit) {
+        remaining.push(waiter);
+        continue;
+      }
       clearTimeout(waiter.timer);
       this.#used += waiter.bytes;
       waiter.resolve(releaseOnce(waiter.bytes, (value) => this.release(value)));
     }
+    this.#waiters = remaining;
   }
 }
 

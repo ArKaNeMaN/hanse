@@ -932,7 +932,8 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   and a non-blocking `attachment_context_large` advisory. File-only kinds stay file. History and
   the app stream project known file parts to short download URLs and strip every unknown `data:`
   URL; `info.hanse.attachments` carries all deliveries. History reads use 48 MiB page/per-message
-  caps, a 192 MiB heap-aware budget (2 s wait, then `503 history_busy`), single-message fallback,
+  caps, a 192 MiB heap-aware budget (2 s wait, 10 s for interactive page/hydration reads, then
+  `503 history_busy`; a 1-message empty check uses a 512 KiB cap), single-message fallback,
   and an 8 MiB projected response. The app SSE frame cap is 32 MiB with a 32 MiB raw/96 MiB heap
   budget and 8 browser streams/app (`429 stream_limit`); internal monitor/fallback streams are a
   separate class, and an active sender's `streamID` is prioritized. The legacy session SSE is

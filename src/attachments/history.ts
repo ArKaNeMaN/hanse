@@ -4,6 +4,7 @@ import {
   type OpencodeMessage,
   type OpencodeMessagePage,
 } from "../opencode/client.js";
+import { HISTORY_READ_INTERACTIVE_WAIT_MS } from "./budget.js";
 import type { MessageProjector } from "./projection.js";
 
 export const PROJECTED_RESPONSE_MAX_BYTES = 8 * 1024 * 1024;
@@ -12,6 +13,7 @@ export interface ProjectedPageOptions {
   limit: number;
   before?: string;
   project: MessageProjector;
+  budgetWaitMs?: number;
 }
 
 function isTooLarge(error: unknown): boolean {
@@ -28,11 +30,13 @@ export async function readProjectedPage(
   sessionId: string,
   options: ProjectedPageOptions,
 ): Promise<OpencodeMessagePage> {
+  const budgetWaitMs = options.budgetWaitMs ?? HISTORY_READ_INTERACTIVE_WAIT_MS;
   try {
     const page = await listMessagePage(endpoint, sessionId, {
       limit: options.limit,
       ...(options.before === undefined ? {} : { before: options.before }),
       project: options.project,
+      budgetWaitMs,
     });
     return page;
   } catch (error) {
@@ -47,6 +51,7 @@ export async function readProjectedPage(
       limit: 1,
       ...(cursor === undefined ? {} : { before: cursor }),
       project: options.project,
+      budgetWaitMs,
     });
     const message = page.messages[0];
     if (message === undefined) break;

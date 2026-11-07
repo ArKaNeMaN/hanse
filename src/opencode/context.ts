@@ -1,3 +1,4 @@
+import { HISTORY_READ_INTERACTIVE_WAIT_MS } from "../attachments/budget.js";
 import type { SettingsScope, SettingsTarget } from "../settings/types.js";
 import {
   listMessagePage,
@@ -1593,7 +1594,10 @@ export class ContextMonitor implements ContextMonitorLike {
     let sessions: OpencodeSession[];
     try {
       [page, sessions] = await Promise.all([
-        this.#listMessagePage(this.#endpoint, sessionId, { limit: HYDRATION_MESSAGE_LIMIT }),
+        this.#listMessagePage(this.#endpoint, sessionId, {
+          limit: HYDRATION_MESSAGE_LIMIT,
+          budgetWaitMs: HISTORY_READ_INTERACTIVE_WAIT_MS,
+        }),
         this.#listSessions(this.#endpoint),
       ]);
     } catch (error) {
