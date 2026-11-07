@@ -336,4 +336,126 @@ describe("chat prompt questions", () => {
     expect(wrapper.find(".chat-question--inline").attributes("data-state")).toBe("answered");
     wrapper.unmount();
   });
+
+  it("renders the custom answer as an option row and submits only the custom value", async () => {
+    const { wrapper, fetchState } = await mountChat("/chat?app=alpha&project=p&session=s1", {
+      questions: [question()],
+    });
+    await flushPromises();
+
+    const custom = wrapper.find("[data-question-custom]");
+    const customRow = wrapper.find(".chat-question__answer--custom");
+    expect(customRow.exists()).toBe(true);
+    expect(customRow.element.contains(custom.element)).toBe(true);
+
+    await wrapper.find('[data-question-option][data-label="Yes"]').trigger("click");
+    expect(
+      wrapper.find('[data-question-option][data-label="Yes"]').attributes("data-selected"),
+    ).toBe("true");
+
+    await custom.trigger("focus");
+    expect(customRow.attributes("data-selected")).toBe("true");
+    expect(
+      wrapper.find('[data-question-option][data-label="Yes"]').attributes("data-selected"),
+    ).toBe("false");
+
+    await custom.setValue("A custom answer");
+    await wrapper.find("[data-question-primary]").trigger("click");
+    await flushPromises();
+
+    const reply = replyFor(fetchState, "/questions/q1/reply");
+    expect(JSON.parse(reply?.body ?? "{}").answers).toEqual([["A custom answer"]]);
+    wrapper.unmount();
+  });
+
+  it("deselects the custom answer when the input is cleared", async () => {
+    const { wrapper } = await mountChat("/chat?app=alpha&project=p&session=s1", {
+      questions: [question()],
+    });
+    await flushPromises();
+
+    const custom = wrapper.find("[data-question-custom]");
+    const customRow = wrapper.find(".chat-question__answer--custom");
+    await custom.setValue("A custom answer");
+    expect(customRow.attributes("data-selected")).toBe("true");
+
+    await custom.setValue("");
+    expect(customRow.attributes("data-selected")).toBe("false");
+    wrapper.unmount();
+  });
+
+  it("clears the custom answer when a single-select option is chosen", async () => {
+    const { wrapper } = await mountChat("/chat?app=alpha&project=p&session=s1", {
+      questions: [question()],
+    });
+    await flushPromises();
+
+    const custom = wrapper.find("[data-question-custom]");
+    await custom.setValue("A custom answer");
+    expect(wrapper.find(".chat-question__answer--custom").attributes("data-selected")).toBe("true");
+
+    await wrapper.find('[data-question-option][data-label="Yes"]').trigger("click");
+    expect(
+      wrapper.find('[data-question-option][data-label="Yes"]').attributes("data-selected"),
+    ).toBe("true");
+    expect(wrapper.find(".chat-question__answer--custom").attributes("data-selected")).toBe(
+      "false",
+    );
+    expect((wrapper.find("[data-question-custom]").element as HTMLInputElement).value).toBe("");
+    wrapper.unmount();
+  });
+
+  it("jumps between questions with the tab strip", async () => {
+    const { wrapper } = await mountChat("/chat?app=alpha&project=p&session=s1", {
+      questions: [
+        question({
+          key: "v1:qmulti",
+          id: "qmulti",
+          questions: [
+            {
+              header: "First header",
+              question: "First question text?",
+              options: [{ label: "A", description: "" }],
+              multiple: false,
+              custom: false,
+            },
+            {
+              header: "Second header",
+              question: "Second question text?",
+              options: [{ label: "B", description: "" }],
+              multiple: false,
+              custom: false,
+            },
+          ],
+        }),
+      ],
+    });
+    await flushPromises();
+
+    const tabs = wrapper.findAll("[data-question-tab]");
+    expect(tabs).toHaveLength(2);
+    expect(tabs[0]?.text()).toContain("First header");
+    expect(tabs[1]?.text()).toContain("Second header");
+    expect(tabs[0]?.attributes("aria-selected")).toBe("true");
+    expect(tabs[1]?.attributes("aria-selected")).toBe("false");
+    expect(wrapper.find(".prompt-dock__title").text()).toBe("First question text?");
+
+    const review = wrapper.find("[data-question-tab-review]");
+    expect(review.exists()).toBe(true);
+    expect(review.attributes("aria-selected")).toBe("false");
+
+    await tabs[1]?.trigger("click");
+    await flushPromises();
+    expect(wrapper.find(".prompt-dock__title").text()).toBe("Second question text?");
+    expect(wrapper.findAll("[data-question-tab]")[1]?.attributes("aria-selected")).toBe("true");
+
+    await wrapper.find("[data-question-tab-review]").trigger("click");
+    await flushPromises();
+    expect(wrapper.find("[data-question-tab-review]").attributes("aria-selected")).toBe("true");
+
+    await wrapper.findAll("[data-question-tab]")[0]?.trigger("click");
+    await flushPromises();
+    expect(wrapper.find(".prompt-dock__title").text()).toBe("First question text?");
+    wrapper.unmount();
+  });
 });

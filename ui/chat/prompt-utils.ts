@@ -56,9 +56,13 @@ export function questionLabel(question: NormalizedQuestion, index: number): stri
   return `Question ${index + 1}`;
 }
 
-export function answersForQuestion(selected: readonly string[], custom: string): readonly string[] {
+export function answersForQuestion(
+  selected: readonly string[],
+  custom: string,
+  customSelected = true,
+): readonly string[] {
   const trimmed = custom.trim();
-  if (trimmed.length === 0 || selected.includes(trimmed)) return [...selected];
+  if (!customSelected || trimmed.length === 0 || selected.includes(trimmed)) return [...selected];
   return [...selected, trimmed];
 }
 
