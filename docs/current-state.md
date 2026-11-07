@@ -1231,12 +1231,13 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   every WebSocket upgrade; exact `/internal/mcp` is exempt. A valid agent token wins over a human
   cookie; invalid tokens do not trigger the gate. The handler-level check remains defense in depth.
 - Not implemented: thread close/`close_handoff`, per-message retry/resend, relaunch/retarget/
-  failThread, the shared-session operator path, target-initiated messages, thread chat projection/UI,
-  cross-project or same-app threads, worktree isolation between concurrent target sessions, automatic
-  routing of the target's interactive questions, failure/rejection notifications back into the source
-  session (the operator sees failed/rejected handoffs), and hard cancellation (there is no abort
-  wrapper for an opencode turn; cancel is soft). The one-shot envelope/security redesign remains
-  deferred; its pre-existing note/redaction risks remain residual.
+  failThread, the shared-session operator path, target-initiated messages, thread-management UI/routes,
+  operator-created threads, cross-project or same-app threads, worktree isolation between concurrent
+  target sessions, session reuse, target-initiated attachments, failure/rejection notifications back
+  into the source session (the operator sees failed/rejected handoffs), and hard cancellation (there
+  is no abort wrapper for an opencode turn; cancel is soft). Thread chat projection and the thread card
+  are implemented; target question events are auto-rejected instead of routed. The one-shot
+  envelope/security redesign remains deferred; its pre-existing note/redaction risks remain residual.
 
 ## Web IDE
 
