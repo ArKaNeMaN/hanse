@@ -83,6 +83,7 @@ describe("master provisioning", () => {
     const app = addApplication(deps, { projectId: project.id, name: "Reviewer" });
     expect(app.appKey).toBe("reviewer");
     expect(app.path).toBe("apps/reviewer");
+    expect(app.appDir).toBe(path.join(app.rootPath, app.path));
     const appYaml = readFileSync(path.join(app.rootPath, app.path, ".hanse", "app.yaml"), "utf8");
     expect(appYaml).toContain("name: Reviewer");
     expect(readFileSync(path.join(project.rootPath, ".hanse", "project.yaml"), "utf8")).toContain(

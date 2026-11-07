@@ -1,5 +1,5 @@
-import path from "node:path";
 import { isMasterApp } from "../master/constants.js";
+import { resolveAppInstructionSources } from "../opencode/app-instructions.js";
 import type { ManagedApp } from "../opencode/manager.js";
 import type { RegisteredApp } from "../registry/index.js";
 import { resolveAppPath } from "../runtime/app-path.js";
@@ -47,6 +47,12 @@ export function appDir(
 export function toManagedApp(found: FoundApp): ManagedApp {
   const directory = appDir(found.project, found.app);
   const master = isMasterApp(found.project.id, found.app.appKey);
+  const sources = resolveAppInstructionSources({
+    appDir: directory,
+    projectRoot: found.project.rootPath,
+    workspaceRoot: found.project.workspaceRoot,
+    contract: found.app.contract,
+  });
   return {
     id: found.app.id,
     projectId: found.project.id,
@@ -54,12 +60,8 @@ export function toManagedApp(found: FoundApp): ManagedApp {
     appDir: directory,
     imageStatus: found.app.imageStatus,
     imageRef: found.app.imageRef,
-    ...(master
-      ? {
-          instructions: [path.join(directory, "AGENTS.md")],
-          gitCredentials: false,
-          appDirReadOnly: true,
-        }
-      : {}),
+    instructions: sources.contract === undefined ? [] : [sources.contract],
+    sharedInstructions: sources.shared,
+    ...(master ? { gitCredentials: false, appDirReadOnly: true } : {}),
   };
 }

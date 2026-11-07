@@ -23,12 +23,16 @@ apps:
     kind: web                                # optional
 ```
 
+Every `shared` path is materialized into the application state and injected as an instruction file
+into each application in the project. Relative paths resolve against the project root; absolute paths
+must stay inside the workspace. Missing paths are skipped.
+
 ## `.hanse/app.yaml`
 
 ```yaml
-name: web            # application key (portable string name)
+name: web            # human-readable application name
 kind: web            # optional
-contract: AGENTS.md  # path to the interface/contract doc (default: AGENTS.md)
+contract: AGENTS.md  # application instruction file, relative to the app directory
 ports:               # optional named ports
   http: 3000
 setup: npm install   # optional setup command
@@ -38,6 +42,9 @@ build:               # optional per-app image environment
     NODE_VERSION: "22"
   base: base                # optional: default | base; no schema default
 ```
+
+`contract` resolves relative to the application directory and is injected into that application's
+instructions; it defaults to `AGENTS.md`.
 
 The Dockerfile is a complete Dockerfile. It is resolved under the app directory with `realpath`
 containment (no `..`, absolute paths, or escaping symlinks); an invalid manifest or Dockerfile marks
@@ -80,9 +87,10 @@ digests from `RepoDigests`. Tags and `Config.Image` are never identities, and an
 ## Naming and portability
 
 - Use **relative paths** everywhere (manifests, shared docs) so the tree can be moved.
-- The application key (`name`) is a **string name**, not a unique id. The coordinator assigns a
-  per-clone instance identity in its own state, so the same application can be cloned into more than
-  one project with separate clones.
+- The application key is the **last segment of the application path** (`apps[].path` in
+  `.hanse/project.yaml`), not the `.hanse/app.yaml` `name`. The `name` is a human-readable label. The
+  coordinator assigns a per-clone instance identity in its own state, so the same application can be
+  cloned into more than one project with separate clones.
 - Keep coordinator-specific files inside `.hanse/` so repository roots stay clean.
 
 ## Settings

@@ -19,8 +19,9 @@ use the Hanse tools for every workspace change.
 
 - The workspace is the root directory that contains operator projects.
 - A project is a directory with \`.hanse/project.yaml\` (id, name, base_branch, apps).
-- An application is a directory with \`.hanse/app.yaml\` (name, kind, contract) and lives inside or
-  beside its project. Each application runs its own isolated opencode agent.
+- An application is a directory with \`.hanse/app.yaml\` (name, kind, contract). It normally lives
+  inside its project directory; an absolute path inside the workspace can place it elsewhere. Each
+  application runs its own isolated opencode agent.
 - \`AGENTS.md\` in an application directory is that agent's instruction contract. Writing it is how
   you give an application its role, rules, and conventions.
 - Settings resolve global -> project -> application. Application scope wins.
@@ -60,14 +61,17 @@ the Hanse workspace tools. Use the Hanse tools for every workspace change.
 ## Recipes
 
 New project:
-1. \`hanse_create_project\` with a human name (optionally a single directory name).
+1. \`hanse_create_project\` with a human name (optionally a single workspace-relative directory name).
 2. Report the project id and root path.
-3. Add applications with \`hanse_add_app\` (a name plus optional workspace-relative path or git
-   remote).
+3. Add applications with \`hanse_add_app\` (a name plus an optional path relative to the project root,
+   or a git remote).
 
 New application:
-1. \`hanse_add_app\` with the project id, a name, and either a path inside the workspace or a remote
-   URL (\`https://\`, \`ssh://\`, \`git://\`, or \`user@host:path\`).
+1. \`hanse_add_app\` with the project id, a name, and either a path relative to the project root
+   (for example \`apps/gateway\`; omit it to default to \`apps/<name-slug>\`) or a remote URL
+   (\`https://\`, \`ssh://\`, \`git://\`, or \`user@host:path\`). Never prefix the path with the project
+   directory name; use an absolute path inside the workspace only when the application must live
+   outside the project directory.
 2. Read the cloned files to learn the stack.
 3. Write the application's \`AGENTS.md\` with \`hanse_write_file\`, then report what you wrote.
 4. If the application needs a model or web driver, set it at app scope and tell the operator a

@@ -215,7 +215,7 @@ The master's MCP surface (opencode exposes these as `hanse_<name>`):
 | `start_app` | `project_id`, `app_key` | `ensure()`; reports the resulting runtime state. Running apps reconnect. |
 | `restart_app` | `project_id`, `app_key` | `restartIfRunning()`; reports whether a container restarted. A stopped app is not started. |
 | `create_project` | `name`, optional `directory` | Creates `<workspace>/<slug>`, writes `.hanse/project.yaml`, inserts the row. |
-| `add_app` | `project_id`, `name`, optional `path`, optional `remote` | Creates/clones the app directory, writes `.hanse/app.yaml` when absent, updates the manifest, inserts the row. |
+| `add_app` | `project_id`, `name`, optional `path`, optional `remote` | Creates/clones the app directory, writes `.hanse/app.yaml` when absent, updates the manifest, inserts the row, and returns the project-relative `path` plus absolute `appDir`. |
 | `list_dir` | optional `path` | Bounded directory listing. |
 | `read_file` | `path` | Bounded UTF-8 text read. |
 | `write_file` | `path`, `content` | Bounded atomic write; creates parent directories inside the workspace. |
@@ -249,6 +249,9 @@ Contract rules:
     path segment `.git`, `.hanse`, and `.hanse-master` is refused; equality with the workspace root
     and with the master directory is refused. Nested project directories are unsupported because
     `discoverProjectDirs` only scans one level;
+  - `add_app.path` is relative to the project root (the directory containing `.hanse/project.yaml`),
+    not the workspace root; omit it to default to `apps/<name-slug>`. An absolute path inside the
+    workspace is the only way to place an app outside its project directory;
   - project ids remain random UUIDs; duplicate manifests/directories are refused;
   - `add_app` rejects the reserved project id, validates the derived app key with `isValidAppId`,
     refuses any resolved path equal to or inside the master directory, refuses a path equal to the

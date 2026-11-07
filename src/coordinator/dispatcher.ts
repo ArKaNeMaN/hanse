@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { DefaultImageUnavailableError, ImageNotReadyError } from "../images/service.js";
+import { resolveAppInstructionSources } from "../opencode/app-instructions.js";
 import {
   createSession,
   listMessages,
@@ -111,6 +112,7 @@ interface AppRow {
   project_id: string;
   app_key: string;
   path: string;
+  contract: string;
   image_status: AppImageStatus;
   image_ref: string | null;
   deleting: number;
@@ -1749,8 +1751,8 @@ export class HandoffDispatcher {
   #app(appId: string): ResolvedApp | undefined {
     const row = this.#db
       .prepare(
-        `SELECT a.id, a.project_id, a.app_key, a.path, a.image_status, a.image_ref, a.deleting,
-                p.root_path, p.deleting AS project_deleting
+        `SELECT a.id, a.project_id, a.app_key, a.path, a.contract, a.image_status, a.image_ref,
+                a.deleting, p.root_path, p.deleting AS project_deleting
          FROM apps a JOIN projects p ON p.id = a.project_id
          WHERE a.id = ?`,
       )
@@ -1768,6 +1770,12 @@ export class HandoffDispatcher {
     } catch {
       return undefined;
     }
+    const sources = resolveAppInstructionSources({
+      appDir,
+      projectRoot: row.root_path,
+      workspaceRoot: this.#workspaceRoot,
+      contract: row.contract,
+    });
     return {
       projectId: row.project_id,
       appKey: row.app_key,
@@ -1779,6 +1787,8 @@ export class HandoffDispatcher {
         appDir,
         imageStatus: row.image_status,
         imageRef: row.image_ref,
+        instructions: sources.contract === undefined ? [] : [sources.contract],
+        sharedInstructions: sources.shared,
       },
     };
   }

@@ -72,6 +72,33 @@ describe("registry", () => {
     db.close();
   });
 
+  it("uses the app.yaml contract and defaults to AGENTS.md", async () => {
+    const root = await projectDir();
+    const webDir = path.join(root, "apps", "web");
+    const apiDir = path.join(root, "apps", "api");
+    await mkdir(path.join(webDir, ".hanse"), { recursive: true });
+    await mkdir(path.join(apiDir, ".hanse"), { recursive: true });
+    await writeFile(
+      path.join(webDir, ".hanse", "app.yaml"),
+      "name: web\ncontract: docs/CONTRACT.md\n",
+      "utf8",
+    );
+    await writeFile(path.join(apiDir, ".hanse", "app.yaml"), "name: api\n", "utf8");
+
+    const { project, rootPath } = await discoverProject(root);
+    const db = openDatabase(path.join(root, "db.sqlite"));
+    runMigrations(db);
+    const registered = registerProject(db, project, rootPath, rootPath);
+    expect(registered.apps.find((app) => app.appKey === "web")?.contract).toBe("docs/CONTRACT.md");
+    expect(registered.apps.find((app) => app.appKey === "api")?.contract).toBe("AGENTS.md");
+    expect(
+      db
+        .prepare("SELECT contract FROM apps WHERE project_id = ? AND app_key = 'web'")
+        .get(project.id),
+    ).toEqual({ contract: "docs/CONTRACT.md" });
+    db.close();
+  });
+
   it("preserves deletion markers across re-registration", async () => {
     const root = await projectDir();
     const { project, rootPath } = await discoverProject(root);

@@ -80,6 +80,8 @@ export interface AppBuildInspection {
   dockerfile: string | null;
   /** Manifest Dockerfile value relative to the application directory. */
   relativeDockerfile: string | null;
+  /** App contract path relative to the application directory; defaults to `AGENTS.md`. */
+  contract?: string;
   /** Raw Dockerfile bytes, or `null` when no build spec could be resolved. */
   dockerfileContent?: Buffer | null;
   args: Record<string, string>;
@@ -229,6 +231,7 @@ export function registerProject(
     const existing = selectExisting.get(id) as
       | (ExistingImageRow & { deleting: number })
       | undefined;
+    const contract = inspection.contract ?? "AGENTS.md";
     const image = mergeImageMetadata(existing, inspection);
     const buildConfigured =
       inspection.buildConfigured ??
@@ -239,7 +242,7 @@ export function registerProject(
       app_key: appKey,
       path: entry.path,
       kind,
-      contract: "AGENTS.md",
+      contract,
       created_at: now,
       image_ref: image.imageRef,
       image_status: image.imageStatus,
@@ -258,7 +261,7 @@ export function registerProject(
       appKey,
       path: entry.path,
       kind,
-      contract: "AGENTS.md",
+      contract,
       deleting: existing?.deleting === 1,
       ...image,
       imageBuildId: existing?.image_build_id ?? null,
@@ -309,9 +312,10 @@ export function resolveAppBuild(
     return failedInspection(new Error(`invalid app.yaml: ${issues}`));
   }
 
+  const contract = parsed.data.contract;
   const build = parsed.data.build;
   if (build === undefined) {
-    return emptyInspection();
+    return emptyInspection(contract);
   }
 
   const args = { ...(build.args ?? {}) };
@@ -347,6 +351,7 @@ export function resolveAppBuild(
       buildConfigured: true,
       dockerfile: resolved.path,
       relativeDockerfile: build.dockerfile,
+      contract,
       dockerfileContent: resolved.content,
       args,
       specHash,
@@ -392,7 +397,7 @@ function readAppConfig(appDir: string): string | undefined {
   return readFileSync(effectivePath, "utf8");
 }
 
-function emptyInspection(): AppBuildInspection {
+function emptyInspection(contract: string = "AGENTS.md"): AppBuildInspection {
   return {
     status: "missing",
     error: null,
@@ -406,6 +411,7 @@ function emptyInspection(): AppBuildInspection {
     baseRef: null,
     baseErrorCode: null,
     hashVersion: 1,
+    contract,
   };
 }
 

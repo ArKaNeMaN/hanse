@@ -113,7 +113,10 @@ defineExpose({ open });
               aria-describedby="add-app-name-hint"
               :disabled="creating"
             >
-            <p class="hint" id="add-app-name-hint">Used as the app key in routes and handoffs.</p>
+            <p class="hint" id="add-app-name-hint">
+              Used as the application name. The app key is the last segment of Path; when Path is
+              empty, the name slug supplies it.
+            </p>
           </div>
           <div class="field">
             <label class="label" for="add-app-path">Path, optional</label>

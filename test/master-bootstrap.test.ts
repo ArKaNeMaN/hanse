@@ -90,6 +90,9 @@ describe("master bootstrap", () => {
     ).toBe(masterDir);
     const instructions = readFileSync(path.join(masterDir, "AGENTS.md"), "utf8");
     expect(instructions).toContain("Hanse master");
+    expect(instructions).toContain("relative to the project root");
+    expect(instructions).toContain("apps/<name-slug>");
+    expect(instructions).not.toContain("optional workspace-relative path");
     expect(instructions).toContain("hanse_list_skills");
     expect(instructions).toContain("hanse_get_skill");
     expect(instructions).toContain("hanse_update_skill");

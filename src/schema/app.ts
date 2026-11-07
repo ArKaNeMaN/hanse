@@ -41,7 +41,7 @@ export const appBuildSchema = z.object({
 
 /** Schema for `.hanse/app.yaml` - a single application descriptor. */
 export const appSchema = z.object({
-  /** Application key: a portable string name. */
+  /** Human-readable application name; the app key is the last segment of the project manifest path. */
   name: z.string().min(1),
   /** Free-form kind or category (for example `web` or `service`). */
   kind: z.string().min(1).optional(),

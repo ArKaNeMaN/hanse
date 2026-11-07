@@ -3955,6 +3955,26 @@ describe("InstanceManager process rule materialization", () => {
     ).toEqual({ appliedRuleHash: PROCESS_RULE_HASH });
   });
 
+  it("materializes shared instruction sources before the contract and process rule", async () => {
+    const runtime = new FakeAgentRuntime();
+    const { manager, dir } = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    const env = resolveInstanceEnv(dir, { projectId: "p", app: "web" });
+    const source = path.join(dir, "shared-source.md");
+    writeFileSync(source, "# Shared\n", "utf8");
+    const contract = "/srv/apps/web/AGENTS.md";
+
+    await manager.ensure({
+      ...APP,
+      instructions: [contract],
+      sharedInstructions: [source],
+    });
+
+    const overlay = overlayOf(runtime.ensured[0] ?? { env: {} });
+    const materialized = path.join(env.XDG_STATE_HOME, "hanse", "instructions", "shared-00.md");
+    expect(overlay.instructions).toEqual([materialized, contract, processRulePath(env)]);
+    expect(readFileSync(materialized, "utf8")).toBe("# Shared\n");
+  });
+
   it("marks a running app restart-required when the applied hash predates the rule hash", async () => {
     const runtime = new FakeAgentRuntime();
     const settings = fakeSettings();

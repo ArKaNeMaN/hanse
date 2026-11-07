@@ -10,6 +10,7 @@ import {
   ProvisioningError,
 } from "../coordinator/provision.js";
 import { DefaultImageUnavailableError, ImageNotReadyError } from "../images/service.js";
+import { resolveAppInstructionSources } from "../opencode/app-instructions.js";
 import type { InstanceManager, ManagedApp } from "../opencode/manager.js";
 import { DeletionPendingError, RestartInProgressError } from "../opencode/manager.js";
 import { resolveAppPath } from "../runtime/app-path.js";
@@ -95,6 +96,7 @@ interface AppRow {
   app_key: string;
   path: string;
   kind: string | null;
+  contract: string;
   deleting: number;
   image_status: string;
   image_ref: string | null;
@@ -292,7 +294,14 @@ export const MASTER_TOOLS = [
     description: "Create a project directory, manifest, and registry row.",
     inputSchema: {
       type: "object",
-      properties: { name: { type: "string" }, directory: { type: "string" } },
+      properties: {
+        name: { type: "string", description: "Human-readable project name." },
+        directory: {
+          type: "string",
+          description:
+            "Optional single workspace-relative directory name; defaults to the name slug.",
+        },
+      },
       required: ["name"],
     },
   },
@@ -303,10 +312,17 @@ export const MASTER_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        project_id: { type: "string" },
-        name: { type: "string" },
-        path: { type: "string" },
-        remote: { type: "string" },
+        project_id: { type: "string", description: "Project id from list_projects." },
+        name: { type: "string", description: "Human-readable application name." },
+        path: {
+          type: "string",
+          description:
+            "Optional path relative to the project root (for example apps/gateway). Defaults to apps/<name-slug>. Do not prefix it with the project directory name; an absolute path inside the workspace is allowed only for a location outside the project.",
+        },
+        remote: {
+          type: "string",
+          description: "Optional git remote to clone into path.",
+        },
       },
       required: ["project_id", "name"],
     },
@@ -355,7 +371,7 @@ function projectRow(db: SqliteDatabase, projectId: string): ProjectRow | undefin
 function appRow(db: SqliteDatabase, projectId: string, appKey: string): AppRow | undefined {
   return db
     .prepare(
-      `SELECT id, project_id, app_key, path, kind, deleting, image_status, image_ref
+      `SELECT id, project_id, app_key, path, kind, contract, deleting, image_status, image_ref
        FROM apps WHERE project_id = ? AND app_key = ?`,
     )
     .get(projectId, appKey) as AppRow | undefined;
@@ -368,6 +384,12 @@ function managedApp(workspaceRoot: string, project: ProjectRow, app: AppRow): Ma
     workspaceRoot,
   });
   const master = app.id === MASTER_APP_ID;
+  const sources = resolveAppInstructionSources({
+    appDir,
+    projectRoot: project.root_path,
+    workspaceRoot,
+    contract: app.contract,
+  });
   return {
     id: app.id,
     projectId: app.project_id,
@@ -375,13 +397,9 @@ function managedApp(workspaceRoot: string, project: ProjectRow, app: AppRow): Ma
     appDir,
     imageStatus: app.image_status as ManagedApp["imageStatus"],
     imageRef: app.image_ref,
-    ...(master
-      ? {
-          instructions: [path.join(appDir, "AGENTS.md")],
-          gitCredentials: false,
-          appDirReadOnly: true,
-        }
-      : {}),
+    instructions: sources.contract === undefined ? [] : [sources.contract],
+    sharedInstructions: sources.shared,
+    ...(master ? { gitCredentials: false, appDirReadOnly: true } : {}),
   };
 }
 

@@ -101,7 +101,7 @@ export interface CreateProjectResult {
 export interface AddApplicationInput {
   projectId: string;
   name: string;
-  /** Workspace-relative or project-relative path, or an absolute path inside the workspace. */
+  /** Path relative to the project root, or an absolute path inside the workspace. */
   path?: string;
   remote?: string;
 }
@@ -112,6 +112,7 @@ export interface AddApplicationResult {
   appKey: string;
   path: string;
   rootPath: string;
+  appDir: string;
 }
 
 const RESERVED_SEGMENTS = new Set([".git", ".hanse", ".hanse-master"]);
@@ -640,16 +641,18 @@ export function addApplication(
   writeManifest(projectRoot, manifest);
 
   const inspection = resolveAppBuild(resolved);
+  const contract = inspection.contract ?? "AGENTS.md";
   try {
     deps.db
       .prepare(
-        "INSERT INTO apps (id, project_id, app_key, path, kind, contract, build_configured, created_at) VALUES (?, ?, ?, ?, 'app', 'AGENTS.md', ?, ?)",
+        "INSERT INTO apps (id, project_id, app_key, path, kind, contract, build_configured, created_at) VALUES (?, ?, ?, ?, 'app', ?, ?, ?)",
       )
       .run(
         appId,
         project.id,
         appKey,
         appPath,
+        contract,
         inspection.buildConfigured ? 1 : 0,
         new Date().toISOString(),
       );
@@ -658,7 +661,14 @@ export function addApplication(
       cause: error,
     });
   }
-  return { id: appId, projectId: project.id, appKey, path: appPath, rootPath: projectRoot };
+  return {
+    id: appId,
+    projectId: project.id,
+    appKey,
+    path: appPath,
+    rootPath: projectRoot,
+    appDir: resolved,
+  };
 }
 
 export type CloneExec = (args: readonly string[], options: { env?: NodeJS.ProcessEnv }) => void;

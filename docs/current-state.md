@@ -547,6 +547,12 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   applied by the last explicit start; a missing/mismatched sidecar restores the current rule and
   keeps the app `Restart required`. The file is agent-writable and the instruction is a guardrail,
   not a sandbox.
+- Every managed instance gets the project manifest's `shared` docs (resolved relative to the project
+  root, or absolute inside the workspace, and copied into `<app state>/hanse/instructions/`), then
+  the application contract (`app.yaml.contract`, default `AGENTS.md`, resolved inside the app
+  directory), then the process-safety rule, in `OPENCODE_CONFIG_CONTENT.instructions`. Missing or
+  escaping paths are skipped. opencode deduplicates these paths, so an explicitly injected
+  `AGENTS.md` is not loaded twice by native discovery.
 - The permission overlay adds deny-only `bash` patterns for `pkill *opencode*`,
   `killall *opencode*`, and `kill` against PID 1/the process group (including `kill 0`); there is
   no broad `kill *` deny and no `bash` catch-all. `ATTACHMENTS_POLICY_VERSION` is 3. `/agent`

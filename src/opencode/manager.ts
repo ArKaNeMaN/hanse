@@ -118,6 +118,7 @@ import {
   type SessionNoticeView,
   type StopIntentReason,
 } from "./recovery.js";
+import { materializeSharedInstructions } from "./shared-instructions.js";
 
 /**
  * Thrown by {@link InstanceManager.ensure} when the application or its project is marked for
@@ -229,6 +230,8 @@ export interface ManagedApp {
   imageRef?: string | null;
   /** Extra opencode instruction files for this instance. */
   instructions?: string[];
+  /** Project-shared instruction sources materialized into the app state at launch. */
+  sharedInstructions?: string[];
   /** Set false to skip git credential materialization for this instance. */
   gitCredentials?: boolean;
   /** Mount the application directory read-only inside the agent container. */
@@ -928,11 +931,12 @@ export class InstanceManager {
         }),
       },
     );
+    const sharedInstructions = materializeSharedInstructions(isolated, app.sharedInstructions ?? []);
     const overlay = buildConfigOverlay({
       coordinatorCommand: [process.execPath, process.argv[1] ?? "", "mcp"],
       codegraphCommand: resolveCodegraphCommand(),
       environment: coordinatorEnvironment,
-      instructions: [...(app.instructions ?? []), processRulePath(isolated)],
+      instructions: [...sharedInstructions, ...(app.instructions ?? []), processRulePath(isolated)],
       plugins: baselinePlugins,
       permission,
       model,

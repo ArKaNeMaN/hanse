@@ -463,7 +463,7 @@ exports[`project page props > keeps the legacy project HTML deriving from the sa
           <div class="field">
             <label class="label" for="add-app-name">Application name (required)</label>
             <input class="input" id="add-app-name" name="name" required autocomplete="off" placeholder="gateway" aria-describedby="add-app-name-hint" />
-            <p class="hint" id="add-app-name-hint">Used as the app key in routes and handoffs.</p>
+            <p class="hint" id="add-app-name-hint">Used as the application name. The app key is the last segment of Path; when Path is empty, the name slug supplies it.</p>
           </div>
           <div class="field">
             <label class="label" for="add-app-path">Path, optional</label>
