@@ -19,4 +19,5 @@ export const SPA_E2E_ROUTE_IDS = [
   "skills-app",
   "app",
   "project",
+  "login",
 ].join(",");

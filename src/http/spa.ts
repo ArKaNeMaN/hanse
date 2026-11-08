@@ -6,6 +6,7 @@ import { SettingsValidationError } from "../settings/index.js";
 import type { SettingsScope, SettingsTarget } from "../settings/types.js";
 import {
   isLegacyRetired,
+  isPublicRoute,
   isSpaRoute,
   matchPage,
   type PageMatch,
@@ -55,9 +56,11 @@ import { buildTerminalProps, type TerminalProps } from "./props/terminal.js";
 import {
   appShell,
   type Crumb,
+  documentPage,
   escapeHtml,
   icon,
   ideBase,
+  loginPlate,
   type NavProject,
   type Notice,
   renderBreadcrumbInner,
@@ -414,6 +417,8 @@ function routeChrome(
           { label: "Terminal" },
         ],
       };
+    case "login":
+      return { title: "Sign in", breadcrumb: [{ label: "Sign in" }] };
   }
 }
 
@@ -621,6 +626,60 @@ function loginRedirect(request: HttpRequest): HttpResponse {
     headers: {
       location: `/login?next=${encodeURIComponent(safeLocalPath(pagePath(request), "/"))}`,
     },
+  };
+}
+
+function loginNext(request: HttpRequest): string {
+  const target = safeLocalPath(request.query?.next, "/");
+  return target === "/login" || target.startsWith("/login?") ? "/" : target;
+}
+
+/**
+ * Public SPA login document.
+ *
+ * The server-rendered plate stays in `#main` so a browser without the Vue bundle still has a
+ * working form; Vue replaces it on mount. `contentScript:false` keeps SPA documents on `app.js` only.
+ */
+function renderLoginSpaDocument(input: {
+  readonly match: PageMatch;
+  readonly next: string;
+  readonly spaRoutes: readonly RouteId[];
+  readonly manifest?: UiManifest;
+  readonly devUrl?: string;
+}): HttpResponse {
+  const boot = {
+    route: input.match,
+    props: { next: input.next },
+    chrome: {
+      sidebarNav: "",
+      breadcrumb: "",
+      title: "Sign in",
+      active: "none",
+      pendingCount: 0,
+      sshPendingCount: 0,
+    },
+    spaRoutes: input.spaRoutes,
+    topbar: { ideHref: ideBase() },
+  };
+  const moduleScripts =
+    input.devUrl !== undefined
+      ? devModuleUrls(input.devUrl)
+      : input.manifest === undefined
+        ? []
+        : [input.manifest.entry];
+  return {
+    status: 200,
+    contentType: "text/html; charset=utf-8",
+    headers: { "cache-control": "no-store" },
+    body: documentPage({
+      title: "Sign in - hanse",
+      ...(input.manifest === undefined ? {} : { styles: [...input.manifest.css] }),
+      moduleScripts,
+      contentScript: false,
+      bootJson: `<script id="hanse-boot" type="application/json">${serializeBoot(boot)}</script>`,
+      body: `<main class="cover chart-ground" id="main">${loginPlate({ next: input.next })}</main>
+    <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="false"></div>`,
+    }),
   };
 }
 
@@ -1007,6 +1066,19 @@ export function maybeServeSpa(deps: HttpDeps, request: HttpRequest): HttpRespons
   }
 
   const principal = humanFromCookie(deps, request);
+  if (isPublicRoute(match.id)) {
+    const next = loginNext(request);
+    if (principal !== undefined) {
+      return redirectTo(next);
+    }
+    return renderLoginSpaDocument({
+      match,
+      next,
+      spaRoutes,
+      ...(devUrl === undefined ? {} : { devUrl }),
+      ...(manifest === undefined ? {} : { manifest }),
+    });
+  }
   if (principal === undefined) {
     return loginRedirect(request);
   }

@@ -240,7 +240,9 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
 
 - One operator token (`HANSE_OPERATOR_TOKEN`), stored hashed as a human principal named `operator`.
 - Browser: `POST /login` sets the `hanse_token` cookie (`HttpOnly`, `SameSite=Strict`). Mutating
-  endpoints and `/ide/*` require it.
+  endpoints and `/ide/*` require it. The SPA login page posts JSON to `POST /api/session` and gets
+  the same cookie; `GET /login` redirects an authenticated cookie to its validated `next`. The form
+  `POST /login` and `POST /logout` remain as the legacy path.
 - The IDE extension authenticates to the coordinator with the same token via `HANSE_API_BASE`
   (`http://hanse:8787`) and `HANSE_OPERATOR_TOKEN`.
 - No separate IDE password; code-server runs with `--auth none` and is only reachable through the proxy.
@@ -255,8 +257,9 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   `/projects/:id/apps/:appKey/settings`, `/skills`, `/projects/:id/skills`,
   `/projects/:id/apps/:appKey/skills`, `/handoffs`, and the
   `/chat?app=<key>&project=<id>` workspace.
-  `/login` is a standalone cover/plate. All HTML pages except `/login` and `/assets/*` require a
-  **human** principal; unauthenticated requests redirect to `/login?next=<validated local path>`.
+  `/login` is a public SPA cover page with a server-rendered form fallback. All other HTML pages
+  except `/assets/*` require a **human** principal; unauthenticated requests redirect to
+  `/login?next=<validated local path>`.
 - Browser forms post to the existing API endpoints and receive a 303 back to a validated `return_to`
   with a `notice`/`tone` toast. JSON API behavior is unchanged for non-browser callers.
 - Handoff decisions use `POST /api/handoffs/:id/decision` (`decision=approved|rejected`, optional
@@ -306,12 +309,13 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   inbox), `/ssh` (SSH console), the three settings scopes (`/settings`,
   `/projects/:id/settings`, `/projects/:id/apps/:app/settings`), and the five skills routes
   (`/skills`, `/projects/:id/skills`, `/projects/:id/apps/:app/skills`, `/skills/new`,
-  `/skills/:id`), `/terminal`, and `/chat` are SPA routes: the shared registry
+  `/skills/:id`), `/terminal`, `/chat`, and `/login` are SPA routes: the shared registry
   (`src/shared/routes.ts`) has `spa: true` for `overview`, `projects`, `project`, `handoffs`, `ssh`,
   `settings-global`, `settings-project`, `settings-app`, `skills-global`, `skills-project`,
-  `skills-app`, `skills-new`, `skills-detail`, `app`, `terminal`, and `chat`. Chat and terminal
-  have `legacyRetired: true`: `HANSE_UI_LEGACY=1`, `?legacy=1`, and `HANSE_UI_SPA_ROUTES` no longer
-  affect them; rollback is an image rollback. Application detail
+  `skills-app`, `skills-new`, `skills-detail`, `app`, `terminal`, `chat`, and `login`. `login` is
+  `public: true` and is served without a session; it keeps the normal non-retired rollback flags.
+  Chat and terminal have `legacyRetired: true`: `HANSE_UI_LEGACY=1`, `?legacy=1`, and
+  `HANSE_UI_SPA_ROUTES` no longer affect them; rollback is an image rollback. Application detail
   (`/projects/:id/apps/:app`) is the default SPA route, and its legacy rollback page still loads
   `git.js`, `images.js`, and `ssh.js`. The page dispatcher
   is the only place that chooses a renderer. For non-retired routes the order is
@@ -385,8 +389,9 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
 - SPA documents and `/api/ui/*` are cookie-only. `/api/ui/*` returns `401` without a human cookie,
   `403 cookie_required` for a human bearer without a cookie, and `403` for agent tokens; responses are
   `no-store`.
-- Script split: legacy pages and `/login` load `app.js` + `app-content.js`; SPA documents load only
-  the shell `app.js`. SPA toasts are owned by the Vue `ToastHost`, not `app-content.js`. SPA
+- Script split: legacy pages and the legacy `/login` document load `app.js` + `app-content.js`;
+  SPA documents, including the SPA `/login` document, load only the shell `app.js`. SPA toasts are
+  owned by the Vue `ToastHost`, not `app-content.js`. SPA
   mutations send `X-Hanse-Client: spa`; `POST /api/projects` answers `200 {ok:true, project}`,
   `POST /api/projects/:id/apps` answers `200 {ok:true, app}`, `POST /api/handoffs/:id/decision`
   answers `200 {ok:true, decision}`, and `POST /api/handoffs` answers `201/202` queued/awaiting or

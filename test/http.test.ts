@@ -272,6 +272,74 @@ describe("http auth and login", () => {
     expect(response.headers?.location).toBe("/login");
     expect(response.headers?.["set-cookie"]).toContain("Max-Age=0");
   });
+
+  it("logs in the SPA with JSON and sets the session cookie", () => {
+    const f = fixture();
+    const token = humanToken(f.db);
+    const response = handleRequest(deps(f), {
+      method: "POST",
+      path: "/api/session",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token, next: "/handoffs?filter=waiting" }),
+    });
+    expect(response.status).toBe(200);
+    expect(JSON.parse(response.body)).toEqual({ ok: true, next: "/handoffs?filter=waiting" });
+    const setCookie = response.headers?.["set-cookie"] ?? "";
+    expect(setCookie).toContain("hanse_token=");
+    expect(setCookie).toContain("HttpOnly");
+    expect(setCookie).toContain("SameSite=Strict");
+    expect(setCookie).toContain("Path=/");
+    expect(setCookie).toContain("Max-Age=2592000");
+  });
+
+  it("rejects an invalid SPA login without setting a cookie", () => {
+    const f = fixture();
+    const response = handleRequest(deps(f), {
+      method: "POST",
+      path: "/api/session",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token: "wrong", next: "/" }),
+    });
+    expect(response.status).toBe(401);
+    expect(JSON.parse(response.body)).toMatchObject({ code: "invalid_token" });
+    expect(response.headers?.["set-cookie"]).toBeUndefined();
+  });
+
+  it("rejects a non-human principal on the SPA login", () => {
+    const f = fixture();
+    const { token } = createPrincipal(f.db, { kind: "agent", name: "web" });
+    const response = handleRequest(deps(f), {
+      method: "POST",
+      path: "/api/session",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token, next: "/" }),
+    });
+    expect(response.status).toBe(401);
+    expect(JSON.parse(response.body)).toMatchObject({ code: "not_human" });
+    expect(response.headers?.["set-cookie"]).toBeUndefined();
+  });
+
+  it("blocks open redirects and cross-origin SPA logins", () => {
+    const f = fixture();
+    const token = humanToken(f.db);
+    const open = handleRequest(deps(f), {
+      method: "POST",
+      path: "/api/session",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token, next: "https://evil.example" }),
+    });
+    expect(JSON.parse(open.body)).toMatchObject({ next: "/" });
+
+    const crossOrigin = handleRequest(deps(f), {
+      method: "POST",
+      path: "/api/session",
+      headers: { "content-type": "application/json", host: "hanse.local" },
+      origin: "https://evil.example",
+      body: JSON.stringify({ token, next: "/" }),
+    });
+    expect(crossOrigin.status).toBe(403);
+    expect(crossOrigin.headers?.["set-cookie"]).toBeUndefined();
+  });
 });
 
 describe("http pages", () => {

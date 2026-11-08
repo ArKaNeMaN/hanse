@@ -884,16 +884,14 @@ export function handoffDialog(input: HandoffDialogInput): string {
 /* Login and error pages                                                     */
 /* ------------------------------------------------------------------------- */
 
-export function loginPage(options: { next: string; error?: string }): string {
+/** Inner cover grid shared by the legacy login document and the SPA login document. */
+export function loginPlate(options: { next: string; error?: string }): string {
   const invalid = options.error !== undefined;
   const error = invalid
     ? `<p class="field-error" id="token-error">${icon("alert-circle")}Token rejected. Check the value and try again.</p>`
     : `<p class="hint" id="token-hint">The operator token is set by HANSE_OPERATOR_TOKEN.</p>`;
   const describedBy = invalid ? "token-error" : "token-hint";
-  return documentPage({
-    title: "Sign in - hanse",
-    body: `<main class="cover chart-ground" id="main">
-      <div></div>
+  return `<div></div>
       <section class="login-plate" aria-labelledby="login-title">
         <div class="login-plate__head">
           <span class="login-plate__brand">hanse</span>
@@ -919,7 +917,12 @@ export function loginPage(options: { next: string; error?: string }): string {
         </form>
         <p class="caption">The session stays on this browser for 30 days. Sign out from the sidebar.</p>
       </section>
-      <p class="caption login-plate__foot">hanse coordinator / operator access</p>
-    </main>`,
+      <p class="caption login-plate__foot">hanse coordinator / operator access</p>`;
+}
+
+export function loginPage(options: { next: string; error?: string }): string {
+  return documentPage({
+    title: "Sign in - hanse",
+    body: `<main class="cover chart-ground" id="main">${loginPlate(options)}</main>`,
   });
 }

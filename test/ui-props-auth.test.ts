@@ -587,6 +587,10 @@ describe("/api/ui auth and props", () => {
           route.id === "terminal" || route.id === "chat" ? { app: "web", project: "p" } : undefined,
         ),
       );
+      if (route.public === true) {
+        expect(page?.status, route.id).toBe(302);
+        continue;
+      }
       expect(page?.status, route.id).toBe(200);
       expect(page?.body, route.id).not.toContain(providerSecret);
       expect(page?.body, route.id).not.toContain(gitSecret);

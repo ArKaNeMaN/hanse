@@ -3,6 +3,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   isLegacyRetired,
+  isPublicRoute,
   isSpaPath,
   isSpaPathIn,
   isSpaRoute,
@@ -39,6 +40,7 @@ describe("shared route manifest", () => {
       ["project", "/projects/:id", "project"],
       ["terminal", "/terminal", "project"],
       ["chat", "/chat", "none"],
+      ["login", "/login", "none"],
     ]);
     expect(ROUTES.filter((route) => route.spa).map((route) => route.id)).toEqual([
       "projects",
@@ -57,6 +59,7 @@ describe("shared route manifest", () => {
       "project",
       "terminal",
       "chat",
+      "login",
     ]);
   });
 
@@ -93,6 +96,7 @@ describe("shared route manifest", () => {
     expect(matchPage("/projects/a%20b")).toEqual({ id: "project", params: { id: "a b" } });
     expect(matchPage("/chat")).toEqual({ id: "chat", params: {} });
     expect(matchPage("/terminal")).toEqual({ id: "terminal", params: {} });
+    expect(matchPage("/login")).toEqual({ id: "login", params: {} });
   });
 
   it("prefers static and longer patterns over dynamic ones", () => {
@@ -125,6 +129,7 @@ describe("shared route manifest", () => {
     expect(matchPage("/projects/")).toBeUndefined();
     expect(matchPage("/projects/p/")).toBeUndefined();
     expect(matchPage("/skills/1/extra")).toBeUndefined();
+    expect(matchPage("/login/")).toBeUndefined();
   });
 
   it("enables the cut-over routes by default", () => {
@@ -145,7 +150,8 @@ describe("shared route manifest", () => {
         route.id === "skills-detail" ||
         route.id === "app" ||
         route.id === "terminal" ||
-        route.id === "chat";
+        route.id === "chat" ||
+        route.id === "login";
       expect(isSpaRoute(route.id, { env: {} }), route.id).toBe(migrated);
     }
     expect(isSpaPath("/projects", { env: {} })).toBe(true);
@@ -165,6 +171,7 @@ describe("shared route manifest", () => {
     expect(isSpaPath("/projects/alpha/apps/web", { env: {} })).toBe(true);
     expect(isSpaPath("/chat", { env: {} })).toBe(true);
     expect(isSpaPath("/terminal", { env: {} })).toBe(true);
+    expect(isSpaPath("/login", { env: {} })).toBe(true);
   });
 
   it("applies HANSE_UI_LEGACY and manifest validity before the allowlist", () => {
@@ -212,7 +219,23 @@ describe("shared route manifest", () => {
       spa: true,
       legacyRetired: true,
     });
+    expect(routeById("login")).toMatchObject({
+      path: "/login",
+      nav: "none",
+      spa: true,
+      public: true,
+    });
     expect(routeById("nope" as never)).toBeUndefined();
+  });
+
+  it("keeps login public while still honoring the legacy rollback flags", () => {
+    expect(isPublicRoute("login")).toBe(true);
+    expect(isPublicRoute("projects")).toBe(false);
+    expect(isLegacyRetired("login")).toBe(false);
+    expect(isSpaRoute("login", { env: {} })).toBe(true);
+    expect(isSpaRoute("login", { env: { legacy: "1" } })).toBe(false);
+    expect(isSpaRoute("login", { env: { spaRoutes: "" } })).toBe(false);
+    expect(isSpaRoute("login", { manifestValid: false })).toBe(false);
   });
 
   it("keeps retired chat and terminal in the boot set regardless of rollback flags", () => {

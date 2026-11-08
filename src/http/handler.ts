@@ -256,6 +256,46 @@ function loginDestination(value: string | undefined): string {
   return target;
 }
 
+function sessionCookie(token: string): string {
+  return `hanse_token=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${COOKIE_MAX_AGE}`;
+}
+
+/** JSON login for the SPA; the form `POST /login` keeps the legacy redirect path. */
+function sessionLogin(deps: HttpDeps, request: HttpRequest): HttpResponse {
+  if (!isSameOrigin(request)) {
+    return json(403, { error: "cross-site request rejected", code: "cross_origin" });
+  }
+  let payload: unknown;
+  try {
+    payload = JSON.parse(request.body ?? "{}");
+  } catch {
+    return json(400, { error: "invalid request", code: "invalid_body" });
+  }
+  if (typeof payload !== "object" || payload === null) {
+    return json(400, { error: "invalid request", code: "invalid_body" });
+  }
+  const fields = payload as Record<string, unknown>;
+  const token = typeof fields.token === "string" ? fields.token.trim() : "";
+  const next = loginDestination(typeof fields.next === "string" ? fields.next : undefined);
+  if (token.length === 0) {
+    return json(401, { error: "missing token", code: "missing_token" });
+  }
+  let principal: Principal;
+  try {
+    principal = authenticate(deps.db, `Bearer ${token}`);
+  } catch {
+    return json(401, { error: "invalid token", code: "invalid_token" });
+  }
+  if (principal.kind !== "human") {
+    return json(401, { error: "not a human principal", code: "not_human" });
+  }
+  return json(
+    200,
+    { ok: true, next },
+    { "set-cookie": sessionCookie(token), "cache-control": "no-store" },
+  );
+}
+
 function noticeFrom(query: Record<string, string> | undefined): Notice | undefined {
   const message = query?.notice;
   if (message === undefined || message.trim().length === 0) {
@@ -978,7 +1018,7 @@ function route(deps: HttpDeps, request: HttpRequest): HttpResponse {
         return html(401, loginPage({ next, error: "not a human principal" }));
       }
       return redirect(next, {
-        "set-cookie": `hanse_token=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${COOKIE_MAX_AGE}`,
+        "set-cookie": sessionCookie(token),
       });
     } catch {
       return html(401, loginPage({ next, error: "invalid token" }));
@@ -989,6 +1029,10 @@ function route(deps: HttpDeps, request: HttpRequest): HttpResponse {
     return redirect("/login", {
       "set-cookie": "hanse_token=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0",
     });
+  }
+
+  if (request.method === "POST" && request.path === "/api/session") {
+    return sessionLogin(deps, request);
   }
 
   if (request.method === "GET" && request.path === "/api/projects") {

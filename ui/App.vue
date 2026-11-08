@@ -21,6 +21,8 @@ const workspace = computed<"chat" | "terminal" | undefined>(() => {
   return undefined;
 });
 
+const standalone = computed(() => route.name === "login" || props.boot.route.id === "login");
+
 // Chat remounts on app/project changes; chat owns the stream/feed/draft lifecycle per workspace.
 const viewKey = computed(() => {
   if (route.name === "chat") {
@@ -54,6 +56,6 @@ onErrorCaptured((error) => {
   <RouterView v-else v-slot="{ Component }">
     <component :is="Component" :key="viewKey" :boot="boot" :data-boot-route="bootRoute" />
   </RouterView>
-  <TopbarActions :topbar="boot.topbar" :workspace="workspace" />
+  <TopbarActions v-if="!standalone" :topbar="boot.topbar" :workspace="workspace" />
   <ToastHost :notice="boot.notice" />
 </template>

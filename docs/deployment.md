@@ -262,7 +262,10 @@ them.
 - **Chat/terminal rollback:** image rollback only. Redeploy the last image that still contains the
   legacy pages, or a pre-cutover image. The deployed image must contain the UI build.
 - **Other routes:** `HANSE_UI_LEGACY=1` still forces the server-rendered document; `HANSE_UI_SPA_ROUTES`
-  and `?legacy=1` still apply to non-retired routes. Restart after changing an env flag.
+  and `?legacy=1` still apply to non-retired routes, including `/login`. Restart after changing an
+  env flag.
+- **Login rollback:** `/login` is non-retired. `HANSE_UI_LEGACY=1` or `?legacy=1` serves the
+  server-rendered plate, and a missing UI build falls back to it instead of an error page.
 - **Missing UI build:** a retired route returns an explicit `503` UI-build-missing page; it never
   falls through to a deleted legacy page. A non-retired route still falls back to legacy and logs
   `ui.manifest_invalid`.

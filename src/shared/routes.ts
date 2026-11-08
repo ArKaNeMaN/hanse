@@ -22,7 +22,8 @@ export type RouteId =
   | "skills-detail"
   | "app"
   | "terminal"
-  | "chat";
+  | "chat"
+  | "login";
 
 export type NavId =
   | "overview"
@@ -43,6 +44,8 @@ export interface RouteDefinition {
   readonly spa: boolean;
   /** True once the legacy renderer is retired and the SPA is always served (Stage 9). */
   readonly legacyRetired?: boolean;
+  /** True for a page served without an authenticated session, such as the login page. */
+  readonly public?: boolean;
 }
 
 export interface PageMatch {
@@ -175,6 +178,14 @@ const ROUTE_DEFINITIONS: readonly RouteDefinition[] = [
     label: "Chat",
     spa: true,
     legacyRetired: true,
+  },
+  {
+    id: "login",
+    path: "/login",
+    nav: "none",
+    label: "Sign in",
+    spa: true,
+    public: true,
   },
 ];
 
@@ -312,6 +323,11 @@ export function isSpaPath(pathname: string, options: SpaRouteOptions = {}): bool
 /** True once the route always serves the SPA and ignores the legacy rollback flags. */
 export function isLegacyRetired(id: RouteId): boolean {
   return ROUTE_BY_ID.get(id)?.legacyRetired === true;
+}
+
+/** True for a page that is served without an authenticated session. */
+export function isPublicRoute(id: RouteId): boolean {
+  return ROUTE_BY_ID.get(id)?.public === true;
 }
 
 /**

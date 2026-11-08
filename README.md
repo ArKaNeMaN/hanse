@@ -168,8 +168,8 @@ node dist/index.js --help
 ```
 
 `/` (fleet overview), `/projects`, `/projects/:id`, `/projects/:id/apps/:app`, `/handoffs`, `/ssh`,
-the three settings scopes, the five skills routes, `/terminal`, and `/chat` are served by the
-Vue/Vite client, which lives under `ui/` and builds into `assets/ui/`. Chat and terminal keep the
+the three settings scopes, the five skills routes, `/terminal`, `/chat`, and `/login` are served by
+the Vue/Vite client, which lives under `ui/` and builds into `assets/ui/`. Chat and terminal keep the
 frozen legacy documents as their rollback path. The coordinator chooses the renderer through the
 shared registry and `HANSE_UI_SPA_ROUTES`; `HANSE_UI_LEGACY=1` (or `?legacy=1` on a page) forces the
 legacy renderer. Run the client dev server with `npm run dev:ui` and the coordinator with
