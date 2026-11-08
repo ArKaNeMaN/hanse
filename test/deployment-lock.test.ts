@@ -18,7 +18,7 @@ afterEach(() => {
 });
 
 function tempDir(): string {
-  const dir = mkdtempSync(path.join(tmpdir(), "hanse-deploy-lock-"));
+  const dir = mkdtempSync(path.join(tmpdir(), "hanse-lock-"));
   dirs.push(dir);
   return dir;
 }

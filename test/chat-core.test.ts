@@ -2741,7 +2741,7 @@ describe("handoff message metadata", () => {
   });
 
   it("derives agent initials with the server rules", () => {
-    expect(agentInitials("hanse-deploy")).toBe("HD");
+    expect(agentInitials("other-app")).toBe("OA");
     expect(agentInitials("web")).toBe("WE");
     expect(agentInitials("")).toBe("AG");
   });

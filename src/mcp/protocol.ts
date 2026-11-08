@@ -22,7 +22,7 @@ export const TOOLS = [
   {
     name: "request_sibling_change",
     description:
-      'Ask a sibling application to do work. Returns a handoff id immediately. The coordinator binds the request to this session, applies the project handoff policy, starts a fresh session on the target, and later delivers the target\'s reply back into this session as a new message. After this tool returns, end your turn: do NOT call handoff_status to wait, do NOT sleep or retry, and do NOT poll - the reply arrives on its own, and polling does not speed it up. Call list_apps first and pass application keys (the "appKey" field, for example "hanse-deploy") in "from" and "to" - never full application ids such as "<projectId>:<appKey>". "to" must be another application in the same project.',
+      'Ask a sibling application to do work. Returns a handoff id immediately. The coordinator binds the request to this session, applies the project handoff policy, starts a fresh session on the target, and later delivers the target\'s reply back into this session as a new message. After this tool returns, end your turn: do NOT call handoff_status to wait, do NOT sleep or retry, and do NOT poll - the reply arrives on its own, and polling does not speed it up. Call list_apps first and pass application keys (the "appKey" field, for example "other-app") in "from" and "to" - never full application ids such as "<projectId>:<appKey>". "to" must be another application in the same project.',
     inputSchema: {
       type: "object",
       properties: {
@@ -34,7 +34,7 @@ export const TOOLS = [
         to: {
           type: "string",
           description:
-            'Application key of the target application in the same project (the "appKey" from list_apps, for example "hanse-deploy"). Never pass a full application id such as "<projectId>:<appKey>".',
+            'Application key of the target application in the same project (the "appKey" from list_apps, for example "other-app"). Never pass a full application id such as "<projectId>:<appKey>".',
         },
         summary: { type: "string", description: "Short human-readable title for the request." },
         spec: {

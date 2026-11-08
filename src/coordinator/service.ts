@@ -520,7 +520,7 @@ export class CoordinatorService {
     const id = this.#tryAppIdByKey(appKey);
     if (id === undefined) {
       throw new Error(
-        `Unknown application "${appKey}" in project ${this.#projectId}. Use the appKey from list_apps (for example "hanse-deploy"), not a full application id such as "<projectId>:<appKey>".`,
+        `Unknown application "${appKey}" in project ${this.#projectId}. Use the appKey from list_apps (for example "other-app"), not a full application id such as "<projectId>:<appKey>".`,
       );
     }
     return id;
