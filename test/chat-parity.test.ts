@@ -95,7 +95,7 @@ const EVENTS = [
     action: "part/upsert + queue recompute + unknown reconcile",
     store: "chatFeed",
     stage: "3A/5A",
-    evidence: [evidence("component", "test/ui/chat-message.test.ts", "renders tool, patch, file")],
+    evidence: [evidence("component", "test/ui/chat-message.test.ts", "renders tool, file")],
   },
   {
     event: "message.part.delta",
@@ -210,10 +210,10 @@ const PART_ROWS = [
   },
   {
     part: "patch",
-    render: "DiffView",
+    render: "hidden/no-op",
     stage: "5B",
-    file: "test/ui/chat-diff-view.test.ts",
-    contains: "extracts read, write, edit",
+    file: "test/ui/chat-message.test.ts",
+    contains: "renders tool, file",
   },
   {
     part: "file",
@@ -227,7 +227,7 @@ const PART_ROWS = [
     render: "subagent/task row",
     stage: "5A",
     file: "test/ui/chat-message.test.ts",
-    contains: "renders tool, patch, file",
+    contains: "renders tool, file",
   },
   {
     part: "retry",

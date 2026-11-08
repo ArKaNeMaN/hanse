@@ -802,8 +802,8 @@ composer only when the reader is away from the bottom.
 `data-chat-sessions="open"` and `data-chat-context="open"` on the chat shell.
 - `.message__body` renders a safe markdown subset: paragraphs, headings (`h3`-`h5`, serif display),
 lists, blockquotes, fenced code, inline code, links, strong/em, and rules. The thread is
-`role="log" aria-live="polite"`. Tool, reasoning, and patch parts use `.tool-call` details; errors
-auto-open.
+`role="log" aria-live="polite"`. Tool and reasoning parts use `.tool-call` details; errors
+auto-open. OpenCode patch parts are hidden.
 
 ### 5.17 Git panel
 

@@ -693,7 +693,7 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
 - Stage 0030 is deployed to `<deployment-host>` as `25e5c81`; readiness reported schema version
   20, migration 18 -> 20, restored running apps, and a passed disposable process-protection smoke.
 - Our chat UI (`/chat?app=<appKey>&project=<projectId>`) lists/filters sessions, streams assistant
-  text and running tool output, renders tool calls (output/error/previews), reasoning, patches,
+  text and running tool output, renders tool calls (output/error/previews), reasoning,
   syntax-highlighted `edit`/`apply_patch` diffs, `write` content, and completed `read` output
   (parsed path, line numbers, code, and status footer), GFM pipe tables, and OMO system cards, and
   sends prompts optimistically. Built-in coordinator tools are rendered from their JSON results:

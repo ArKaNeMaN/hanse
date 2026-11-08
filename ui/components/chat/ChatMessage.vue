@@ -7,12 +7,10 @@ import {
   attachmentViewFromFilePart,
   isHiddenSyntheticTextPart,
 } from "../../../assets/chat-core.js";
-import { allocateView, patchPartView, type ToolView } from "../../../assets/chat-diff.js";
 import { isKnownPartType } from "../../chat/feed-store.js";
 import type { ChatMessagePartView, ChatMessageView, InlineQuestionView } from "../../chat/types.js";
 import ChatAttachmentCard from "./ChatAttachmentCard.vue";
 import ChatQuestionCard from "./ChatQuestionCard.vue";
-import DiffView from "./DiffView.vue";
 import HandoffCard from "./HandoffCard.vue";
 import MarkdownBlock from "./MarkdownBlock.vue";
 import OmoCard from "./OmoCard.vue";
@@ -26,6 +24,7 @@ const HIDDEN_PART_TYPES = new Set([
   "compaction",
   "snapshot",
   "agent",
+  "patch",
 ]);
 
 const props = defineProps<{
@@ -108,7 +107,6 @@ function detailsPreview(part: ChatMessagePartView): string {
     }
     return "";
   };
-  if (part.type === "patch") return first("title");
   if (part.type === "file") return first("filename", "path", "name", "title");
   if (part.type === "subtask") return first("description", "agent", "title", "prompt");
   return "";
@@ -117,43 +115,11 @@ function detailsPreview(part: ChatMessagePartView): string {
 function detailsBody(part: ChatMessagePartView): string {
   const data = dataOf(part);
   if (part.type === "reasoning") return stringField(part, "text") || "Reasoning";
-  if (part.type === "patch") {
-    return stringField(part, "patch") || stringField(part, "text") || "Patch";
-  }
   for (const key of ["output", "error", "text", "content", "patch"]) {
     const value = data[key];
     if (typeof value === "string" && value.length > 0) return value;
   }
   return part.text.length > 0 ? part.text : "No output";
-}
-
-const patchViews = computed(() => {
-  const map = new Map<string, ToolView | null>();
-  for (const part of props.record.parts) {
-    map.set(part.id, part.type === "patch" ? allocateView(patchPartView(dataOf(part))) : null);
-  }
-  return map;
-});
-
-function patchView(part: ChatMessagePartView): ToolView | null {
-  return patchViews.value.get(part.id) ?? null;
-}
-
-function patchKind(part: ChatMessagePartView): string {
-  return patchView(part)?.kind ?? "";
-}
-
-function patchKey(part: ChatMessagePartView): string {
-  const view = patchView(part);
-  if (view === null) return "";
-  const sizes = (view.files ?? []).map((file) =>
-    typeof file.patch === "string"
-      ? file.patch.length
-      : typeof file.content === "string"
-        ? file.content.length
-        : 0,
-  );
-  return `${part.id}:${view.kind}:${sizes.join(",")}`;
 }
 
 function isHidden(part: ChatMessagePartView): boolean {
@@ -163,7 +129,6 @@ function isHidden(part: ChatMessagePartView): boolean {
       part.type !== "text" &&
       part.type !== "reasoning" &&
       part.type !== "tool" &&
-      part.type !== "patch" &&
       part.type !== "file" &&
       part.type !== "subtask")
   );
@@ -255,28 +220,6 @@ const optimisticLabel = computed(() => {
           @reject="emit('question-reject', questionView(part) as InlineQuestionView)"
         />
         <ToolPart v-else-if="part.type === 'tool'" :part="part" />
-        <details
-          v-else-if="part.type === 'patch'"
-          class="tool-call chat-detail"
-          :data-part-id="part.id"
-          :data-part-type="part.type"
-          @toggle="onDetailToggle(part.id, $event)"
-        >
-          <summary>
-            <span class="mono">{{ detailsLabel(part) }}</span>
-            <span v-if="detailsPreview(part).length > 0" class="tool-call__path">
-              {{ detailsPreview(part) }}
-            </span>
-          </summary>
-          <DiffView
-            v-if="patchKind(part) === 'diff' || patchKind(part) === 'files'"
-            :view="patchView(part) as ToolView"
-            :part-id="part.id"
-            :view-key="patchKey(part)"
-            :open="isDetailOpen(part.id)"
-          />
-          <pre v-else class="chat-detail__text">{{ detailsBody(part) }}</pre>
-        </details>
         <ChatAttachmentCard
           v-else-if="fileAttachment(part) !== null"
           :attachment="fileAttachment(part) as AttachmentView"

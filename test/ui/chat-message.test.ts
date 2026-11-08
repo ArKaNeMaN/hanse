@@ -130,7 +130,7 @@ describe("ChatMessage part surfaces", () => {
     wrapper.unmount();
   });
 
-  it("renders tool, patch, file, and subtask views", async () => {
+  it("renders tool, file, and subtask views while hiding patch parts", async () => {
     const wrapper = render([
       part({
         id: "tool",
@@ -162,7 +162,10 @@ describe("ChatMessage part surfaces", () => {
     await nextTick();
     expect(wrapper.find('[data-part-type="tool"]').text()).toContain("bash");
     expect(wrapper.find('[data-part-type="tool"]').text()).toContain("tests passed");
-    expect(wrapper.find('[data-part-type="patch"]').exists()).toBe(true);
+    const patch = wrapper.find('[data-part-type="patch"]');
+    expect(patch.exists()).toBe(true);
+    expect(patch.isVisible()).toBe(false);
+    expect(patch.text()).toBe("");
     expect(wrapper.find('[data-part-type="file"]').text()).toContain("src/file.ts");
     expect(wrapper.find('[data-part-type="subtask"]').text()).toContain("Review the change");
     wrapper.unmount();
