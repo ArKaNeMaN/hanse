@@ -23,6 +23,13 @@ import {
 import { handleCommands, isCommandsRoute } from "./commands.js";
 import { handleContext, isContextRoute } from "./context.js";
 import { handleDeletion, isDeletionRoute } from "./deletion.js";
+import {
+  closeWebSocket,
+  drainingResponse,
+  handleDeploy,
+  isDeployRoute,
+  isLongLivedStreamPath,
+} from "./deploy.js";
 import { handleGit } from "./git.js";
 import { type HttpDeps, type HttpRequest, type HttpResponse, handleRequest } from "./handler.js";
 import { handleHandoffHttp } from "./handoff.js";
@@ -276,6 +283,23 @@ export function createHttpServer(deps: HttpDeps): Server {
       return;
     }
 
+    const gateRequest = httpRequestFor(request, url, "");
+    const blocked = drainingResponse(deps, gateRequest);
+    if (blocked !== undefined) {
+      writeHttpResponse(request, response, blocked);
+      return;
+    }
+    const endRequest = deps.drain?.trackHttp(
+      !isLongLivedStreamPath(url.pathname) &&
+        !isDeployRoute(url.pathname) &&
+        url.pathname !== "/healthz" &&
+        url.pathname !== "/readyz",
+    );
+    if (endRequest !== undefined) {
+      response.once("finish", endRequest);
+      response.once("close", endRequest);
+    }
+
     if (url.pathname === "/ide" || url.pathname.startsWith("/ide/")) {
       if (!isHumanCookie(deps, request.headers.cookie)) {
         const next = encodeURIComponent(`${url.pathname}${url.search}`);
@@ -409,6 +433,11 @@ export function createHttpServer(deps: HttpDeps): Server {
     void readBody(request, bodyLimitFor(request.url ?? ""))
       .then(async (body) => {
         const httpRequest = httpRequestFor(request, url, body);
+        const deployResult = await handleDeploy(deps, httpRequest);
+        if (deployResult !== undefined) {
+          writeHttpResponse(request, response, deployResult);
+          return;
+        }
         const handoffResult = await handleHandoffHttp(deps, httpRequest);
         if (handoffResult !== undefined) {
           response.writeHead(handoffResult.status, {
@@ -521,6 +550,14 @@ export function createHttpServer(deps: HttpDeps): Server {
     if (isManagedAgentToken(deps, request)) {
       rejectUpgrade(socket, 403, "Forbidden");
       return;
+    }
+    if (deps.drain?.isDraining() === true || deps.drain?.isShuttingDown() === true) {
+      closeWebSocket(socket);
+      return;
+    }
+    const unregisterStream = deps.drain?.registerStream(() => closeWebSocket(socket));
+    if (unregisterStream !== undefined) {
+      socket.once("close", unregisterStream);
     }
     const url = request.url ?? "";
     if (/^\/api\/apps\/[^/]+\/terminal(?:\?|$)/.test(url)) {

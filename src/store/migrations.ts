@@ -2,6 +2,15 @@ export interface Migration {
   version: number;
   name: string;
   sql: string;
+  /**
+   * Whether the previous coordinator release can still run against this schema (an additive/expand
+   * migration). `false` marks a migration that needs the image rollback path (restore a backup).
+   */
+  backwardCompatible?: boolean;
+  /** Whether the migration rewrites existing rows and should not run while the coordinator serves. */
+  requiresExclusive?: boolean;
+  /** Rough offline/online application time used by `hanse migrate --check`. */
+  estimatedMs?: number;
 }
 
 export const MIGRATIONS: readonly Migration[] = [
@@ -225,6 +234,8 @@ ALTER TABLE instances ADD COLUMN image_ref TEXT;
   {
     version: 8,
     name: "git-credentials",
+    backwardCompatible: false,
+    requiresExclusive: true,
     sql: `
 CREATE TABLE setting_secrets (
   scope TEXT NOT NULL CHECK (scope IN ('global', 'project', 'app')),
@@ -1014,6 +1025,30 @@ CREATE TABLE skill_source_skills (
 CREATE INDEX skill_source_skills_name ON skill_source_skills(snapshot_id, name);
 
 ALTER TABLE instances ADD COLUMN applied_skills_hash TEXT;
+`,
+  },
+  {
+    version: 25,
+    name: "deploy-drain-and-restart-claims",
+    sql: `
+-- v25: persisted deploy drain state and surviving async restart claims
+CREATE TABLE deploy_state (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  draining INTEGER NOT NULL DEFAULT 0 CHECK (draining IN (0, 1)),
+  drain_id TEXT,
+  draining_since TEXT,
+  updated_at TEXT NOT NULL
+);
+
+INSERT INTO deploy_state (id, draining, drain_id, draining_since, updated_at)
+VALUES (1, 0, NULL, NULL, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+
+CREATE TABLE restart_claims (
+  app_id TEXT PRIMARY KEY REFERENCES apps(id) ON DELETE CASCADE,
+  claim_id TEXT NOT NULL,
+  reason TEXT,
+  created_at TEXT NOT NULL
+);
 `,
   },
 ];

@@ -1,3 +1,4 @@
+import type { RunnerHandshake } from "../shared/runner-api.js";
 import type {
   ReconcileResponse,
   RuntimeAppStatus,
@@ -23,6 +24,8 @@ export interface AgentRuntimeClient {
   logs(appId: string): Promise<RuntimeLogs | undefined>;
   /** Stop every host whose app id is not in the desired list. */
   reconcile(appIds: string[]): Promise<ReconcileResponse>;
+  /** Read the runner API version handshake; absent on transports that do not expose one. */
+  handshake?(): Promise<RunnerHandshake | undefined>;
 }
 
 /** Historical name used in the runtime plan; identical to {@link AgentRuntimeClient}. */
@@ -144,6 +147,38 @@ export class HttpAgentRuntimeClient implements AgentRuntimeClient {
     return (await this.#request<ReconcileResponse>("POST", "/v1/reconcile", {
       appIds,
     })) as ReconcileResponse;
+  }
+
+  async handshake(): Promise<RunnerHandshake | undefined> {
+    let response: Response;
+    try {
+      response = await this.#fetch(`${this.#baseUrl}/healthz`, {
+        signal: AbortSignal.timeout(this.#timeoutMs),
+      });
+    } catch {
+      return undefined;
+    }
+    if (!response.ok) {
+      return undefined;
+    }
+    const parsed: unknown = await response.json().catch(() => undefined);
+    if (!isRecord(parsed)) {
+      return undefined;
+    }
+    const hanseVersion =
+      typeof parsed.hanseVersion === "string" ? { hanseVersion: parsed.hanseVersion } : {};
+    const apiVersion = Number(parsed.apiVersion);
+    if (!Number.isInteger(apiVersion)) {
+      return { apiVersion: 0, minApiVersion: 0, maxApiVersion: 0, ...hanseVersion };
+    }
+    const minApiVersion = Number(parsed.minApiVersion);
+    const maxApiVersion = Number(parsed.maxApiVersion);
+    return {
+      apiVersion,
+      minApiVersion: Number.isInteger(minApiVersion) ? minApiVersion : apiVersion,
+      maxApiVersion: Number.isInteger(maxApiVersion) ? maxApiVersion : apiVersion,
+      ...hanseVersion,
+    };
   }
 
   async #request<T>(

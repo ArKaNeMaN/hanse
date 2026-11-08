@@ -5,6 +5,7 @@ import { reconcileSkillFiles } from "./reconcile-skill-files.js";
 export * from "./database.js";
 export * from "./migrations.js";
 export * from "./reconcile-skill-files.js";
+export * from "./restart-claims.js";
 
 /** Open the coordinator DB, apply migrations, and reconcile local skill files. */
 export function openCoordinatorDatabase(

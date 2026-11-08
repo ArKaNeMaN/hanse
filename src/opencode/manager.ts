@@ -60,7 +60,11 @@ import type {
   SkillMaterializeResult,
   SkillSource,
 } from "../skills/index.js";
-import type { SqliteDatabase } from "../store/index.js";
+import {
+  claimPersistedRestart,
+  releasePersistedRestart,
+  type SqliteDatabase,
+} from "../store/index.js";
 import {
   type ProcessEvent,
   type ProcessPhase,
@@ -1819,8 +1823,9 @@ export class InstanceManager {
    * Claim a restart synchronously and run it on the next tick.
    *
    * A duplicate claim returns `{ accepted: false }` without a completion promise. The claim is
-   * in memory: if the coordinator exits after a 202 the app can remain stopped and the caller must
-   * retry. Errors are logged, reflected in the instance row, and rejected only to sync callers.
+   * persisted before the caller can answer `202`, so a coordinator exit mid-restart is repaired by
+   * the next startup's restart-claim recovery pass. Errors are logged, reflected in the instance
+   * row, and rejected only to sync callers.
    */
   beginRestart(app: ManagedApp): RestartClaim {
     const release = this.#acquireRestartClaim(app.id);
@@ -1909,6 +1914,16 @@ export class InstanceManager {
     if (this.#restartClaims.has(appId)) {
       return undefined;
     }
+    let persistedClaimId: string | undefined;
+    try {
+      persistedClaimId = claimPersistedRestart(this.#db, appId);
+    } catch {
+      persistedClaimId = "__memory__";
+    }
+    if (persistedClaimId === undefined) {
+      return undefined;
+    }
+    const persisted = persistedClaimId !== "__memory__";
     let released = false;
     const release = (): void => {
       if (released) {
@@ -1917,6 +1932,13 @@ export class InstanceManager {
       released = true;
       if (this.#restartClaims.get(appId) === release) {
         this.#restartClaims.delete(appId);
+      }
+      if (persisted) {
+        try {
+          releasePersistedRestart(this.#db, appId, persistedClaimId);
+        } catch {
+          // A lost claim row is repaired by the next startup recovery pass.
+        }
       }
     };
     this.#restartClaims.set(appId, release);

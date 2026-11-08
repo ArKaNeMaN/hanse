@@ -7,6 +7,7 @@ import {
   imagesCommand,
   initCommand,
   mcpCommand,
+  migrateCommand,
   runnerCommand,
   serveCommand,
   statusCommand,
@@ -42,6 +43,7 @@ function buildUsage(): string[] {
     "  init [dir]      Scaffold a project (.hanse/project.yaml)",
     "  status [dir]    Discover and register a project, print its status",
     "  serve           Serve the web dashboard and HTTP API",
+    "  migrate         Check or apply additive schema migrations",
     "  images build    Build one app image through the runner (human action)",
     "  mcp             Run the coordinator MCP server (stdio)",
     "  web-mcp         Run the managed web tools MCP server (stdio)",
@@ -57,6 +59,10 @@ function buildUsage(): string[] {
     "      --workspace <p>   Workspace of projects (serve/images; default: cwd)",
     "      --app <key>       Application key (images build)",
     "      --project <p>     Project id or path (images build)",
+    "      --check           Read-only migration inspection (migrate)",
+    "      --online          Apply additive migrations while serving (migrate)",
+    "      --db <p>          Database file (migrate; default: coordinator DB)",
+    "      --json            Machine-readable output (migrate --check)",
     "      --hostname <h>    Bind host (serve/agent-supervisor/runner; default: 127.0.0.1/0.0.0.0)",
     "      --port <n>        Bind port (serve/agent-supervisor/runner; default: 8787/8789/8790)",
     "      --spec <p>        Runtime spec file (agent-host)",
@@ -100,6 +106,16 @@ export async function runCli(argv: readonly string[], io: CliIo = defaultIo): Pr
           workspace: typeof args.flags.workspace === "string" ? args.flags.workspace : ".",
           hostname: typeof args.flags.hostname === "string" ? args.flags.hostname : "127.0.0.1",
           port: typeof args.flags.port === "string" ? Number(args.flags.port) : 8787,
+        },
+        defaultContext(process.cwd(), io, args.flags),
+      );
+    case "migrate":
+      return migrateCommand(
+        {
+          check: args.flags.check === true,
+          online: args.flags.online === true,
+          json: args.flags.json === true,
+          db: typeof args.flags.db === "string" ? args.flags.db : undefined,
         },
         defaultContext(process.cwd(), io, args.flags),
       );

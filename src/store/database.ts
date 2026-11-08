@@ -51,6 +51,102 @@ export function openDatabase(filename: string): SqliteDatabase {
   return db;
 }
 
+/** Open an existing database without write access, for `hanse migrate --check`. */
+export function openDatabaseReadOnly(filename: string): SqliteDatabase {
+  const db = new Database(filename, { readonly: true, fileMustExist: true });
+  db.pragma("busy_timeout = 5000");
+  return db;
+}
+
+/** One pending migration as reported by `hanse migrate --check`. */
+export interface MigrationPlanEntry {
+  version: number;
+  name: string;
+  backwardCompatible: boolean;
+  requiresExclusive: boolean;
+  estimatedMs: number;
+}
+
+/** Read-only schema inspection result shared by the readiness probe and `hanse migrate --check`. */
+export interface MigrationInspection {
+  current: number;
+  target: number;
+  pending: MigrationPlanEntry[];
+  pendingCount: number;
+  backwardCompatible: boolean;
+  requiresExclusive: boolean;
+  estimatedMs: number;
+  newer: boolean;
+  unknownApplied: number[];
+}
+
+function migrationEstimatedMs(migration: Migration): number {
+  if (migration.estimatedMs !== undefined) {
+    return migration.estimatedMs;
+  }
+  return Math.min(5000, Math.max(20, Math.round(migration.sql.length / 40)));
+}
+
+function migrationPlanEntry(migration: Migration): MigrationPlanEntry {
+  return {
+    version: migration.version,
+    name: migration.name,
+    backwardCompatible: migration.backwardCompatible ?? true,
+    requiresExclusive: migration.requiresExclusive ?? false,
+    estimatedMs: migrationEstimatedMs(migration),
+  };
+}
+
+/** Inspect the applied and pending migrations without creating or modifying anything. */
+export function inspectMigrations(db: SqliteDatabase): MigrationInspection {
+  const hasTable =
+    db
+      .prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = ?")
+      .get("schema_migrations") !== undefined;
+  const appliedRows = (
+    hasTable ? db.prepare("SELECT version FROM schema_migrations ORDER BY version").all() : []
+  ) as Array<{ version: number }>;
+  const known = new Map(MIGRATIONS.map((migration) => [migration.version, migration]));
+  const target = MIGRATIONS.at(-1)?.version ?? 0;
+  const current = appliedRows.at(-1)?.version ?? 0;
+  const applied = new Set(appliedRows.map((row) => row.version));
+  const unknownApplied = appliedRows
+    .map((row) => row.version)
+    .filter((version) => !known.has(version));
+  const newer = current > target || unknownApplied.length > 0;
+  const pending = newer
+    ? []
+    : MIGRATIONS.filter((migration) => !applied.has(migration.version)).map(migrationPlanEntry);
+  return {
+    current,
+    target,
+    pending,
+    pendingCount: pending.length,
+    backwardCompatible: pending.every((migration) => migration.backwardCompatible),
+    requiresExclusive: pending.some((migration) => migration.requiresExclusive),
+    estimatedMs: pending.reduce((total, migration) => total + migration.estimatedMs, 0),
+    newer,
+    unknownApplied,
+  };
+}
+
+/** Apply pending migrations only when every one is additive and safe while the coordinator serves. */
+export function applyOnlineMigrations(db: SqliteDatabase): number {
+  const inspection = inspectMigrations(db);
+  if (inspection.newer) {
+    throw new SchemaTooNewError(inspection.current, inspection.target);
+  }
+  const unsafe = inspection.pending.find(
+    (migration) => !migration.backwardCompatible || migration.requiresExclusive,
+  );
+  if (unsafe !== undefined) {
+    throw new Error(
+      `migration ${unsafe.version} (${unsafe.name}) is not online-safe; stop the coordinator and run the normal startup migration`,
+    );
+  }
+  return runMigrations(db);
+}
+
 function checksum(sql: string): string {
   return createHash("sha256").update(sql).digest("hex");
 }

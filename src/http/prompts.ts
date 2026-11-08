@@ -45,6 +45,7 @@ import { agentMediaServiceFor } from "./agent-media.js";
 import { appDir, type FoundApp, findApp, toManagedApp } from "./apps.js";
 import { principalFrom } from "./auth.js";
 import { agentStoppedResponse } from "./chat.js";
+import { registerSseDrain } from "./deploy.js";
 import { lifecycleErrorResponse } from "./errors.js";
 import type { HttpDeps, HttpRequest, HttpResponse } from "./handler.js";
 
@@ -810,6 +811,8 @@ export async function streamAppEvents(
           connection: "keep-alive",
           "x-accel-buffering": "no",
         });
+        const unregisterDrain = registerSseDrain(deps, response);
+        response.once("close", unregisterDrain);
         void write(ready);
         heartbeat = setInterval(() => {
           void write(": ping\n\n");

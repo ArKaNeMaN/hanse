@@ -9,10 +9,13 @@ services:
     container_name: hanse
     restart: unless-stopped
     user: "1000:1000"
+    stop_grace_period: 30s
     security_opt:
       - no-new-privileges:true
     environment:
       HANSE_OPERATOR_TOKEN: ${HANSE_OPERATOR_TOKEN:?set HANSE_OPERATOR_TOKEN in .env}
+      HANSE_SHUTDOWN_GRACE_MS: ${HANSE_SHUTDOWN_GRACE_MS:-25000}
+      HANSE_START_DRAINED: ${HANSE_START_DRAINED:-0}
       HANSE_RUNTIME_TOKEN: ${HANSE_RUNTIME_TOKEN:?set HANSE_RUNTIME_TOKEN in .env}
       HANSE_STATE_HOME: /data/state
       HANSE_AGENTS_HOME: /data/agents

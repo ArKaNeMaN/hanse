@@ -11,8 +11,10 @@ import { ConfigError } from "../config/load.js";
 import { DeletionService } from "../coordinator/deletion.js";
 import { DeploymentLock, deploymentLockPath } from "../coordinator/deployment-lock.js";
 import { HandoffDispatcher } from "../coordinator/dispatcher.js";
+import { DrainController } from "../coordinator/drain.js";
 import { LifecycleActivity } from "../coordinator/lifecycle-activity.js";
 import { CoordinatorService } from "../coordinator/service.js";
+import { runGracefulShutdown, shutdownGraceMs, startDrainedFlag } from "../coordinator/shutdown.js";
 import {
   GIT_SANDBOX_APP_DIR_ENV,
   GIT_SANDBOX_BRANCH_ENV,
@@ -28,12 +30,13 @@ import {
 import { validateGitRequest } from "../git/request.js";
 import { GitService } from "../git/service.js";
 import { sweepStaleRuntimeDirs } from "../git/temp-dir.js";
+import { findApp, toManagedApp } from "../http/apps.js";
 import type { ProjectContext } from "../http/handler.js";
 import { createHttpServer } from "../http/server.js";
 import { upsertPrincipalWithToken } from "../identity/principals.js";
 import { RunnerImageClient } from "../images/client.js";
 import { ImageService, ImageServiceError } from "../images/service.js";
-import { createLogger } from "../logging/logger.js";
+import { createLogger, type Logger } from "../logging/logger.js";
 import { ensureMasterAgent } from "../master/bootstrap.js";
 import { isMasterProject, MASTER_DIR_NAME } from "../master/constants.js";
 import { runRemoteMcpServer } from "../mcp/remote.js";
@@ -61,12 +64,18 @@ import {
 } from "../runtime/index.js";
 import { loadOrCreateKey } from "../secrets/index.js";
 import { SettingsService } from "../settings/index.js";
+import { isRunnerCompatible } from "../shared/runner-api.js";
 import { CompositeSkillSource, SkillSourceService } from "../skill-sources/index.js";
 import { SkillService } from "../skills/index.js";
 import { SshService } from "../ssh/service.js";
 import {
+  applyOnlineMigrations,
+  inspectMigrations,
+  listPersistedRestarts,
   openCoordinatorDatabase,
   openDatabase,
+  openDatabaseReadOnly,
+  releasePersistedRestart,
   runMigrations,
   SchemaTooNewError,
   type SqliteDatabase,
@@ -153,6 +162,153 @@ export async function statusCommand(dir: string, ctx: CommandContext): Promise<n
   return 0;
 }
 
+export interface MigrateOptions {
+  check: boolean;
+  online: boolean;
+  json: boolean;
+  db: string | undefined;
+}
+
+function migrationPayload(
+  inspection: ReturnType<typeof inspectMigrations>,
+): Record<string, unknown> {
+  return {
+    current: inspection.current,
+    target: inspection.target,
+    pending: inspection.pending,
+    pendingCount: inspection.pendingCount,
+    backwardCompatible: inspection.backwardCompatible,
+    requiresExclusive: inspection.requiresExclusive,
+    estimatedMs: inspection.estimatedMs,
+    newer: inspection.newer,
+    unknownApplied: inspection.unknownApplied,
+  };
+}
+
+function writeMigrationResult(
+  io: CliIo,
+  jsonOutput: boolean,
+  payload: Record<string, unknown>,
+  lines: string[],
+): void {
+  if (jsonOutput) {
+    io.stdout(JSON.stringify(payload));
+    return;
+  }
+  for (const line of lines) {
+    io.stdout(line);
+  }
+}
+
+/** `hanse migrate --check` (read-only) and `--online` (additive migrations). */
+export async function migrateCommand(
+  options: MigrateOptions,
+  ctx: CommandContext,
+): Promise<number> {
+  if (options.check === options.online) {
+    ctx.io.stderr(
+      "migrate: use exactly one of --check (read-only) or --online (additive migrations)",
+    );
+    return 2;
+  }
+  const filename =
+    options.db === undefined ? coordinatorDbPath(ctx.stateHome) : path.resolve(ctx.cwd, options.db);
+
+  if (options.check) {
+    let db: SqliteDatabase;
+    try {
+      db = openDatabaseReadOnly(filename);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      writeMigrationResult(ctx.io, options.json, { error: message, code: "database_unavailable" }, [
+        `migrate: cannot read ${filename}: ${message}`,
+      ]);
+      return 20;
+    }
+    try {
+      const inspection = inspectMigrations(db);
+      const payload = migrationPayload(inspection);
+      writeMigrationResult(ctx.io, options.json, payload, [
+        `current: ${inspection.current}`,
+        `target: ${inspection.target}`,
+        `pending: ${inspection.pendingCount}`,
+        `backwardCompatible: ${inspection.backwardCompatible}`,
+        `requiresExclusive: ${inspection.requiresExclusive}`,
+        `estimatedMs: ${inspection.estimatedMs}`,
+        ...(inspection.newer
+          ? ["database is newer than this binary or has unknown migrations"]
+          : []),
+      ]);
+      if (inspection.newer) {
+        return 20;
+      }
+      return inspection.pendingCount > 0 ? 10 : 0;
+    } finally {
+      db.close();
+    }
+  }
+
+  let db: SqliteDatabase;
+  try {
+    db = openDatabase(filename);
+  } catch (error) {
+    ctx.io.stderr(
+      `migrate: cannot open ${filename}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return 1;
+  }
+  try {
+    const inspection = inspectMigrations(db);
+    if (inspection.newer) {
+      writeMigrationResult(ctx.io, options.json, migrationPayload(inspection), [
+        "database is newer than this binary or has unknown migrations",
+      ]);
+      return 20;
+    }
+    if (inspection.pendingCount === 0) {
+      writeMigrationResult(ctx.io, options.json, { applied: 0, ...migrationPayload(inspection) }, [
+        "no pending migrations",
+      ]);
+      return 0;
+    }
+    if (!inspection.backwardCompatible || inspection.requiresExclusive) {
+      const blocked = inspection.pending.find(
+        (migration) => !migration.backwardCompatible || migration.requiresExclusive,
+      );
+      writeMigrationResult(
+        ctx.io,
+        options.json,
+        {
+          error: `migration ${blocked?.version ?? "unknown"} requires an offline upgrade`,
+          code: "migration_requires_offline",
+          ...migrationPayload(inspection),
+        },
+        [
+          `migration ${blocked?.version ?? "unknown"} (${blocked?.name ?? "unknown"}) cannot run online`,
+        ],
+      );
+      return 1;
+    }
+    const applied = applyOnlineMigrations(db);
+    writeMigrationResult(
+      ctx.io,
+      options.json,
+      { applied, current: inspection.target, target: inspection.target },
+      [`applied ${applied} migration(s); schema is now at ${inspection.target}`],
+    );
+    return 0;
+  } catch (error) {
+    if (error instanceof SchemaTooNewError || error instanceof UnknownMigrationError) {
+      ctx.io.stderr(`migrate: ${error.message}`);
+      return 20;
+    }
+    ctx.io.stderr(`migrate: ${error instanceof Error ? error.message : String(error)}`);
+    return 1;
+  } finally {
+    db.close();
+  }
+}
+
 export interface ServeOptions {
   workspace: string;
   hostname: string;
@@ -190,6 +346,40 @@ export async function resumeContextMonitors(
     await manager.resumeRunning(apps);
   } catch {
     process.stderr.write("hanse: context monitor resume failed\n");
+  }
+}
+
+/** Finish async restarts that were claimed with a `202` before the coordinator exited. */
+export async function recoverRestartClaims(
+  db: SqliteDatabase,
+  manager: {
+    ensure(
+      app: ReturnType<typeof toManagedApp>,
+      options?: { origin?: "operator" | "system"; reason?: string },
+    ): Promise<string>;
+  },
+  getProjects: () => ProjectContext[],
+  logger?: Logger,
+): Promise<void> {
+  for (const claim of listPersistedRestarts(db)) {
+    const row = db
+      .prepare("SELECT project_id AS projectId, app_key AS appKey FROM apps WHERE id = ?")
+      .get(claim.appId) as { projectId: string; appKey: string } | undefined;
+    const found =
+      row === undefined ? undefined : findApp({ getProjects }, row.projectId, row.appKey);
+    if (found === undefined) {
+      releasePersistedRestart(db, claim.appId, claim.claimId);
+      continue;
+    }
+    try {
+      await manager.ensure(toManagedApp(found), { origin: "system", reason: "restart_recovery" });
+      releasePersistedRestart(db, claim.appId, claim.claimId);
+    } catch (error) {
+      logger?.warn("restart_claim_recovery_failed", {
+        appId: claim.appId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 }
 export interface ImagesOptions {
@@ -623,6 +813,23 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
     db?.close();
     throw error;
   }
+  const logger = createLogger();
+  const drain = new DrainController({
+    db,
+    lifecycle: lifecycleActivity,
+    logger,
+    startedAt: new Date().toISOString(),
+  });
+  drain.initialize({ startDrained: startDrainedFlag() });
+  const runnerHandshake = await runtime.handshake?.();
+  if (runnerHandshake !== undefined && !isRunnerCompatible(runnerHandshake)) {
+    logger.warn("runner_api_incompatible", {
+      runnerApi: runnerHandshake.apiVersion,
+      minApiVersion: runnerHandshake.minApiVersion,
+      maxApiVersion: runnerHandshake.maxApiVersion,
+      hanseVersion: runnerHandshake.hanseVersion,
+    });
+  }
   const modelProviders = new ModelProviderService({ db });
   const settings = new SettingsService({
     db,
@@ -771,7 +978,8 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
     ...(deletion === undefined ? {} : { deletion }),
     deploymentLock,
     lifecycleActivity,
-    logger: createLogger(),
+    drain,
+    logger,
   });
 
   let ide: ChildProcess | null = null;
@@ -804,6 +1012,9 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
   void resumeContextMonitors(manager, listResumableApps(db)).catch(() => {
     process.stderr.write("hanse: context monitor resume failed\n");
   });
+  void recoverRestartClaims(db, manager, getProjects, logger).catch(() => {
+    process.stderr.write("hanse: restart-claim recovery failed\n");
+  });
   handoffDispatcher.start();
   skillSources.start();
   const operatorCount = getProjects().filter((project) => !isMasterProject(project.id)).length;
@@ -812,15 +1023,39 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
   );
 
   return await new Promise<number>((resolve) => {
+    let stopping = false;
     const shutdown = (): void => {
-      handoffDispatcher?.stop();
-      skillSources.stop();
-      manager.detach();
-      ide?.kill("SIGTERM");
-      server.close(() => {
-        db.close();
-        resolve(0);
-      });
+      if (stopping) {
+        return;
+      }
+      stopping = true;
+      void runGracefulShutdown({
+        drain,
+        server,
+        graceMs: shutdownGraceMs(),
+        logger,
+        stopBackground: () => {
+          handoffDispatcher?.stop();
+          skillSources.stop();
+          manager.stopStatusReconciler();
+        },
+        onClose: () => {
+          manager.detach();
+          ide?.kill("SIGTERM");
+        },
+        closeDb: () => {
+          db.close();
+        },
+      })
+        .then(() => {
+          resolve(0);
+        })
+        .catch((error: unknown) => {
+          logger.error("shutdown_failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+          resolve(0);
+        });
     };
     process.on("SIGINT", shutdown);
     process.on("SIGTERM", shutdown);

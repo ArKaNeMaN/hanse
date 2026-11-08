@@ -142,6 +142,7 @@ import { agentMediaServiceFor } from "./agent-media.js";
 import { type FoundApp, findApp, toManagedApp } from "./apps.js";
 import { principalFrom } from "./auth.js";
 import type { PageChrome, SiteModel } from "./dashboard.js";
+import { registerSseDrain } from "./deploy.js";
 import { lifecycleErrorResponse } from "./errors.js";
 import type { HttpDeps, HttpRequest, HttpResponse } from "./handler.js";
 import { appShell, emptyState, pageHeader } from "./ui.js";
@@ -321,6 +322,8 @@ export async function streamSessionEvents(
     connection: "keep-alive",
     "x-accel-buffering": "no",
   });
+  const unregisterDrain = registerSseDrain(deps, response);
+  response.once("close", unregisterDrain);
   const streamID = request.headers["x-hanse-stream"]?.trim() ?? "";
   const stream = createRawEventStream(upstream.body, {
     signal: controller.signal,

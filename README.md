@@ -150,7 +150,10 @@ Open <http://127.0.0.1:8787> and sign in with the token. The coordinator binds l
 set `HANSE_BIND=0.0.0.0` to expose it on the LAN.
 
 `GET /healthz` is the liveness check. For deployment automation, `GET /readyz` reports the version,
-image revision, schema version, deployment-lock state, and in-flight lifecycle count.
+image revision, schema version, deployment-lock state, drain state, database/migration state,
+in-flight lifecycle and HTTP counts, and uptime. `POST /api/deploy/drain` (operator auth) quiesces the
+coordinator for a deploy; `POST /api/deploy/resume` clears it. `hanse migrate --check --db <copy>
+--json` inspects a database read-only (exit `0` compatible, `10` migration required, `20` newer).
 
 The full guide covers model credentials, LAN/TLS exposure, backups (including `agents`), upgrades,
 source builds, image publishing, and troubleshooting: [`docs/deployment.md`](docs/deployment.md).

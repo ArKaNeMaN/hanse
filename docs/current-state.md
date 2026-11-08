@@ -52,7 +52,8 @@ a host `opencode` auth file.
 - **Exposed port:** `${HANSE_BIND:-127.0.0.1}:${HANSE_PORT:-8787}` (loopback by default; set
   `HANSE_BIND=0.0.0.0` or a LAN IP to expose it). `/healthz` is an unauthenticated constant liveness
   endpoint; the separate unauthenticated `/readyz` reports version, revision, schema version,
-  deployment-lock state, and in-flight lifecycle count. `/` and `/api/*` are our UI; `/ide/*` is
+  deployment-lock state, drain state, database/migration state, in-flight lifecycle and HTTP counts,
+  and process uptime. `/` and `/api/*` are our UI; `/ide/*` is
   reverse-proxied to `ide:8080` (HTTP and WebSocket), with `/ide` stripped and `?folder` confined to
   the workspace root. The coordinator is the single front door.
 
@@ -74,12 +75,32 @@ a host `opencode` auth file.
   `state/` restore must restore only the DB/non-lock state or rewrite the lock before continuing.
   `hanse images` honors the lock but runs outside the process counter and must not run during a
   deploy.
-- **Readiness.** `GET /readyz` is synchronous, unauthenticated, non-mutating, and returns
-  `{status,version,revision,schemaVersion,deploying,inFlightLifecycle}` with
-  `Cache-Control: no-store`; `revision` comes from image-provided `HANSE_REVISION` (`unknown` when
-  absent), and a schema-query failure returns `503 {"status":"error","error":"database_unavailable"}`.
-  It never calls the manager or runtime. The existing synchronous database handle inherits
-  `busy_timeout=5000`, so a concurrent restore can delay it up to five seconds.
+- **Readiness.** `GET /readyz` is synchronous, unauthenticated, non-mutating, and keeps
+  `{status,version,revision,schemaVersion,deploying,inFlightLifecycle}` additively adding
+  `draining`, `dbReady`, `migrationPending`, `inFlightHttp`, `startedAt`, `shutdownAt`, and `uptime`,
+  with `Cache-Control: no-store`; `revision` comes from image-provided `HANSE_REVISION` (`unknown`
+  when absent), and a schema-query failure returns
+  `503 {"status":"error","error":"database_unavailable","dbReady":false}`. After SIGTERM it returns
+  `503 {status:"shutting_down",...}`. It never calls the manager or runtime. The existing synchronous
+  database handle inherits `busy_timeout=5000`, so a concurrent restore can delay it up to five
+  seconds.
+- **Drain and resume.** `POST /api/deploy/drain` (human/operator auth, optional
+  `{timeoutSeconds}`) persists a drain row in `deploy_state`, closes SSE streams with a `deploy` event
+  and WebSockets with code `1012`, rejects new mutations with `503` + `Retry-After` (reads stay
+  available), waits for `inFlightLifecycle` and counted `inFlightHttp` to reach zero, runs
+  `PRAGMA wal_checkpoint(TRUNCATE)`, and returns
+  `{drainId,draining,drained,inFlightLifecycle,inFlightHttp,schemaVersion,revision,walCheckpoint}`.
+  It is idempotent and deliberately excludes long-lived streams from the quiescence count.
+  `POST /api/deploy/resume` clears the persisted state. Startup resumes a draining instance unless
+  `HANSE_START_DRAINED=1` starts it drained. SIGTERM uses the same drain path with
+  `HANSE_SHUTDOWN_GRACE_MS` (default 25 s), logs phase timings, closes the DB, and exits `0` inside
+  Compose's 30 s `stop_grace_period`.
+- **Migration inspection.** `hanse migrate --check --db <copy> --json` is read-only and returns
+  `{current,target,pending,pendingCount,backwardCompatible,requiresExclusive,estimatedMs,newer,
+  unknownApplied}` with exit `0` compatible, `10` migration required, and `20` newer/unknown.
+  `hanse migrate --online` applies only additive/expand pending migrations; migration v8 is the only
+  current migration that is not N-1 compatible and forces the normal startup path. The schema guard
+  remains unchanged, so rollback after a migration is still a backup restore.
 - **Schema guard.** Starting against a database whose applied migration is newer than the binary, or
   whose applied version is unknown, exits `1` before listening and before any partial migration.
   An applied checksum that differs from the code logs `schema_checksum_mismatch` with the version and
@@ -87,8 +108,9 @@ a host `opencode` auth file.
 - **Async restart.** `POST /api/apps/:app/restart?async=1` claims synchronously and returns
   `202 {accepted:true,appId}` without waiting; a duplicate claim returns `409 restart_in_progress`.
   Sync, async, and image-rollback restarts share one per-app claim. `GET /api/apps/:app/runtime`
-  exposes `restarting`. The claim is in memory: if the coordinator exits after `202`, the app can
-  remain stopped with no surviving marker, and the caller must retry or use the sync route.
+  exposes `restarting`. The claim is mirrored into `restart_claims` before the `202`; after a
+  coordinator exit, startup recovery calls `ensure` for each surviving claim and releases it only
+  after the app starts, so an interrupted `202` no longer leaves the app stopped indefinitely.
 - **MCP-token reconciliation.** A running app whose token row is missing or rotated reconciles the
   token in place and reconnects without `runtime.delete`/`runtime.ensure`; the container identity and
   start time are unchanged. Mint and file write are compensated on failure, an old in-flight token
@@ -609,13 +631,14 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   order; migrations v10 (applied settings/profile state), v11 (deletion markers), v12 (skills),
   v13 (skill bundles), v14 (session-bound handoffs, reply routing, and handoff policy), and v15
   (chat drafts, session state, and pending sends) and v16 (file-only attachments and deliveries)
-  follow. The current schema versions are `[1..24]` (v17 adds handoff message-id lookup indexes;
+  follow. The current schema versions are `[1..25]` (v17 adds handoff message-id lookup indexes;
   v18 adds agent image validity; v19 adds the global custom model provider registry; v20 adds the
   process-rule hash, runtime epoch/exit fields, and the session resume/notice tables; v21 adds
   `agent_media` for agent-published chat images; v22 adds the handoff-thread header fields, ordered
   `handoff_messages` columns, triggers, and indexes; v23 adds the `instances.process_*` current
   fields and the durable `agent_run_events` history; v24 adds arbitrary `skill_files`, external
-  skill-source tables, fork provenance, and `instances.applied_skills_hash`).
+  skill-source tables, fork provenance, and `instances.applied_skills_hash`; v25 adds the durable
+  `deploy_state` drain row and `restart_claims`).
 - Live on `deployment-host` (`sha-e2d89a2`): a temporary SSH target pinned and authenticated, an approval was
   approved, `echo QA_OK` and a 65 s `sleep` succeeded, upload/download round-tripped, a real
   `opencode` turn called `hanse_ssh_exec` and received the result after 65 s, and audit rows survived
@@ -1454,6 +1477,8 @@ Host `./agents` is mounted at `/data/agents` read-write in `hanse` and read-only
 - `hanse status [dir]` - discover/register a project and print its apps.
 - `hanse serve` - run the web UI/API (`--workspace`, `--hostname`, `--port`, `--state-home`); requires
   `HANSE_RUNTIME_TOKEN` and a reachable B1 runner (`HANSE_RUNNER_URL`).
+- `hanse migrate --check --db <copy> --json` - read-only migration inspection with exit `0`/`10`/`20`;
+  `hanse migrate --online` applies only additive/expand migrations while the coordinator serves.
 - `hanse runner` - internal B1 container runner (`--hostname`, `--port`; default `0.0.0.0:8790`).
 - `hanse agent-supervisor` / `hanse agent-host` - internal B0 compatibility commands, not used by the
   B1 Compose stack.
@@ -1478,6 +1503,8 @@ Host `./agents` is mounted at `/data/agents` read-write in `hanse` and read-only
 | `HANSE_TAG` / `HANSE_AGENT_TAG` | Compose | coordinator and per-app agent image tags; `HANSE_TAG` is the fallback for all, `HANSE_AGENT_TAG` for IDE/runner |
 | `HANSE_IDE_TAG` / `HANSE_RUNNER_TAG` | Compose | independent IDE and runner image tags; fall back to `HANSE_AGENT_TAG`, then `HANSE_TAG` |
 | `HANSE_DEPLOY_LOCK_FILE` | serve | absolute path of the external deployment lock (default `<state>/hanse/deploy.lock`) |
+| `HANSE_SHUTDOWN_GRACE_MS` | serve | graceful-shutdown budget (default 25000, clamped 1000..28000; keep below Compose `stop_grace_period: 30s`) |
+| `HANSE_START_DRAINED` | serve | `1` starts the coordinator already drained; otherwise startup resumes |
 | `HANSE_REVISION` | serve, image | image-provided full commit revision reported by `/readyz`; not an operator setting |
 | `HANSE_AUTH_FILE` | serve | host opencode `auth.json`; reconciled with provider-key settings into each app state |
 | `HANSE_OMO_PLUGIN` | serve | comma-separated baseline plugin specs injected into every instance |
@@ -1620,8 +1647,12 @@ Settings stage verification:
   CLI is outside the quiescence counter; the orchestrator must also wait for runner health and must
   not run CLI image commands during a deploy. A whole-`state/` restore can remove or replace
   `deploy.lock`; restore only DB/non-lock state or rewrite the lock before continuing.
-- An async restart's claim is in memory. If the coordinator exits after returning `202`, the app may
-  remain stopped and the caller must retry; use the sync route when a completion signal is required.
+- An async restart's claim is persisted, but recovery runs on the next coordinator start: an app
+  interrupted between `202` and completion can stay stopped until that recovery finishes. Use the
+  sync route when a completion signal is required.
+- Drain closes active SSE/WebSocket clients but does not persist their client-side reconnect state;
+  the client reconnect path is unchanged. `--online` migrations are limited to additive/expand
+  changes, and an older coordinator still refuses a newer schema.
 - MCP-token reconciliation is eventual, not crash-safe across SQLite and the filesystem. A crash
   between the DB commit and the file rename is repaired by the next startup/`ensure`; until then an
   old token gets `401`, and no container is recreated.

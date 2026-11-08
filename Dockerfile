@@ -82,7 +82,11 @@ LABEL org.opencontainers.image.title="hanse" \
       org.opencontainers.image.documentation="https://github.com/ArKaNeMaN/hanse/blob/main/docs/deployment.md" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${REVISION}" \
-      org.opencontainers.image.licenses="NOASSERTION"
+      org.opencontainers.image.licenses="NOASSERTION" \
+      org.hanse.api.min="1" \
+      org.hanse.api.max="1" \
+      org.hanse.schema.min="1" \
+      org.hanse.schema.max="25"
 
 USER root
 ENV NODE_ENV=production \
@@ -166,7 +170,11 @@ LABEL org.opencontainers.image.title="hanse-agent-base" \
       org.opencontainers.image.documentation="https://github.com/ArKaNeMaN/hanse/blob/main/docs/deployment.md" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${REVISION}" \
-      org.opencontainers.image.licenses="NOASSERTION"
+      org.opencontainers.image.licenses="NOASSERTION" \
+      org.hanse.api.min="1" \
+      org.hanse.api.max="1" \
+      org.hanse.schema.min="0" \
+      org.hanse.schema.max="0"
 
 ENV NODE_ENV=production \
     HOME=/home/agent \
@@ -219,7 +227,11 @@ ARG PHP_VERSION
 ARG UV_VERSION
 
 LABEL org.opencontainers.image.title="hanse-agent-default" \
-      org.opencontainers.image.description="Hanse default agent environment: Python, Node, PHP, uv, build tools."
+      org.opencontainers.image.description="Hanse default agent environment: Python, Node, PHP, uv, build tools." \
+      org.hanse.api.min="1" \
+      org.hanse.api.max="1" \
+      org.hanse.schema.min="0" \
+      org.hanse.schema.max="0"
 
 USER root
 RUN apt-get update \
@@ -266,7 +278,11 @@ LABEL org.opencontainers.image.title="hanse-agent-ide" \
       org.opencontainers.image.documentation="https://github.com/ArKaNeMaN/hanse/blob/main/docs/deployment.md" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${REVISION}" \
-      org.opencontainers.image.licenses="NOASSERTION"
+      org.opencontainers.image.licenses="NOASSERTION" \
+      org.hanse.api.min="1" \
+      org.hanse.api.max="1" \
+      org.hanse.schema.min="0" \
+      org.hanse.schema.max="0"
 
 ENV NODE_ENV=production \
     HOME=/home/coder \
@@ -341,7 +357,11 @@ LABEL org.opencontainers.image.title="hanse-runner" \
       org.opencontainers.image.documentation="https://github.com/ArKaNeMaN/hanse/blob/main/docs/deployment.md" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${REVISION}" \
-      org.opencontainers.image.licenses="NOASSERTION"
+      org.opencontainers.image.licenses="NOASSERTION" \
+      org.hanse.api.min="1" \
+      org.hanse.api.max="1" \
+      org.hanse.schema.min="0" \
+      org.hanse.schema.max="0"
 
 ENV NODE_ENV=production \
     HANSE_REVISION=${REVISION}

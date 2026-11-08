@@ -4,6 +4,7 @@ import { type ApprovalKind, decideApproval, getPendingApproval } from "../coordi
 import type { DeletionService } from "../coordinator/deletion.js";
 import type { DeploymentLock } from "../coordinator/deployment-lock.js";
 import type { HandoffDispatcher } from "../coordinator/dispatcher.js";
+import type { DrainController } from "../coordinator/drain.js";
 import { getHandoff, type Handoff } from "../coordinator/handoff.js";
 import type { LifecycleActivity } from "../coordinator/lifecycle-activity.js";
 import {
@@ -26,11 +27,12 @@ import type { SettingsService } from "../settings/index.js";
 import type { SkillSourceService } from "../skill-sources/index.js";
 import type { SkillService, SkillSource } from "../skills/index.js";
 import type { SshService } from "../ssh/service.js";
-import type { SqliteDatabase } from "../store/index.js";
+import { MIGRATIONS, type SqliteDatabase } from "../store/index.js";
 import { readProcessSnapshot } from "../store/process.js";
 import { VERSION } from "../version.js";
 import { humanFrom, principalFrom } from "./auth.js";
 import { buildSite, type PageChrome, renderErrorPage, renderNotFound } from "./dashboard.js";
+import { drainingResponse } from "./deploy.js";
 import { loginPage, type Notice, safeLocalPath } from "./ui.js";
 
 export interface ProjectContext {
@@ -68,6 +70,8 @@ export interface HttpDeps {
   deploymentLock?: DeploymentLock;
   /** Process-local destructive-operation counter reported by `/readyz`. */
   lifecycleActivity?: LifecycleActivity;
+  /** Persisted drain/resume state, in-flight HTTP count, and graceful-shutdown view. */
+  drain?: DrainController;
   /** Structured operator log; optional so tests and embeds may omit it. */
   logger?: Logger;
 }
@@ -947,6 +951,18 @@ function route(deps: HttpDeps, request: HttpRequest): HttpResponse {
 
   if (request.method === "GET" && request.path === "/readyz") {
     const headers = { "cache-control": "no-store" };
+    const drain = deps.drain;
+    const startedAt = drain?.startedAt ?? new Date().toISOString();
+    const shutdownAt = drain?.shutdownAt ?? null;
+    const uptime = Math.max(0, (Date.now() - Date.parse(startedAt)) / 1000);
+    const base = {
+      version: VERSION,
+      draining: drain?.isDraining() ?? false,
+      startedAt,
+      shutdownAt,
+      uptime,
+      inFlightHttp: drain?.inFlightHttp ?? 0,
+    };
     let schemaVersion: number | null;
     try {
       const row = deps.db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as
@@ -954,16 +970,30 @@ function route(deps: HttpDeps, request: HttpRequest): HttpResponse {
         | undefined;
       schemaVersion = row?.version ?? null;
     } catch {
-      return json(503, { status: "error", error: "database_unavailable" }, headers);
+      return json(
+        503,
+        {
+          ...base,
+          status: "error",
+          error: "database_unavailable",
+          dbReady: false,
+          migrationPending: false,
+        },
+        headers,
+      );
     }
     const revision = process.env.HANSE_REVISION?.trim();
+    const targetSchema = MIGRATIONS.at(-1)?.version ?? 0;
+    const shuttingDown = drain?.isShuttingDown() ?? false;
     return json(
-      200,
+      shuttingDown ? 503 : 200,
       {
-        status: "ok",
-        version: VERSION,
+        ...base,
+        status: shuttingDown ? "shutting_down" : "ok",
         revision: revision === undefined || revision.length === 0 ? "unknown" : revision,
         schemaVersion,
+        dbReady: true,
+        migrationPending: schemaVersion !== null && schemaVersion < targetSchema,
         deploying: deps.deploymentLock?.isActive() ?? false,
         inFlightLifecycle: deps.lifecycleActivity?.count ?? 0,
       },
@@ -1227,5 +1257,9 @@ function route(deps: HttpDeps, request: HttpRequest): HttpResponse {
 }
 
 export function handleRequest(deps: HttpDeps, request: HttpRequest): HttpResponse {
+  const blocked = drainingResponse(deps, request);
+  if (blocked !== undefined) {
+    return blocked;
+  }
   return route(deps, request);
 }

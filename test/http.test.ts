@@ -685,13 +685,20 @@ describe("http API and assets", () => {
       const response = handleRequest(d, { method: "GET", path: "/readyz", headers: {} });
       expect(response.status).toBe(200);
       expect(response.headers?.["cache-control"]).toBe("no-store");
-      expect(JSON.parse(response.body)).toEqual({
+      expect(JSON.parse(response.body)).toMatchObject({
         status: "ok",
         version: expect.any(String),
         revision: "unknown",
-        schemaVersion: 24,
+        schemaVersion: 25,
         deploying: false,
         inFlightLifecycle: 0,
+        draining: false,
+        dbReady: true,
+        migrationPending: false,
+        inFlightHttp: 0,
+        startedAt: expect.any(String),
+        shutdownAt: null,
+        uptime: expect.any(Number),
       });
       const after = f.db.prepare("SELECT COUNT(*) AS count FROM instances").get() as {
         count: number;
@@ -760,9 +767,10 @@ describe("http API and assets", () => {
     const response = handleRequest(deps(f), { method: "GET", path: "/readyz", headers: {} });
     expect(response.status).toBe(503);
     expect(response.headers?.["cache-control"]).toBe("no-store");
-    expect(JSON.parse(response.body)).toEqual({
+    expect(JSON.parse(response.body)).toMatchObject({
       status: "error",
       error: "database_unavailable",
+      dbReady: false,
     });
   });
 

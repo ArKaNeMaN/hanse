@@ -5,6 +5,7 @@ import { processEvents } from "../opencode/process-events.js";
 import { type ProcessEvent, readProcessEvents, readProcessSnapshot } from "../store/process.js";
 import { findApp } from "./apps.js";
 import { principalFrom } from "./auth.js";
+import { registerSseDrain } from "./deploy.js";
 import type { HttpDeps, HttpRequest, HttpResponse } from "./handler.js";
 
 const PROCESS_PATH = /^\/api\/apps\/([^/]+)\/process$/;
@@ -300,6 +301,8 @@ export async function streamProcessEvents(
     connection: "keep-alive",
     "x-accel-buffering": "no",
   });
+  const unregisterDrain = registerSseDrain(deps, response);
+  response.once("close", unregisterDrain);
   void write(`data: ${JSON.stringify({ type: "stream.ready", seq: 0, streamID })}\n\n`);
   heartbeat = setInterval(() => {
     void write(": ping\n\n");

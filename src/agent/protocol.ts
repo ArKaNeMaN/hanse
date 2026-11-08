@@ -77,6 +77,9 @@ export interface RuntimeHealth {
   ok: true;
   hanseVersion: string;
   apps: number;
+  apiVersion: number;
+  minApiVersion: number;
+  maxApiVersion: number;
 }
 
 /** Error response body shared by every runtime endpoint. */

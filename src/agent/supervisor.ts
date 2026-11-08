@@ -5,6 +5,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { connect, createServer as createNetServer } from "node:net";
 import path from "node:path";
 import { ConfigError } from "../config/load.js";
+import { RUNNER_API_MAX, RUNNER_API_MIN, RUNNER_API_VERSION } from "../shared/runner-api.js";
 import { VERSION } from "../version.js";
 import { readHostStatus } from "./host.js";
 import {
@@ -587,7 +588,14 @@ export class AgentSupervisor {
         writeJson(response, 405, { error: "method not allowed" }, { Allow: "GET" });
         return;
       }
-      const health: RuntimeHealth = { ok: true, hanseVersion: VERSION, apps: this.#entries.size };
+      const health: RuntimeHealth = {
+        ok: true,
+        hanseVersion: VERSION,
+        apps: this.#entries.size,
+        apiVersion: RUNNER_API_VERSION,
+        minApiVersion: RUNNER_API_MIN,
+        maxApiVersion: RUNNER_API_MAX,
+      };
       writeJson(response, 200, health);
       return;
     }

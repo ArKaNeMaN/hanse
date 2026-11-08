@@ -225,6 +225,8 @@ Compose reads `.env` in the directory containing `compose.yaml`.
 | `HANSE_RUNNER_IMAGE` | `ghcr.io/arkaneman/hanse-runner` | Runner image repository. |
 | `HANSE_RUNNER_TAG` | `HANSE_AGENT_TAG`, then `HANSE_TAG` | Runner image tag. Overrides only the runner. |
 | `HANSE_DEPLOY_LOCK_FILE` | `/data/state/hanse/deploy.lock` in Compose | Absolute path of the external deployment lock read by the coordinator. The orchestrator writes and removes it; the coordinator only reads. |
+| `HANSE_SHUTDOWN_GRACE_MS` | `25000` | Graceful-shutdown budget in milliseconds, clamped to `1000..28000`. Keep it below the Compose `stop_grace_period` (`30s`). |
+| `HANSE_START_DRAINED` | `0` | `1` starts the coordinator already drained (mutations return `503`). Otherwise startup resumes a draining instance. |
 | `HANSE_REVISION` | image-provided | Full commit revision baked into the image and reported by `GET /readyz`. Not an operator setting; a source build without `REVISION` reports `unknown`. |
 | `HANSE_BIND` | `127.0.0.1` | Host address for port 8787. Set `0.0.0.0` (or a LAN IP) to expose it. |
 | `HANSE_PORT` | `8787` | Host port mapped to the coordinator. |
@@ -354,22 +356,119 @@ Security model, in short:
 
 ## Updating and rollback
 
+The coordinator is the only externally visible static service. The IDE and runner are internal, and
+per-app containers keep running during a coordinator update; restart them later when they should pick
+up a new base/agent image. The target sequence keeps the coordinator serving through pull, backup, and
+live file copy, and stops only the small coordinator process for the switch:
+
+1. Pull images while the old coordinator keeps serving.
+2. Take a hot SQLite backup and copy live workspace/agents files while it serves. There is deliberately
+   no HTTP backup or archive endpoint; use an approved SQLite hot-backup tool or filesystem snapshot.
+3. Drain: `POST /api/deploy/drain` (operator auth) and wait for `drained: true`. New mutations answer
+   `503` with `Retry-After`; reads stay available; SSE streams end with a `deploy` event and
+   WebSockets close with code `1012` so clients reconnect.
+4. Stop only the coordinator and copy its small database.
+5. Switch with `docker compose up -d --no-deps hanse` (do not recreate IDE, runner, or app containers).
+6. Verify `GET /readyz` (`status: ok`, expected `revision`, `schemaVersion`, `dbReady: true`,
+   `draining` false unless started drained).
+7. `POST /api/deploy/resume` if the coordinator was started drained; otherwise startup resumes
+   automatically. Update IDE and runner later, then restart apps when they should pick up a new image.
+
 ```bash
 set -a; . ./.env; set +a
 docker compose pull
 docker pull "${HANSE_AGENT_IMAGE:-ghcr.io/arkaneman/hanse-agent-default}:${HANSE_AGENT_TAG:-${HANSE_TAG:-latest}}"
 docker pull "${HANSE_AGENT_BASE_IMAGE:-ghcr.io/arkaneman/hanse-agent-base:${HANSE_AGENT_TAG:-${HANSE_TAG:-latest}}}"
-docker compose up -d --remove-orphans
-docker compose ps
+
+# 1. Hot DB backup and live file copy happen while the old coordinator serves.
+# 2. Drain and wait for the bounded report.
+curl -fsS -X POST \
+  -H "Authorization: Bearer $HANSE_OPERATOR_TOKEN" \
+  -H 'content-type: application/json' \
+  -d '{"timeoutSeconds":25}' \
+  http://127.0.0.1:8787/api/deploy/drain
+docker compose stop hanse
+docker compose up -d --no-deps hanse
+docker compose ps hanse
 curl -fsS http://127.0.0.1:8787/healthz
 curl -fsS http://127.0.0.1:8787/readyz
 ```
+
+Drain and resume are idempotent. The drain response is:
+
+```json
+{
+  "drainId": "<uuid>",
+  "draining": true,
+  "drained": true,
+  "inFlightLifecycle": 0,
+  "inFlightHttp": 0,
+  "schemaVersion": 25,
+  "revision": "<full-commit>",
+  "walCheckpoint": { "busy": 0, "log": 0, "checkpointed": 0 }
+}
+```
+
+A drain performs `PRAGMA wal_checkpoint(TRUNCATE)` after quiescence. SIGTERM follows the same path:
+readiness turns `503 {"status":"shutting_down"}` immediately, new connections stop, in-flight work is
+given `HANSE_SHUTDOWN_GRACE_MS` (default 25 s), the WAL is checkpointed, the database closes, and the
+process exits `0` inside Compose's `stop_grace_period: 30s`. `docker compose logs hanse` records the
+phase timings (`readiness_false`, `stop_accepting`, `drained`, `wal_checkpoint`, `closed`).
 
 Pull the default and base images before recreating services. The identity cache is warmed after the
 pull; a reference that is absent locally is `unknown` (never treated as current) and retried on the
 next refresh. A default launch whose target cannot be inspected fails closed instead of starting the
 old image. A custom app that declares `build.base: base` fails its next build if
 `HANSE_AGENT_BASE_IMAGE` is unset.
+
+### Split updates and N-1 compatibility
+
+The coordinator must work with the previous IDE and runner for one release. Images carry
+`org.hanse.api.min` / `org.hanse.api.max` and `org.hanse.schema.min` / `org.hanse.schema.max` labels.
+The coordinator image currently declares API `1..1` and schema `1..25`; the IDE, runner, and agent
+images declare API `1..1` and schema `0..0` (they do not read the coordinator database).
+
+The coordinator reads the runner's unauthenticated `/healthz` handshake (`apiVersion`,
+`minApiVersion`, `maxApiVersion`) at startup. A legacy runner without those fields is logged as
+`runner_api_incompatible` and keeps working with the previous transport; version-specific requests
+return their normal bounded errors instead of crashing the coordinator. Update the coordinator first
+with `docker compose up -d --no-deps hanse`, then update the IDE and runner separately; never run a
+runner more than one release ahead of the coordinator.
+
+Async restart claims are persisted in SQLite before the `202` is returned. If the coordinator exits
+mid-restart, the next startup finds the claim and completes the start; a stopped app left by an
+interrupted `202` is therefore repaired instead of being silently abandoned.
+
+### Operator session continuity
+
+Operator login is a stateless cookie: `hanse_token` carries the operator token and the database stores
+only its SHA-256 hash. It survives a coordinator restart or `docker compose up -d --no-deps hanse` as
+long as `HANSE_OPERATOR_TOKEN` and `state/hanse/coordinator.db` are unchanged. `state/hanse/secret.key`
+must also stay stable across restarts and restores; it decrypts provider keys, git credentials, and SSH
+host keys. Chat sessions live in each application's `opencode` state under `agents/`, not in
+coordinator memory, so a coordinator restart does not discard them.
+
+### Migration check and online apply
+
+```bash
+# Read-only inspection; safe against a copy of the live DB.
+hanse migrate --check --db <copy> --json
+#   -> {current,target,pending,pendingCount,backwardCompatible,requiresExclusive,estimatedMs,...}
+#   exit 0: compatible, no pending migration
+#   exit 10: one or more migrations are required
+#   exit 20: the database is newer than this binary or has an unknown applied migration
+
+# Apply only additive/expand migrations where N-1 compatibility holds, while the coordinator serves.
+hanse migrate --online [--db <database>]
+```
+
+`pending` is the list of pending migration descriptors (version, name, `backwardCompatible`,
+`requiresExclusive`, `estimatedMs`); `pendingCount` is its length. `--online` refuses the whole batch
+when any pending migration is not backward compatible or requires exclusive work. Migration 8
+(`git-credentials`, which drops the legacy `secrets` table) is the only migration in the current range
+that cannot be made N-1 compatible; an empty or pre-v8 database must use the normal startup migration.
+The schema guard is unchanged: an older coordinator still refuses a newer schema, so rollback after a
+migration remains a pre-upgrade backup restore, not an online down-migration.
 
 `latest` tracks `main`. For a reproducible deployment, pin each image tag to a release or a
 `sha-<short>`/`sha-<full>` tag produced by the publish workflow. `HANSE_TAG` pins the coordinator and
@@ -430,6 +529,11 @@ The external orchestrator contracts are:
    `expiresAt` has passed, is inactive. `expiresAt` slides from the last heartbeat and is clamped to
    `updatedAt + 2 hours`, so a long pull stays locked while heartbeats continue.
 4. Remove the lock on success and on failure.
+
+Drain is the coordinator-side companion to the lock: `POST /api/deploy/drain` additionally closes
+long-lived clients, rejects mutations with `503`, waits for in-flight HTTP and lifecycle work, and
+checkpoints the WAL before the orchestrator stops only the coordinator. The lock remains the advisory
+guard for destructive app operations; drain does not replace it.
 
 A malformed lock is treated as active until its file mtime is older than 300 seconds, then inactive.
 `ENOENT` is inactive; any other read/stat/permission error is treated as active (fail closed) and
@@ -597,14 +701,20 @@ All three static services define health checks. `hanse` is healthy when `/health
 coordinator. Check per-app containers with
 `docker ps --filter label=hanse.managed=true`.
 
-`GET /healthz` remains exactly `{"status":"ok"}`. The separate unauthenticated `GET /readyz` returns
-`status`, `version`, `revision`, `schemaVersion`, `deploying`, and `inFlightLifecycle` with
-`Cache-Control: no-store`; it performs only database reads and returns `503`
-`{"status":"error","error":"database_unavailable"}` if the schema query fails. Because it uses the
-synchronous database handle with `busy_timeout=5000`, a concurrent restore can delay it up to five
+`GET /healthz` remains exactly `{"status":"ok"}`. The separate unauthenticated `GET /readyz` keeps its
+existing `status`, `version`, `revision`, `schemaVersion`, `deploying`, and `inFlightLifecycle` fields
+and additively reports `draining`, `dbReady`, `migrationPending`, `inFlightHttp`, `startedAt`,
+`shutdownAt`, and `uptime`, with `Cache-Control: no-store`. It performs only database reads. A schema
+query failure still returns `503 {"status":"error","error":"database_unavailable"}` (with
+`dbReady: false`). Once SIGTERM starts it returns `503 {"status":"shutting_down", ...}`. Because it uses
+the synchronous database handle with `busy_timeout=5000`, a concurrent restore can delay it up to five
 seconds; the 50 ms p99 is a target, not a gate.
 
 ## Backup and restore
+
+This is the full cold backup used for disaster recovery. The routine update path above uses a hot
+SQLite backup plus live file copy while the coordinator serves, because the stop-the-world backup is
+what used to dominate deploy downtime.
 
 Stop app containers first, then back up all three volumes and the deployment files:
 
@@ -838,7 +948,10 @@ and run the container smoke test against `/healthz`, `/readyz`, `/login`, the as
 - Database migrations are forward-only.
 - The deployment lock is advisory and single-host. It cannot stop a runner call that already
   outlived a coordinator timeout, and the CLI image commands are outside the quiescence counter.
-- An async restart claim is in memory; a coordinator exit after `202` can leave the app stopped.
+- Async restart claims are persisted, but recovery runs on the next coordinator start: an app
+  interrupted between `202` and completion stays stopped until that startup recovery finishes.
+- `--online` migrations are limited to additive/expand changes; destructive or exclusive migrations
+  still need the offline startup path, and an older coordinator still refuses a newer schema.
 - App containers are zombie-free by construction (Docker init plus bounded MCP/coordinator state),
   but `opencode`'s own session/runtime memory is outside Hanse's control. An app that reaches its
   configured memory cap can still be OOM-killed; restart it and inspect the runtime history instead

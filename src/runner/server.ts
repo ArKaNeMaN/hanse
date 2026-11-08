@@ -42,6 +42,7 @@ import {
 } from "../git/request.js";
 import { readRegularFileNoFollow } from "../opencode/password.js";
 import { isInside, resolveWithinRoot } from "../runtime/app-path.js";
+import { RUNNER_API_MAX, RUNNER_API_MIN, RUNNER_API_VERSION } from "../shared/runner-api.js";
 import { VERSION } from "../version.js";
 import {
   type DockerBuildRuntime,
@@ -676,7 +677,14 @@ export class RunnerService {
 
   async health(): Promise<RuntimeHealth> {
     const containers = await this.#docker.listContainers("hanse.managed=true");
-    return { ok: true, hanseVersion: VERSION, apps: containers.length };
+    return {
+      ok: true,
+      hanseVersion: VERSION,
+      apps: containers.length,
+      apiVersion: RUNNER_API_VERSION,
+      minApiVersion: RUNNER_API_MIN,
+      maxApiVersion: RUNNER_API_MAX,
+    };
   }
 
   async #isBuiltAppImage(appId: string, image: string): Promise<boolean> {
