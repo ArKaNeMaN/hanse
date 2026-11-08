@@ -294,6 +294,13 @@ function fakeSkills(initialHash: string | undefined = "skills-hash", order?: str
       warnings = next;
     },
     source: {
+      capture: (target) => ({
+        hash,
+        capturedAt: new Date(0).toISOString(),
+        resolved: resolved(target),
+        managed: [],
+        external: [],
+      }),
       resolve: (target) => resolved(target),
       preview: (target) => ({ resolved: resolved(target), warnings: [] }),
       hash: (target) => {
@@ -1024,7 +1031,7 @@ describe("InstanceManager lifecycle", () => {
     skills.setHash("skills-two");
     expect(manager.pendingRestart(APP.id)).toEqual({
       pending: true,
-      reasons: ["settings_changed"],
+      reasons: ["skills_changed"],
     });
 
     skills.setHash("skills-one");
@@ -1079,7 +1086,7 @@ describe("InstanceManager lifecycle", () => {
     registry.update(betaTombstone.id, { enabled: true }, "test");
     expect(manager.pendingRestart(APP.id)).toEqual({
       pending: true,
-      reasons: ["settings_changed"],
+      reasons: ["skills_changed"],
     });
   });
 
@@ -1157,7 +1164,7 @@ describe("InstanceManager lifecycle", () => {
     registry.update(appAlpha.id, { metadata: { author: "someone" } }, "test");
     expect(manager.pendingRestart(APP.id)).toEqual({
       pending: true,
-      reasons: ["settings_changed"],
+      reasons: ["skills_changed"],
     });
     await manager.restartIfRunning(APP);
     expect(manager.pendingRestart(APP.id)).toEqual({ pending: false, reasons: [] });
@@ -1169,7 +1176,7 @@ describe("InstanceManager lifecycle", () => {
     );
     expect(manager.pendingRestart(APP.id)).toEqual({
       pending: true,
-      reasons: ["settings_changed"],
+      reasons: ["skills_changed"],
     });
     await manager.restartIfRunning(APP);
     expect(manager.pendingRestart(APP.id)).toEqual({ pending: false, reasons: [] });

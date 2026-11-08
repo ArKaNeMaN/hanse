@@ -1,4 +1,11 @@
-import type { SkillMetadata, SkillReference, SkillStoredIssue } from "./types.js";
+import { createHash } from "node:crypto";
+import type {
+  SkillFile,
+  SkillFileView,
+  SkillMetadata,
+  SkillReference,
+  SkillStoredIssue,
+} from "./types.js";
 
 /** A skill input validation failure that HTTP callers should map to 400. */
 export class SkillValidationError extends Error {
@@ -390,6 +397,234 @@ export function parseStoredMetadata(raw: string): StoredMetadataResult {
       metadata: {},
       metadataRaw: raw,
       issue: { code: "invalid_skill_metadata", detail },
+    };
+  }
+}
+
+export const SKILL_FILE_LIMITS = {
+  files: 100,
+  fileBytes: 1024 * 1024,
+  bundleBytes: 8 * 1024 * 1024,
+  pathBytes: 1024,
+  depth: 16,
+  segmentBytes: 255,
+} as const;
+
+const WINDOWS_RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i;
+const BASE64_PATTERN = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
+
+function hasForbiddenPathCharacter(value: string): boolean {
+  for (const character of value) {
+    const code = character.codePointAt(0) ?? 0;
+    if (code <= 0x1f || (code >= 0x7f && code <= 0x9f) || character === "\\") return true;
+  }
+  return false;
+}
+
+export function sha256Bytes(value: Uint8Array): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+/** Whether a path is a safe bundle-relative file path. */
+export function isSkillFilePath(
+  value: unknown,
+  options: { allowSkillMd?: boolean } = {},
+): value is string {
+  if (typeof value !== "string") return false;
+  if (value.length === 0) return false;
+  if (Buffer.byteLength(value, "utf8") > SKILL_FILE_LIMITS.pathBytes) return false;
+  if (value.startsWith("/") || /^[A-Za-z]:/.test(value)) return false;
+  if (value.endsWith("/") || value.includes("\\")) return false;
+  if (hasForbiddenPathCharacter(value)) return false;
+  if (value.normalize("NFC") !== value) return false;
+  if (value === "SKILL.md" && options.allowSkillMd !== true) return false;
+  const segments = value.split("/");
+  if (segments.length > SKILL_FILE_LIMITS.depth) return false;
+  for (const segment of segments) {
+    if (segment.length === 0 || segment === "." || segment === "..") return false;
+    if (Buffer.byteLength(segment, "utf8") > SKILL_FILE_LIMITS.segmentBytes) return false;
+  }
+  const leaf = segments[segments.length - 1] ?? "";
+  if (WINDOWS_RESERVED.test(leaf)) return false;
+  return true;
+}
+
+export function validateSkillFilePath(
+  value: unknown,
+  options: { allowSkillMd?: boolean } = {},
+): string {
+  if (!isSkillFilePath(value, options)) {
+    throw new SkillValidationError(
+      "file path must be a safe relative POSIX path (1-1024 bytes, depth <= 16, no traversal)",
+      "files",
+    );
+  }
+  return value;
+}
+
+function validateSkillFileInputOne(value: unknown, options: { allowSkillMd?: boolean }): SkillFile {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new SkillValidationError("each file must have a path and text or base64", "files");
+  }
+  const record = value as Record<string, unknown>;
+  const filePath = validateSkillFilePath(record.path, options);
+  const hasText = typeof record.text === "string";
+  const hasBase64 = typeof record.base64 === "string";
+  if (hasText === hasBase64) {
+    throw new SkillValidationError("a file must have exactly one of text or base64", "files");
+  }
+  let content: Buffer;
+  if (hasText) {
+    const text = normalizeLineEndings(record.text as string);
+    if (hasUnpairedSurrogate(text)) {
+      throw new SkillValidationError("file text must not contain unpaired surrogates", "files");
+    }
+    content = Buffer.from(text, "utf8");
+  } else {
+    const raw = record.base64 as string;
+    if (raw.length % 4 !== 0 || !BASE64_PATTERN.test(raw)) {
+      throw new SkillValidationError("file base64 is invalid", "files");
+    }
+    content = Buffer.from(raw, "base64");
+  }
+  if (content.byteLength > SKILL_FILE_LIMITS.fileBytes) {
+    throw new SkillValidationError("a skill file must be at most 1 MiB", "files");
+  }
+  if (record.executable !== undefined && typeof record.executable !== "boolean") {
+    throw new SkillValidationError("file executable must be a boolean", "files");
+  }
+  return {
+    path: filePath,
+    content,
+    sha256: sha256Bytes(content),
+    size: content.byteLength,
+    executable: record.executable === true,
+  };
+}
+
+/** Validate a file-set conflict: duplicates, case-insensitive duplicates, and prefix conflicts. */
+export function assertNoFileConflicts(files: readonly { path: string }[]): void {
+  const seen = new Map<string, string>();
+  const sorted = [...files].sort((left, right) => (left.path < right.path ? -1 : 1));
+  for (const file of sorted) {
+    const key = file.path.toLowerCase();
+    const previous = seen.get(key);
+    if (previous !== undefined) {
+      throw new SkillValidationError(`file path ${file.path} duplicates ${previous}`, "files");
+    }
+    seen.set(key, file.path);
+  }
+  for (let index = 1; index < sorted.length; index += 1) {
+    const previous = sorted[index - 1]?.path ?? "";
+    const current = sorted[index]?.path ?? "";
+    if (current.startsWith(`${previous}/`)) {
+      throw new SkillValidationError(
+        `file path ${previous} conflicts with nested path ${current}`,
+        "files",
+      );
+    }
+  }
+}
+
+export function validateSkillFiles(
+  value: unknown,
+  options: { allowSkillMd?: boolean } = {},
+): SkillFile[] {
+  if (!Array.isArray(value)) {
+    throw new SkillValidationError("files must be an array", "files");
+  }
+  if (value.length > SKILL_FILE_LIMITS.files) {
+    throw new SkillValidationError("a skill may have at most 100 files", "files");
+  }
+  const files = value.map((item) => validateSkillFileInputOne(item, options));
+  assertNoFileConflicts(files);
+  const total = files.reduce((sum, file) => sum + file.size, 0);
+  if (total > SKILL_FILE_LIMITS.bundleBytes) {
+    throw new SkillValidationError("a skill bundle must be at most 8 MiB", "files");
+  }
+  return files.sort((left, right) =>
+    left.path < right.path ? -1 : left.path > right.path ? 1 : 0,
+  );
+}
+
+/** Map the legacy `references` payload into the local file set. */
+export function referencesToFiles(references: readonly SkillReference[]): SkillFile[] {
+  return references
+    .map((reference) => {
+      const content = Buffer.from(reference.content, "utf8");
+      return {
+        path: reference.path,
+        content,
+        sha256: sha256Bytes(content),
+        size: content.byteLength,
+        executable: false,
+      } satisfies SkillFile;
+    })
+    .sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
+}
+
+/** Whether a file is part of the legacy `skill_references` projection. */
+export function isLegacyReferenceFile(file: SkillFile): boolean {
+  if (!isSkillReferencePath(file.path) || file.executable === true) return false;
+  if (file.size > SKILL_LIMITS.referenceContent) return false;
+  let text: string;
+  try {
+    text = UTF8_DECODER.decode(file.content);
+  } catch {
+    return false;
+  }
+  if (text.includes("\r")) return false;
+  try {
+    validateSkillReferenceContent(text);
+  } catch {
+    return false;
+  }
+  return true;
+}
+
+/** The legacy reference rows a local file set projects into. */
+export function legacyReferenceProjection(files: readonly SkillFile[]): SkillReference[] {
+  const references: SkillReference[] = [];
+  for (const file of files) {
+    if (!isLegacyReferenceFile(file)) continue;
+    references.push({ path: file.path, content: UTF8_DECODER.decode(file.content) });
+  }
+  return references.sort((left, right) => (left.path < right.path ? -1 : 1));
+}
+
+/** Whether two reference sets are equal by path and exact text. */
+export function sameReferences(
+  left: readonly SkillReference[],
+  right: readonly SkillReference[],
+): boolean {
+  if (left.length !== right.length) return false;
+  const sortedLeft = [...left].sort((a, b) => (a.path < b.path ? -1 : 1));
+  const sortedRight = [...right].sort((a, b) => (a.path < b.path ? -1 : 1));
+  return sortedLeft.every(
+    (reference, index) =>
+      reference.path === sortedRight[index]?.path &&
+      reference.content === sortedRight[index]?.content,
+  );
+}
+
+export function skillFileView(file: SkillFile): SkillFileView {
+  try {
+    const text = UTF8_DECODER.decode(file.content);
+    return {
+      path: file.path,
+      size: file.size,
+      encoding: "utf8",
+      text,
+      ...(file.executable === true ? { executable: true } : {}),
+    };
+  } catch {
+    return {
+      path: file.path,
+      size: file.size,
+      encoding: "binary",
+      base64: Buffer.from(file.content).toString("base64"),
+      ...(file.executable === true ? { executable: true } : {}),
     };
   }
 }

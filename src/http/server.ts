@@ -43,6 +43,7 @@ import {
 } from "./process.js";
 import { handlePrompts, streamAppEvents } from "./prompts.js";
 import { handleSettings, isSettingsRoute } from "./settings.js";
+import { handleSkillSources, isSkillSourcesRoute } from "./skill-sources.js";
 import { handleSkills, isSkillsRoute } from "./skills.js";
 import { handleAppUiApi, handleUiApi, isAppUiPath, maybeServeSpa } from "./spa.js";
 import { handleSsh, isSshRoute } from "./ssh.js";
@@ -53,9 +54,8 @@ const IDE_HOST = process.env.HANSE_IDE_HOST ?? "127.0.0.1";
 const MAX_BODY_BYTES = 64 * 1024;
 // Draft text and message sends carry a 32 KiB operator text plus JSON escaping.
 const MAX_CHAT_BODY_BYTES = 256 * 1024;
-// A bundle can hold a 48,000-character body plus 192,000 characters of references;
-// percent-encoded multi-byte text expands several-fold, so skills routes get 4 MiB.
-const MAX_SKILLS_BODY_BYTES = 4 * 1024 * 1024;
+// A skill may carry up to 8 MiB of arbitrary files plus base64 and JSON expansion.
+const MAX_SKILLS_BODY_BYTES = 16 * 1024 * 1024;
 // A master write_file carries up to 256 KiB of text plus JSON escaping and the RPC envelope.
 const MAX_INTERNAL_MCP_BODY_BYTES = 1024 * 1024;
 const PREVIEW_PATH = /^\/preview\/([^/]+)\/([^/]+)\/([^/]+)(\/.*)?$/;
@@ -454,6 +454,7 @@ export function createHttpServer(deps: HttpDeps): Server {
           );
         const isSettings = isSettingsRoute(httpRequest.method, url.pathname);
         const isSkills = isSkillsRoute(httpRequest.method, url.pathname);
+        const isSkillSources = isSkillSourcesRoute(httpRequest.method, url.pathname);
         const isInternalMcp =
           (httpRequest.method ?? "GET") === "POST" && url.pathname === "/internal/mcp";
         const isSsh = isSshRoute(httpRequest.method, url.pathname);
@@ -477,23 +478,25 @@ export function createHttpServer(deps: HttpDeps): Server {
                 ? await handleSettings(deps, httpRequest)
                 : isSkills
                   ? await handleSkills(deps, httpRequest)
-                  : isInternalMcp
-                    ? await handleInternalMcp(deps, httpRequest)
-                    : isSsh
-                      ? await handleSsh(deps, httpRequest)
-                      : isContext
-                        ? await handleContext(deps, httpRequest)
-                        : isCommands
-                          ? await handleCommands(deps, httpRequest)
-                          : isPreviews
-                            ? await handlePreviews(deps, httpRequest)
-                            : isProcess
-                              ? handleProcess(deps, httpRequest)
-                              : isStart
-                                ? await handleStart(deps, httpRequest)
-                                : isChat
-                                  ? await handleChat(deps, httpRequest)
-                                  : handleRequest(deps, httpRequest);
+                  : isSkillSources
+                    ? await handleSkillSources(deps, httpRequest)
+                    : isInternalMcp
+                      ? await handleInternalMcp(deps, httpRequest)
+                      : isSsh
+                        ? await handleSsh(deps, httpRequest)
+                        : isContext
+                          ? await handleContext(deps, httpRequest)
+                          : isCommands
+                            ? await handleCommands(deps, httpRequest)
+                            : isPreviews
+                              ? await handlePreviews(deps, httpRequest)
+                              : isProcess
+                                ? handleProcess(deps, httpRequest)
+                                : isStart
+                                  ? await handleStart(deps, httpRequest)
+                                  : isChat
+                                    ? await handleChat(deps, httpRequest)
+                                    : handleRequest(deps, httpRequest);
         writeHttpResponse(request, response, result);
       })
       .catch((error: unknown) => {

@@ -359,6 +359,8 @@ export function issueText(issue: SkillStoredIssue): string {
       return `The stored metadata is not valid JSON: ${issue.detail}`;
     case "invalid_skill_reference":
       return `Reference ${issue.path}: ${issue.detail}`;
+    case "invalid_skill_file":
+      return `File ${issue.path}: ${issue.detail}`;
     case "invalid_skill_bundle":
       return `The stored bundle is invalid: ${issue.detail}`;
   }
@@ -473,19 +475,22 @@ export interface SkillsScopeProps {
 }
 
 export interface SkillsInventoryRowProps {
-  readonly id: number;
-  readonly primaryId: number;
+  readonly id: number | null;
+  readonly primaryId: number | null;
   readonly name: string;
   readonly description: string;
-  readonly scope: SkillScope;
+  readonly scope: SkillScope | null;
   readonly state: InventoryState;
   readonly stateLabel: string;
   readonly enabled: boolean;
   readonly overridden: boolean;
   readonly shadowed: boolean;
   readonly shadows: readonly SkillScope[];
-  readonly originScope: SkillScope;
+  readonly originScope: SkillScope | null;
   readonly originText: string;
+  readonly mode: "managed" | "external";
+  readonly externalKey: string | null;
+  readonly fileCount: number;
   readonly references: number;
   readonly updatedAt: string;
   readonly issues: readonly SkillIssueProps[];
@@ -493,7 +498,7 @@ export interface SkillsInventoryRowProps {
   readonly repairId: number | null;
   readonly effectiveId: number | null;
   readonly effectiveScope: SkillScope | null;
-  readonly href: string;
+  readonly href: string | null;
   readonly effectiveHref: string | null;
   readonly actionLabel: string;
 }
@@ -584,22 +589,25 @@ export function parseInventoryFilter(value: string | undefined): InventoryFilter
 }
 
 interface InventoryRow {
-  id: number;
+  id: number | null;
   name: string;
   description: string;
-  scope: SkillScope;
+  scope: SkillScope | null;
   state: InventoryState;
   stateLabel: string;
-  originScope: SkillScope;
+  originScope: SkillScope | null;
   originText: string;
+  mode: "managed" | "external";
+  externalKey: string | null;
+  fileCount: number;
   references: number;
   updatedAt: string;
   issues: SkillStoredIssue[];
   collisions: SkillWarning[];
   shadows: SkillScope[];
   repairId?: number;
-  effectiveId?: number;
-  effectiveScope?: SkillScope;
+  effectiveId?: number | null;
+  effectiveScope?: SkillScope | null;
 }
 
 function buildInventoryRows(
@@ -630,11 +638,11 @@ function buildInventoryRows(
     }
     let state: InventoryState;
     let stateLabel: string;
-    let originScope: SkillScope;
+    let originScope: SkillScope | null;
     let originText: string;
     let repairId: number | undefined;
-    let effectiveId: number | undefined;
-    let effectiveScope: SkillScope | undefined;
+    let effectiveId: number | null | undefined;
+    let effectiveScope: SkillScope | null | undefined;
     let shadows: SkillScope[] = [];
     if (scoped !== undefined) {
       if (scoped.storedIssues.length > 0) {
@@ -646,8 +654,10 @@ function buildInventoryRows(
           stateLabel = invalidName ? "Invalid here" : "Invalid local override";
           effectiveId = effective.id;
           effectiveScope = effective.source;
-          originScope = effective.source;
-          originText = `Effective source: ${scopeLabel(effective.source)}`;
+          originScope = effective.source ?? scoped.scope;
+          originText = `Effective source: ${
+            effective.source === null ? "hub" : scopeLabel(effective.source)
+          }`;
         } else {
           stateLabel = "Invalid here";
           originScope = scoped.scope;
@@ -684,6 +694,9 @@ function buildInventoryRows(
         stateLabel,
         originScope,
         originText,
+        mode: "managed",
+        externalKey: null,
+        fileCount: scoped.references.length,
         references: scoped.references.length,
         updatedAt: scoped.updatedAt,
         issues: scoped.storedIssues,
@@ -698,6 +711,27 @@ function buildInventoryRows(
     if (effective === undefined) {
       continue;
     }
+    if (effective.mode === "external") {
+      rows.push({
+        id: null,
+        name,
+        description: effective.description,
+        scope: null,
+        state: "inherited",
+        stateLabel: "Hub",
+        originScope: null,
+        originText: `Hub · ${effective.origin?.sourceName ?? "source"}`,
+        mode: "external",
+        externalKey: effective.externalKey,
+        fileCount: effective.fileCount,
+        references: effective.references.length,
+        updatedAt: effective.updatedAt,
+        issues: [],
+        collisions,
+        shadows: [],
+      });
+      continue;
+    }
     rows.push({
       id: effective.id,
       name,
@@ -706,7 +740,12 @@ function buildInventoryRows(
       state: "inherited",
       stateLabel: "Inherited",
       originScope: effective.source,
-      originText: `Inherited from ${scopeLabel(effective.source)}`,
+      originText: `Inherited from ${
+        effective.source === null ? "hub" : scopeLabel(effective.source)
+      }`,
+      mode: "managed",
+      externalKey: null,
+      fileCount: effective.fileCount,
       references: effective.references.length,
       updatedAt: effective.updatedAt,
       issues: [],
@@ -950,9 +989,15 @@ export function buildSkillsInventoryProps(
     breadcrumb,
     rows: rows.map((row) => {
       const primaryId = row.repairId ?? row.effectiveId ?? row.id;
+      const href =
+        primaryId === null || primaryId === undefined ? null : `/skills/${primaryId}?from=${from}`;
+      const effectiveHref =
+        row.effectiveId === null || row.effectiveId === undefined
+          ? null
+          : `/skills/${row.effectiveId}?from=${from}`;
       return {
         id: row.id,
-        primaryId,
+        primaryId: primaryId ?? null,
         name: row.name,
         description: row.description,
         scope: row.scope,
@@ -960,10 +1005,13 @@ export function buildSkillsInventoryProps(
         stateLabel: row.stateLabel,
         enabled: row.state === "enabled" || row.state === "inherited",
         overridden: row.state === "enabled" && row.shadows.length > 0,
-        shadowed: row.effectiveId !== undefined,
+        shadowed: row.effectiveId !== undefined && row.effectiveId !== null,
         shadows: row.shadows,
         originScope: row.originScope,
         originText: row.originText,
+        mode: row.mode,
+        externalKey: row.externalKey,
+        fileCount: row.fileCount,
         references: row.references,
         updatedAt: row.updatedAt,
         issues: skillIssueProps(row.issues, false),
@@ -971,9 +1019,8 @@ export function buildSkillsInventoryProps(
         repairId: row.repairId ?? null,
         effectiveId: row.effectiveId ?? null,
         effectiveScope: row.effectiveScope ?? null,
-        href: `/skills/${primaryId}?from=${from}`,
-        effectiveHref:
-          row.effectiveId === undefined ? null : `/skills/${row.effectiveId}?from=${from}`,
+        href,
+        effectiveHref,
         actionLabel: `Open ${row.name}`,
       };
     }),
@@ -1800,6 +1847,10 @@ export function emptyRow(scope: SkillScope, target: SkillTarget): SkillRow {
     updatedBy: null,
     storedIssues: [],
     metadataRaw: null,
+    origin: "local",
+    forkedFromSourceId: null,
+    forkedFromName: null,
+    forkedFromRevision: null,
   };
 }
 

@@ -31,9 +31,13 @@ and requirements) to each other through the coordinator - like independent teams
   into every application's `opencode` config, with encrypted provider keys, restart semantics, and a
   settings UI.
 - Global/project/application agent skill bundles in the coordinator DB: a generated `SKILL.md`
-  plus `references/*.md`, structured metadata, an inventory and dedicated source/preview workspace,
-  deterministic materialization into each isolated instance, collision warnings, explicit restart
-  semantics, and deletion integration.
+  plus arbitrary text/binary files (legacy `references/*.md` remains supported), structured
+  metadata, an inventory and dedicated source/preview workspace, deterministic materialization into
+  each isolated instance, collision warnings, explicit restart semantics, and deletion integration.
+- Global external skill sources served by a trusted `skills-hub` instance: manifest/file sync into a
+  content-addressed cache with immutable snapshots, local-wins precedence, per-skill quarantine,
+  pinning, explicit restart semantics, and a human-only API. The source-management UI is a
+  follow-up; the API is available now.
 - Optional per-tool web drivers: built-in OMO/opencode tools or the DeepSeek standalone Search/Fetch
   APIs, exposed through the managed `hanse_web` MCP server only when configured.
 - Explicit "restart required" markers and a restart action; settings never restart agents silently.

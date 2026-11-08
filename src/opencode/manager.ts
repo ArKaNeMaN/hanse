@@ -54,7 +54,12 @@ import type {
   LaunchSettingsSnapshot,
   SettingsTarget,
 } from "../settings/types.js";
-import type { SkillApplyOptions, SkillMaterializeResult, SkillSource } from "../skills/index.js";
+import type {
+  SkillApplyOptions,
+  SkillCapture,
+  SkillMaterializeResult,
+  SkillSource,
+} from "../skills/index.js";
 import type { SqliteDatabase } from "../store/index.js";
 import {
   type ProcessEvent,
@@ -291,6 +296,7 @@ interface ProcessTransitionInput {
   image?: string;
   settingsHash?: string;
   appliedProfile?: boolean;
+  appliedSkillsHash?: string;
   appliedRuleHash?: string;
   /** Append the history row (default true). */
   emitEvent?: boolean;
@@ -309,6 +315,7 @@ interface InstanceProcessRow {
   appliedImageId: string | null;
   appliedSettingsHash: string | null;
   appliedProfile: number | null;
+  appliedSkillsHash: string | null;
   appliedRuleHash: string | null;
   startedAt: string | null;
   runtimeStartedAt: string | null;
@@ -392,6 +399,7 @@ interface Entry {
   policyWarnings: string[];
   settingsHash?: string;
   appliedProfile?: boolean;
+  appliedSkillsHash?: string;
   profileWarning?: string;
   modelWarnings?: string[];
 }
@@ -871,6 +879,7 @@ export class InstanceManager {
         .prepare(
           `SELECT applied_settings_hash AS appliedSettingsHash,
                   applied_profile AS appliedProfile,
+                  applied_skills_hash AS appliedSkillsHash,
                   applied_rule_hash AS appliedRuleHash
            FROM instances WHERE app_id = ?`,
         )
@@ -878,6 +887,7 @@ export class InstanceManager {
         | {
             appliedSettingsHash: string | null;
             appliedProfile: number | null;
+            appliedSkillsHash: string | null;
             appliedRuleHash: string | null;
           }
         | undefined;
@@ -928,6 +938,7 @@ export class InstanceManager {
               persistedSettings?.appliedProfile === undefined
                 ? undefined
                 : persistedSettings.appliedProfile !== 0,
+            appliedSkillsHash: persistedSettings?.appliedSkillsHash ?? undefined,
           };
           this.#running.set(app.id, entry);
           this.#startMonitor(app, entry);
@@ -1019,10 +1030,17 @@ export class InstanceManager {
         baselinePlugins,
       };
       let skillsHash: string | undefined;
+      let skillCapture: SkillCapture | undefined;
       if (skills !== undefined) {
         try {
-          const probed = skills.probe(skillsTarget, isolated.XDG_CONFIG_HOME, skillOptions);
-          skillsHash = probed.hash;
+          skillCapture = skills.capture(skillsTarget);
+          const probed = skills.probe(
+            skillsTarget,
+            isolated.XDG_CONFIG_HOME,
+            skillOptions,
+            skillCapture,
+          );
+          skillsHash = skillCapture.hash ?? probed.hash;
           this.#logSkillWarnings(app.id, "probe", probed);
         } catch (error) {
           throw skillsMaterializeFailure(error);
@@ -1044,8 +1062,13 @@ export class InstanceManager {
 
       if (skills !== undefined) {
         try {
-          const applied = skills.apply(skillsTarget, isolated.XDG_CONFIG_HOME, skillOptions);
-          skillsHash = applied.hash;
+          const applied = skills.apply(
+            skillsTarget,
+            isolated.XDG_CONFIG_HOME,
+            skillOptions,
+            skillCapture,
+          );
+          skillsHash = skillCapture?.hash ?? applied.hash;
           this.#logSkillWarnings(app.id, "apply", applied);
         } catch (error) {
           const failure = skillsMaterializeFailure(error);
@@ -1249,6 +1272,7 @@ export class InstanceManager {
         image,
         settingsHash,
         appliedProfile,
+        appliedSkillsHash: skillsHash,
         appliedRuleHash: PROCESS_RULE_HASH,
       });
       const status = await this.#options.runtime.ensure(spec);
@@ -1266,6 +1290,7 @@ export class InstanceManager {
         image,
         settingsHash,
         appliedProfile,
+        appliedSkillsHash: skillsHash,
         appliedRuleHash: PROCESS_RULE_HASH,
       });
       const endpoint = status.endpoint;
@@ -1285,7 +1310,15 @@ export class InstanceManager {
         });
         throw error;
       }
-      await this.#recordStatus(app, status, image, settingsHash, appliedProfile, PROCESS_RULE_HASH);
+      await this.#recordStatus(
+        app,
+        status,
+        image,
+        settingsHash,
+        appliedProfile,
+        PROCESS_RULE_HASH,
+        skillsHash,
+      );
 
       const entry: Entry = {
         endpoint,
@@ -1294,6 +1327,7 @@ export class InstanceManager {
         policyWarnings: [],
         settingsHash,
         appliedProfile,
+        appliedSkillsHash: skillsHash,
         profileWarning,
       };
       this.#running.set(app.id, entry);
@@ -1516,6 +1550,7 @@ export class InstanceManager {
           appKey: entry.appKey,
           settingsHash: entry.settingsHash,
           appliedProfile: entry.appliedProfile,
+          appliedSkillsHash: entry.appliedSkillsHash,
         },
         settings,
         omoProfiles,
@@ -1527,7 +1562,8 @@ export class InstanceManager {
                 a.app_key AS appKey,
                 COALESCE(i.runtime_state, i.state) AS state,
                 i.applied_settings_hash AS appliedSettingsHash,
-                i.applied_profile AS appliedProfile
+                i.applied_profile AS appliedProfile,
+                i.applied_skills_hash AS appliedSkillsHash
          FROM instances i
          JOIN apps a ON a.id = i.app_id
          WHERE i.app_id = ?`,
@@ -1539,6 +1575,7 @@ export class InstanceManager {
           state: string;
           appliedSettingsHash: string | null;
           appliedProfile: number | null;
+          appliedSkillsHash: string | null;
         }
       | undefined;
     if (row === undefined || (row.state !== "running" && row.state !== "starting")) {
@@ -1551,6 +1588,7 @@ export class InstanceManager {
         appKey: row.appKey,
         settingsHash: row.appliedSettingsHash ?? undefined,
         appliedProfile: row.appliedProfile === null ? undefined : row.appliedProfile !== 0,
+        appliedSkillsHash: row.appliedSkillsHash ?? undefined,
       },
       settings,
       omoProfiles,
@@ -1564,11 +1602,15 @@ export class InstanceManager {
       appKey: string;
       settingsHash?: string;
       appliedProfile?: boolean;
+      appliedSkillsHash?: string;
     },
     settings: SettingsSource,
     omoProfiles: OmoProfileSource,
   ): { pending: boolean; reasons: string[] } {
-    if (target.settingsHash === undefined || target.appliedProfile === undefined) {
+    if (
+      target.appliedProfile === undefined ||
+      (target.settingsHash === undefined && target.appliedSkillsHash === undefined)
+    ) {
       return { pending: true, reasons: ["applied_state_unknown"] };
     }
     const reasons: string[] = [];
@@ -1587,20 +1629,35 @@ export class InstanceManager {
         model,
         disableWebsearch: disableWebsearch(effective.web),
       });
-      const skillsHash = this.#options.skills?.hash({
+      const currentSkillsHash = this.#options.skills?.hash({
         projectId: target.projectId,
         appKey: target.appKey,
       });
-      if (
-        settingsHashFor(
+      if (target.appliedSkillsHash === undefined) {
+        if (
+          settingsHashFor(
+            snapshot,
+            preview.contentHash,
+            currentSkillsHash,
+            this.#options.modelProviders?.snapshot().hash,
+            PROCESS_RULE_HASH,
+          ) !== target.settingsHash
+        ) {
+          reasons.push("settings_changed");
+        }
+      } else {
+        const settingsWithApplied = settingsHashFor(
           snapshot,
           preview.contentHash,
-          skillsHash,
+          target.appliedSkillsHash,
           this.#options.modelProviders?.snapshot().hash,
           PROCESS_RULE_HASH,
-        ) !== target.settingsHash
-      ) {
-        reasons.push("settings_changed");
+        );
+        if (settingsWithApplied !== target.settingsHash) {
+          reasons.push("settings_changed");
+        } else if (target.appliedSkillsHash !== currentSkillsHash) {
+          reasons.push("skills_changed");
+        }
       }
     } catch {
       reasons.push("settings_changed");
@@ -2723,6 +2780,7 @@ export class InstanceManager {
                 applied_image_id AS appliedImageId,
                 applied_settings_hash AS appliedSettingsHash,
                 applied_profile AS appliedProfile,
+                applied_skills_hash AS appliedSkillsHash,
                 applied_rule_hash AS appliedRuleHash,
                 started_at AS startedAt,
                 runtime_started_at AS runtimeStartedAt,
@@ -2813,6 +2871,10 @@ export class InstanceManager {
         : input.appliedProfile
           ? 1
           : 0;
+    const appliedSkillsHash =
+      input.appliedSkillsHash !== undefined
+        ? input.appliedSkillsHash
+        : (previous?.appliedSkillsHash ?? null);
     const appliedRuleHash = input.appliedRuleHash ?? previous?.appliedRuleHash ?? null;
     const previousState =
       previous === undefined
@@ -2856,13 +2918,15 @@ export class InstanceManager {
           `INSERT INTO instances
              (id, app_id, endpoint, pid, state, runtime_state, spec_hash, container_id,
               container_name, image_ref, started_at, updated_at, applied_settings_hash,
-              applied_profile, applied_image_id, applied_rule_hash, runtime_started_at,
+              applied_profile, applied_skills_hash, applied_image_id, applied_rule_hash,
+              runtime_started_at,
               runtime_restart_count, last_exit_code, last_oom_killed, last_stop_reason,
               last_stop_at, process_attempt_id, process_phase, process_started_at,
               process_error_code, process_error_message, process_error_at, process_updated_at)
            VALUES (@id, @appId, @endpoint, @pid, @state, @state, @specHash, @containerId,
              @containerName, @imageRef, @startedAt, @now, @appliedSettingsHash,
-             @appliedProfile, @appliedImageId, @appliedRuleHash, @runtimeStartedAt,
+             @appliedProfile, @appliedSkillsHash, @appliedImageId, @appliedRuleHash,
+             @runtimeStartedAt,
              @runtimeRestartCount, @lastExitCode, @lastOomKilled, @lastStopReason,
              @lastStopAt, @attemptId, @phase, @processStartedAt, @errorCode,
              @errorMessage, @errorAt, @now)
@@ -2879,6 +2943,7 @@ export class InstanceManager {
              updated_at = excluded.updated_at,
              applied_settings_hash = excluded.applied_settings_hash,
              applied_profile = excluded.applied_profile,
+             applied_skills_hash = excluded.applied_skills_hash,
              applied_image_id = excluded.applied_image_id,
              applied_rule_hash = excluded.applied_rule_hash,
              runtime_started_at = excluded.runtime_started_at,
@@ -2909,6 +2974,7 @@ export class InstanceManager {
           now,
           appliedSettingsHash,
           appliedProfile,
+          appliedSkillsHash,
           appliedImageId,
           appliedRuleHash,
           runtimeStartedAt,
@@ -3130,6 +3196,7 @@ export class InstanceManager {
     settingsHash?: string,
     appliedProfile?: boolean,
     appliedRuleHash?: string,
+    appliedSkillsHash?: string,
   ): Promise<void> {
     const persisted = readProcess(this.#db, app.id);
     const state = normalizeProcessState(status.state);
@@ -3144,6 +3211,7 @@ export class InstanceManager {
       ...(settingsHash === undefined ? {} : { settingsHash }),
       ...(appliedProfile === undefined ? {} : { appliedProfile }),
       ...(appliedRuleHash === undefined ? {} : { appliedRuleHash }),
+      ...(appliedSkillsHash === undefined ? {} : { appliedSkillsHash }),
       clearError: state === "running",
     });
   }

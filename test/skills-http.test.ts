@@ -1601,10 +1601,10 @@ describe("skills API", () => {
     expect(JSON.parse(invalidName.body).field).toBe("name");
   });
 
-  it("accepts a 4 MiB skills body and rejects one above the bound", async () => {
+  it("accepts a 5 MiB skills body and rejects one above the 16 MiB bound", async () => {
     const f = fixture();
     const port = await listen(f);
-    const padding = "x".repeat(1024 * 1024);
+    const padding = "x".repeat(5 * 1024 * 1024);
     const accepted = await fetch(`http://127.0.0.1:${port}/api/skills`, {
       method: "POST",
       headers: {
@@ -1628,7 +1628,7 @@ describe("skills API", () => {
         ...auth(f.token),
         "content-type": "application/x-www-form-urlencoded",
       },
-      body: `padding=${"x".repeat(5 * 1024 * 1024)}`,
+      body: `padding=${"x".repeat(17 * 1024 * 1024)}`,
     });
     expect(rejected.status).toBe(413);
     expect(JSON.parse(await rejected.text())).toMatchObject({ code: "payload_too_large" });

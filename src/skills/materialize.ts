@@ -14,8 +14,15 @@ import {
   writeSync,
 } from "node:fs";
 import path from "node:path";
-import type { EffectiveBundle, SkillMetadata } from "./types.js";
-import { isSkillName, isSkillReferencePath, validateSkillReferenceContent } from "./validation.js";
+import type { EffectiveBundle, SkillFile, SkillMetadata } from "./types.js";
+import {
+  assertNoFileConflicts,
+  isSkillFilePath,
+  isSkillName,
+  isSkillReferencePath,
+  SKILL_FILE_LIMITS,
+  validateSkillReferenceContent,
+} from "./validation.js";
 
 const MAX_ERROR_DETAIL = 500;
 
@@ -139,7 +146,7 @@ function relativePath(root: string, target: string): string {
   return path.relative(root, target).split(path.sep).join("/");
 }
 
-function writeAtomic(file: string, content: string): void {
+function writeAtomicBytes(file: string, content: Uint8Array, mode = 0o644): void {
   const tmp = path.join(
     path.dirname(file),
     `.hanse-skill-${process.pid}-${randomBytes(6).toString("hex")}.tmp`,
@@ -147,11 +154,11 @@ function writeAtomic(file: string, content: string): void {
   const fd = openSync(
     tmp,
     fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY | fsConstants.O_NOFOLLOW,
-    0o644,
+    mode,
   );
   try {
-    writeSync(fd, content, null, "utf8");
-    fchmodSync(fd, 0o644);
+    writeSync(fd, content);
+    fchmodSync(fd, mode);
   } catch (error) {
     closeSync(fd);
     rmSync(tmp, { force: true });
@@ -164,6 +171,10 @@ function writeAtomic(file: string, content: string): void {
     rmSync(tmp, { force: true });
     throw error;
   }
+}
+
+function writeAtomic(file: string, content: string): void {
+  writeAtomicBytes(file, Buffer.from(content, "utf8"));
 }
 
 const KNOWN_METADATA_KEYS = [
@@ -238,20 +249,46 @@ export function buildSkillDocument(skill: {
  * algorithm. All entries not in the effective set are removed; on a first apply
  * they are moved to `skills-replaced/` instead.
  */
-export function rebuildSkills(options: RebuildOptions): RebuildResult {
-  const appRootReal = realpathSync(options.appRoot);
-  ensureRealDirectory(appRootReal, options.opencodeRoot);
-  const skillsRoot = path.join(options.opencodeRoot, "skills");
-  const skillRoot = path.join(options.opencodeRoot, "skill");
-  ensureRealDirectory(appRootReal, skillsRoot);
-  ensureRealDirectory(appRootReal, skillRoot);
+function skillMode(skill: EffectiveBundle): "managed" | "external" {
+  return skill.mode === "external" ? "external" : "managed";
+}
 
-  for (const skill of options.effective) {
-    if (!isSkillName(skill.name)) {
+function validateBundle(skill: EffectiveBundle): void {
+  if (!isSkillName(skill.name)) {
+    throw new Error(`skills_materialize_failed: invalid skill name ${JSON.stringify(skill.name)}`);
+  }
+  const mode = skillMode(skill);
+  const files = skill.files ?? [];
+  if (mode === "external") {
+    const mains = files.filter((file) => file.path === "SKILL.md");
+    if (mains.length !== 1) {
       throw new Error(
-        `skills_materialize_failed: invalid skill name ${JSON.stringify(skill.name)}`,
+        `skills_materialize_failed: external skill ${JSON.stringify(skill.name)} must have exactly one SKILL.md`,
       );
     }
+  } else if (files.some((file) => file.path === "SKILL.md")) {
+    throw new Error(
+      `skills_materialize_failed: managed skill ${JSON.stringify(skill.name)} cannot store SKILL.md`,
+    );
+  }
+  if (files.length > SKILL_FILE_LIMITS.files) {
+    throw new Error("skills_materialize_failed: a skill may have at most 100 files");
+  }
+  let total = 0;
+  for (const file of files) {
+    if (!isSkillFilePath(file.path, { allowSkillMd: mode === "external" })) {
+      throw new Error(`skills_materialize_failed: invalid file path ${JSON.stringify(file.path)}`);
+    }
+    if (file.size > SKILL_FILE_LIMITS.fileBytes) {
+      throw new Error(`skills_materialize_failed: file ${JSON.stringify(file.path)} exceeds 1 MiB`);
+    }
+    total += file.size;
+  }
+  if (total > SKILL_FILE_LIMITS.bundleBytes) {
+    throw new Error("skills_materialize_failed: a skill bundle must be at most 8 MiB");
+  }
+  assertNoFileConflicts(files);
+  if (mode === "managed") {
     for (const reference of skill.references) {
       if (!isSkillReferencePath(reference.path)) {
         throw new Error(
@@ -266,6 +303,35 @@ export function rebuildSkills(options: RebuildOptions): RebuildResult {
       }
     }
   }
+}
+
+function writeFile(rootReal: string, skillRoot: string, file: SkillFile): void {
+  const segments = file.path.split("/");
+  let directory = skillRoot;
+  for (const segment of segments.slice(0, -1)) {
+    directory = path.join(directory, segment);
+    ensureRealDirectory(rootReal, directory);
+  }
+  const destination = path.join(skillRoot, ...segments);
+  if (!isInside(skillRoot, destination)) {
+    throw new Error(
+      `skills_materialize_failed: file path escapes the skill directory ${JSON.stringify(file.path)}`,
+    );
+  }
+  writeAtomicBytes(destination, file.content, file.executable === true ? 0o755 : 0o644);
+}
+
+export function rebuildSkills(options: RebuildOptions): RebuildResult {
+  const appRootReal = realpathSync(options.appRoot);
+  ensureRealDirectory(appRootReal, options.opencodeRoot);
+  const skillsRoot = path.join(options.opencodeRoot, "skills");
+  const skillRoot = path.join(options.opencodeRoot, "skill");
+  ensureRealDirectory(appRootReal, skillsRoot);
+  ensureRealDirectory(appRootReal, skillRoot);
+
+  for (const skill of options.effective) {
+    validateBundle(skill);
+  }
 
   const effectiveNames = new Set(options.effective.map((skill) => skill.name));
   const marker = path.join(options.opencodeRoot, ".hanse-skills-initialized");
@@ -273,7 +339,7 @@ export function rebuildSkills(options: RebuildOptions): RebuildResult {
 
   const preserved = new Set<string>();
   const removed: string[] = [];
-  const written: string[] = [];
+  const written = new Set<string>();
 
   const handleUnexpected = (root: string, name: string): void => {
     const source = path.join(root, name);
@@ -305,37 +371,92 @@ export function rebuildSkills(options: RebuildOptions): RebuildResult {
     writeAtomic(marker, "");
   }
 
+  const trashRoot = path.join(options.opencodeRoot, ".hanse-skill-trash");
+  ensureRealDirectory(appRootReal, trashRoot);
+
   for (const skill of [...options.effective].sort((left, right) =>
     compareStrings(left.name, right.name),
   )) {
     const directory = path.join(skillsRoot, skill.name);
-    removeEntry(appRootReal, directory);
-    ensureRealDirectory(appRootReal, directory);
-    const references = [...skill.references].sort((left, right) =>
-      compareStrings(left.path, right.path),
+    const staging = path.join(
+      skillsRoot,
+      `.hanse-tmp-${skill.name}-${randomBytes(6).toString("hex")}`,
     );
-    if (references.length > 0) {
-      ensureRealDirectory(appRootReal, path.join(directory, "references"));
-    }
-    for (const reference of references) {
-      const segments = reference.path.split("/");
-      const file = path.resolve(directory, ...segments);
-      if (!isInside(directory, file)) {
-        throw new Error(
-          `skills_materialize_failed: reference path escapes the skill directory ${JSON.stringify(reference.path)}`,
-        );
+    removeEntry(appRootReal, staging);
+    ensureRealDirectory(appRootReal, staging);
+    try {
+      const mode = skillMode(skill);
+      const files = [...(skill.files ?? [])].sort((left, right) =>
+        compareStrings(left.path, right.path),
+      );
+      if (mode === "external") {
+        for (const file of files) {
+          if (file.path !== "SKILL.md") {
+            writeFile(appRootReal, staging, file);
+            written.add(path.posix.join("skills", skill.name, file.path));
+          }
+        }
+        const main = files.find((file) => file.path === "SKILL.md");
+        if (main === undefined) {
+          throw new Error(
+            `skills_materialize_failed: external skill ${JSON.stringify(skill.name)} is missing SKILL.md`,
+          );
+        }
+        writeFile(appRootReal, staging, main);
+        written.add(path.posix.join("skills", skill.name, "SKILL.md"));
+      } else {
+        const filePaths = new Set(files.map((file) => file.path));
+        for (const file of files) {
+          writeFile(appRootReal, staging, file);
+          written.add(path.posix.join("skills", skill.name, file.path));
+        }
+        for (const reference of [...skill.references].sort((left, right) =>
+          compareStrings(left.path, right.path),
+        )) {
+          if (filePaths.has(reference.path)) {
+            continue;
+          }
+          const segments = reference.path.split("/");
+          let directoryPath = staging;
+          for (const segment of segments.slice(0, -1)) {
+            directoryPath = path.join(directoryPath, segment);
+            ensureRealDirectory(appRootReal, directoryPath);
+          }
+          const destination = path.join(staging, ...segments);
+          if (!isInside(staging, destination)) {
+            throw new Error(
+              `skills_materialize_failed: reference path escapes the skill directory ${JSON.stringify(reference.path)}`,
+            );
+          }
+          writeAtomic(destination, reference.content ?? "");
+          written.add(path.posix.join("skills", skill.name, reference.path));
+        }
+        writeAtomic(path.join(staging, "SKILL.md"), buildSkillDocument(skill));
+        written.add(path.posix.join("skills", skill.name, "SKILL.md"));
       }
-      writeAtomic(file, reference.content ?? "");
-      written.push(path.posix.join("skills", skill.name, reference.path));
+
+      const trash = path.join(trashRoot, `${skill.name}-${randomBytes(6).toString("hex")}`);
+      removeEntry(appRootReal, trash);
+      if (existsAt(directory)) {
+        renameSync(directory, trash);
+      }
+      try {
+        renameSync(staging, directory);
+      } catch (error) {
+        if (!existsAt(directory) && existsAt(trash)) {
+          renameSync(trash, directory);
+        }
+        throw error;
+      }
+      removeEntry(appRootReal, trash);
+    } catch (error) {
+      rmSync(staging, { recursive: true, force: true });
+      throw error;
     }
-    // SKILL.md is written last so a crash mid-bundle is not discoverable.
-    const file = path.join(directory, "SKILL.md");
-    writeAtomic(file, buildSkillDocument(skill));
-    written.push(path.posix.join("skills", skill.name, "SKILL.md"));
   }
 
   return {
-    written: written.sort(compareStrings),
+    written: [...written].sort(compareStrings),
     removed: removed.sort(compareStrings),
     preserved: [...preserved].sort(compareStrings),
   };

@@ -904,4 +904,116 @@ CREATE INDEX agent_run_events_created
   ON agent_run_events(created_at);
 `,
   },
+  {
+    version: 24,
+    name: "external-skill-sources",
+    sql: `
+-- v24: external skill sources, immutable snapshots, and arbitrary local skill files
+CREATE TABLE skill_files (
+  skill_id INTEGER NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+  path TEXT NOT NULL CHECK (length(path) BETWEEN 1 AND 1024),
+  content BLOB NOT NULL,
+  encoding TEXT NOT NULL DEFAULT 'utf8' CHECK (encoding IN ('utf8', 'binary')),
+  executable INTEGER NOT NULL DEFAULT 0 CHECK (executable IN (0, 1)),
+  sha256 TEXT,
+  size INTEGER,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (skill_id, path)
+);
+
+INSERT INTO skill_files (skill_id, path, content, encoding, executable, sha256, size, updated_at)
+SELECT r.skill_id, r.path, CAST(r.content AS BLOB), 'utf8', 0, NULL, NULL, s.updated_at
+FROM skill_references r
+JOIN skills s ON s.id = r.skill_id;
+
+CREATE TABLE skill_sources (
+  id TEXT PRIMARY KEY,
+  slug TEXT NOT NULL UNIQUE CHECK (length(slug) BETWEEN 1 AND 64),
+  name TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 128),
+  kind TEXT NOT NULL CHECK (length(kind) BETWEEN 1 AND 64),
+  endpoint TEXT NOT NULL CHECK (length(endpoint) BETWEEN 1 AND 2048),
+  config_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(config_json)),
+  priority INTEGER NOT NULL DEFAULT 100 CHECK (priority BETWEEN 0 AND 100000),
+  enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+  mode TEXT NOT NULL DEFAULT 'track' CHECK (mode IN ('track', 'pinned')),
+  sync_interval_sec INTEGER NOT NULL DEFAULT 900
+    CHECK (sync_interval_sec BETWEEN 60 AND 604800),
+  stale_after_sec INTEGER NOT NULL DEFAULT 86400
+    CHECK (stale_after_sec BETWEEN 60 AND 2592000),
+  request_timeout_ms INTEGER NOT NULL DEFAULT 15000
+    CHECK (request_timeout_ms BETWEEN 1000 AND 120000),
+  active_snapshot_id TEXT,
+  pinned_snapshot_id TEXT,
+  disabled_at TEXT,
+  last_attempt_at TEXT,
+  last_success_at TEXT,
+  last_checked_at TEXT,
+  last_error_code TEXT,
+  last_error_message TEXT,
+  etag TEXT,
+  revision TEXT,
+  state TEXT NOT NULL DEFAULT 'never_synced'
+    CHECK (state IN ('never_synced', 'syncing', 'ready', 'degraded', 'error', 'disabled')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  updated_by TEXT
+);
+
+ALTER TABLE skills ADD COLUMN origin TEXT NOT NULL DEFAULT 'local'
+  CHECK (origin IN ('local', 'forked'));
+ALTER TABLE skills ADD COLUMN forked_from_source_id TEXT
+  REFERENCES skill_sources(id) ON DELETE SET NULL;
+ALTER TABLE skills ADD COLUMN forked_from_name TEXT;
+ALTER TABLE skills ADD COLUMN forked_from_revision TEXT;
+
+CREATE TABLE skill_source_credentials (
+  source_id TEXT PRIMARY KEY REFERENCES skill_sources(id) ON DELETE CASCADE,
+  cipher TEXT,
+  nonce TEXT,
+  meta_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(meta_json)),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  updated_by TEXT
+);
+
+CREATE TABLE skill_source_snapshots (
+  id TEXT PRIMARY KEY,
+  source_id TEXT NOT NULL,
+  revision TEXT NOT NULL,
+  etag TEXT,
+  manifest_sha256 TEXT NOT NULL,
+  bucket_set_json TEXT NOT NULL CHECK (json_valid(bucket_set_json)),
+  skill_count INTEGER NOT NULL DEFAULT 0 CHECK (skill_count >= 0),
+  total_bytes INTEGER NOT NULL DEFAULT 0 CHECK (total_bytes >= 0),
+  state TEXT NOT NULL DEFAULT 'active' CHECK (state IN ('active', 'superseded', 'failed')),
+  fetched_at TEXT NOT NULL,
+  published_at TEXT,
+  error_code TEXT,
+  error_message TEXT
+);
+CREATE INDEX skill_source_snapshots_source
+  ON skill_source_snapshots(source_id, published_at);
+
+CREATE TABLE skill_source_skills (
+  snapshot_id TEXT NOT NULL REFERENCES skill_source_snapshots(id) ON DELETE CASCADE,
+  source_id TEXT NOT NULL,
+  bucket TEXT NOT NULL,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL,
+  version TEXT,
+  content_hash TEXT,
+  skill_md_sha256 TEXT NOT NULL,
+  files_json TEXT NOT NULL CHECK (json_valid(files_json)),
+  file_count INTEGER NOT NULL DEFAULT 0 CHECK (file_count >= 0),
+  total_bytes INTEGER NOT NULL DEFAULT 0 CHECK (total_bytes >= 0),
+  state TEXT NOT NULL DEFAULT 'ok' CHECK (state IN ('ok', 'quarantined')),
+  error_code TEXT,
+  error_message TEXT,
+  PRIMARY KEY (snapshot_id, bucket, name)
+);
+CREATE INDEX skill_source_skills_name ON skill_source_skills(snapshot_id, name);
+
+ALTER TABLE instances ADD COLUMN applied_skills_hash TEXT;
+`,
+  },
 ];

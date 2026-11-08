@@ -1,5 +1,26 @@
 # Open questions
 
+> Stage: `0037-external-skill-sources`. Owner decisions were collected on 2026-11-07. The owner
+> selected storage variant B (content-addressed cache + thin DB index + per-app materialization)
+> and mixing variant A (local managed skills always win). The owner delegated the remaining forks;
+> the autonomous decisions are recorded in the design and repeated below.
+
+## Stage `0037-external-skill-sources` - resolved owner decisions
+
+1. **Storage/caching** - content-addressed cache under coordinator state plus a thin DB index;
+   external bytes never enter `skills`; each app receives a materialized copy.
+2. **Mixing** - `app > project > global > external sources`; a disabled managed row is a tombstone
+   over external skills.
+3. **Corrupt active cache** - fail closed; the operator can disable the source to start without it.
+4. **Local arbitrary files** - `skill_files` storage and text/base64 API land in this stage; the Vue
+   editor starts with text files; a binary upload UI is a follow-up.
+5. **Deletion guard** - a fully successful full manifest is required; an empty set for a previously
+   non-empty source or a removal above the threshold requires `force`.
+6. **Source position** - fixed below global; no per-source position setting in this stage.
+7. **Pinning** - freeze the cached snapshot; the hub cannot serve arbitrary revisions.
+8. **Token rotation** - write-only replace; the next sync uses the new token; no version history.
+9. **Approval queue and per-app source opt-out** - deferred.
+
 > Stage: `0036-agent-process-status`. Owner decisions were collected on 2026-11-07. There are no
 > open items for this stage.
 

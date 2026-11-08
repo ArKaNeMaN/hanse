@@ -23,7 +23,8 @@ import type { ModelProviderService } from "../model-providers/index.js";
 import type { InstanceManager } from "../opencode/manager.js";
 import type { PreviewService } from "../preview/service.js";
 import type { SettingsService } from "../settings/index.js";
-import type { SkillService } from "../skills/index.js";
+import type { SkillSourceService } from "../skill-sources/index.js";
+import type { SkillService, SkillSource } from "../skills/index.js";
 import type { SshService } from "../ssh/service.js";
 import type { SqliteDatabase } from "../store/index.js";
 import { readProcessSnapshot } from "../store/process.js";
@@ -61,6 +62,8 @@ export interface HttpDeps {
   modelProviders?: ModelProviderService;
   ssh?: SshService;
   skills?: SkillService;
+  effectiveSkills?: SkillSource;
+  skillSources?: SkillSourceService;
   /** Present only when the coordinator is wired to the runner; preview tools 503/unavailable otherwise. */
   previews?: PreviewService;
   agentsHome?: string;

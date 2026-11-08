@@ -1,6 +1,7 @@
 import {
   SKILL_LIMITS,
   SkillConflictError,
+  type SkillFileInput,
   type SkillMetadata,
   type SkillReference,
   type SkillRow,
@@ -9,6 +10,7 @@ import {
   type SkillTarget,
   type SkillUpdate,
   SkillValidationError,
+  skillFileView,
 } from "../skills/index.js";
 import { principalFrom } from "./auth.js";
 import {
@@ -454,8 +456,8 @@ function navProjects(site: SiteModel): Array<{ id: string; name: string; appCoun
 /* Inventory                                                                  */
 /* ------------------------------------------------------------------------- */
 
-function scopeBadge(scope: SkillScope): string {
-  return `<span class="badge">${escapeHtml(scopeLabel(scope))}</span>`;
+function scopeBadge(scope: SkillScope | null): string {
+  return `<span class="badge">${scope === null ? "Hub" : escapeHtml(scopeLabel(scope))}</span>`;
 }
 
 function stateBadge(row: SkillsInventoryProps["rows"][number]): string {
@@ -523,9 +525,17 @@ function inventoryTable(props: SkillsInventoryProps): string {
         row.references === 0
           ? '<span class="hint mono">0</span>'
           : `<span class="mono">${row.references}</span>`;
+      const primary =
+        row.href === null
+          ? `<span class="mono">${escapeHtml(row.name)}</span>`
+          : `<a class="mono" href="${escapeHtml(row.href)}">${escapeHtml(row.name)}</a>`;
+      const action =
+        row.href === null
+          ? ""
+          : `<a class="btn btn-ghost btn-icon" href="${escapeHtml(row.href)}" aria-label="${escapeHtml(row.actionLabel)}">${icon("chevron-right")}</a>`;
       return `<tr data-skill-name="${escapeHtml(row.name)}" data-skill-state="${row.state}" data-skill-state-label="${escapeHtml(row.stateLabel)}">
         <td class="table__primary" data-label="Skill">
-          <a class="mono" href="${escapeHtml(row.href)}">${escapeHtml(row.name)}</a>
+          ${primary}
           <p class="small">${escapeHtml(row.description)}</p>
           ${secondary}
         </td>
@@ -533,7 +543,7 @@ function inventoryTable(props: SkillsInventoryProps): string {
         <td data-label="State"><span class="cluster">${stateBadge(row)}${issueGlyph(row.issues)}${row.collisions.length === 0 ? "" : `<span class="status" data-state="awaiting_approval" title="${escapeHtml((row.collisions[0] as SkillWarningProps).text)}">${icon("alert-triangle")}<span class="sr-only">Collision</span></span>`}</span></td>
         <td data-label="References">${references}</td>
         <td data-label="Updated">${updated}</td>
-        <td class="table__actions"><a class="btn btn-ghost btn-icon" href="${escapeHtml(row.href)}" aria-label="${escapeHtml(row.actionLabel)}">${icon("chevron-right")}</a></td>
+        <td class="table__actions">${action}</td>
       </tr>`;
     })
     .join("");
@@ -672,6 +682,7 @@ interface ParsedBundle {
   metadata?: SkillMetadata;
   metadataRaw?: string | null;
   references?: SkillReference[];
+  files?: SkillFileInput[];
   /** The browser form could not edit these stored fields without JavaScript. */
   preserveInvalid?: boolean;
 }
@@ -688,6 +699,7 @@ function detailOf(row: SkillRow): Record<string, unknown> {
         size: Buffer.byteLength(content, "utf8"),
       };
     }),
+    files: (row.files ?? []).map(skillFileView),
   };
 }
 
@@ -718,7 +730,14 @@ function parseBundlePayload(payload: Record<string, unknown>): ParsedBundle {
     if (rawBundle.trim().length > 0) {
       source = { ...jsonObject(rawBundle, "bundle") };
     }
-    for (const key of ["license", "compatibility", "metadata", "metadataRaw", "references"]) {
+    for (const key of [
+      "license",
+      "compatibility",
+      "metadata",
+      "metadataRaw",
+      "references",
+      "files",
+    ]) {
       if (hasOwn(payload, key)) {
         source[key] = payload[key];
       }
@@ -794,6 +813,49 @@ function parseBundlePayload(payload: Record<string, unknown>): ParsedBundle {
       references.push({ path: record.path, content: record.content });
     }
     parsed.references = references;
+  }
+  if (hasOwn(source, "files")) {
+    let value = source.files;
+    if (typeof value === "string") {
+      if (value.trim().length === 0) {
+        value = [];
+      } else {
+        try {
+          value = JSON.parse(value) as unknown;
+        } catch {
+          throw new SkillValidationError("files must be valid JSON", "files");
+        }
+      }
+    }
+    if (!Array.isArray(value)) {
+      throw new SkillValidationError("files must be an array", "files");
+    }
+    const files: SkillFileInput[] = [];
+    for (const entry of value) {
+      if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+        throw new SkillValidationError("each file must have a path and text or base64", "files");
+      }
+      const record = entry as Record<string, unknown>;
+      if (typeof record.path !== "string") {
+        throw new SkillValidationError("each file must have a path", "files");
+      }
+      if (record.text !== undefined && typeof record.text !== "string") {
+        throw new SkillValidationError("file text must be a string", "files");
+      }
+      if (record.base64 !== undefined && typeof record.base64 !== "string") {
+        throw new SkillValidationError("file base64 must be a string", "files");
+      }
+      if (record.executable !== undefined && typeof record.executable !== "boolean") {
+        throw new SkillValidationError("file executable must be a boolean", "files");
+      }
+      files.push({
+        path: record.path,
+        ...(record.text === undefined ? {} : { text: record.text }),
+        ...(record.base64 === undefined ? {} : { base64: record.base64 }),
+        ...(record.executable === undefined ? {} : { executable: record.executable }),
+      });
+    }
+    parsed.files = files;
   }
   if (source.preserveInvalid === true) {
     parsed.preserveInvalid = true;
@@ -872,6 +934,9 @@ function updatePatch(payload: Record<string, unknown>, parsed: ParsedBundle): Sk
   }
   if (parsed.references !== undefined) {
     patch.references = parsed.references;
+  }
+  if (parsed.files !== undefined) {
+    patch.files = parsed.files;
   }
   if (Object.keys(patch).length === 0) {
     throw new SkillsBodyError("update requires at least one field");
@@ -1782,6 +1847,7 @@ export async function handleSkills(deps: HttpDeps, request: HttpRequest): Promis
               compatibility: selected.bundle.compatibility,
               metadata: selected.bundle.metadata,
               references: selected.bundle.references,
+              ...(parsed.files === undefined ? {} : { files: parsed.files }),
             },
             actor,
           );

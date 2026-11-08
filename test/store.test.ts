@@ -50,7 +50,7 @@ describe("store", () => {
       version: number;
     }[];
     expect(versions.map((row) => row.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
     ]);
     const secretTables = (
       db
@@ -149,6 +149,10 @@ describe("store", () => {
       "license",
       "compatibility",
       "metadata_json",
+      "origin",
+      "forked_from_source_id",
+      "forked_from_name",
+      "forked_from_revision",
     ]);
     const referenceColumns = (
       db.prepare("PRAGMA table_info(skill_references)").all() as {

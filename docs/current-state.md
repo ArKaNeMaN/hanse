@@ -620,12 +620,13 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   order; migrations v10 (applied settings/profile state), v11 (deletion markers), v12 (skills),
   v13 (skill bundles), v14 (session-bound handoffs, reply routing, and handoff policy), and v15
   (chat drafts, session state, and pending sends) and v16 (file-only attachments and deliveries)
-  follow. The current schema versions are `[1..23]` (v17 adds handoff message-id lookup indexes;
+  follow. The current schema versions are `[1..24]` (v17 adds handoff message-id lookup indexes;
   v18 adds agent image validity; v19 adds the global custom model provider registry; v20 adds the
   process-rule hash, runtime epoch/exit fields, and the session resume/notice tables; v21 adds
   `agent_media` for agent-published chat images; v22 adds the handoff-thread header fields, ordered
   `handoff_messages` columns, triggers, and indexes; v23 adds the `instances.process_*` current
-  fields and the durable `agent_run_events` history).
+  fields and the durable `agent_run_events` history; v24 adds arbitrary `skill_files`, external
+  skill-source tables, fork provenance, and `instances.applied_skills_hash`).
 - Live on `deployment-host` (`sha-e2d89a2`): a temporary SSH target pinned and authenticated, an approval was
   approved, `echo QA_OK` and a 65 s `sleep` succeeded, upload/download round-tripped, a real
   `opencode` turn called `hanse_ssh_exec` and received the result after 65 s, and audit rows survived
@@ -1136,13 +1137,21 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   (`update`/`discard`/legacy `delete`), `POST /api/skills/:id/delete`, and
   `DELETE /api/skills/:id`. Agent principals receive `403`; every mutation rejects a cross-site
   `Origin`; `return_to` and `from` are validated local scope paths.
-- Skills live in the coordinator DB tables `skills` and `skill_references` (migration v13), not in
-  `.hanse/` manifests or repositories. `skills` rows are keyed by
+- Skills live in the coordinator DB tables `skills`, `skill_references`, and `skill_files`
+  (migrations v13/v24), not in `.hanse/` manifests or repositories. `skills` rows are keyed by
   `(scope, project_id, app_key, name)` with empty strings for wider scopes, and add nullable
-  `license`/`compatibility` plus a `metadata_json` string map. `skill_references` stores a canonical
-  `references/<slug>.md` path and content with `ON DELETE CASCADE`. App deletion removes app-scope
-  rows, project deletion removes all rows for the project, and global rows (`project_id = ''`)
-  survive.
+  `license`/`compatibility`, a `metadata_json` string map, and `origin`/`forked_from_*` provenance.
+  `skill_references` stores the legacy canonical `references/<slug>.md` projection with
+  `ON DELETE CASCADE`; `skill_files` is the canonical byte store for arbitrary text/binary files
+  with `sha256`/`size`. App deletion removes app-scope rows, project deletion removes all rows for
+  the project, and global rows (`project_id = ''`) survive.
+- Local arbitrary files are accepted through `POST/POST /api/skills` as
+  `files: [{path, text|base64, executable?}]` (mutually exclusive with `references` in one payload).
+  `files` is a full replacement; `references` is a partial replacement of only the legacy
+  `skill_references` projection and preserves binary/over-limit `references/*` files. `override`
+  copies the full file set. A startup `reconcileSkillFiles` merges rolled-back legacy edits and fills
+  missing digests. The API supports text and base64 files; the Vue editor still edits the legacy
+  reference projection, and both the arbitrary-file text editor and binary upload UI are deferred.
 - A skill is a bundle: a generated `SKILL.md` plus zero or more flat `references/<slug>.md` files.
   The slug is 1-64 lowercase-hyphen characters, the full path 15-78, with at most 20 references,
   48,000 characters each and 192,000 aggregate. The body is 48,000 characters; `description` may
@@ -1173,14 +1182,25 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   instance as `error`. Materialization failures surface as `skills_materialize_failed`. The manager
   refuses to start an application whose sanitized state segment collides with a sibling, so two
   apps cannot share a skills root.
+- Global external skill sources are operator-managed rows in `skill_sources` with sealed tokens in
+  `skill_source_credentials`, immutable snapshots in `skill_source_snapshots`, and a per-skill index
+  in `skill_source_skills` (migration v24). The first adapter consumes a `skills-hub` instance over
+  `GET /api/v1/manifest` and per-file downloads with a Bearer token, ETag/304, immutable
+  content-addressed blobs under `<state>/hanse/skill-sources/`, atomic snapshot publication, deletion
+  guards, per-skill quarantine, pinning, and background sync. External skills resolve below managed
+  rows (`app > project > global > source priority`), external `SKILL.md` is materialized verbatim,
+  and disabled managed rows are tombstones over external skills. A source hard delete keeps
+  snapshot/index rows and blobs for the 24-hour retention floor. Source management is API-only in
+  this stage (`/api/skill-sources*`, human-only); the Vue source page and external skill drawer are
+  a follow-up, so the existing skills inventory continues to show managed rows.
 - The effective hash includes `name`, `description`, `content`, and, only when non-empty,
   `license`, `compatibility`, `metadata`, and path-sorted `references`. A legacy single-file skill
   with no new fields keeps its pre-v13 hash and generated `SKILL.md` bytes, so upgrading does not
   mark agents restart-required. Adding or changing an effective bundle marks affected running apps
   `Restart required`; a shadowed or disabled row does not. Restarts are never automatic.
-- `/api/skills*` routes accept up to 4 MiB request bodies, while the general server bound stays
-  64 KiB. The extra room covers the bundle form and worst-case percent-encoding; per-field and
-  per-bundle limits are enforced by the service.
+- `/api/skills*` routes accept up to 16 MiB request bodies, while the general server bound stays
+  64 KiB. The extra room covers an 8 MiB arbitrary-file bundle plus base64/JSON expansion;
+  per-field and per-bundle limits are enforced by the service.
 - Collision scanning covers the app repository `.opencode/skill` and `.opencode/skills`,
   `<HOME>/.claude/skills`, `<HOME>/.agents/skills`, `<XDG_CACHE_HOME>/opencode/skills`, and
   `file://` baseline plugin `<root>/skills`, excluding the Hanse-owned config roots. Results are
@@ -1411,6 +1431,9 @@ Host `./state` is mounted at `/data/state` in `hanse` only:
   policies, approvals, principals, events, settings, skills, provider keys, custom model providers
   (`model_providers`), and encrypted git credentials (`setting_secrets`).
 - `hanse/secret.key` - AES-256-GCM key for the credential store and provider keys (mode `0600`).
+- `hanse/skill-sources/` - content-addressed blobs, per-source snapshot manifests, staging, and trash
+  for external skill sources. The DB and this directory are backed up together; the cache is
+  rebuildable from the hub but a pinned snapshot is not a backup.
 
 Host `./agents` is mounted at `/data/agents` read-write in `hanse` and read-only in `hanse-runner`:
 
@@ -1672,13 +1695,14 @@ Settings stage verification:
   `OPENCODE_CONFIG_CONTENT`; keys remain encrypted. Deleting and recreating an id reuses its retained
   key against the new base URL. The registry is capped at 32 providers and the final overlay at
   64 KiB; a downgrade to a coordinator without v19 requires a restart.
-- Skills only establish precedence among Hanse-managed rows. Repository `.opencode/skill(s)`,
-  plugin, `~/.claude/skills`, `~/.agents/skills`, and cache roots are scanned and warned, but Hanse
-  cannot override them, and duplicate winner selection across those roots is not a stable opencode
-  contract.
-- Skills are single-file `SKILL.md` only: no bundles, scripts, binary assets, URL imports, per-agent
-  allowlist, or version history/rollback. They are plaintext operator instructions, not a secret
-  store.
+- Skills establish precedence between Hanse-managed rows and configured external sources;
+  repository `.opencode/skill(s)`, plugin, `~/.claude/skills`, `~/.agents/skills`, and cache roots
+  are scanned and warned, but Hanse cannot override them, and duplicate winner selection across
+  those roots is not a stable opencode contract.
+- Skills support arbitrary local text/binary files and external snapshots. Deferred: external source
+  UI (API-only in this stage), binary upload UI, git-backed sources, project/app-scoped sources,
+  per-app source opt-out, historical revision fetch, and an approval queue. External content is
+  operator-trusted prompt content, not a secret store.
 - Skills are never hot-reloaded; a running agent picks up a changed set only after an explicit
   restart. `pendingRestart` hashes the effective set per query, and first-deploy
   `skills-replaced/` directories are not cleaned up automatically.

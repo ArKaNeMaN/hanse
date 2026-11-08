@@ -61,9 +61,11 @@ import {
 } from "../runtime/index.js";
 import { loadOrCreateKey } from "../secrets/index.js";
 import { SettingsService } from "../settings/index.js";
+import { CompositeSkillSource, SkillSourceService } from "../skill-sources/index.js";
 import { SkillService } from "../skills/index.js";
 import { SshService } from "../ssh/service.js";
 import {
+  openCoordinatorDatabase,
   openDatabase,
   runMigrations,
   SchemaTooNewError,
@@ -611,8 +613,7 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
   const lifecycleActivity = new LifecycleActivity();
   let db: SqliteDatabase | undefined;
   try {
-    db = openDatabase(coordinatorDbPath(ctx.stateHome));
-    runMigrations(db);
+    db = openCoordinatorDatabase(ctx.stateHome);
   } catch (error) {
     if (error instanceof SchemaTooNewError || error instanceof UnknownMigrationError) {
       ctx.io.stderr(`serve: ${error.message}`);
@@ -659,6 +660,13 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
   }
 
   const skills = new SkillService({ db });
+  const skillSources = new SkillSourceService({
+    db,
+    secretKey,
+    stateRoot: coordinatorStateDir(ctx.stateHome),
+    logger: (message) => ctx.io.stderr(`hanse: ${message}`),
+  });
+  const effectiveSkills = new CompositeSkillSource(skills, skillSources);
   const previews =
     runnerUrl !== undefined && runnerUrl.length > 0 ? new PreviewService() : undefined;
   const images =
@@ -679,7 +687,7 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
     runtime,
     settings,
     omoProfiles,
-    skills,
+    skills: effectiveSkills,
     modelProviders,
     waitForReady: async (appId, endpoint) => {
       if (!(await waitForOpenCodeReady(endpoint))) {
@@ -750,6 +758,8 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
     modelProviders,
     ssh,
     skills,
+    effectiveSkills,
+    skillSources,
     dispatcher: handoffDispatcher,
     ...(previews === undefined ? {} : { previews }),
     agentsHome: path.resolve(agentsHome()),
@@ -795,6 +805,7 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
     process.stderr.write("hanse: context monitor resume failed\n");
   });
   handoffDispatcher.start();
+  skillSources.start();
   const operatorCount = getProjects().filter((project) => !isMasterProject(project.id)).length;
   ctx.io.stdout(
     `hanse serving ${operatorCount} project(s) and the master agent at http://${options.hostname}:${options.port}`,
@@ -803,6 +814,7 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
   return await new Promise<number>((resolve) => {
     const shutdown = (): void => {
       handoffDispatcher?.stop();
+      skillSources.stop();
       manager.detach();
       ide?.kill("SIGTERM");
       server.close(() => {
@@ -858,8 +870,10 @@ export async function mcpCommand(ctx: CommandContext): Promise<number> {
     ctx.io.stderr("mcp: HANSE_PROJECT_ID and HANSE_APP_KEY are required");
     return 2;
   }
-  const db = openDatabase(process.env.HANSE_DB ?? coordinatorDbPath(ctx.stateHome));
-  runMigrations(db);
+  const db = openCoordinatorDatabase(
+    ctx.stateHome,
+    process.env.HANSE_DB ?? coordinatorDbPath(ctx.stateHome),
+  );
   await runMcpServer(new CoordinatorService(db, projectId), appKey);
   db.close();
   return 0;
