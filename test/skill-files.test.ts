@@ -3,9 +3,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { hashValue } from "../src/settings/hash.js";
-import { SkillService, type SkillApplyOptions } from "../src/skills/index.js";
-import { reconcileSkillFiles } from "../src/store/reconcile-skill-files.js";
+import { type SkillApplyOptions, SkillService } from "../src/skills/index.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
+import { reconcileSkillFiles } from "../src/store/reconcile-skill-files.js";
 
 const dirs: string[] = [];
 const databases: SqliteDatabase[] = [];
@@ -87,10 +87,7 @@ describe("local arbitrary skill files", () => {
     ).toContain("name: files-demo");
 
     const updated = f.service.update(row.id, { references: [] }, "owner");
-    expect(updated.files?.map((file) => file.path)).toEqual([
-      "assets/logo.bin",
-      "scripts/run.sh",
-    ]);
+    expect(updated.files?.map((file) => file.path)).toEqual(["assets/logo.bin", "scripts/run.sh"]);
     expect(updated.references).toEqual([]);
   });
 
