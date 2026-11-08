@@ -8,26 +8,10 @@ const baseEnv = Object.fromEntries(
 const token = "test-operator-token";
 const reuseExistingServer = process.env.HANSE_E2E_REUSE === "1";
 
-const routeSpecs = [
-  "**/auth.spec.ts",
-  "**/overview.spec.ts",
-  "**/projects.spec.ts",
-  "**/project-detail.spec.ts",
-  "**/app.spec.ts",
-  "**/handoffs.spec.ts",
-  "**/settings.spec.ts",
-  "**/skills.spec.ts",
-  "**/ssh.spec.ts",
-  "**/error.spec.ts",
-  "**/terminal.spec.ts",
-  "**/chat.spec.ts",
-];
-
-function fixtureEnv(port: number, mode: "spa" | "legacy", extra: Record<string, string> = {}) {
+function fixtureEnv(port: number, extra: Record<string, string> = {}) {
   return {
     ...baseEnv,
     HANSE_E2E_PORT: String(port),
-    HANSE_E2E_MODE: mode,
     HANSE_E2E_TOKEN: token,
     ...extra,
   };
@@ -77,23 +61,6 @@ export default defineConfig({
       ],
       use: { baseURL: "http://127.0.0.1:4310" },
     },
-    {
-      name: "legacy",
-      testMatch: routeSpecs,
-      use: { baseURL: "http://127.0.0.1:4311" },
-    },
-    {
-      name: "allowlist-empty",
-      testMatch: [
-        "**/overview.spec.ts",
-        "**/projects.spec.ts",
-        "**/handoffs.spec.ts",
-        "**/ssh.spec.ts",
-        "**/settings.spec.ts",
-        "**/skills.spec.ts",
-      ],
-      use: { baseURL: "http://127.0.0.1:4312" },
-    },
   ],
   webServer: [
     {
@@ -101,26 +68,9 @@ export default defineConfig({
       url: "http://127.0.0.1:4310/healthz",
       reuseExistingServer,
       timeout: 60_000,
-      env: fixtureEnv(4310, "spa", {
+      env: fixtureEnv(4310, {
         HANSE_UI_LEGACY: "",
         HANSE_UI_SPA_ROUTES: SPA_E2E_ROUTE_IDS,
-      }),
-    },
-    {
-      command: "node --import tsx e2e/support/server.ts",
-      url: "http://127.0.0.1:4311/healthz",
-      reuseExistingServer,
-      timeout: 60_000,
-      env: fixtureEnv(4311, "legacy", { HANSE_UI_LEGACY: "1" }),
-    },
-    {
-      command: "node --import tsx e2e/support/server.ts",
-      url: "http://127.0.0.1:4312/healthz",
-      reuseExistingServer,
-      timeout: 60_000,
-      env: fixtureEnv(4312, "spa", {
-        HANSE_UI_LEGACY: "",
-        HANSE_UI_SPA_ROUTES: "",
       }),
     },
   ],

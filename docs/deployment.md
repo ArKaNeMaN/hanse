@@ -235,7 +235,7 @@ Compose reads `.env` in the directory containing `compose.yaml`.
 | `HANSE_IDE_BUILD_IMAGE` | `hanse-agent-ide:dev` | Local IDE tag used by the source-build overlay. |
 | `HANSE_RUNNER_BUILD_IMAGE` | `hanse-runner:dev` | Local runner tag used by the source-build overlay. |
 | `HANSE_HOST_AUTH_FILE` | - | Required only by `compose.host-auth.yaml`; path to a host `auth.json`. |
-| `HANSE_UI_LEGACY` | unset | `1` forces non-retired pages to the legacy renderer; ignored for chat/terminal, which are retired. Restart required. |
+| `HANSE_UI_LEGACY` | unset | `1` forces the `/login` rollback form; ignored for every other route, which is retired. Restart required. |
 | `HANSE_UI_SPA_ROUTES` | unset | Comma-separated non-retired route ids served by the SPA; retired chat/terminal are always SPA. Restart required. |
 | `HANSE_UI_DEV_URL` | unset | Development only: Vite origin (for example `http://127.0.0.1:5173`). The coordinator emits Vite client/entry module URLs instead of the built manifest. |
 
@@ -254,23 +254,21 @@ need to be overridden.
 
 ### UI rendering modes and rollback
 
-The authenticated UI serves the Vue client under `ui/` (built into `assets/ui/`). Chat and terminal
-are **retired**: their legacy renderers and `assets/chat.js`/`assets/terminal.js` were deleted after
-Stage 8 sign-off, and `HANSE_UI_LEGACY=1`, `?legacy=1`, and `HANSE_UI_SPA_ROUTES` no longer affect
-them.
+The authenticated UI serves the Vue client under `ui/` (built into `assets/ui/`). Every page route
+except `/login` is **retired**: all legacy renderers and clients are deleted, and
+`HANSE_UI_LEGACY=1`, `?legacy=1`, and `HANSE_UI_SPA_ROUTES` no longer affect those routes. Rollback
+for them is an image rollback with a UI-build check.
 
-- **Chat/terminal rollback:** image rollback only. Redeploy the last image that still contains the
-  legacy pages, or a pre-cutover image. The deployed image must contain the UI build.
-- **Other routes:** `HANSE_UI_LEGACY=1` still forces the server-rendered document; `HANSE_UI_SPA_ROUTES`
-  and `?legacy=1` still apply to non-retired routes, including `/login`. Restart after changing an
-  env flag.
+- **Page rollback:** redeploy the last image that still contains the previous renderer, or a
+  pre-cutover image. The deployed image must contain the UI build.
 - **Login rollback:** `/login` is non-retired. `HANSE_UI_LEGACY=1` or `?legacy=1` serves the
-  server-rendered plate, and a missing UI build falls back to it instead of an error page.
-- **Missing UI build:** a retired route returns an explicit `503` UI-build-missing page; it never
-  falls through to a deleted legacy page. A non-retired route still falls back to legacy and logs
-  `ui.manifest_invalid`.
-- **Mandatory deploy check:** after an image update, load `/chat` and `/terminal` and perform one
-  client navigation in each. If the SPA entry/chunks are absent, roll back the image immediately.
+  server-rendered form, `HANSE_UI_SPA_ROUTES` applies only to it, and a missing UI build falls back
+  to it instead of an error page. Restart after changing an env flag.
+- **Missing UI build:** a retired route returns an explicit `503` UI-build-missing page and logs
+  `ui.manifest_invalid`; it never falls through to a deleted legacy page.
+- **Mandatory deploy check:** after an image update, load `/`, `/projects`, `/chat`, and `/terminal`
+  and perform one client navigation in each. If the SPA entry/chunks are absent, roll back the image
+  immediately.
 - **Development:** run `npm run dev:ui`, then start the coordinator with
   `HANSE_UI_DEV_URL=http://127.0.0.1:5173`. The document, cookies, and `/api/ui/*` stay on the
   coordinator origin; the browser loads modules from Vite. HMR works cross-origin for localhost. A

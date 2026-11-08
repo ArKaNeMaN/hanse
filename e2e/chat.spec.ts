@@ -89,7 +89,7 @@ function expectNoUnexpected(errors: string[], allowed: readonly RegExp[] = []): 
   expect(unexpected, unexpected.join("\n")).toEqual([]);
 }
 
-async function signInAt(page: Page, origin: string, path: string): Promise<void> {
+async function _signInAt(page: Page, origin: string, path: string): Promise<void> {
   await page.goto(`${origin}/login?next=${encodeURIComponent(path)}`);
   if (new URL(page.url()).pathname !== "/login") {
     await page.goto(`${origin}${path}`);
@@ -375,21 +375,4 @@ test("SPA chat shows the persisted process error with Retry and history", async 
       event: { processSnapshot: { appId, state: "stopped", phase: "stopped" } },
     });
   }
-});
-
-test("?legacy=1 and legacy servers still serve the SPA chat", async ({ page }) => {
-  const errors = collectPageErrors(page);
-  await signIn(page, `${CHAT_PATH}&legacy=1`);
-  await expect(page.locator("#hanse-boot")).toHaveCount(1);
-  await expect(page.locator('script[src="/assets/chat.js"]')).toHaveCount(0);
-  await expect(page.locator("#chat-shell")).toHaveCount(1);
-
-  for (const origin of ["http://127.0.0.1:4311", "http://127.0.0.1:4312"]) {
-    await signInAt(page, origin, CHAT_PATH);
-    await expect(page.locator("#hanse-boot")).toHaveCount(1);
-    await expect(page.locator('script[src="/assets/chat.js"]')).toHaveCount(0);
-    await expect(page.locator("#chat-shell")).toHaveCount(1);
-  }
-  await page.waitForTimeout(400);
-  expectNoUnexpected(errors, [/50[023]/]);
 });

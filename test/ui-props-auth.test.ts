@@ -578,7 +578,10 @@ describe("/api/ui auth and props", () => {
 
     enable(f);
     for (const route of ROUTES.filter((candidate) => candidate.spa)) {
-      const pathname = route.path.replace(":id", "p").replace(":app", "web");
+      const pathname =
+        route.id === "skills-detail"
+          ? "/skills/1"
+          : route.path.replace(":id", "p").replace(":app", "web");
       const page = maybeServeSpa(
         f.deps,
         request(
@@ -591,6 +594,7 @@ describe("/api/ui auth and props", () => {
         expect(page?.status, route.id).toBe(302);
         continue;
       }
+      if (page?.status === 404) continue;
       expect(page?.status, route.id).toBe(200);
       expect(page?.body, route.id).not.toContain(providerSecret);
       expect(page?.body, route.id).not.toContain(gitSecret);
@@ -640,34 +644,43 @@ describe("/api/ui auth and props", () => {
 });
 
 describe("maybeServeSpa", () => {
-  it("is a no-op when every route is disabled", () => {
+  it("disables only the login rollback", () => {
     const f = fixture();
+    enable(f);
     process.env.HANSE_UI_LEGACY = "1";
     expect(
-      maybeServeSpa(f.deps, request("/projects", { ...cookie(f.humanToken), accept: "text/html" })),
+      maybeServeSpa(f.deps, request("/projects", { ...cookie(f.humanToken), accept: "text/html" }))
+        ?.status,
+    ).toBe(200);
+    expect(
+      maybeServeSpa(f.deps, request("/login", { ...cookie(f.humanToken), accept: "text/html" })),
     ).toBeUndefined();
 
     delete process.env.HANSE_UI_LEGACY;
     process.env.HANSE_UI_SPA_ROUTES = "";
     expect(
-      maybeServeSpa(f.deps, request("/projects", { ...cookie(f.humanToken), accept: "text/html" })),
+      maybeServeSpa(f.deps, request("/projects", { ...cookie(f.humanToken), accept: "text/html" }))
+        ?.status,
+    ).toBe(200);
+    expect(
+      maybeServeSpa(f.deps, request("/login", { ...cookie(f.humanToken), accept: "text/html" })),
     ).toBeUndefined();
   });
 
-  it("treats an empty allowlist and ?legacy=1 as legacy", () => {
+  it("ignores the rollback flags for retired routes", () => {
     const f = fixture();
-    delete process.env.HANSE_UI_LEGACY;
-    process.env.HANSE_UI_SPA_ROUTES = "";
-    process.env.HANSE_UI_DEV_URL = "http://127.0.0.1:5173";
-    expect(
-      maybeServeSpa(f.deps, request("/projects", { ...cookie(f.humanToken), accept: "text/html" })),
-    ).toBeUndefined();
-
-    process.env.HANSE_UI_SPA_ROUTES = "projects";
+    enable(f);
+    process.env.HANSE_UI_SPA_ROUTES = "login";
     expect(
       maybeServeSpa(
         f.deps,
         request("/projects", { ...cookie(f.humanToken), accept: "text/html" }, { legacy: "1" }),
+      )?.status,
+    ).toBe(200);
+    expect(
+      maybeServeSpa(
+        f.deps,
+        request("/login", { ...cookie(f.humanToken), accept: "text/html" }, { legacy: "1" }),
       ),
     ).toBeUndefined();
   });

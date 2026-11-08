@@ -173,10 +173,10 @@ node dist/index.js --help
 
 `/` (fleet overview), `/projects`, `/projects/:id`, `/projects/:id/apps/:app`, `/handoffs`, `/ssh`,
 the three settings scopes, the five skills routes, `/terminal`, `/chat`, and `/login` are served by
-the Vue/Vite client, which lives under `ui/` and builds into `assets/ui/`. Chat and terminal keep the
-frozen legacy documents as their rollback path. The coordinator chooses the renderer through the
-shared registry and `HANSE_UI_SPA_ROUTES`; `HANSE_UI_LEGACY=1` (or `?legacy=1` on a page) forces the
-legacy renderer. Run the client dev server with `npm run dev:ui` and the coordinator with
+the Vue/Vite client, which lives under `ui/` and builds into `assets/ui/`. Every route except
+`/login` is retired: its legacy renderer is deleted and its only rollback is an image rollback.
+`/login` keeps the legacy server-rendered form as its rollback; `HANSE_UI_LEGACY=1` or `?legacy=1`
+forces it. Run the client dev server with `npm run dev:ui` and the coordinator with
 `HANSE_UI_DEV_URL=http://127.0.0.1:5173` to load Vite modules from the dev server;
 `npm run check:ui-dev` is an optional Vite-entry smoke that is not part of CI. See
 [`docs/deployment.md`](docs/deployment.md) and [`docs/current-state.md`](docs/current-state.md).

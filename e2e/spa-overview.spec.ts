@@ -56,36 +56,6 @@ test("deep links, refreshes, and navigates client-side to projects", async ({ pa
   expectNoPageErrors(errors);
 });
 
-test("?legacy=1 serves the legacy overview document", async ({ page }) => {
-  const errors = collectPageErrors(page);
-  await signIn(page, "/");
-
-  const response = await page.goto("/?legacy=1");
-  expect(response?.status()).toBe(200);
-  await expect(page.locator("#hanse-boot")).toHaveCount(0);
-  await expect(page.getByRole("heading", { name: "Fleet overview" })).toBeVisible();
-  await expect(page.locator(".watch-strip")).toBeVisible();
-
-  await settle(page);
-  expectNoPageErrors(errors);
-});
-
-test("the legacy and empty-allowlist servers still serve the overview", async ({ page }) => {
-  const errors = collectPageErrors(page);
-  await signIn(page, "/");
-
-  for (const origin of ["http://127.0.0.1:4311", "http://127.0.0.1:4312"]) {
-    const response = await page.goto(`${origin}/`);
-    expect(response?.status()).toBe(200);
-    await expect(page.locator("#hanse-boot")).toHaveCount(0);
-    await expect(page.getByRole("heading", { name: "Fleet overview" })).toBeVisible();
-    await expect(page.getByRole("link", { name: "E2E Project One", exact: true })).toBeVisible();
-  }
-
-  await settle(page);
-  expectNoPageErrors(errors);
-});
-
 test("mounts without a fallback flash or console errors", async ({ page }) => {
   const errors = collectPageErrors(page);
   await signIn(page, "/");

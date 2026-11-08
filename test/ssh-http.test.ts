@@ -75,7 +75,7 @@ const human = { cookie: "hanse_token=op-token" };
 const agent = (token: string) => ({ authorization: `Bearer ${token}` });
 
 describe("SSH HTTP surface", () => {
-  it("is human-only, renders the page, and never returns key material", async () => {
+  it("is human-only and never returns key material", async () => {
     const f = fixture();
     const created = await handleSsh(f.deps, {
       method: "POST",
@@ -91,21 +91,6 @@ describe("SSH HTTP surface", () => {
     expect(created.status).toBe(201);
     expect(created.body).not.toContain("PRIVATE KEY");
     expect(created.body).not.toContain("cipher");
-    const page = await handleSsh(f.deps, {
-      method: "GET",
-      path: "/ssh",
-      headers: { ...human, accept: "text/html" },
-    });
-    expect(page.status).toBe(200);
-    expect(page.body).toContain("SSH hosts");
-    expect(page.body).not.toContain("PRIVATE KEY");
-    const anonymous = await handleSsh(f.deps, {
-      method: "GET",
-      path: "/ssh",
-      headers: { accept: "text/html" },
-      query: {},
-    });
-    expect(anonymous.status).toBe(303);
     const agentResponse = await handleSsh(f.deps, {
       method: "GET",
       path: "/api/ssh/hosts",

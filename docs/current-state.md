@@ -269,8 +269,7 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   `POST /api/projects/:id/handoff-policy*` (all human-only).
 - Static assets are allowlisted: `/assets/app.css`, `/assets/app.js`,
   `/assets/chat-core.js`, `/assets/chat-commands.js`, `/assets/chat-diff.js`, `/assets/chat-highlight.js`,
-  `/assets/chat-highlight-worker.js`, `/assets/git.js`, `/assets/git-settings.js`,
-  `/assets/handoff.js`, `/assets/settings.js`, `/assets/skill-detail.js`, `/assets/markdown.js`,
+  `/assets/chat-highlight-worker.js`, `/assets/markdown.js`,
   `/assets/vendor/prism/prism-1.30.0.min.js`,
   `/assets/vendor/xterm/xterm-6.0.0.js`, `/assets/vendor/xterm/xterm-6.0.0.css`,
   `/assets/vendor/xterm/addon-fit-0.11.0.js`,
@@ -278,13 +277,12 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   `/assets/vendor/xterm/addon-unicode-graphemes-0.4.0.js`, and `/assets/favicon.svg`.
 - `assets/app.js` owns shell behavior (drawer, theme, nav); `assets/app-content.js` owns dialogs,
   menus, segmented controls, toast close/autodismiss, password visibility, and submit-busy behavior.
-  Legacy pages load both; SPA documents load only `app.js`. The SPA chat workspace is
+  The legacy `/login` document loads both; SPA documents load only `app.js`. The SPA chat workspace is
   `ui/pages/ChatPage.vue` plus its `ui/chat/*` adapters, `ui/stores/chat-*`, and
   `ui/components/chat/*`; it reuses the pure helpers in `assets/chat-core.js`,
   `assets/chat-commands.js`, `assets/chat-diff.js`, and the lazy worker controller in
   `assets/chat-highlight.js`. `assets/chat.js` and `assets/terminal.js` were deleted in Stage 9;
-  chat and terminal are always SPA, and their only rollback is an image rollback. `assets/git.js`
-  still hydrates the legacy rollback application git panel for non-chat pages.
+  every route except `/login` is always SPA, and its only rollback is an image rollback.
 - The chat workspace is the three-pane surface: sessions rail, thread, and context rail, rendered
   by `ui/pages/ChatPage.vue`. Below 1360 the context pane is a drawer; below 768 both rails are
   drawers. The thread is the only scroll owner. `session` is mirrored to the URL, and the optional
@@ -303,47 +301,39 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   `/login?next=<fullPath>`. Runtime stopped/error links to chat. `/assets/terminal.js` and its
   legacy document were deleted in Stage 9; terminal rollback is image rollback only.
 
-## UI rendering modes (Stage 9 complete)
+## UI rendering modes (all pages SPA; login keeps the legacy form)
 
-- `/` (fleet overview), `/projects`, `/projects/:id` (project detail), `/handoffs` (handoff
-  inbox), `/ssh` (SSH console), the three settings scopes (`/settings`,
-  `/projects/:id/settings`, `/projects/:id/apps/:app/settings`), and the five skills routes
-  (`/skills`, `/projects/:id/skills`, `/projects/:id/apps/:app/skills`, `/skills/new`,
-  `/skills/:id`), `/terminal`, `/chat`, and `/login` are SPA routes: the shared registry
-  (`src/shared/routes.ts`) has `spa: true` for `overview`, `projects`, `project`, `handoffs`, `ssh`,
-  `settings-global`, `settings-project`, `settings-app`, `skills-global`, `skills-project`,
-  `skills-app`, `skills-new`, `skills-detail`, `app`, `terminal`, `chat`, and `login`. `login` is
-  `public: true` and is served without a session; it keeps the normal non-retired rollback flags.
-  Chat and terminal have `legacyRetired: true`: `HANSE_UI_LEGACY=1`, `?legacy=1`, and
-  `HANSE_UI_SPA_ROUTES` no longer affect them; rollback is an image rollback. Application detail
-  (`/projects/:id/apps/:app`) is the default SPA route, and its legacy rollback page still loads
-  `git.js`, `images.js`, and `ssh.js`. The page dispatcher
-  is the only place that chooses a renderer. For non-retired routes the order is
-  `HANSE_UI_LEGACY=1` > `?legacy=1` > `HANSE_UI_SPA_ROUTES` > the registry flag; a missing, invalid,
-  or partial `assets/ui/.vite/manifest.json` falls back to legacy and logs `ui.manifest_invalid`.
-  A retired route is always SPA (or an explicit `503` UI-build-missing page) and never reaches a
-  legacy branch.
+- Every page route is SPA: `/`, `/projects`, `/projects/:id`, `/projects/:id/apps/:app`,
+  `/handoffs`, `/ssh`, the three settings scopes, the five skills routes, `/terminal`, `/chat`, and
+  `/login`. The shared registry (`src/shared/routes.ts`) has `spa: true` for all of them. Every route
+  except `login` is `legacyRetired: true`: it always serves the SPA and ignores `HANSE_UI_LEGACY`,
+  `?legacy=1`, and `HANSE_UI_SPA_ROUTES`; a missing or invalid UI build returns the explicit `503`
+  UI-build-missing page and logs `ui.manifest_invalid`. `login` is `public: true`, is served without
+  a session, and keeps the legacy server-rendered form as its rollback and no-JS fallback; those
+  three rollback inputs affect only `login`. The page dispatcher is the only place that chooses a
+  renderer.
+
 - The Vue 3 + Vue Router + Pinia + Vue Query client lives in `ui/`, builds into `assets/ui/`
   (`npm run build:ui`), and mounts into the existing server shell `<main id="main">` (no second
   wrapper). Server-rendered chrome is refreshed through `GET /api/ui/chrome?path=`, and page data
-  comes from boot JSON plus per-route `/api/ui/*` endpoints. `/projects` renders the legacy header,
+  comes from boot JSON plus per-route `/api/ui/*` endpoints. `/projects` renders the header,
   six-column ledger, search, empty states, deletion status, and create dialog in Vue. `/` renders
-  the legacy header, four-cell watch strip, project ledger, recent handoffs, waiting route cards,
-  runtime rail, and empty state. The project-detail page renders the legacy header (Settings, Open
+  the header, four-cell watch strip, project ledger, recent handoffs, waiting route cards,
+  runtime rail, and empty state. The project-detail page renders the header (Settings, Open
   IDE, New handoff), four-cell watch strip, applications table (runtime, pending restart, chat/IDE/app
   links, add app), handoffs table and review dialogs (approve/reject, relaunch, retry, cancel),
   waiting route cards, manifest, handoff-policy editor, danger zone, and the add-app/new-handoff/
   delete dialogs; the reserved master project renders the read-only master header/card with chat,
-  settings, and skills links and no mutating controls. `/handoffs` renders the legacy header and
+  settings, and skills links and no mutating controls. `/handoffs` renders the header and
   counts, the All/Waiting/Active/Closed/Replies segmented filters, the search form, the Id/Route/
   State/Summary/Updated/Actions inbox table, inline approve/reject, review dialogs, and its empty,
   loading, error, and retry states. The dialog renders specification, result, and operator note
   through the shared `SafeMarkdown` component, which clears its container and reuses
-  `assets/markdown.js` on every text change. `/ssh` renders the legacy Access header and scope
+  `assets/markdown.js` on every text change. `/ssh` renders the Access header and scope
   counts, the section nav and `?target=<project>:<app>` picker, the four-cell watch strip, host
   cards with pin/approval state, host-key details, test/prepare-re-pin/re-pin actions, add/edit/
   delete dialogs, the per-application allowlist and grant table, pending approve/reject cards, and
-  the read-only audit table, with loading/error/retry/`?legacy=1` states. SSH host private keys stay
+  the read-only audit table, with loading/error/retry states. SSH host private keys stay
   write-only: page props, boot JSON, toasts, and rendered output contain only the derived public
   key, fingerprint, and key type. The settings page renders the scope/target navigation, the
   Agent/Web tools/Context/Git/Restart sections, inherited/overridden/cleared setting rows with
@@ -356,8 +346,7 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   override/shadow state, collision and restart rails, the create form, and the detail workspace:
   bundle identity/description, details/metadata, references, source/preview tabs, issues with repair
   anchors, override/disable/revert plus danger-zone delete, and the restart banner. Detail content
-  and references render through `SafeMarkdown`; `assets/skill-detail.js` remains only on the legacy
-  rollback pages. The application page reads boot props only for a matching app route and otherwise
+  and references render through `SafeMarkdown`. The application page reads boot props only for a matching app route and otherwise
   fetches `/api/ui/apps/:app?project=`, whose response also carries the live git read summary (boot
   props load it as `git.summary.loaded=false`). It renders the application header and links, the
   always-visible Runtime/Settings state strip, and a default-collapsed accordion of four group cards
@@ -377,8 +366,7 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   key (or project name when retrying project deletion) and `return_to`. Application, chat, terminal,
   settings, skills, and session links remain plain anchors; project links are client-side, and the
   native new-project dialog is a shared Vue component used by the overview and projects pages.
-- The SPA document loads only the shell `app.js`; `git.js`, `images.js`, and `ssh.js` are loaded only
-  by the legacy rollback application document. No app-scoped SSH key material, provider key, git
+- The SPA document loads only the shell `app.js`. No app-scoped SSH key material, provider key, git
   token, or MCP token enters props, boot JSON, toasts, errors, or the DOM.
 - Built client assets are served from `/assets/ui/*` with immutable caching; compressible responses
   are gzip-encoded when the client offers it (first loads measure ~136 KiB for `/projects`,
@@ -389,8 +377,8 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
 - SPA documents and `/api/ui/*` are cookie-only. `/api/ui/*` returns `401` without a human cookie,
   `403 cookie_required` for a human bearer without a cookie, and `403` for agent tokens; responses are
   `no-store`.
-- Script split: legacy pages and the legacy `/login` document load `app.js` + `app-content.js`;
-  SPA documents, including the SPA `/login` document, load only the shell `app.js`. SPA toasts are
+- Script split: the legacy `/login` document loads `app.js` + `app-content.js`; SPA documents,
+  including the SPA `/login` document, load only the shell `app.js`. SPA toasts are
   owned by the Vue `ToastHost`, not `app-content.js`. SPA
   mutations send `X-Hanse-Client: spa`; `POST /api/projects` answers `200 {ok:true, project}`,
   `POST /api/projects/:id/apps` answers `200 {ok:true, app}`, `POST /api/handoffs/:id/decision`
@@ -398,17 +386,16 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   `403/409/400` denied/existing/summary-required, while the legacy form path keeps its `303` +
   notice. Reply, cancel, policy, and deletion requests reuse the existing JSON handlers.
 - `#ui-fallback` stays hidden, then reveals after 4 s only if the client did not mount;
-  `vite:preloadError` reloads once and then renders a route-aware fallback: classic-interface link
-  for non-retired routes, reload-only for chat/terminal.
-- Stage 9 is complete: `/terminal` was cut over in Stage 2 and `/chat` in Stage 7C; after operator
-  sign-off both legacy renderers and clients were deleted. Their retired route records ignore all
-  runtime rollback flags, and the only rollback is an image rollback with a UI-build check.
+  `vite:preloadError` reloads once and then renders a route-aware fallback: a classic-interface link
+  for `/login`, reload-only for every other route.
+- All legacy page renderers and clients are deleted. Every route except `/login` is retired and
+  ignores all runtime rollback flags; the only rollback for them is an image rollback with a
+  UI-build check. `/login` retains the server-rendered form as its rollback and no-JS fallback.
 
 ## Git workbench
 
 - The Application page (`/projects/:projectId/apps/:appKey`) is human-only, SPA-rendered by default,
-  and represented by `ui/pages/AppPage.vue`. The legacy rollback document still hydrates its git
-  panel with `assets/git.js`. The page header has `Open chat`, `Terminal`,
+  and represented by `ui/pages/AppPage.vue`. The page header has `Open chat`, `Terminal`,
   and a `More actions` disclosure (`Open IDE in this folder`, `Application settings`); a two-cell
   state strip (`Runtime`, `Settings`) precedes the body, which is a default-collapsed accordion of
   four group cards: Git, Image, SSH access, and Danger zone. Each app's open state is persisted per
@@ -421,8 +408,7 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   switch, and the remotes card onto the existing git JSON handlers with no legacy island scripts.
   Busy/disabled reasons, confirmation-free branch switching, commit-message validation, warnings,
   toasts, and the legacy error mapping are preserved. Restart, git, image build/rollback/check/logs,
-  app SSH allowlist/grant/revoke/approve/reject/audit, and exact-name deletion are its mutations; the
-  legacy renderer and its `git.js`/`images.js`/`ssh.js` scripts remain only as the rollback path.
+  app SSH allowlist/grant/revoke/approve/reject/audit, and exact-name deletion are its mutations.
 - Runtime state uses one vocabulary from the runner: `starting`, `running`, `stopped`, `error`
   (legacy `failed` normalizes to `error`). The overview shows all four counts; the app, chat, and
   terminal surfaces use the same pill mapping. `POST /api/apps/:app/restart` calls
@@ -1060,17 +1046,12 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   and are clearable. `context.auto_compact.enabled` (default `false`) and
   `context.auto_compact.percent` (default `80`, integer 1..99) are non-clearable live settings.
   `git.user.name`/`git.user.email` are clearable strings (default `null`).
-  Every page uses a sticky scope/section nav, five section cards (Agent, Web tools, Context, Git,
-  Restart & pending), and one collapsed setting row per setting. Rows show effective value and source
-  at rest; editor, scope history (`Scope details`), warnings, and actions are disclosed on demand.
-  Saves are live: all settings mutations from `settings.js`/`git-settings.js` request
-  `x-hanse-fragment: settings`, and the server returns only the affected section HTML plus the
-  warnings/restart state. The client swaps those sections in place, restoring open rows, other-row
-  drafts, focus, scroll, and the URL hash, so a successful save does not reload the page. Context
-  settings are excluded from the launch settings hash, so changing them never marks a running agent
-  restart-required. Non-Git
-  forms still fall back to redirect + toast without JS; Git credential forms remain JSON-only and
-  JS-required.
+  The Vue settings page renders the sticky scope/section nav, five section cards (Agent, Web tools,
+  Context, Git, Restart & pending), and one collapsed setting row per setting. Rows show the effective
+  value and source at rest; the editor, scope history (`Scope details`), warnings, and actions are
+  disclosed on demand. Saves use the JSON settings endpoints and refresh the affected props; there is
+  no fragment contract and no server-rendered settings page. Context settings are excluded from the
+  launch settings hash, so changing them never marks a running agent restart-required.
 - `settings` and `provider_keys` live in `coordinator.db` (migration v3). Provider API keys are
   entered in the settings UI, AES-256-GCM encrypted, and never returned. At instance start the
   coordinator reconciles the host `auth.json` with effective provider keys into the per-instance
@@ -1215,11 +1196,8 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   description; a collapsible field guide gives short examples. The bundle form and danger zone use
   the normal stack gap. Save/discard are explicit, references and metadata are
   edited in the bundle form, and delete/override/disable/revert remain normal human-only forms.
-  Without JavaScript metadata/license/compatibility/reference controls are disabled and unnamed,
-  all file editors are stacked, and a hidden bundle snapshot preserves the bundle; the preview
-  states that it requires JavaScript. `assets/markdown.js` is the shared safe renderer used by chat
-  and the skill preview; `assets/skill-detail.js` drives the workspace. `assets/skills.js` and the
-  old dialog editor are removed.
+  `assets/markdown.js` is the shared safe renderer used by chat and the skill preview. There is no
+  server-rendered skill workspace or legacy skill client.
 - Ordinary application agents can maintain their own app-scope skill bundles through the production
   app MCP surface (`/internal/mcp`, via the remote bridge): `create_skill`, `list_skills`,
   `get_skill`, `update_skill`, `set_skill_enabled`, and `override_skill`. The target is always the
@@ -1288,9 +1266,8 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   operator-only.
 - UI: a **Master** navigation entry opens its chat. The master is hidden from the overview ledger,
   project index, sidebar project lists, `/api/projects`, and chat's default selection. Direct
-  project/app/settings/skills URLs still resolve with a reduced master page (no git workbench or
-  `/assets/git.js`, no image panel, no manifest card, no add-app/new-handoff controls, no danger
-  zone). Settings and skills scope pickers intentionally list the master so it can be configured.
+  project/app/settings/skills URLs still resolve with a reduced master page (no git workbench, no
+  image panel, no manifest card, no add-app/new-handoff controls, no danger zone). Settings and skills scope pickers intentionally list the master so it can be configured.
 - Deletion is refused at the service and HTTP layers (`409 master_protected`) even when deletion is
   unconfigured. A discovered project may not use the reserved id, and no project or app may point at
   the reserved directory.
@@ -1360,7 +1337,7 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
 - The dispatcher reuses the existing per-app context-monitor stream rather than opening a second SSE
   connection. If context monitors are disabled, source-session binding is unavailable and agent-created
   handoffs stay unbound (and are failed by the binding deadline).
-- Operator UI: `/handoffs` (Vue SPA, with the legacy page as rollback) has
+- Operator UI: `/handoffs` (Vue SPA) has
   `All`/`Waiting`/`Active`/`Closed`/`Replies` filters, inline approvals, and a detail dialog with
   source/target session links, policy, outcome, reply state, and the relaunch/retry/cancel actions.
   The review/detail dialog is wide and renders the spec, result, and operator note as safe Markdown
@@ -1494,9 +1471,9 @@ Host `./agents` is mounted at `/data/agents` read-write in `hanse` and read-only
 | `HANSE_IDE=0` | serve | do not spawn code-server in the coordinator |
 | `HANSE_IDE_HOST` / `HANSE_IDE_PORT` | serve | proxy target for `/ide` (default `127.0.0.1:8080`) |
 | `HANSE_IDE_BIN` | serve | code-server binary |
-| `HANSE_ASSETS` | serve | directory for `app.css`, `app.js`, `app-content.js`, the built client assets under `assets/ui/`, `chat-core.js`, `chat-diff.js`, `chat-highlight.js`, `chat-highlight-worker.js`, `git.js`, `git-settings.js`, `handoff.js`, `settings.js`, `skill-detail.js`, `markdown.js`, `vendor/prism/prism-1.30.0.min.js`, xterm vendor files, and `favicon.svg` |
-| `HANSE_UI_LEGACY` | serve | `1` forces non-retired pages to the legacy renderer (restart required); ignored for retired chat/terminal |
-| `HANSE_UI_SPA_ROUTES` | serve | comma-separated non-retired route ids to serve as SPA; retired chat/terminal are always SPA |
+| `HANSE_ASSETS` | serve | directory for `app.css`, `app.js`, `app-content.js`, the built client assets under `assets/ui/`, `chat-core.js`, `chat-diff.js`, `chat-highlight.js`, `chat-highlight-worker.js`, `markdown.js`, `vendor/prism/prism-1.30.0.min.js`, xterm vendor files, and `favicon.svg` |
+| `HANSE_UI_LEGACY` | serve | `1` forces the `/login` rollback form (restart required); ignored for every other route |
+| `HANSE_UI_SPA_ROUTES` | serve | comma-separated route ids to serve as SPA; it now controls `/login` only, because every other route is retired |
 | `HANSE_UI_DEV_URL` | serve, dev | Vite dev origin (for example `http://127.0.0.1:5173`); the server emits `<url>/assets/ui/@vite/client` and `<url>/assets/ui/main.ts` instead of the built manifest |
 | `HANSE_DB` / `HANSE_PROJECT_ID` / `HANSE_APP_KEY` | `hanse mcp` | MCP server binding |
 | `HANSE_API_BASE` | extension | coordinator base URL (`http://hanse:8787`) |

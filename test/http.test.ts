@@ -117,7 +117,7 @@ function form(values: Record<string, string>): string {
   return new URLSearchParams(values).toString();
 }
 
-function seedStates(db: SqliteDatabase): void {
+function _seedStates(db: SqliteDatabase): void {
   const states: HandoffState[] = [
     "queued",
     "dispatching",
@@ -253,12 +253,12 @@ describe("http auth and login", () => {
     const setCookie = login.headers?.["set-cookie"] ?? "";
     const cookiePair = setCookie.split(";")[0] ?? "";
     expect(cookiePair.startsWith("hanse_token=")).toBe(true);
-    const page = handleRequest(deps(f), {
+    const projects = handleRequest(deps(f), {
       method: "GET",
-      path: "/",
+      path: "/api/projects",
       headers: { cookie: cookiePair },
     });
-    expect(page.status).toBe(200);
+    expect(projects.status).toBe(200);
   });
 
   it("clears the cookie on logout", () => {
@@ -339,246 +339,6 @@ describe("http auth and login", () => {
     });
     expect(crossOrigin.status).toBe(403);
     expect(crossOrigin.headers?.["set-cookie"]).toBeUndefined();
-  });
-});
-
-describe("http pages", () => {
-  it("renders the fleet overview for a human", () => {
-    const f = fixture();
-    const token = humanToken(f.db);
-    const response = handleRequest(deps(f), {
-      method: "GET",
-      path: "/",
-      headers: auth(token),
-    });
-    expect(response.status).toBe(200);
-    expect(response.body).toContain("Fleet overview");
-    expect(response.body).toContain("Project ledger");
-    expect(response.body).toContain("Awaiting approval");
-    expect(response.body).toContain(f.handoffId.slice(0, 8));
-    expect(response.body).toContain('href="/handoffs"');
-    expect(response.body).not.toContain('{"error"');
-  });
-
-  it("renders the projects index and filters by query", () => {
-    const f = fixture();
-    const token = humanToken(f.db);
-    const all = handleRequest(deps(f), {
-      method: "GET",
-      path: "/projects",
-      headers: auth(token),
-    });
-    expect(all.status).toBe(200);
-    expect(all.body).toContain("Project ledger");
-    expect(all.body).toContain('name="q"');
-    expect(all.body).toContain(">P</a>");
-
-    const none = handleRequest(deps(f), {
-      method: "GET",
-      path: "/projects",
-      query: { q: "nothing" },
-      headers: auth(token),
-    });
-    expect(none.status).toBe(200);
-    expect(none.body).toContain("No matching projects");
-    expect(none.body).toContain("Clear search");
-  });
-
-  it("renders project detail with apps, dialogs, and the manifest", () => {
-    const f = fixture();
-    const token = humanToken(f.db);
-    const response = handleRequest(deps(f), {
-      method: "GET",
-      path: "/projects/p",
-      headers: auth(token),
-    });
-    expect(response.status).toBe(200);
-    expect(response.body).toContain("Applications");
-    expect(response.body).toContain("apps/a");
-    expect(response.body).toContain('id="add-app"');
-    expect(response.body).toContain('id="new-handoff"');
-    expect(response.body).toContain('data-dialog-open="h-');
-    expect(response.body).toContain(".hanse/project.yaml");
-    expect(response.body).toContain("Waiting for approval");
-    expect(response.body).toContain('href="/projects/p/apps/a"');
-    expect(response.body).toContain('aria-label="Open a application"');
-    expect(response.body).toContain('href="/projects/p/settings"');
-    expect(response.body).toContain('class="nav-item" href="/projects/p/settings"');
-    expect(response.body).toContain('id="danger-zone"');
-    expect(response.body).toContain("Danger zone");
-    expect(response.body).toContain('id="project-delete-dialog"');
-    expect(response.body).toContain('data-dialog-open="project-delete-dialog"');
-    expect(response.body).toContain('action="/api/projects/p/delete"');
-    expect(response.body).toContain('name="confirm" required');
-    expect(response.body).toContain("Type P to confirm (required)");
-    expect(response.body).toContain('name="deleteFiles" value="true"');
-    expect(response.body).toContain('name="return_to" value="/projects/p"');
-    expect(response.body).toContain('class="btn btn-danger" type="submit">Delete project</button>');
-    expect(response.body).toContain("#i-trash");
-    expect(response.body).toContain("sessions, handoffs, credentials, and managed images");
-  });
-
-  it("marks a deleting project as incomplete in the ledgers and on its page", () => {
-    const f = fixture();
-    f.db.prepare("UPDATE projects SET deleting = 1 WHERE id = 'p'").run();
-    const token = humanToken(f.db);
-
-    const overview = handleRequest(deps(f), {
-      method: "GET",
-      path: "/",
-      headers: auth(token),
-    });
-    expect(overview.status).toBe(200);
-    expect(overview.body).toContain("Deletion incomplete");
-
-    const index = handleRequest(deps(f), {
-      method: "GET",
-      path: "/projects",
-      headers: auth(token),
-    });
-    expect(index.status).toBe(200);
-    expect(index.body).toContain("Deletion incomplete");
-
-    const detail = handleRequest(deps(f), {
-      method: "GET",
-      path: "/projects/p",
-      headers: auth(token),
-    });
-    expect(detail.status).toBe(200);
-    expect(detail.body).toContain("Deletion incomplete");
-    expect(detail.body).toContain("Retry deletion");
-    expect(detail.body).toContain('data-dialog-open="project-delete-dialog"');
-    expect(detail.body).toContain("Retry project deletion?");
-    expect(detail.body).toContain("Type P to confirm (required)");
-    expect(detail.body).toContain('action="/api/projects/p/delete"');
-  });
-
-  it("marks a deleting application row in the project table", () => {
-    const f = fixture();
-    f.db.prepare("UPDATE apps SET deleting = 1 WHERE id = 'p:a'").run();
-    const token = humanToken(f.db);
-    const response = handleRequest(deps(f), {
-      method: "GET",
-      path: "/projects/p",
-      headers: auth(token),
-    });
-    expect(response.status).toBe(200);
-    expect(response.body).toContain("Deletion incomplete");
-    expect(response.body).not.toContain("Retry deletion");
-    expect(response.body).toContain('aria-label="Open a application"');
-    expect(response.body).not.toContain('href="/chat?app=a&amp;project=p"');
-    expect(response.body).toContain('href="/chat?app=b&amp;project=p"');
-  });
-
-  it("returns a styled 404 for an unknown project", () => {
-    const f = fixture();
-    const token = humanToken(f.db);
-    const response = handleRequest(deps(f), {
-      method: "GET",
-      path: "/projects/missing",
-      headers: auth(token),
-    });
-    expect(response.status).toBe(404);
-    expect(response.contentType).toContain("text/html");
-    expect(response.body).toContain("Page not found");
-    expect(response.body).toContain("Open overview");
-  });
-
-  it("renders all nine handoff states with filters and dialogs", () => {
-    const f = fixture();
-    seedStates(f.db);
-    const token = humanToken(f.db);
-    const response = handleRequest(deps(f), {
-      method: "GET",
-      path: "/handoffs",
-      headers: auth(token),
-    });
-    expect(response.status).toBe(200);
-    for (const label of [
-      "Queued",
-      "Awaiting approval",
-      "Dispatching",
-      "In progress",
-      "Delivered",
-      "Rejected",
-      "Failed",
-      "Expired",
-      "Cancelled",
-    ]) {
-      expect(response.body).toContain(label);
-    }
-    expect(response.body).toContain('All <span class="mono">9</span>');
-    expect(response.body).toContain('Waiting <span class="mono">1</span>');
-    expect(response.body).toContain('Active <span class="mono">3</span>');
-    expect(response.body).toContain('Closed <span class="mono">5</span>');
-    expect(response.body).toContain('name="decision" value="approved"');
-    expect(response.body).toContain('name="decision" value="rejected"');
-    expect(response.body).toContain("Spec for failed");
-    expect(response.body).toContain(f.handoffId);
-  });
-
-  it("filters handoffs by group and search", () => {
-    const f = fixture();
-    seedStates(f.db);
-    const token = humanToken(f.db);
-    const waiting = handleRequest(deps(f), {
-      method: "GET",
-      path: "/handoffs",
-      query: { filter: "waiting" },
-      headers: auth(token),
-    });
-    expect(waiting.status).toBe(200);
-    expect(waiting.body).toContain("Waiting for approval");
-    expect(waiting.body).not.toContain("Summary delivered");
-
-    const search = handleRequest(deps(f), {
-      method: "GET",
-      path: "/handoffs",
-      query: { q: "extra-failed" },
-      headers: auth(token),
-    });
-    expect(search.status).toBe(200);
-    expect(search.body).toContain("Summary failed");
-    expect(search.body).not.toContain("Summary delivered");
-
-    const none = handleRequest(deps(f), {
-      method: "GET",
-      path: "/handoffs",
-      query: { filter: "closed", q: "zzz" },
-      headers: auth(token),
-    });
-    expect(none.status).toBe(200);
-    expect(none.body).toContain("No matching handoffs");
-    expect(none.body).toContain("Clear search");
-  });
-
-  it("renders notices as a toast", () => {
-    const f = fixture();
-    const token = humanToken(f.db);
-    const response = handleRequest(deps(f), {
-      method: "GET",
-      path: "/projects",
-      query: { notice: "Application added.", tone: "success" },
-      headers: auth(token),
-    });
-    expect(response.status).toBe(200);
-    expect(response.body).toContain('class="toast" data-tone="success"');
-    expect(response.body).toContain("Application added.");
-    expect(response.body).toContain('data-autodismiss="6000"');
-  });
-
-  it("escapes dynamic project content", () => {
-    const f = fixture();
-    f.db.prepare("UPDATE projects SET name = ? WHERE id = 'p'").run('<script>alert("x")</script>');
-    const token = humanToken(f.db);
-    const response = handleRequest(deps(f), {
-      method: "GET",
-      path: "/",
-      headers: auth(token),
-    });
-    expect(response.status).toBe(200);
-    expect(response.body).not.toContain("<script>alert");
-    expect(response.body).toContain("&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;");
   });
 });
 
@@ -1076,16 +836,6 @@ describe("http API and assets", () => {
     expect(favicon.status).toBe(200);
     expect(favicon.contentType).toBe("image/svg+xml");
 
-    const settingsJs = handleRequest(deps(f), {
-      method: "GET",
-      path: "/assets/settings.js",
-      headers: {},
-    });
-    expect(settingsJs.status).toBe(200);
-    expect(settingsJs.contentType).toContain("text/javascript");
-    expect(settingsJs.body).toContain("data-settings-driver");
-    expect(settingsJs.body).toContain("data-driver-fields");
-
     const markdownJs = handleRequest(deps(f), {
       method: "GET",
       path: "/assets/markdown.js",
@@ -1282,12 +1032,6 @@ describe("http API and assets", () => {
       };
       expect(payload.effective.llm.model.value).toBe("deepseek/deepseek-flash");
       expect(payload.pendingRestart).toEqual([]);
-
-      const page = await fetch(`http://127.0.0.1:${port}/settings`, {
-        headers: { ...auth(token), accept: "text/html" },
-      });
-      expect(page.status).toBe(200);
-      expect(await page.text()).toContain(">Settings</h1>");
 
       const restart = await fetch(`http://127.0.0.1:${port}/api/apps/a/restart?project=p`, {
         method: "POST",

@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Handoff } from "../src/coordinator/handoff.js";
 import type { ProjectView, SiteModel } from "../src/http/dashboard.js";
-import { renderProjects } from "../src/http/dashboard.js";
 import { buildProjectsProps, type ProjectsSourceProject } from "../src/http/props/projects.js";
 
 function handoff(state: string, replyState: string, updatedAt: string): Handoff {
@@ -32,7 +31,7 @@ function sourceProject(
   };
 }
 
-function siteModel(projects: ProjectsSourceProject[]): SiteModel {
+function _siteModel(projects: ProjectsSourceProject[]): SiteModel {
   return {
     projects: projects as unknown as ProjectView[],
     apps: new Map(),
@@ -112,34 +111,5 @@ describe("projects page props", () => {
       updatedAt: "2026-03-01T00:00:00.000Z",
       deleting: true,
     });
-  });
-
-  it("keeps the legacy projects HTML deriving from the same props", () => {
-    const site = siteModel([
-      sourceProject("alpha", "Alpha", "/workspace/alpha", { appCount: 2 }),
-      sourceProject("beta", "Beta", "/workspace/beta", { appCount: 1 }),
-    ]);
-    const response = renderProjects(site, {
-      chrome: { operatorName: "alice" },
-    });
-    expect(response).toContain("Project ledger");
-    expect(response).toContain('name="q"');
-    expect(response).toContain(">Alpha</a>");
-    expect(response).toContain(">Beta</a>");
-    expect(response).toContain("2 projects");
-    expect(response).toContain("3 applications");
-  });
-
-  it("keeps the legacy no-match and no-project states", () => {
-    const site = siteModel([sourceProject("alpha", "Alpha", "/workspace/alpha")]);
-    const none = renderProjects(site, { q: "nothing", chrome: { operatorName: "alice" } });
-    expect(none).toContain("No matching projects");
-    expect(none).toContain("Clear search");
-
-    const empty = renderProjects(siteModel([]), {
-      chrome: { operatorName: "alice" },
-    });
-    expect(empty).toContain("No projects yet");
-    expect(empty).toContain("A project is a folder with a manifest.");
   });
 });

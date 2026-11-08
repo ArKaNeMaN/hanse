@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { createHandoff, transitionHandoff, updateHandoff } from "../src/coordinator/handoff.js";
 import { setHandoffPolicy } from "../src/coordinator/policy.js";
 import { CoordinatorService } from "../src/coordinator/service.js";
-import { buildSite, renderOverview, renderProject, type SiteModel } from "../src/http/dashboard.js";
+import { buildSite, type SiteModel } from "../src/http/dashboard.js";
 import { buildOverviewProps } from "../src/http/props/overview.js";
 import { buildProjectProps } from "../src/http/props/project.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
@@ -157,13 +157,6 @@ describe("overview page props", () => {
     expect(props.waitingHandoffs[0]?.reviewHref).toBe("/handoffs?filter=waiting");
   });
 
-  it("keeps the legacy overview HTML deriving from the same props", () => {
-    const site = fixture();
-    expect(renderOverview(site, { operatorName: "operator" })).toMatchSnapshot();
-  });
-});
-
-describe("project page props", () => {
   it("assembles project summary, apps, handoffs, policy, deletion, and dialogs", () => {
     const site = fixture();
     const props = buildProjectProps(site, "p");
@@ -235,11 +228,6 @@ describe("project page props", () => {
     expect(props?.masterSummary).toBeNull();
   });
 
-  it("keeps the legacy project HTML deriving from the same props", () => {
-    const site = fixture();
-    expect(renderProject(site, "p", { operatorName: "operator" })).toMatchSnapshot();
-  });
-
   it("returns the master variant without mutating actions", () => {
     const site = fixture();
     const props = buildProjectProps(site, "hanse-master");
@@ -252,12 +240,10 @@ describe("project page props", () => {
       settingsHref: "/projects/hanse-master/apps/master/settings",
       skillsHref: "/projects/hanse-master/apps/master/skills",
     });
-    expect(renderProject(site, "hanse-master", { operatorName: "operator" })).toMatchSnapshot();
   });
 
   it("returns undefined for an unknown project", () => {
     const site = fixture();
     expect(buildProjectProps(site, "missing")).toBeUndefined();
-    expect(renderProject(site, "missing", { operatorName: "operator" })).toBeUndefined();
   });
 });

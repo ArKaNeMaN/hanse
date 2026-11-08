@@ -10,6 +10,7 @@ function testRouter(guardLoad?: (path: string) => void, terminalRetired = true) 
     routes: [
       { path: "/", name: "overview", component: { template: "<div />" } },
       { path: "/projects", name: "projects", component: { template: "<div />" } },
+      { path: "/login", name: "login", component: { template: "<div />" } },
       {
         path: "/chat",
         name: "chat",
@@ -60,11 +61,19 @@ describe("SPA navigation guard", () => {
     expect(load).toHaveBeenCalledWith("/api/projects");
   });
 
-  it("full-document-loads ?legacy=1 for a non-retired route", async () => {
+  it("ignores ?legacy=1 on a retired route", async () => {
     const load = vi.fn();
     const router = testRouter(load);
     await router.push("/projects?legacy=1");
-    expect(load).toHaveBeenCalledWith("/projects?legacy=1");
+    expect(load).not.toHaveBeenCalled();
+  });
+
+  it("full-document-loads ?legacy=1 for the login rollback", async () => {
+    installSpaRoutes(["overview", "projects", "login"]);
+    const load = vi.fn();
+    const router = testRouter(load);
+    await router.push("/login?legacy=1");
+    expect(load).toHaveBeenCalledWith("/login?legacy=1");
   });
 
   it("allows an enabled terminal route and ignores ?legacy=1 once retired", async () => {
@@ -89,8 +98,7 @@ describe("SPA navigation guard", () => {
     const bootIds = ROUTES.filter((route) => route.spa).map((route) => route.id);
     for (const id of bootIds) {
       expect(appRouter.hasRoute(id), id).toBe(true);
-      const record = appRouter.getRoutes().find((route) => route.name === id);
-      expect(record?.meta.legacyRetired ?? false, id).toBe(isLegacyRetired(id));
+      expect(isLegacyRetired(id), id).toBe(id !== "login");
     }
     // The chat record lands in Stage 3B behind the test-only allowlist even though `spa` stays off.
     expect(appRouter.hasRoute("chat")).toBe(true);

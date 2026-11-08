@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { CoordinatorService } from "../src/coordinator/service.js";
-import { buildSite, type DashboardDeps, renderOverview } from "../src/http/dashboard.js";
+import { buildSite, type DashboardDeps } from "../src/http/dashboard.js";
 import { buildOverviewProps } from "../src/http/props/overview.js";
 import { type RuntimeState, runtimePill } from "../src/http/ui.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
@@ -189,20 +189,6 @@ describe("runtime vocabulary and counts", () => {
     expect(site.runningCount).toBe(1);
     expect(site.stoppedCount).toBe(2);
     expect(site.errorCount).toBe(2);
-  });
-
-  it("renders one runtime row per state", () => {
-    const page = renderOverview(buildSite(fixture()), { operatorName: "op" });
-
-    expect(page).toContain('<span class="status" data-state="dispatching">');
-    expect(page).toContain("Starting</span>");
-    expect(page).toContain('<span class="status" data-state="in_progress">');
-    expect(page).toContain("Running</span>");
-    expect(page).toContain('<span class="status" data-state="queued">');
-    expect(page).toContain("Stopped</span>");
-    expect(page).toContain('<span class="status" data-state="failed">');
-    expect(page).toContain("Error</span>");
-    expect(page).not.toContain("Failed</span>");
   });
 
   it("maps every runtime state to its label, pill state, and glyph", () => {

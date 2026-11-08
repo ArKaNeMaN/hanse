@@ -9,7 +9,6 @@ import { buildSite } from "../src/http/dashboard.js";
 import type { HttpDeps, HttpRequest } from "../src/http/handler.js";
 import { buildSshProps, resolveSshScope } from "../src/http/props/ssh.js";
 import { handleUiApi, maybeServeSpa } from "../src/http/spa.js";
-import { handleSsh } from "../src/http/ssh.js";
 import { upsertPrincipalWithToken } from "../src/identity/principals.js";
 import { mintAgentToken } from "../src/mcp/agent-tokens.js";
 import { ROUTES } from "../src/shared/routes.js";
@@ -333,23 +332,6 @@ describe("SSH page props", () => {
     expect(serialized).not.toContain("PRIVATE KEY");
     expect(serialized).not.toContain(f.cipher);
     expect(serialized).not.toContain(f.nonce);
-  });
-
-  it("keeps the legacy page renderer consuming props and hiding key material", async () => {
-    const f = fixture();
-    const page = await handleSsh(f.deps, {
-      method: "GET",
-      path: "/ssh",
-      headers: { ...cookie(f.humanToken), accept: "text/html" },
-      query: { target: "p:a" },
-    });
-    expect(page.status).toBe(200);
-    expect(page.body).toContain("SSH hosts");
-    expect(page.body).toContain(`id="ssh-host-${f.hostId}"`);
-    expect(page.body).toContain(`/ssh/hosts/${f.hostId}/test`);
-    expect(page.body).toContain("/ssh/approvals/approval-1/decision");
-    expect(page.body).not.toContain("PRIVATE KEY");
-    assertNoKeyMaterial(page.body, f);
   });
 });
 

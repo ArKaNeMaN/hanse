@@ -63,17 +63,3 @@ test("creates a project from the form and lands on its notice", async ({ page })
   await settle(page);
   expectNoPageErrors(errors);
 });
-
-test("serves the legacy document behind ?legacy=1", async ({ page }) => {
-  const errors = collectPageErrors(page);
-  await signIn(page);
-
-  await page.goto("/projects?legacy=1");
-  await expect(page.locator("#hanse-boot")).toHaveCount(0);
-  await expect(page.locator("#project-search")).toBeVisible();
-  await expect(page.getByRole("link", { name: "E2E Project One", exact: true })).toBeVisible();
-  await expect(page.locator("#new-project")).toBeAttached();
-
-  await settle(page);
-  expectNoPageErrors(errors);
-});

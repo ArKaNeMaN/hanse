@@ -6,7 +6,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CoordinatorService } from "../src/coordinator/service.js";
 import { GitService } from "../src/git/service.js";
-import { type HttpDeps, type HttpRequest, handleRequest } from "../src/http/handler.js";
+import type { HttpDeps, HttpRequest } from "../src/http/handler.js";
 import { handleImages } from "../src/http/images.js";
 import { createHttpServer } from "../src/http/server.js";
 import { createPrincipal } from "../src/identity/principals.js";
@@ -462,36 +462,6 @@ describe("app image API", () => {
     expect(response.status).toBe(202);
     expect(f.runner.inputs).toHaveLength(1);
   });
-
-  it("renders image component markers, the asset, and does not auto-build", async () => {
-    const f = await fixture();
-    const page = handleRequest(f.deps, {
-      method: "GET",
-      path: `/projects/${f.projectId}/apps/web`,
-      headers: auth(f.token),
-    });
-    expect(page.status).toBe(200);
-    expect(page.body).toContain('id="image-panel"');
-    expect(page.body).toContain('data-status="missing"');
-    expect(page.body).toContain('id="image-status"');
-    expect(page.body).toContain('id="image-build"');
-    expect(page.body).toContain('id="image-logs"');
-    expect(page.body).toContain('id="image-refresh"');
-    expect(page.body).toContain("/assets/images.js");
-    expect(page.body).toContain(
-      `action="/api/apps/web/build?project=${encodeURIComponent(f.projectId)}"`,
-    );
-    expect(f.runner.inputs).toHaveLength(0);
-
-    const asset = handleRequest(f.deps, {
-      method: "GET",
-      path: "/assets/images.js",
-      headers: {},
-    });
-    expect(asset.status).toBe(200);
-    expect(asset.contentType).toContain("text/javascript");
-    expect(asset.body).toContain("image-panel");
-  });
 });
 
 describe("app image stale detection", () => {
@@ -558,15 +528,6 @@ describe("app image check", () => {
     expect(row(f)).toMatchObject({ image_status: "missing", image_ref: null });
     expect(row(f).image_hash).not.toBeNull();
     expect(f.runner.inputs).toHaveLength(0);
-
-    const page = handleRequest(f.deps, {
-      method: "GET",
-      path: `/projects/${f.projectId}/apps/web`,
-      headers: auth(f.token),
-    });
-    expect(page.status).toBe(200);
-    expect(page.body).toContain('id="image-build"');
-    expect(page.body).not.toContain('id="image-check"');
   });
 
   it("reports the default image when no Dockerfile is configured", async () => {

@@ -21,7 +21,6 @@ import {
 import { handleGit } from "../src/http/git.js";
 import type { HttpDeps, HttpRequest } from "../src/http/handler.js";
 import { createHttpServer } from "../src/http/server.js";
-import { handleSettings } from "../src/http/settings.js";
 import { createPrincipal } from "../src/identity/principals.js";
 import { SettingsService } from "../src/settings/index.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
@@ -892,38 +891,5 @@ describe("git test HTTP API", () => {
       });
       expect(response.status).toBe(404);
     }
-  });
-
-  it("renders the Test connection controls only on the application settings page", async () => {
-    const f = await fixture();
-    const settings = new SettingsService({ db: f.db, secretKey: randomBytes(32) });
-    const deps: HttpDeps = { ...f.deps, settings };
-    const html = (pathname: string): HttpRequest => ({
-      method: "GET",
-      path: pathname,
-      headers: {
-        authorization: `Bearer ${f.token}`,
-        accept: "text/html",
-      },
-    });
-
-    const global = await handleSettings(deps, html("/settings"));
-    expect(global.status).toBe(200);
-    expect(global.body).toContain("Application settings");
-    expect(global.body).not.toContain("data-git-test");
-    expect(global.body).not.toContain("Test connection");
-
-    const project = await handleSettings(deps, html("/projects/p/settings"));
-    expect(project.status).toBe(200);
-    expect(project.body).not.toContain("data-git-test");
-
-    const app = await handleSettings(deps, html("/projects/p/apps/repo/settings"));
-    expect(app.status).toBe(200);
-    expect(app.body).toContain("data-git-test");
-    expect(app.body).toContain("Test connection");
-    expect(app.body).toContain("data-git-test-result");
-    expect(app.body).toContain("data-git-test-summary");
-    expect(app.body).toContain('role="status"');
-    expect(app.body).toContain('role="alert"');
   });
 });

@@ -42,7 +42,7 @@ export interface RouteDefinition {
   readonly label: string;
   /** Registry cutover flag. */
   readonly spa: boolean;
-  /** True once the legacy renderer is retired and the SPA is always served (Stage 9). */
+  /** True when the route always serves the SPA and ignores every rollback flag. */
   readonly legacyRetired?: boolean;
   /** True for a page served without an authenticated session, such as the login page. */
   readonly public?: boolean;
@@ -71,6 +71,7 @@ const ROUTE_DEFINITIONS: readonly RouteDefinition[] = [
     nav: "projects",
     label: "Projects",
     spa: true,
+    legacyRetired: true,
   },
   {
     id: "overview",
@@ -78,6 +79,7 @@ const ROUTE_DEFINITIONS: readonly RouteDefinition[] = [
     nav: "overview",
     label: "Overview",
     spa: true,
+    legacyRetired: true,
   },
   {
     id: "handoffs",
@@ -85,6 +87,7 @@ const ROUTE_DEFINITIONS: readonly RouteDefinition[] = [
     nav: "handoffs",
     label: "Handoffs",
     spa: true,
+    legacyRetired: true,
   },
   {
     id: "ssh",
@@ -92,6 +95,7 @@ const ROUTE_DEFINITIONS: readonly RouteDefinition[] = [
     nav: "ssh",
     label: "SSH",
     spa: true,
+    legacyRetired: true,
   },
   {
     id: "settings-global",
@@ -99,6 +103,7 @@ const ROUTE_DEFINITIONS: readonly RouteDefinition[] = [
     nav: "settings",
     label: "Settings",
     spa: true,
+    legacyRetired: true,
   },
   {
     id: "skills-global",
@@ -106,6 +111,7 @@ const ROUTE_DEFINITIONS: readonly RouteDefinition[] = [
     nav: "skills",
     label: "Skills",
     spa: true,
+    legacyRetired: true,
   },
   {
     id: "skills-new",
@@ -113,6 +119,7 @@ const ROUTE_DEFINITIONS: readonly RouteDefinition[] = [
     nav: "skills",
     label: "New skill",
     spa: true,
+    legacyRetired: true,
   },
   {
     id: "skills-detail",
@@ -120,6 +127,7 @@ const ROUTE_DEFINITIONS: readonly RouteDefinition[] = [
     nav: "skills",
     label: "Skill",
     spa: true,
+    legacyRetired: true,
   },
   {
     id: "settings-project",
@@ -127,6 +135,7 @@ const ROUTE_DEFINITIONS: readonly RouteDefinition[] = [
     nav: "settings",
     label: "Settings",
     spa: true,
+    legacyRetired: true,
   },
   {
     id: "settings-app",
@@ -134,6 +143,7 @@ const ROUTE_DEFINITIONS: readonly RouteDefinition[] = [
     nav: "settings",
     label: "Settings",
     spa: true,
+    legacyRetired: true,
   },
   {
     id: "skills-project",
@@ -141,6 +151,7 @@ const ROUTE_DEFINITIONS: readonly RouteDefinition[] = [
     nav: "skills",
     label: "Skills",
     spa: true,
+    legacyRetired: true,
   },
   {
     id: "skills-app",
@@ -148,6 +159,7 @@ const ROUTE_DEFINITIONS: readonly RouteDefinition[] = [
     nav: "skills",
     label: "Skills",
     spa: true,
+    legacyRetired: true,
   },
   {
     id: "app",
@@ -155,6 +167,7 @@ const ROUTE_DEFINITIONS: readonly RouteDefinition[] = [
     nav: "project",
     label: "Application",
     spa: true,
+    legacyRetired: true,
   },
   {
     id: "project",
@@ -162,6 +175,7 @@ const ROUTE_DEFINITIONS: readonly RouteDefinition[] = [
     nav: "project",
     label: "Project",
     spa: true,
+    legacyRetired: true,
   },
   {
     id: "terminal",

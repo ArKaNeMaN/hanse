@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { HandoffReplyState, HandoffState } from "../src/coordinator/handoff.js";
 import { CoordinatorService } from "../src/coordinator/service.js";
-import { buildSite, renderHandoffs, type SiteModel } from "../src/http/dashboard.js";
+import { buildSite, type SiteModel } from "../src/http/dashboard.js";
 import { buildHandoffsProps } from "../src/http/props/handoffs.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
 
@@ -347,17 +347,5 @@ describe("handoffs page props", () => {
     expect(buildHandoffsProps(closed, "replies", undefined).emptyState).toMatchObject({
       title: "No replies waiting",
     });
-  });
-
-  it("keeps the legacy inbox HTML deriving from the same props", () => {
-    const site = fixture();
-    expect(renderHandoffs(site, { chrome: { operatorName: "operator" } })).toMatchSnapshot();
-    expect(
-      renderHandoffs(site, {
-        filter: "waiting",
-        q: "reply",
-        chrome: { operatorName: "operator" },
-      }),
-    ).toMatchSnapshot();
   });
 });

@@ -112,26 +112,6 @@ test("keeps the current inventory visible while switching scope", async ({ page 
   expectNoPageErrors(errors);
 });
 
-test("?legacy=1 and the rollback servers serve the legacy skills pages", async ({ page }) => {
-  const errors = collectPageErrors(page);
-  await signIn(page, "/skills");
-
-  const legacy = await page.goto("/skills?legacy=1");
-  expect(legacy?.status()).toBe(200);
-  await expect(page.locator("#hanse-boot")).toHaveCount(0);
-  await expect(page.locator("[data-skill-inventory]")).toBeVisible();
-
-  for (const origin of ["http://127.0.0.1:4311", "http://127.0.0.1:4312"]) {
-    const response = await page.goto(`${origin}/skills`);
-    expect(response?.status()).toBe(200);
-    await expect(page.locator("#hanse-boot")).toHaveCount(0);
-    await expect(page.locator("[data-skill-inventory]")).toBeVisible();
-  }
-
-  await settle(page);
-  expectNoPageErrors(errors);
-});
-
 test("mounts without a fallback flash, console errors, or secret text", async ({ page }) => {
   const errors = collectPageErrors(page);
   await signIn(page, "/skills");

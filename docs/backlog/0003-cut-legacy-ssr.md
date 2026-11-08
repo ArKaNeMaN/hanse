@@ -1,6 +1,6 @@
 # 0003 - Cut the legacy SSR renderer and its rollback path
 
-Status: open
+Status: done for all non-login routes (2026-11-08); the `/login` rollback and the shared error/login shell intentionally remain
 Created: 2026-11-08
 Priority: medium (removes a second UI implementation, its rollback surface, and the last per-request HTML rendering)
 
@@ -22,6 +22,13 @@ hydration. The only server-rendered pieces left on an SPA document are:
 
 "Legacy SSR" below means the separate old renderer that renders full pages with `app-content.js`,
 not the SPA shell.
+
+## Completed
+
+The rollback was cut for every route except `/login`: those routes are `legacyRetired: true`, the
+legacy page renderers and their client assets/tests were deleted, and `HANSE_UI_LEGACY`,
+`?legacy=1`, and `HANSE_UI_SPA_ROUTES` now affect only `/login`. The remaining shell, error pages,
+and login form are shared with the SPA or are the requested auth rollback.
 
 ## Current state
 

@@ -65,37 +65,6 @@ test("deep links, refreshes, swaps chrome, and restores history", async ({ page 
   expectNoPageErrors(errors);
 });
 
-test("?legacy=1 serves the legacy project document", async ({ page }) => {
-  const errors = collectPageErrors(page);
-  await signIn(page, `/projects/${PROJECT_ONE}`);
-
-  const response = await page.goto(`/projects/${PROJECT_ONE}?legacy=1`);
-  expect(response?.status()).toBe(200);
-  await expect(page.locator("#hanse-boot")).toHaveCount(0);
-  await expect(page.getByRole("heading", { name: "E2E Project One" })).toBeVisible();
-  await expect(page.locator("#add-app")).toBeAttached();
-  await expect(page.locator("#new-handoff")).toBeAttached();
-
-  await settle(page);
-  expectNoPageErrors(errors);
-});
-
-test("the legacy and empty-allowlist servers still serve the project page", async ({ page }) => {
-  const errors = collectPageErrors(page);
-  await signIn(page, `/projects/${PROJECT_ONE}`);
-
-  for (const origin of ["http://127.0.0.1:4311", "http://127.0.0.1:4312"]) {
-    const response = await page.goto(`${origin}/projects/${PROJECT_ONE}`);
-    expect(response?.status()).toBe(200);
-    await expect(page.locator("#hanse-boot")).toHaveCount(0);
-    await expect(page.getByRole("heading", { name: "E2E Project One" })).toBeVisible();
-    await expect(page.locator("#add-app")).toBeAttached();
-  }
-
-  await settle(page);
-  expectNoPageErrors(errors);
-});
-
 test("an application link navigates client-side after the cutover", async ({ page }) => {
   const errors = collectPageErrors(page);
   await signIn(page, `/projects/${PROJECT_ONE}`);

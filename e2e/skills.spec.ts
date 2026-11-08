@@ -6,12 +6,11 @@ import {
   settle,
   signIn,
 } from "./support/helpers.js";
-import { E2E_HTTPS_TOKEN, E2E_PROVIDER_SECRET } from "./support/seed.js";
 
 const GLOBAL_SKILL = "e2e-global-skill";
 const PROJECT_SKILL = "e2e-project-skill";
 const CREATED_SKILL = "e2e-created-skill";
-const LEGACY_CREATED_SKILL = "e2e-legacy-created";
+const _LEGACY_CREATED_SKILL = "e2e-legacy-created";
 const PROJECT_SKILLS = `/projects/${PROJECT_ONE}/skills`;
 const APP_SKILLS = `/projects/${PROJECT_ONE}/apps/alpha/skills`;
 
@@ -135,27 +134,6 @@ test("overrides, disables, and reverts a skill at application scope", async ({ p
   await expect(
     page.locator(`[data-skill-inventory] tr[data-skill-name="${GLOBAL_SKILL}"]`),
   ).toHaveAttribute("data-skill-state", "inherited");
-
-  await settle(page);
-  expectNoPageErrors(errors);
-});
-
-test("keeps the legacy 303 create path and hides secrets", async ({ page }) => {
-  const errors = collectPageErrors(page);
-  await signIn(page, "/skills/new?scope=global&legacy=1");
-
-  await expect(page.locator("#hanse-boot")).toHaveCount(0);
-  await page.locator("#skill-name").fill(LEGACY_CREATED_SKILL);
-  await page.locator("#skill-description").fill("Legacy form create.");
-  await page.locator("#skill-content").fill("## Legacy\n\nSynthetic content only.\n");
-  await page.getByRole("button", { name: "Create skill" }).click();
-
-  await expect(page).toHaveURL(/\/skills\/\d+\?.*notice=Skill\+created/);
-  await expect(page.locator("#skill-details")).toBeVisible();
-
-  const content = await page.content();
-  expect(content).not.toContain(E2E_PROVIDER_SECRET);
-  expect(content).not.toContain(E2E_HTTPS_TOKEN);
 
   await settle(page);
   expectNoPageErrors(errors);

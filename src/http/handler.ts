@@ -29,18 +29,8 @@ import type { SshService } from "../ssh/service.js";
 import type { SqliteDatabase } from "../store/index.js";
 import { readProcessSnapshot } from "../store/process.js";
 import { VERSION } from "../version.js";
-import { renderApplication } from "./application.js";
 import { humanFrom, principalFrom } from "./auth.js";
-import {
-  buildSite,
-  type PageChrome,
-  renderErrorPage,
-  renderHandoffs,
-  renderNotFound,
-  renderOverview,
-  renderProject,
-  renderProjects,
-} from "./dashboard.js";
+import { buildSite, type PageChrome, renderErrorPage, renderNotFound } from "./dashboard.js";
 import { loginPage, type Notice, safeLocalPath } from "./ui.js";
 
 export interface ProjectContext {
@@ -128,16 +118,6 @@ const ASSETS: Record<string, { file: string; contentType: string }> = {
     file: "chat-highlight-worker.js",
     contentType: "text/javascript; charset=utf-8",
   },
-  "/assets/git.js": { file: "git.js", contentType: "text/javascript; charset=utf-8" },
-  "/assets/git-settings.js": {
-    file: "git-settings.js",
-    contentType: "text/javascript; charset=utf-8",
-  },
-  "/assets/handoff.js": {
-    file: "handoff.js",
-    contentType: "text/javascript; charset=utf-8",
-  },
-  "/assets/images.js": { file: "images.js", contentType: "text/javascript; charset=utf-8" },
   "/assets/markdown.js": {
     file: "markdown.js",
     contentType: "text/javascript; charset=utf-8",
@@ -164,15 +144,6 @@ const ASSETS: Record<string, { file: string; contentType: string }> = {
   },
   "/assets/vendor/xterm/addon-unicode-graphemes-0.4.0.js": {
     file: "vendor/xterm/addon-unicode-graphemes-0.4.0.js",
-    contentType: "text/javascript; charset=utf-8",
-  },
-  "/assets/ssh.js": { file: "ssh.js", contentType: "text/javascript; charset=utf-8" },
-  "/assets/settings.js": {
-    file: "settings.js",
-    contentType: "text/javascript; charset=utf-8",
-  },
-  "/assets/skill-detail.js": {
-    file: "skill-detail.js",
     contentType: "text/javascript; charset=utf-8",
   },
   "/assets/favicon.svg": { file: "favicon.svg", contentType: "image/svg+xml" },
@@ -1245,46 +1216,6 @@ function route(deps: HttpDeps, request: HttpRequest): HttpResponse {
     }
     const chrome = pageChrome(human, request);
     try {
-      if (request.path === "/") {
-        return html(200, renderOverview(buildSite(deps), chrome));
-      }
-      if (request.path === "/projects") {
-        return html(200, renderProjects(buildSite(deps), { q: request.query?.q, chrome }));
-      }
-      if (request.path === "/handoffs") {
-        return html(
-          200,
-          renderHandoffs(buildSite(deps), {
-            filter: request.query?.filter,
-            q: request.query?.q,
-            chrome,
-          }),
-        );
-      }
-      const applicationMatch = /^\/projects\/([^/]+)\/apps\/([^/]+)$/.exec(request.path);
-      if (applicationMatch !== null) {
-        const site = buildSite(deps);
-        const page = renderApplication(
-          site,
-          safeDecode(applicationMatch[1] ?? ""),
-          safeDecode(applicationMatch[2] ?? ""),
-          chrome,
-          deps.manager !== undefined,
-        );
-        if (page !== undefined) {
-          return html(200, page);
-        }
-        return html(404, renderNotFound(site, chrome));
-      }
-      const projectMatch = /^\/projects\/([^/]+)$/.exec(request.path);
-      if (projectMatch !== null) {
-        const site = buildSite(deps);
-        const page = renderProject(site, safeDecode(projectMatch[1] ?? ""), chrome);
-        if (page !== undefined) {
-          return html(200, page);
-        }
-        return html(404, renderNotFound(site, chrome));
-      }
       return html(404, renderNotFound(buildSite(deps), chrome));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

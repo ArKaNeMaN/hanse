@@ -174,33 +174,34 @@ describe("shared route manifest", () => {
     expect(isSpaPath("/login", { env: {} })).toBe(true);
   });
 
-  it("applies HANSE_UI_LEGACY and manifest validity before the allowlist", () => {
-    expect(isSpaRoute("projects", { env: { legacy: "1", spaRoutes: "projects" } })).toBe(false);
-    expect(isSpaRoute("projects", { env: { spaRoutes: "projects" }, manifestValid: false })).toBe(
-      false,
-    );
-    expect(isSpaRoute("projects", { env: { legacy: "0", spaRoutes: "projects" } })).toBe(true);
+  it("applies the rollback flags to login only", () => {
+    expect(isSpaRoute("login", { env: { legacy: "1", spaRoutes: "login" } })).toBe(false);
+    expect(isSpaRoute("login", { env: { spaRoutes: "login" }, manifestValid: false })).toBe(false);
+    expect(isSpaRoute("login", { env: { legacy: "0", spaRoutes: "login" } })).toBe(true);
+    expect(isSpaRoute("projects", { env: { legacy: "1", spaRoutes: "" } })).toBe(true);
   });
 
   it("treats an unset allowlist as the registry flag", () => {
     expect(isSpaRoute("projects", { env: {} })).toBe(true);
     expect(isSpaRoute("projects", { env: { spaRoutes: undefined } })).toBe(true);
     expect(isSpaRoute("overview", { env: {} })).toBe(true);
+    expect(isSpaRoute("login", { env: {} })).toBe(true);
   });
 
-  it("treats an empty allowlist as all legacy", () => {
-    expect(isSpaRoute("projects", { env: { spaRoutes: "" } })).toBe(false);
-    expect(isSpaRoute("projects", { env: { spaRoutes: "   " } })).toBe(false);
+  it("treats an empty allowlist as legacy for login only", () => {
+    expect(isSpaRoute("login", { env: { spaRoutes: "" } })).toBe(false);
+    expect(isSpaRoute("login", { env: { spaRoutes: "   " } })).toBe(false);
+    expect(isSpaRoute("projects", { env: { spaRoutes: "" } })).toBe(true);
   });
 
-  it("enables only listed ids and ignores unknown ids", () => {
-    const allowlist = { spaRoutes: "projects, overview, not-a-route" };
+  it("enables only listed login and ignores unknown ids", () => {
+    const allowlist = { spaRoutes: "login, not-a-route" };
+    expect(isSpaRoute("login", { env: allowlist })).toBe(true);
     expect(isSpaRoute("projects", { env: allowlist })).toBe(true);
-    expect(isSpaRoute("overview", { env: allowlist })).toBe(true);
-    expect(isSpaRoute("handoffs", { env: allowlist })).toBe(false);
+    expect(isSpaRoute("handoffs", { env: allowlist })).toBe(true);
     expect(isSpaRoute("not-a-route" as never, { env: allowlist })).toBe(false);
-    expect(parseSpaAllowlist("projects, nope ,overview")).toEqual({
-      ids: new Set(["projects", "overview"]),
+    expect(parseSpaAllowlist("login, nope ,overview")).toEqual({
+      ids: new Set(["login", "overview"]),
       unknown: ["nope"],
     });
   });
@@ -238,25 +239,24 @@ describe("shared route manifest", () => {
     expect(isSpaRoute("login", { manifestValid: false })).toBe(false);
   });
 
-  it("keeps retired chat and terminal in the boot set regardless of rollback flags", () => {
+  it("keeps every non-login route in the boot set regardless of rollback flags", () => {
     const bootRoutes = ROUTES.filter((route) =>
       isSpaRoute(route.id, { env: {}, manifestValid: true }),
     ).map((route) => route.id);
-    expect(bootRoutes).toContain("chat");
-    expect(bootRoutes).toContain("terminal");
-    expect(bootRoutes).toContain("projects");
-    expect(isSpaRoute("chat", { env: { legacy: "1" } })).toBe(true);
-    expect(isSpaRoute("chat", { env: { spaRoutes: "" } })).toBe(true);
-    expect(isSpaRoute("terminal", { env: { legacy: "1", spaRoutes: "projects" } })).toBe(true);
-    expect(isSpaRoute("chat", { manifestValid: false })).toBe(false);
-    expect(isSpaRoute("terminal", { manifestValid: false })).toBe(false);
-    expect(isSpaRoute("projects", { env: { legacy: "1" } })).toBe(false);
+    for (const route of ROUTES) {
+      if (route.id !== "login") expect(bootRoutes, route.id).toContain(route.id);
+    }
+    expect(isSpaRoute("projects", { env: { legacy: "1" } })).toBe(true);
+    expect(isSpaRoute("projects", { env: { spaRoutes: "" } })).toBe(true);
+    expect(isSpaRoute("projects", { env: { legacy: "1", spaRoutes: "" } })).toBe(true);
+    expect(isSpaRoute("projects", { manifestValid: false })).toBe(false);
+    expect(isSpaRoute("login", { env: { legacy: "1" } })).toBe(false);
   });
 
-  it("retires only chat and terminal", () => {
-    expect(isLegacyRetired("projects")).toBe(false);
-    expect(isLegacyRetired("chat")).toBe(true);
-    expect(isLegacyRetired("terminal")).toBe(true);
+  it("retires every route except login", () => {
+    for (const route of ROUTES) {
+      expect(isLegacyRetired(route.id), route.id).toBe(route.id !== "login");
+    }
     expect(isLegacyRetired("nope" as never)).toBe(false);
   });
 

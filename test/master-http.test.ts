@@ -132,16 +132,11 @@ function spaRequest(
 
 describe("master HTTP surface", () => {
   it("hides the master from operator lists while keeping the navigation entry", () => {
+    process.env.HANSE_UI_DEV_URL = "http://127.0.0.1:5173";
     const value = fixture({ withOperator: true });
-    const overview = handleRequest(value.deps, request("GET", "/", value.token));
-    expect(overview.status).toBe(200);
-    expect(overview.body).toContain("Atlas");
-    expect(overview.body).not.toContain("Hanse master");
-    expect(overview.body).toContain("/chat?app=master&amp;project=hanse-master");
-
-    const projects = handleRequest(value.deps, request("GET", "/projects", value.token));
-    expect(projects.status).toBe(200);
-    expect(projects.body).not.toContain(`/projects/${MASTER_PROJECT_ID}`);
+    const overview = maybeServeSpa(value.deps, spaRequest("/", value.token));
+    expect(overview?.status).toBe(200);
+    expect(overview?.body).toContain("/chat?app=master&amp;project=hanse-master");
 
     const api = handleRequest(value.deps, request("GET", "/api/projects", value.token));
     expect(api.status).toBe(200);
@@ -164,38 +159,24 @@ describe("master HTTP surface", () => {
     expect(fallback?.headers?.location).toContain(`project=${MASTER_PROJECT_ID}`);
   });
 
-  it("renders direct master pages without destructive or git controls", async () => {
+  it("serves master SPA documents without destructive or git controls", async () => {
     const value = fixture({ withOperator: true });
-    const project = handleRequest(
-      value.deps,
-      request("GET", `/projects/${MASTER_PROJECT_ID}`, value.token),
-    );
-    expect(project.status).toBe(200);
-    expect(project.body).toContain("Built-in assistant");
-    expect(project.body).not.toContain("Delete project");
-    expect(project.body).not.toContain("New handoff");
-    expect(project.body).not.toContain("Add app");
-
-    const app = handleRequest(
-      value.deps,
-      request("GET", `/projects/${MASTER_PROJECT_ID}/apps/${MASTER_APP_KEY}`, value.token),
-    );
-    expect(app.status).toBe(200);
-    expect(app.body).toContain("Master workspace");
-    expect(app.body).not.toContain("Delete application");
-    expect(app.body).not.toContain("/assets/git.js");
-
     process.env.HANSE_UI_DEV_URL = "http://127.0.0.1:5173";
-    const chat = maybeServeSpa(
-      value.deps,
-      spaRequest("/chat", value.token, {
-        app: MASTER_APP_KEY,
-        project: MASTER_PROJECT_ID,
-      }),
-    );
-    expect(chat?.status).toBe(200);
-    expect(chat?.body).toContain(MASTER_APP_KEY);
-    expect(chat?.body).toContain('id="hanse-boot"');
+    for (const pathname of [
+      `/projects/${MASTER_PROJECT_ID}`,
+      `/projects/${MASTER_PROJECT_ID}/apps/${MASTER_APP_KEY}`,
+      "/chat",
+    ]) {
+      const response = maybeServeSpa(
+        value.deps,
+        spaRequest(pathname, value.token, {
+          ...(pathname === "/chat" ? { app: MASTER_APP_KEY, project: MASTER_PROJECT_ID } : {}),
+        }),
+      );
+      expect(response?.status, pathname).toBe(200);
+      expect(response?.body, pathname).toContain('id="hanse-boot"');
+      expect(response?.body, pathname).not.toContain("/assets/git.js");
+    }
   });
 
   it("refuses deletion even without a configured deletion service", async () => {

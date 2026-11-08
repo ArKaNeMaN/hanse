@@ -32,3 +32,14 @@ test("signs in with a cookie and signs out", async ({ page, context }) => {
   await settle(page);
   expectNoPageErrors(errors);
 });
+
+test("serves the legacy login form behind ?legacy=1", async ({ page }) => {
+  const errors = collectPageErrors(page);
+
+  await page.goto("/login?legacy=1");
+  await expect(page.getByRole("heading", { name: "Operator sign-in" })).toBeVisible();
+  await expect(page.locator("#hanse-boot")).toHaveCount(0);
+
+  await settle(page);
+  expectNoPageErrors(errors);
+});

@@ -130,8 +130,7 @@ test("an overview project link opens the project page", async ({ page }) => {
   }
 
   await expect(page).toHaveURL(new RegExp(`/projects/${PROJECT_ONE}$`));
-  // SPA client navigation keeps the document (and its boot marker); the legacy rollback servers
-  // cross the boundary with a full document load.
+  // SPA client navigation keeps the document and its boot marker.
   await expect(page.locator("#hanse-boot")).toHaveCount(spa ? 1 : 0);
   await expect(page.getByRole("heading", { name: "E2E Project One" })).toBeVisible();
 

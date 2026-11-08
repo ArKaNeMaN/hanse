@@ -30,71 +30,85 @@ const routes: readonly RouteRecordRaw[] = [
     path: "/",
     name: "overview",
     component: () => import("./pages/OverviewPage.vue"),
+    meta: { legacyRetired: true },
   },
   {
     path: "/projects",
     name: "projects",
     component: () => import("./pages/ProjectsPage.vue"),
+    meta: { legacyRetired: true },
   },
   {
     path: "/projects/:id/apps/:app",
     name: "app",
     component: () => import("./pages/AppPage.vue"),
+    meta: { legacyRetired: true },
   },
   {
     path: "/projects/:id/apps/:app/settings",
     name: "settings-app",
     component: () => import("./pages/SettingsPage.vue"),
+    meta: { legacyRetired: true },
   },
   {
     path: "/projects/:id/settings",
     name: "settings-project",
     component: () => import("./pages/SettingsPage.vue"),
+    meta: { legacyRetired: true },
   },
   {
     path: "/projects/:id/apps/:app/skills",
     name: "skills-app",
     component: () => import("./pages/SkillsPage.vue"),
+    meta: { legacyRetired: true },
   },
   {
     path: "/projects/:id/skills",
     name: "skills-project",
     component: () => import("./pages/SkillsPage.vue"),
+    meta: { legacyRetired: true },
   },
   {
     path: "/skills",
     name: "skills-global",
     component: () => import("./pages/SkillsPage.vue"),
+    meta: { legacyRetired: true },
   },
   {
     path: "/skills/new",
     name: "skills-new",
     component: () => import("./pages/SkillsPage.vue"),
+    meta: { legacyRetired: true },
   },
   {
     path: "/skills/:id",
     name: "skills-detail",
     component: () => import("./pages/SkillDetailPage.vue"),
+    meta: { legacyRetired: true },
   },
   {
     path: "/projects/:id",
     name: "project",
     component: () => import("./pages/ProjectPage.vue"),
+    meta: { legacyRetired: true },
   },
   {
     path: "/settings",
     name: "settings-global",
     component: () => import("./pages/SettingsPage.vue"),
+    meta: { legacyRetired: true },
   },
   {
     path: "/handoffs",
     name: "handoffs",
     component: () => import("./pages/HandoffsPage.vue"),
+    meta: { legacyRetired: true },
   },
   {
     path: "/ssh",
     name: "ssh",
     component: () => import("./pages/SshPage.vue"),
+    meta: { legacyRetired: true },
   },
   {
     path: "/terminal",
@@ -117,6 +131,7 @@ const routes: readonly RouteRecordRaw[] = [
     path: "/:pathMatch(.*)*",
     name: "not-implemented",
     component: () => import("./pages/NotImplementedPage.vue"),
+    meta: { legacyRetired: true },
   },
 ];
 

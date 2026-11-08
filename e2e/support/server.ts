@@ -30,11 +30,6 @@ import {
 } from "./seed.js";
 
 const port = Number(process.env.HANSE_E2E_PORT ?? 4310);
-const mode = process.env.HANSE_E2E_MODE === "legacy" ? "legacy" : "spa";
-if (mode === "legacy") {
-  process.env.HANSE_UI_LEGACY = "1";
-}
-
 const fixtureRemotePath = path.join(tmpdir(), `hanse-e2e-git-${port}`, "remote.git");
 const fixture = seed({
   ...(process.env.HANSE_E2E_DB === undefined ? {} : { dbPath: process.env.HANSE_E2E_DB }),
@@ -743,5 +738,5 @@ server.on("error", (error) => {
 server.listen(port, "127.0.0.1", () => {
   const address = server.address();
   const actualPort = typeof address === "object" && address !== null ? address.port : port;
-  process.stdout.write(`e2e fixture ready on http://127.0.0.1:${actualPort} (${mode})\n`);
+  process.stdout.write(`e2e fixture ready on http://127.0.0.1:${actualPort} (spa)\n`);
 });

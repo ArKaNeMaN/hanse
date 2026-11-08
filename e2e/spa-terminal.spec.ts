@@ -11,7 +11,7 @@ import {
 const APP_PATH = `/projects/${PROJECT_ONE}/apps/alpha`;
 const TERMINAL_PATH = `/terminal?app=alpha&project=${PROJECT_ONE}`;
 
-async function signInAt(page: Page, origin: string, path: string): Promise<void> {
+async function _signInAt(page: Page, origin: string, path: string): Promise<void> {
   await page.goto(`${origin}/login?next=${encodeURIComponent(path)}`);
   if (new URL(page.url()).pathname !== "/login") {
     await page.goto(`${origin}${path}`);
@@ -82,14 +82,4 @@ test("?legacy=1 still serves the SPA terminal", async ({ page }) => {
   await expect(page.locator(".terminal-shell")).toHaveCount(1);
   await settle(page);
   expectNoPageErrors(errors);
-});
-
-test("HANSE_UI_LEGACY=1 and allowlist removal still serve the SPA terminal", async ({ page }) => {
-  for (const origin of ["http://127.0.0.1:4311", "http://127.0.0.1:4312"]) {
-    await signInAt(page, origin, TERMINAL_PATH);
-    await expect(page.locator("#hanse-boot")).toHaveCount(1);
-    await expect(page.locator('script[src="/assets/terminal.js"]')).toHaveCount(0);
-    await expect(page.locator(".terminal-shell")).toHaveCount(1);
-    await expect(page.locator('link[href="/assets/vendor/xterm/xterm-6.0.0.css"]')).toHaveCount(1);
-  }
 });

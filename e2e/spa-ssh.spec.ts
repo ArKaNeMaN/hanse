@@ -150,29 +150,6 @@ test("swaps chrome, title, and active nav after a scoped client navigation", asy
   expectNoPageErrors(errors);
 });
 
-test("?legacy=1 and the rollback servers serve the legacy SSH page", async ({ page }) => {
-  const errors = collectPageErrors(page);
-  await signIn(page, "/ssh");
-
-  const legacy = await page.goto("/ssh?legacy=1");
-  expect(legacy?.status()).toBe(200);
-  await expect(page.locator("#hanse-boot")).toHaveCount(0);
-  await expect(page.getByRole("heading", { name: "SSH hosts" })).toBeVisible();
-  await expect(page.locator("#ssh-hosts")).toBeVisible();
-  await expect(page.getByText("test-host").first()).toBeVisible();
-
-  for (const origin of ["http://127.0.0.1:4311", "http://127.0.0.1:4312"]) {
-    const response = await page.goto(`${origin}/ssh`);
-    expect(response?.status()).toBe(200);
-    await expect(page.locator("#hanse-boot")).toHaveCount(0);
-    await expect(page.getByRole("heading", { name: "SSH hosts" })).toBeVisible();
-    await expect(page.locator("#ssh-hosts")).toBeVisible();
-  }
-
-  await settle(page);
-  expectNoPageErrors(errors);
-});
-
 test("mounts without a fallback flash or console errors", async ({ page }) => {
   const errors = collectPageErrors(page);
   await signIn(page, "/ssh");

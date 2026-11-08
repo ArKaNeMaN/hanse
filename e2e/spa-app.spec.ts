@@ -141,43 +141,6 @@ test("surfaces a restart failure without breaking the page", async ({ page }) =>
   await expect(page.getByRole("heading", { name: "alpha", exact: true })).toBeVisible();
 });
 
-test("?legacy=1 serves the legacy application document with its island scripts", async ({
-  page,
-}) => {
-  const errors = collectPageErrors(page);
-  await signIn(page, APP_PATH);
-
-  const response = await page.goto(`${APP_PATH}?legacy=1`);
-  expect(response?.status()).toBe(200);
-  await expect(page.locator("#hanse-boot")).toHaveCount(0);
-  await expect(page.getByRole("heading", { name: "alpha", exact: true })).toBeVisible();
-  await expect(page.locator("#app-state")).toBeVisible();
-  await expect(page.locator("#git-panel")).toBeAttached();
-  await expect(page.locator('script[src="/assets/git.js"]')).toHaveCount(1);
-  await expect(page.locator('script[src="/assets/images.js"]')).toHaveCount(1);
-
-  await settle(page);
-  expectNoPageErrors(errors);
-});
-
-test("the legacy and empty-allowlist servers still serve the application page", async ({
-  page,
-}) => {
-  const errors = collectPageErrors(page);
-  await signIn(page, APP_PATH);
-
-  for (const origin of ["http://127.0.0.1:4311", "http://127.0.0.1:4312"]) {
-    const response = await page.goto(`${origin}${APP_PATH}`);
-    expect(response?.status()).toBe(200);
-    await expect(page.locator("#hanse-boot")).toHaveCount(0);
-    await expect(page.getByRole("heading", { name: "alpha", exact: true })).toBeVisible();
-    await expect(page.locator("#git-panel")).toBeAttached();
-  }
-
-  await settle(page);
-  expectNoPageErrors(errors);
-});
-
 test("mounts without a fallback flash or console errors", async ({ page }) => {
   const errors = collectPageErrors(page);
   await signIn(page, APP_PATH);

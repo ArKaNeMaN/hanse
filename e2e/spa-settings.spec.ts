@@ -123,27 +123,6 @@ test("swaps chrome, title, and active nav after a scoped client navigation", asy
   expectNoPageErrors(errors);
 });
 
-test("?legacy=1 and the rollback servers serve the legacy settings page", async ({ page }) => {
-  const errors = collectPageErrors(page);
-  await signIn(page, "/settings");
-
-  const legacy = await page.goto("/settings?legacy=1");
-  expect(legacy?.status()).toBe(200);
-  await expect(page.locator("#hanse-boot")).toHaveCount(0);
-  await expect(page.locator("#settings-agent")).toBeVisible();
-
-  for (const origin of ["http://127.0.0.1:4311", "http://127.0.0.1:4312"]) {
-    const response = await page.goto(`${origin}/settings`);
-    expect(response?.status()).toBe(200);
-    await expect(page.locator("#hanse-boot")).toHaveCount(0);
-    await expect(page.locator("#settings-agent")).toBeVisible();
-    await expect(page.locator("#setting-llm-model")).toBeVisible();
-  }
-
-  await settle(page);
-  expectNoPageErrors(errors);
-});
-
 test("mounts without a fallback flash, console errors, or secret text", async ({ page }) => {
   const errors = collectPageErrors(page);
   await signIn(page, APP_SETTINGS);

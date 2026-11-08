@@ -73,36 +73,6 @@ test("project links client-navigate to the SPA project detail", async ({ page })
   expectNoPageErrors(errors);
 });
 
-test("?legacy=1 serves the legacy projects document", async ({ page }) => {
-  const errors = collectPageErrors(page);
-  await signIn(page);
-
-  const response = await page.goto("/projects?legacy=1");
-  expect(response?.status()).toBe(200);
-  await expect(page.locator("#hanse-boot")).toHaveCount(0);
-  await expect(page.locator("#project-search")).toBeVisible();
-  await expect(page.getByRole("link", { name: "E2E Project Two", exact: true })).toBeVisible();
-
-  await settle(page);
-  expectNoPageErrors(errors);
-});
-
-test("the legacy and empty-allowlist servers still serve the rollback page", async ({ page }) => {
-  const errors = collectPageErrors(page);
-  await signIn(page);
-
-  for (const origin of ["http://127.0.0.1:4311", "http://127.0.0.1:4312"]) {
-    const response = await page.goto(`${origin}/projects`);
-    expect(response?.status()).toBe(200);
-    await expect(page.locator("#hanse-boot")).toHaveCount(0);
-    await expect(page.locator("#project-search")).toBeVisible();
-    await expect(page.getByRole("link", { name: "E2E Project One", exact: true })).toBeVisible();
-  }
-
-  await settle(page);
-  expectNoPageErrors(errors);
-});
-
 test("reveals the server fallback when the entry module fails", async ({ page }) => {
   await signIn(page);
   await page.route(/\/assets\/ui\/main-[^/]+\.js$/, (route) =>
@@ -114,9 +84,9 @@ test("reveals the server fallback when the entry module fails", async ({ page })
   const fallback = page.locator("#ui-fallback");
   await expect(fallback).toBeVisible({ timeout: 8_000 });
   await expect(fallback).toContainText("The new interface did not load.");
-  await expect(fallback.getByRole("link", { name: "Use the classic interface" })).toHaveAttribute(
+  await expect(fallback.getByRole("link", { name: "Reload the page" })).toHaveAttribute(
     "href",
-    "?legacy=1",
+    "/projects",
   );
 });
 

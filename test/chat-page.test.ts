@@ -345,17 +345,6 @@ describe("chat page", () => {
     expect(response.body).toContain("export const HANSE_ACTIONS");
   });
 
-  it("adds the project id to dashboard chat links", () => {
-    const f = fixture();
-    const response = handleRequest(f.deps, {
-      method: "GET",
-      path: "/projects/p1",
-      headers: auth(f.token),
-    });
-    expect(response.status).toBe(200);
-    expect(response.body).toContain('href="/chat?app=storefront&amp;project=p1"');
-  });
-
   it("serves the shared markdown renderer from the asset allowlist", () => {
     const f = fixture();
     const response = handleRequest(f.deps, {

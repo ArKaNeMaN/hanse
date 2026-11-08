@@ -115,29 +115,6 @@ test("navigates to handoffs from overview and swaps chrome, title, and active na
   expectNoPageErrors(errors);
 });
 
-test("?legacy=1 and the rollback servers serve the legacy inbox", async ({ page }) => {
-  const errors = collectPageErrors(page);
-  await signIn(page, "/handoffs");
-
-  const legacy = await page.goto("/handoffs?legacy=1");
-  expect(legacy?.status()).toBe(200);
-  await expect(page.locator("#hanse-boot")).toHaveCount(0);
-  await expect(page.getByRole("heading", { name: "Handoffs", exact: true })).toBeVisible();
-  await expect(page.locator("#handoff-search")).toBeVisible();
-  await expect(page.getByText("E2E handoff summary").first()).toBeVisible();
-
-  for (const origin of ["http://127.0.0.1:4311", "http://127.0.0.1:4312"]) {
-    const response = await page.goto(`${origin}/handoffs`);
-    expect(response?.status()).toBe(200);
-    await expect(page.locator("#hanse-boot")).toHaveCount(0);
-    await expect(page.getByRole("heading", { name: "Handoffs", exact: true })).toBeVisible();
-    await expect(page.locator("#handoff-search")).toBeVisible();
-  }
-
-  await settle(page);
-  expectNoPageErrors(errors);
-});
-
 test("renders Markdown safely without fallback flash or console errors", async ({ page }) => {
   const errors = collectPageErrors(page);
   await signIn(page, "/handoffs?q=E2E%20inbox%20relaunch%20reply");
