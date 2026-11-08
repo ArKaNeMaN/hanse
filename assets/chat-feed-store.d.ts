@@ -21,6 +21,7 @@ export interface FeedPartRecord {
 export interface FeedMessageRecord {
   id: string;
   role: "user" | "assistant";
+  origin?: "server" | "local";
   parentID?: string;
   finish?: string;
   optimistic?: "sending" | "queued" | "accepted" | "unknown" | "failed";

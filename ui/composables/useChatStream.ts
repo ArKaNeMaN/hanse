@@ -14,6 +14,7 @@ export interface UseChatStreamOptions {
   readonly onResync?: ChatStreamOptions["onResync"];
   readonly onLimit?: ChatStreamOptions["onLimit"];
   readonly onAuthExpired?: ChatStreamOptions["onAuthExpired"];
+  readonly onVisible?: () => void;
   readonly deps?: ChatStreamDeps;
 }
 
@@ -65,6 +66,7 @@ export function useChatStream(options: UseChatStreamOptions): UseChatStream {
     if (doc?.visibilityState === "hidden") {
       return;
     }
+    options.onVisible?.();
     stream.connect(false);
   };
   const onBeforeUnload = (): void => {
@@ -78,6 +80,7 @@ export function useChatStream(options: UseChatStreamOptions): UseChatStream {
     if (doc?.visibilityState !== "visible" || suspended) {
       return;
     }
+    options.onVisible?.();
     if (shouldReconnect()) {
       stream.connect(false);
     }

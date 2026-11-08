@@ -1,0 +1,205 @@
+{
+  "tool": "chat-qa",
+  "mode": "spa",
+  "harness": "deterministic",
+  "route": "/chat",
+  "spaRoutes": "projects,overview,handoffs,ssh,settings-global,skills-global,skills-new,skills-detail,settings-project,settings-app,skills-project,skills-app,app,project,chat",
+  "startedAt": "2026-11-08T13:24:47.248Z",
+  "status": "PASS",
+  "baseUrl": "http://127.0.0.1:40159",
+  "app": "web",
+  "project": "11111111-1111-4111-8111-111111111111",
+  "scenarios": [
+    {
+      "name": "turn-status",
+      "status": "PASS",
+      "ms": 8118,
+      "checks": [
+        "the queue strip is gone",
+        "an idle turn renders no status label ()",
+        "an idle turn renders no queue button ()",
+        "an idle turn renders no generation row ()",
+        "idle with a queue reads Ready (Ready)",
+        "the count button reads 2 queued (· 2 queued)",
+        "the count button has a stable name (Show 2 queued messages)",
+        "the count controls the queue dialog (chat-queue-dialog)",
+        "the generation row mirrors the count (Ready · 2 queued)",
+        "the dialog lists both queued rows (2)",
+        "idle queue rows are queued and none is active",
+        "the dialog focuses its close control (close)",
+        "Escape returns focus to the count (count)",
+        "a running head is excluded (· 1 queued)",
+        "the generation row carries the suffix (Running bash · 1 queued)",
+        "the running row is active",
+        "the remaining row is queued",
+        "abort settles to Ready (Ready · 2 queued)",
+        "the strip stays gone after reload",
+        "reload hydrates Ready (Ready)",
+        "reload hydrates the count (· 2 queued)",
+        "a stream gap refreshes the turn and clears the stale count",
+        "no strip returns after the gap reconcile"
+      ],
+      "data": {
+        "normal": {
+          "strip": false,
+          "label": "",
+          "button": "",
+          "buttonLabel": null,
+          "controls": null,
+          "generated": "",
+          "dialogOpen": false,
+          "rows": [],
+          "focus": "other"
+        },
+        "queued": {
+          "strip": false,
+          "label": "Ready",
+          "button": "· 2 queued",
+          "buttonLabel": "Show 2 queued messages",
+          "controls": "chat-queue-dialog",
+          "generated": "Ready · 2 queued",
+          "dialogOpen": false,
+          "rows": [
+            {
+              "id": "msg_u2",
+              "state": "Queued",
+              "active": false
+            },
+            {
+              "id": "msg_u3",
+              "state": "Queued",
+              "active": false
+            }
+          ],
+          "focus": "other"
+        },
+        "dialog": {
+          "strip": false,
+          "label": "Ready",
+          "button": "· 2 queued",
+          "buttonLabel": "Show 2 queued messages",
+          "controls": "chat-queue-dialog",
+          "generated": "Ready · 2 queued",
+          "dialogOpen": true,
+          "rows": [
+            {
+              "id": "msg_u2",
+              "state": "Queued",
+              "active": false
+            },
+            {
+              "id": "msg_u3",
+              "state": "Queued",
+              "active": false
+            }
+          ],
+          "focus": "close"
+        },
+        "busy": {
+          "strip": false,
+          "label": "Running bash",
+          "button": "· 1 queued",
+          "buttonLabel": "Show 1 queued message",
+          "controls": "chat-queue-dialog",
+          "generated": "Running bash · 1 queued",
+          "dialogOpen": false,
+          "rows": [
+            {
+              "id": "msg_u2",
+              "state": "Active",
+              "active": true
+            },
+            {
+              "id": "msg_u3",
+              "state": "Queued",
+              "active": false
+            }
+          ],
+          "focus": "count"
+        },
+        "activeDialog": {
+          "strip": false,
+          "label": "Running bash",
+          "button": "· 1 queued",
+          "buttonLabel": "Show 1 queued message",
+          "controls": "chat-queue-dialog",
+          "generated": "Running bash · 1 queued",
+          "dialogOpen": true,
+          "rows": [
+            {
+              "id": "msg_u2",
+              "state": "Active",
+              "active": true
+            },
+            {
+              "id": "msg_u3",
+              "state": "Queued",
+              "active": false
+            }
+          ],
+          "focus": "close"
+        },
+        "aborted": {
+          "strip": false,
+          "label": "Ready",
+          "button": "· 2 queued",
+          "buttonLabel": "Show 2 queued messages",
+          "controls": "chat-queue-dialog",
+          "generated": "Ready · 2 queued",
+          "dialogOpen": false,
+          "rows": [
+            {
+              "id": "msg_u2",
+              "state": "Queued",
+              "active": false
+            },
+            {
+              "id": "msg_u3",
+              "state": "Queued",
+              "active": false
+            }
+          ],
+          "focus": "count"
+        },
+        "reloaded": {
+          "strip": false,
+          "label": "Ready",
+          "button": "· 2 queued",
+          "buttonLabel": "Show 2 queued messages",
+          "controls": "chat-queue-dialog",
+          "generated": "Ready · 2 queued",
+          "dialogOpen": false,
+          "rows": [
+            {
+              "id": "msg_u2",
+              "state": "Queued",
+              "active": false
+            },
+            {
+              "id": "msg_u3",
+              "state": "Queued",
+              "active": false
+            }
+          ],
+          "focus": "other"
+        },
+        "gap": {
+          "strip": false,
+          "label": "",
+          "button": "",
+          "buttonLabel": null,
+          "controls": null,
+          "generated": "",
+          "dialogOpen": false,
+          "rows": [],
+          "focus": "other"
+        }
+      }
+    }
+  ],
+  "screenshots": [
+    "docs/design/artifacts/chat/turn-status-queued-1440-dark.png"
+  ],
+  "consoleErrors": [],
+  "finishedAt": "2026-11-08T13:24:58.616Z"
+}

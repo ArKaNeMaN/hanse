@@ -12,14 +12,15 @@ import {
 } from "../../assets/chat-commands.js";
 import {
   type AttachmentView,
+  generationLabel,
   handoffBodyFromText,
   handoffNoteFromText,
   imageGateFromView,
   imagePollDelay,
+  isHiddenSyntheticTextPart,
   messageCountLabel,
   normalizeAttachments,
   normalizeHandoffMeta,
-  resolveActiveStatusLabel,
   safeAttachmentUrl,
 } from "../../assets/chat-core.js";
 import type {
@@ -43,10 +44,11 @@ import {
   partQuestions,
   partTerminal,
 } from "../chat/prompt-utils.js";
-import { deriveQueueRows } from "../chat/queue.js";
+import { queueRowsFromIDs } from "../chat/queue.js";
 import { commandListUrl, commandSendUrl, isPendingResolved, localMessageID } from "../chat/send.js";
 import { clearChatSessionState, clearChatWorkspaceState } from "../chat/session-storage.js";
 import { applyChatActions, type RenderIntent } from "../chat/state-actions.js";
+import { useChatTurnStore } from "../chat/turn-state.js";
 import type {
   ChatCommandsResponse,
   ChatHandoffView,
@@ -77,7 +79,6 @@ import ChatImageLightbox from "../components/chat/ChatImageLightbox.vue";
 import ChatImageWarning from "../components/chat/ChatImageWarning.vue";
 import ChatPromptDock from "../components/chat/ChatPromptDock.vue";
 import ChatQueueDialog from "../components/chat/ChatQueueDialog.vue";
-import ChatQueueStrip from "../components/chat/ChatQueueStrip.vue";
 import ChatScrim from "../components/chat/ChatScrim.vue";
 import ChatSessionsRail from "../components/chat/ChatSessionsRail.vue";
 import ChatSshApprovals from "../components/chat/ChatSshApprovals.vue";
@@ -119,6 +120,7 @@ useWorkspaceShell(
 );
 
 const feed = useChatFeedStore();
+const turn = useChatTurnStore();
 const sessionStore = useChatSessionStore();
 const contextStore = useChatContextStore();
 const promptsStore = useChatPromptsStore();
@@ -171,6 +173,31 @@ function projectSuffix(path: string): string {
     ? path
     : `${path}${path.includes("?") ? "&" : "?"}project=${encoded(routeState.project.value)}`;
 }
+
+function refreshTurn(reason: string): void {
+  const sessionID = routeState.session.value;
+  if (sessionID === null) {
+    return;
+  }
+  turn.bindScope(routeState.app.value, routeState.project.value);
+  turn.refresh(sessionID, reason);
+}
+
+const turnProjection = computed(() => ({
+  statusType: turn.status?.type ?? null,
+  turnContinues: turn.turnContinues,
+  runningPromptID: turn.runningPromptID,
+  activePromptID: turn.activePromptID,
+  queuedPromptIDs: turn.queuedPromptIDs,
+}));
+
+watch(
+  turnProjection,
+  (projection) => {
+    feed.applyTurnState(projection);
+  },
+  { immediate: true, deep: true },
+);
 
 let previewRefreshTimer: ReturnType<typeof setTimeout> | undefined;
 let contextPollTimer: ReturnType<typeof setInterval> | undefined;
@@ -370,13 +397,10 @@ async function sendServerCommand(entry: CommandEntry, args: string): Promise<voi
       if (serverID === null) {
         throw Object.assign(new TypeError("Delivery unknown; checking…"), { outcome: "unknown" });
       }
-      feed.rekeyOptimistic({
-        tempID,
-        serverID,
-        allowPromotion: composerPromotionAllowed(),
-      });
+      feed.rekeyOptimistic({ tempID, serverID });
       feed.clearOptimisticState(serverID);
       toasts.push("Command accepted.", "success");
+      refreshTurn("command-accepted");
       void sessionsQuery.refetch();
       return;
     } catch (caught) {
@@ -1204,6 +1228,8 @@ function dropActiveSession(sessionID: string): void {
   })();
 }
 
+turn.setSessionGoneHandler((sessionID) => dropActiveSession(sessionID));
+
 composerApi = useChatComposer({
   app: routeState.app,
   project: routeState.project,
@@ -1217,6 +1243,7 @@ composerApi = useChatComposer({
   onSessionDeleted: (sessionID) => dropActiveSession(sessionID),
   onToast: (message, tone) => toasts.push(message, tone),
   onSent: () => {
+    refreshTurn("send-accepted");
     void sessionsQuery.refetch();
   },
 });
@@ -1241,7 +1268,6 @@ const {
   restorePending: composerRestorePending,
   shouldSuppressAbort: composerShouldSuppressAbort,
   noteAgentStatus: composerNoteAgentStatus,
-  promotionAllowed: composerPromotionAllowed,
   attachments: composerAttachments,
   attachmentQuota: composerAttachmentQuota,
   createSession: composerCreateSession,
@@ -1276,8 +1302,15 @@ const composerPendingRows = computed(() => {
 
 const queueRows = computed(() => {
   feed.revision;
-  return deriveQueueRows(feed.thread, composerPromotionAllowed());
+  turn.turnRevision;
+  if (turn.hidden) {
+    return [];
+  }
+  return queueRowsFromIDs(feed.thread, turn.queuedPromptIDs, turn.runningPromptID);
 });
+
+const turnQueuedCount = computed(() => turn.displayCount());
+const turnQueuedTruncated = computed(() => turn.queuedTruncated);
 
 const deleting = ref<ReadonlySet<string>>(new Set<string>());
 const creatingSession = ref(false);
@@ -1519,9 +1552,12 @@ async function loadMessages(sessionID: string, reset: boolean, attempt = 0): Pro
     if (generation !== loadGeneration || routeState.session.value !== sessionID) {
       return;
     }
-    feed.applySnapshot(data.messages, { position: reset ? "replace" : "tail", sessionID });
+    const applied = feed.applySnapshot(data.messages, {
+      position: reset ? "replace" : "tail",
+      sessionID,
+    });
     // A tail refresh must not rewind paging to a cursor inside the already-loaded older prefix.
-    if (reset) {
+    if (reset || applied.disjoint) {
       historyCursor.value = data.nextCursor ?? null;
       historyExhausted.value = historyCursor.value === null;
     } else if (!historyExhausted.value && previousCursor === null) {
@@ -1612,6 +1648,7 @@ function scheduleReconcile(reason: string, delayMs: number): void {
     const sessionID = routeState.session.value;
     if (sessionID !== null && reason.length > 0) {
       void loadMessages(sessionID, false);
+      refreshTurn(reason);
     }
   }, delayMs);
 }
@@ -1630,6 +1667,8 @@ function handleIntents(intents: readonly RenderIntent[]): void {
       });
     } else if (intent.type === "reconcile") {
       scheduleReconcile(intent.reason, intent.delayMs);
+    } else if (intent.type === "turn-refresh") {
+      refreshTurn(intent.reason);
     } else if (intent.type === "refresh") {
       const sessionID = routeState.session.value;
       if (sessionID !== null) {
@@ -1684,16 +1723,16 @@ function handleEvent(event: InboundChatEvent): void {
   if (event.type === "session.error" && composerShouldSuppressAbort(event)) {
     feed.setAgentStatus({ type: "idle" });
     feed.settleIdle();
+    if (typeof event.sessionID === "string") {
+      turn.applySseStatus(event.sessionID, { type: "idle" });
+    }
+    refreshTurn("session-error");
     return;
   }
   if (event.type === "session.status") {
     composerNoteAgentStatus(event.sessionID, event.status?.type);
   }
-  const result = reduceEvent(event, {
-    sessionID: routeState.session.value,
-    currentStreamID: null,
-    lastSeqByStream: new Map<string, number>(),
-  });
+  const result = reduceEvent(event, { sessionID: routeState.session.value });
   if (!result.accepted) {
     return;
   }
@@ -1709,6 +1748,7 @@ const chatStream = useChatStream({
     if (sessionID !== null) {
       void loadMessages(sessionID, false);
     }
+    refreshTurn("stream-ready");
     void loadPrompts();
     void loadSavedPermissions();
     void loadPreviews();
@@ -1721,10 +1761,19 @@ const chatStream = useChatStream({
         : "The live stream reconnected; refreshing the conversation.";
     feed.setStreamWarning(message);
     scheduleReconcile(reason, 0);
+    refreshTurn(`stream-${reason}`);
   },
   onLimit: (message) => {
     feed.setStreamWarning(message);
     feed.setStreamPaused(true);
+    refreshTurn("stream-limit");
+  },
+  onVisible: () => {
+    const sessionID = routeState.session.value;
+    if (sessionID !== null) {
+      void loadMessages(sessionID, false);
+    }
+    refreshTurn("visibility");
   },
 });
 
@@ -1737,11 +1786,22 @@ watch(
 );
 
 watch(
+  () => chatUi.queueOpen,
+  (open) => {
+    if (open) {
+      refreshTurn("dialog-open");
+    }
+  },
+);
+
+watch(
   () => [routeState.app.value, routeState.project.value, routeState.session.value] as const,
   ([appKey, projectID, sessionID], previous) => {
     if (previous !== undefined && (previous[0] !== appKey || previous[2] !== sessionID)) {
       abortLoads();
     }
+    turn.bindScope(appKey, projectID);
+    turn.open(sessionID);
     const workspaceChanged =
       previous === undefined || previous[0] !== appKey || previous[1] !== projectID;
     if (workspaceChanged) {
@@ -1754,6 +1814,7 @@ watch(
     }
     if (appKey.length === 0) {
       feed.reset(null);
+      feed.applyTurnState(turnProjection.value);
       messages.value = [];
       messageCount.value = 0;
       return;
@@ -1766,11 +1827,14 @@ watch(
     }
     if (sessionID === null) {
       feed.reset(null);
+      feed.applyTurnState(turnProjection.value);
       messages.value = [];
       messageCount.value = 0;
       return;
     }
+    feed.applyTurnState(turnProjection.value);
     void loadMessages(sessionID, true);
+    refreshTurn("session-open");
   },
   { immediate: true },
 );
@@ -2006,18 +2070,74 @@ function openContextSection(section: "context" | "plan"): void {
     heading?.focus();
   });
 }
+function liveTurnParts(): {
+  unsealedText: boolean;
+  unsealedReasoning: boolean;
+  runningTool: string | null;
+} {
+  let unsealedText = false;
+  let unsealedReasoning = false;
+  let runningTool: string | null = null;
+  for (const id of feed.thread.order) {
+    const record = feed.thread.messages.get(id);
+    if (record === undefined || record.role !== "assistant") {
+      continue;
+    }
+    for (const partID of record.partOrder) {
+      const part = record.parts.get(partID);
+      if (part === undefined) {
+        continue;
+      }
+      if (part.type === "text" && part.sealed !== true) {
+        if (isHiddenSyntheticTextPart(part)) {
+          continue;
+        }
+        const text = typeof part.data.text === "string" ? part.data.text : "";
+        if (text.trim().length > 0) {
+          unsealedText = true;
+        }
+      } else if (part.type === "reasoning" && part.sealed !== true) {
+        const text = typeof part.data.text === "string" ? part.data.text : "";
+        if (text.trim().length > 0) {
+          unsealedReasoning = true;
+        }
+      } else if (part.type === "tool" && runningTool === null) {
+        const state = part.data.state;
+        const status =
+          typeof state === "object" &&
+          state !== null &&
+          typeof (state as Record<string, unknown>).status === "string"
+            ? ((state as Record<string, unknown>).status as string)
+            : "";
+        if (status === "running") {
+          runningTool =
+            typeof part.data.tool === "string" && part.data.tool.length > 0
+              ? part.data.tool
+              : part.type;
+        }
+      }
+    }
+  }
+  return { unsealedText, unsealedReasoning, runningTool };
+}
+
 const generatingLabel = computed(() => {
   feed.revision;
-  const type = feed.thread.agentStatus?.type;
-  const busy = type === "busy" || type === "retry";
-  if (!busy && feed.thread.queue.length === 0 && feed.thread.activePromptID === null) {
+  turn.turnRevision;
+  if (turn.hidden) {
     return null;
   }
-  return resolveActiveStatusLabel({
-    statusType: type,
-    queueLength: feed.thread.queue.length,
-    activePromptID: feed.thread.activePromptID,
-    queueBlocked: false,
+  const live = liveTurnParts();
+  return generationLabel({
+    statusType: turn.status?.type ?? null,
+    unsealedText: live.unsealedText,
+    unsealedReasoning: live.unsealedReasoning,
+    runningTool: live.runningTool,
+    sending: composerDelivery.value === "sending",
+    unknown: composerDelivery.value === "unknown",
+    queuedCount: turn.displayCount(),
+    queuedTruncated: turn.queuedTruncated,
+    settling: turn.settling,
   });
 });
 
@@ -2073,7 +2193,9 @@ function isKeyboardActivatable(target: EventTarget | null): boolean {
 }
 
 function hasBlockingDialog(): boolean {
-  return document.querySelector('dialog[open], [role="dialog"][aria-modal="true"]') !== null;
+  return (
+    document.querySelector('dialog[open], [role="dialog"][aria-modal="true"]:not(dialog)') !== null
+  );
 }
 
 function isChatWindowTarget(target: EventTarget | null): boolean {
@@ -2157,6 +2279,7 @@ onBeforeUnmount(() => {
   stopContextPolling();
   stopPreviewRefresh();
   promptsStore.clear();
+  turn.reset();
   disposeHighlightController();
   if (reconcileTimer !== undefined) {
     clearTimeout(reconcileTimer);
@@ -2300,6 +2423,8 @@ onBeforeUnmount(() => {
           :load-earlier-enabled="historyCursor !== null"
           :message-count="messageCountText"
           :generating-label="generatingLabel"
+          :queued-count="turnQueuedCount"
+          :queued-truncated="turnQueuedTruncated"
           :starting-agent="startingAgent"
           :session-title="sessionTitle"
           :stream-status="chatStream.status.value"
@@ -2312,6 +2437,7 @@ onBeforeUnmount(() => {
           @question-submit="submitInlineQuestion"
           @question-reject="rejectInlineQuestion"
           @open-context="openContextSection"
+          @open-queue="chatUi.setQueueOpen(true)"
           @open-image="openImage"
           @start="startAgent"
         >
@@ -2334,13 +2460,6 @@ onBeforeUnmount(() => {
               :project="view.app.projectId"
               :disabled="deletionPending"
               @update:count="sshApprovalCount = $event"
-            />
-          </template>
-          <template #queue-strip>
-            <ChatQueueStrip
-              v-if="!stopped && !deletionPending"
-              :rows="queueRows"
-              @open="chatUi.setQueueOpen(true)"
             />
           </template>
           <template #session-notice>
@@ -2464,6 +2583,8 @@ onBeforeUnmount(() => {
       <ChatQueueDialog
         :open="chatUi.queueOpen"
         :rows="queueRows"
+        :running-id="turn.runningPromptID"
+        :failed="turn.stale"
         @close="chatUi.setQueueOpen(false)"
       />
       <ChatScrim :open="chatUi.sessionsOpen" @close="chatUi.setSessionsOpen(false)" />

@@ -5,11 +5,16 @@ import {
   E2E_TOKEN,
   expectNoPageErrors,
   PROJECT_ONE,
+  resetUpstreamStatuses,
   signIn,
   upstreamInfo,
 } from "./support/helpers.js";
 
 const CHAT_PATH = `/chat?app=alpha&project=${PROJECT_ONE}&session=ses_e2ealpha`;
+
+test.beforeEach(async () => {
+  await resetUpstreamStatuses();
+});
 
 function isSpa(): boolean {
   return test.info().project.name === "spa";
@@ -497,9 +502,7 @@ test("SPA unknown delivery exposes Check again and Remove", async ({ page }) => 
   expect(errors.filter((error) => !error.includes("502"))).toEqual([]);
 });
 
-test("SPA queue strip and dialog show deriveQueue rows, then Stop settles idle", async ({
-  page,
-}) => {
+test("SPA turn-status count opens the queue modal, then Stop settles idle", async ({ page }) => {
   const errors = collectPageErrors(page);
   await signIn(page, CHAT_PATH);
   await expect(page.locator("#chat-shell")).toHaveCount(1);
@@ -519,14 +522,19 @@ test("SPA queue strip and dialog show deriveQueue rows, then Stop settles idle",
   await expect(page.getByText("Queued first").first()).toBeVisible();
   await composerInput(page).fill("Queued second");
   await composerInput(page).press("Enter");
-  await expect(page.locator("[data-chat-queue-strip]")).toBeVisible();
-  await expect(page.locator("[data-chat-queue-strip]")).toContainText("Queued second");
+  await expect(page.locator("[data-chat-turn-status]")).toBeVisible();
+  const queueOpen = page.locator("[data-chat-queue-open]");
+  await expect(queueOpen).toBeVisible();
+  await expect(queueOpen).toContainText("queued");
 
-  await page.locator("[data-chat-queue-open]").click();
-  await expect(page.locator("[data-chat-queue-dialog]")).toBeVisible();
-  await expect(page.locator("[data-chat-queue-dialog] [data-queue-id]")).toHaveCount(1);
-  await page.locator("[data-chat-queue-close]").click();
-  await expect(page.locator("[data-chat-queue-dialog]")).toHaveCount(0);
+  await queueOpen.click();
+  const dialog = page.locator("[data-chat-queue-dialog][open]");
+  await expect(dialog).toBeVisible();
+  await expect(dialog.locator("[data-queue-id]")).toHaveCount(2);
+  await expect(dialog.locator('[data-active="true"]')).toHaveCount(1);
+  await page.keyboard.press("Escape");
+  await expect(page.locator("[data-chat-queue-dialog]")).not.toHaveAttribute("open");
+  await expect(queueOpen).toBeFocused();
 
   await page.locator("[data-chat-abort]").click();
   await control(page, {

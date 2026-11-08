@@ -159,7 +159,13 @@ const EVENTS = [
     action: "session/activity -> reconcile unless message/status",
     store: "chatUi",
     stage: "3A/3B",
-    evidence: [evidence("unit", "test/chat-state-actions.test.ts", "requests reconcile on a gap")],
+    evidence: [
+      evidence(
+        "unit",
+        "test/chat-state-actions.test.ts",
+        "mirrors sequence updates without generating a gap reconcile",
+      ),
+    ],
   },
   {
     event: "stream.warning",
@@ -300,10 +306,14 @@ const BEHAVIORS: readonly BehaviorRow[] = [
   },
   {
     section: "2.2",
-    behavior: "one EventSource, every stream.ready resets, duplicate/gap sequence handling",
+    behavior: "one EventSource owns duplicate/gap handling and the reducer mirrors the identity",
     evidence: [
       evidence("unit", "test/ui/chat-stream.test.ts", "opens one EventSource and resets"),
-      evidence("unit", "test/chat-event-reducer.test.ts", "drops duplicate sequences"),
+      evidence(
+        "unit",
+        "test/chat-event-reducer.test.ts",
+        "accepts every sequenced frame because the adapter owns dedupe and gaps",
+      ),
     ],
   },
   {
@@ -388,7 +398,11 @@ const BEHAVIORS: readonly BehaviorRow[] = [
         "test/ui/chat-draft.test.ts",
         "saves a draft after the 500 ms debounce",
       ),
-      evidence("component", "test/ui/chat-queue.test.ts", "derives strip rows"),
+      evidence(
+        "component",
+        "test/ui/chat-queue.test.ts",
+        "counts a queued prompt behind a busy multi-step turn",
+      ),
       evidence("component", "test/ui/chat-abort.test.ts", "keeps last-wins when Stop"),
     ],
   },

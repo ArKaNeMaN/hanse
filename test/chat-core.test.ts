@@ -21,6 +21,7 @@ import {
   firstRootId,
   formatByteCount,
   formatTokenCount,
+  generationLabel,
   handoffBodyFromText,
   handoffFromInfo,
   handoffNoteFromText,
@@ -42,7 +43,6 @@ import {
   provisionalPartType,
   reasoningElapsedMs,
   rekeyOptimistic,
-  resolveActiveStatusLabel,
   runtimeChip,
   sessionHasHistory,
   shouldResubscribe,
@@ -1482,6 +1482,72 @@ describe("applySnapshot", () => {
     expect(promoted.activePromptID).toBe("u2");
     expect(promoted.queue).toEqual([]);
   });
+
+  it("projects the server turn queue instead of deriving it", () => {
+    const snapshot = [
+      snapMessage("u1", "user", [snapPart("u1p", "text", { text: "one" })], {
+        time: { completed: 1 },
+      }),
+      snapMessage("a1", "assistant", [snapPart("a1p", "text", { text: "done" })], {
+        parentID: "u1",
+        finish: "stop",
+        time: { created: 1, completed: 2 },
+      }),
+      snapMessage("u2", "user", [snapPart("u2p", "text", { text: "two" })]),
+    ];
+
+    const { store } = applySnapshot(makeStore({ messages: [] }), snapshot, {
+      turn: {
+        queuedPromptIDs: ["u2"],
+        runningPromptID: null,
+        activePromptID: "u2",
+      },
+    });
+    expect(store.queue).toEqual(["u2"]);
+    expect(store.activePromptID).toBe("u2");
+    expect(store.messages.get("u2")?.optimistic).toBe("queued");
+    expect(store.messages.get("u2")?.origin).toBe("server");
+    expect(store.messages.get("u1")?.origin).toBe("server");
+  });
+
+  it("resets a disjoint tail with keepOptimistic transient and reports it", () => {
+    const current = makeStore({
+      messages: [
+        user("old_u", [textPart("old_p", "old")]),
+        { ...user("local_send", [textPart("ls_p", "sending")]), optimistic: "sending" },
+        { ...user("msg_acc", [textPart("acc_p", "accepted")]), optimistic: "accepted" },
+      ],
+    });
+    const snapshot = [
+      snapMessage("new_u", "user", [snapPart("new_p", "text", { text: "new" })], {
+        time: { completed: 1 },
+      }),
+      snapMessage("new_a", "assistant", [snapPart("new_a_p", "text", { text: "answer" })], {
+        parentID: "new_u",
+        finish: "stop",
+        time: { created: 1, completed: 2 },
+      }),
+    ];
+
+    const result = applySnapshot(current, snapshot, { position: "tail" });
+    expect(result.disjoint).toBe(true);
+    expect(result.store.order).toEqual(["new_u", "new_a", "local_send"]);
+    expect(result.store.messages.has("old_u")).toBe(false);
+    expect(result.store.messages.has("msg_acc")).toBe(false);
+    expect(result.store.messages.get("local_send")?.optimistic).toBe("sending");
+  });
+
+  it("keeps an overlapping tail merge", () => {
+    const current = makeStore({ messages: [user("u1", [textPart("u1p", "hi")])] });
+    const snapshot = [
+      snapMessage("u1", "user", [snapPart("u1p", "text", { text: "hi" })], {
+        time: { completed: 1 },
+      }),
+    ];
+    const result = applySnapshot(current, snapshot, { position: "tail" });
+    expect(result.disjoint).toBe(false);
+    expect(result.store.order).toEqual(["u1"]);
+  });
 });
 
 describe("rekeyOptimistic", () => {
@@ -1892,84 +1958,57 @@ describe("toolStatusChip", () => {
   });
 });
 
-describe("resolveActiveStatusLabel", () => {
-  it("lets waiting and sending outrank every active state", () => {
+describe("generationLabel", () => {
+  it("never creates the row for Waiting for you or Paused", () => {
     expect(
-      resolveActiveStatusLabel({
+      generationLabel({
         waiting: true,
         statusType: "busy",
         runningTool: "bash",
-        queueLength: 2,
+        queuedCount: 2,
       }),
-    ).toBe("Waiting for you");
-    expect(resolveActiveStatusLabel({ sending: true, statusType: "retry", queueLength: 1 })).toBe(
-      "Sending",
+    ).toBeNull();
+    expect(generationLabel({ paused: true, statusType: "retry" })).toBeNull();
+  });
+
+  it("outranks every active state with the outbox states", () => {
+    expect(generationLabel({ sending: true, statusType: "retry", queuedCount: 1 })).toBe("Sending");
+    expect(generationLabel({ unknown: true, statusType: "busy" })).toBe("Delivery unknown");
+  });
+
+  it("shows the busy vocabulary and appends the T13 count", () => {
+    expect(generationLabel({ statusType: "retry" })).toBe("Retrying");
+    expect(generationLabel({ statusType: "retry", queuedCount: 1 })).toBe("Retrying · 1 queued");
+    expect(generationLabel({ statusType: "busy", runningTool: "bash" })).toBe("Running bash");
+    expect(generationLabel({ statusType: "busy", runningTool: "bash", queuedCount: 1 })).toBe(
+      "Running bash · 1 queued",
     );
-  });
-
-  it("shows Paused before Retrying only while the turn is active", () => {
-    expect(resolveActiveStatusLabel({ paused: true, statusType: "retry" })).toBe("Paused");
-    expect(resolveActiveStatusLabel({ paused: false, statusType: "retry" })).toBe("Retrying");
-  });
-
-  it("lets a running tool outrank a busy or queued session", () => {
     expect(
-      resolveActiveStatusLabel({
-        statusType: "busy",
-        runningTool: "bash",
-        queueLength: 3,
-        activePromptID: "msg_2",
-      }),
-    ).toBe("Running bash");
-  });
-
-  it("shows Thinking for unsealed reasoning before the busy branch", () => {
-    expect(
-      resolveActiveStatusLabel({
-        statusType: "busy",
-        unsealedReasoning: true,
-        unsealedText: true,
-      }),
+      generationLabel({ statusType: "busy", unsealedReasoning: true, unsealedText: true }),
     ).toBe("Thinking");
-  });
-
-  it("distinguishes Working and Thinking while busy", () => {
-    expect(resolveActiveStatusLabel({ statusType: "busy", unsealedText: true })).toBe("Working");
-    expect(resolveActiveStatusLabel({ statusType: "busy" })).toBe("Thinking");
-  });
-
-  it("never returns Ready with a queued or active prompt", () => {
-    expect(resolveActiveStatusLabel({ statusType: "idle", queueLength: 1 })).toBe("Working");
-    expect(resolveActiveStatusLabel({ statusType: "idle", activePromptID: "msg_1" })).toBe(
-      "Working",
+    expect(generationLabel({ statusType: "busy", unsealedText: true })).toBe("Working");
+    expect(generationLabel({ statusType: "busy", unsealedText: true, queuedCount: 1 })).toBe(
+      "Working · 1 queued",
     );
-    expect(resolveActiveStatusLabel({ statusType: "idle" })).toBe("Ready");
-    expect(resolveActiveStatusLabel({})).toBe("Ready");
+    expect(generationLabel({ statusType: "busy" })).toBe("Thinking");
   });
 
-  it("returns Ready for a blocked idle/unknown status before the queue fallback", () => {
-    expect(
-      resolveActiveStatusLabel({
-        statusType: "idle",
-        queueLength: 2,
-        activePromptID: "msg_2",
-        queueBlocked: true,
-      }),
-    ).toBe("Ready");
-    expect(
-      resolveActiveStatusLabel({ statusType: "unknown", queueLength: 1, queueBlocked: true }),
-    ).toBe("Ready");
-    expect(resolveActiveStatusLabel({ queueLength: 1, queueBlocked: true })).toBe("Ready");
-    expect(resolveActiveStatusLabel({ statusType: "idle", queueLength: 1 })).toBe("Working");
+  it("renders Ready only with a queued prompt and never alone", () => {
+    expect(generationLabel({ statusType: "idle" })).toBeNull();
+    expect(generationLabel({ statusType: "idle", queuedCount: 0 })).toBeNull();
+    expect(generationLabel({ statusType: "idle", queuedCount: 1 })).toBe("Ready · 1 queued");
+    expect(generationLabel({ statusType: "idle", queuedCount: 3, queuedTruncated: true })).toBe(
+      "Ready · 3+ queued",
+    );
+    expect(generationLabel({ statusType: "unknown", queuedCount: 2 })).toBeNull();
+    expect(generationLabel({})).toBeNull();
   });
 
-  it("keeps the higher-priority labels for a blocked busy, retry, or waiting session", () => {
-    expect(resolveActiveStatusLabel({ statusType: "busy", queueBlocked: true })).toBe("Thinking");
-    expect(
-      resolveActiveStatusLabel({ statusType: "busy", unsealedText: true, queueBlocked: true }),
-    ).toBe("Working");
-    expect(resolveActiveStatusLabel({ statusType: "retry", queueBlocked: true })).toBe("Retrying");
-    expect(resolveActiveStatusLabel({ waiting: true, queueBlocked: true })).toBe("Waiting for you");
+  it("suppresses the idle queued row while settling", () => {
+    expect(generationLabel({ statusType: "idle", queuedCount: 1, settling: true })).toBeNull();
+    expect(generationLabel({ statusType: "busy", queuedCount: 1, settling: true })).toBe(
+      "Thinking · 1 queued",
+    );
   });
 });
 

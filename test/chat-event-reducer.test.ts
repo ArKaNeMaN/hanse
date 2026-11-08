@@ -8,8 +8,6 @@ const STREAM = "stream-reducer";
 function context(overrides: Partial<ReducerContext> = {}): ReducerContext {
   return {
     sessionID: SESSION,
-    currentStreamID: STREAM,
-    lastSeqByStream: new Map([[STREAM, 10]]),
     ...overrides,
   };
 }
@@ -238,7 +236,7 @@ describe("pure chat event reducer", () => {
     );
 
     expect(result.accepted).toBe(true);
-    expect(result.stream).toMatchObject({ streamID: "stream-next", reset: true, changed: true });
+    expect(result.stream).toMatchObject({ streamID: "stream-next", reset: true, changed: false });
     expect(result.actions[0]).toMatchObject({
       type: "stream/ready",
       streamID: "stream-next",
@@ -246,24 +244,19 @@ describe("pure chat event reducer", () => {
     });
   });
 
-  it("drops duplicate sequences with no actions", () => {
-    const result = reduceEvent(
-      messageEvent() as never,
-      context({ lastSeqByStream: new Map([[STREAM, 11]]) }),
-    );
-    expect(result.accepted).toBe(false);
-    expect(result.dropReason).toBe("duplicate");
-    expect(result.actions).toEqual([]);
+  it("accepts every sequenced frame because the adapter owns dedupe and gaps", () => {
+    const duplicate = reduceEvent({ ...messageEvent(), seq: 10 } as never, context());
+    expect(duplicate.accepted).toBe(true);
+    expect(duplicate.dropReason).toBeUndefined();
+    expect(duplicate.actions[0]).toMatchObject({ type: "stream/seq", seq: 10, gap: false });
+
+    const gapped = reduceEvent({ ...messageEvent(), seq: 30 } as never, context());
+    expect(gapped.accepted).toBe(true);
+    expect(gapped.stream?.gap).toBe(false);
+    expect(gapped.actions[0]).toMatchObject({ type: "stream/seq", seq: 30, gap: false });
   });
 
-  it("keeps a gapped event and asks for reconcile", () => {
-    const result = reduceEvent({ ...messageEvent(), seq: 12 } as never, context());
-    expect(result.accepted).toBe(true);
-    expect(result.stream?.gap).toBe(true);
-    expect(result.actions[0]).toMatchObject({ type: "stream/seq", seq: 12, gap: true });
-  });
-
-  it("resets sequence state when the stream identity changes", () => {
+  it("mirrors a changed stream identity without deciding a reset", () => {
     const result = reduceEvent(
       envelope(
         { type: "session.status", sessionID: SESSION, status: { type: "busy" } },
@@ -273,8 +266,13 @@ describe("pure chat event reducer", () => {
       context(),
     );
     expect(result.accepted).toBe(true);
-    expect(result.stream).toMatchObject({ streamID: "stream-other", reset: true, changed: true });
-    expect(result.actions[0]).toMatchObject({ type: "stream/seq", reset: true, changed: true });
+    expect(result.stream).toMatchObject({ streamID: "stream-other", reset: false, changed: false });
+    expect(result.actions[0]).toMatchObject({
+      type: "stream/seq",
+      streamID: "stream-other",
+      reset: false,
+      gap: false,
+    });
   });
 
   it("drops session-scoped events for another session", () => {

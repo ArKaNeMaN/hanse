@@ -252,6 +252,34 @@ describe("chat stream adapter", () => {
     adapter.dispose();
   });
 
+  it("reconnects with a fresh source and mirrors the new stream identity", async () => {
+    const h = harness();
+    const adapter = stream(h);
+    adapter.connect();
+    let source = FakeEventSource.instances[0];
+    if (source === undefined) throw new Error("missing source");
+    source.open();
+    source.emit({ type: "stream.ready", seq: 0, streamID: "s1" });
+
+    source.fail();
+    source.fail();
+    source.fail();
+    await vi.waitFor(() => expect(adapter.status()).toBe("paused"));
+
+    adapter.connect(true);
+    source = FakeEventSource.instances.at(-1);
+    if (source === undefined) throw new Error("missing reconnect source");
+    expect(FakeEventSource.instances).toHaveLength(2);
+    source.open();
+    source.emit({ type: "stream.ready", seq: 0, streamID: "s2" });
+    source.emit({ type: "session.status", seq: 4, streamID: "s2" });
+
+    expect(adapter.streamID()).toBe("s2");
+    expect(adapter.lastSeq("s2")).toBe(4);
+    expect(h.events.filter((event) => event.type === "session.status")).toHaveLength(1);
+    adapter.dispose();
+  });
+
   it("dispose closes the source and ignores stale callbacks", () => {
     const h = harness();
     const adapter = stream(h);

@@ -13,8 +13,6 @@ const STREAM = "stream-actions";
 function reducerContext(overrides: Partial<ReducerContext> = {}): ReducerContext {
   return {
     sessionID: SESSION,
-    currentStreamID: STREAM,
-    lastSeqByStream: new Map([[STREAM, 10]]),
     ...overrides,
   };
 }
@@ -137,15 +135,12 @@ describe("chat state action applier", () => {
     });
   });
 
-  it("applies sequence updates and requests reconcile on a gap", () => {
+  it("mirrors sequence updates without generating a gap reconcile", () => {
     const { feed } = setup();
-    const { intents } = apply(
-      { ...messageEvent(), seq: 12 },
-      reducerContext({ lastSeqByStream: new Map([[STREAM, 10]]) }),
-    );
+    const { intents } = apply({ ...messageEvent(), seq: 12 });
 
     expect(feed.thread.lastSeqByStream.get(STREAM)).toBe(12);
-    expect(intents).toContainEqual({ type: "reconcile", reason: "stream-gap", delayMs: 500 });
+    expect(intents).not.toContainEqual({ type: "reconcile", reason: "stream-gap", delayMs: 500 });
   });
 
   it("applies stream warnings and the paused limit state", () => {

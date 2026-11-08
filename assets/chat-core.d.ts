@@ -16,12 +16,20 @@ export interface SnapshotOptions {
   position?: "replace" | "tail" | "older";
   keepOptimistic?: "all" | "transient";
   allowPromotion?: boolean;
+  turn?: TurnPresentation;
+}
+
+export interface TurnPresentation {
+  queuedPromptIDs?: readonly string[];
+  runningPromptID?: string | null;
+  activePromptID?: string | null;
 }
 
 export interface SnapshotResult {
   store: ThreadStore;
   contentDiscarded: boolean;
   turnChanged: boolean;
+  disjoint: boolean;
 }
 
 export interface QueueDerivation {
@@ -37,6 +45,7 @@ export interface RekeyOptions {
   sessionStatusType?: string;
   allowPromotion?: boolean;
   bufferedEvents?: readonly unknown[];
+  turn?: TurnPresentation;
 }
 
 export interface RekeyResult {
@@ -243,18 +252,19 @@ export function handoffNoteFromText(text: string): string;
 export function agentInitials(name: string): string;
 export function reasoningElapsedMs(start: unknown, end: unknown, now?: number): number | null;
 
-export function resolveActiveStatusLabel(input?: {
+export function generationLabel(input?: {
   waiting?: boolean;
   sending?: boolean;
+  unknown?: boolean;
   paused?: boolean;
-  statusType?: string;
+  statusType?: string | null;
   runningTool?: string | null;
   unsealedReasoning?: boolean;
   unsealedText?: boolean;
-  queueLength?: number;
-  activePromptID?: string | null;
-  queueBlocked?: boolean;
-}): string;
+  queuedCount?: number;
+  queuedTruncated?: boolean;
+  settling?: boolean;
+}): string | null;
 
 export function formatTokenCount(value: number | null | undefined): string;
 export function contextMeterPercent(snapshot: unknown): number;

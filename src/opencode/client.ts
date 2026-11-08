@@ -210,6 +210,8 @@ export const SESSIONS_RESPONSE_TIMEOUT_MS = 5_000;
 export const SESSION_STATUS_RESPONSE_MAX_BYTES = 1024 * 1024;
 export const SESSION_STATUS_RESPONSE_TIMEOUT_MS = 5_000;
 const MAX_SESSION_STATUS_ENTRIES = 2_000;
+/** Explicit small cap for the bounded turn-tail read (design §4.1 / plan A2). */
+export const TURN_TAIL_MAX_BYTES = 2 * 1024 * 1024;
 export const SUMMARIZE_RESPONSE_TIMEOUT_MS = 600_000;
 export const COMMANDS_RESPONSE_MAX_BYTES = 4 * 1024 * 1024;
 export const COMMANDS_RESPONSE_TIMEOUT_MS = 10_000;
@@ -292,6 +294,52 @@ export async function listSessionStatuses(endpoint: string): Promise<OpencodeSes
       ...(record.action === undefined ? {} : { action: record.action }),
     };
     count += 1;
+  }
+  return statuses;
+}
+
+/**
+ * Strict variant for the authoritative turn read: a valid empty map means idle, but a malformed
+ * 200 body is an error instead of an empty map, so the turn route can answer 502 rather than
+ * fabricating idle (design T9/T16).
+ */
+export async function listSessionStatusesStrict(
+  endpoint: string,
+): Promise<OpencodeSessionStatusMap> {
+  const path = "/session/status";
+  const body = await getJson<unknown>(
+    endpoint,
+    path,
+    {
+      maxBytes: SESSION_STATUS_RESPONSE_MAX_BYTES,
+      timeoutMs: SESSION_STATUS_RESPONSE_TIMEOUT_MS,
+    },
+    SESSION_STATUS_RESPONSE_TIMEOUT_MS,
+  );
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    throw new OpencodeHttpError(path, 0, "response body is not a session status map");
+  }
+  const statuses: OpencodeSessionStatusMap = {};
+  for (const [sessionId, value] of Object.entries(body)) {
+    const record =
+      typeof value === "object" && value !== null && !Array.isArray(value)
+        ? (value as Record<string, unknown>)
+        : undefined;
+    if (
+      sessionId.length === 0 ||
+      record === undefined ||
+      typeof record.type !== "string" ||
+      record.type.length === 0
+    ) {
+      throw new OpencodeHttpError(path, 0, "response body contains a malformed status entry");
+    }
+    statuses[sessionId] = {
+      type: record.type,
+      ...(typeof record.attempt === "number" ? { attempt: record.attempt } : {}),
+      ...(typeof record.message === "string" ? { message: record.message } : {}),
+      ...(typeof record.next === "number" ? { next: record.next } : {}),
+      ...(record.action === undefined ? {} : { action: record.action }),
+    };
   }
   return statuses;
 }

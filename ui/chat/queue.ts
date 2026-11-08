@@ -1,11 +1,10 @@
 /**
  * Queue projection for the Stage 4 strip and dialog.
  *
- * `deriveQueue` remains the single queue derivation; this module only maps the derived ids to the
- * short row labels the composer surface renders.
+ * Rows come from the authoritative server `queuedPromptIDs`; the client never derives the queue.
  */
 
-import { deriveQueue, isHiddenSyntheticTextPart } from "../../assets/chat-core.js";
+import { isHiddenSyntheticTextPart } from "../../assets/chat-core.js";
 import type { FeedMessageRecord, ThreadStore } from "../../assets/chat-feed-store.js";
 
 export interface QueueRow {
@@ -35,7 +34,10 @@ function previewOf(record: FeedMessageRecord | undefined): string {
   return "Queued message";
 }
 
-function stateOf(record: FeedMessageRecord | undefined): string {
+function stateOf(record: FeedMessageRecord | undefined, running: boolean): string {
+  if (running) {
+    return "Running";
+  }
   if (record?.optimistic === "sending") {
     return "Sending…";
   }
@@ -45,18 +47,19 @@ function stateOf(record: FeedMessageRecord | undefined): string {
   return "Queued";
 }
 
-export function deriveQueueRows(thread: ThreadStore, allowPromotion: boolean): QueueRow[] {
-  const derived = deriveQueue(thread, {
-    sessionStatusType: thread.agentStatus?.type,
-    allowPromotion,
-  });
+export function queueRowsFromIDs(
+  thread: ThreadStore,
+  queuedPromptIDs: readonly string[],
+  runningPromptID: string | null = null,
+): QueueRow[] {
   const rows: QueueRow[] = [];
-  for (const id of derived.queuedIDs) {
+  for (const id of queuedPromptIDs) {
     const record = thread.messages.get(id);
-    if (record === undefined) {
-      continue;
-    }
-    rows.push({ id, preview: previewOf(record), state: stateOf(record) });
+    rows.push({
+      id,
+      preview: previewOf(record),
+      state: stateOf(record, id === runningPromptID),
+    });
   }
   return rows;
 }

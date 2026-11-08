@@ -59,6 +59,17 @@ export function upstreamInfo(port = 4310): E2EUpstreamInfo {
   ) as E2EUpstreamInfo;
 }
 
+export async function resetUpstreamStatuses(port = 4310): Promise<void> {
+  const response = await fetch(`${upstreamInfo(port).url}/__control`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ resetStatuses: true }),
+  });
+  if (!response.ok) {
+    throw new Error(`reset upstream statuses failed: ${response.status}`);
+  }
+}
+
 export function fixtureRepos(port = 4310): E2EFixtureRepos {
   return JSON.parse(
     readFileSync(path.join(tmpdir(), `hanse-e2e-repos-${port}.json`), "utf8"),

@@ -223,6 +223,20 @@ function defaultContextSnapshot(sessionID) {
   };
 }
 
+function defaultTurnSnapshot(sessionID) {
+  return {
+    sessionID,
+    status: { type: "idle" },
+    turnContinues: false,
+    runningPromptID: null,
+    activePromptID: null,
+    queuedPromptIDs: [],
+    queuedTruncated: false,
+    settling: false,
+    revision: "qa-turn-idle",
+  };
+}
+
 async function emit(page, payload) {
   await page.evaluate(
     ({ event, normalizeSeq }) => {
@@ -249,6 +263,14 @@ async function emit(page, payload) {
 
 async function emitMany(page, payloads) {
   for (const payload of payloads) await emit(page, payload);
+}
+
+async function emitRaw(page, payload) {
+  await page.evaluate((event) => {
+    const source = window.__qaEventSource;
+    if (!source) throw new Error("FakeEventSource is not installed");
+    source.emit(event);
+  }, payload);
 }
 
 // ---------------------------------------------------------------------------
@@ -470,7 +492,7 @@ function installFakeEventSource() {
       this.onopen = null;
       this.onmessage = null;
       this.onerror = null;
-      window.__qaEventSource = this;
+      if (!url.includes("/process/events")) window.__qaEventSource = this;
       window.__qaEventSourceCount = (window.__qaEventSourceCount || 0) + 1;
       window.setTimeout(() => {
         this.readyState = 1;
@@ -655,6 +677,7 @@ async function installRoutes(page, config) {
     promptQuestions: config.promptQuestions ?? [],
     messageGets: [],
     contextGets: [],
+    turnGets: [],
     compactCalls: [],
     commandGets: [],
     commandPosts: [],
@@ -923,6 +946,29 @@ async function installRoutes(page, config) {
         await wait(result.delayMs);
       }
       return json(route, result.body ?? { aborted: true }, result.status ?? 200);
+    }
+    if (pathname.endsWith("/process") && method === "GET") {
+      const now = new Date().toISOString();
+      return json(route, {
+        current: {
+          state: "running",
+          phase: "ready",
+          attemptId: "qa-attempt",
+          startedAt: now,
+          updatedAt: now,
+          error: null,
+          lastEventId: 1,
+        },
+        events: [],
+        nextCursor: null,
+      });
+    }
+    if (pathname.includes("/sessions/") && pathname.endsWith("/turn") && method === "GET") {
+      const sessionID = sessionIDFromPath(pathname, "turn") ?? config.sessionId;
+      state.turnGets.push(Date.now());
+      const fixture =
+        typeof config.turn === "function" ? await config.turn({ state, sessionID }) : config.turn;
+      return json(route, fixture ?? defaultTurnSnapshot(sessionID));
     }
     if (pathname.includes("/messages") && method === "GET") {
       state.messageGets.push(Date.now());
@@ -2909,12 +2955,20 @@ async function scenarioContextRetry(browser, target) {
 
 async function scenarioMain(browser, target) {
   const { messages, todo } = mainFixture();
+  const mainTurn = {
+    ...defaultTurnSnapshot(THREADS.main),
+    status: { type: "busy" },
+    turnContinues: true,
+    queuedPromptIDs: ["msg_u2", "msg_u3"],
+    revision: "qa-main-busy",
+  };
   const { context, page, errors } = await newPage(browser, target);
   try {
     const routeState = await installRoutes(page, {
       sessionId: THREADS.main,
       messages,
       todos: todo,
+      turn: () => mainTurn,
     });
     await gotoChat(page, target);
     await page.waitForSelector(".message");
@@ -2991,17 +3045,20 @@ async function scenarioMain(browser, target) {
         composerWidth: width(composer),
         overflowX: document.documentElement.scrollWidth - document.documentElement.clientWidth,
         status: {
-          hidden: document.getElementById("chat-working")?.hidden ?? null,
-          label: text(document.getElementById("chat-working-label")),
-          elapsed: text(document.getElementById("chat-working-elapsed")),
-          queued: text(document.getElementById("chat-working-queued")),
+          hidden: document.querySelector("[data-chat-turn-label]") === null,
+          label: text(document.querySelector("[data-chat-turn-label]")),
+          elapsed: "",
+          queued: text(document.querySelector("[data-chat-queue-open]")),
+          generating: text(document.querySelector("[data-chat-generating-label]")),
         },
         queue: {
-          hidden: document.getElementById("chat-queue-strip")?.hidden ?? null,
-          count: text(document.getElementById("chat-queue-strip-count")),
-          rows: Array.from(document.querySelectorAll(".chat-queue-strip__item")).map((node) => ({
+          strip: document.querySelector("[data-chat-queue-strip]") !== null,
+          count: text(document.querySelector("[data-chat-queue-open]")),
+          rows: Array.from(
+            document.querySelectorAll("[data-chat-queue-dialog] [data-queue-id]"),
+          ).map((node) => ({
             text: text(node),
-            state: text(node.querySelector(".chat-queue-strip__state")),
+            state: text(node.querySelector(".chat-queue__kind")),
           })),
         },
         tables: document.querySelectorAll(".message__table").length,
@@ -3039,14 +3096,18 @@ async function scenarioMain(browser, target) {
       `feed is ~87% of the padded content box at 1440 (${Math.round(contentRatio * 100)}%)`,
     );
     check(metrics.overflowX === 0, `no horizontal page overflow at 1440 (${metrics.overflowX}px)`);
-    check(metrics.queue.hidden === false, "queue strip is visible");
+    check(metrics.queue.strip === false, "the queue strip is gone");
     check(
-      metrics.queue.rows.length === 2,
-      `queue strip shows 2 rows (${metrics.queue.rows.length})`,
+      metrics.status.queued.includes("2 queued"),
+      `turn-status button reads 2 queued (${metrics.status.queued})`,
     );
     check(
-      metrics.queue.count.includes("2 messages queued"),
-      `queue count reads 2 messages queued (${metrics.queue.count})`,
+      metrics.status.generating.includes("2 queued"),
+      `generation row mirrors the count (${metrics.status.generating})`,
+    );
+    check(
+      metrics.queue.rows.length === 2,
+      `the queue modal projects 2 rows (${metrics.queue.rows.length})`,
     );
     check(
       metrics.queue.rows.every((row) => row.state === "Queued"),
@@ -3076,14 +3137,6 @@ async function scenarioMain(browser, target) {
     check(
       /^Running (bash|plan)$/.test(metrics.status.label),
       `status label is a Running label (${metrics.status.label})`,
-    );
-    check(
-      metrics.status.queued.includes("2 queued"),
-      `status carries the queued suffix (${metrics.status.queued})`,
-    );
-    check(
-      metrics.status.elapsed.length > 0,
-      `status shows elapsed time (${metrics.status.elapsed})`,
     );
 
     await shot(page, "main-1440-dark");
@@ -3151,13 +3204,12 @@ async function scenarioMain(browser, target) {
 
     const mobile = await page.evaluate(() => {
       const feed = document.querySelector(".chat-thread__inner");
-      const list = document.querySelector(".chat-queue-strip__list");
       const table = document.querySelector(".message__table-wrap");
       return {
         overflowX: document.documentElement.scrollWidth - document.documentElement.clientWidth,
         feedWidth: feed ? Math.round(feed.getBoundingClientRect().width) : null,
         tableWidth: table ? Math.round(table.getBoundingClientRect().width) : null,
-        queueList: list ? { client: list.clientWidth, scroll: list.scrollWidth } : null,
+        queueOpen: document.querySelector("[data-chat-queue-open]") !== null,
         systems: document.querySelectorAll(".message--system").length,
         todos: document.querySelectorAll(".tool-todo__item").length,
       };
@@ -3168,10 +3220,7 @@ async function scenarioMain(browser, target) {
       mobile.tableWidth !== null && mobile.tableWidth <= mobile.feedWidth + 1,
       `table wrapper stays inside the feed at 390 (${mobile.tableWidth} <= ${mobile.feedWidth})`,
     );
-    check(
-      mobile.queueList !== null && mobile.queueList.scroll >= mobile.queueList.client,
-      "queue strip scrolls horizontally on mobile",
-    );
+    check(mobile.queueOpen, "the turn-status count stays visible on mobile");
     check(mobile.systems === 1, "OMO system card survives the mobile layout");
     check(mobile.todos === 3, "todowrite checklist survives the mobile layout");
 
@@ -3833,6 +3882,7 @@ async function scenarioQuestions(browser, target) {
 
 async function scenarioSend(browser, target) {
   const fixture = sendFixture();
+  let sendTurn = defaultTurnSnapshot(THREADS.send);
   // A slow 202 makes the optimistic row observable before acceptance.
   const { context, page, errors } = await newPage(browser, target);
   const postDelayMs = 700;
@@ -3843,6 +3893,7 @@ async function scenarioSend(browser, target) {
       messages: fixture.messages,
       postDelayMs,
       messageIDs: ["msg_new", "msg_new2"],
+      turn: () => sendTurn,
     });
     await gotoChat(page, target, THREADS.send);
     await page.waitForSelector(".message");
@@ -4022,22 +4073,31 @@ async function scenarioSend(browser, target) {
 
     await prompt.fill("Second queued message.");
     await prompt.press("Enter");
+    sendTurn = {
+      ...defaultTurnSnapshot(THREADS.send),
+      status: { type: "busy" },
+      turnContinues: true,
+      queuedPromptIDs: ["msg_new2"],
+      revision: "qa-send-queued",
+    };
     await wait(900);
 
     const queued = await page.evaluate(() => {
       const text = (node) => (node ? (node.textContent ?? "").replace(/\s+/g, " ").trim() : "");
       return {
         queue: {
-          hidden: document.getElementById("chat-queue-strip")?.hidden ?? null,
-          count: text(document.getElementById("chat-queue-strip-count")),
-          rows: Array.from(document.querySelectorAll(".chat-queue-strip__item")).map(text),
+          strip: document.querySelector("[data-chat-queue-strip]") !== null,
+          count: text(document.querySelector("[data-chat-queue-open]")),
+          rows: Array.from(
+            document.querySelectorAll("[data-chat-queue-dialog] [data-queue-id]"),
+          ).map(text),
         },
         optimistic: Array.from(document.querySelectorAll(".message--optimistic")).map((node) => ({
           id: node.dataset.messageId,
           state: node.dataset.state,
         })),
-        status: text(document.getElementById("chat-working-label")),
-        queuedSuffix: text(document.getElementById("chat-working-queued")),
+        status: text(document.querySelector("[data-chat-turn-label]")),
+        queuedSuffix: text(document.querySelector("[data-chat-queue-open]")),
       };
     });
     check(routeState.postCalls === 2, `two async sends were accepted (${routeState.postCalls})`);
@@ -4045,14 +4105,14 @@ async function scenarioSend(browser, target) {
       routeState.postBodies.every((entry) => entry.url.includes("async=1")),
       "both sends use the async flag",
     );
-    check(queued.queue.hidden === false, "queue strip is visible for the busy send");
+    check(queued.queue.strip === false, "the queue strip is gone for the busy send");
     check(
       queued.queue.rows.length === 1,
-      `queue strip shows one queued row (${queued.queue.rows.length})`,
+      `the queue modal projects one queued row (${queued.queue.rows.length})`,
     );
     check(
-      queued.queue.count.includes("1 message queued"),
-      `queue count reads 1 message queued (${queued.queue.count})`,
+      queued.queue.count.includes("1 queued"),
+      `the turn-status button reads 1 queued (${queued.queue.count})`,
     );
     check(
       queued.optimistic.some((row) => row.id === "msg_new2" && row.state === "queued"),
@@ -4118,13 +4178,21 @@ async function scenarioSend(browser, target) {
         },
       },
     ]);
-    await wait(500);
+    sendTurn = defaultTurnSnapshot(THREADS.send);
+    await emit(page, {
+      type: "session.status",
+      seq: 12,
+      streamID: "qa-stream",
+      sessionID: THREADS.send,
+      status: { type: "idle" },
+    });
+    await wait(700);
 
     const consumed = await page.evaluate(() => {
       const text = (node) => (node ? (node.textContent ?? "").replace(/\s+/g, " ").trim() : "");
       return {
-        queueHidden: document.getElementById("chat-queue-strip")?.hidden ?? null,
-        queueRows: document.querySelectorAll(".chat-queue-strip__item").length,
+        queueHidden: document.querySelector("[data-chat-queue-open]") === null,
+        queueRows: document.querySelectorAll("[data-chat-queue-dialog] [data-queue-id]").length,
         users: Array.from(document.querySelectorAll(".message--user")).map(
           (node) => node.dataset.messageId,
         ),
@@ -6342,6 +6410,234 @@ async function scenarioReasoning(browser, target) {
   }
 }
 
+async function scenarioTurnStatus(browser, target) {
+  const sessionID = THREADS.main;
+  const { messages } = mainFixture();
+  let turn = defaultTurnSnapshot(sessionID);
+  const { context, page, errors } = await newPage(browser, target);
+  try {
+    const routeState = await installRoutes(page, {
+      sessionId: sessionID,
+      messages,
+      turn: () => turn,
+    });
+    await gotoChat(page, target, sessionID);
+    await page.waitForSelector(".message");
+    await waitForStableMessageGets(routeState);
+    await wait(200);
+
+    const probe = () =>
+      page.evaluate(() => {
+        const text = (node) => (node ? (node.textContent ?? "").replace(/\s+/g, " ").trim() : "");
+        const button = document.querySelector("[data-chat-queue-open]");
+        const dialog = document.querySelector("[data-chat-queue-dialog]");
+        return {
+          strip: document.querySelector("[data-chat-queue-strip]") !== null,
+          label: text(document.querySelector("[data-chat-turn-label]")),
+          button: text(button),
+          buttonLabel: button?.getAttribute("aria-label") ?? null,
+          controls: button?.getAttribute("aria-controls") ?? null,
+          generated: text(document.querySelector("[data-chat-generating-label]")),
+          dialogOpen: dialog?.hasAttribute("open") === true,
+          rows: Array.from(dialog?.querySelectorAll("[data-queue-id]") ?? []).map((node) => ({
+            id: node.getAttribute("data-queue-id"),
+            state: text(node.querySelector(".chat-queue__kind")),
+            active: node.getAttribute("data-active") === "true",
+          })),
+          focus:
+            document.activeElement?.hasAttribute("data-chat-queue-close") === true
+              ? "close"
+              : document.activeElement?.hasAttribute("data-chat-queue-open") === true
+                ? "count"
+                : "other",
+        };
+      });
+
+    const normal = await probe();
+    check(normal.strip === false, "the queue strip is gone");
+    check(normal.label === "", `an idle turn renders no status label (${normal.label})`);
+    check(normal.button === "", `an idle turn renders no queue button (${normal.button})`);
+    check(normal.generated === "", `an idle turn renders no generation row (${normal.generated})`);
+
+    turn = {
+      ...defaultTurnSnapshot(sessionID),
+      status: { type: "idle" },
+      queuedPromptIDs: ["msg_u2", "msg_u3"],
+      activePromptID: "msg_u2",
+      revision: "qa-turn-queued",
+    };
+    await emit(page, {
+      type: "session.status",
+      seq: 1,
+      streamID: "qa-stream",
+      sessionID,
+      status: { type: "idle" },
+    });
+    await page.waitForFunction(
+      () =>
+        (document.querySelector("[data-chat-queue-open]")?.textContent ?? "").includes("2 queued"),
+      undefined,
+      { timeout: 3_000 },
+    );
+    const queued = await probe();
+    check(queued.label === "Ready", `idle with a queue reads Ready (${queued.label})`);
+    check(queued.button === "· 2 queued", `the count button reads 2 queued (${queued.button})`);
+    check(
+      queued.buttonLabel === "Show 2 queued messages",
+      `the count button has a stable name (${queued.buttonLabel})`,
+    );
+    check(
+      queued.controls === "chat-queue-dialog",
+      `the count controls the queue dialog (${queued.controls})`,
+    );
+    check(
+      queued.generated === "Ready · 2 queued",
+      `the generation row mirrors the count (${queued.generated})`,
+    );
+
+    await page.locator("[data-chat-queue-open]").click();
+    await page.waitForSelector("[data-chat-queue-dialog][open]");
+    const dialog = await probe();
+    check(dialog.rows.length === 2, `the dialog lists both queued rows (${dialog.rows.length})`);
+    check(
+      dialog.rows.every((row) => row.state === "Queued" && !row.active),
+      "idle queue rows are queued and none is active",
+    );
+    check(dialog.focus === "close", `the dialog focuses its close control (${dialog.focus})`);
+    await shot(page, "turn-status-queued-1440-dark");
+    await page.keyboard.press("Escape");
+    await page.waitForFunction(
+      () => document.querySelector("[data-chat-queue-dialog]")?.hasAttribute("open") !== true,
+      undefined,
+      { timeout: 2_000 },
+    );
+    const returned = await probe();
+    check(returned.focus === "count", `Escape returns focus to the count (${returned.focus})`);
+
+    turn = {
+      ...defaultTurnSnapshot(sessionID),
+      status: { type: "busy" },
+      runningPromptID: "msg_u2",
+      activePromptID: "msg_u2",
+      queuedPromptIDs: ["msg_u2", "msg_u3"],
+      revision: "qa-turn-busy",
+    };
+    await emit(page, {
+      type: "session.status",
+      seq: 2,
+      streamID: "qa-stream",
+      sessionID,
+      status: { type: "busy" },
+    });
+    await page.waitForFunction(
+      () =>
+        (document.querySelector("[data-chat-queue-open]")?.textContent ?? "").includes("1 queued"),
+      undefined,
+      { timeout: 3_000 },
+    );
+    const busy = await probe();
+    check(busy.button === "· 1 queued", `a running head is excluded (${busy.button})`);
+    check(
+      busy.generated.includes("· 1 queued"),
+      `the generation row carries the suffix (${busy.generated})`,
+    );
+    await page.locator("[data-chat-queue-open]").click();
+    await page.waitForSelector("[data-chat-queue-dialog][open]");
+    const activeDialog = await probe();
+    const active = activeDialog.rows.find((row) => row.id === "msg_u2");
+    const waiting = activeDialog.rows.find((row) => row.id === "msg_u3");
+    check(active?.active === true && active.state === "Active", "the running row is active");
+    check(waiting?.state === "Queued" && waiting.active === false, "the remaining row is queued");
+    await page.keyboard.press("Escape");
+
+    turn = {
+      ...defaultTurnSnapshot(sessionID),
+      status: { type: "idle" },
+      queuedPromptIDs: ["msg_u2", "msg_u3"],
+      activePromptID: "msg_u2",
+      revision: "qa-turn-abort",
+    };
+    await emit(page, {
+      type: "session.status",
+      seq: 3,
+      streamID: "qa-stream",
+      sessionID,
+      status: { type: "idle" },
+    });
+    await page.waitForFunction(
+      () =>
+        (document.querySelector("[data-chat-generating-label]")?.textContent ?? "").trim() ===
+        "Ready · 2 queued",
+      undefined,
+      { timeout: 3_000 },
+    );
+    const aborted = await probe();
+    check(
+      aborted.generated === "Ready · 2 queued",
+      `abort settles to Ready (${aborted.generated})`,
+    );
+
+    await page.reload({ waitUntil: "networkidle" });
+    await page.waitForFunction(
+      () =>
+        (document.querySelector("[data-chat-queue-open]")?.textContent ?? "").includes("2 queued"),
+      undefined,
+      { timeout: 5_000 },
+    );
+    const reloaded = await probe();
+    check(reloaded.strip === false, "the strip stays gone after reload");
+    check(reloaded.label === "Ready", `reload hydrates Ready (${reloaded.label})`);
+    check(reloaded.button === "· 2 queued", `reload hydrates the count (${reloaded.button})`);
+
+    turn = defaultTurnSnapshot(sessionID);
+    await emit(page, {
+      type: "message.part.updated",
+      seq: 4,
+      streamID: "qa-stream",
+      sessionID,
+      messageID: "msg_a1",
+      partID: "prt_t1",
+      partType: "text",
+      part: {
+        id: "prt_t1",
+        sessionID,
+        messageID: "msg_a1",
+        type: "text",
+        text: "I'll run the suite and then summarize.",
+      },
+    });
+    await emitRaw(page, {
+      type: "message.part.updated",
+      seq: 50,
+      streamID: "qa-stream",
+      sessionID,
+      messageID: "msg_a1",
+      partID: "prt_t1",
+      partType: "text",
+      part: {
+        id: "prt_t1",
+        sessionID,
+        messageID: "msg_a1",
+        type: "text",
+        text: "I'll run the suite and then summarize.",
+      },
+    });
+    await page.waitForFunction(
+      () => document.querySelector("[data-chat-queue-open]") === null,
+      undefined,
+      { timeout: 5_000 },
+    );
+    const gap = await probe();
+    check(gap.button === "", "a stream gap refreshes the turn and clears the stale count");
+    check(gap.strip === false, "no strip returns after the gap reconcile");
+
+    checkNoErrors(errors);
+    return { normal, queued, dialog, busy, activeDialog, aborted, reloaded, gap };
+  } finally {
+    await context.close();
+  }
+}
+
 async function scenarioReconnect(browser, target) {
   const sessionID = THREADS.main;
   const { context, page, errors } = await newPage(browser, target);
@@ -6351,13 +6647,13 @@ async function scenarioReconnect(browser, target) {
     await page.waitForFunction(
       () =>
         window.__qaEventSourceCount >= 1 &&
-        document.getElementById("chat-live")?.textContent === "Live",
+        document.querySelector("[data-chat-live]")?.textContent === "Live",
       undefined,
       { timeout: 3_000 },
     );
     const before = await page.evaluate(() => ({
       count: window.__qaEventSourceCount,
-      live: document.getElementById("chat-live")?.textContent ?? "",
+      live: document.querySelector("[data-chat-live]")?.textContent ?? "",
     }));
 
     await page.evaluate(() => {
@@ -6376,14 +6672,9 @@ async function scenarioReconnect(browser, target) {
 
     const hidden = await page.evaluate(() => ({
       count: window.__qaEventSourceCount,
-      live: document.getElementById("chat-live")?.textContent ?? "",
-      retryHidden: document.getElementById("chat-stream-retry")?.hidden ?? null,
+      live: document.querySelector("[data-chat-live]")?.textContent ?? "",
     }));
     check(hidden.count === before.count, "background errors do not open a replacement stream");
-    check(
-      hidden.retryHidden === true,
-      `background errors do not expose the paused Retry control (${hidden.live})`,
-    );
 
     await page.evaluate(() => {
       Object.defineProperty(document, "hidden", { configurable: true, get: () => false });
@@ -6396,18 +6687,16 @@ async function scenarioReconnect(browser, target) {
     await page.waitForFunction(
       (count) =>
         window.__qaEventSourceCount === count + 1 &&
-        document.getElementById("chat-live")?.textContent === "Live",
+        document.querySelector("[data-chat-live]")?.textContent === "Live",
       before.count,
       { timeout: 3_000 },
     );
     const after = await page.evaluate(() => ({
       count: window.__qaEventSourceCount,
-      live: document.getElementById("chat-live")?.textContent ?? "",
-      retryHidden: document.getElementById("chat-stream-retry")?.hidden ?? null,
+      live: document.querySelector("[data-chat-live]")?.textContent ?? "",
     }));
     check(after.count === before.count + 1, "returning to the page opens one replacement stream");
     check(after.live === "Live", `the replacement stream returns to Live (${after.live})`);
-    check(after.retryHidden === true, "the Retry control stays hidden after recovery");
     await shot(page, "reconnect-after-background-1440-dark");
 
     checkNoErrors(errors);
@@ -7661,6 +7950,7 @@ try {
     await run("plan-visibility", () => scenarioPlanVisibility(browser, target));
     await run("reasoning", () => scenarioReasoning(browser, target));
     await run("stop", () => scenarioStop(browser, target));
+    await run("turn-status", () => scenarioTurnStatus(browser, target));
     await run("reconnect", () => scenarioReconnect(browser, target));
     await run("session-tree", () => scenarioSessionTree(browser, target));
     await run("image-not-ready", () => scenarioImageNotReady(browser, target));

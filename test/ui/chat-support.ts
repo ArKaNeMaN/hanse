@@ -3,6 +3,7 @@ import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia } from "pinia";
 import { vi } from "vitest";
 import { createMemoryHistory, createRouter } from "vue-router";
+import type { TurnSnapshot } from "../../src/chat/turn.js";
 import type { BootPayload } from "../../ui/boot.js";
 import type { ChatResponse } from "../../ui/chat/types.js";
 import ChatPage from "../../ui/pages/ChatPage.vue";
@@ -138,11 +139,30 @@ export interface ChatFixture {
   readonly restartStatus?: number;
   readonly startStatus?: number;
   readonly previewCloseStatus?: number;
+  readonly turn?: Partial<TurnSnapshot>;
+  readonly turns?: Readonly<Record<string, Partial<TurnSnapshot>>>;
+  readonly turnStatus?: number;
+  readonly turnCode?: string;
+  readonly turnGate?: Promise<void>;
   readonly custom?: (request: {
     readonly method: string;
     readonly url: string;
     readonly body: string | undefined;
   }) => { readonly status: number; readonly body: unknown } | undefined;
+}
+
+export function defaultTurn(sessionID: string): TurnSnapshot {
+  return {
+    sessionID,
+    status: { type: "idle" },
+    turnContinues: false,
+    runningPromptID: null,
+    activePromptID: null,
+    queuedPromptIDs: [],
+    queuedTruncated: false,
+    settling: false,
+    revision: "rev-idle",
+  };
 }
 
 export function boot(overrides: Partial<BootPayload> = {}): BootPayload {
@@ -319,6 +339,26 @@ export function installFetch(fixture: ChatFixture = {}): InstalledFetch {
         current: currentProcess,
         events: [],
         nextCursor: null,
+      });
+    }
+    const turnMatch = /^\/api\/apps\/alpha\/sessions\/([^/?]+)\/turn(?:\?.*)?$/.exec(url);
+    if (turnMatch !== null) {
+      if (fixture.turnGate !== undefined) {
+        await fixture.turnGate;
+      }
+      const status = fixture.turnStatus ?? 200;
+      if (status !== 200) {
+        return json(status, {
+          error: "turn unavailable",
+          code: fixture.turnCode ?? (status === 409 ? "deletion_pending" : "turn_unavailable"),
+        });
+      }
+      const sessionID = decodeURIComponent(turnMatch[1] ?? "");
+      return json(200, {
+        ...defaultTurn(sessionID),
+        ...(fixture.turn ?? {}),
+        ...(fixture.turns?.[sessionID] ?? {}),
+        sessionID,
       });
     }
     if (url.startsWith("/api/apps/alpha/prompts")) {

@@ -4164,6 +4164,38 @@
     display: none;
   }
 
+  .chat-turn-status {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-1);
+    min-inline-size: 0;
+    color: var(--text-2);
+    font-size: var(--text-caption);
+  }
+
+  .chat-turn-status__label {
+    white-space: nowrap;
+  }
+
+  .chat-turn-status__queue {
+    flex: none;
+    padding-inline: var(--space-2);
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius-pill);
+    background: var(--wash-1);
+    color: var(--text-2);
+    font-family: var(--font-mono);
+    font-size: var(--text-micro);
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+  }
+
+  .chat-turn-status__queue:hover {
+    color: var(--text-1);
+    border-color: var(--text-3);
+  }
+
   .chat-history {
     display: flex;
     align-items: center;
@@ -4717,7 +4749,7 @@
   /* Interactive prompts, plan, saved permissions, and policy warnings */
 
   .chat-shell--workspace .chat-thread {
-    grid-template-rows: auto auto auto auto minmax(0, 1fr) auto auto auto auto;
+    grid-template-rows: auto auto auto auto minmax(0, 1fr) auto auto auto;
   }
 
   /* Hidden rows use display:none and are removed from auto-placement. Pin every visible row so the
@@ -4744,20 +4776,16 @@
     min-inline-size: 0;
   }
 
-  .chat-shell--workspace .chat-thread > .chat-queue-strip {
+  .chat-shell--workspace .chat-thread > .chat-session-notice {
     grid-row: 6;
   }
 
-  .chat-shell--workspace .chat-thread > .chat-session-notice {
+  .chat-shell--workspace .chat-thread > .prompt-dock {
     grid-row: 7;
   }
 
-  .chat-shell--workspace .chat-thread > .prompt-dock {
-    grid-row: 8;
-  }
-
   .chat-shell--workspace .chat-thread > .composer {
-    grid-row: 9;
+    grid-row: 8;
   }
 
   .chat-input-needed {
@@ -4770,7 +4798,6 @@
   .chat-plan-chip[hidden],
   .policy-warning[hidden],
   .prompt-dock[hidden],
-  .chat-queue[hidden],
   .chat-waiting[hidden],
   .chat-context__section[hidden],
   .badge[hidden] {
@@ -5561,20 +5588,12 @@
   }
 
   .chat-queue {
-    position: fixed;
-    z-index: var(--z-drawer);
-    inset-block-start: calc(var(--topbar-h) + var(--space-2));
-    inset-inline-end: var(--space-4);
-    display: flex;
-    flex-direction: column;
+    max-inline-size: min(28rem, calc(100vw - var(--space-8)));
+  }
+
+  .chat-queue__frame {
     gap: var(--space-2);
-    inline-size: min(24rem, calc(100vw - var(--space-8)));
     max-block-size: min(28rem, 70dvh);
-    padding: var(--space-3);
-    border: 1px solid var(--line-strong);
-    border-radius: var(--radius-md);
-    background: var(--surface-3);
-    box-shadow: var(--shadow-overlay);
   }
 
   .chat-queue__head {
@@ -5602,12 +5621,9 @@
     border-radius: var(--radius-sm);
     background: var(--surface-2);
     color: var(--text-2);
-    font: inherit;
-    text-align: start;
-    cursor: pointer;
   }
 
-  .chat-queue__row:hover {
+  .chat-queue__row[data-active="true"] {
     border-color: var(--line-strong);
     background: var(--wash-1);
     color: var(--text-1);
@@ -5634,11 +5650,16 @@
     overflow-wrap: anywhere;
   }
 
-  .chat-queue__empty {
+  .chat-queue__empty,
+  .chat-queue__error {
     margin: 0;
     padding: var(--space-2);
     color: var(--text-3);
     font-size: var(--text-sm);
+  }
+
+  .chat-queue__error {
+    color: var(--warning);
   }
 
   .session-item__flag {
@@ -5660,85 +5681,6 @@
   /* ------------------------------------------------------------------ */
   /* Chat UX overhaul: queue, notices, optimistic/system rows           */
   /* ------------------------------------------------------------------ */
-
-  .chat-queue-strip {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
-    min-inline-size: 0;
-    padding: var(--space-1) var(--space-6);
-    border-block-start: 1px solid var(--line);
-    background: var(--surface-1);
-  }
-
-  .chat-queue-strip[hidden] {
-    display: none;
-  }
-
-  .chat-queue-strip__count {
-    display: inline-flex;
-    flex: none;
-    align-items: center;
-    padding: var(--space-1) var(--space-2);
-    border: 1px solid var(--line-strong);
-    border-radius: var(--radius-pill);
-    background: var(--wash-1);
-    color: var(--text-2);
-    font-family: var(--font-mono);
-    font-size: var(--text-micro);
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    white-space: nowrap;
-  }
-
-  .chat-queue-strip__list {
-    display: flex;
-    flex: 1 1 auto;
-    align-items: center;
-    gap: var(--space-2);
-    min-inline-size: 0;
-    margin: 0;
-    padding: 0;
-    overflow-x: auto;
-    overscroll-behavior-inline: contain;
-    list-style: none;
-    scrollbar-gutter: stable;
-  }
-
-  .chat-queue-strip__item {
-    display: inline-flex;
-    flex: 0 0 auto;
-    align-items: center;
-    gap: var(--space-2);
-    min-inline-size: 0;
-    max-inline-size: 34ch;
-    padding: var(--space-1) var(--space-2);
-    border: 1px solid var(--line);
-    border-radius: var(--radius-sm);
-    background: var(--canvas);
-  }
-
-  .chat-queue-strip__preview {
-    flex: 1 1 auto;
-    min-inline-size: 0;
-    overflow: hidden;
-    color: var(--text-2);
-    font-size: var(--text-caption);
-    line-height: 1.35;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .chat-queue-strip__state,
-  .chat-queue-strip__more {
-    flex: none;
-    color: var(--text-3);
-    font-family: var(--font-mono);
-    font-size: var(--text-micro);
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    white-space: nowrap;
-  }
 
   .chat-session-notice {
     margin: 0;
@@ -7447,14 +7389,6 @@
       min-block-size: 1.75rem;
     }
 
-    .chat-queue-strip {
-      padding-inline: var(--space-4);
-    }
-
-    .chat-queue-strip__item {
-      max-inline-size: 26ch;
-    }
-
     .chat-session-notice {
       padding-inline: var(--space-4);
     }
@@ -7752,12 +7686,15 @@
     }
 
     .chat-queue {
-      position: fixed;
-      inset-block: auto 0;
-      inset-inline: 0;
       inline-size: 100%;
+      max-inline-size: 100%;
+      margin-block-end: 0;
+    }
+
+    .chat-queue__frame {
       max-block-size: 70dvh;
-      border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+      border-end-start-radius: 0;
+      border-end-end-radius: 0;
     }
   }
 

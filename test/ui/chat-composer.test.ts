@@ -1,6 +1,6 @@
 import { flushPromises } from "@vue/test-utils";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { FakeEventSource, mountChat } from "./chat-support.js";
+import { defaultTurn, FakeEventSource, mountChat } from "./chat-support.js";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -120,7 +120,9 @@ describe("ChatComposer", () => {
   });
 
   it("switches to Stop while the turn is active and an empty draft is present", async () => {
-    const { wrapper, fetchState } = await mountChat();
+    const { wrapper, fetchState } = await mountChat(undefined, {
+      turn: { ...defaultTurn("s1"), status: { type: "busy" }, revision: "rev-busy" },
+    });
     const source = FakeEventSource.instances[0];
     if (source === undefined) throw new Error("missing source");
     source.open();

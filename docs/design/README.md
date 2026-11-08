@@ -36,6 +36,11 @@
   handoff/event retention, path guards, and retry semantics.
 - [Chat pagination and generation indicator](./chat-pagination.md) - 30-message session tail,
   cursor-based scroll-up history, overlap-aware snapshot merge, and the in-feed generation row.
+- [Truthful chat turn state](./chat-turn-state.md) - a server-computed turn snapshot
+  (`status`, `turnContinues`, running/queued prompts), the read-only `GET .../turn` hydration route,
+  a status-driven generation row with `Ready · N queued`, the queue modal replacing the strip, and the
+  retirement of the client queue-promotion block. Status: design `oracle` Round 2 PASS WITH FIXES
+  (findings folded); plan `momus` OKAY; implemented and verified (journal 0045).
 - [Mobile chat polish and turn control](./chat-mobile-polish.md) - touch composer focus/viewport,
   coarse-pointer Enter, Stop/abort, queue-state guarding, policy diagnostic filtering, plan
   visibility, smooth autoscroll, reasoning type/timer, elapsed seed, and background stream recovery.
@@ -147,9 +152,11 @@ Query parameters:
 ## Chat QA
 
 `CHAT_QA_ONLY=session-tree node docs/design/chat-qa.mjs` runs only the session-tree scenario; its
-report is copied to `artifacts/chat/session-tree-report.json`. The full deterministic run currently
-stops at the pre-existing `main` queue-strip assertion (`2 rows` vs `1`), reproduced on clean HEAD;
-existing scenarios are unchanged.
+report is copied to `artifacts/chat/session-tree-report.json`. The Phase C turn-state gate runs
+`CHAT_QA_MODE=spa CHAT_QA_ONLY=turn-status node docs/design/chat-qa.mjs`. The full deterministic SPA
+run still stops at the pre-existing `main` feed/composer width assertion (`501` vs `568`), whose
+legacy selectors and measurements predate the SPA chat cutover; the Phase C gate therefore uses the
+exact `turn-status` scenario set and does not attribute that failure to this stage.
 
 `node docs/design/chat-qa.mjs` is the phase-6 browser gate for the chat UX overhaul. It self-starts
 a throwaway server (or targets `CHAT_QA_URL`/`CHAT_QA_TOKEN`), intercepts `/api/apps/**` with

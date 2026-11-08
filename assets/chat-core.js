@@ -1234,6 +1234,7 @@ function cloneMessage(value) {
   return {
     id,
     role,
+    origin: value.origin === "local" ? "local" : "server",
     parentID: asString(value.parentID),
     finish: asString(value.finish),
     time: isRecord(value.time)
@@ -1259,7 +1260,11 @@ function cloneMessage(value) {
  * @returns {boolean}
  */
 function isLocalOptimistic(id, record) {
-  return (typeof record.optimistic === "string" && record.optimistic.length > 0) || id.startsWith("local_");
+  return (
+    record.origin === "local" ||
+    (typeof record.optimistic === "string" && record.optimistic.length > 0) ||
+    id.startsWith("local_")
+  );
 }
 
 /**
@@ -1272,6 +1277,7 @@ function isLocalOptimistic(id, record) {
  */
 function isTransientLocal(id, record) {
   return (
+    record.origin === "local" ||
     id.startsWith("local_") ||
     record.optimistic === "sending" ||
     record.optimistic === "unknown" ||
@@ -1289,6 +1295,7 @@ function isTransientLocal(id, record) {
  */
 function mergeOptimisticRecord(server, local) {
   const merged = cloneMessage(server) ?? server;
+  merged.origin = "server";
   if (local.optimistic === "sending" || local.optimistic === "unknown") {
     merged.optimistic = local.optimistic;
   } else {
@@ -1624,6 +1631,7 @@ function buildSnapshotMessages(snapshotMessages, currentMessages) {
     const record = {
       id,
       role,
+      origin: "server",
       parentID,
       finish,
       time,
@@ -1786,6 +1794,48 @@ function presentationState(store, id, derived, preserveInFlight = true) {
 }
 
 /**
+ * @param {unknown} value
+ * @returns {string[]}
+ */
+function normalizeStringList(value) {
+  if (!Array.isArray(value)) return [];
+  const out = [];
+  for (const entry of value) {
+    const id = asString(entry);
+    if (id !== undefined && id.length > 0 && !out.includes(id)) out.push(id);
+  }
+  return out;
+}
+
+/**
+ * Apply the authoritative turn queue to every server-backed row.
+ *
+ * @param {Map<string, MessageRecord>} messages
+ * @param {string[]} order
+ * @param {string[]} queuedPromptIDs
+ * @param {string | undefined} runningPromptID
+ */
+function applyTurnPresentation(messages, order, queuedPromptIDs, runningPromptID) {
+  const queued = new Set(queuedPromptIDs);
+  for (const id of order) {
+    const record = messages.get(id);
+    if (record === undefined || record.origin === "local") continue;
+    if (
+      record.optimistic === "sending" ||
+      record.optimistic === "unknown" ||
+      record.optimistic === "failed"
+    ) {
+      continue;
+    }
+    if (queued.has(id) && id !== runningPromptID) {
+      record.optimistic = "queued";
+    } else if (record.optimistic === "queued" || record.optimistic === "accepted") {
+      record.optimistic = "accepted";
+    }
+  }
+}
+
+/**
  * Apply a complete message snapshot atomically.
  *
  * @param {ThreadStore} currentStore
@@ -1799,12 +1849,14 @@ function presentationState(store, id, derived, preserveInFlight = true) {
  *   sessionID?: string,
  *   position?: "replace" | "tail" | "older",
  *   keepOptimistic?: "all" | "transient",
- *   allowPromotion?: boolean
+ *   allowPromotion?: boolean,
+ *   turn?: { queuedPromptIDs?: string[], runningPromptID?: string | null, activePromptID?: string | null }
  * }} [options]
- * @returns {{ store: ThreadStore, contentDiscarded: boolean, turnChanged: boolean }}
+ * @returns {{ store: ThreadStore, contentDiscarded: boolean, turnChanged: boolean, disjoint: boolean }}
  */
 export function applySnapshot(currentStore, snapshotMessages, options = {}) {
   const base = currentStore;
+  const turn = isRecord(options?.turn) ? options.turn : null;
   const snapshotSource = Array.isArray(snapshotMessages)
     ? snapshotMessages
     : isRecord(snapshotMessages) && Array.isArray(snapshotMessages.messages)
@@ -1812,12 +1864,18 @@ export function applySnapshot(currentStore, snapshotMessages, options = {}) {
       : [];
   const currentOrder = Array.isArray(base?.order) ? base.order : [];
   const currentMessages = base?.messages instanceof Map ? base.messages : new Map();
-  const position =
+  const requestedPosition =
     options?.position === "tail" || options?.position === "older" ? options.position : "replace";
   const built = buildSnapshotMessages(snapshotSource, currentMessages);
   const snapshotIDs = built.snapshotIDs;
   const snapshotPartIDs = built.snapshotPartIDs;
   const adoptedIDs = new Set();
+  const disjoint =
+    requestedPosition === "tail" &&
+    currentOrder.length > 0 &&
+    built.order.length > 0 &&
+    !built.order.some((id) => currentOrder.includes(id));
+  const position = disjoint ? "replace" : requestedPosition;
   const emptyPage =
     built.order.length === 0 && (position === "tail" || position === "older");
 
@@ -1935,7 +1993,7 @@ export function applySnapshot(currentStore, snapshotMessages, options = {}) {
 
   if (!emptyPage) {
     const keepTransientOnly =
-      position !== "replace" || options?.keepOptimistic === "transient";
+      disjoint || position !== "replace" || options?.keepOptimistic === "transient";
     for (const id of currentOrder) {
       const local = currentMessages.get(id);
       if (local === undefined) {
@@ -2004,14 +2062,17 @@ export function applySnapshot(currentStore, snapshotMessages, options = {}) {
     capturedTurnGeneration !== (asNumber(base?.turnGeneration) ?? 0);
 
   const generation = (asNumber(base?.generation) ?? 0) + 1;
+  const queuedFromTurn = turn === null ? null : normalizeStringList(turn.queuedPromptIDs);
   const store = {
     sessionID,
     generation,
     turnGeneration: asNumber(base?.turnGeneration) ?? 0,
     order,
     messages,
-    activePromptID: base?.activePromptID ?? null,
-    queue: [],
+    activePromptID: turn === null ? (base?.activePromptID ?? null) : asString(turn.activePromptID) ?? null,
+    queue: queuedFromTurn === null
+      ? (Array.isArray(base?.queue) ? [...base.queue] : [])
+      : [...queuedFromTurn],
     openParts,
     lastSeqByStream:
       base?.lastSeqByStream instanceof Map ? new Map(base.lastSeqByStream) : new Map(),
@@ -2021,23 +2082,27 @@ export function applySnapshot(currentStore, snapshotMessages, options = {}) {
     connection: base?.connection ?? "live",
   };
 
-  const sessionStatusType =
-    asString(options?.sessionStatusType) ?? asString(store.agentStatus?.type);
-  const derived = deriveQueue(store, {
-    sessionStatusType,
-    allowPromotion: options?.allowPromotion,
-  });
-  store.queue = [...derived.queuedIDs];
-  store.activePromptID = derived.nextActivePromptID;
-  for (const id of order) {
-    const record = messages.get(id);
-    if (record === undefined || record.optimistic === undefined) {
-      continue;
+  if (turn === null) {
+    const sessionStatusType =
+      asString(options?.sessionStatusType) ?? asString(store.agentStatus?.type);
+    const derived = deriveQueue(store, {
+      sessionStatusType,
+      allowPromotion: options?.allowPromotion,
+    });
+    store.queue = [...derived.queuedIDs];
+    store.activePromptID = derived.nextActivePromptID;
+    for (const id of order) {
+      const record = messages.get(id);
+      if (record === undefined || record.optimistic === undefined) {
+        continue;
+      }
+      record.optimistic = presentationState(store, id, derived, !adoptedIDs.has(id));
     }
-    record.optimistic = presentationState(store, id, derived, !adoptedIDs.has(id));
+  } else {
+    applyTurnPresentation(messages, order, queuedFromTurn ?? [], asString(turn.runningPromptID));
   }
 
-  return { store, contentDiscarded, turnChanged };
+  return { store, contentDiscarded, turnChanged, disjoint };
 }
 
 /**
@@ -2226,11 +2291,13 @@ function applyBufferedEvent(record, event, placeholderID) {
  *   serverID: string,
  *   bufferedEvents?: Array<Record<string, unknown>>,
  *   sessionStatusType?: string,
- *   allowPromotion?: boolean
+ *   allowPromotion?: boolean,
+ *   turn?: { queuedPromptIDs?: string[], runningPromptID?: string | null, activePromptID?: string | null }
  * }} options
  * @returns {{ store: ThreadStore, consumed: boolean }}
  */
 export function rekeyOptimistic(store, options) {
+  const turn = isRecord(options?.turn) ? options.turn : null;
   const tempID = asString(options?.tempID);
   const serverID = asString(options?.serverID);
   if (tempID === undefined || serverID === undefined) {
@@ -2259,6 +2326,7 @@ export function rekeyOptimistic(store, options) {
     merged.id = serverID;
   }
   merged.version = Math.max(temp.version, existing?.version ?? 0) + 1;
+  merged.origin = "server";
 
   let placeholderID = placeholderPartID(merged);
   if (Array.isArray(options?.bufferedEvents)) {
@@ -2282,14 +2350,21 @@ export function rekeyOptimistic(store, options) {
   messages.delete(tempID);
   messages.set(serverID, merged);
 
+  const queuedFromTurn = turn === null ? null : normalizeStringList(turn.queuedPromptIDs);
   const nextStore = {
     sessionID: store?.sessionID ?? null,
     generation: asNumber(store?.generation) ?? 0,
     turnGeneration: asNumber(store?.turnGeneration) ?? 0,
     order: remaining,
     messages,
-    activePromptID: store?.activePromptID ?? null,
-    queue: Array.isArray(store?.queue) ? [...store.queue] : [],
+    activePromptID:
+      turn === null ? (store?.activePromptID ?? null) : (asString(turn.activePromptID) ?? null),
+    queue:
+      queuedFromTurn === null
+        ? Array.isArray(store?.queue)
+          ? [...store.queue]
+          : []
+        : [...queuedFromTurn],
     openParts: store?.openParts instanceof Set ? new Set(store.openParts) : new Set(),
     lastSeqByStream:
       store?.lastSeqByStream instanceof Map ? new Map(store.lastSeqByStream) : new Map(),
@@ -2299,15 +2374,6 @@ export function rekeyOptimistic(store, options) {
     agentStatus: store?.agentStatus ?? null,
     connection: store?.connection ?? "live",
   };
-
-  const sessionStatusType =
-    asString(options?.sessionStatusType) ?? asString(nextStore.agentStatus?.type);
-  const derived = deriveQueue(nextStore, {
-    sessionStatusType,
-    allowPromotion: options?.allowPromotion,
-  });
-  nextStore.queue = [...derived.queuedIDs];
-  nextStore.activePromptID = derived.nextActivePromptID;
 
   const serverIndex = remaining.indexOf(serverID);
   let consumed = false;
@@ -2325,14 +2391,34 @@ export function rekeyOptimistic(store, options) {
     }
   }
 
-  if (merged.optimistic === "unknown") {
-    merged.optimistic = "unknown";
-  } else if (consumed || derived.activeID === serverID) {
-    merged.optimistic = "accepted";
-  } else if (derived.queuedIDs.includes(serverID)) {
-    merged.optimistic = "queued";
+  if (turn === null) {
+    const sessionStatusType =
+      asString(options?.sessionStatusType) ?? asString(nextStore.agentStatus?.type);
+    const derived = deriveQueue(nextStore, {
+      sessionStatusType,
+      allowPromotion: options?.allowPromotion,
+    });
+    nextStore.queue = [...derived.queuedIDs];
+    nextStore.activePromptID = derived.nextActivePromptID;
+    if (merged.optimistic === "unknown") {
+      merged.optimistic = "unknown";
+    } else if (consumed || derived.activeID === serverID) {
+      merged.optimistic = "accepted";
+    } else if (derived.queuedIDs.includes(serverID)) {
+      merged.optimistic = "queued";
+    } else {
+      merged.optimistic = "accepted";
+    }
   } else {
-    merged.optimistic = "accepted";
+    const queued = queuedFromTurn ?? [];
+    const runningPromptID = asString(turn.runningPromptID);
+    if (merged.optimistic === "unknown" || merged.optimistic === "sending") {
+      // Preserve an in-flight delivery state until the snapshot or user resolves it.
+    } else if (queued.includes(serverID) && serverID !== runningPromptID) {
+      merged.optimistic = "queued";
+    } else {
+      merged.optimistic = "accepted";
+    }
   }
   return { store: nextStore, consumed };
 }
@@ -2766,48 +2852,53 @@ export function toolStatusChip(status) {
 }
 
 /**
+ * The truthful generation-row label. Returns `null` when the row must not exist.
+ *
+ * `queuedCount` is the T13 display count (a running prompt excluded, an idle head included).
+ * `Waiting for you` and `Paused` never create the row; `Ready` alone is never rendered.
+ *
  * @param {{
  *   waiting?: boolean,
  *   sending?: boolean,
+ *   unknown?: boolean,
  *   paused?: boolean,
- *   statusType?: string,
- *   runningTool?: string,
+ *   statusType?: string | null,
+ *   runningTool?: string | null,
  *   unsealedReasoning?: boolean,
  *   unsealedText?: boolean,
- *   queueLength?: number,
- *   activePromptID?: string | null,
- *   queueBlocked?: boolean
+ *   queuedCount?: number,
+ *   queuedTruncated?: boolean,
+ *   settling?: boolean
  * }} [input]
- * @returns {string}
+ * @returns {string | null}
  */
-export function resolveActiveStatusLabel(input) {
+export function generationLabel(input) {
   const state = input === null || typeof input !== "object" ? {} : input;
-  if (state.waiting === true) return "Waiting for you";
+  if (state.waiting === true || state.paused === true) return null;
   if (state.sending === true) return "Sending";
-  if (state.paused === true) return "Paused";
-  if (state.statusType === "retry") return "Retrying";
-  if (typeof state.runningTool === "string" && state.runningTool.length > 0) {
-    return `Running ${state.runningTool}`;
+  if (state.unknown === true) return "Delivery unknown";
+  const count =
+    typeof state.queuedCount === "number" && Number.isFinite(state.queuedCount)
+      ? Math.max(0, Math.floor(state.queuedCount))
+      : 0;
+  const suffix = count > 0 ? ` · ${count}${state.queuedTruncated === true ? "+" : ""} queued` : "";
+  if (state.statusType === "retry") return `Retrying${suffix}`;
+  if (
+    state.statusType === "busy" &&
+    typeof state.runningTool === "string" &&
+    state.runningTool.length > 0
+  ) {
+    return `Running ${state.runningTool}${suffix}`;
   }
-  if (state.unsealedReasoning === true) return "Thinking";
   if (state.statusType === "busy") {
-    return state.unsealedText === true ? "Working" : "Thinking";
+    if (state.unsealedReasoning === true) return `Thinking${suffix}`;
+    if (state.unsealedText === true) return `Working${suffix}`;
+    return `Thinking${suffix}`;
   }
-  if (
-    state.queueBlocked === true &&
-    (state.statusType === "idle" ||
-      state.statusType === undefined ||
-      state.statusType === "unknown")
-  ) {
-    return "Ready";
+  if (state.statusType === "idle" && state.settling !== true) {
+    return count > 0 ? `Ready${suffix}` : null;
   }
-  if (
-    (typeof state.queueLength === "number" && state.queueLength > 0) ||
-    (state.activePromptID !== null && state.activePromptID !== undefined)
-  ) {
-    return "Working";
-  }
-  return "Ready";
+  return null;
 }
 
 /* ------------------------------------------------------------------------- */

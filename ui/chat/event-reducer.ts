@@ -194,8 +194,6 @@ export type DropReason = "duplicate" | "other-session" | "invalid" | "malformed"
 export interface ReducerContext {
   /** Active/selected session; mirrors `route.query.session` in the SPA. */
   sessionID: string | null;
-  currentStreamID?: string | null;
-  lastSeqByStream?: ReadonlyMap<string, number> | Readonly<Record<string, number>>;
 }
 
 export interface StreamDecision {
@@ -211,18 +209,6 @@ export interface ReduceResult {
   dropReason?: DropReason;
   stream: StreamDecision | null;
   actions: ChatAction[];
-}
-
-function lastSequence(context: ReducerContext, streamID: string): number {
-  const source = context.lastSeqByStream;
-  if (source === undefined) {
-    return 0;
-  }
-  if (source instanceof Map) {
-    return source.get(streamID) ?? 0;
-  }
-  const value = (source as Readonly<Record<string, number>>)[streamID];
-  return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
 function streamOf(event: InboundChatEvent): { streamID: string | null; seq: number | null } {
@@ -459,9 +445,8 @@ function passesSessionFilter(event: InboundChatEvent, sessionID: string | null):
 }
 
 /**
- * Reduce one event. `stream.ready` resets stream identity before envelope acceptance, exactly like
- * the legacy handler. A duplicate sequence is dropped with no actions; a gap keeps the event and
- * asks the applier for a reconcile.
+ * Reduce one event. The stream adapter owns duplicate/gap detection; this reducer only mirrors the
+ * stream identity for diagnostics and never drops a frame for ordering.
  */
 export function reduceEvent(event: InboundChatEvent, context: ReducerContext): ReduceResult {
   if (event === null || typeof event !== "object") {
@@ -471,40 +456,28 @@ export function reduceEvent(event: InboundChatEvent, context: ReducerContext): R
 
   if (event.type === "stream.ready") {
     const reset = streamID !== null;
-    const changed = streamID !== null && streamID !== context.currentStreamID;
     return accepted([{ type: "stream/ready", streamID, reset }], {
       streamID,
       seq,
       reset,
-      changed,
+      changed: false,
       gap: false,
     });
   }
 
-  let streamAction: StreamSeqAction | null = null;
-  let streamDecision: StreamDecision | null = null;
-  if (streamID !== null) {
-    const changed = streamID !== context.currentStreamID;
-    if (!changed && seq !== null) {
-      const last = lastSequence(context, streamID);
-      if (seq <= last) {
-        return drop("duplicate");
-      }
-      const gap = last > 0 && seq > last + 1;
-      streamAction = { type: "stream/seq", streamID, seq, reset: false, changed: false, gap };
-      streamDecision = { streamID, seq, reset: false, changed: false, gap };
-    } else if (changed) {
-      streamAction = {
-        type: "stream/seq",
-        streamID,
-        seq: seq ?? 0,
-        reset: true,
-        changed: true,
-        gap: false,
-      };
-      streamDecision = { streamID, seq, reset: true, changed: true, gap: false };
-    }
-  }
+  const streamAction: StreamSeqAction | null =
+    streamID === null
+      ? null
+      : {
+          type: "stream/seq",
+          streamID,
+          seq: seq ?? 0,
+          reset: false,
+          changed: false,
+          gap: false,
+        };
+  const streamDecision: StreamDecision | null =
+    streamID === null ? null : { streamID, seq, reset: false, changed: false, gap: false };
 
   if (event.type === "stream.warning") {
     const warning = normalizeStreamWarning(event);

@@ -8,7 +8,8 @@ import {
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { historyReadBudget } from "../src/attachments/budget.js";
 import { uploadCoordinator } from "../src/attachments/quota.js";
 import { PendingRecovery } from "../src/chat/pending.js";
 import {
@@ -20,12 +21,13 @@ import {
 import { ChatSweep } from "../src/chat/sweep.js";
 import { CoordinatorService } from "../src/coordinator/service.js";
 import { GitService } from "../src/git/service.js";
-import { handleChat } from "../src/http/chat.js";
+import { handleChat, resetTurnSnapshotCacheForTests } from "../src/http/chat.js";
 import type { HttpDeps, HttpRequest } from "../src/http/handler.js";
 import { createHttpServer } from "../src/http/server.js";
 import { createPrincipal } from "../src/identity/principals.js";
 import type { InstanceManager } from "../src/opencode/manager.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
+import { textPart, userMessage } from "./fixtures/chat-turn.js";
 
 const dirs: string[] = [];
 const databases: SqliteDatabase[] = [];
@@ -33,6 +35,8 @@ const servers: Array<ReturnType<typeof createServer>> = [];
 const recoveries: PendingRecovery[] = [];
 
 afterEach(async () => {
+  resetTurnSnapshotCacheForTests();
+  historyReadBudget.resetForTests();
   uploadCoordinator.resetForTests();
   for (const recovery of recoveries.splice(0)) recovery.dispose();
   await Promise.all(
@@ -1217,5 +1221,110 @@ describe("attachment sends", () => {
     expect(body.messages[0]?.parts[0]?.url).toBe("");
     expect(body.messages[0]?.parts[0]?.truncated).toBe(true);
     expect(body.messages[0]?.info.hanse?.attachments).toHaveLength(1);
+  });
+});
+
+describe("turn route status resolution", () => {
+  function turnRequest(f: Fixture): HttpRequest {
+    return request({
+      path: "/api/apps/storefront/sessions/ses_1/turn",
+      query: { project: "p1" },
+      headers: auth(f.token),
+    });
+  }
+
+  it("reports unknown for a subagent absent from the status map", async () => {
+    const f = fixture();
+    const upstream = await fakeOpencode((incoming, outgoing) => {
+      const path = new URL(incoming.url ?? "/", "http://localhost").pathname;
+      if (incoming.method === "GET" && path === "/session/status") {
+        json(outgoing, {});
+        return;
+      }
+      if (incoming.method === "GET" && path === "/session") {
+        json(outgoing, [{ id: "ses_1", parentID: "ses_parent" }]);
+        return;
+      }
+      if (incoming.method === "GET" && path === "/session/ses_1/message") {
+        json(outgoing, [userMessage("msg_u1", [textPart("run")])]);
+        return;
+      }
+      outgoing.writeHead(404);
+      outgoing.end("missing");
+    });
+    useManager(f, upstream.endpoint);
+
+    const response = await handleChat(f.deps, turnRequest(f));
+
+    expect(response.status).toBe(200);
+    expect(JSON.parse(response.body)).toMatchObject({
+      status: { type: "unknown" },
+      queuedPromptIDs: ["msg_u1"],
+      runningPromptID: null,
+    });
+    expect(upstream.calls.map((call) => call.url.split("?")[0])).toEqual([
+      "/session/status",
+      "/session/ses_1/message",
+      "/session/status",
+      "/session",
+    ]);
+  });
+
+  it("returns 503 history_busy when the history budget is exhausted", async () => {
+    const f = fixture();
+    const upstream = await fakeOpencode((incoming, outgoing) => {
+      const path = new URL(incoming.url ?? "/", "http://localhost").pathname;
+      if (incoming.method === "GET" && path === "/session/status") {
+        json(outgoing, { ses_1: { type: "idle" } });
+        return;
+      }
+      json(outgoing, [userMessage("msg_u1", [textPart("run")])]);
+    });
+    useManager(f, upstream.endpoint);
+    const acquire = vi.spyOn(historyReadBudget, "acquire").mockResolvedValue(undefined);
+    try {
+      const response = await handleChat(f.deps, turnRequest(f));
+
+      expect(response.status).toBe(503);
+      expect(JSON.parse(response.body)).toEqual({
+        error: "history is busy; retry shortly",
+        code: "history_busy",
+      });
+    } finally {
+      acquire.mockRestore();
+    }
+  });
+
+  it("retries once and settles when the status keeps changing across the history read", async () => {
+    const f = fixture();
+    let statusReads = 0;
+    const phases = ["busy", "idle", "busy", "idle"];
+    const upstream = await fakeOpencode((incoming, outgoing) => {
+      const path = new URL(incoming.url ?? "/", "http://localhost").pathname;
+      if (incoming.method === "GET" && path === "/session/status") {
+        const phase = phases[Math.min(statusReads, phases.length - 1)];
+        statusReads += 1;
+        json(outgoing, { ses_1: { type: phase } });
+        return;
+      }
+      if (incoming.method === "GET" && path === "/session/ses_1/message") {
+        json(outgoing, [userMessage("msg_u1", [textPart("run")])]);
+        return;
+      }
+      outgoing.writeHead(404);
+      outgoing.end("missing");
+    });
+    useManager(f, upstream.endpoint);
+
+    const response = await handleChat(f.deps, turnRequest(f));
+
+    expect(response.status).toBe(200);
+    expect(statusReads).toBe(4);
+    expect(JSON.parse(response.body)).toMatchObject({
+      status: { type: "idle" },
+      settling: true,
+      queuedPromptIDs: ["msg_u1"],
+      activePromptID: "msg_u1",
+    });
   });
 });

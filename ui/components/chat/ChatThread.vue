@@ -39,6 +39,8 @@ const props = defineProps<{
   loadEarlierEnabled: boolean;
   messageCount?: string;
   generatingLabel?: string | null;
+  queuedCount?: number;
+  queuedTruncated?: boolean;
   startingAgent?: boolean;
   sessionTitle?: string;
   streamStatus?: ChatStreamStatusKind;
@@ -61,6 +63,7 @@ const emit = defineEmits<{
   "question-reject": [view: InlineQuestionView];
   "open-image": [attachment: AttachmentView];
   "open-context": [section: "context" | "plan"];
+  "open-queue": [];
   start: [];
 }>();
 
@@ -72,6 +75,29 @@ const sessionTitleText = computed(() => {
 const sessionShortId = computed(() =>
   props.sessionId === null ? "" : props.sessionId.slice(0, 8),
 );
+const turnStatus = computed(() => {
+  const full = props.generatingLabel?.trim() ?? "";
+  if (full.length === 0 || props.stopped) return null;
+  const count =
+    typeof props.queuedCount === "number" && Number.isFinite(props.queuedCount)
+      ? Math.max(0, Math.floor(props.queuedCount))
+      : 0;
+  const truncated = props.queuedTruncated === true && count > 0;
+  const suffix = count > 0 ? ` · ${count}${truncated ? "+" : ""} queued` : "";
+  const label = suffix.length > 0 && full.endsWith(suffix) ? full.slice(0, -suffix.length) : full;
+  return { label, count, truncated };
+});
+const queueButtonLabel = computed(() => {
+  const status = turnStatus.value;
+  if (status === null || status.count === 0) return "Queued messages";
+  const count = `${status.count}${status.truncated ? "+" : ""}`;
+  return `Show ${count} queued ${status.count === 1 ? "message" : "messages"}`;
+});
+const queueButtonText = computed(() => {
+  const status = turnStatus.value;
+  if (status === null || status.count === 0) return "";
+  return `· ${status.count}${status.truncated ? "+" : ""} queued`;
+});
 const liveState = computed(() => {
   if (props.streamStatus === "live") return "live";
   if (props.streamStatus === "paused") return "paused";
@@ -433,6 +459,29 @@ defineExpose({ captureAnchor, restoreAnchor, scrollToBottom, onScroll, unseen })
       </div>
       <div class="chat-thread__chips">
         <span
+          class="chat-turn-status"
+          data-chat-turn-status
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+        >
+          <template v-if="turnStatus !== null">
+            <span class="chat-turn-status__label" data-chat-turn-label>{{ turnStatus.label }}</span>
+            <button
+              v-if="turnStatus.count > 0"
+              class="btn btn-ghost btn-sm chat-turn-status__queue"
+              type="button"
+              :aria-label="queueButtonLabel"
+              aria-haspopup="dialog"
+              aria-controls="chat-queue-dialog"
+              data-chat-queue-open
+              @click="emit('open-queue')"
+            >
+              {{ queueButtonText }}
+            </button>
+          </template>
+        </span>
+        <span
           class="chat-waiting"
           :class="{ 'chat-meta-placeholder': waiting !== true }"
           :aria-hidden="waiting !== true"
@@ -679,7 +728,6 @@ defineExpose({ captureAnchor, restoreAnchor, scrollToBottom, onScroll, unseen })
         </span>
       </div>
     </div>
-    <slot name="queue-strip" />
     <slot name="session-notice" />
     <slot name="prompt-dock" />
     <slot name="composer" />

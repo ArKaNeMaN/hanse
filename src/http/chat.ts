@@ -45,6 +45,7 @@ import {
 import {
   createEventAttachmentResolver,
   createMessageProjector,
+  type MessageProjector,
 } from "../attachments/projection.js";
 import {
   activeUploadIds,
@@ -109,6 +110,7 @@ import {
   upsertSessionState,
   writeDraft,
 } from "../chat/state.js";
+import { deriveTurn, hasVisibleAssistant, type TurnSnapshot } from "../chat/turn.js";
 import { projectHandoffMessages } from "../coordinator/handoff-messages.js";
 import {
   abortSession,
@@ -119,14 +121,17 @@ import {
   lastAssistant,
   listMessagePage,
   listMessages,
+  listSessionStatusesStrict,
   listSessions,
   listSessionsBounded,
   MESSAGES_EMPTY_CHECK_MAX_BYTES,
   OpencodeHttpError,
   type OpencodeMessage,
+  type OpencodeSessionStatus,
   patchSessionTitle,
   sendPrompt,
   sendPromptAsync,
+  TURN_TAIL_MAX_BYTES,
 } from "../opencode/client.js";
 import { authorizationFor } from "../opencode/endpoint-auth.js";
 import { APP_STREAM_MAX_FRAME_BYTES, createRawEventStream } from "../opencode/events.js";
@@ -2025,6 +2030,191 @@ async function readMessagesResponse(
   }
 }
 
+const TURN_CACHE_TTL_MS = 300;
+const TURN_PAGE_LIMIT = 50;
+const TURN_PAGE_BUDGET = 3;
+
+interface TurnCacheEntry {
+  expiresAt: number;
+  snapshot: TurnSnapshot;
+}
+
+interface TurnTail {
+  messages: OpencodeMessage[];
+  truncated: boolean;
+}
+
+const turnSnapshotCache = new Map<string, TurnCacheEntry>();
+const turnSnapshotInflight = new Map<string, Promise<TurnSnapshot>>();
+let turnSnapshotEpoch = 0;
+
+function turnCacheKey(appId: string, sessionId: string, endpoint: string): string {
+  return `${appId}\u0000${sessionId}\u0000${endpoint}`;
+}
+
+/** Test isolation for the process-wide turn cache; production invalidation is send-driven. */
+export function resetTurnSnapshotCacheForTests(): void {
+  turnSnapshotCache.clear();
+  turnSnapshotInflight.clear();
+  turnSnapshotEpoch += 1;
+}
+
+function invalidateTurnSnapshotCache(appId: string, sessionId: string): void {
+  turnSnapshotEpoch += 1;
+  const prefix = `${appId}\u0000${sessionId}\u0000`;
+  for (const key of turnSnapshotCache.keys()) {
+    if (key.startsWith(prefix)) turnSnapshotCache.delete(key);
+  }
+  for (const key of turnSnapshotInflight.keys()) {
+    if (key.startsWith(prefix)) turnSnapshotInflight.delete(key);
+  }
+}
+
+function statusPhase(status: OpencodeSessionStatus | undefined): string {
+  if (status === undefined) return "idle";
+  if (status.type === "idle" || status.type === "busy" || status.type === "retry") {
+    return status.type;
+  }
+  return "unknown";
+}
+
+async function sessionIsSubagent(endpoint: string, sessionId: string): Promise<boolean> {
+  try {
+    const sessions = await listSessionsBounded(endpoint);
+    const session = sessions.find((candidate) => candidate.id === sessionId);
+    const parentID = session?.parentID;
+    return typeof parentID === "string" && parentID.trim().length > 0 && parentID !== sessionId;
+  } catch {
+    // Best effort: an unreadable session list leaves the session treated as top-level.
+    return false;
+  }
+}
+
+async function readTurnTail(
+  endpoint: string,
+  sessionId: string,
+  project: MessageProjector,
+): Promise<TurnTail> {
+  let messages: OpencodeMessage[] = [];
+  let before: string | undefined;
+  for (let pageIndex = 0; pageIndex < TURN_PAGE_BUDGET; pageIndex += 1) {
+    const page = await listMessagePage(endpoint, sessionId, {
+      limit: TURN_PAGE_LIMIT,
+      ...(before === undefined ? {} : { before }),
+      maxBytes: TURN_TAIL_MAX_BYTES,
+      project,
+    });
+    messages = [...page.messages, ...messages];
+    if (hasVisibleAssistant(messages)) return { messages, truncated: false };
+    if (page.nextCursor === undefined) return { messages, truncated: false };
+    if (pageIndex === TURN_PAGE_BUDGET - 1) break;
+    before = page.nextCursor;
+  }
+  return { messages, truncated: true };
+}
+
+async function computeTurnSnapshot(
+  deps: HttpDeps,
+  found: FoundApp,
+  endpoint: string,
+  sessionId: string,
+): Promise<TurnSnapshot> {
+  const project = createMessageProjector({
+    db: deps.db,
+    appId: found.app.id,
+    appKey: found.app.appKey,
+    projectId: found.project.id,
+    ...(agentMediaServiceFor(deps, found) === undefined
+      ? {}
+      : { agentMedia: agentMediaServiceFor(deps, found) }),
+  });
+  const projectHistory = (messages: Parameters<typeof project>[0]): void => {
+    project(messages);
+    projectHandoffMessages(deps.db, sessionId, messages);
+  };
+
+  let tail: TurnTail = { messages: [], truncated: false };
+  let status: OpencodeSessionStatus | undefined;
+  let settling = false;
+  for (let attempt = 0; ; attempt += 1) {
+    const before = await listSessionStatusesStrict(endpoint);
+    tail = await readTurnTail(endpoint, sessionId, projectHistory);
+    const after = await listSessionStatusesStrict(endpoint);
+    const changed = statusPhase(before[sessionId]) !== statusPhase(after[sessionId]);
+    status = after[sessionId];
+    if (!changed || attempt >= 1) {
+      settling = changed && statusPhase(status) === "idle";
+      break;
+    }
+  }
+
+  const isSubagent = status === undefined && (await sessionIsSubagent(endpoint, sessionId));
+  return {
+    ...deriveTurn(tail.messages, status, {
+      isSubagent,
+      settling,
+      queuedTruncated: tail.truncated,
+    }),
+    sessionID: sessionId,
+  };
+}
+
+async function turnSnapshotFor(
+  deps: HttpDeps,
+  found: FoundApp,
+  endpoint: string,
+  sessionId: string,
+): Promise<TurnSnapshot> {
+  const key = turnCacheKey(found.app.id, sessionId, endpoint);
+  const cached = turnSnapshotCache.get(key);
+  if (cached !== undefined) {
+    if (cached.expiresAt > Date.now()) return cached.snapshot;
+    turnSnapshotCache.delete(key);
+  }
+  const inflight = turnSnapshotInflight.get(key);
+  if (inflight !== undefined) return inflight;
+
+  const epoch = turnSnapshotEpoch;
+  const work = computeTurnSnapshot(deps, found, endpoint, sessionId);
+  turnSnapshotInflight.set(key, work);
+  try {
+    const snapshot = await work;
+    if (epoch === turnSnapshotEpoch) {
+      turnSnapshotCache.set(key, { expiresAt: Date.now() + TURN_CACHE_TTL_MS, snapshot });
+    }
+    return snapshot;
+  } finally {
+    if (turnSnapshotInflight.get(key) === work) turnSnapshotInflight.delete(key);
+  }
+}
+
+async function readTurnResponse(
+  deps: HttpDeps,
+  found: FoundApp,
+  sessionId: string,
+): Promise<HttpResponse> {
+  if (deps.manager === undefined) return agentStoppedResponse();
+  try {
+    return await withReadEndpoint(deps, found, async (endpoint) =>
+      json(200, await turnSnapshotFor(deps, found, endpoint, sessionId)),
+    );
+  } catch (error) {
+    if (error instanceof AgentStoppedError) return agentStoppedResponse();
+    if (error instanceof OpencodeHttpError) {
+      if (error.status === 404 || error.status === 410) {
+        return json(404, { error: "session not found", code: "session_not_found" });
+      }
+      if (error.code === "messages_too_large") {
+        return json(502, { error: "turn history is too large", code: "messages_too_large" });
+      }
+      if (error.code === "history_busy") {
+        return json(503, { error: "history is busy; retry shortly", code: "history_busy" });
+      }
+    }
+    return json(502, { error: "turn state is unavailable", code: "turn_unavailable" });
+  }
+}
+
 export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<HttpResponse> {
   const projectId = projectParam(request);
 
@@ -2035,6 +2225,7 @@ export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<
   const sessionsMatch = /^\/api\/apps\/([^/]+)\/sessions$/.exec(request.path);
   const sessionMatch = /^\/api\/apps\/([^/]+)\/sessions\/([^/]+)$/.exec(request.path);
   const messagesMatch = /^\/api\/apps\/([^/]+)\/sessions\/([^/]+)\/messages$/.exec(request.path);
+  const turnMatch = /^\/api\/apps\/([^/]+)\/sessions\/([^/]+)\/turn$/.exec(request.path);
   const noticesMatch = /^\/api\/apps\/([^/]+)\/sessions\/([^/]+)\/notices$/.exec(request.path);
   const abortMatch = /^\/api\/apps\/([^/]+)\/sessions\/([^/]+)\/abort$/.exec(request.path);
   const draftMatch = /^\/api\/apps\/([^/]+)\/sessions\/([^/]+)\/draft$/.exec(request.path);
@@ -2052,6 +2243,7 @@ export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<
     sessionsMatch === null &&
     sessionMatch === null &&
     messagesMatch === null &&
+    turnMatch === null &&
     noticesMatch === null &&
     abortMatch === null &&
     draftMatch === null &&
@@ -2085,6 +2277,12 @@ export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<
   if (noticesMatch !== null && request.method !== "GET") {
     return json(405, { error: "method not allowed" });
   }
+  if (turnMatch !== null && principal.kind !== "human") {
+    return json(403, { error: "only a human principal may read the turn state" });
+  }
+  if (turnMatch !== null && request.method !== "GET") {
+    return json(405, { error: "method not allowed" });
+  }
   const humanOnly =
     draftMatch !== null ||
     touchMatch !== null ||
@@ -2100,6 +2298,7 @@ export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<
     (sessionsMatch ??
       sessionMatch ??
       messagesMatch ??
+      turnMatch ??
       noticesMatch ??
       abortMatch ??
       draftMatch ??
@@ -2126,6 +2325,7 @@ export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<
   const sessionId = safeDecode(
     (sessionMatch ??
       messagesMatch ??
+      turnMatch ??
       noticesMatch ??
       abortMatch ??
       draftMatch ??
@@ -2210,6 +2410,12 @@ export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<
       ...(before === undefined ? {} : { before }),
     });
     return json(200, page);
+  }
+  if (turnMatch !== null) {
+    if (found.app.deleting || found.project.deleting) {
+      return json(409, { error: "application is pending deletion", code: "deletion_pending" });
+    }
+    return readTurnResponse(deps, found, sessionId);
   }
   if (deps.manager === undefined) {
     return json(503, { error: "agent runtime is not configured" });
@@ -2358,7 +2564,7 @@ export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<
         typeof body.streamID === "string"
           ? body.streamID
           : request.headers["x-hanse-stream"]?.trim() || undefined;
-      return dispatchTextSend(
+      const sent = await dispatchTextSend(
         deps,
         found,
         endpoint,
@@ -2368,6 +2574,10 @@ export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<
         requested,
         streamID,
       );
+      if (sent.status === 200 || sent.status === 202) {
+        invalidateTurnSnapshotCache(found.app.id, sessionId);
+      }
+      return sent;
     }
   } catch (error) {
     if (error instanceof DeletionPendingError) {

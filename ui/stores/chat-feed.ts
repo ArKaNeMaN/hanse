@@ -55,6 +55,14 @@ export interface RecomputeResult {
   nextActivePromptID: string | null;
 }
 
+export interface TurnProjection {
+  readonly statusType: "idle" | "busy" | "retry" | "unknown" | null;
+  readonly turnContinues: boolean;
+  readonly runningPromptID: string | null;
+  readonly activePromptID: string | null;
+  readonly queuedPromptIDs: readonly string[];
+}
+
 function noticeSessionMatches(notice: NoticeView, sessionID: string | null): boolean {
   return typeof notice.sessionId !== "string" || notice.sessionId === sessionID;
 }
@@ -104,7 +112,7 @@ export const useChatFeedStore = defineStore("chat-feed", () => {
   const streamWarning = ref<string | null>(null);
   const streamPaused = ref(false);
   const revision = ref(0);
-  let queuePromotionGuard: ((statusType: string | undefined) => boolean) | null = null;
+  let turnProjection: TurnProjection | null = null;
 
   function touch(): void {
     revision.value += 1;
@@ -133,6 +141,13 @@ export const useChatFeedStore = defineStore("chat-feed", () => {
     clearDirty();
     streamWarning.value = null;
     streamPaused.value = false;
+    turnProjection = {
+      statusType: null,
+      turnContinues: false,
+      runningPromptID: null,
+      activePromptID: null,
+      queuedPromptIDs: [],
+    };
     touch();
   }
 
@@ -159,6 +174,7 @@ export const useChatFeedStore = defineStore("chat-feed", () => {
       record = {
         id,
         role,
+        origin: "server",
         partOrder: [],
         parts: new Map<string, FeedPartRecord>(),
         version: 1,
@@ -189,12 +205,6 @@ export const useChatFeedStore = defineStore("chat-feed", () => {
     delete record.system;
   }
 
-  function setQueuePromotionGuard(
-    guard: ((statusType: string | undefined) => boolean) | null,
-  ): void {
-    queuePromotionGuard = guard;
-  }
-
   function insertOptimisticMessage(input: {
     id: string;
     text: string;
@@ -213,6 +223,7 @@ export const useChatFeedStore = defineStore("chat-feed", () => {
     const record: FeedMessageRecord = {
       id: input.id,
       role: "user",
+      origin: "local",
       optimistic: "sending",
       partOrder: [partID],
       parts: new Map([[partID, part]]),
@@ -270,36 +281,67 @@ export const useChatFeedStore = defineStore("chat-feed", () => {
     return true;
   }
 
-  function recomputeQueue(): RecomputeResult {
+  function projectTurn(): RecomputeResult {
     const current = thread.value;
-    const statusType = current.agentStatus?.type;
-    const derived = deriveQueue(current, {
-      sessionStatusType: statusType,
-      ...(queuePromotionGuard === null ? {} : { allowPromotion: queuePromotionGuard(statusType) }),
-    });
-    current.queue = [...derived.queuedIDs];
-    current.activePromptID = derived.nextActivePromptID;
+    const projection = turnProjection;
+    if (projection === null) {
+      const statusType = current.agentStatus?.type;
+      const derived = deriveQueue(current, { sessionStatusType: statusType });
+      current.queue = [...derived.queuedIDs];
+      current.activePromptID = derived.nextActivePromptID;
+      return derived;
+    }
+    const queued = [...projection.queuedPromptIDs];
+    current.queue = queued;
+    current.activePromptID = projection.activePromptID;
+    const queuedSet = new Set(queued);
     for (const id of current.order) {
       const record = current.messages.get(id);
-      if (record === undefined || record.optimistic === undefined) {
+      if (record === undefined || record.origin === "local") {
         continue;
       }
-      if (record.optimistic === "sending" || record.optimistic === "unknown") {
+      if (
+        record.optimistic === "sending" ||
+        record.optimistic === "unknown" ||
+        record.optimistic === "failed"
+      ) {
         continue;
       }
-      if (record.optimistic === "failed") {
-        continue;
-      }
-      if (id === derived.activeID) {
-        record.optimistic = "accepted";
-      } else if (derived.queuedIDs.includes(id)) {
+      if (queuedSet.has(id) && id !== projection.runningPromptID) {
         record.optimistic = "queued";
-      } else {
+      } else if (record.optimistic === "queued" || record.optimistic === "accepted") {
         record.optimistic = "accepted";
       }
     }
+    return {
+      activeID: projection.runningPromptID ?? projection.activePromptID,
+      queuedIDs: queued,
+      turnContinues: projection.turnContinues,
+      nextActivePromptID: projection.activePromptID,
+    };
+  }
+
+  function recomputeQueue(): RecomputeResult {
+    const result = projectTurn();
     touch();
-    return derived;
+    return result;
+  }
+
+  /**
+   * Apply the authoritative server turn to the feed status, queue, and row presentation.
+   * Local (client-only) rows are never part of the queue or its count.
+   */
+  function applyTurnState(projection: TurnProjection): void {
+    turnProjection = projection;
+    if (
+      projection.statusType === "idle" ||
+      projection.statusType === "busy" ||
+      projection.statusType === "retry"
+    ) {
+      setAgentStatus({ type: projection.statusType });
+    }
+    projectTurn();
+    touch();
   }
 
   function upsertMessage(action: MessageUpsertAction): FeedMessageRecord {
@@ -494,7 +536,10 @@ export const useChatFeedStore = defineStore("chat-feed", () => {
   }
 
   function applySnapshot(snapshotMessages: unknown, options: SnapshotOptions = {}): SnapshotResult {
-    const result = applySnapshotCore(thread.value, snapshotMessages, options);
+    const result = applySnapshotCore(thread.value, snapshotMessages, {
+      ...options,
+      ...(turnProjection === null ? {} : { turn: turnProjection }),
+    });
     thread.value = markRaw(result.store);
     for (const id of thread.value.order) {
       markMessageDirty(id);
@@ -510,7 +555,10 @@ export const useChatFeedStore = defineStore("chat-feed", () => {
     allowPromotion?: boolean;
     bufferedEvents?: readonly unknown[];
   }): { consumed: boolean } {
-    const result = rekeyOptimisticCore(thread.value, options);
+    const result = rekeyOptimisticCore(thread.value, {
+      ...options,
+      ...(turnProjection === null ? {} : { turn: turnProjection }),
+    });
     thread.value = markRaw(result.store);
     if (options.serverID !== undefined) {
       const record = thread.value.messages.get(options.serverID);
@@ -539,8 +587,6 @@ export const useChatFeedStore = defineStore("chat-feed", () => {
     current.agentStatus = status;
     if (next === "idle") {
       settleIdle();
-    } else {
-      recomputeQueue();
     }
     touch();
   }
@@ -562,7 +608,6 @@ export const useChatFeedStore = defineStore("chat-feed", () => {
         markMessageDirty(id);
       }
     }
-    recomputeQueue();
     touch();
   }
 
@@ -724,7 +769,7 @@ export const useChatFeedStore = defineStore("chat-feed", () => {
     removeMessage,
     setOptimisticState,
     clearOptimisticState,
-    setQueuePromotionGuard,
+    applyTurnState,
     upsertPart,
     appendDelta,
     markPartOmitted,

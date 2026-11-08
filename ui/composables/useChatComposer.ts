@@ -2,8 +2,8 @@
  * Composer lifecycle: draft persistence, optimistic send/delivery, pending recovery, and abort.
  *
  * Exactly one instance exists per ChatPage mount. It is the only owner of the draft timers,
- * keepalive flushes, send/abort generations, intentional-abort window, and queue-promotion
- * suppression writes through `ui/chat/session-storage.ts`.
+ * keepalive flushes, send/abort generations, the intentional-abort window, the bounded
+ * `sending -> unknown` transition, and draft/send persistence.
  */
 
 import { type ComputedRef, computed, nextTick, onBeforeUnmount, watch } from "vue";
@@ -54,16 +54,13 @@ import {
   sendFailureMessage,
   sessionsUrl,
 } from "../chat/send.js";
-import {
-  blockQueuePromotion,
-  queuePromotionAllowed,
-  unblockQueuePromotion,
-} from "../chat/session-storage.js";
+import { useChatTurnStore } from "../chat/turn-state.js";
 import { useChatComposerStore } from "../stores/chat-composer.js";
 import { useChatFeedStore } from "../stores/chat-feed.js";
 
 const DRAFT_SAVE_DEBOUNCE_MS = 500;
 const UNKNOWN_GRACE_MS = 1_500;
+const SEND_UNKNOWN_TIMEOUT_MS = 15_000;
 const DELETE_IF_EMPTY_DEBOUNCE_MS = 1_000;
 const ABORT_SETTLE_INTERVAL_MS = 400;
 const ABORT_SETTLE_MAX_TICKS = 12;
@@ -99,6 +96,7 @@ type Timer = ReturnType<typeof setTimeout>;
 export function useChatComposer(options: UseChatComposerOptions) {
   const store = useChatComposerStore();
   const feed = useChatFeedStore();
+  const turn = useChatTurnStore();
   const draft = computed(() => store.draft);
   const error = computed(() => store.error);
   const delivery = computed(() => store.delivery);
@@ -124,6 +122,7 @@ export function useChatComposer(options: UseChatComposerOptions) {
   let editSeq = 0;
   let draftTimer: Timer | undefined;
   let unknownGraceTimer: Timer | undefined;
+  let sendTimeoutTimer: Timer | undefined;
   let deleteEmptyTimer: Timer | undefined;
   let pendingPollTimer: Timer | undefined;
   let pendingPollAttempts = 0;
@@ -150,11 +149,6 @@ export function useChatComposer(options: UseChatComposerOptions) {
   function currentStatusType(): string | undefined {
     const status = feed.thread.agentStatus;
     return status !== null && typeof status.type === "string" ? status.type : undefined;
-  }
-
-  function promotionAllowed(statusType = currentStatusType()): boolean {
-    const id = options.sessionID.value;
-    return id === null ? true : queuePromotionAllowed(scope(), id, statusType);
   }
 
   const turnActive = computed(() => {
@@ -204,6 +198,31 @@ export function useChatComposer(options: UseChatComposerOptions) {
       clearTimeout(unknownGraceTimer);
       unknownGraceTimer = undefined;
     }
+  }
+
+  function cancelSendTimeout(): void {
+    if (sendTimeoutTimer !== undefined) {
+      clearTimeout(sendTimeoutTimer);
+      sendTimeoutTimer = undefined;
+    }
+  }
+
+  function scheduleSendTimeout(session: string, seq: number, tempID: string): void {
+    cancelSendTimeout();
+    sendTimeoutTimer = setTimeout(() => {
+      sendTimeoutTimer = undefined;
+      if (disposed || seq !== actionSeq || options.sessionID.value !== session) {
+        return;
+      }
+      if (store.delivery !== "sending") {
+        return;
+      }
+      feed.setOptimisticState(tempID, "unknown");
+      store.markUnknown(null);
+      scheduleUnknownGrace(session);
+      void loadDraft(session, { applyText: false });
+      void options.refreshMessages(session);
+    }, SEND_UNKNOWN_TIMEOUT_MS);
   }
 
   function cancelDeleteEmpty(): void {
@@ -694,6 +713,7 @@ export function useChatComposer(options: UseChatComposerOptions) {
     actionSeq += 1;
     cancelDraftTimer();
     cancelUnknownGrace();
+    cancelSendTimeout();
     cancelDeleteEmpty();
     cancelPendingPoll();
     stopAbortSettle();
@@ -843,6 +863,7 @@ export function useChatComposer(options: UseChatComposerOptions) {
       feed.insertOptimisticMessage({ id: tempID, text, attachments: sentViews });
       store.beginAcceptance({ tempID, text, sessionID: session });
       store.setLastSaved(session, "");
+      scheduleSendTimeout(session, seq, tempID);
       let response: unknown;
       try {
         response = await postPrompt(
@@ -862,6 +883,8 @@ export function useChatComposer(options: UseChatComposerOptions) {
         } else {
           throw caught;
         }
+      } finally {
+        cancelSendTimeout();
       }
       if (seq !== actionSeq || options.sessionID.value !== session) {
         return false;
@@ -872,18 +895,9 @@ export function useChatComposer(options: UseChatComposerOptions) {
         throw unknown;
       }
       store.setServerID(serverID);
-      feed.rekeyOptimistic({
-        tempID,
-        serverID,
-        sessionStatusType: currentStatusType(),
-        allowPromotion: promotionAllowed(),
-      });
-      const queued = feed.recomputeQueue().queuedIDs.includes(serverID);
-      store.setAcceptanceState(queued ? "queued" : "accepted");
-      if (!queued) {
-        feed.clearOptimisticState(serverID);
-      }
-      unblockQueuePromotion(scope(), session);
+      feed.rekeyOptimistic({ tempID, serverID });
+      store.setAcceptanceState("accepted");
+      feed.clearOptimisticState(serverID);
       clearSentDraft(session, text);
       const sentKeys = new Set(sentChips.map((chip) => chip.key));
       if (store.attachments.some((chip) => sentKeys.has(chip.key))) {
@@ -909,12 +923,7 @@ export function useChatComposer(options: UseChatComposerOptions) {
       }
       if (failure.kind === "unknown") {
         if (tempID !== null && failure.messageID !== null) {
-          feed.rekeyOptimistic({
-            tempID,
-            serverID: failure.messageID,
-            sessionStatusType: currentStatusType(),
-            allowPromotion: promotionAllowed(),
-          });
+          feed.rekeyOptimistic({ tempID, serverID: failure.messageID });
           feed.setOptimisticState(failure.messageID, "unknown");
         } else if (tempID !== null) {
           feed.setOptimisticState(tempID, "unknown");
@@ -1067,6 +1076,7 @@ export function useChatComposer(options: UseChatComposerOptions) {
     stopAbortSettle();
     if (options.sessionID.value === session) {
       store.setAbortPending(false);
+      turn.finishAbortSettle(session);
       feed.setAgentStatus({ type: "idle" });
       feed.settleIdle();
     }
@@ -1099,6 +1109,7 @@ export function useChatComposer(options: UseChatComposerOptions) {
     }
     const seq = ++actionSeq;
     cancelUnknownGrace();
+    cancelSendTimeout();
     const sending = store.acceptance;
     store.setAbortPending(true);
     store.setError(null);
@@ -1113,7 +1124,7 @@ export function useChatComposer(options: UseChatComposerOptions) {
         return;
       }
       if (result !== null && typeof result === "object" && result.aborted === true) {
-        blockQueuePromotion(scope(), session);
+        turn.startAbortSettle(session);
         if (sending !== null && sending.state === "sending" && sending.sessionID === session) {
           const target = sending.serverID ?? sending.tempID;
           if (target !== null) {
@@ -1127,7 +1138,6 @@ export function useChatComposer(options: UseChatComposerOptions) {
         return;
       }
       store.setAbortPending(false);
-      unblockQueuePromotion(scope(), session);
       suppressAbortUntil.delete(session);
       store.setError("The turn was already idle.");
     } catch (caught) {
@@ -1135,7 +1145,6 @@ export function useChatComposer(options: UseChatComposerOptions) {
         return;
       }
       store.setAbortPending(false);
-      unblockQueuePromotion(scope(), session);
       suppressAbortUntil.delete(session);
       store.setError(
         caught instanceof Error && caught.message.trim().length > 0
@@ -1170,7 +1179,6 @@ export function useChatComposer(options: UseChatComposerOptions) {
       return;
     }
     if ((type === "busy" || type === "retry") && !store.abortPending) {
-      unblockQueuePromotion(scope(), sessionID);
       suppressAbortUntil.delete(sessionID);
       stopAbortSettle();
     }
@@ -1227,7 +1235,6 @@ export function useChatComposer(options: UseChatComposerOptions) {
     cleanup.push(() => target.removeEventListener(event, listener));
   }
 
-  feed.setQueuePromotionGuard((statusType) => promotionAllowed(statusType));
   if (typeof window !== "undefined") {
     addListener(window, "pagehide", onPageHide);
     addListener(document, "visibilitychange", onVisibilityChange);
@@ -1253,6 +1260,7 @@ export function useChatComposer(options: UseChatComposerOptions) {
     flushForSwitch();
     cancelDraftTimer();
     cancelUnknownGrace();
+    cancelSendTimeout();
     cancelDeleteEmpty();
     cancelPendingPoll();
     stopAbortSettle();
@@ -1267,7 +1275,6 @@ export function useChatComposer(options: UseChatComposerOptions) {
     for (const remove of cleanup.splice(0)) {
       remove();
     }
-    feed.setQueuePromotionGuard(null);
     store.reset();
   });
 
@@ -1299,7 +1306,6 @@ export function useChatComposer(options: UseChatComposerOptions) {
     restorePending,
     shouldSuppressAbort,
     noteAgentStatus,
-    promotionAllowed,
     createSession,
     addFiles,
     retryAttachment,

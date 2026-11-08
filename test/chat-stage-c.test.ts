@@ -10,19 +10,21 @@ import { appStreams } from "../src/attachments/streams.js";
 import { insertEmptySessionState } from "../src/chat/state.js";
 import { CoordinatorService } from "../src/coordinator/service.js";
 import { GitService } from "../src/git/service.js";
-import { handleChat } from "../src/http/chat.js";
+import { handleChat, resetTurnSnapshotCacheForTests } from "../src/http/chat.js";
 import type { HttpDeps, HttpRequest } from "../src/http/handler.js";
 import { streamAppEvents } from "../src/http/prompts.js";
 import { createHttpServer } from "../src/http/server.js";
 import { createPrincipal } from "../src/identity/principals.js";
 import type { InstanceManager } from "../src/opencode/manager.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
+import { assistantMessage, manifestPart, textPart, userMessage } from "./fixtures/chat-turn.js";
 
 const dirs: string[] = [];
 const databases: SqliteDatabase[] = [];
 const servers: Array<ReturnType<typeof createServer>> = [];
 
 afterEach(async () => {
+  resetTurnSnapshotCacheForTests();
   appStreams.resetForTests();
   await Promise.all(
     servers.splice(0).map(
@@ -732,5 +734,172 @@ describe("legacy session stream", () => {
     const text = await response.text();
     expect(text).not.toContain("data:image");
     expect(text).toContain("/api/apps/storefront/attachments/att_img?project=p1");
+  });
+});
+
+describe("turn route bounded history", () => {
+  function turnRequest(f: Fixture): HttpRequest {
+    return request({
+      path: "/api/apps/storefront/sessions/ses_1/turn",
+      query: { project: "p1" },
+      headers: auth(f.token),
+    });
+  }
+
+  it("counts a file-mode attachment-only send through the history projector", async () => {
+    const f = fixture();
+    insertAttachment(f, { id: "att_1", kind: "file", mime: "text/csv", size: 4 });
+    insertDelivery(f, {
+      id: "del_1",
+      attachmentId: "att_1",
+      partId: null,
+      messageId: "msg_att",
+    });
+    const upstream = await fakeOpencode((incoming, outgoing) => {
+      const path = new URL(incoming.url ?? "/", "http://localhost").pathname;
+      if (incoming.method === "GET" && path === "/session/status") {
+        json(outgoing, { ses_1: { type: "idle" } });
+        return;
+      }
+      if (incoming.method === "GET" && path === "/session/ses_1/message") {
+        json(outgoing, [
+          userMessage("msg_u1", [textPart("first")]),
+          assistantMessage("msg_a1", [textPart("done")], {
+            parentID: "msg_u1",
+            finish: "stop",
+            completed: true,
+          }),
+          userMessage("msg_att", [manifestPart()]),
+        ]);
+        return;
+      }
+      outgoing.writeHead(404);
+      outgoing.end("missing");
+    });
+    useManager(f, upstream.endpoint);
+
+    const response = await handleChat(f.deps, turnRequest(f));
+
+    expect(response.status).toBe(200);
+    expect(JSON.parse(response.body)).toMatchObject({
+      status: { type: "idle" },
+      queuedPromptIDs: ["msg_att"],
+      activePromptID: "msg_att",
+    });
+  });
+
+  it("pages backward within the budget and marks a truncated queue", async () => {
+    const f = fixture();
+    const page = (prefix: string, nextCursor: string | undefined) => {
+      const messages = Array.from({ length: 50 }, (_, index) =>
+        userMessage(`${prefix}_${index}`, [textPart(`prompt ${index}`)]),
+      );
+      return { messages, nextCursor };
+    };
+    const pages = new Map<string, ReturnType<typeof page>>([
+      ["", page("msg_p1", "c1")],
+      ["c1", page("msg_p2", "c2")],
+      ["c2", page("msg_p3", "c3")],
+    ]);
+    const upstream = await fakeOpencode((incoming, outgoing) => {
+      const url = new URL(incoming.url ?? "/", "http://localhost");
+      if (incoming.method === "GET" && url.pathname === "/session/status") {
+        json(outgoing, { ses_1: { type: "idle" } });
+        return;
+      }
+      if (incoming.method === "GET" && url.pathname === "/session/ses_1/message") {
+        const before = url.searchParams.get("before") ?? "";
+        const selected = pages.get(before);
+        if (selected === undefined) {
+          outgoing.writeHead(404);
+          outgoing.end("missing");
+          return;
+        }
+        outgoing.writeHead(200, {
+          "content-type": "application/json",
+          ...(selected.nextCursor === undefined ? {} : { "x-next-cursor": selected.nextCursor }),
+        });
+        outgoing.end(JSON.stringify(selected.messages));
+        return;
+      }
+      outgoing.writeHead(404);
+      outgoing.end("missing");
+    });
+    useManager(f, upstream.endpoint);
+
+    const response = await handleChat(f.deps, turnRequest(f));
+
+    expect(response.status).toBe(200);
+    const body = JSON.parse(response.body) as {
+      queuedPromptIDs: string[];
+      queuedTruncated: boolean;
+    };
+    expect(body.queuedTruncated).toBe(true);
+    expect(body.queuedPromptIDs).toHaveLength(150);
+    expect(body.queuedPromptIDs[0]).toBe("msg_p3_0");
+    expect(body.queuedPromptIDs.at(-1)).toBe("msg_p1_49");
+  });
+
+  it("maps an oversized turn tail to 502 messages_too_large", async () => {
+    const f = fixture();
+    const huge = "x".repeat(3 * 1024 * 1024);
+    const upstream = await fakeOpencode((incoming, outgoing) => {
+      const path = new URL(incoming.url ?? "/", "http://localhost").pathname;
+      if (incoming.method === "GET" && path === "/session/status") {
+        json(outgoing, { ses_1: { type: "idle" } });
+        return;
+      }
+      if (incoming.method === "GET" && path === "/session/ses_1/message") {
+        json(outgoing, [userMessage("msg_u1", [textPart(huge)])]);
+        return;
+      }
+      outgoing.writeHead(404);
+      outgoing.end("missing");
+    });
+    useManager(f, upstream.endpoint);
+
+    const response = await handleChat(f.deps, turnRequest(f));
+
+    expect(response.status).toBe(502);
+    expect(JSON.parse(response.body)).toEqual({
+      error: "turn history is too large",
+      code: "messages_too_large",
+    });
+  });
+
+  it("returns a completed idle turn with an empty queue", async () => {
+    const f = fixture();
+    const upstream = await fakeOpencode((incoming, outgoing) => {
+      const path = new URL(incoming.url ?? "/", "http://localhost").pathname;
+      if (incoming.method === "GET" && path === "/session/status") {
+        json(outgoing, { ses_1: { type: "idle" } });
+        return;
+      }
+      if (incoming.method === "GET" && path === "/session/ses_1/message") {
+        json(outgoing, [
+          userMessage("msg_u1", [textPart("first")]),
+          assistantMessage("msg_a1", [textPart("done")], {
+            parentID: "msg_u1",
+            finish: "stop",
+            completed: true,
+          }),
+        ]);
+        return;
+      }
+      outgoing.writeHead(404);
+      outgoing.end("missing");
+    });
+    useManager(f, upstream.endpoint);
+
+    const response = await handleChat(f.deps, turnRequest(f));
+
+    expect(response.status).toBe(200);
+    expect(JSON.parse(response.body)).toMatchObject({
+      status: { type: "idle" },
+      turnContinues: false,
+      runningPromptID: null,
+      activePromptID: null,
+      queuedPromptIDs: [],
+    });
   });
 });

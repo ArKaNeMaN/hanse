@@ -386,10 +386,7 @@ function resolveOptions(options: OpencodeUpstreamOptions): ResolvedOptions {
         ? DEFAULT_SESSIONS.map((session) => structuredClone(session))
         : options.sessions.map((session) => structuredClone(session)),
     messages,
-    statuses:
-      options.statuses === undefined
-        ? { [E2E_SESSION_ID]: { type: "busy" } }
-        : structuredClone(options.statuses),
+    statuses: options.statuses === undefined ? {} : structuredClone(options.statuses),
     commands:
       options.commands === undefined
         ? DEFAULT_COMMANDS.map((command) => structuredClone(command))
@@ -595,6 +592,13 @@ export async function startOpencodeUpstream(
 
     if (pathname === "/__control" && method === "POST") {
       const parsed = safeJson(body);
+      if (parsed?.resetStatuses === true) {
+        for (const sessionID of Object.keys(resolved.statuses)) {
+          delete resolved.statuses[sessionID];
+        }
+        writeJson(response, 200, { accepted: 0, resetStatuses: true });
+        return;
+      }
       if (parsed?.streamClose === true) {
         for (const client of streamClients) {
           if (!client.destroyed && !client.writableEnded) client.end();
@@ -623,6 +627,27 @@ export async function startOpencodeUpstream(
           typeof frame === "object" && frame !== null && !Array.isArray(frame)
             ? (frame as Record<string, unknown>)
             : {};
+        if (event.type === "session.status") {
+          const properties =
+            typeof event.properties === "object" && event.properties !== null
+              ? (event.properties as Record<string, unknown>)
+              : {};
+          const sessionID = typeof properties.sessionID === "string" ? properties.sessionID : "";
+          const status =
+            typeof properties.status === "object" &&
+            properties.status !== null &&
+            !Array.isArray(properties.status)
+              ? (properties.status as Record<string, unknown>)
+              : undefined;
+          const type = status?.type;
+          if (sessionID.length > 0) {
+            if (type === "idle") {
+              delete resolved.statuses[sessionID];
+            } else if (typeof type === "string" && status !== undefined) {
+              resolved.statuses[sessionID] = { ...status, type };
+            }
+          }
+        }
         if (resolved.onControl?.(event) === true) continue;
         broadcast(frame);
       }

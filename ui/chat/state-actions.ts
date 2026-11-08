@@ -9,6 +9,7 @@ import { useChatContextStore } from "../stores/chat-context.js";
 import { type NoticeView, useChatFeedStore } from "../stores/chat-feed.js";
 import { useChatSessionStore } from "../stores/chat-session.js";
 import type { ChatAction, PromptResolveAction, PromptUpsertAction } from "./event-reducer.js";
+import { useChatTurnStore } from "./turn-state.js";
 
 export type RefreshTarget = "runtime" | "commands" | "context" | "notices" | "messages";
 
@@ -20,6 +21,7 @@ export type RenderIntent =
   | { type: "toast"; tone: "success" | "error"; message: string }
   | { type: "reconcile"; reason: string; delayMs: number }
   | { type: "refresh"; targets: readonly RefreshTarget[] }
+  | { type: "turn-refresh"; reason: string }
   | { type: "stream-paused"; message: string | null }
   | {
       type: "prompt-upsert";
@@ -84,6 +86,7 @@ export function applyChatActions(actions: readonly ChatAction[]): RenderIntent[]
   const feed = useChatFeedStore();
   const session = useChatSessionStore();
   const context = useChatContextStore();
+  const turn = useChatTurnStore();
   const intents: RenderIntent[] = [];
   const activeSessionID = feed.thread.sessionID;
 
@@ -118,6 +121,7 @@ export function applyChatActions(actions: readonly ChatAction[]): RenderIntent[]
         intents.push(
           { type: "notice", tone: "warning", message: action.message },
           { type: "stream-paused", message: action.message },
+          { type: "turn-refresh", reason: "stream-limit" },
         );
         break;
       }
@@ -192,7 +196,9 @@ export function applyChatActions(actions: readonly ChatAction[]): RenderIntent[]
       case "session/status": {
         session.setAgentStatus(action.sessionID, action.status);
         if (action.sessionID === activeSessionID) {
+          turn.applySseStatus(action.sessionID, action.status);
           feed.setAgentStatus(action.status);
+          intents.push({ type: "turn-refresh", reason: "status-transition" });
           if (action.status.type === "idle") {
             intents.push(
               { type: "reconcile", reason: "idle", delayMs: IDLE_RECONCILE_MS },
@@ -207,7 +213,11 @@ export function applyChatActions(actions: readonly ChatAction[]): RenderIntent[]
         const errorID = feed.appendErrorRow(action);
         const message = errorMessageText(action.message);
         session.setAgentStatus(action.sessionID, { type: "idle" });
+        if (action.sessionID === activeSessionID) {
+          turn.applySseStatus(action.sessionID, { type: "idle" });
+        }
         intents.push(
+          { type: "turn-refresh", reason: "session-error" },
           { type: "dirty-message", messageID: errorID },
           { type: "toast", tone: "error", message: `Agent error: ${toastMessage(message)}` },
           { type: "notice", tone: "error", message },

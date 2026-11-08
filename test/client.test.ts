@@ -15,6 +15,7 @@ import {
   listQuestionsV2,
   listSavedPermissions,
   listSessionStatuses,
+  listSessionStatusesStrict,
   listSessions,
   listSessionsBounded,
   listTodos,
@@ -39,6 +40,7 @@ import {
   sendPrompt,
   sendPromptAsync,
   summarizeSession,
+  TURN_TAIL_MAX_BYTES,
   waitForOpenCodeReady,
 } from "../src/opencode/client.js";
 import { setEndpointAuthorization } from "../src/opencode/endpoint-auth.js";
@@ -810,6 +812,42 @@ describe("session status client", () => {
     const server = await upstream((_request, response) => json(response, []));
 
     await expect(listSessionStatuses(server.endpoint)).resolves.toEqual({});
+  });
+
+  it("strictly reads a valid map and accepts a valid empty map", async () => {
+    let body: unknown = {
+      ses_busy: { type: "busy" },
+      ses_retry: { type: "retry", attempt: 2, message: "retrying", next: 5 },
+    };
+    const server = await upstream((_request, response) => json(response, body));
+
+    await expect(listSessionStatusesStrict(server.endpoint)).resolves.toEqual(body);
+
+    body = {};
+    await expect(listSessionStatusesStrict(server.endpoint)).resolves.toEqual({});
+    expect(TURN_TAIL_MAX_BYTES).toBe(2 * 1024 * 1024);
+  });
+
+  it("rejects a malformed status body instead of fabricating idle", async () => {
+    const server = await upstream((_request, response) => json(response, []));
+
+    const error = await listSessionStatusesStrict(server.endpoint).catch(
+      (caught: unknown) => caught,
+    );
+    expect(error).toBeInstanceOf(OpencodeHttpError);
+    expect((error as OpencodeHttpError).bodyExcerpt).toContain("not a session status map");
+  });
+
+  it("rejects a malformed status entry instead of dropping it", async () => {
+    const server = await upstream((_request, response) =>
+      json(response, { ses_1: { label: "no type" } }),
+    );
+
+    const error = await listSessionStatusesStrict(server.endpoint).catch(
+      (caught: unknown) => caught,
+    );
+    expect(error).toBeInstanceOf(OpencodeHttpError);
+    expect((error as OpencodeHttpError).bodyExcerpt).toContain("malformed status entry");
   });
 });
 

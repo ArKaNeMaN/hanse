@@ -5,6 +5,7 @@ import {
   expectNoPageErrors,
   PROJECT_ONE,
   PROJECT_TWO,
+  resetUpstreamStatuses,
   signIn,
   upstreamInfo,
 } from "./support/helpers.js";
@@ -12,6 +13,10 @@ import {
 const APP_PATH = `/projects/${PROJECT_ONE}/apps/alpha`;
 const CHAT_PATH = `/chat?app=alpha&project=${PROJECT_ONE}`;
 const SESSION_ID = "ses_e2ealpha";
+
+test.beforeEach(async () => {
+  await resetUpstreamStatuses();
+});
 
 async function eventSourceStats(page: Page): Promise<{ created: number; active: number }> {
   return page.evaluate(() => {

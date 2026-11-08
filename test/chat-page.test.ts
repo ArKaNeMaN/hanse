@@ -26,7 +26,11 @@ import {
 import { DeploymentInProgressError } from "../src/coordinator/deployment-lock.js";
 import { CoordinatorService } from "../src/coordinator/service.js";
 import { GitService } from "../src/git/service.js";
-import { handleChat, streamSessionEvents } from "../src/http/chat.js";
+import {
+  handleChat,
+  resetTurnSnapshotCacheForTests,
+  streamSessionEvents,
+} from "../src/http/chat.js";
 import { type HttpDeps, type HttpRequest, handleRequest } from "../src/http/handler.js";
 import { createHttpServer } from "../src/http/server.js";
 import { createPrincipal } from "../src/identity/principals.js";
@@ -39,6 +43,7 @@ import {
 } from "../src/opencode/manager.js";
 import { SettingsService } from "../src/settings/index.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
+import { assistantMessage, textPart, userMessage } from "./fixtures/chat-turn.js";
 import { imageStateView } from "./fixtures/image-state.js";
 
 const dirs: string[] = [];
@@ -46,6 +51,7 @@ const databases: SqliteDatabase[] = [];
 const servers: Server[] = [];
 
 afterEach(async () => {
+  resetTurnSnapshotCacheForTests();
   await Promise.all(
     servers.splice(0).map(
       (server) =>
@@ -1470,6 +1476,331 @@ describe("read routes attach to the running agent", () => {
       code: "unknown_app",
     });
     expect(calls).toEqual({ ensure: 0, endpoint: 0 });
+  });
+});
+
+describe("turn route", () => {
+  function turnRequest(f: Fixture, overrides: Partial<HttpRequest> = {}): HttpRequest {
+    return request({
+      path: "/api/apps/storefront/sessions/ses_1/turn",
+      query: { project: "p1" },
+      headers: auth(f.token),
+      ...overrides,
+    });
+  }
+
+  function manager(
+    endpoint: string | undefined,
+    counters: { ensure: number; endpoint: number },
+  ): InstanceManager {
+    return {
+      ensure: async () => {
+        counters.ensure += 1;
+        return endpoint ?? "http://127.0.0.1:1";
+      },
+      endpointFor: () => {
+        counters.endpoint += 1;
+        return endpoint;
+      },
+    } as unknown as InstanceManager;
+  }
+
+  function counters(): { ensure: number; endpoint: number } {
+    return { ensure: 0, endpoint: 0 };
+  }
+
+  function statusHandler(input: {
+    status: () => unknown;
+    messages: () => unknown;
+    sessions?: () => unknown;
+    onSend?: () => void;
+  }): (incoming: IncomingMessage, outgoing: ServerResponse) => void {
+    return (incoming, outgoing) => {
+      const path = new URL(incoming.url ?? "/", "http://localhost").pathname;
+      if (incoming.method === "GET" && path === "/session/status") {
+        outgoing.writeHead(200, { "content-type": "application/json" });
+        outgoing.end(JSON.stringify(input.status()));
+        return;
+      }
+      if (incoming.method === "GET" && path === "/session") {
+        outgoing.writeHead(200, { "content-type": "application/json" });
+        outgoing.end(JSON.stringify(input.sessions?.() ?? []));
+        return;
+      }
+      if (incoming.method === "GET" && path === "/session/ses_1/message") {
+        outgoing.writeHead(200, { "content-type": "application/json" });
+        outgoing.end(JSON.stringify(input.messages()));
+        return;
+      }
+      if (incoming.method === "POST" && path === "/session/ses_1/prompt_async") {
+        input.onSend?.();
+        noContent(outgoing);
+        return;
+      }
+      outgoing.writeHead(404);
+      outgoing.end("missing");
+    };
+  }
+
+  it("returns a busy pre-first-part snapshot without starting the agent", async () => {
+    const f = fixture();
+    const upstream = await fakeOpencodeHandler(
+      statusHandler({
+        status: () => ({ ses_1: { type: "busy" } }),
+        messages: () => [userMessage("msg_u1", [textPart("run")])],
+      }),
+    );
+    const calls = counters();
+    f.deps.manager = manager(upstream.endpoint, calls);
+
+    const response = await handleChat(f.deps, turnRequest(f));
+
+    expect(response.status).toBe(200);
+    expect(JSON.parse(response.body)).toMatchObject({
+      sessionID: "ses_1",
+      status: { type: "busy" },
+      turnContinues: false,
+      runningPromptID: "msg_u1",
+      activePromptID: "msg_u1",
+      queuedPromptIDs: ["msg_u1"],
+      queuedTruncated: false,
+      settling: false,
+    });
+    expect(calls).toEqual({ ensure: 0, endpoint: 1 });
+    expect(upstream.calls.map((call) => `${call.method} ${call.url.split("?")[0]}`)).toEqual([
+      "GET /session/status",
+      "GET /session/ses_1/message",
+      "GET /session/status",
+    ]);
+  });
+
+  it("requires a human principal before any upstream read", async () => {
+    const f = fixture();
+    const upstream = await fakeOpencodeHandler(
+      statusHandler({
+        status: () => ({ ses_1: { type: "idle" } }),
+        messages: () => [],
+      }),
+    );
+    const calls = counters();
+    f.deps.manager = manager(upstream.endpoint, calls);
+    const agent = createPrincipal(f.db, { kind: "agent", name: "bot" });
+
+    const response = await handleChat(f.deps, turnRequest(f, { headers: auth(agent.token) }));
+
+    expect(response.status).toBe(403);
+    expect(calls).toEqual({ ensure: 0, endpoint: 0 });
+    expect(upstream.calls).toEqual([]);
+  });
+
+  it("rejects every non-GET method without touching the runtime", async () => {
+    const f = fixture();
+    const upstream = await fakeOpencodeHandler(
+      statusHandler({
+        status: () => ({ ses_1: { type: "idle" } }),
+        messages: () => [],
+      }),
+    );
+    const calls = counters();
+    f.deps.manager = manager(upstream.endpoint, calls);
+
+    for (const method of ["POST", "PUT", "DELETE", "PATCH"]) {
+      const response = await handleChat(f.deps, turnRequest(f, { method }));
+      expect(response.status, method).toBe(405);
+    }
+    expect(calls).toEqual({ ensure: 0, endpoint: 0 });
+    expect(upstream.calls).toEqual([]);
+  });
+
+  it("keeps the unknown-app and deletion responses on the turn route", async () => {
+    const f = fixture();
+    const calls = counters();
+    f.deps.manager = manager(undefined, calls);
+
+    const unknown = await handleChat(
+      f.deps,
+      request({
+        path: "/api/apps/nope/sessions/ses_1/turn",
+        query: { project: "p1" },
+        headers: auth(f.token),
+      }),
+    );
+    expect(unknown.status).toBe(404);
+    expect(JSON.parse(unknown.body)).toEqual({
+      error: "unknown application: nope",
+      code: "unknown_app",
+    });
+
+    f.db.prepare("UPDATE apps SET deleting = 1 WHERE id = 'p1:storefront'").run();
+    const deleting = await handleChat(f.deps, turnRequest(f));
+    expect(deleting.status).toBe(409);
+    expect(JSON.parse(deleting.body).code).toBe("deletion_pending");
+    expect(calls).toEqual({ ensure: 0, endpoint: 0 });
+  });
+
+  it("returns 503 agent_stopped without starting a stopped app", async () => {
+    const f = fixture();
+    const calls = counters();
+    f.deps.manager = manager(undefined, calls);
+
+    const response = await handleChat(f.deps, turnRequest(f));
+
+    expect(response.status).toBe(503);
+    expect(JSON.parse(response.body)).toEqual({
+      error: "agent is stopped",
+      code: "agent_stopped",
+    });
+    expect(calls).toEqual({ ensure: 0, endpoint: 1 });
+  });
+
+  it("returns 502 turn_unavailable for a malformed status map", async () => {
+    const f = fixture();
+    const upstream = await fakeOpencodeHandler(
+      statusHandler({
+        status: () => ({ ses_1: { label: "no type" } }),
+        messages: () => [userMessage("msg_u1", [textPart("run")])],
+      }),
+    );
+    const calls = counters();
+    f.deps.manager = manager(upstream.endpoint, calls);
+
+    const response = await handleChat(f.deps, turnRequest(f));
+
+    expect(response.status).toBe(502);
+    expect(JSON.parse(response.body)).toEqual({
+      error: "turn state is unavailable",
+      code: "turn_unavailable",
+    });
+    expect(upstream.calls.map((call) => call.url.split("?")[0])).toEqual(["/session/status"]);
+  });
+
+  it("maps an upstream missing session to 404 session_not_found", async () => {
+    const f = fixture();
+    const upstream = await fakeOpencodeHandler((incoming, outgoing) => {
+      const path = new URL(incoming.url ?? "/", "http://localhost").pathname;
+      if (incoming.method === "GET" && path === "/session/status") {
+        outgoing.writeHead(200, { "content-type": "application/json" });
+        outgoing.end(JSON.stringify({}));
+        return;
+      }
+      outgoing.writeHead(404);
+      outgoing.end("missing");
+    });
+    const calls = counters();
+    f.deps.manager = manager(upstream.endpoint, calls);
+
+    const response = await handleChat(f.deps, turnRequest(f));
+
+    expect(response.status).toBe(404);
+    expect(JSON.parse(response.body)).toEqual({
+      error: "session not found",
+      code: "session_not_found",
+    });
+  });
+
+  it("invalidates the cached snapshot on an accepted send", async () => {
+    const f = fixture();
+    let status: unknown = { ses_1: { type: "busy" } };
+    let statusCalls = 0;
+    const upstream = await fakeOpencodeHandler((incoming, outgoing) => {
+      const path = new URL(incoming.url ?? "/", "http://localhost").pathname;
+      if (incoming.method === "GET" && path === "/session/status") {
+        statusCalls += 1;
+        outgoing.writeHead(200, { "content-type": "application/json" });
+        outgoing.end(JSON.stringify(status));
+        return;
+      }
+      if (incoming.method === "GET" && path === "/session/ses_1/message") {
+        outgoing.writeHead(200, { "content-type": "application/json" });
+        outgoing.end(JSON.stringify([userMessage("msg_u1", [textPart("run")])]));
+        return;
+      }
+      if (incoming.method === "POST" && path === "/session/ses_1/prompt_async") {
+        status = { ses_1: { type: "idle" } };
+        noContent(outgoing);
+        return;
+      }
+      outgoing.writeHead(404);
+      outgoing.end("missing");
+    });
+    const calls = counters();
+    f.deps.manager = manager(upstream.endpoint, calls);
+
+    const first = await handleChat(f.deps, turnRequest(f));
+    expect(JSON.parse(first.body).status.type).toBe("busy");
+    expect(statusCalls).toBe(2);
+
+    const send = await handleChat(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/apps/storefront/sessions/ses_1/messages",
+        query: { project: "p1", async: "1" },
+        headers: auth(f.token),
+        body: JSON.stringify({ text: "next" }),
+      }),
+    );
+    expect(send.status).toBe(202);
+
+    const second = await handleChat(f.deps, turnRequest(f));
+    expect(JSON.parse(second.body).status.type).toBe("idle");
+    expect(statusCalls).toBe(4);
+  });
+
+  it("serves concurrent reads through one single-flight computation", async () => {
+    const f = fixture();
+    let messageCalls = 0;
+    const upstream = await fakeOpencodeHandler((incoming, outgoing) => {
+      const path = new URL(incoming.url ?? "/", "http://localhost").pathname;
+      if (incoming.method === "GET" && path === "/session/status") {
+        outgoing.writeHead(200, { "content-type": "application/json" });
+        outgoing.end(JSON.stringify({ ses_1: { type: "busy" } }));
+        return;
+      }
+      if (incoming.method === "GET" && path === "/session/ses_1/message") {
+        messageCalls += 1;
+        outgoing.writeHead(200, { "content-type": "application/json" });
+        outgoing.end(JSON.stringify([userMessage("msg_u1", [textPart("run")])]));
+        return;
+      }
+      outgoing.writeHead(404);
+      outgoing.end("missing");
+    });
+    const calls = counters();
+    f.deps.manager = manager(upstream.endpoint, calls);
+
+    const [first, second] = await Promise.all([
+      handleChat(f.deps, turnRequest(f)),
+      handleChat(f.deps, turnRequest(f)),
+    ]);
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(messageCalls).toBe(1);
+  });
+
+  it("keeps the same completed-turn snapshot stable across cache hits", async () => {
+    const f = fixture();
+    const upstream = await fakeOpencodeHandler(
+      statusHandler({
+        status: () => ({ ses_1: { type: "idle" } }),
+        messages: () => [
+          userMessage("msg_u1", [textPart("run")]),
+          assistantMessage("msg_a1", [textPart("done")], {
+            parentID: "msg_u1",
+            finish: "stop",
+            completed: true,
+          }),
+        ],
+      }),
+    );
+    const calls = counters();
+    f.deps.manager = manager(upstream.endpoint, calls);
+
+    const first = await handleChat(f.deps, turnRequest(f));
+    const second = await handleChat(f.deps, turnRequest(f));
+    expect(JSON.parse(second.body)).toEqual(JSON.parse(first.body));
+    expect(upstream.calls).toHaveLength(3);
   });
 });
 

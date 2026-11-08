@@ -60,6 +60,18 @@ parent subtree delete with the post-delete refresh, and 1440/390/320 layouts. Th
 currently stops at the pre-existing `main` queue-strip assertion (`2 rows` vs `1`), reproduced on
 clean HEAD; existing scenarios are unchanged.
 
+## Turn status and the queue modal (stage 0038 phase C)
+
+`CHAT_QA_MODE=spa CHAT_QA_ONLY=turn-status node docs/design/chat-qa.mjs` runs the Phase C scenario
+with `data-chat-*` selectors. It covers an idle turn with no status surface, `Ready · 2 queued` with
+the count button and the generation row mirroring the label, the modal's Queued rows and focus
+return, a busy turn where the running head is excluded from the count and marked `Active`, an abort
+settling back to `Ready · 2 queued`, a reload that hydrates the same state, and a stream gap that
+refreshes the turn and removes a stale count. The queue strip is asserted absent throughout. The
+full default SPA run still stops at the pre-existing `main` feed/composer width assertion; the gate
+uses this scenario set and records that choice in `docs/design/README.md`. Its report is copied to
+`turn-status-report.json` so the canonical `report.json` keeps the full baseline.
+
 ## Captures
 
 | File | Covers |
@@ -81,7 +93,8 @@ clean HEAD; existing scenarios are unchanged.
 | `question-custom-1440-dark.png` | Custom-answer `Green` submitted with Enter; focus returns to the composer after the card becomes answered. |
 | `send-sending-1440-dark.png` | Optimistic local row (`sending`) visible before the delayed 202. |
 | `send-streaming-1440-dark.png` | Server-ID rekey with no duplicate user row, plus assistant text deltas (`Streaming works.`). |
-| `send-queued-1440-dark.png` | A second send while busy: one queued row, `1 message queued`, and `· 1 queued` in the status. |
+| `send-queued-1440-dark.png` | A second send while busy: one queued row and `· 1 queued` in the turn-status button. |
+| `turn-status-queued-1440-dark.png` | `Ready · 2 queued`: the turn-status label and count button, the mirrored generation row, and the queue modal with both Queued rows. |
 | `commands-palette-1440-dark.png` | The open palette: Hanse and Application commands groups, `Hanse`/`MCP`/`Shell`/`Shell unknown` badges, a disabled row with its reason, the shadow footer, and the active row. |
 | `commands-shell-confirm-1440-dark.png` | The reusable confirmation dialog after `/shellcheck --dry-run`; accepting produces the single accepted optimistic row rekeyed to the 202 `messageID`. |
 | `commands-shell-unknown-1440-dark.png` | A `shell:"unknown"` MCP prompt still opens the same confirmation dialog and posts `confirmShell:true` only after acceptance. |

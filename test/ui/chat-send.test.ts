@@ -2,7 +2,7 @@ import { flushPromises } from "@vue/test-utils";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { postPrompt } from "../../ui/chat/send.js";
 import { useChatComposerStore } from "../../ui/stores/chat-composer.js";
-import { FIXTURE_MESSAGES, mountChat } from "./chat-support.js";
+import { FakeEventSource, FIXTURE_MESSAGES, mountChat } from "./chat-support.js";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -155,6 +155,80 @@ describe("chat send and delivery", () => {
         (request) => request.method === "POST" && request.url.includes("/messages"),
       ),
     ).toHaveLength(1);
+    wrapper.unmount();
+  });
+
+  it("never settles an in-flight send from an idle status", async () => {
+    vi.useFakeTimers();
+    const gate = deferred();
+    const { wrapper, pinia } = await mountChat("/chat?app=alpha&project=p&session=s1", {
+      sendGate: gate.promise,
+    });
+    const source = FakeEventSource.instances[0];
+    if (source === undefined) throw new Error("missing source");
+    source.open();
+    source.emit({ type: "stream.ready", seq: 0, streamID: "stream-send" });
+    await flushPromises();
+
+    const input = wrapper.find("[data-chat-composer-input]");
+    await input.setValue("Still sending");
+    await wrapper.find("[data-chat-send]").trigger("click");
+    await flushPromises();
+    expect(useChatComposerStore(pinia).delivery).toBe("sending");
+
+    source.emit({
+      type: "session.status",
+      seq: 1,
+      streamID: "stream-send",
+      sessionID: "s1",
+      status: { type: "idle" },
+    });
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flushPromises();
+    expect(useChatComposerStore(pinia).delivery).toBe("sending");
+    expect(wrapper.find('[data-message-id^="local_"]').attributes("data-optimistic")).toBe(
+      "sending",
+    );
+
+    gate.resolve();
+    await flushPromises();
+    expect(wrapper.find('[data-message-id="msg_sent_1"]').exists()).toBe(true);
+    wrapper.unmount();
+  });
+
+  it("times out a hung send into Delivery unknown and accepts a late 202", async () => {
+    vi.useFakeTimers();
+    const gate = deferred();
+    const { wrapper, pinia } = await mountChat("/chat?app=alpha&project=p&session=s1", {
+      sendGate: gate.promise,
+    });
+    const input = wrapper.find("[data-chat-composer-input]");
+    await input.setValue("Hung delivery");
+    await wrapper.find("[data-chat-send]").trigger("click");
+    await flushPromises();
+
+    expect(useChatComposerStore(pinia).delivery).toBe("sending");
+    expect(wrapper.find('[data-message-id^="local_"]').attributes("data-optimistic")).toBe(
+      "sending",
+    );
+
+    await vi.advanceTimersByTimeAsync(15_000);
+    await flushPromises();
+    expect(useChatComposerStore(pinia).delivery).toBe("unknown");
+    expect(wrapper.find('[data-message-id^="local_"]').attributes("data-optimistic")).toBe(
+      "unknown",
+    );
+    await vi.advanceTimersByTimeAsync(2_000);
+    await flushPromises();
+    expect(wrapper.find("[data-chat-send-recovery]").exists()).toBe(true);
+
+    gate.resolve();
+    await flushPromises();
+    expect(wrapper.find('[data-message-id="msg_sent_1"]').exists()).toBe(true);
+    expect(wrapper.findAll('[data-message-id^="local_"]')).toHaveLength(0);
+    expect(useChatComposerStore(pinia).delivery).toBe("accepted");
+    expect(wrapper.find("[data-chat-send-recovery]").exists()).toBe(false);
     wrapper.unmount();
   });
 

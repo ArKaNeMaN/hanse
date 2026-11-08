@@ -1,5 +1,22 @@
 # Open questions
 
+> Stage: `0038-chat-turn-state`. Owner decisions were collected on 2026-11-08. There are no open
+> items for this stage.
+
+## Stage `0038-chat-turn-state` - resolved owner decisions
+
+1. **Idle + queue** - render `Ready · N queued`. A queue means the work is not fully finished, so a
+   bare `Ready` would be wrong. Remove the queue strip; open the queue modal from the `N queued`
+   control. Active labels append `· N queued` (for example `Working · N queued`).
+2. **Busy labels** - restore the full legacy vocabulary: `Working` with unsealed text, `Thinking`
+   with reasoning, `Running <tool>`, `Waiting for you`, `Retrying`, `Paused`.
+3. **Architecture** - server-computed turn snapshot (Option B). The coordinator derives
+   `status`, `activePromptID`, and `queuedPromptIDs`; the client hydrates the snapshot on
+   ready/reconnect/visibility/status transition/send acceptance/idle reconcile.
+4. **Multi-tab** - best-effort: another tab sees a prompt after the server accepts/persists it.
+5. **Vocabulary** - keep the existing label names; no renaming in this stage.
+6. **Reviews** - design `oracle` pending; plan `momus` pending.
+
 > Stage: `0037-external-skill-sources`. Owner decisions were collected on 2026-11-07. The owner
 > selected storage variant B (content-addressed cache + thin DB index + per-app materialization)
 > and mixing variant A (local managed skills always win). The owner delegated the remaining forks;

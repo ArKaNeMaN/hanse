@@ -1011,4 +1011,69 @@ describe("ChatPage read-only shell", () => {
     expect(wrapper.get(".handoff-card__body").text()).not.toContain("Envelope body.");
     wrapper.unmount();
   });
+
+  it("refreshes the turn on both session.error paths, stream limit, and visibility", async () => {
+    const { wrapper, fetchState } = await mountChat();
+    const source = chatEventSource();
+    if (source === undefined) throw new Error("missing source");
+    source.open();
+    source.emit({ type: "stream.ready", seq: 0, streamID: "stream-turn" });
+    await flushPromises();
+    const turnReads = () =>
+      fetchState.requests.filter(
+        (request) => request.method === "GET" && request.url.includes("/turn"),
+      ).length;
+
+    const beforeError = turnReads();
+    source.emit({
+      type: "session.error",
+      seq: 1,
+      streamID: "stream-turn",
+      sessionID: "s1",
+      name: "Error",
+      message: "boom",
+    });
+    await flushPromises();
+    expect(turnReads()).toBeGreaterThan(beforeError);
+
+    const beforeAbortError = turnReads();
+    source.emit({
+      type: "session.error",
+      seq: 2,
+      streamID: "stream-turn",
+      sessionID: "s1",
+      name: "MessageAbortedError",
+      message: "aborted by user",
+    });
+    await flushPromises();
+    expect(turnReads()).toBeGreaterThan(beforeAbortError);
+
+    const beforeLimit = turnReads();
+    source.emit({
+      type: "stream.warning",
+      seq: 3,
+      streamID: "stream-turn",
+      code: "stream_limit",
+      message: "paused",
+    });
+    await flushPromises();
+    expect(turnReads()).toBeGreaterThan(beforeLimit);
+
+    const original = Object.getOwnPropertyDescriptor(document, "visibilityState");
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => "visible",
+    });
+    try {
+      const beforeVisibility = turnReads();
+      document.dispatchEvent(new Event("visibilitychange"));
+      await flushPromises();
+      expect(turnReads()).toBeGreaterThan(beforeVisibility);
+    } finally {
+      if (original !== undefined) {
+        Object.defineProperty(document, "visibilityState", original);
+      }
+    }
+    wrapper.unmount();
+  });
 });

@@ -811,20 +811,28 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   affordance. Tail hydration merges by message ID and keeps loaded history; a provably disjoint tail
   (more than a page missed while disconnected) resets to a contiguous window. An older-page failure
   is terminal per kind (bad cursor, missing session, oversize) or retryable on the next top-scroll.
-- A decorative in-feed generation row (`#chat-generating`) mirrors the active status label
-  (`Sending`, `Thinking`, `Working`, `Running <tool>`, `Retrying`) and elapsed time inside the
-  conversation. It is `aria-hidden` (the meta chip remains the live region) and honors
-  `prefers-reduced-motion`.
+- A decorative in-feed generation row (`[data-chat-generating]`) mirrors the authoritative turn
+  label (`Sending`, `Delivery unknown`, `Thinking`, `Working`, `Running <tool>`, `Retrying`,
+  `Ready · N queued`) and elapsed time inside the conversation. It is `aria-hidden`; a polite thread
+  turn-status live region carries the label plus the `N queued` button (the single announcement
+  source for turn-phase changes) and honors `prefers-reduced-motion`. `Waiting for you` stays in the
+  prompt dock/meta and `Paused` in the connection chip; neither creates the row.
 - Send/queue behavior: a submitted prompt appears immediately as an optimistic operator row
   (`sending`, then `accepted` after the 202; `queued` while the agent is busy; `unknown` during the
-  delivery-unknown grace). The queue strip above the prompt dock is derived from upstream history
-  (last visible assistant `parentID`, `finish:"tool-calls"`/idle overrides, bare shells ignored), shows
-  up to three one-line previews plus `+N more`, excludes the active head and OMO rows, and has no
-  remove control. The status line appends `· N queued` only on the allowed labels.
-- Status is derived from `session.status`, the latest part, and the queue:
-  `Sending`, `Thinking`, `Working`, `Running <tool>`, `Waiting for you`, `Ready`, `Retrying`,
-  `Paused`, with elapsed time that freezes while waiting and resets on `Ready`. Inline questions in
-  the feed gate the composer and show `Waiting for you`; the top-bar/per-session counts include them.
+  delivery-unknown grace, with a bounded `sending -> unknown` timeout). A client-only row never enters
+  the server queue or its count. `GET /api/apps/:app/sessions/:sid/turn` (human-only, non-starting)
+  returns the server-computed `{status, turnContinues, runningPromptID, activePromptID,
+  queuedPromptIDs, queuedTruncated, settling, revision}` from the projected history tail and the
+  upstream `/session/status` map; the SPA hydrates it on open, ready, reconnect/gap, visibility, every
+  status transition, send acceptance, the idle reconcile, and dialog open. The queue strip is removed:
+  an idle head is included in the count, a running prompt is excluded, and the count opens the queue
+  modal (`N+` when truncated). The active labels append `· N queued` using that display count.
+- Status is derived from the server turn snapshot plus the latest unsealed part: `Sending`,
+  `Delivery unknown`, `Thinking`, `Working`, `Running <tool>`, `Retrying`, and `Ready · N queued`
+  (an idle turn with queued work); a bare `Ready` is never rendered in the row. Elapsed time freezes
+  while waiting and resets on idle. Inline questions in the feed gate the composer and show
+  `Waiting for you`; the top-bar/per-session counts include them. `Paused` stays in the connection
+  chip.
 - Upstream `session.error` is projected with a 2000-char first-line message (stack traces are
   dropped) and deduplicated per attempt (`session.status: busy` resets the dedupe). The client inserts
   an `Agent error` card into the feed, marks the active and queued prompts `Failed`, drops them from
@@ -851,10 +859,10 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
 - Stop/interrupt: `POST /api/apps/:app/sessions/:sid/abort?project=<id>` is human-only, resolves the
   running endpoint with `manager.endpointFor` (never `ensure`), and maps not-running/deletion/upstream
   failures to `503`/`409`/`502`. An intentional `MessageAbortedError` is suppressed (no Agent error
-  card, toast, failed prompts, or queue drop); prompt docks are cleared/reconciled, and unanswered
-  queued prompts remain queued behind a per-session block (mirrored to `sessionStorage`) so an idle
-  session does not show a phantom `Working` turn. Context snapshots seed `session.status` after a
-  reload; a real `idle → busy|retry` transition clears the block.
+  card, toast, failed prompts, or queue drop); prompt docks are cleared/reconciled. The client
+  queue-promotion block and its `sessionStorage` mirror are retired: the server turn snapshot plus the
+  status-driven row make a phantom `Working` impossible. Status precedence is `abort-settle > sse >
+  snapshot`; a late snapshot `busy` after an abort settle does not re-show the row.
 - Background stream recovery (0030): hidden-tab SSE errors do not consume the three-strike `Paused`
   budget; returning from hidden/bfcache, or going online, replaces a missing/`CLOSED` source (and a
   `CONNECTING` source after 5 s or any source after 10 s hidden) and hydrates prompts plus the last
