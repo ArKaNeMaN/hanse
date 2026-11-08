@@ -298,6 +298,9 @@ Runner invariants (forced, not read from the image):
   socket, no devices, no host network.
 - Per-app bridge network; no published ports.
 - Memory, CPU, and PID limits; log rotation.
+- Docker `Init: true`: a small init process is PID 1 and `opencode serve` is its child, so orphaned
+  shell/tool/MCP/terminal children are reaped. This is additive to the fixed entrypoint and does not
+  change the user, capabilities, read-only root, mounts, or network.
 
 The runtime API (same shape in B0 and B1/B2):
 

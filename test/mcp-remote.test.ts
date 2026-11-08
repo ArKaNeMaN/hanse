@@ -37,6 +37,7 @@ function bridge(
   tokenFile: string,
   inputLines: string[],
   fetchImpl: typeof fetch,
+  options: { requestTimeoutMs?: number; maxQueued?: number } = {},
 ): Promise<string[]> {
   const { lines, output } = capture();
   return runRemoteMcpServer({
@@ -45,7 +46,18 @@ function bridge(
     input: Readable.from(inputLines),
     output,
     fetchImpl,
+    ...options,
   }).then(() => lines);
+}
+
+async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
+  const started = Date.now();
+  while (!predicate()) {
+    if (Date.now() - started > timeoutMs) {
+      throw new Error("timed out waiting for bridge");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
 }
 
 describe("remote MCP bridge", () => {
@@ -125,6 +137,89 @@ describe("remote MCP bridge", () => {
       id: 8,
       error: { code: -32000, message: expect.stringContaining("connection refused") },
     });
+  });
+
+  it("times out a hung request and writes one transport error line", async () => {
+    const { tokenFile } = fixture();
+    const fetchImpl = ((_url: string | URL | Request, init?: RequestInit) => {
+      return new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        if (signal === undefined || signal === null) {
+          reject(new Error("fetch was called without an abort signal"));
+          return;
+        }
+        const abort = (): void => reject(signal.reason ?? new Error("aborted"));
+        if (signal.aborted) {
+          abort();
+          return;
+        }
+        signal.addEventListener("abort", abort, { once: true });
+      });
+    }) as typeof fetch;
+
+    const lines = await bridge(
+      tokenFile,
+      ['{"jsonrpc":"2.0","id":11,"method":"tools/list"}\n'],
+      fetchImpl,
+      { requestTimeoutMs: 20 },
+    );
+
+    expect(lines).toHaveLength(1);
+    expect(JSON.parse(lines[0] ?? "")).toMatchObject({
+      jsonrpc: "2.0",
+      id: 11,
+      error: { code: -32000, message: expect.stringContaining("mcp transport error") },
+    });
+  });
+
+  it("rejects requests beyond the queue cap without reaching fetch", async () => {
+    const { tokenFile } = fixture();
+    const calls: string[] = [];
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
+      calls.push(String(init?.body ?? ""));
+      await held;
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { tools: [] } }), {
+        status: 200,
+      });
+    }) as typeof fetch;
+
+    const { lines, output } = capture();
+    const done = runRemoteMcpServer({
+      baseUrl: "http://127.0.0.1:8787/",
+      tokenFile,
+      input: Readable.from([
+        '{"jsonrpc":"2.0","id":1,"method":"tools/list"}\n',
+        '{"jsonrpc":"2.0","id":2,"method":"tools/list"}\n',
+        '{"jsonrpc":"2.0","id":3,"method":"tools/list"}\n',
+      ]),
+      output,
+      fetchImpl,
+      maxQueued: 1,
+    });
+
+    await waitFor(() => calls.length === 1 && lines.length >= 2);
+    expect(calls).toHaveLength(1);
+    const rejected = lines.map((line) => JSON.parse(line) as { id?: unknown; error?: unknown });
+    expect(rejected).toHaveLength(2);
+    expect(rejected[0]).toMatchObject({
+      id: 2,
+      error: { message: "mcp bridge queue is full" },
+    });
+    expect(rejected[1]).toMatchObject({
+      id: 3,
+      error: { message: "mcp bridge queue is full" },
+    });
+
+    release();
+    await done;
+
+    const all = lines.map((line) => JSON.parse(line) as { id?: unknown; result?: unknown });
+    expect(all).toHaveLength(3);
+    expect(all[2]).toMatchObject({ id: 1, result: { tools: [] } });
   });
 
   it("rereads the token file for every request", async () => {

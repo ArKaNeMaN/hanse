@@ -1,6 +1,6 @@
 # Hanse - Current State (read this first)
 
-> Last updated: 2026-11-07. This is the canonical description of what is **implemented right now**.
+> Last updated: 2026-11-08. This is the canonical description of what is **implemented right now**.
 > If this document and the code disagree, the code wins - update this document.
 > History and rationale: `docs/design/overview.md`, `docs/plans/0001-core.md`,
 > `docs/journal/0001-core.md`. Deployment: `docs/deployment.md`.
@@ -43,7 +43,10 @@ a host `opencode` auth file.
 - **`hanse-app-<project>-<app>`** (dynamic): one `agent-default` container per app, on its own
   `hanse-app-*` bridge network. It mounts only the app directory and `/data/agents/<project>/<app>`;
   uid 1000, read-only root, `cap_drop: ALL`, no state, no Docker socket, no operator/runtime token.
-  `opencode serve` listens on `0.0.0.0:4100` inside the app network.
+  The runner sets Docker `HostConfig.Init`, so a small init process is PID 1 and `opencode serve` is
+  its child; orphaned shell/tool/MCP/terminal children are reaped instead of accumulating as zombies.
+  Memory, CPU, and PID limits stay enforced. `opencode serve` listens on `0.0.0.0:4100` inside the
+  app network.
 - **Networks:** `front` contains the coordinator and IDE; `control` contains the coordinator and
   runner; each app container has its own network. App containers cannot reach the IDE or sibling apps.
 - **Exposed port:** `${HANSE_BIND:-127.0.0.1}:${HANSE_PORT:-8787}` (loopback by default; set
@@ -627,6 +630,10 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   `XDG_*`, `OPENCODE_DB`, and `TMPDIR` under
   `/data/agents/<projectId>/<appKey>/{home,data,state,config,cache,tmp,mise}`. The app `auth.json`
   and opencode password live in that per-app state; model access works (verified with `deepseek`).
+  The container is created with Docker `HostConfig.Init`, so a container init process is PID 1 and
+  reaps orphaned children; `opencode serve` runs as its child. The `hanse`/`hanse_web` MCP bridges
+  bound their in-flight queues and request time, and the coordinator's TTL-only caches are
+  size-bounded, so a long-lived app does not grow them without limit.
 - Every managed instance also loads the image-baked OMO baseline
   (`oh-my-openagent@5.1.35`, `/opt/hanse/omo`) through `HANSE_OMO_PLUGIN`. The coordinator writes a
   per-app profile at `<app-home>/.omo/omo.jsonc` and pins OMO agents/categories to
@@ -1580,6 +1587,12 @@ Settings stage verification:
   server).
 
 ## Known limitations and residual risks
+
+- The per-app memory/CPU/PID limits are hard cgroup limits, not a memory-leak fix. The runtime now
+  reaps orphaned children and bounds its own MCP and coordinator caches, but a long-running
+  `opencode` process can still grow its own session/runtime memory; an app that reaches its
+  configured cap can be OOM-killed. Restart the app after an OOM and keep the cap at its configured
+  value instead of raising it as a workaround.
 
 - Deletion is irreversible and a partially failed deletion cannot be cancelled: the app/project stays
   `Deletion incomplete` and start/chat/terminal remain blocked until a retry completes. Source-file

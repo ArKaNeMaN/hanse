@@ -7,6 +7,9 @@ import type { DeepSeekOptions, WebDriver, WebMcpConfig } from "./types.js";
 const PROTOCOL_VERSION = "2024-11-05";
 const SERVER_NAME = "hanse_web";
 
+/** Default cap on requests handled concurrently by the stdio loop. */
+export const DEFAULT_MCP_MAX_PENDING = 128;
+
 type ManagedTool = "search" | "fetch";
 
 interface RpcRequest {
@@ -82,6 +85,8 @@ export interface WebMcpDependencies {
 export interface WebMcpServerOptions extends WebMcpDependencies {
   input?: NodeJS.ReadableStream;
   write?: (line: string) => void;
+  /** Reject new requests once this many are in flight. */
+  maxPending?: number;
 }
 
 async function defaultReadAuth(authFile: string): Promise<unknown> {
@@ -261,6 +266,7 @@ export function runWebMcpServer(
   options: WebMcpServerOptions = {},
 ): Promise<void> {
   const write = options.write ?? ((line: string) => process.stdout.write(`${line}\n`));
+  const maxPending = options.maxPending ?? DEFAULT_MCP_MAX_PENDING;
   return new Promise((resolve) => {
     const lines = createInterface({ input: options.input ?? process.stdin });
     let pending = 0;
@@ -285,6 +291,16 @@ export function runWebMcpServer(
             jsonrpc: "2.0",
             id: null,
             error: { code: -32700, message: "parse error" },
+          }),
+        );
+        return;
+      }
+      if (pending >= maxPending) {
+        write(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: bestEffortId(request),
+            error: { code: -32000, message: "too many concurrent requests" },
           }),
         );
         return;
@@ -319,4 +335,14 @@ export function runWebMcpServer(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function bestEffortId(request: unknown): string | number | null {
+  if (isRecord(request)) {
+    const id = request.id;
+    if (typeof id === "string" || typeof id === "number") {
+      return id;
+    }
+  }
+  return null;
 }

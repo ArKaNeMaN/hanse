@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { createServer, type IncomingMessage, type Server } from "node:http";
+import { createServer, request as httpRequest, type IncomingMessage, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { Duplex } from "node:stream";
@@ -193,6 +193,50 @@ describe("operator terminal websocket proxy", () => {
     await waitFor(() => f.upstream.frames.length === 1);
     expect(f.upstream.frames[0]?.payload.toString("utf8")).toBe("ls\r");
     client.destroy();
+  });
+
+  it("aborts the upstream request when the client disconnects before the upgrade response", async () => {
+    const f = await fixture();
+
+    let upstreamReceived: (() => void) | undefined;
+    const requestReceived = new Promise<void>((resolve) => {
+      upstreamReceived = resolve;
+    });
+    let upstreamClosed = false;
+    const upstreamServer = createServer((request) => {
+      request.on("close", () => {
+        upstreamClosed = true;
+      });
+      upstreamReceived?.();
+    });
+    servers.push(upstreamServer);
+    await new Promise<void>((resolve) => upstreamServer.listen(0, "127.0.0.1", resolve));
+    const upstreamAddress = upstreamServer.address();
+    if (upstreamAddress === null || typeof upstreamAddress === "string") {
+      throw new Error("no address");
+    }
+    f.deps.runner = { url: `http://127.0.0.1:${upstreamAddress.port}`, token: RUNTIME_TOKEN };
+
+    const clientRequest = httpRequest({
+      host: "127.0.0.1",
+      port: f.port,
+      path: "/api/apps/a/terminal?project=p",
+      method: "GET",
+      headers: {
+        connection: "Upgrade",
+        upgrade: "websocket",
+        "sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ==",
+        "sec-websocket-version": "13",
+        cookie: `hanse_token=${f.humanToken}`,
+      },
+    });
+    clientRequest.on("error", () => undefined);
+    clientRequest.end();
+
+    await requestReceived;
+    clientRequest.destroy();
+    await waitFor(() => upstreamClosed);
+    expect(upstreamClosed).toBe(true);
   });
 
   it("rejects missing cookies, agent cookies, bearer-only humans, and unknown apps", async () => {

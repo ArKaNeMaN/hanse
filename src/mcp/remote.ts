@@ -1,6 +1,11 @@
 import { readFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
+/** Default per-request timeout for the stdio bridge. */
+export const DEFAULT_MCP_REQUEST_TIMEOUT_MS = 600_000;
+/** Default cap on requests waiting behind the in-flight bridge request. */
+export const DEFAULT_MCP_MAX_QUEUED = 1_024;
+
 /** Options for the stdio <-> HTTP MCP bridge. */
 export interface RemoteMcpBridgeOptions {
   /** Coordinator base URL, for example `http://127.0.0.1:8787`. */
@@ -10,6 +15,10 @@ export interface RemoteMcpBridgeOptions {
   input?: NodeJS.ReadableStream;
   output?: { write(chunk: string): unknown };
   fetchImpl?: typeof fetch;
+  /** Abort a forwarded request after this many milliseconds. */
+  requestTimeoutMs?: number;
+  /** Reject new requests once this many are waiting behind the in-flight one. */
+  maxQueued?: number;
 }
 
 type RpcId = string | number | null;
@@ -70,6 +79,8 @@ export function runRemoteMcpServer(options: RemoteMcpBridgeOptions): Promise<voi
   const output = options.output ?? process.stdout;
   const fetchImpl = options.fetchImpl ?? fetch;
   const endpoint = `${options.baseUrl.replace(/\/+$/, "")}/internal/mcp`;
+  const requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_MCP_REQUEST_TIMEOUT_MS;
+  const maxQueued = options.maxQueued ?? DEFAULT_MCP_MAX_QUEUED;
 
   const write = (value: unknown): void => {
     output.write(singleLine(value));
@@ -99,6 +110,7 @@ export function runRemoteMcpServer(options: RemoteMcpBridgeOptions): Promise<voi
           accept: "application/json",
         },
         body: line,
+        signal: AbortSignal.timeout(requestTimeoutMs),
       });
     } catch (error) {
       write(
@@ -145,12 +157,23 @@ export function runRemoteMcpServer(options: RemoteMcpBridgeOptions): Promise<voi
   return new Promise((resolve) => {
     const lines = createInterface({ input });
     let queue: Promise<void> = Promise.resolve();
+    let queued = 0;
     lines.on("line", (line) => {
       const trimmed = line.trim();
       if (trimmed.length === 0) {
         return;
       }
-      queue = queue.then(() => forward(trimmed));
+      if (queued >= maxQueued) {
+        write(errorLine(requestId(trimmed), "mcp bridge queue is full"));
+        return;
+      }
+      queued += 1;
+      queue = queue
+        .then(() => forward(trimmed))
+        .catch(() => undefined)
+        .finally(() => {
+          queued -= 1;
+        });
     });
     lines.on("close", () => {
       void queue.then(

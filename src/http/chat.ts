@@ -137,6 +137,7 @@ import { authorizationFor } from "../opencode/endpoint-auth.js";
 import { APP_STREAM_MAX_FRAME_BYTES, createRawEventStream } from "../opencode/events.js";
 import { DEFAULT_MODEL, DeletionPendingError } from "../opencode/manager.js";
 import { SESSION_NOTICE_MAX_PAGE, SessionNoticeStore } from "../opencode/recovery.js";
+import { setBounded } from "../shared/bounded-cache.js";
 import { agentMediaServiceFor } from "./agent-media.js";
 import { type FoundApp, findApp, toManagedApp } from "./apps.js";
 import { principalFrom } from "./auth.js";
@@ -2031,6 +2032,7 @@ async function readMessagesResponse(
 }
 
 const TURN_CACHE_TTL_MS = 300;
+const MAX_TURN_CACHE_ENTRIES = 512;
 const TURN_PAGE_LIMIT = 50;
 const TURN_PAGE_BUDGET = 3;
 
@@ -2180,7 +2182,15 @@ async function turnSnapshotFor(
   try {
     const snapshot = await work;
     if (epoch === turnSnapshotEpoch) {
-      turnSnapshotCache.set(key, { expiresAt: Date.now() + TURN_CACHE_TTL_MS, snapshot });
+      for (const [k, v] of turnSnapshotCache) {
+        if (v.expiresAt <= Date.now()) turnSnapshotCache.delete(k);
+      }
+      setBounded(
+        turnSnapshotCache,
+        key,
+        { expiresAt: Date.now() + TURN_CACHE_TTL_MS, snapshot },
+        MAX_TURN_CACHE_ENTRIES,
+      );
     }
     return snapshot;
   } finally {

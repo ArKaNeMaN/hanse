@@ -61,6 +61,7 @@ const createOptions = {
   pidsLimit: 512,
   networkName: "hanse-app-project-app",
   networkAliases: ["hanse-app-project-app"],
+  init: true,
 };
 
 describe("DockerClient", () => {
@@ -81,6 +82,7 @@ describe("DockerClient", () => {
         CapDrop: string[];
         SecurityOpt: string[];
         Privileged: boolean;
+        Init: boolean;
         Binds: string[];
         Memory: number;
         NanoCpus: number;
@@ -94,6 +96,7 @@ describe("DockerClient", () => {
     expect(body.HostConfig.CapDrop).toEqual(["ALL"]);
     expect(body.HostConfig.SecurityOpt).toEqual(["no-new-privileges:true"]);
     expect(body.HostConfig.Privileged).toBe(false);
+    expect(body.HostConfig.Init).toBe(true);
     expect(body.HostConfig.Binds).toHaveLength(2);
     expect(body.HostConfig.Memory).toBe(2048);
     expect(body.HostConfig.NanoCpus).toBe(2);
@@ -101,6 +104,19 @@ describe("DockerClient", () => {
     expect(body.NetworkingConfig.EndpointsConfig["hanse-app-project-app"]?.Aliases).toEqual([
       "hanse-app-project-app",
     ]);
+  });
+
+  it("defaults to a Docker init reaper when the option is omitted", async () => {
+    const f = fixture((method, path) =>
+      method === "POST" && path.startsWith("/containers/create?name=")
+        ? json(201, { Id: "container-id" })
+        : json(500, { message: "unexpected" }),
+    );
+
+    const { init: _init, ...withoutInit } = createOptions;
+    await expect(f.client.createContainer(withoutInit)).resolves.toBe("container-id");
+    const body = f.records[0]?.body as { HostConfig: { Init: boolean } };
+    expect(body.HostConfig.Init).toBe(true);
   });
 
   it("creates one-shot containers without networking and waits for the exit code", async () => {

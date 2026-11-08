@@ -280,6 +280,8 @@ export interface DockerContainerCreateOptions {
   networkAliases: string[];
   restartPolicy?: "no" | "unless-stopped";
   networkMode?: string;
+  /** Run Docker's init process as PID 1 to reap orphaned children. Defaults to true. */
+  init?: boolean;
 }
 
 export interface DockerContainerWait {
@@ -327,6 +329,7 @@ export interface DockerContainerInspect {
     CapDrop?: string[];
     SecurityOpt?: string[];
     Privileged?: boolean;
+    Init?: boolean;
     Memory?: number;
     NanoCpus?: number;
     PidsLimit?: number | null;
@@ -843,6 +846,7 @@ export class DockerClient {
           CapDrop: ["ALL"],
           SecurityOpt: ["no-new-privileges:true"],
           Privileged: false,
+          Init: options.init ?? true,
           Tmpfs: options.tmpfs,
           Memory: options.memoryBytes,
           NanoCpus: options.nanoCpus,

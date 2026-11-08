@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { RuntimeAppState, RuntimeAppStatus } from "../agent/protocol.js";
 import type { Logger } from "../logging/logger.js";
+import { setBounded } from "../shared/bounded-cache.js";
 import type { SqliteDatabase } from "../store/index.js";
 import {
   OpencodeHttpError,
@@ -30,6 +31,8 @@ export const ABORT_TOMBSTONE_MS = 30_000;
 export const STOPPED_GRACE_MS = 10_000;
 /** A session parent map is cached for this long. */
 export const SESSION_MAP_TTL_MS = 30_000;
+/** Bound on the per-app session-map cache so a long-running coordinator cannot grow it forever. */
+const MAX_SESSION_MAP_ENTRIES = 1024;
 /** Bounded batch sizes for startup catch-up/reconcile. */
 export const RECOVERY_BATCH_LIMIT = 100;
 /** Bounded message tail used for the completed-tail cutoff. */
@@ -2469,12 +2472,15 @@ export class ProcessRecovery {
   async #sessionMap(appId: string): Promise<OpencodeSession[] | undefined> {
     const now = this.#deps.now();
     const cached = this.#sessions.get(appId);
-    if (cached !== undefined && now - cached.at <= SESSION_MAP_TTL_MS) return cached.value;
+    if (cached !== undefined) {
+      if (now - cached.at <= SESSION_MAP_TTL_MS) return cached.value;
+      this.#sessions.delete(appId);
+    }
     const endpoint = this.#deps.endpointFor(appId);
     if (endpoint === undefined) return undefined;
     try {
       const value = await this.#deps.listSessionsBounded(endpoint);
-      this.#sessions.set(appId, { at: now, value });
+      setBounded(this.#sessions, appId, { at: now, value }, MAX_SESSION_MAP_ENTRIES);
       return value;
     } catch {
       return undefined;

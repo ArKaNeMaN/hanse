@@ -4,6 +4,7 @@ import type { GitStatus } from "../git/service.js";
 import { verifyAgentToken } from "../mcp/agent-tokens.js";
 import { SettingsValidationError } from "../settings/index.js";
 import type { SettingsScope, SettingsTarget } from "../settings/types.js";
+import { setBounded } from "../shared/bounded-cache.js";
 import {
   isLegacyRetired,
   isPublicRoute,
@@ -248,7 +249,7 @@ function readUiManifest(root: string, logger: UiManifestOptions["logger"]): UiMa
 export function loadUiManifest(options: UiManifestOptions = {}): UiManifest | undefined {
   const root = path.resolve(options.assetsRoot ?? assetsRoot());
   if (!manifestCache.has(root)) {
-    manifestCache.set(root, readUiManifest(root, options.logger));
+    setBounded(manifestCache, root, readUiManifest(root, options.logger), MAX_CACHE_ENTRIES);
   }
   return manifestCache.get(root);
 }

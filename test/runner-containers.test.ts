@@ -172,6 +172,7 @@ class FakeDocker implements DockerRuntime {
         CapDrop: ["ALL"],
         SecurityOpt: ["no-new-privileges:true"],
         Privileged: false,
+        Init: options.init ?? true,
         Memory: options.memoryBytes,
         NanoCpus: options.nanoCpus,
         PidsLimit: options.pidsLimit,
@@ -269,6 +270,7 @@ describe("RunnerService per-app containers", () => {
       expect(options.nanoCpus).toBe(1);
       expect(options.pidsLimit).toBe(128);
       expect(options.networkName).toMatch(/^hanse-app-project-/);
+      expect(options.init).toBe(true);
     }
     expect(docker.creates[0]?.networkName).not.toBe(docker.creates[1]?.networkName);
     expect(docker.connects).toHaveLength(2);

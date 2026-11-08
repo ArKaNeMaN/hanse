@@ -878,6 +878,9 @@ export class RunnerService {
           user: "1000:1000",
           entrypoint: [RUNNER_ENTRYPOINT],
           cmd: [],
+          // The fixed entrypoint overrides the image's dumb-init, so Docker's init must reap
+          // orphaned children instead.
+          init: true,
           workingDir: spec.containerAppDir,
           env: containerEnvironment(spec),
           labels: {

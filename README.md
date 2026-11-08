@@ -99,6 +99,10 @@ the `agents` volume grows by roughly 1-2 GB per app as toolchains and caches are
 images and the Docker build cache add more. Keep well below the thresholds: Hanse warns at 75% used
 and reports critical at 85%, so target at least 30% free.
 
+Each app container also runs under a Docker init process (`HostConfig.Init`) that reaps orphaned
+children, and Hanse bounds its own in-flight MCP and coordinator caches. The memory cap remains a
+hard limit: if an app is OOM-killed, restart it rather than raising the cap as a workaround.
+
 The published images are `linux/amd64`. On arm64 hosts, build them locally. Docker Desktop on macOS
 or Windows/WSL2 works, including for evaluation; Linux `amd64` is the production target. No GPU is
 required for the default setup: model inference runs at the configured provider.

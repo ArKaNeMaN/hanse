@@ -53,6 +53,11 @@ this stage.
   `opencode serve --hostname 0.0.0.0 --port 4100`, so opencode is PID 1. `dumb-init` and
   `hanse agent-host` from the image are bypassed (`Dockerfile:196-210`, `src/runner/server.ts:84,875-877`,
   `shell/hanse-agent-entrypoint:1-3`).
+  > **Updated by the runtime reaper (journal 0046):** app containers now set Docker
+  > `HostConfig.Init`. The init process is PID 1 and `opencode serve` is a child, so the
+  > "opencode is PID 1" statement above describes the pre-reaper behavior. The process-safety
+  > instruction and self-kill deny rules still apply: a tool can still signal opencode by name or
+  > PID, and the container restart semantics are unchanged.
 - App containers default to Docker `unless-stopped`; one-shot git/validation containers explicitly
   use `"no"` (`src/runner/docker.ts:848-851`, `src/runner/server.ts:1106,1198`).
 - The coordinator can observe `RuntimeAppState` (`starting|running|stopped|error`) and the container

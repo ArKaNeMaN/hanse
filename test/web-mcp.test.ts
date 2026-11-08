@@ -33,6 +33,16 @@ function authFile(entries: Record<string, unknown>): string {
   return file;
 }
 
+async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
+  const started = Date.now();
+  while (!predicate()) {
+    if (Date.now() - started > timeoutMs) {
+      throw new Error("timed out waiting for web mcp server");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
 function effectiveValue<T>(value: T | null): EffectiveValue<T> {
   return {
     value,
@@ -360,6 +370,64 @@ describe("hanse_web MCP server", () => {
       method: "nope",
     })) as RpcPayload;
     expect(unknown.error?.code).toBe(-32601);
+  });
+
+  it("rejects requests beyond the pending cap and still completes the in-flight one", async () => {
+    let firstResponse: import("node:http").ServerResponse | undefined;
+    const server = await fakeServer((request, response) => {
+      const body = request.json as { query?: string };
+      if (body.query === "slow") {
+        firstResponse = response;
+        return;
+      }
+      jsonResponse(response, { results: [] });
+    });
+    try {
+      const config: WebMcpConfig = { search: deepseek };
+      const auth = authFile({ deepseek: { type: "api", key: KEY } });
+      const input = new PassThrough();
+      const output: string[] = [];
+      const done = runWebMcpServer(config, auth, {
+        input,
+        write: (line) => output.push(line),
+        baseUrl: server.baseUrl,
+        maxPending: 1,
+      });
+      input.write(
+        `${JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: { name: "search", arguments: { query: "slow" } },
+        })}\n`,
+      );
+      await waitFor(() => firstResponse !== undefined);
+      input.write(
+        `${JSON.stringify({
+          jsonrpc: "2.0",
+          id: 2,
+          method: "tools/call",
+          params: { name: "search", arguments: { query: "fast" } },
+        })}\n`,
+      );
+      await waitFor(() => output.length >= 1);
+      const rejected = (JSON.parse(output[0] ?? "") as RpcPayload).error;
+      expect(rejected).toEqual({ code: -32000, message: "too many concurrent requests" });
+      expect((JSON.parse(output[0] ?? "") as RpcPayload).id).toBe(2);
+
+      firstResponse?.setHeader("content-type", "application/json");
+      firstResponse?.end(JSON.stringify({ results: [{ title: "slow" }] }));
+      input.end();
+      await done;
+
+      const responses = output.map((line) => JSON.parse(line) as RpcPayload);
+      expect(responses).toHaveLength(2);
+      const first = responses.find((response) => response.id === 1);
+      expect(first?.error).toBeUndefined();
+      expect(first?.result?.content?.[0]?.text).toContain("slow");
+    } finally {
+      await server.close();
+    }
   });
 
   it("handles interleaved requests concurrently and matches responses by id", async () => {

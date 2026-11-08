@@ -111,11 +111,22 @@ export async function proxyTerminalUpgrade(
     });
 
     let finished = false;
+    const onClientGone = (): void => {
+      upstreamRequest.destroy();
+      finish();
+    };
     const finish = (): void => {
       if (finished) return;
       finished = true;
+      socket.removeListener("close", onClientGone);
+      socket.removeListener("error", onClientGone);
+      socket.removeListener("end", onClientGone);
       resolve();
     };
+    socket.once("close", onClientGone);
+    socket.once("error", onClientGone);
+    // HTTP server sockets allow half-open, so a client FIN arrives as "end" before "close".
+    socket.once("end", onClientGone);
 
     upstreamRequest.on("upgrade", (response, upstreamSocket, upstreamHead) => {
       if (!socket.writable) {

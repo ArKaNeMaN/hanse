@@ -29,7 +29,10 @@ no extra published port.
 - About 2 GB of RAM for an idle coordinator/IDE/runner, plus up to 2 GB per app container (the
   default cap). 4 GB is the minimum for the stack and one app; 8-16 GB is recommended for several.
   Raise `HANSE_APP_MEMORY_MB`/`HANSE_APP_CPUS` only with matching host capacity (set them in the
-  coordinator environment, for example with a Compose override).
+  coordinator environment, for example with a Compose override). Each app container also runs under
+  a Docker init process (`HostConfig.Init`) that reaps orphaned children, and its memory/CPU/PID
+  limits stay enforced. Do not raise `HANSE_APP_MEMORY_MB` as a workaround for a leak: the runtime
+  bounds its own child-process, MCP, and coordinator state.
 - Absolute host paths for the workspace and agents volumes, because the runner passes them to the
   Docker daemon as bind sources.
 - About 7-8 GB for the five images, plus roughly 1-2 GB per app in the `agents` volume, the
@@ -333,6 +336,10 @@ Security model, in short:
   `no-new-privileges`, and only its app directory and app agents root mounted. App containers have no
   `/data/state`, no Docker socket, and no operator/runtime token. Each app has its own bridge network;
   sibling app containers are not reachable by name.
+- App containers run under Docker `Init: true`, so a small init process is PID 1 and `opencode
+  serve` is its child. The init reaps orphaned shell/tool/MCP/terminal children, so a long-lived app
+  does not accumulate zombie processes. This is additive: it does not change the uid, read-only
+  root, capabilities, or network, and the memory/CPU/PID limits remain set.
 - The runner is the only socket holder. It is root-equivalent by capability, so it runs on the internal
   `control` network only, has no coordinator state, and receives the host agents volume read-only for
   per-app credentials. The coordinator calls it with `HANSE_RUNTIME_TOKEN`.
@@ -832,5 +839,9 @@ and run the container smoke test against `/healthz`, `/readyz`, `/login`, the as
 - The deployment lock is advisory and single-host. It cannot stop a runner call that already
   outlived a coordinator timeout, and the CLI image commands are outside the quiescence counter.
 - An async restart claim is in memory; a coordinator exit after `202` can leave the app stopped.
+- App containers are zombie-free by construction (Docker init plus bounded MCP/coordinator state),
+  but `opencode`'s own session/runtime memory is outside Hanse's control. An app that reaches its
+  configured memory cap can still be OOM-killed; restart it and inspect the runtime history instead
+  of raising the cap as a workaround.
 - The image is large (code-server, `opencode`, OMO, and CodeGraph are bundled).
 - `latest` moves with `main`; pin a tag for production.

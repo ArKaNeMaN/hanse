@@ -45,28 +45,43 @@ export class AppStreamRegistry {
   /** A send route registers the client's app-stream id for priority admission. */
   registerActive(appId: string, streamID: string | undefined, now = Date.now()): void {
     if (streamID === undefined || streamID.length === 0 || streamID.length > 200) return;
-    this.#state(appId).active.set(streamID, now);
+    const state = this.#state(appId);
+    this.#pruneActive(state, now);
+    state.active.set(streamID, now);
   }
 
   isActive(appId: string, streamID: string, now = Date.now()): boolean {
-    const active = this.#apps.get(appId)?.active;
-    if (active === undefined) return false;
-    const at = active.get(streamID);
+    const state = this.#apps.get(appId);
+    if (state === undefined) return false;
+    this.#pruneActive(state, now);
+    const at = state.active.get(streamID);
     if (at === undefined) return false;
     if (now - at > this.#activeTtlMs) {
-      active.delete(streamID);
+      state.active.delete(streamID);
       return false;
     }
     return true;
+  }
+
+  /** Test-only visibility into the tracked active ids for one app. */
+  activeEntryCountForTests(appId: string): number {
+    return this.#apps.get(appId)?.active.size ?? 0;
   }
 
   resetForTests(): void {
     this.#apps.clear();
   }
 
+  #pruneActive(state: AppStreamState, now: number): void {
+    for (const [streamID, at] of state.active) {
+      if (now - at > this.#activeTtlMs) state.active.delete(streamID);
+    }
+  }
+
   #prune(appId: string): void {
     const state = this.#apps.get(appId);
     if (state === undefined) return;
+    this.#pruneActive(state, Date.now());
     if (state.browser === 0 && state.active.size === 0) this.#apps.delete(appId);
   }
 }
