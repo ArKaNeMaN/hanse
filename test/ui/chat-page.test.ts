@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   chatEventSource,
   FakeEventSource,
+  FIXTURE_MESSAGES,
   mountChat,
   processEventSource,
   props,
@@ -1074,6 +1075,113 @@ describe("ChatPage read-only shell", () => {
         Object.defineProperty(document, "visibilityState", original);
       }
     }
+    wrapper.unmount();
+  });
+});
+
+describe("chat notice grouping", () => {
+  function notice(id: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      id,
+      sessionId: "s1",
+      kind: "agent_stopped",
+      reason: "process_exit",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      payload: {},
+      ...overrides,
+    };
+  }
+
+  it("hides a leading notice while an older message chunk exists and reveals it once history ends", async () => {
+    const leading = notice("notice-lead", { createdAt: "2020-01-01T00:00:00.000Z" });
+    const { wrapper } = await mountChat("/chat?app=alpha&project=p&session=s1", {
+      nextCursor: "cursor-old",
+      notices: [leading],
+    });
+
+    expect(wrapper.find('[data-notice-id="notice-lead"]').exists()).toBe(false);
+
+    await wrapper.find("[data-chat-load-earlier]").trigger("click");
+    await flushPromises();
+
+    expect(wrapper.find('[data-notice-id="notice-lead"]').exists()).toBe(true);
+    wrapper.unmount();
+  });
+
+  it("keeps a leading notice when the loaded history is complete", async () => {
+    const leading = notice("notice-lead", { createdAt: "2020-01-01T00:00:00.000Z" });
+    const { wrapper } = await mountChat("/chat?app=alpha&project=p&session=s1", {
+      nextCursor: null,
+      notices: [leading],
+    });
+
+    expect(wrapper.find('[data-notice-id="notice-lead"]').exists()).toBe(true);
+    wrapper.unmount();
+  });
+
+  it("keeps a notice in a notice-only complete session", async () => {
+    const only = notice("notice-only");
+    const { wrapper } = await mountChat("/chat?app=alpha&project=p&session=s1", {
+      messages: [],
+      nextCursor: null,
+      notices: [only],
+    });
+
+    expect(wrapper.find('[data-notice-id="notice-only"]').exists()).toBe(true);
+    expect(wrapper.find(".chat-notice").exists()).toBe(true);
+    wrapper.unmount();
+  });
+
+  it("groups contiguous notices with the same cause and expands to the member rows", async () => {
+    const { wrapper } = await mountChat("/chat?app=alpha&project=p&session=s1", {
+      messages: [FIXTURE_MESSAGES[0]],
+      nextCursor: null,
+      notices: [
+        notice("notice-a", {
+          kind: "subagent_interrupted",
+          createdAt: "2026-01-01T00:00:01.000Z",
+          payload: { childSessionID: "child-a", runtimeEpoch: "epoch-1" },
+        }),
+        notice("notice-b", {
+          kind: "subagent_interrupted",
+          createdAt: "2026-01-01T00:00:02.000Z",
+          payload: { childSessionID: "child-b", runtimeEpoch: "epoch-2" },
+        }),
+        notice("notice-c", {
+          kind: "agent_stopped",
+          createdAt: "2026-01-01T00:00:03.000Z",
+          payload: { childSessionID: "child-a", runtimeEpoch: "epoch-1" },
+        }),
+      ],
+    });
+
+    const groups = wrapper.findAll(".chat-notice-group");
+    expect(groups).toHaveLength(1);
+    const group = groups[0];
+    if (group === undefined) throw new Error("missing notice group");
+    expect(group.text()).toContain("3 notices");
+    expect(group.text()).toContain("2 subagents");
+
+    const toggle = group.find(".chat-notice-group__toggle");
+    expect(toggle.attributes("aria-expanded")).toBe("false");
+    await toggle.trigger("click");
+
+    expect(toggle.attributes("aria-expanded")).toBe("true");
+    const body = group.find(".chat-notice-group__body");
+    expect(body.findAll(".chat-notice")).toHaveLength(3);
+    wrapper.unmount();
+  });
+
+  it("renders a single notice without a group wrapper", async () => {
+    const { wrapper } = await mountChat("/chat?app=alpha&project=p&session=s1", {
+      messages: [FIXTURE_MESSAGES[0]],
+      nextCursor: null,
+      notices: [notice("notice-single")],
+    });
+
+    expect(wrapper.find(".chat-notice-group").exists()).toBe(false);
+    expect(wrapper.find('[data-notice-id="notice-single"]').exists()).toBe(true);
+    expect(wrapper.find(".chat-notice").exists()).toBe(true);
     wrapper.unmount();
   });
 });

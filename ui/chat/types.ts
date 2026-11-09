@@ -95,9 +95,27 @@ export interface ChatMessageView {
   readonly parts: readonly ChatMessagePartView[];
 }
 
+export interface ChatNoticeGroupView {
+  readonly id: string;
+  readonly notices: readonly NoticeView[];
+  readonly reason: string;
+  readonly reasonLabel: string;
+  readonly count: number;
+  readonly kindBreakdown: readonly { readonly label: string; readonly count: number }[];
+  readonly subagentCount: number;
+  readonly restartCount: number;
+  readonly firstAt: string;
+  readonly lastAt: string;
+  readonly metricsText: string;
+  readonly breakdownText: string;
+  readonly timeText: string;
+  readonly timeTitle: string;
+}
+
 export type ChatThreadItem =
   | { readonly type: "message"; readonly message: ChatMessageView }
-  | { readonly type: "notice"; readonly notice: NoticeView };
+  | { readonly type: "notice"; readonly notice: NoticeView }
+  | { readonly type: "notice-group"; readonly group: ChatNoticeGroupView };
 
 export interface ChatPromptsResponse {
   readonly questions?: readonly NormalizedQuestionRequest[];

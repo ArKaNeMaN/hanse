@@ -2374,6 +2374,55 @@
     color: var(--brass);
   }
 
+  .chat-notice-group {
+    display: flex;
+    flex-direction: column;
+    inline-size: 100%;
+    gap: var(--space-1);
+  }
+
+  .chat-notice-group__toggle {
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: center;
+    gap: var(--space-1) var(--space-2);
+    min-inline-size: 0;
+    text-align: center;
+    cursor: pointer;
+  }
+
+  .chat-notice-group__chevron {
+    inline-size: 1em;
+    block-size: 1em;
+    color: var(--text-3);
+    transition: transform var(--dur-micro) var(--ease-out);
+  }
+
+  .chat-notice-group--open .chat-notice-group__chevron {
+    transform: rotate(180deg);
+  }
+
+  .chat-notice-group__breakdown,
+  .chat-notice-group__time {
+    color: var(--text-3);
+    font-size: var(--text-caption);
+    line-height: 1.4;
+  }
+
+  .chat-notice-group__body {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    padding-block: var(--space-1);
+  }
+
   .chat-stopped {
     display: flex;
     flex-direction: column;

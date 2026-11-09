@@ -9,6 +9,7 @@ import {
 } from "../../../assets/chat-core.js";
 import type { ContextSnapshot } from "../../../src/opencode/context.js";
 import type { NormalizedTodo } from "../../../src/opencode/prompts.js";
+import { threadItemKey } from "../../chat/notice-groups.js";
 import {
   type ChatScrollMemory,
   readScrollMemory,
@@ -23,6 +24,7 @@ import { processPhasePill, processPill, runtimePill } from "../../status.js";
 import AppIcon from "../AppIcon.vue";
 import ChatGeneratingRow from "./ChatGeneratingRow.vue";
 import ChatMessage from "./ChatMessage.vue";
+import ChatNoticeGroupRow from "./ChatNoticeGroupRow.vue";
 import ChatNoticeRow from "./ChatNoticeRow.vue";
 
 const props = defineProps<{
@@ -673,10 +675,7 @@ defineExpose({ captureAnchor, restoreAnchor, scrollToBottom, onScroll, unseen })
             place.
           </p>
 
-          <template
-            v-for="item in items"
-            :key="item.type === 'message' ? item.message.id : `notice:${item.notice.id}`"
-          >
+          <template v-for="item in items" :key="threadItemKey(item)">
             <ChatMessage
               v-if="item.type === 'message'"
               :record="item.message"
@@ -687,7 +686,8 @@ defineExpose({ captureAnchor, restoreAnchor, scrollToBottom, onScroll, unseen })
               @question-reject="(view) => emit('question-reject', view)"
               @open-image="(attachment) => emit('open-image', attachment)"
             />
-            <ChatNoticeRow v-else :notice="item.notice" />
+            <ChatNoticeRow v-else-if="item.type === 'notice'" :notice="item.notice" />
+            <ChatNoticeGroupRow v-else :group="item.group" />
           </template>
         </div>
         <div class="chat-thread__approvals">

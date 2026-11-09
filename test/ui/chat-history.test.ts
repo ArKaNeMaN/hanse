@@ -111,6 +111,34 @@ describe("chat history paging", () => {
     wrapper.unmount();
   });
 
+  it("adopts a tail cursor after an initial message read fails", async () => {
+    let messageReads = 0;
+    const { wrapper } = await mountChat("/chat?app=alpha&project=p&session=s1", {
+      nextCursor: "cursor-old",
+      custom: ({ method, url }) => {
+        if (method === "GET" && url.includes("/messages?") && messageReads === 0) {
+          messageReads += 1;
+          return { status: 503, body: { error: "transient message read failure" } };
+        }
+        return undefined;
+      },
+    });
+
+    expect(messageReads).toBe(1);
+    expect(wrapper.find("[data-chat-load-earlier]").exists()).toBe(false);
+    expect(wrapper.text()).not.toContain("Hello from the fixture.");
+
+    const source = FakeEventSource.instances[0];
+    if (source === undefined) throw new Error("missing source");
+    source.open();
+    source.emit({ type: "stream.ready", seq: 0, streamID: "stream-stale-null" });
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("Hello from the fixture.");
+    expect(wrapper.find("[data-chat-load-earlier]").exists()).toBe(true);
+    wrapper.unmount();
+  });
+
   it("keeps keyed message nodes across a live delta instead of replacing the feed DOM", async () => {
     const { wrapper } = await mountChat("/chat?app=alpha&project=p&session=s1");
     const before = wrapper.find('[data-message-id="msg_user"]').element;

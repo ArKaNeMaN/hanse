@@ -1,5 +1,21 @@
 # Open questions
 
+> Stage: `0039-chat-notice-grouping`. Owner decisions were collected on 2026-11-09. There are no
+> open items for this stage.
+
+## Stage `0039-chat-notice-grouping` - resolved owner decisions
+
+1. **Scope** - only the persisted notice divider rows (`agent_stopped`,
+   `subagent_interrupted`, `resume_*`, and client warning notices). OMO/system-reminder cards and
+   synthetic error rows are out of scope.
+2. **Collapsed caption** - the most detailed variant: cause, notice count, distinct subagents,
+   distinct restarts, per-kind breakdown, and time range.
+3. **Leading notices** - while an older message chunk is not loaded (`historyCursor !== null`), a
+   notice before the first locally loaded message is hidden; it reappears when history is exhausted.
+   A notice-only session with complete history keeps its notice.
+4. **Remaining forks** - delegated to the implementer; the design records grouping by normalized
+   reason (not kind), singleton preservation, the metric rules, and the accessibility contract.
+
 > Stage: `0038-chat-turn-state`. Owner decisions were collected on 2026-11-08. There are no open
 > items for this stage.
 

@@ -37,6 +37,7 @@ import { ApiError, apiMutation, apiQuery } from "../api.js";
 import type { BootPayload } from "../boot.js";
 import type { InboundChatEvent } from "../chat/event-reducer.js";
 import { reduceEvent } from "../chat/event-reducer.js";
+import { buildNoticeTimeline } from "../chat/notice-groups.js";
 import {
   isQuestionToolPart,
   partAnswers,
@@ -2019,7 +2020,7 @@ const threadItems = computed<ChatThreadItem[]>(() => {
       }
     }
   }
-  return items;
+  return buildNoticeTimeline(items, { historyComplete: historyCursor.value === null });
 });
 const messageCountText = computed(() =>
   messageCountLabel(feed.thread.order.length, historyCursor.value === null),

@@ -81,6 +81,8 @@ export interface ChatFixture {
   readonly messages?: readonly unknown[];
   readonly olderMessages?: readonly unknown[];
   readonly nextCursor?: string | null;
+  readonly notices?: readonly unknown[];
+  readonly noticeNextCursor?: string | null;
   readonly messagePages?: readonly {
     readonly before: string | null;
     readonly messages: readonly unknown[];
@@ -641,7 +643,10 @@ export function installFetch(fixture: ChatFixture = {}): InstalledFetch {
       });
     }
     if (/\/sessions\/[^/]+\/notices/.test(url)) {
-      return json(200, { notices: [], nextCursor: null });
+      return json(200, {
+        notices: fixture.notices ?? [],
+        nextCursor: fixture.noticeNextCursor ?? null,
+      });
     }
     if (/\/sessions\/[^/]+\/context/.test(url)) {
       return json(

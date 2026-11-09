@@ -36,6 +36,11 @@
   handoff/event retention, path guards, and retry semantics.
 - [Chat pagination and generation indicator](./chat-pagination.md) - 30-message session tail,
   cursor-based scroll-up history, overlap-aware snapshot merge, and the in-feed generation row.
+- [Chat notice grouping](./chat-notice-grouping.md) - groups contiguous interruption/resume notice
+  dividers by cause, a detailed collapsed caption (counts, subagents, restarts, kind breakdown, time
+  range), and hides leading notices while an older message chunk is not loaded. Status: design
+  review cleared (Oracle Round 3 findings folded); plan `momus` OKAY; implemented and verified
+  (journal 0047).
 - [Truthful chat turn state](./chat-turn-state.md) - a server-computed turn snapshot
   (`status`, `turnContinues`, running/queued prompts), the read-only `GET .../turn` hydration route,
   a status-driven generation row with `Ready · N queued`, the queue modal replacing the strip, and the
