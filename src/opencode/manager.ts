@@ -103,6 +103,7 @@ import {
 import type { HanseEvent } from "./events.js";
 import {
   assertOverlayBytes,
+  BASH_DEFAULT_TIMEOUT_ENV,
   buildConfigOverlay,
   type IsolatedEnv,
   type McpLocalServer,
@@ -1224,6 +1225,7 @@ export class InstanceManager {
         GIT_CEILING_DIRECTORIES: realParentDir(app.appDir),
         HANSE_OPENCODE_PASSWORD_FILE: passwordFile,
         ...NON_INTERACTIVE_SHELL_ENV,
+        ...BASH_DEFAULT_TIMEOUT_ENV,
         ...gitEnv,
         ...(omoProfile === undefined ? {} : { OMO_PROFILE: omoProfile }),
         ...(existsSync(authFile) ? { HANSE_OPENCODE_AUTH_FILE: authFile } : {}),

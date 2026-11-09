@@ -28,6 +28,21 @@ export const COORDINATOR_MCP_NAME = "hanse";
 /** Name under which the image-baked codegraph MCP server is exposed to managed agents. */
 export const CODEGRAPH_MCP_NAME = "codegraph";
 
+/** Default timeout (5 minutes) for opencode's `bash` tool when a call omits `timeout`. */
+export const BASH_DEFAULT_TIMEOUT_MS = 300_000;
+
+/**
+ * opencode `bash`-tool default-timeout environment.
+ *
+ * `OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS` is opencode's own env name (not gated behind
+ * `OPENCODE_EXPERIMENTAL`; it may change across opencode versions). It only sets the bash tool
+ * default when a call omits `timeout`; an explicit per-call `timeout` still wins, and an
+ * unset/invalid value falls back to opencode's built-in 120000 ms.
+ */
+export const BASH_DEFAULT_TIMEOUT_ENV: Readonly<Record<string, string>> = Object.freeze({
+  OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS: String(BASH_DEFAULT_TIMEOUT_MS),
+});
+
 /** Minimal opencode MCP server config (local, v1-compatible subset). */
 export interface McpLocalServer {
   type: "local";

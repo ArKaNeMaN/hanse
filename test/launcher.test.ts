@@ -248,6 +248,7 @@ describe("launcher", () => {
       expect(env.npm_config_yes).toBe("true");
       expect(env.PIP_NO_INPUT).toBe("1");
       expect(env.YARN_ENABLE_IMMUTABLE_INSTALLS).toBe("false");
+      expect(env.OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS).toBe("300000");
       expect(env.GIT_CEILING_DIRECTORIES).not.toBe("/host/git");
       expect(env.HANSE_GIT_OP).toBe("status");
       expect(env.HANSE_GIT_APP_DIR).toBe("/app");

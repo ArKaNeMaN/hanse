@@ -1935,6 +1935,7 @@ describe("InstanceManager lifecycle", () => {
     expect(spec.env.npm_config_yes).toBe("true");
     expect(spec.env.PIP_NO_INPUT).toBe("1");
     expect(spec.env.YARN_ENABLE_IMMUTABLE_INSTALLS).toBe("false");
+    expect(spec.env.OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS).toBe("300000");
     const serialized = JSON.stringify(spec);
     expect(serialized).not.toContain("key-material");
     expect(serialized).not.toContain(token);

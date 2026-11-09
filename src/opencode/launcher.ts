@@ -8,6 +8,7 @@ import type { SqliteDatabase } from "../store/index.js";
 import { writeAuthFile } from "./auth.js";
 import {
   assertOverlayBytes,
+  BASH_DEFAULT_TIMEOUT_ENV,
   buildConfigOverlay,
   type InstanceIdentity,
   type McpLocalServer,
@@ -120,6 +121,7 @@ export function buildInstanceEnv(input: LaunchInput): NodeJS.ProcessEnv {
   });
   // Applied after scrubbing: the host values are untrusted, these deliberate ones are not.
   Object.assign(env, NON_INTERACTIVE_SHELL_ENV);
+  Object.assign(env, BASH_DEFAULT_TIMEOUT_ENV);
   env.GIT_CEILING_DIRECTORIES = realParentDir(input.appDir);
   if (input.omoProfile !== undefined) {
     env.OMO_PROFILE = input.omoProfile;
