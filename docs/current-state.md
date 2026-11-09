@@ -669,6 +669,11 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   `non-interactive-env` hook: that hook prepends an `export ...;` prefix to git commands, the prefix
   persists in tool-call history, and the model then copies it onto unrelated commands. `CI` is not
   set globally because it changes test/build behavior beyond non-interactive prompts.
+- The `bash` tool defaults to a five-minute timeout through
+  `OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS=300000` in every instance env (opencode's own
+  variable; unset/invalid falls back to 120000 ms). An explicit per-call `timeout` overrides it.
+  Long or detached work must be capped in the shell (for example
+  `nohup timeout 3600 <command> ><log> 2>&1 &`) and its log polled, never left unbounded.
 - Every managed instance also gets the codegraph MCP server
   (`@colbymchenry/codegraph@1.6.2`, `/opt/hanse/codegraph`) through `HANSE_CODEGRAPH_BIN`. The
   application must be indexed with `codegraph init` (creates `.codegraph/`) before graph queries
