@@ -3,7 +3,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { nextTick } from "vue";
 import TopbarActions from "../../ui/components/TopbarActions.vue";
 import { useChatUiStore } from "../../ui/stores/chat-ui.js";
-import { clearTopbarActions } from "../../ui/topbar.js";
 import { boot, mountChat } from "./chat-support.js";
 
 function topbarShell(): void {
@@ -38,7 +37,6 @@ describe("chat policy warnings", () => {
     );
 
     topbarShell();
-    clearTopbarActions();
     const topbar = mount(TopbarActions, {
       props: { topbar: boot().topbar, workspace: "chat" },
       global: { plugins: [pinia] },
@@ -71,7 +69,6 @@ describe("chat policy warnings", () => {
     });
     await flushPromises();
     topbarShell();
-    clearTopbarActions();
     const topbar = mount(TopbarActions, {
       props: { topbar: boot().topbar, workspace: "chat" },
       global: { plugins: [pinia] },

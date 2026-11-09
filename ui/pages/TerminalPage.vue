@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useQuery } from "@tanstack/vue-query";
-import { computed, ref, watch } from "vue";
+import { computed, ref } from "vue";
 import { useRoute } from "vue-router";
 import { ApiError, apiQuery } from "../api.js";
 import type { BootPayload } from "../boot.js";
@@ -9,7 +9,7 @@ import TerminalBanner from "../components/TerminalBanner.vue";
 import TerminalStoppedState from "../components/TerminalStoppedState.vue";
 import TerminalToolbar from "../components/TerminalToolbar.vue";
 import TerminalView from "../components/TerminalView.vue";
-import { applyChrome } from "../composables/useChrome.js";
+import { usePageChrome } from "../composables/usePageChrome.js";
 import { useWorkspaceShell } from "../composables/useWorkspaceShell.js";
 import type { TerminalStatusKind } from "../terminal/socket.js";
 import type { TerminalPageProps, TerminalResponse } from "../terminal/types.js";
@@ -54,8 +54,11 @@ const terminalQuery = useQuery<TerminalResponse>({
   initialDataUpdatedAt: 0,
   staleTime: 30_000,
   retry: false,
+  refetchOnWindowFocus: false,
   enabled: computed(() => appKey.value.length > 0 && projectId.value.length > 0),
 });
+
+usePageChrome(terminalQuery, props.boot);
 
 const view = computed<TerminalPageProps | undefined>(() => terminalQuery.data.value);
 const loading = computed(() => terminalQuery.isFetching.value);
@@ -73,16 +76,6 @@ const failure = computed(() => {
     ? error.message
     : "Could not load this terminal.";
 });
-
-watch(
-  () => terminalQuery.data.value?.chrome,
-  (chrome) => {
-    if (chrome !== undefined) {
-      applyChrome(chrome);
-    }
-  },
-  { immediate: true },
-);
 
 const status = ref<TerminalStatusKind>("connecting");
 const detail = ref<string | undefined>(undefined);

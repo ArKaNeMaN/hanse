@@ -88,7 +88,7 @@ function request(
   return {
     method: "GET",
     path: pathname,
-    headers,
+    headers: { "x-hanse-ui-version": "2", ...headers },
     query,
     ...(host === undefined ? {} : { host }),
   };
@@ -163,7 +163,7 @@ describe("/api/ui/chat", () => {
       active: "none",
       activeProjectId: "p",
     });
-    expect(payload.chrome.breadcrumb).toContain("Chat");
+    expect(payload.chrome.breadcrumb).toContainEqual({ label: "Chat" });
     expect(payload).not.toHaveProperty("initialSession");
     expect(payload).not.toHaveProperty("session");
   });
@@ -207,33 +207,32 @@ describe("/api/ui/chat", () => {
     const f = fixture();
     const chat = handleUiApi(
       f.deps,
-      request("/api/ui/chrome", cookie(f.token), { path: "/chat", project: "p", app: "web" }),
+      request("/api/ui/chat", cookie(f.token), { app: "web", project: "p" }),
     );
     expect(chat).toMatchObject({ status: 200 });
-    const chatChrome = JSON.parse(chat?.body ?? "{}");
-    expect(chatChrome).toMatchObject({
+    const chatPayload = JSON.parse(chat?.body ?? "{}");
+    expect(chatPayload.chrome).toMatchObject({
       title: "web chat",
       active: "none",
       activeProjectId: "p",
     });
-    expect(chatChrome.breadcrumb).toContain("Chat");
-    expect(chatChrome.breadcrumb).toContain("Alpha");
+    expect(chatPayload.chrome.breadcrumb).toContainEqual({ label: "Chat" });
+    expect(chatPayload.chrome.breadcrumb).toContainEqual({ label: "Alpha", href: "/projects/p" });
 
     const terminal = handleUiApi(
       f.deps,
-      request("/api/ui/chrome", cookie(f.token), {
-        path: "/terminal",
-        project: "p",
+      request("/api/ui/terminal", cookie(f.token), {
         app: "web",
+        project: "p",
       }),
     );
     expect(terminal).toMatchObject({ status: 200 });
-    const terminalChrome = JSON.parse(terminal?.body ?? "{}");
-    expect(terminalChrome).toMatchObject({
+    const terminalPayload = JSON.parse(terminal?.body ?? "{}");
+    expect(terminalPayload.chrome).toMatchObject({
       title: "web terminal",
       active: "project",
       activeProjectId: "p",
     });
-    expect(terminalChrome.breadcrumb).toContain("Terminal");
+    expect(terminalPayload.chrome.breadcrumb).toContainEqual({ label: "Terminal" });
   });
 });

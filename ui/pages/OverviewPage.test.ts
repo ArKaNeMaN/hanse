@@ -109,13 +109,15 @@ function boot(overrides: Partial<typeof PROPS> = {}, routeId = "overview"): Boot
     spaRoutes: [routeId as BootPayload["route"]["id"]],
     topbar: { ideHref: "/ide/" },
     chrome: {
-      sidebarNav: "",
-      breadcrumb: "",
       title: "Fleet overview",
       active: "overview",
+      breadcrumb: [],
+      projects: [],
+      masterHref: "/chat?app=master&project=hanse-master",
       pendingCount: 1,
       sshPendingCount: 0,
     },
+    routeKey: JSON.stringify(["overview", [], []]),
   };
 }
 

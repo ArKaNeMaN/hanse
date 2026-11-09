@@ -4,7 +4,7 @@
  * One socket per page. Every connect increments a generation, so callbacks from a replaced or
  * disposed socket are ignored. Automatic reconnects are bounded: exactly five attempts with the
  * `[1,2,4,8,15]s` delays, then a manual Reconnect. A failed WebSocket upgrade cannot expose an HTTP
- * status, so auth expiry is detected through the cookie-only `/api/ui/chrome?path=/terminal` probe
+ * status, so auth expiry is detected through the cookie-only `/api/ui/auth` probe
  * (at most once per retry window, 5 s cooldown, never while hidden).
  */
 
@@ -238,8 +238,8 @@ export function createTerminalSocket(options: TerminalSocketOptions): TerminalSo
   }
 
   /**
-   * Ask the cookie-only chrome endpoint whether the session is still alive. Returns true when the
-   * adapter must stop (auth expired) and false when retries may continue.
+   * Ask the cookie-only auth probe whether the session is still alive. A 401/403 means expired;
+   * 204 (or any other status, including 404/409) leaves the bounded retries running.
    */
   async function probeAuth(): Promise<boolean> {
     if (doc?.hidden === true || probedThisWindow || probeInFlight) {
@@ -252,10 +252,9 @@ export function createTerminalSocket(options: TerminalSocketOptions): TerminalSo
     probedThisWindow = true;
     lastProbeAt = now();
     try {
-      const response = await fetchImpl("/api/ui/chrome?path=/terminal", {
+      const response = await fetchImpl("/api/ui/auth", {
         credentials: "same-origin",
         cache: "no-store",
-        headers: { accept: "application/json" },
       });
       if (response.status === 401 || response.status === 403) {
         generation += 1;

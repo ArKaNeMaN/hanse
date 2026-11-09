@@ -6,7 +6,7 @@
  * bundle while still typing the boot payload and query response.
  */
 
-import type { BootChrome } from "./boot.js";
+import type { ChromeData } from "./boot.js";
 import type { HandoffReplyState, HandoffState, RuntimeState } from "./status.js";
 
 export type HandoffDispatchMode = "auto" | "approve" | "deny";
@@ -181,5 +181,5 @@ export interface ProjectProps {
 }
 
 export interface ProjectResponse extends ProjectProps {
-  readonly chrome?: BootChrome;
+  readonly chrome?: ChromeData;
 }

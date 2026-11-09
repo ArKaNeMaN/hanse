@@ -87,7 +87,7 @@ import ChatThread from "../components/chat/ChatThread.vue";
 import { useAgentProcess } from "../composables/useAgentProcess.js";
 import { useChatComposer } from "../composables/useChatComposer.js";
 import { useChatStream } from "../composables/useChatStream.js";
-import { applyChrome } from "../composables/useChrome.js";
+import { usePageChrome } from "../composables/usePageChrome.js";
 import { useWorkspaceShell } from "../composables/useWorkspaceShell.js";
 import type { ProcessError, ProcessPhase, ProcessState } from "../process/types.js";
 import { useChatContextStore } from "../stores/chat-context.js";
@@ -950,9 +950,12 @@ const chatQuery = useQuery<ChatResponse>({
   initialDataUpdatedAt: 0,
   staleTime: 30_000,
   refetchInterval: CHAT_PROPS_POLL_MS,
+  refetchOnWindowFocus: false,
   retry: false,
   enabled: computed(() => routeState.app.value.length > 0),
 });
+
+usePageChrome(chatQuery, props.boot);
 
 const view = computed(() => chatQuery.data.value);
 
@@ -962,16 +965,6 @@ const agentProcess = useAgentProcess({
   initial: () =>
     view.value?.app.appKey === routeState.app.value ? (view.value?.runtime.process ?? null) : null,
 });
-
-watch(
-  () => view.value?.chrome,
-  (chrome) => {
-    if (chrome !== undefined) {
-      applyChrome(chrome);
-    }
-  },
-  { immediate: true },
-);
 
 watch(
   () => view.value?.topbar,

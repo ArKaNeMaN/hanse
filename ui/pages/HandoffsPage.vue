@@ -9,7 +9,7 @@ import HandoffReviewDialog from "../components/HandoffReviewDialog.vue";
 import RouteText from "../components/RouteText.vue";
 import SmartLink from "../components/SmartLink.vue";
 import StatusPill from "../components/StatusPill.vue";
-import { applyChrome } from "../composables/useChrome.js";
+import { usePageChrome } from "../composables/usePageChrome.js";
 import { absoluteTime, timeAgo } from "../format.js";
 import type {
   HandoffFilter,
@@ -65,7 +65,10 @@ const inboxQuery = useQuery<HandoffsResponse>({
   initialData: () => bootProps.value,
   staleTime: 30_000,
   retry: false,
+  refetchOnWindowFocus: false,
 });
+
+const { refreshing: visibilityRefreshing } = usePageChrome(inboxQuery, props.boot);
 
 const view = computed<HandoffsProps | undefined>(() => inboxQuery.data.value ?? bootProps.value);
 const hasData = computed(() => view.value !== undefined);
@@ -117,11 +120,7 @@ function submitSearch(): void {
 }
 
 async function refreshInbox(): Promise<void> {
-  const result = await inboxQuery.refetch();
-  const chrome = (result.data as HandoffsResponse | undefined)?.chrome;
-  if (chrome !== undefined) {
-    applyChrome(chrome);
-  }
+  await inboxQuery.refetch();
 }
 
 function messageFor(kind: "dispatch" | "reply", decision: "approved" | "rejected"): string {
@@ -183,7 +182,12 @@ async function openReview(row: HandoffRow): Promise<void> {
   </header>
 
   <div class="page__body">
-    <p v-if="loading && hasData" class="hint" role="status" aria-live="polite">
+    <p
+      v-if="loading && hasData && !visibilityRefreshing"
+      class="hint"
+      role="status"
+      aria-live="polite"
+    >
       Updating handoffs…
     </p>
 

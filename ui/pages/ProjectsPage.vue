@@ -3,10 +3,11 @@ import { keepPreviousData, useQuery } from "@tanstack/vue-query";
 import { computed, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ApiError, apiQuery } from "../api.js";
-import type { BootChrome, BootPayload } from "../boot.js";
+import type { BootPayload, ChromeData } from "../boot.js";
 import AppIcon from "../components/AppIcon.vue";
 import NewProjectDialog from "../components/NewProjectDialog.vue";
 import SmartLink from "../components/SmartLink.vue";
+import { usePageChrome } from "../composables/usePageChrome.js";
 import { absoluteTime, timeAgo } from "../format.js";
 
 interface ProjectRow {
@@ -28,7 +29,7 @@ interface ProjectsProps {
 }
 
 interface ProjectsResponse extends ProjectsProps {
-  readonly chrome?: BootChrome;
+  readonly chrome?: ChromeData;
 }
 
 const EMPTY: ProjectsProps = {
@@ -73,7 +74,10 @@ const projectsQuery = useQuery<ProjectsResponse>({
   placeholderData: keepPreviousData,
   staleTime: 30_000,
   retry: false,
+  refetchOnWindowFocus: false,
 });
+
+const { refreshing: visibilityRefreshing } = usePageChrome(projectsQuery, props.boot);
 
 const view = computed<ProjectsProps>(() => projectsQuery.data.value ?? bootProps ?? EMPTY);
 const hasData = computed(() => projectsQuery.data.value !== undefined || bootProps !== undefined);
@@ -128,7 +132,12 @@ function openDialog(): void {
   </header>
 
   <div class="page__body">
-    <p v-if="loading && hasData" class="hint" role="status" aria-live="polite">
+    <p
+      v-if="loading && hasData && !visibilityRefreshing"
+      class="hint"
+      role="status"
+      aria-live="polite"
+    >
       Updating projects…
     </p>
 

@@ -146,6 +146,7 @@ import { registerSseDrain } from "./deploy.js";
 import { lifecycleErrorResponse } from "./errors.js";
 import type { HttpDeps, HttpRequest, HttpResponse } from "./handler.js";
 import { appShell, emptyState, pageHeader } from "./ui.js";
+import { requireUiVersion } from "./ui-version.js";
 
 function json(status: number, value: unknown): HttpResponse {
   return { status, contentType: "application/json; charset=utf-8", body: JSON.stringify(value) };
@@ -2305,6 +2306,15 @@ export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<
     attachmentMatch !== null;
   if (humanOnly && principal.kind !== "human") {
     return json(403, { error: "only a human principal may manage drafts" });
+  }
+  if (
+    (draftMatch !== null && request.method === "PUT") ||
+    (deleteIfEmptyMatch !== null && request.method === "POST")
+  ) {
+    const versionFailure = requireUiVersion(request);
+    if (versionFailure !== undefined) {
+      return versionFailure;
+    }
   }
 
   const appKey = safeDecode(

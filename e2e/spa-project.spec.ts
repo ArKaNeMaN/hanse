@@ -7,15 +7,6 @@ import {
   signIn,
 } from "./support/helpers.js";
 
-const CHROME_FIXTURE = {
-  sidebarNav: '<p class="nav-label">Workbench</p>',
-  breadcrumb: '<span class="crumb">Swapped Project</span>',
-  title: "Project Swapped",
-  active: "project",
-  pendingCount: 0,
-  sshPendingCount: 0,
-};
-
 test("deep links, refreshes, swaps chrome, and restores history", async ({ page }) => {
   const errors = collectPageErrors(page);
   await signIn(page, `/projects/${PROJECT_ONE}`);
@@ -25,23 +16,18 @@ test("deep links, refreshes, swaps chrome, and restores history", async ({ page 
   await expect(page.getByRole("heading", { name: "E2E Project One" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Applications" })).toBeVisible();
 
-  await page.route(/\/api\/ui\/chrome\?/, (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify(CHROME_FIXTURE),
-    }),
-  );
-
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "Fleet overview" })).toBeVisible();
+  await expect(page.locator("#breadcrumb-host")).toContainText("Overview");
+  await expect(page).toHaveTitle("Fleet overview - hanse");
   await page.getByRole("link", { name: "E2E Project One", exact: true }).click();
   await expect(page).toHaveURL(new RegExp(`/projects/${PROJECT_ONE}$`));
   await expect(page.getByRole("heading", { name: "E2E Project One" })).toBeVisible();
-  await expect(page.locator("#breadcrumb-host")).toContainText("Swapped Project");
+  await expect(page.locator("#breadcrumb-host")).toContainText("E2E Project One");
+  await expect(page.locator("#breadcrumb-host")).toContainText("Projects");
   await expect(page.locator("#breadcrumb-host")).toHaveAttribute("data-nav-id", "project");
   await expect(page.locator("#sidebar-nav")).toHaveAttribute("data-nav-id", "project");
-  await expect(page).toHaveTitle("Project Swapped - hanse");
+  await expect(page).toHaveTitle("E2E Project One - hanse");
 
   await page.reload();
   await expect(page.locator("#hanse-boot")).toHaveCount(1);

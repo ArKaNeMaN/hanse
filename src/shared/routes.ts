@@ -263,6 +263,56 @@ export function routeById(id: RouteId): RouteDefinition | undefined {
   return ROUTE_BY_ID.get(id);
 }
 
+type RouteQueryValue = string | string[] | null | undefined;
+
+/**
+ * Query keys that do not affect chrome or page identity: `legacy` (rollback input),
+ * `notice`/`tone` (toast presentation), and `session` (chat selection).
+ */
+const EXCLUDED_ROUTE_KEYS: ReadonlySet<string> = new Set(["legacy", "notice", "tone", "session"]);
+
+function lastQueryValue(value: RouteQueryValue): string | null | undefined {
+  return Array.isArray(value) ? value[value.length - 1] : value;
+}
+
+/**
+ * Build a stable identity string for a page route.
+ *
+ * The canonical form is shared by the server and the client so they cannot drift: param and query
+ * keys are sorted, a repeated query key takes its last value (matching the server's
+ * `Object.fromEntries(url.searchParams)`), `null`/`undefined` are dropped while an empty string is
+ * kept, and the excluded keys above are ignored. The normalized entries are serialized with
+ * `JSON.stringify`.
+ */
+export function routeKey(
+  id: RouteId,
+  params: Readonly<Record<string, string>>,
+  query: Readonly<Record<string, RouteQueryValue>>,
+): string {
+  const normalize = (
+    entries: readonly (readonly [string, string | null | undefined])[],
+  ): [string, string][] => {
+    const normalized: [string, string][] = [];
+    for (const [key, value] of entries) {
+      if (value === null || value === undefined || EXCLUDED_ROUTE_KEYS.has(key)) {
+        continue;
+      }
+      normalized.push([key, value]);
+    }
+    normalized.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    return normalized;
+  };
+
+  const normalizedParams = normalize(Object.entries(params));
+  const normalizedQuery = normalize(
+    Object.entries(query).map(([key, value]): [string, string | null | undefined] => [
+      key,
+      lastQueryValue(value),
+    ]),
+  );
+  return JSON.stringify([id, normalizedParams, normalizedQuery]);
+}
+
 export interface SpaAllowlist {
   readonly ids: ReadonlySet<RouteId>;
   readonly unknown: readonly string[];

@@ -47,6 +47,68 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** One-shot reload guard shared by the Vite preload fallback and the UI version gate. */
+export const PRELOAD_RELOAD_KEY = "hanse-ui-preload-reloaded";
+
+export const UI_VERSION = "2";
+export const UI_VERSION_HEADER = "x-hanse-ui-version";
+
+let reloadAttempted = false;
+
+export function alreadyReloaded(): boolean {
+  if (reloadAttempted) {
+    return true;
+  }
+  try {
+    return sessionStorage.getItem(PRELOAD_RELOAD_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function markReloaded(): void {
+  reloadAttempted = true;
+  try {
+    sessionStorage.setItem(PRELOAD_RELOAD_KEY, "1");
+  } catch {
+    // Session storage may be unavailable in hardened browser modes; the in-memory flag still
+    // prevents a reload loop for this document.
+  }
+}
+
+/** A successful boot proves the new bundle loaded, so the next mismatch may reload again. */
+export function clearReloadGuard(): void {
+  reloadAttempted = false;
+  try {
+    sessionStorage.removeItem(PRELOAD_RELOAD_KEY);
+  } catch {
+    // Nothing to clear when session storage is unavailable.
+  }
+}
+
+/** Reload at most once per boot; a second `ui_reload_required` must not loop. */
+export function reloadForUiVersion(): void {
+  if (alreadyReloaded()) {
+    return;
+  }
+  markReloaded();
+  if (typeof window !== "undefined") {
+    window.location.reload();
+  }
+}
+
+export function isUiReloadRequired(payload: unknown): boolean {
+  return isRecord(payload) && payload.code === "ui_reload_required";
+}
+
+/** Consume a draft response and report whether it asks for the guarded full-page reload. */
+export async function responseRequiresUiReload(response: Response): Promise<boolean> {
+  if (response.status !== 409) {
+    return false;
+  }
+  return isUiReloadRequired(await readPayload(response));
+}
+
 function currentLocalPath(): string {
   if (typeof window === "undefined") {
     return "/";
@@ -97,6 +159,9 @@ async function parse<T>(response: Response, options: ApiRequestOptions): Promise
     throw new ApiError("sign in required", 401, "unauthenticated");
   }
   if (!response.ok) {
+    if (response.status === 409 && isUiReloadRequired(payload)) {
+      reloadForUiVersion();
+    }
     throw errorFrom(response, payload);
   }
   return payload as T;
@@ -107,7 +172,7 @@ export async function apiQuery<T>(path: string, options: ApiRequestOptions = {})
   const response = await fetch(path, {
     method: "GET",
     credentials: "same-origin",
-    headers: { accept: "application/json" },
+    headers: { accept: "application/json", [UI_VERSION_HEADER]: UI_VERSION },
     ...(options.signal === undefined ? {} : { signal: options.signal }),
   });
   return parse<T>(response, options);
@@ -125,6 +190,7 @@ export async function apiMutation<T>(
   const headers: Record<string, string> = {
     accept: "application/json",
     "x-hanse-client": "spa",
+    [UI_VERSION_HEADER]: UI_VERSION,
   };
   let payload: string;
   if ("form" in body) {

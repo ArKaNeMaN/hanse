@@ -3,14 +3,12 @@ import { createPinia } from "pinia";
 import { createApp } from "vue";
 import { isLegacyRetired, matchPage } from "../src/shared/routes.js";
 import App from "./App.vue";
+import { alreadyReloaded, clearReloadGuard, markReloaded } from "./api.js";
 import { readBoot } from "./boot.js";
 import { installChrome } from "./composables/useChrome.js";
 import { router } from "./router.js";
 import { installSpaRoutes } from "./spa-routes.js";
-import { clearTopbarActions } from "./topbar.js";
-
-const PRELOAD_RELOAD_KEY = "hanse-ui-preload-reloaded";
-let preloadReloadAttempted = false;
+import { useChromeStore } from "./stores/chrome.js";
 
 /**
  * Safe runtime fallback. Every value is written with `textContent`; no boot or error string is
@@ -61,27 +59,6 @@ function renderFallback(message: string): void {
   main.focus({ preventScroll: true });
 }
 
-function alreadyReloaded(): boolean {
-  if (preloadReloadAttempted) {
-    return true;
-  }
-  try {
-    return sessionStorage.getItem(PRELOAD_RELOAD_KEY) === "1";
-  } catch {
-    return false;
-  }
-}
-
-function markReloaded(): void {
-  preloadReloadAttempted = true;
-  try {
-    sessionStorage.setItem(PRELOAD_RELOAD_KEY, "1");
-  } catch {
-    // Session storage may be unavailable in hardened browser modes; the in-memory flag still
-    // prevents a reload loop for this document.
-  }
-}
-
 window.addEventListener("vite:preloadError", (event) => {
   event.preventDefault();
   if (!alreadyReloaded()) {
@@ -104,10 +81,10 @@ if (boot === undefined) {
     app.use(createPinia());
     app.use(VueQueryPlugin);
     installSpaRoutes(boot.spaRoutes);
+    useChromeStore().initialize(boot);
     installChrome(router);
-    // The server fallback is pre-JS only; the App-level TopbarActions owns the container after mount.
-    clearTopbarActions();
     app.use(router);
     app.mount(main);
+    clearReloadGuard();
   }
 }

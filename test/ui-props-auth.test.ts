@@ -6,12 +6,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { CoordinatorService } from "../src/coordinator/service.js";
 import { GitService } from "../src/git/service.js";
 import { humanFromCookie } from "../src/http/auth.js";
+import { buildSite } from "../src/http/dashboard.js";
 import { type HttpDeps, type HttpRequest, handleRequest } from "../src/http/handler.js";
-import { handleUiApi, maybeServeSpa } from "../src/http/spa.js";
+import { chromeFor, handleUiApi, maybeServeSpa } from "../src/http/spa.js";
 import { createPrincipal } from "../src/identity/principals.js";
 import { mintAgentToken } from "../src/mcp/agent-tokens.js";
 import { SettingsService } from "../src/settings/index.js";
-import { ROUTES } from "../src/shared/routes.js";
+import { matchPage, ROUTES } from "../src/shared/routes.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
 
 const dirs: string[] = [];
@@ -139,7 +140,14 @@ function request(
   headers: Record<string, string>,
   query?: Record<string, string>,
 ): HttpRequest {
-  return { method: "GET", path: pathname, headers, ...(query === undefined ? {} : { query }) };
+  const withVersion =
+    pathname === "/api/ui/auth" ? headers : { "x-hanse-ui-version": "2", ...headers };
+  return {
+    method: "GET",
+    path: pathname,
+    headers: withVersion,
+    ...(query === undefined ? {} : { query }),
+  };
 }
 
 interface BootPayload {
@@ -151,7 +159,18 @@ interface BootPayload {
     query?: string;
     rows?: readonly unknown[];
   };
-  chrome: { title?: string; active?: string; activeProjectId?: string };
+  chrome: {
+    title?: string;
+    active?: string;
+    activeProjectId?: string;
+    breadcrumb?: readonly { label: string; href?: string }[];
+    projects?: readonly { id: string; name: string; appCount: number }[];
+    masterHref?: string;
+    settingsHref?: string;
+    skillsHref?: string;
+  };
+  routeKey?: string;
+  operator?: { name: string; initials: string };
 }
 
 function boot(body: string): BootPayload {
@@ -301,9 +320,11 @@ describe("/api/ui auth and props", () => {
       active: "projects",
       pendingCount: 0,
       sshPendingCount: 0,
+      masterHref: "/chat?app=master&project=hanse-master",
+      breadcrumb: [{ label: "Workbench", href: "/" }, { label: "Projects" }],
+      projects: [{ id: "p", name: "Alpha", appCount: 1 }],
     });
-    expect(payload.chrome.sidebarNav).not.toContain("<nav");
-    expect(payload.chrome.breadcrumb).not.toContain("<nav");
+    expect(payload.chrome).not.toHaveProperty("sidebarNav");
   });
 
   it("returns overview props plus chrome for a valid human cookie", () => {
@@ -448,11 +469,10 @@ describe("/api/ui auth and props", () => {
       title: "Alpha",
       active: "project",
       activeProjectId: "p",
+      settingsHref: "/projects/p/settings",
+      skillsHref: "/projects/p/skills",
     });
-    expect(payload.chrome.sidebarNav).toContain('data-project-id="p"');
-    expect(payload.chrome.sidebarNav).toContain('href="/projects/p/settings"');
-    expect(payload.chrome.sidebarNav).toContain('href="/projects/p/skills"');
-    expect(payload.chrome.breadcrumb).toContain("Alpha");
+    expect(payload.chrome.breadcrumb).toContainEqual({ label: "Alpha" });
   });
 
   it("returns the master project variant read-only", () => {
@@ -497,44 +517,110 @@ describe("/api/ui auth and props", () => {
     expect(throughHandler).toMatchObject({ status: 404 });
   });
 
-  it("returns server-rendered chrome fragments for a path", () => {
+  it("returns data-only chrome for an application route", () => {
     const f = fixture();
-    const response = handleUiApi(
-      f.deps,
-      request("/api/ui/chrome", cookie(f.humanToken), { path: "/projects/p/apps/web" }),
-    );
-    expect(response).toMatchObject({ status: 200 });
-    const payload = JSON.parse(response?.body ?? "{}");
-    expect(payload).toMatchObject({ title: "web", active: "project" });
-    expect(payload.sidebarNav).toContain("Alpha");
-    expect(payload.breadcrumb).toContain("web");
-    expect(payload.breadcrumb).toContain("Alpha");
-    expect(payload.sidebarNav).not.toContain("<nav");
-    expect(payload.breadcrumb).not.toContain("<nav");
+    const match = matchPage("/projects/p/apps/web");
+    if (match === undefined) throw new Error("missing route");
+    const chrome = chromeFor(buildSite(f.deps), match);
+    expect(chrome).toMatchObject({
+      title: "web",
+      active: "project",
+      activeProjectId: "p",
+      settingsHref: "/projects/p/apps/web/settings",
+      skillsHref: "/projects/p/apps/web/skills",
+    });
+    expect(chrome.breadcrumb).toEqual([
+      { label: "Projects", href: "/projects" },
+      { label: "Alpha", href: "/projects/p" },
+      { label: "web" },
+    ]);
+    expect(chrome).not.toHaveProperty("sidebarNav");
   });
 
   it("does not scope sidebar links from a skill id", () => {
     const f = fixture();
-    const response = handleUiApi(
-      f.deps,
-      request("/api/ui/chrome", cookie(f.humanToken), { path: "/skills/7" }),
-    );
-    expect(response).toMatchObject({ status: 200 });
-    const payload = JSON.parse(response?.body ?? "{}");
-    expect(payload).toMatchObject({ active: "skills" });
-    expect(payload.sidebarNav).toContain('href="/settings"');
-    expect(payload.sidebarNav).toContain('href="/skills"');
-    expect(payload.sidebarNav).not.toContain("/projects/7/");
-    expect(payload.sidebarNav).not.toContain('data-project-id="7"');
+    const match = matchPage("/skills/7");
+    if (match === undefined) throw new Error("missing route");
+    const chrome = chromeFor(buildSite(f.deps), match);
+    expect(chrome.active).toBe("skills");
+    expect(chrome.settingsHref).toBeUndefined();
+    expect(chrome.skillsHref).toBeUndefined();
+    expect(chrome.activeProjectId).toBeUndefined();
   });
 
-  it("404s an unknown chrome path", () => {
+  it("404s the removed chrome endpoint", () => {
     const f = fixture();
-    const response = handleUiApi(
+    expect(
+      handleUiApi(f.deps, request("/api/ui/chrome", cookie(f.humanToken), { path: "/projects" })),
+    ).toBeUndefined();
+    const throughHandler = handleRequest(f.deps, {
+      method: "GET",
+      path: "/api/ui/chrome",
+      headers: cookie(f.humanToken),
+      query: { path: "/projects" },
+    });
+    expect(throughHandler).toMatchObject({ status: 404 });
+  });
+
+  it("serves the data-free auth probe with no version header", () => {
+    const f = fixture();
+    const authorized = handleUiApi(f.deps, request("/api/ui/auth", cookie(f.humanToken)));
+    expect(authorized).toMatchObject({ status: 204, body: "" });
+    expect(authorized?.headers?.["cache-control"]).toBe("no-store");
+
+    const anonymous = handleUiApi(f.deps, request("/api/ui/auth", {}));
+    expect(anonymous).toMatchObject({ status: 401 });
+    expect(anonymous?.headers?.["cache-control"]).toBe("no-store");
+    expect(JSON.parse(anonymous?.body ?? "{}")).toEqual({
+      error: "sign in required",
+      code: "unauthenticated",
+    });
+
+    const bearer = handleUiApi(
       f.deps,
-      request("/api/ui/chrome", cookie(f.humanToken), { path: "/api/projects" }),
+      request("/api/ui/auth", { authorization: `Bearer ${f.humanToken}` }),
     );
-    expect(response).toMatchObject({ status: 404 });
+    expect(bearer).toMatchObject({ status: 403 });
+    expect(bearer?.headers?.["cache-control"]).toBe("no-store");
+    expect(JSON.parse(bearer?.body ?? "{}")).toEqual({
+      error: "cookie sign-in required",
+      code: "cookie_required",
+    });
+
+    const agent = handleUiApi(
+      f.deps,
+      request("/api/ui/auth", {
+        authorization: `Bearer ${f.agentBearerToken}`,
+        ...cookie(f.humanToken),
+      }),
+    );
+    expect(agent).toMatchObject({ status: 403 });
+    expect(agent?.headers?.["cache-control"]).toBe("no-store");
+    expect(JSON.parse(agent?.body ?? "{}")).toEqual({
+      error: "agent tokens may only call the MCP endpoint",
+    });
+  });
+
+  it("rejects a missing or different UI version with a reload response", () => {
+    const f = fixture();
+    const missing = handleUiApi(f.deps, {
+      method: "GET",
+      path: "/api/ui/projects",
+      headers: cookie(f.humanToken),
+    });
+    expect(missing).toMatchObject({ status: 409 });
+    expect(missing?.headers?.["cache-control"]).toBe("no-store");
+    expect(JSON.parse(missing?.body ?? "{}")).toEqual({
+      error: "UI reload required",
+      code: "ui_reload_required",
+    });
+
+    const stale = handleUiApi(f.deps, {
+      method: "GET",
+      path: "/api/ui/projects",
+      headers: { ...cookie(f.humanToken), "x-hanse-ui-version": "1" },
+    });
+    expect(stale).toMatchObject({ status: 409 });
   });
 
   it("never leaks seeded secrets through the props, chrome, or boot", () => {
@@ -552,15 +638,15 @@ describe("/api/ui auth and props", () => {
     );
     f.settings.set("global", {}, "git.user.name", settingSecret, "owner");
 
+    const site = buildSite(f.deps);
     for (const route of ROUTES) {
       const pathname = route.path.replace(":id", "p").replace(":app", "web");
-      const chrome = handleUiApi(
-        f.deps,
-        request("/api/ui/chrome", cookie(f.humanToken), { path: pathname }),
-      );
-      expect(chrome?.body, route.id).not.toContain(providerSecret);
-      expect(chrome?.body, route.id).not.toContain(gitSecret);
-      expect(chrome?.body, route.id).not.toContain(settingSecret);
+      const match = matchPage(pathname);
+      if (match === undefined) continue;
+      const serialized = JSON.stringify(chromeFor(site, match));
+      expect(serialized, route.id).not.toContain(providerSecret);
+      expect(serialized, route.id).not.toContain(gitSecret);
+      expect(serialized, route.id).not.toContain(settingSecret);
     }
 
     for (const pathname of [
@@ -746,6 +832,45 @@ describe("maybeServeSpa", () => {
     expect(response?.body).toContain('<script id="hanse-boot" type="application/json">');
     expect(response?.body).toContain("/assets/ui/@vite/client");
     expect(response?.body).not.toContain("/assets/app-content.js");
+    expect(response?.body).not.toContain('<script src="/assets/app.js" defer></script>');
+    expect(response?.body).toContain(
+      '<aside class="sidebar" id="sidebar" aria-label="Primary"></aside>',
+    );
+    const payload = boot(response?.body ?? "");
+    expect(payload.chrome).toMatchObject({
+      title: "Projects",
+      active: "projects",
+      breadcrumb: [{ label: "Workbench", href: "/" }, { label: "Projects" }],
+      projects: [{ id: "p", name: "Alpha", appCount: 1 }],
+      masterHref: "/chat?app=master&project=hanse-master",
+    });
+    expect(payload.operator).toEqual({ name: "alice", initials: "AL" });
+    expect(payload.routeKey).toBe(JSON.stringify(["projects", [], []]));
+    expect(response?.body).not.toContain("sidebarNav");
+  });
+
+  it("boots the login document with empty chrome, a routeKey, and no operator", () => {
+    const f = fixture();
+    enable(f);
+    const response = maybeServeSpa(
+      f.deps,
+      request("/login", { accept: "text/html" }, { next: "/projects" }),
+    );
+    expect(response).toMatchObject({ status: 200 });
+    const payload = boot(response?.body ?? "");
+    expect(payload.route.id).toBe("login");
+    expect(payload.chrome).toEqual({
+      title: "Sign in",
+      active: "none",
+      breadcrumb: [],
+      projects: [],
+      masterHref: "/chat?app=master&project=hanse-master",
+      pendingCount: 0,
+      sshPendingCount: 0,
+    });
+    expect(payload.operator).toBeUndefined();
+    expect(payload.routeKey).toBe(JSON.stringify(["login", [], [["next", "/projects"]]]));
+    expect(response?.body).toContain('<script src="/assets/app.js" defer></script>');
   });
 
   it("boots overview and project props for enabled routes", () => {

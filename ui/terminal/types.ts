@@ -1,4 +1,4 @@
-import type { BootChrome } from "../boot.js";
+import type { ChromeData } from "../boot.js";
 import type { RuntimeState } from "../status.js";
 
 export interface TerminalCrumb {
@@ -43,5 +43,5 @@ export interface TerminalPageProps {
 }
 
 export interface TerminalResponse extends TerminalPageProps {
-  readonly chrome: BootChrome;
+  readonly chrome: ChromeData;
 }

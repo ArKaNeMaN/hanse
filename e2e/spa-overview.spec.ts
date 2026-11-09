@@ -1,15 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { collectPageErrors, expectNoPageErrors, settle, signIn } from "./support/helpers.js";
 
-const CHROME_FIXTURE = {
-  sidebarNav: '<p class="nav-label">Workbench</p>',
-  breadcrumb: '<span class="crumb">Swapped Projects</span>',
-  title: "Projects",
-  active: "projects",
-  pendingCount: 0,
-  sshPendingCount: 0,
-};
-
 test("deep links, refreshes, and navigates client-side to projects", async ({ page }) => {
   const errors = collectPageErrors(page);
   await signIn(page, "/");
@@ -20,21 +11,19 @@ test("deep links, refreshes, and navigates client-side to projects", async ({ pa
   await expect(page.getByRole("heading", { name: "Fleet overview" })).toBeVisible();
   await expect(page.getByRole("link", { name: "E2E Project One", exact: true })).toBeVisible();
 
-  await page.route(/\/api\/ui\/chrome\?/, (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify(CHROME_FIXTURE),
-    }),
-  );
+  await expect(page.locator("#breadcrumb-host")).toContainText("Overview");
+  await expect(page.locator("#breadcrumb-host")).toHaveAttribute("data-nav-id", "overview");
+  await expect(page.locator("#sidebar-nav")).toHaveAttribute("data-nav-id", "overview");
+  await expect(page).toHaveTitle("Fleet overview - hanse");
 
   await page.locator("#main").getByRole("link", { name: "All projects", exact: true }).click();
   await expect(page).toHaveURL(/\/projects$/);
   await expect(page.getByRole("heading", { name: "Projects" })).toBeVisible();
 
-  // The document was not reloaded: same boot marker, swapped chrome fragment.
+  // The document was not reloaded: same boot marker, chrome rendered from the projects page data.
   await expect(page.locator("#hanse-boot")).toHaveCount(1);
-  await expect(page.locator("#breadcrumb-host")).toContainText("Swapped Projects");
+  await expect(page.locator("#breadcrumb-host")).toContainText("Projects");
+  await expect(page.locator("#breadcrumb-host")).not.toContainText("Overview");
   await expect(page.locator("#breadcrumb-host")).toHaveAttribute("data-nav-id", "projects");
   await expect(page.locator("#sidebar-nav")).toHaveAttribute("data-nav-id", "projects");
   await expect(page).toHaveTitle("Projects - hanse");

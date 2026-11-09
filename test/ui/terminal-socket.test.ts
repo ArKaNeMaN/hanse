@@ -53,14 +53,14 @@ interface Harness {
   readonly authExpired: ReturnType<typeof vi.fn>;
   readonly data: Uint8Array[];
   readonly exits: string[];
-  chromeStatus: number;
+  authStatus: number;
   runtimeState: string;
   hidden: boolean;
 }
 
-function harness(overrides: { runtimeState?: string; chromeStatus?: number } = {}): Harness {
+function harness(overrides: { runtimeState?: string; authStatus?: number } = {}): Harness {
   FakeWebSocket.instances = [];
-  let chromeStatus = overrides.chromeStatus ?? 200;
+  let authStatus = overrides.authStatus ?? 204;
   let runtimeState = overrides.runtimeState ?? "running";
   let hidden = false;
   const statuses: Array<{ kind: TerminalStatusKind; detail?: string }> = [];
@@ -69,8 +69,12 @@ function harness(overrides: { runtimeState?: string; chromeStatus?: number } = {
   const exits: string[] = [];
   const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
-    if (url.startsWith("/api/ui/chrome")) {
-      return { ok: chromeStatus === 200, status: chromeStatus, json: async () => ({}) };
+    if (url.startsWith("/api/ui/auth")) {
+      return {
+        ok: authStatus >= 200 && authStatus < 300,
+        status: authStatus,
+        json: async () => ({}),
+      };
     }
     return { ok: true, status: 200, json: async () => ({ state: runtimeState }) };
   });
@@ -114,11 +118,11 @@ function harness(overrides: { runtimeState?: string; chromeStatus?: number } = {
     authExpired,
     data,
     exits,
-    get chromeStatus(): number {
-      return chromeStatus;
+    get authStatus(): number {
+      return authStatus;
     },
-    set chromeStatus(value: number) {
-      chromeStatus = value;
+    set authStatus(value: number) {
+      authStatus = value;
     },
     get runtimeState(): string {
       return runtimeState;
@@ -269,22 +273,22 @@ describe("terminal socket", () => {
   });
 
   it("redirects once on a 401 auth probe and stops retrying", async () => {
-    const h = harness({ chromeStatus: 401 });
+    const h = harness({ authStatus: 401 });
     const socket = await connect(h);
     socket.open();
     await fail(socket, 1011);
 
     expect(h.authExpired).toHaveBeenCalledTimes(1);
     expect(h.statuses.at(-1)).toEqual({ kind: "paused" });
-    expect(
-      h.fetchMock.mock.calls.some(([input]) => String(input).startsWith("/api/ui/chrome")),
-    ).toBe(true);
+    expect(h.fetchMock.mock.calls.some(([input]) => String(input).startsWith("/api/ui/auth"))).toBe(
+      true,
+    );
     await vi.advanceTimersByTimeAsync(20_000);
     expect(FakeWebSocket.instances).toHaveLength(1);
   });
 
   it("redirects once on a 403 auth probe and stops retrying", async () => {
-    const h = harness({ chromeStatus: 403 });
+    const h = harness({ authStatus: 403 });
     const socket = await connect(h);
     socket.open();
     await fail(socket, 1011);
@@ -294,8 +298,8 @@ describe("terminal socket", () => {
     expect(FakeWebSocket.instances).toHaveLength(1);
   });
 
-  it("continues bounded retries when the auth probe returns 200", async () => {
-    const h = harness({ chromeStatus: 200 });
+  it("continues bounded retries when the auth probe returns 204", async () => {
+    const h = harness({ authStatus: 204 });
     const socket = await connect(h);
     socket.open();
     await fail(socket, 1011);
@@ -306,15 +310,30 @@ describe("terminal socket", () => {
     expect(FakeWebSocket.instances).toHaveLength(2);
   });
 
+  it("treats a 404 or 409 auth probe as alive", async () => {
+    for (const authStatus of [404, 409]) {
+      FakeWebSocket.instances = [];
+      const h = harness({ authStatus });
+      const socket = await connect(h);
+      socket.open();
+      await fail(socket, 1011);
+
+      expect(h.authExpired, String(authStatus)).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1000);
+      await flush();
+      expect(FakeWebSocket.instances, String(authStatus)).toHaveLength(2);
+    }
+  });
+
   it("does not probe auth while the document is hidden", async () => {
-    const h = harness({ chromeStatus: 401 });
+    const h = harness({ authStatus: 401 });
     h.hidden = true;
     const socket = await connect(h);
     socket.open();
     await fail(socket, 1011);
 
     expect(
-      h.fetchMock.mock.calls.filter(([input]) => String(input).startsWith("/api/ui/chrome")),
+      h.fetchMock.mock.calls.filter(([input]) => String(input).startsWith("/api/ui/auth")),
     ).toHaveLength(0);
     expect(h.authExpired).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1000);

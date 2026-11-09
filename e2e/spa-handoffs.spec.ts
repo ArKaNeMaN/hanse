@@ -1,15 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { collectPageErrors, expectNoPageErrors, settle, signIn } from "./support/helpers.js";
 
-const CHROME_FIXTURE = {
-  sidebarNav: '<p class="nav-label">Workbench</p>',
-  breadcrumb: '<span class="crumb">Swapped Inbox</span>',
-  title: "Handoffs Swapped",
-  active: "handoffs",
-  pendingCount: 0,
-  sshPendingCount: 0,
-};
-
 const EMPTY_PROPS = {
   counts: { all: 0, waiting: 0, active: 0, closed: 0, replies: 0 },
   filter: "closed",
@@ -94,22 +85,18 @@ test("navigates to handoffs from overview and swaps chrome, title, and active na
   const errors = collectPageErrors(page);
   await signIn(page, "/");
 
-  await page.route(/\/api\/ui\/chrome\?/, (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify(CHROME_FIXTURE),
-    }),
-  );
+  await expect(page.locator("#breadcrumb-host")).toContainText("Overview");
+  await expect(page).toHaveTitle("Fleet overview - hanse");
 
   await page.locator("#main").getByRole("link", { name: "Handoffs inbox" }).click();
   await expect(page).toHaveURL(/\/handoffs$/);
   await expect(page.getByRole("heading", { name: "Handoffs", exact: true })).toBeVisible();
   await expect(page.locator("#hanse-boot")).toHaveCount(1);
-  await expect(page.locator("#breadcrumb-host")).toContainText("Swapped Inbox");
+  await expect(page.locator("#breadcrumb-host")).toContainText("Handoffs");
+  await expect(page.locator("#breadcrumb-host")).not.toContainText("Overview");
   await expect(page.locator("#breadcrumb-host")).toHaveAttribute("data-nav-id", "handoffs");
   await expect(page.locator("#sidebar-nav")).toHaveAttribute("data-nav-id", "handoffs");
-  await expect(page).toHaveTitle("Handoffs Swapped - hanse");
+  await expect(page).toHaveTitle("Handoffs - hanse");
 
   await settle(page);
   expectNoPageErrors(errors);

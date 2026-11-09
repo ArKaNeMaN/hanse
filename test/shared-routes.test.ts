@@ -11,6 +11,7 @@ import {
   parseSpaAllowlist,
   ROUTES,
   routeById,
+  routeKey,
 } from "../src/shared/routes.js";
 
 const SOURCE = path.join(process.cwd(), "src/shared/routes.ts");
@@ -267,5 +268,71 @@ describe("shared route manifest", () => {
     expect(isSpaPathIn("/terminal", ids)).toBe(false);
     expect(isSpaPathIn("/api/projects", ids)).toBe(false);
     expect(isSpaPathIn("/projects", ["projects"] as const)).toBe(true);
+  });
+});
+
+describe("routeKey", () => {
+  it("includes and sorts path params", () => {
+    expect(routeKey("app", { app: "web", id: "alpha" }, {})).toBe(
+      JSON.stringify([
+        "app",
+        [
+          ["app", "web"],
+          ["id", "alpha"],
+        ],
+        [],
+      ]),
+    );
+    expect(routeKey("app", { id: "alpha", app: "web" }, {})).toBe(
+      routeKey("app", { app: "web", id: "alpha" }, {}),
+    );
+  });
+
+  it("includes and sorts query values", () => {
+    expect(routeKey("chat", {}, { app: "a", tab: "x" })).toBe(
+      JSON.stringify([
+        "chat",
+        [],
+        [
+          ["app", "a"],
+          ["tab", "x"],
+        ],
+      ]),
+    );
+    expect(routeKey("chat", {}, { tab: "x", app: "a" })).toBe(
+      routeKey("chat", {}, { app: "a", tab: "x" }),
+    );
+  });
+
+  it("uses the last value for a repeated query key", () => {
+    expect(routeKey("chat", {}, { app: ["a", "b"] })).toBe(routeKey("chat", {}, { app: "b" }));
+    expect(routeKey("chat", {}, { app: ["a", "b"] })).not.toBe(routeKey("chat", {}, { app: "a" }));
+  });
+
+  it("drops null and undefined query values but keeps an empty string", () => {
+    expect(routeKey("chat", {}, { a: null, b: undefined })).toBe(routeKey("chat", {}, {}));
+    expect(routeKey("chat", {}, { a: "" })).toBe(JSON.stringify(["chat", [], [["a", ""]]]));
+    expect(routeKey("chat", {}, { a: "" })).not.toBe(routeKey("chat", {}, {}));
+  });
+
+  it("excludes legacy, notice, tone, and session", () => {
+    expect(
+      routeKey("chat", {}, { legacy: "1", notice: "saved", tone: "warn", session: "s1" }),
+    ).toBe(routeKey("chat", {}, {}));
+    expect(
+      routeKey("chat", {}, { legacy: "1", notice: "saved", tone: "warn", session: "s1", app: "a" }),
+    ).toBe(routeKey("chat", {}, { app: "a" }));
+  });
+
+  it("produces the same key regardless of key insertion order", () => {
+    expect(routeKey("settings-app", { app: "web", id: "alpha" }, { scope: "x", tab: "y" })).toBe(
+      routeKey("settings-app", { id: "alpha", app: "web" }, { tab: "y", scope: "x" }),
+    );
+  });
+
+  it("distinguishes different ids, params, and query", () => {
+    expect(routeKey("chat", {}, {})).not.toBe(routeKey("terminal", {}, {}));
+    expect(routeKey("project", { id: "a" }, {})).not.toBe(routeKey("project", { id: "b" }, {}));
+    expect(routeKey("chat", {}, { app: "a" })).not.toBe(routeKey("chat", {}, { app: "b" }));
   });
 });

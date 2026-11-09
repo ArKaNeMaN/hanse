@@ -96,6 +96,66 @@ describe("chat drafts", () => {
         request.method === "PUT" && request.url === write?.url && request.keepalive === true,
     );
     expect(record).toBeDefined();
+    expect(record?.headers["x-hanse-client"]).toBe("spa");
+    expect(record?.headers["x-hanse-ui-version"]).toBe("2");
+    wrapper.unmount();
+  });
+
+  it("does not mark a rejected keepalive draft as saved", async () => {
+    const { wrapper, fetchState } = await mountChat(undefined, { draftSaveStatus: 500 });
+    vi.useFakeTimers();
+    await wrapper.find("[data-chat-composer-input]").setValue("Rejected draft");
+    window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true }));
+    await flushPromises();
+    window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true }));
+    await flushPromises();
+
+    const writes = draftWrites(fetchState.requests).filter((write) =>
+      write.url.includes("/sessions/s1/draft"),
+    );
+    expect(writes).toHaveLength(2);
+    wrapper.unmount();
+  });
+
+  it("does not mark an old-client draft 409 as saved", async () => {
+    sessionStorage.setItem("hanse-ui-preload-reloaded", "1");
+    const { wrapper, fetchState } = await mountChat(undefined, {
+      draftSaveStatus: 409,
+      draftSaveBody: { error: "UI reload required", code: "ui_reload_required" },
+    });
+    vi.useFakeTimers();
+    await wrapper.find("[data-chat-composer-input]").setValue("Old client draft");
+    window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true }));
+    await flushPromises();
+    window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true }));
+    await flushPromises();
+
+    const writes = draftWrites(fetchState.requests).filter((write) =>
+      write.url.includes("/sessions/s1/draft"),
+    );
+    expect(writes).toHaveLength(2);
+    expect(writes[0]?.headers["x-hanse-ui-version"]).toBe("2");
+    wrapper.unmount();
+  });
+
+  it("sends the UI version on a keepalive delete-if-empty", async () => {
+    const { wrapper, fetchState } = await mountChat("/chat?app=alpha&project=p&session=s2", {
+      sessions: [
+        { id: "s1", title: "One" },
+        { id: "s2", title: "Two" },
+      ],
+      messagesBySession: { s1: FIXTURE_MESSAGES, s2: [] },
+      drafts: { s1: "", s2: "" },
+    });
+    window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true }));
+    await flushPromises();
+
+    const record = fetchState.requests.find(
+      (request) => request.method === "POST" && request.url.includes("/delete-if-empty"),
+    );
+    expect(record).toBeDefined();
+    expect(record?.headers["x-hanse-client"]).toBe("spa");
+    expect(record?.headers["x-hanse-ui-version"]).toBe("2");
     wrapper.unmount();
   });
 

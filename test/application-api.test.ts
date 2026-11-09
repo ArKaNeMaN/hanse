@@ -6,14 +6,15 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CoordinatorService } from "../src/coordinator/service.js";
 import { GitService } from "../src/git/service.js";
+import { buildSite } from "../src/http/dashboard.js";
 import type { HttpDeps, HttpRequest } from "../src/http/handler.js";
 import { createHttpServer } from "../src/http/server.js";
-import { handleAppUiApi, handleUiApi, maybeServeSpa } from "../src/http/spa.js";
+import { chromeFor, handleAppUiApi, maybeServeSpa } from "../src/http/spa.js";
 import { createPrincipal } from "../src/identity/principals.js";
 import { mintAgentToken } from "../src/mcp/agent-tokens.js";
 import type { InstanceManager } from "../src/opencode/manager.js";
 import { SettingsService } from "../src/settings/index.js";
-import { ROUTES } from "../src/shared/routes.js";
+import { matchPage, ROUTES } from "../src/shared/routes.js";
 import type { SshService } from "../src/ssh/service.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
 
@@ -116,7 +117,12 @@ function request(
   headers: Record<string, string>,
   query?: Record<string, string>,
 ): HttpRequest {
-  return { method: "GET", path: pathname, headers, ...(query === undefined ? {} : { query }) };
+  return {
+    method: "GET",
+    path: pathname,
+    headers: { "x-hanse-ui-version": "2", ...headers },
+    ...(query === undefined ? {} : { query }),
+  };
 }
 
 interface AppApiPayload {
@@ -207,6 +213,31 @@ describe("GET /api/ui/apps/:app", () => {
     expect(JSON.parse(agent?.body ?? "{}")).toEqual({
       error: "agent tokens may only call the MCP endpoint",
     });
+  });
+
+  it("rejects a missing or different UI version with a reload response", async () => {
+    const f = fixture();
+    const pathname = "/api/ui/apps/web";
+    const missing = await handleAppUiApi(f.deps, {
+      method: "GET",
+      path: pathname,
+      headers: cookie(f.humanToken),
+      query: { project: "p" },
+    });
+    expect(missing).toMatchObject({ status: 409 });
+    expect(missing?.headers?.["cache-control"]).toBe("no-store");
+    expect(JSON.parse(missing?.body ?? "{}")).toEqual({
+      error: "UI reload required",
+      code: "ui_reload_required",
+    });
+
+    const stale = await handleAppUiApi(f.deps, {
+      method: "GET",
+      path: pathname,
+      headers: { ...cookie(f.humanToken), "x-hanse-ui-version": "1" },
+      query: { project: "p" },
+    });
+    expect(stale).toMatchObject({ status: 409 });
   });
 
   it("404s an unknown app, project, or missing project query", async () => {
@@ -370,13 +401,11 @@ describe("GET /api/ui/apps/:app", () => {
         expect(props?.body, route.id).not.toContain(gitSecret);
         continue;
       }
-      const props = handleUiApi(
-        f.deps,
-        request("/api/ui/chrome", cookie(f.humanToken), { path: pagePath }),
-      );
-      if (props === undefined) continue;
-      expect(props.body, route.id).not.toContain(providerSecret);
-      expect(props.body, route.id).not.toContain(gitSecret);
+      const match = matchPage(pagePath);
+      if (match === undefined) continue;
+      const serialized = JSON.stringify(chromeFor(buildSite(f.deps), match));
+      expect(serialized, route.id).not.toContain(providerSecret);
+      expect(serialized, route.id).not.toContain(gitSecret);
     }
   });
 });
@@ -393,7 +422,7 @@ describe("app detail endpoint over HTTP", () => {
       throw new Error("expected a TCP address");
     }
     const response = await fetch(`http://127.0.0.1:${address.port}/api/ui/apps/web?project=p`, {
-      headers: cookie(f.humanToken),
+      headers: { ...cookie(f.humanToken), "x-hanse-ui-version": "2" },
     });
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toContain("application/json");

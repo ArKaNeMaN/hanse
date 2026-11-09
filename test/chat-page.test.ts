@@ -168,7 +168,7 @@ function fakeText(node: FakeNode): string {
 }
 
 function auth(token: string): Record<string, string> {
-  return { authorization: `Bearer ${token}` };
+  return { authorization: `Bearer ${token}`, "x-hanse-ui-version": "2" };
 }
 
 function request(overrides: Partial<HttpRequest>): HttpRequest {
@@ -829,6 +829,26 @@ console.log(JSON.stringify(Object.keys(Prism.languages)));`;
     );
     expect(blocked.status).toBe(409);
     expect(JSON.parse(blocked.body).code).toBe("deletion_pending");
+  });
+
+  it("rejects an old-client delete-if-empty without the UI version", async () => {
+    const f = fixture();
+    const response = await handleChat(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/apps/storefront/sessions/ses_1/delete-if-empty",
+        query: { project: "p1" },
+        headers: { authorization: `Bearer ${f.token}` },
+        body: "{}",
+      }),
+    );
+    expect(response.status).toBe(409);
+    expect(response.headers?.["cache-control"]).toBe("no-store");
+    expect(JSON.parse(response.body)).toEqual({
+      error: "UI reload required",
+      code: "ui_reload_required",
+    });
   });
 
   it("deletes only the requested id when the session list is not an array", async () => {

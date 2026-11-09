@@ -291,6 +291,8 @@ export function documentPage(options: {
   moduleScripts?: string[];
   viewport?: string;
   contentScript?: boolean;
+  /** False on SPA documents: Vue owns the shell behavior, so `app.js` is not needed. */
+  shellScript?: boolean;
   bootJson?: string;
 }): string {
   return `<!doctype html>
@@ -313,7 +315,7 @@ export function documentPage(options: {
     <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml" />
     ${(options.styles ?? []).map((style) => `<link rel="stylesheet" href="${escapeHtml(style)}" />`).join("")}
     <link rel="stylesheet" href="/assets/app.css" />
-    <script src="/assets/app.js" defer></script>
+    ${options.shellScript === false ? "" : '<script src="/assets/app.js" defer></script>'}
     ${options.contentScript === false ? "" : '<script src="/assets/app-content.js" defer></script>'}
     ${(options.scripts ?? []).map((script) => `<script src="${escapeHtml(script)}" defer></script>`).join("")}
     ${(options.moduleScripts ?? []).map((script) => `<script type="module" src="${escapeHtml(script)}"></script>`).join("")}
@@ -355,7 +357,6 @@ export interface ShellOptions {
   moduleScripts?: string[];
   viewport?: string;
   notice?: Notice;
-  topbarActions?: string;
   settingsHref?: string;
   skillsHref?: string;
   contentScript?: boolean;
@@ -530,9 +531,7 @@ function sidebar(options: ShellOptions): string {
 }
 
 export function appShell(options: ShellOptions): string {
-  const topbarActions =
-    options.topbarActions ??
-    `<a class="btn btn-ghost btn-icon" href="${escapeHtml(ideBase())}" target="_blank" rel="noreferrer" aria-label="Open IDE in a new tab" title="Open IDE">${icon("external")}</a>`;
+  const topbarActions = `<a class="btn btn-ghost btn-icon" href="${escapeHtml(ideBase())}" target="_blank" rel="noreferrer" aria-label="Open IDE in a new tab" title="Open IDE">${icon("external")}</a>`;
 
   const header = options.header.trim().length === 0 ? "" : options.header;
   const projectAttr =
@@ -566,6 +565,59 @@ export function appShell(options: ShellOptions): string {
       <div class="scrim" data-nav-close></div>
     </div>
     ${toastRegion(options.notice)}`,
+  });
+}
+
+export interface SpaShellOptions {
+  pageClass?: string;
+  bodyClass?: string;
+  viewport?: string;
+  styles?: string[];
+  moduleScripts?: string[];
+  bootJson?: string;
+  legacyAvailable?: boolean;
+  fallbackHref?: string;
+}
+
+/**
+ * Static SPA document shell. Chrome containers start empty and Vue fills them after mount; the
+ * document loads no `app.js` because the drawer and theme behavior is client-owned.
+ */
+export function spaShell(options: SpaShellOptions = {}): string {
+  const legacyAvailable = options.legacyAvailable !== false;
+  const fallbackHref = options.fallbackHref ?? "?legacy=1";
+  const fallback = `<div class="ui-fallback" id="ui-fallback" data-ui-fallback>
+      <p class="overline">Interface</p>
+      <h2 class="h3">The new interface did not load.</h2>
+      <p class="body">${legacyAvailable ? "Reload the page, or switch to the classic interface." : "Reload the page."}</p>
+      <a class="btn btn-secondary btn-sm" href="${escapeHtml(fallbackHref)}">${legacyAvailable ? "Use the classic interface" : "Reload the page"}</a>
+    </div>`;
+  return documentPage({
+    title: "hanse",
+    ...(options.styles === undefined ? {} : { styles: options.styles }),
+    ...(options.moduleScripts === undefined ? {} : { moduleScripts: options.moduleScripts }),
+    ...(options.viewport === undefined ? {} : { viewport: options.viewport }),
+    contentScript: false,
+    shellScript: false,
+    ...(options.bootJson === undefined ? {} : { bootJson: options.bootJson }),
+    body: `<a class="skip-link" href="#main">Skip to content</a>
+    <div class="sr-only" id="route-announcer" aria-live="polite" aria-atomic="true"></div>
+    <div class="app-shell" data-nav="closed" id="shell" data-nav-id="none">
+      <aside class="sidebar" id="sidebar" aria-label="Primary"></aside>
+      <div class="shell-main">
+        <header class="topbar">
+          <button class="btn btn-ghost btn-icon nav-toggle" type="button" data-nav-toggle aria-expanded="false" aria-controls="sidebar" aria-label="Open navigation">${icon("menu")}</button>
+          <a class="topbar__brand" href="/">hanse</a>
+          <nav class="breadcrumb" id="breadcrumb-host" aria-label="Breadcrumb" data-nav-id="none"></nav>
+          <div class="topbar__actions"></div>
+        </header>
+        <main class="${pageClasses("page", options.pageClass)}" id="main" tabindex="-1">
+          <div class="${pageClasses("page__body", options.bodyClass)}">${fallback}</div>
+        </main>
+      </div>
+      <div class="scrim" data-nav-close></div>
+    </div>
+    ${toastRegion()}`,
   });
 }
 

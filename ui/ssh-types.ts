@@ -6,7 +6,7 @@
  * props only expose the derived public-key status, and the dialog keeps the write-only input local.
  */
 
-import type { BootChrome } from "./boot.js";
+import type { ChromeData } from "./boot.js";
 
 export type SshPinState = "pinned" | "unpinned" | "mismatch";
 export type SshGrantState = "active" | "expired" | "revoked";
@@ -328,7 +328,7 @@ export interface SshProps {
 }
 
 export interface SshResponse extends SshProps {
-  readonly chrome?: BootChrome;
+  readonly chrome?: ChromeData;
 }
 
 export interface SshTestResponse {

@@ -1,15 +1,31 @@
 <script setup lang="ts">
-import { computed, onErrorCaptured, ref } from "vue";
+import { computed, onErrorCaptured, ref, watch } from "vue";
 import { RouterView, useRoute } from "vue-router";
 import type { BootPayload } from "./boot.js";
+import AppSidebar from "./components/AppSidebar.vue";
+import BreadcrumbBar from "./components/BreadcrumbBar.vue";
 import ToastHost from "./components/ToastHost.vue";
 import TopbarActions from "./components/TopbarActions.vue";
 import RouteErrorPage from "./pages/RouteErrorPage.vue";
+import { useChromeStore } from "./stores/chrome.js";
+import { useShellStore } from "./stores/shell.js";
 
 const props = defineProps<{ boot: BootPayload }>();
 const route = useRoute();
+const chrome = useChromeStore();
+const shell = useShellStore();
 
 const renderError = ref<string | undefined>(undefined);
+
+watch(
+  () => chrome.current,
+  (data) => {
+    if (data !== undefined) {
+      shell.setActive(data.active, data.activeProjectId);
+    }
+  },
+  { immediate: true },
+);
 
 const workspace = computed<"chat" | "terminal" | undefined>(() => {
   if (route.name === "chat") {
@@ -56,6 +72,8 @@ onErrorCaptured((error) => {
   <RouterView v-else v-slot="{ Component }">
     <component :is="Component" :key="viewKey" :boot="boot" :data-boot-route="bootRoute" />
   </RouterView>
+  <AppSidebar v-if="!standalone" />
+  <BreadcrumbBar v-if="!standalone" />
   <TopbarActions v-if="!standalone" :topbar="boot.topbar" :workspace="workspace" />
   <ToastHost :notice="boot.notice" />
 </template>

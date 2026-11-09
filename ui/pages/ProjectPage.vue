@@ -13,7 +13,7 @@ import ProjectPolicyCard from "../components/ProjectPolicyCard.vue";
 import RouteText from "../components/RouteText.vue";
 import SmartLink from "../components/SmartLink.vue";
 import StatusPill from "../components/StatusPill.vue";
-import { applyChrome } from "../composables/useChrome.js";
+import { usePageChrome } from "../composables/usePageChrome.js";
 import { absoluteTime, timeAgo } from "../format.js";
 import type { ProjectHandoff, ProjectProps, ProjectResponse } from "../project-types.js";
 import { replyPill, runtimePill, statusPill } from "../status.js";
@@ -45,7 +45,10 @@ const projectQuery = useQuery<ProjectResponse>({
   initialData: () => bootProps.value,
   staleTime: 30_000,
   retry: false,
+  refetchOnWindowFocus: false,
 });
+
+const { refreshing: visibilityRefreshing } = usePageChrome(projectQuery, props.boot);
 
 const view = computed<ProjectProps | undefined>(() => projectQuery.data.value ?? bootProps.value);
 const hasData = computed(() => view.value !== undefined);
@@ -108,11 +111,7 @@ async function openReview(id: string): Promise<void> {
 
 /** Refetch the project (and its chrome counters) after any successful mutation. */
 async function refreshProject(): Promise<void> {
-  const result = await projectQuery.refetch();
-  const chrome = (result.data as ProjectResponse | undefined)?.chrome;
-  if (chrome !== undefined) {
-    applyChrome(chrome);
-  }
+  await projectQuery.refetch();
 }
 </script>
 
@@ -257,7 +256,12 @@ async function refreshProject(): Promise<void> {
     </header>
 
     <div class="page__body">
-      <p v-if="loading && hasData" class="hint" role="status" aria-live="polite">
+      <p
+        v-if="loading && hasData && !visibilityRefreshing"
+        class="hint"
+        role="status"
+        aria-live="polite"
+      >
         Updating project…
       </p>
 

@@ -3,13 +3,14 @@ import { useQuery } from "@tanstack/vue-query";
 import { computed, ref } from "vue";
 import { ApiError, apiQuery } from "../api.js";
 import type { OverviewProcessesProps } from "../app-types.js";
-import type { BootChrome, BootPayload } from "../boot.js";
+import type { BootPayload, ChromeData } from "../boot.js";
 import AppIcon from "../components/AppIcon.vue";
 import NewProjectDialog from "../components/NewProjectDialog.vue";
 import RouteCard from "../components/RouteCard.vue";
 import RouteText from "../components/RouteText.vue";
 import SmartLink from "../components/SmartLink.vue";
 import StatusPill from "../components/StatusPill.vue";
+import { usePageChrome } from "../composables/usePageChrome.js";
 import { absoluteTime, timeAgo } from "../format.js";
 import {
   type HandoffReplyState,
@@ -68,7 +69,7 @@ interface OverviewProps {
 }
 
 interface OverviewResponse extends OverviewProps {
-  readonly chrome?: BootChrome;
+  readonly chrome?: ChromeData;
 }
 
 const EMPTY: OverviewProps = {
@@ -106,7 +107,10 @@ const overviewQuery = useQuery<OverviewResponse>({
   initialData: () => bootProps,
   staleTime: 30_000,
   retry: false,
+  refetchOnWindowFocus: false,
 });
+
+const { refreshing: visibilityRefreshing } = usePageChrome(overviewQuery, props.boot);
 
 const view = computed<OverviewProps>(() => overviewQuery.data.value ?? bootProps ?? EMPTY);
 const hasData = computed(() => overviewQuery.data.value !== undefined || bootProps !== undefined);
@@ -182,7 +186,12 @@ function projectHref(row: OverviewProjectRow): string {
   </header>
 
   <div class="page__body">
-    <p v-if="loading && hasData" class="hint" role="status" aria-live="polite">
+    <p
+      v-if="loading && hasData && !visibilityRefreshing"
+      class="hint"
+      role="status"
+      aria-live="polite"
+    >
       Updating overview…
     </p>
 

@@ -134,32 +134,29 @@ describe("UI boot and dev URLs", () => {
     expect(serializeBoot(undefined)).toBe("null");
   });
 
-  it("renders the SPA document with the shell script only, boot JSON, and fallback", () => {
+  it("renders the SPA document with no app.js, boot JSON, and fallback", () => {
     const html = renderSpaDocument({
-      title: "Projects",
-      active: "projects",
-      breadcrumb: [{ label: "Workbench", href: "/" }, { label: "Projects" }],
-      projects: [{ id: "alpha", name: "Alpha", appCount: 1 }],
-      pendingCount: 0,
-      operatorName: "alice",
       route: { id: "projects", params: {} },
       props: { rows: [{ name: "<unsafe>" }] },
-      spaRoutes: ["projects", "overview"],
       chrome: {
-        sidebarNav: "",
-        breadcrumb: "",
         title: "Projects",
         active: "projects",
+        breadcrumb: [{ label: "Workbench", href: "/" }, { label: "Projects" }],
+        projects: [{ id: "alpha", name: "Alpha", appCount: 1 }],
+        masterHref: "/chat?app=master&project=hanse-master",
         pendingCount: 0,
         sshPendingCount: 0,
       },
+      routeKey: JSON.stringify(["projects", [], []]),
+      operator: { name: "alice", initials: "AL" },
+      spaRoutes: ["projects", "overview"],
       manifest: {
         entry: "/assets/ui/assets/main.js",
         css: ["/assets/ui/assets/main.css"],
         files: [],
       },
     });
-    expect(html).toContain('<script src="/assets/app.js" defer></script>');
+    expect(html).not.toContain('<script src="/assets/app.js" defer></script>');
     expect(html).not.toContain("/assets/app-content.js");
     expect(html).toContain('<script id="hanse-boot" type="application/json">');
     expect(html).toContain("\\u003cunsafe>");
@@ -167,31 +164,30 @@ describe("UI boot and dev URLs", () => {
     expect(html).toContain('<script type="module" src="/assets/ui/assets/main.js"></script>');
     expect(html).toContain('<link rel="stylesheet" href="/assets/ui/assets/main.css" />');
     expect(html).toContain('id="route-announcer"');
-    expect(html).toContain('id="sidebar-nav"');
+    expect(html).toContain('<aside class="sidebar" id="sidebar"');
     expect(html).toContain('id="breadcrumb-host"');
     expect(html).toContain('"spaRoutes":["projects","overview"]');
     expect(html).toContain('"topbar":{"ideHref":"/ide/"}');
+    expect(html).toContain('"routeKey":"[\\"projects\\",[],[]]"');
+    expect(html).toContain('"operator":{"name":"alice","initials":"AL"}');
+    expect(html).toContain('"masterHref":"/chat?app=master&project=hanse-master"');
   });
 
   it("prefers dev module URLs over the manifest entry", () => {
     const html = renderSpaDocument({
-      title: "Projects",
-      active: "projects",
-      breadcrumb: [{ label: "Projects" }],
-      projects: [],
-      pendingCount: 0,
-      operatorName: "alice",
       route: { id: "projects", params: {} },
       props: {},
-      spaRoutes: ["projects", "overview"],
       chrome: {
-        sidebarNav: "",
-        breadcrumb: "",
         title: "Projects",
         active: "projects",
+        breadcrumb: [{ label: "Projects" }],
+        projects: [],
+        masterHref: "/chat?app=master&project=hanse-master",
         pendingCount: 0,
         sshPendingCount: 0,
       },
+      routeKey: JSON.stringify(["projects", [], []]),
+      spaRoutes: ["projects", "overview"],
       devUrl: "http://127.0.0.1:5173",
     });
     expect(html).toContain(
@@ -206,35 +202,31 @@ describe("UI boot and dev URLs", () => {
 describe("SPA shell inputs and content script forwarding", () => {
   it("forwards page/body/viewport/topbar inputs into the SPA shell", () => {
     const html = renderSpaDocument({
-      title: "web chat",
-      active: "none",
-      breadcrumb: [{ label: "Chat" }],
-      projects: [],
-      pendingCount: 0,
-      operatorName: "alice",
       route: { id: "chat", params: {} },
       props: {},
       spaRoutes: ["projects"],
       topbar: { ideHref: "/ide/", contextToggle: true },
-      topbarActions: '<button id="fallback-chat-action">chat</button>',
       pageClass: "page--chat",
       bodyClass: "page__body--chat",
       viewport: "width=device-width, initial-scale=1, interactive-widget=resizes-content",
       chrome: {
-        sidebarNav: "",
-        breadcrumb: "",
         title: "web chat",
         active: "none",
+        breadcrumb: [{ label: "Chat" }],
+        projects: [],
+        masterHref: "/chat?app=master&project=hanse-master",
         pendingCount: 0,
         sshPendingCount: 0,
       },
+      routeKey: JSON.stringify(["chat", [], []]),
       devUrl: "http://127.0.0.1:5173",
     });
     expect(html).toContain('class="page page--chat"');
     expect(html).toContain('class="page__body page__body--chat"');
     expect(html).toContain("interactive-widget=resizes-content");
-    expect(html).toContain('id="fallback-chat-action"');
+    expect(html).toContain('<div class="topbar__actions"></div>');
     expect(html).toContain('"contextToggle":true');
+    expect(html).not.toContain('<script src="/assets/app.js" defer></script>');
   });
 
   it("forwards contentScript:false through the private shell helper", () => {

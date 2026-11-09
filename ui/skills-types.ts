@@ -7,7 +7,7 @@
  * part of these props.
  */
 
-import type { BootChrome } from "./boot.js";
+import type { ChromeData } from "./boot.js";
 
 export type SkillScope = "global" | "project" | "app";
 export type InventoryState = "enabled" | "inherited" | "disabled" | "invalid";
@@ -371,11 +371,11 @@ export interface SkillWorkspaceProps {
 }
 
 export interface SkillsResponse extends SkillsInventoryProps {
-  readonly chrome?: BootChrome;
+  readonly chrome?: ChromeData;
 }
 
 export interface SkillDetailResponse extends SkillWorkspaceProps {
-  readonly chrome?: BootChrome;
+  readonly chrome?: ChromeData;
 }
 
 /** Mutable editor model; the server bundle snapshot is rebuilt from it on save. */

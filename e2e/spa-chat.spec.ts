@@ -91,7 +91,7 @@ async function installEventSourceCounter(page: Page): Promise<void> {
   });
 }
 
-test("server first paint already carries the chat topbar set with zeroed counters", async ({
+test("the server document has no chrome seed and the client mounts the chat topbar with zeroed counters", async ({
   page,
 }) => {
   const errors = collectPageErrors(page);
@@ -100,13 +100,16 @@ test("server first paint already carries the chat topbar set with zeroed counter
   const html = await (
     await page.request.get(CHAT_PATH, { headers: { accept: "text/html" } })
   ).text();
-  expect(html).toContain('id="chat-input-needed"');
-  expect(html).toContain('id="chat-policy-chip"');
-  expect(html).toContain("data-chat-context-toggle");
-  expect(html).toContain('id="chat-input-needed-count" aria-hidden="true">0');
-  expect(html).toMatch(/id="chat-input-needed"[^>]* hidden/);
-  expect(html).toMatch(/id="chat-policy-chip"[^>]* hidden/);
+  // The SPA document is a static shell: chrome and topbar controls are client-rendered.
+  expect(html).not.toContain('id="chat-input-needed"');
+  expect(html).not.toContain('id="chat-policy-chip"');
+  expect(html).not.toContain("data-chat-context-toggle");
+  expect(html).not.toContain("sidebarNav");
+  expect(html).toContain('id="sidebar"');
+  expect(html).toContain('id="breadcrumb-host"');
+  expect(html).toContain('class="topbar__actions"');
   expect(html).toContain("page__body--chat");
+  expect(html).not.toContain("/assets/app.js");
 
   const boot = JSON.parse((await page.locator("#hanse-boot").textContent()) ?? "{}") as Record<
     string,
@@ -118,7 +121,15 @@ test("server first paint already carries the chat topbar set with zeroed counter
   expect(boot).not.toHaveProperty("initialSession");
   expect(JSON.stringify(boot)).not.toContain("session=");
 
+  // After Vue mounts, the chat topbar set is present with zeroed counters.
+  await expect(page.locator("#sidebar-nav")).toHaveAttribute("data-nav-id", "none");
   await expect(page.locator("#chat-shell")).toHaveCount(1);
+  await expect(page.locator("#chat-input-needed")).toHaveCount(1);
+  await expect(page.locator("#chat-input-needed")).toBeHidden();
+  await expect(page.locator("#chat-input-needed-count")).toHaveText("0");
+  await expect(page.locator("#chat-policy-chip")).toHaveCount(1);
+  await expect(page.locator("#chat-policy-chip")).toBeVisible();
+  await expect(page.locator("[data-chat-context-toggle]")).toBeVisible();
   await expect(page.locator("[data-chat-composer-input]")).toBeEnabled();
   await page.waitForTimeout(400);
   expectNoPageErrors(errors);

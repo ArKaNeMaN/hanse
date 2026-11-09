@@ -23,7 +23,15 @@ import {
   normalizePendingSends,
   type PendingSendView,
 } from "../../assets/chat-core.js";
-import { type ApiRequestOptions, apiMutation, apiQuery } from "../api.js";
+import {
+  type ApiRequestOptions,
+  apiMutation,
+  apiQuery,
+  reloadForUiVersion,
+  responseRequiresUiReload,
+  UI_VERSION,
+  UI_VERSION_HEADER,
+} from "../api.js";
 import {
   type AttachmentChip,
   attachmentErrorMessage,
@@ -265,14 +273,24 @@ export function useChatComposer(options: UseChatComposerOptions) {
         return;
       }
       try {
-        await fetch(draftUrl(scope(), session), {
+        const response = await fetch(draftUrl(scope(), session), {
           method: "PUT",
-          headers: { "content-type": "application/json" },
+          headers: {
+            "content-type": "application/json",
+            "x-hanse-client": "spa",
+            [UI_VERSION_HEADER]: UI_VERSION,
+          },
           body: JSON.stringify({ text: body }),
           credentials: "same-origin",
           cache: "no-store",
           keepalive: true,
         });
+        if (!response.ok) {
+          if (await responseRequiresUiReload(response)) {
+            reloadForUiVersion();
+          }
+          return;
+        }
         store.setLastSaved(session, body);
       } catch {
         // Keepalive is best effort during hide/unload.
@@ -1202,18 +1220,26 @@ export function useChatComposer(options: UseChatComposerOptions) {
         hasHistory: options.hasHistory(),
       })
     ) {
-      try {
-        void fetch(deleteIfEmptyUrl(scope(), session), {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: "{}",
-          credentials: "same-origin",
-          cache: "no-store",
-          keepalive: true,
+      void fetch(deleteIfEmptyUrl(scope(), session), {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-hanse-client": "spa",
+          [UI_VERSION_HEADER]: UI_VERSION,
+        },
+        body: "{}",
+        credentials: "same-origin",
+        cache: "no-store",
+        keepalive: true,
+      })
+        .then(async (response) => {
+          if (!response.ok && (await responseRequiresUiReload(response))) {
+            reloadForUiVersion();
+          }
+        })
+        .catch(() => {
+          // Best effort during unload.
         });
-      } catch {
-        // Best effort during unload.
-      }
     }
   }
 

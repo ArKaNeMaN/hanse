@@ -8,6 +8,7 @@ import AppIcon from "../components/AppIcon.vue";
 import SkillBundleEditor from "../components/SkillBundleEditor.vue";
 import SkillsScopeNav from "../components/SkillsScopeNav.vue";
 import SmartLink from "../components/SmartLink.vue";
+import { usePageChrome } from "../composables/usePageChrome.js";
 import { absoluteTime } from "../format.js";
 import { hasSkillsMutated, markSkillsMutated } from "../skills-mutation.js";
 import type {
@@ -184,8 +185,11 @@ const inventoryQuery = useQuery<SkillsResponse>({
   placeholderData: keepPreviousData,
   staleTime: 30_000,
   retry: false,
+  refetchOnWindowFocus: false,
   enabled: computed(() => !isCreate.value || bootCreate.value === undefined),
 });
+
+usePageChrome(inventoryQuery, props.boot);
 
 const view = computed<SkillsInventoryProps | undefined>(
   () => inventoryQuery.data.value ?? bootInventory.value,

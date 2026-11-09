@@ -5,7 +5,7 @@
  * avoids importing server code into the Vite bundle while still typing the inbox page.
  */
 
-import type { BootChrome } from "./boot.js";
+import type { ChromeData } from "./boot.js";
 import type { ProjectHandoff } from "./project-types.js";
 
 export type HandoffFilter = "all" | "waiting" | "active" | "closed" | "replies";
@@ -78,5 +78,5 @@ export interface HandoffsProps {
 }
 
 export interface HandoffsResponse extends HandoffsProps {
-  readonly chrome?: BootChrome;
+  readonly chrome?: ChromeData;
 }

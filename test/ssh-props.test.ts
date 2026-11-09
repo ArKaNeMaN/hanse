@@ -138,7 +138,12 @@ function request(
   headers: Record<string, string>,
   query?: Record<string, string>,
 ): HttpRequest {
-  return { method: "GET", path: pathname, headers, ...(query === undefined ? {} : { query }) };
+  return {
+    method: "GET",
+    path: pathname,
+    headers: { "x-hanse-ui-version": "2", ...headers },
+    ...(query === undefined ? {} : { query }),
+  };
 }
 
 interface SshApiPayload {

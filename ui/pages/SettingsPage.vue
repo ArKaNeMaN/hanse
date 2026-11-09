@@ -12,7 +12,7 @@ import SettingsProviderSection from "../components/SettingsProviderSection.vue";
 import SettingsRestartSection from "../components/SettingsRestartSection.vue";
 import SettingsRow from "../components/SettingsRow.vue";
 import SmartLink from "../components/SmartLink.vue";
-import { applyChrome } from "../composables/useChrome.js";
+import { usePageChrome } from "../composables/usePageChrome.js";
 import { useSectionNav } from "../composables/useSectionNav.js";
 import type {
   SettingsProps,
@@ -102,7 +102,10 @@ const settingsQuery = useQuery<SettingsResponse>({
   initialData: () => bootProps.value,
   staleTime: 30_000,
   retry: false,
+  refetchOnWindowFocus: false,
 });
+
+const { refreshing: visibilityRefreshing } = usePageChrome(settingsQuery, props.boot);
 
 const view = computed<SettingsProps | undefined>(() => settingsQuery.data.value ?? bootProps.value);
 const loading = computed(() => settingsQuery.isFetching.value);
@@ -134,11 +137,7 @@ const SETTINGS_SECTION_IDS = [
 const { activeId: activeSection, activate: activateSection } = useSectionNav(SETTINGS_SECTION_IDS);
 
 async function refreshChromeAndProps(): Promise<void> {
-  const result = await settingsQuery.refetch();
-  const chrome = result.data?.chrome;
-  if (chrome !== undefined) {
-    applyChrome(chrome);
-  }
+  await settingsQuery.refetch();
 }
 
 async function refreshPage(): Promise<void> {
@@ -285,7 +284,12 @@ watch(
   </header>
 
   <div class="page__body">
-    <p v-if="loading && view !== undefined" class="hint" role="status" aria-live="polite">
+    <p
+      v-if="loading && view !== undefined && !visibilityRefreshing"
+      class="hint"
+      role="status"
+      aria-live="polite"
+    >
       Updating settings…
     </p>
 

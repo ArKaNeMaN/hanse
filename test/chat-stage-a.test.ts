@@ -100,7 +100,7 @@ interface UpstreamCall {
 }
 
 function auth(token: string): Record<string, string> {
-  return { authorization: `Bearer ${token}` };
+  return { authorization: `Bearer ${token}`, "x-hanse-ui-version": "2" };
 }
 
 function request(overrides: Partial<HttpRequest>): HttpRequest {
@@ -384,6 +384,38 @@ describe("stage A draft routes", () => {
     expect(forbidden.status).toBe(403);
   });
 
+  it("rejects an old-client draft PUT without the UI version", async () => {
+    const f = fixture();
+    const manager = useManager(f, undefined);
+    const response = await handleChat(
+      f.deps,
+      draftRequest(f, {
+        method: "PUT",
+        headers: { authorization: `Bearer ${f.token}` },
+        body: JSON.stringify({ text: "old tab" }),
+      }),
+    );
+    expect(response.status).toBe(409);
+    expect(response.headers?.["cache-control"]).toBe("no-store");
+    expect(JSON.parse(response.body)).toEqual({
+      error: "UI reload required",
+      code: "ui_reload_required",
+    });
+    expect(readDraft(f.db, "p1:storefront", "ses_1")).toBeUndefined();
+    expect(manager.ensureCalls).toBe(0);
+
+    const agent = createPrincipal(f.db, { kind: "agent", name: "bot" });
+    const forbidden = await handleChat(
+      f.deps,
+      draftRequest(f, {
+        method: "PUT",
+        headers: { authorization: `Bearer ${agent.token}` },
+        body: JSON.stringify({ text: "old tab" }),
+      }),
+    );
+    expect(forbidden.status).toBe(403);
+  });
+
   it("does not create a row or start the app when touch cannot reach upstream", async () => {
     const f = fixture();
     const manager = useManager(f, undefined);
@@ -418,7 +450,11 @@ describe("stage A draft routes", () => {
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const address = server.address() as AddressInfo;
     const url = `http://127.0.0.1:${address.port}/api/apps/storefront/sessions/ses_1/draft?project=p1`;
-    const headers = { authorization: `Bearer ${f.token}`, "content-type": "application/json" };
+    const headers = {
+      authorization: `Bearer ${f.token}`,
+      "content-type": "application/json",
+      "x-hanse-ui-version": "2",
+    };
 
     const accepted = await fetch(url, {
       method: "PUT",
@@ -565,6 +601,25 @@ describe("stage A eager sessions and sessions listing", () => {
 });
 
 describe("stage A delete-if-empty and manual delete", () => {
+  it("rejects an old-client delete-if-empty without the UI version", async () => {
+    const f = fixture();
+    const response = await handleChat(
+      f.deps,
+      draftRequest(f, {
+        method: "POST",
+        path: "/api/apps/storefront/sessions/ses_1/delete-if-empty",
+        headers: { authorization: `Bearer ${f.token}` },
+        body: "{}",
+      }),
+    );
+    expect(response.status).toBe(409);
+    expect(response.headers?.["cache-control"]).toBe("no-store");
+    expect(JSON.parse(response.body)).toEqual({
+      error: "UI reload required",
+      code: "ui_reload_required",
+    });
+  });
+
   it("blocks for has_messages, a draft, or a pending send without starting the app", async () => {
     const f = fixture();
     const manager = useManager(f, undefined);

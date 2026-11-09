@@ -6,7 +6,7 @@ import { ApiError, apiMutation, apiQuery } from "../api.js";
 import type { BootPayload } from "../boot.js";
 import AppIcon from "../components/AppIcon.vue";
 import SshHostDialog from "../components/SshHostDialog.vue";
-import { applyChrome } from "../composables/useChrome.js";
+import { usePageChrome } from "../composables/usePageChrome.js";
 import { useSectionNav } from "../composables/useSectionNav.js";
 import { absoluteTime, timeAgo } from "../format.js";
 import type {
@@ -115,7 +115,10 @@ const sshQuery = useQuery<SshResponse>({
   initialData: () => bootProps.value,
   staleTime: 30_000,
   retry: false,
+  refetchOnWindowFocus: false,
 });
+
+const { refreshing: visibilityRefreshing } = usePageChrome(sshQuery, props.boot);
 
 const view = computed<SshProps | undefined>(() => sshQuery.data.value ?? bootProps.value);
 const counts = computed(() => view.value?.counts ?? EMPTY_COUNTS);
@@ -252,11 +255,7 @@ function pageErrorFor(target: string): string | null {
 }
 
 async function refreshChromeAndProps(): Promise<void> {
-  const result = await sshQuery.refetch();
-  const chrome = (result.data as SshResponse | undefined)?.chrome;
-  if (chrome !== undefined) {
-    applyChrome(chrome);
-  }
+  await sshQuery.refetch();
 }
 
 function openAdd(): void {
@@ -456,7 +455,12 @@ async function refreshPage(): Promise<void> {
   </header>
 
   <div class="page__body">
-    <p v-if="loading && view !== undefined" class="hint" role="status" aria-live="polite">
+    <p
+      v-if="loading && view !== undefined && !visibilityRefreshing"
+      class="hint"
+      role="status"
+      aria-live="polite"
+    >
       Updating SSH console…
     </p>
 

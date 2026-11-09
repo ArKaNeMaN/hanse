@@ -26,7 +26,7 @@ async function createAwaitingHandoff(page: Page, summary: string): Promise<strin
       spec: "E2E inline specification.",
       requires_approval: "1",
     },
-    headers: { "x-hanse-client": "spa" },
+    headers: { "x-hanse-client": "spa", "x-hanse-ui-version": "2" },
   });
   expect(response.status()).toBe(202);
   const payload = (await response.json()) as { handoffId: string };

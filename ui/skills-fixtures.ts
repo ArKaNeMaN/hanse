@@ -382,12 +382,14 @@ export function boot(
     spaRoutes: [routeId],
     topbar: { ideHref: "/ide/" },
     chrome: {
-      sidebarNav: "",
-      breadcrumb: "",
       title: "Skills",
       active: "skills",
+      breadcrumb: [],
+      projects: [],
+      masterHref: "/chat?app=master&project=hanse-master",
       pendingCount: 0,
       sshPendingCount: 0,
     },
+    routeKey: JSON.stringify([routeId, Object.entries(params).sort(), []]),
   };
 }

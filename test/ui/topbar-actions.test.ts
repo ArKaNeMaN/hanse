@@ -5,9 +5,8 @@ import { nextTick } from "vue";
 import type { BootTopbar } from "../../ui/boot.js";
 import TopbarActions from "../../ui/components/TopbarActions.vue";
 import { useChatUiStore } from "../../ui/stores/chat-ui.js";
-import { clearTopbarActions } from "../../ui/topbar.js";
 
-function shell(defaultMarkup = '<a id="server-default" href="/ide/">IDE</a>'): void {
+function shell(defaultMarkup = ""): void {
   document.body.innerHTML = `<header class="topbar"><div class="topbar__actions">${defaultMarkup}</div></header><main id="main"></main>`;
 }
 
@@ -35,9 +34,7 @@ afterEach(() => {
 });
 
 describe("TopbarActions", () => {
-  it("clears the server fallback once and renders one chat action set", async () => {
-    expect(actions().querySelector("#server-default")).not.toBeNull();
-    clearTopbarActions();
+  it("renders one chat action set into the static empty container", async () => {
     expect(actions().children).toHaveLength(0);
 
     const wrapper = mount(TopbarActions, {
@@ -46,7 +43,6 @@ describe("TopbarActions", () => {
     });
     await nextTick();
 
-    expect(actions().querySelector("#server-default")).toBeNull();
     expect(actions().querySelectorAll("#chat-input-needed")).toHaveLength(1);
     expect(actions().querySelectorAll("#chat-policy-chip")).toHaveLength(1);
     expect(actions().querySelectorAll("[data-chat-context-toggle]")).toHaveLength(1);
@@ -59,7 +55,6 @@ describe("TopbarActions", () => {
   });
 
   it("renders only the default IDE action for terminal and restores it on prop change", async () => {
-    clearTopbarActions();
     const wrapper = mount(TopbarActions, {
       props: { topbar: CHAT, workspace: "chat" },
       global: { plugins: [createPinia()] },
@@ -82,7 +77,6 @@ describe("TopbarActions", () => {
   });
 
   it("shows the needs-input count and policy chip when the seed says so", async () => {
-    clearTopbarActions();
     const wrapper = mount(TopbarActions, {
       props: { topbar: { ...CHAT, needsInputCount: 2, policyVisible: true }, workspace: "chat" },
       global: { plugins: [createPinia()] },
@@ -98,7 +92,6 @@ describe("TopbarActions", () => {
 describe("TopbarActions chat store", () => {
   it("renders the chat set on a direct chat boot and resets to the default when the store leaves", async () => {
     shell();
-    clearTopbarActions();
     const pinia = createPinia();
     const wrapper = mount(TopbarActions, {
       props: { topbar: CHAT, workspace: "chat" },
@@ -120,7 +113,6 @@ describe("TopbarActions chat store", () => {
 
 describe("TopbarActions chat state ownership", () => {
   it("renders the count and policy visibility published by the chat store", async () => {
-    clearTopbarActions();
     const pinia = createPinia();
     const wrapper = mount(TopbarActions, {
       props: { topbar: CHAT, workspace: "chat" },
@@ -150,7 +142,6 @@ describe("TopbarActions chat state ownership", () => {
   });
 
   it("opens the queue, policy rail, and context rail through the persistent store", async () => {
-    clearTopbarActions();
     const pinia = createPinia();
     const wrapper = mount(TopbarActions, {
       props: { topbar: { ...CHAT, needsInputCount: 1, policyVisible: true }, workspace: "chat" },

@@ -58,10 +58,17 @@ export const CHAT_PROPS: ChatResponse = {
     contextToggle: true,
   },
   chrome: {
-    sidebarNav: "",
-    breadcrumb: "",
     title: "alpha chat",
     active: "none",
+    activeProjectId: "p",
+    breadcrumb: [
+      { label: "Projects", href: "/projects" },
+      { label: "Project", href: "/projects/p" },
+      { label: "alpha", href: "/projects/p/apps/alpha" },
+      { label: "Chat" },
+    ],
+    projects: [{ id: "p", name: "Project", appCount: 1 }],
+    masterHref: "/chat?app=master&project=hanse-master",
     pendingCount: 0,
     sshPendingCount: 0,
   },
@@ -97,6 +104,9 @@ export interface ChatFixture {
   readonly deleteSessionStatus?: number;
   readonly draftText?: string;
   readonly drafts?: Readonly<Record<string, string>>;
+  readonly draftSaveStatus?: number;
+  readonly draftSaveBody?: unknown;
+  readonly deleteIfEmptyStatus?: number;
   readonly pendingSends?: readonly unknown[];
   readonly messagesBySession?: Readonly<Record<string, readonly unknown[]>>;
   readonly sentMessageID?: string;
@@ -172,6 +182,14 @@ export function boot(overrides: Partial<BootPayload> = {}): BootPayload {
     route: { id: "chat", params: {} },
     props: CHAT_PROPS,
     chrome: CHAT_PROPS.chrome,
+    routeKey: JSON.stringify([
+      "chat",
+      [],
+      [
+        ["app", "alpha"],
+        ["project", "p"],
+      ],
+    ]),
     spaRoutes: ["chat"],
     topbar: CHAT_PROPS.topbar,
     ...overrides,
@@ -215,6 +233,19 @@ function json(status: number, body: unknown): Response {
     text: async () => JSON.stringify(body),
     json: async () => body,
   } as unknown as Response;
+}
+
+function headerRecord(headers: HeadersInit | undefined): Record<string, string> {
+  if (headers === undefined) {
+    return {};
+  }
+  if (headers instanceof Headers) {
+    return Object.fromEntries(headers.entries());
+  }
+  if (Array.isArray(headers)) {
+    return Object.fromEntries(headers);
+  }
+  return { ...headers };
 }
 
 export const FIXTURE_MESSAGES = [
@@ -292,6 +323,7 @@ export interface InstalledFetch {
     url: string;
     body?: string;
     keepalive?: boolean;
+    headers: Record<string, string>;
   }>;
 }
 
@@ -302,6 +334,7 @@ export function installFetch(fixture: ChatFixture = {}): InstalledFetch {
     url: string;
     body?: string;
     keepalive?: boolean;
+    headers: Record<string, string>;
   }> = [];
   let sessions = (fixture.sessions ?? [{ id: "s1", title: "Session one" }]).map((session) => ({
     ...session,
@@ -324,6 +357,7 @@ export function installFetch(fixture: ChatFixture = {}): InstalledFetch {
       url,
       ...(bodyText === undefined ? {} : { body: bodyText }),
       ...(init?.keepalive === true ? { keepalive: true } : {}),
+      headers: headerRecord(init?.headers),
     });
     const custom = fixture.custom?.({ method, url, body: bodyText });
     if (custom !== undefined) {
@@ -531,6 +565,10 @@ export function installFetch(fixture: ChatFixture = {}): InstalledFetch {
     if (draftMatch !== null) {
       const sessionId = sessionOf(draftMatch[1] ?? "");
       if (method === "PUT") {
+        const status = fixture.draftSaveStatus ?? 200;
+        if (status !== 200) {
+          return json(status, fixture.draftSaveBody ?? { error: "draft save failed" });
+        }
         const parsed = typeof init?.body === "string" ? JSON.parse(init.body) : {};
         const text = typeof parsed.text === "string" ? parsed.text : "";
         if (text.length === 0) {
@@ -578,7 +616,8 @@ export function installFetch(fixture: ChatFixture = {}): InstalledFetch {
       url,
     );
     if (emptyMatch !== null && method === "POST") {
-      return json(200, fixture.deleteIfEmptyBody ?? { deleted: false });
+      const status = fixture.deleteIfEmptyStatus ?? 200;
+      return json(status, fixture.deleteIfEmptyBody ?? { deleted: false });
     }
     const retryMatch =
       /^\/api\/apps\/alpha\/sessions\/([^/?]+)\/pending\/([^/?]+)\/retry(?:\?.*)?$/.exec(url);

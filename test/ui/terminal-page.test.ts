@@ -45,13 +45,23 @@ function boot(): BootPayload {
     route: { id: "terminal", params: {} },
     props: PROPS,
     chrome: {
-      sidebarNav: "",
-      breadcrumb: "",
       title: "alpha terminal",
       active: "project",
+      activeProjectId: "p",
+      breadcrumb: [],
+      projects: [],
+      masterHref: "/chat?app=master&project=hanse-master",
       pendingCount: 0,
       sshPendingCount: 0,
     },
+    routeKey: JSON.stringify([
+      "terminal",
+      [],
+      [
+        ["app", "alpha"],
+        ["project", "p"],
+      ],
+    ]),
     spaRoutes: ["terminal"],
     topbar: PROPS.topbar,
   };
@@ -63,10 +73,12 @@ beforeEach(() => {
   const response: TerminalResponse = {
     ...PROPS,
     chrome: {
-      sidebarNav: "",
-      breadcrumb: "",
       title: "alpha terminal",
       active: "project",
+      activeProjectId: "p",
+      breadcrumb: [],
+      projects: [],
+      masterHref: "/chat?app=master&project=hanse-master",
       pendingCount: 0,
       sshPendingCount: 0,
     },

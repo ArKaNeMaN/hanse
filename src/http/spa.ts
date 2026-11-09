@@ -1,6 +1,7 @@
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import type { GitStatus } from "../git/service.js";
+import { isMasterProject, masterChatHref } from "../master/constants.js";
 import { verifyAgentToken } from "../mcp/agent-tokens.js";
 import { SettingsValidationError } from "../settings/index.js";
 import type { SettingsScope, SettingsTarget } from "../settings/types.js";
@@ -15,6 +16,7 @@ import {
   ROUTES,
   type RouteId,
   routeById,
+  routeKey,
 } from "../shared/routes.js";
 import { SkillService, type SkillTarget } from "../skills/index.js";
 import { findApp } from "./apps.js";
@@ -58,17 +60,17 @@ import {
   appShell,
   type Crumb,
   documentPage,
-  escapeHtml,
   icon,
   ideBase,
+  initials,
   loginPlate,
   type NavProject,
   type Notice,
-  renderBreadcrumbInner,
-  renderSidebarNavInner,
   type ShellOptions,
   safeLocalPath,
+  spaShell,
 } from "./ui.js";
+import { requireUiVersion } from "./ui-version.js";
 
 const UI_BASE = "/assets/ui/";
 const MANIFEST_DIR = ".vite";
@@ -274,27 +276,22 @@ export function serializeBoot(value: unknown): string {
   return (json === undefined ? "null" : json).replace(/</g, "\\u003c");
 }
 
-export interface ChromeProps {
-  readonly sidebarNav: string;
-  readonly breadcrumb: string;
-  readonly title: string;
-  readonly active: ShellOptions["active"];
-  readonly activeProjectId?: string;
-  readonly pendingCount: number;
-  readonly sshPendingCount: number;
-}
-
 export interface ChromeData {
-  readonly chrome: ChromeProps;
   readonly title: string;
   readonly active: ShellOptions["active"];
   readonly activeProjectId?: string;
-  readonly breadcrumb: Crumb[];
-  readonly projects: NavProject[];
+  readonly breadcrumb: readonly Crumb[];
+  readonly projects: readonly NavProject[];
+  readonly masterHref: string;
   readonly pendingCount: number;
   readonly sshPendingCount: number;
   readonly settingsHref?: string;
   readonly skillsHref?: string;
+}
+
+export interface BootOperator {
+  readonly name: string;
+  readonly initials: string;
 }
 
 function encoded(value: string): string {
@@ -456,36 +453,21 @@ export function chromeFor(
   const title = hint.title ?? chromeRoute.title;
   const breadcrumb = hint.breadcrumb === undefined ? chromeRoute.breadcrumb : [...hint.breadcrumb];
   const active = definition?.nav ?? "none";
-  const projects: NavProject[] = site.projects.map((entry) => ({
-    id: entry.id,
-    name: entry.name,
-    appCount: entry.apps.length,
-  }));
+  const projects: NavProject[] = site.projects
+    .filter((entry) => !isMasterProject(entry.id))
+    .map((entry) => ({
+      id: entry.id,
+      name: entry.name,
+      appCount: entry.apps.length,
+    }));
   const scoped = scopedHrefs(projectId, appKey);
-  const chrome: ChromeProps = {
-    sidebarNav: renderSidebarNavInner({
-      active,
-      ...(project === undefined ? {} : { activeProjectId: project.id }),
-      projects,
-      pendingCount: site.pendingCount,
-      sshPendingCount: site.sshPendingCount,
-      ...(scoped.settings === undefined ? {} : { settingsHref: scoped.settings }),
-      ...(scoped.skills === undefined ? {} : { skillsHref: scoped.skills }),
-    }),
-    breadcrumb: renderBreadcrumbInner(breadcrumb),
-    title,
-    active,
-    ...(project === undefined ? {} : { activeProjectId: project.id }),
-    pendingCount: site.pendingCount,
-    sshPendingCount: site.sshPendingCount,
-  };
   return {
-    chrome,
     title,
     active,
     ...(project === undefined ? {} : { activeProjectId: project.id }),
     breadcrumb,
     projects,
+    masterHref: masterChatHref(),
     pendingCount: site.pendingCount,
     sshPendingCount: site.sshPendingCount,
     ...(scoped.settings === undefined ? {} : { settingsHref: scoped.settings }),
@@ -525,25 +507,16 @@ export interface SpaTopbar {
 }
 
 export interface SpaDocumentInput {
-  readonly title: string;
-  readonly active: ShellOptions["active"];
-  readonly activeProjectId?: string;
-  readonly breadcrumb: Crumb[];
-  readonly projects: NavProject[];
-  readonly pendingCount: number;
-  readonly sshPendingCount?: number;
-  readonly operatorName: string;
-  readonly settingsHref?: string;
-  readonly skillsHref?: string;
   readonly route: PageMatch;
   readonly props: unknown;
-  readonly chrome: ChromeProps;
+  readonly chrome: ChromeData;
+  readonly routeKey: string;
+  readonly operator?: BootOperator;
   readonly spaRoutes: readonly RouteId[];
   readonly topbar?: SpaTopbar;
   readonly pageClass?: string;
   readonly bodyClass?: string;
   readonly viewport?: string;
-  readonly topbarActions?: string;
   readonly notice?: Notice;
   readonly manifest?: UiManifest;
   readonly devUrl?: string;
@@ -557,6 +530,8 @@ export function renderSpaDocument(input: SpaDocumentInput): string {
     route: input.route,
     props: input.props,
     chrome: input.chrome,
+    routeKey: input.routeKey,
+    ...(input.operator === undefined ? {} : { operator: input.operator }),
     spaRoutes: input.spaRoutes,
     topbar,
     ...(input.notice === undefined ? {} : { notice: input.notice }),
@@ -568,34 +543,14 @@ export function renderSpaDocument(input: SpaDocumentInput): string {
       : input.manifest === undefined
         ? []
         : [input.manifest.entry];
-  const legacyAvailable = input.legacyAvailable !== false;
-  const fallbackHref = input.fallbackHref ?? "?legacy=1";
-  const fallback = `<div class="ui-fallback" id="ui-fallback" data-ui-fallback>
-      <p class="overline">Interface</p>
-      <h2 class="h3">The new interface did not load.</h2>
-      <p class="body">${legacyAvailable ? "Reload the page, or switch to the classic interface." : "Reload the page."}</p>
-      <a class="btn btn-secondary btn-sm" href="${escapeHtml(fallbackHref)}">${legacyAvailable ? "Use the classic interface" : "Reload the page"}</a>
-    </div>`;
-  return appShell({
-    title: input.title,
-    active: input.active,
-    ...(input.activeProjectId === undefined ? {} : { activeProjectId: input.activeProjectId }),
-    breadcrumb: input.breadcrumb,
-    projects: input.projects,
-    pendingCount: input.pendingCount,
-    ...(input.sshPendingCount === undefined ? {} : { sshPendingCount: input.sshPendingCount }),
-    operatorName: input.operatorName,
-    ...(input.settingsHref === undefined ? {} : { settingsHref: input.settingsHref }),
-    ...(input.skillsHref === undefined ? {} : { skillsHref: input.skillsHref }),
-    header: "",
-    body: fallback,
-    contentScript: false,
+  return spaShell({
     ...(input.pageClass === undefined ? {} : { pageClass: input.pageClass }),
     ...(input.bodyClass === undefined ? {} : { bodyClass: input.bodyClass }),
     ...(input.viewport === undefined ? {} : { viewport: input.viewport }),
-    ...(input.topbarActions === undefined ? {} : { topbarActions: input.topbarActions }),
     ...(input.manifest === undefined ? {} : { styles: [...input.manifest.css] }),
     moduleScripts,
+    ...(input.legacyAvailable === undefined ? {} : { legacyAvailable: input.legacyAvailable }),
+    ...(input.fallbackHref === undefined ? {} : { fallbackHref: input.fallbackHref }),
     bootJson: `<script id="hanse-boot" type="application/json">${serializeBoot(boot)}</script>`,
   });
 }
@@ -644,6 +599,7 @@ function loginNext(request: HttpRequest): string {
 function renderLoginSpaDocument(input: {
   readonly match: PageMatch;
   readonly next: string;
+  readonly routeKey: string;
   readonly spaRoutes: readonly RouteId[];
   readonly manifest?: UiManifest;
   readonly devUrl?: string;
@@ -652,13 +608,15 @@ function renderLoginSpaDocument(input: {
     route: input.match,
     props: { next: input.next },
     chrome: {
-      sidebarNav: "",
-      breadcrumb: "",
       title: "Sign in",
       active: "none",
+      breadcrumb: [],
+      projects: [],
+      masterHref: masterChatHref(),
       pendingCount: 0,
       sshPendingCount: 0,
     },
+    routeKey: input.routeKey,
     spaRoutes: input.spaRoutes,
     topbar: { ideHref: ideBase() },
   };
@@ -968,15 +926,6 @@ function terminalPropsFor(site: SiteModel, request: HttpRequest): TerminalProps 
   return buildTerminalProps({ site, projectId, appKey }) ?? null;
 }
 
-/** Server first-paint topbar markup for the chat control set; terminal/default use appShell's IDE action. */
-function renderChatTopbarActions(topbar: SpaTopbar): string {
-  if (topbar.contextToggle !== true) {
-    return `<a class="btn btn-ghost btn-icon" href="${escapeHtml(topbar.ideHref)}" target="_blank" rel="noreferrer" aria-label="Open application in IDE" title="Open in IDE">${icon("external")}</a>`;
-  }
-  const count = topbar.needsInputCount ?? 0;
-  return `<button class="btn btn-ghost btn-sm chat-input-needed" id="chat-input-needed" type="button" aria-haspopup="dialog" aria-controls="chat-queue" aria-expanded="false" aria-label="No requests need input"${count === 0 ? " hidden" : ""}>${icon("message")}<span class="chat-input-needed__count" id="chat-input-needed-count" aria-hidden="true">${count}</span></button><button class="btn btn-ghost btn-sm policy-chip" id="chat-policy-chip" type="button" aria-controls="chat-policy-warning" aria-expanded="false"${topbar.policyVisible === true ? "" : " hidden"}>${icon("alert-triangle")}<span id="chat-policy-chip-label">Policy warning</span></button><button class="btn btn-ghost btn-icon chat-context-toggle" type="button" data-chat-context-toggle aria-controls="chat-context" aria-expanded="false" aria-label="Open context panel" title="Context panel">${icon("panel-right")}</button><a class="btn btn-ghost btn-icon" href="${escapeHtml(topbar.ideHref)}" target="_blank" rel="noreferrer" aria-label="Open application in IDE" title="Open in IDE">${icon("external")}</a>`;
-}
-
 interface WorkspaceShellInput {
   readonly pageClass: string;
   readonly bodyClass: string;
@@ -986,7 +935,6 @@ interface WorkspaceShellInput {
   readonly projectId: string;
   readonly appKey: string;
   readonly topbar: SpaTopbar;
-  readonly topbarActions?: string;
 }
 
 function workspaceShellFor(match: PageMatch, props: unknown): WorkspaceShellInput | undefined {
@@ -1001,7 +949,6 @@ function workspaceShellFor(match: PageMatch, props: unknown): WorkspaceShellInpu
       projectId: chat.app.projectId,
       appKey: chat.app.appKey,
       topbar: chat.topbar,
-      topbarActions: renderChatTopbarActions(chat.topbar),
     };
   }
   if (match.id === "terminal") {
@@ -1020,7 +967,11 @@ function workspaceShellFor(match: PageMatch, props: unknown): WorkspaceShellInpu
 }
 
 function agentForbidden(): HttpResponse {
-  return jsonResponse(403, { error: "agent tokens may only call the MCP endpoint" });
+  return jsonResponse(
+    403,
+    { error: "agent tokens may only call the MCP endpoint" },
+    { "cache-control": "no-store" },
+  );
 }
 
 /**
@@ -1075,6 +1026,7 @@ export function maybeServeSpa(deps: HttpDeps, request: HttpRequest): HttpRespons
     return renderLoginSpaDocument({
       match,
       next,
+      routeKey: routeKey(match.id, match.params, request.query ?? {}),
       spaRoutes,
       ...(devUrl === undefined ? {} : { devUrl }),
       ...(manifest === undefined ? {} : { manifest }),
@@ -1117,19 +1069,11 @@ export function maybeServeSpa(deps: HttpDeps, request: HttpRequest): HttpRespons
     contentType: "text/html; charset=utf-8",
     headers: { "cache-control": "no-store" },
     body: renderSpaDocument({
-      title: data.title,
-      active: data.active,
-      ...(data.activeProjectId === undefined ? {} : { activeProjectId: data.activeProjectId }),
-      breadcrumb: data.breadcrumb,
-      projects: data.projects,
-      pendingCount: data.pendingCount,
-      sshPendingCount: data.sshPendingCount,
-      operatorName: principal.name,
-      ...(data.settingsHref === undefined ? {} : { settingsHref: data.settingsHref }),
-      ...(data.skillsHref === undefined ? {} : { skillsHref: data.skillsHref }),
       route: match,
       props,
-      chrome: data.chrome,
+      chrome: data,
+      routeKey: routeKey(match.id, match.params, request.query ?? {}),
+      operator: { name: principal.name, initials: initials(principal.name) },
       spaRoutes,
       ...(workspace === undefined
         ? {}
@@ -1138,9 +1082,6 @@ export function maybeServeSpa(deps: HttpDeps, request: HttpRequest): HttpRespons
             pageClass: workspace.pageClass,
             bodyClass: workspace.bodyClass,
             ...(workspace.viewport === undefined ? {} : { viewport: workspace.viewport }),
-            ...(workspace.topbarActions === undefined
-              ? {}
-              : { topbarActions: workspace.topbarActions }),
           }),
       ...(notice === undefined ? {} : { notice }),
       ...(devUrl === undefined ? {} : { devUrl }),
@@ -1247,7 +1188,6 @@ function uiBuildMissing(site: SiteModel, chrome: PageChrome): HttpResponse {
 
 const UI_API_PATHS = new Set([
   "/api/ui/projects",
-  "/api/ui/chrome",
   "/api/ui/overview",
   "/api/ui/handoffs",
   "/api/ui/ssh",
@@ -1316,6 +1256,18 @@ export function handleUiApi(deps: HttpDeps, request: HttpRequest): HttpResponse 
   if (request.method !== "GET") {
     return undefined;
   }
+  if (request.path === "/api/ui/auth") {
+    const authFailure = authorizeUiRead(deps, request);
+    if (authFailure !== undefined) {
+      return authFailure;
+    }
+    return {
+      status: 204,
+      contentType: "text/plain; charset=utf-8",
+      body: "",
+      headers: { "cache-control": "no-store" },
+    };
+  }
   const projectId = uiProjectId(request.path);
   const skillPath = uiSkillPath(request.path);
   if (!UI_API_PATHS.has(request.path) && projectId === undefined && skillPath === undefined) {
@@ -1325,26 +1277,13 @@ export function handleUiApi(deps: HttpDeps, request: HttpRequest): HttpResponse 
   if (authFailure !== undefined) {
     return authFailure;
   }
+  const versionFailure = requireUiVersion(request);
+  if (versionFailure !== undefined) {
+    return versionFailure;
+  }
 
   logUnknownRoutes(deps);
   const site = buildSite(deps);
-
-  if (request.path === "/api/ui/chrome") {
-    const pathname = safeLocalPath(request.query?.path, "/");
-    const match = matchPage(pathname);
-    if (match === undefined) {
-      return jsonResponse(404, { error: "not found" }, { "cache-control": "no-store" });
-    }
-    const projectId = request.query?.project?.trim();
-    const appKey = request.query?.app?.trim();
-    const hint = {
-      ...(projectId === undefined || projectId.length === 0 ? {} : { projectId }),
-      ...(appKey === undefined || appKey.length === 0 ? {} : { appKey }),
-    };
-    return jsonResponse(200, chromeFor(site, match, hint).chrome, {
-      "cache-control": "no-store",
-    });
-  }
 
   if (request.path === "/api/ui/chat") {
     const projectId = request.query?.project?.trim();
@@ -1379,7 +1318,7 @@ export function handleUiApi(deps: HttpDeps, request: HttpRequest): HttpResponse 
       appKey: props.app.appKey,
       title: props.title,
       breadcrumb: props.breadcrumb,
-    }).chrome;
+    });
     return jsonResponse(200, { ...props, chrome }, { "cache-control": "no-store" });
   }
 
@@ -1399,7 +1338,7 @@ export function handleUiApi(deps: HttpDeps, request: HttpRequest): HttpResponse 
       appKey: props.app.appKey,
       title: props.title,
       breadcrumb: props.breadcrumb,
-    }).chrome;
+    });
     return jsonResponse(200, { ...props, chrome }, { "cache-control": "no-store" });
   }
 
@@ -1407,7 +1346,7 @@ export function handleUiApi(deps: HttpDeps, request: HttpRequest): HttpResponse 
     const match: PageMatch = { id: "overview", params: {} };
     return jsonResponse(
       200,
-      { ...buildOverviewProps(site), chrome: chromeFor(site, match).chrome },
+      { ...buildOverviewProps(site), chrome: chromeFor(site, match) },
       { "cache-control": "no-store" },
     );
   }
@@ -1418,7 +1357,7 @@ export function handleUiApi(deps: HttpDeps, request: HttpRequest): HttpResponse 
       200,
       {
         ...buildHandoffsProps(site, request.query?.filter, request.query?.q),
-        chrome: chromeFor(site, match).chrome,
+        chrome: chromeFor(site, match),
       },
       { "cache-control": "no-store" },
     );
@@ -1437,7 +1376,7 @@ export function handleUiApi(deps: HttpDeps, request: HttpRequest): HttpResponse 
           site,
           scope: resolveSshScope(deps, request.query),
         }),
-        chrome: chromeFor(site, match).chrome,
+        chrome: chromeFor(site, match),
       },
       { "cache-control": "no-store" },
     );
@@ -1485,7 +1424,7 @@ export function handleUiApi(deps: HttpDeps, request: HttpRequest): HttpResponse 
     };
     return jsonResponse(
       200,
-      { ...props, chrome: chromeFor(site, match).chrome },
+      { ...props, chrome: chromeFor(site, match) },
       { "cache-control": "no-store" },
     );
   }
@@ -1539,7 +1478,7 @@ export function handleUiApi(deps: HttpDeps, request: HttpRequest): HttpResponse 
     };
     return jsonResponse(
       200,
-      { ...props, chrome: chromeFor(site, match).chrome },
+      { ...props, chrome: chromeFor(site, match) },
       { "cache-control": "no-store" },
     );
   }
@@ -1571,7 +1510,7 @@ export function handleUiApi(deps: HttpDeps, request: HttpRequest): HttpResponse 
     const match: PageMatch = { id: "skills-detail", params: { id: String(skillId) } };
     return jsonResponse(
       200,
-      { ...props, chrome: chromeFor(site, match, skillsChromeHint(match, props)).chrome },
+      { ...props, chrome: chromeFor(site, match, skillsChromeHint(match, props)) },
       { "cache-control": "no-store" },
     );
   }
@@ -1584,7 +1523,7 @@ export function handleUiApi(deps: HttpDeps, request: HttpRequest): HttpResponse 
     const match: PageMatch = { id: "project", params: { id: projectId } };
     return jsonResponse(
       200,
-      { ...props, chrome: chromeFor(site, match).chrome },
+      { ...props, chrome: chromeFor(site, match) },
       { "cache-control": "no-store" },
     );
   }
@@ -1593,7 +1532,7 @@ export function handleUiApi(deps: HttpDeps, request: HttpRequest): HttpResponse 
   if (match === undefined) {
     return jsonResponse(404, { error: "not found" }, { "cache-control": "no-store" });
   }
-  const chrome = chromeFor(site, match).chrome;
+  const chrome = chromeFor(site, match);
   return jsonResponse(
     200,
     { ...buildProjectsProps(site, request.query?.q), chrome },
@@ -1622,6 +1561,10 @@ export async function handleAppUiApi(
   const authFailure = authorizeUiRead(deps, request);
   if (authFailure !== undefined) {
     return authFailure;
+  }
+  const versionFailure = requireUiVersion(request);
+  if (versionFailure !== undefined) {
+    return versionFailure;
   }
 
   logUnknownRoutes(deps);
@@ -1660,7 +1603,7 @@ export async function handleAppUiApi(
   const match: PageMatch = { id: "app", params: { id: projectId, app: appKey } };
   return jsonResponse(
     200,
-    { ...props, chrome: chromeFor(site, match).chrome },
+    { ...props, chrome: chromeFor(site, match) },
     { "cache-control": "no-store" },
   );
 }

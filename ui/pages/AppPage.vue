@@ -19,7 +19,7 @@ import { useAgentProcess } from "../composables/useAgentProcess.js";
 import { useAppGit } from "../composables/useAppGit.js";
 import { useAppGroups } from "../composables/useAppGroups.js";
 import { useAppImage } from "../composables/useAppImage.js";
-import { applyChrome } from "../composables/useChrome.js";
+import { usePageChrome } from "../composables/usePageChrome.js";
 import { absoluteTime, timeAgo } from "../format.js";
 import type { ProcessEvent, ProcessResponse, ProcessSnapshot } from "../process/types.js";
 import type { RuntimeState } from "../status.js";
@@ -63,8 +63,11 @@ const appQuery = useQuery<AppResponse>({
   // Boot props never carry the git read summary; refetch on mount so the workbench fills in.
   staleTime: 0,
   refetchOnMount: "always",
+  refetchOnWindowFocus: false,
   retry: false,
 });
+
+const { refreshing: visibilityRefreshing } = usePageChrome(appQuery, props.boot);
 
 const view = computed<AppProps | undefined>(() => appQuery.data.value ?? bootProps.value);
 const hasData = computed(() => view.value !== undefined);
@@ -83,16 +86,6 @@ const failure = computed(() => {
     ? error.message
     : "Could not load this application.";
 });
-
-watch(
-  () => appQuery.data.value?.chrome,
-  (chrome) => {
-    if (chrome !== undefined) {
-      applyChrome(chrome);
-    }
-  },
-  { immediate: true },
-);
 
 const projectHref = computed(() =>
   view.value === undefined ? "" : `/projects/${encodeURIComponent(view.value.identity.projectId)}`,
@@ -367,11 +360,7 @@ const sshGroupSummary = computed(() => {
 const dangerGroupSummary = computed(() => view.value?.delete.statusLabel ?? "Destructive");
 
 async function refreshApp(): Promise<void> {
-  const result = await appQuery.refetch();
-  const chrome = (result.data as AppResponse | undefined)?.chrome;
-  if (chrome !== undefined) {
-    applyChrome(chrome);
-  }
+  await appQuery.refetch();
   void refreshRuntime();
   void refreshImage();
 }
@@ -491,7 +480,12 @@ async function restartAgent(): Promise<void> {
     </header>
 
     <div class="page__body">
-      <p v-if="loading && hasData" class="hint" role="status" aria-live="polite">
+      <p
+        v-if="loading && hasData && !visibilityRefreshing"
+        class="hint"
+        role="status"
+        aria-live="polite"
+      >
         Updating application…
       </p>
       <AppStateStrip
@@ -580,7 +574,12 @@ async function restartAgent(): Promise<void> {
     </header>
 
     <div class="page__body">
-      <p v-if="loading && hasData" class="hint" role="status" aria-live="polite">
+      <p
+        v-if="loading && hasData && !visibilityRefreshing"
+        class="hint"
+        role="status"
+        aria-live="polite"
+      >
         Updating application…
       </p>
 

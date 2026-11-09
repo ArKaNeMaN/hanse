@@ -171,6 +171,9 @@ function httpRequestFor(request: IncomingMessage, url: URL, body: string): HttpR
       "x-hanse-client": Array.isArray(request.headers["x-hanse-client"])
         ? request.headers["x-hanse-client"][0]
         : request.headers["x-hanse-client"],
+      "x-hanse-ui-version": Array.isArray(request.headers["x-hanse-ui-version"])
+        ? request.headers["x-hanse-ui-version"][0]
+        : request.headers["x-hanse-ui-version"],
     },
     body,
     origin: request.headers.origin,

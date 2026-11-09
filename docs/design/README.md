@@ -107,6 +107,11 @@
   round 3 PASS); Phases 0-7 complete; `/`, `/projects`, `/projects/:id`, `/handoffs`, `/ssh`, settings, skills,
   and application detail are cut over. D1 was revised: chat and terminal are scheduled for a
   separate design/plan migration, then operator verification and Phase 8 cleanup.
+- [Client-owned application chrome](./client-owned-chrome.md) - removing the server-rendered chrome
+  fragment contract from SPA documents: data-only `ChromeData`, a static document shell, Vue-rendered
+  sidebar/breadcrumb/theme/drawer/sign-out, `usePageChrome`, the `/api/ui/auth` probe, and the
+  `X-Hanse-UI-Version` hard-cutover gate. Status: approved (Oracle round 7 PASS; §10 amendment PASS);
+  plan 0040 approved (`momus` PASS); implemented and verified (journal 0048).
 - [Chat and terminal SPA migration](./chat-terminal-migration.md) - migrating `/chat` and
   `/terminal` to the Vue client before legacy cleanup: the SSE/WebSocket lifecycle inventory,
   the Vue/legacy island trade-off, a recommended hybrid incremental port (terminal first, chat in

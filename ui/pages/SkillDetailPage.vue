@@ -8,7 +8,7 @@ import AppIcon from "../components/AppIcon.vue";
 import SkillBundleEditor from "../components/SkillBundleEditor.vue";
 import SkillsScopeNav from "../components/SkillsScopeNav.vue";
 import SmartLink from "../components/SmartLink.vue";
-import { applyChrome } from "../composables/useChrome.js";
+import { usePageChrome } from "../composables/usePageChrome.js";
 import { markSkillsMutated } from "../skills-mutation.js";
 import type {
   SkillActionFormProps,
@@ -59,7 +59,10 @@ const detailQuery = useQuery<SkillDetailResponse>({
   initialData: () => bootDetail.value,
   staleTime: 30_000,
   retry: false,
+  refetchOnWindowFocus: false,
 });
+
+const { refreshing: visibilityRefreshing } = usePageChrome(detailQuery, props.boot);
 
 const view = computed<SkillWorkspaceProps | undefined>(
   () => detailQuery.data.value ?? bootDetail.value,
@@ -160,11 +163,7 @@ const editable = computed(() => view.value?.form !== null && view.value?.form !=
 /* ------------------------------------------------------------------------- */
 
 async function refreshDetail(): Promise<void> {
-  const result = await detailQuery.refetch();
-  const chrome = result.data?.chrome;
-  if (chrome !== undefined) {
-    applyChrome(chrome);
-  }
+  await detailQuery.refetch();
 }
 
 async function save(): Promise<void> {
@@ -442,7 +441,12 @@ async function restart(entry: SkillPendingAppProps): Promise<void> {
   </header>
 
   <div class="page__body">
-    <p v-if="loading && view !== undefined" class="hint" role="status" aria-live="polite">
+    <p
+      v-if="loading && view !== undefined && !visibilityRefreshing"
+      class="hint"
+      role="status"
+      aria-live="polite"
+    >
       Updating skill…
     </p>
 

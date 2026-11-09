@@ -274,9 +274,12 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
 
 ## Web UI (stages 2-3)
 
-- Shared server-rendered shell (`src/http/ui.ts`): fixed sidebar, top bar with breadcrumb and global
-  IDE link, mobile drawer, sidebar theme toggle (dark default, `localStorage["hanse-theme"]`),
-  sign-out, skip link, notice toasts, and the full status/icon/dialog primitive set.
+- Static SPA shell (`src/http/ui.ts` `spaShell()`): the server sends a static document with empty
+  chrome containers; Vue renders the fixed sidebar (navigation, projects, counters, operator,
+  theme toggle, sign-out), breadcrumb, title, mobile drawer, skip link, notice toasts, and the
+  status/icon/dialog primitives. Chrome is data-only: boot JSON carries the initial `ChromeData` and
+  each `/api/ui/*` page response carries `{...props, chrome}`. There is no server-rendered chrome
+  fragment and no `GET /api/ui/chrome`.
 - Authenticated pages: `/` fleet overview, `/projects`, `/projects/:id`,
   `/projects/:id/apps/:appKey`, `/settings`, `/projects/:id/settings`,
   `/projects/:id/apps/:appKey/settings`, `/skills`, `/projects/:id/skills`,
@@ -300,11 +303,13 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   `/assets/vendor/xterm/addon-fit-0.11.0.js`,
   `/assets/vendor/xterm/addon-unicode11-0.9.0.js`,
   `/assets/vendor/xterm/addon-unicode-graphemes-0.4.0.js`, and `/assets/favicon.svg`.
-- `assets/app.js` owns shell behavior (drawer, theme, nav); `assets/app-content.js` owns dialogs,
-  menus, segmented controls, toast close/autodismiss, password visibility, and submit-busy behavior.
-  The legacy `/login` document loads both; SPA documents load only `app.js`. The SPA chat workspace is
-  `ui/pages/ChatPage.vue` plus its `ui/chat/*` adapters, `ui/stores/chat-*`, and
-  `ui/components/chat/*`; it reuses the pure helpers in `assets/chat-core.js`,
+- `assets/app.js` owns drawer/theme behavior for the legacy `/login` and fallback/error documents;
+  `assets/app-content.js` owns dialogs, menus, segmented controls, toast close/autodismiss, password
+  visibility, and submit-busy behavior for those legacy documents. The legacy `/login` document loads
+  both; the SPA `/login` document keeps `app.js`; authenticated SPA documents load neither, because
+  Vue owns the shell (`ui/stores/shell.ts`, `ui/stores/theme.ts`, `ui/components/AppSidebar.vue`).
+  The SPA chat workspace is `ui/pages/ChatPage.vue` plus its `ui/chat/*` adapters,
+  `ui/stores/chat-*`, and `ui/components/chat/*`; it reuses the pure helpers in `assets/chat-core.js`,
   `assets/chat-commands.js`, `assets/chat-diff.js`, and the lazy worker controller in
   `assets/chat-highlight.js`. `assets/chat.js` and `assets/terminal.js` were deleted in Stage 9;
   every route except `/login` is always SPA, and its only rollback is an image rollback.
@@ -321,8 +326,8 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   a client navigation share exactly one `<link>`. The socket adapter (`ui/terminal/socket.ts`) runs
   the runtime preflight, uses a generation guard, sends input bytes and clamped resize JSON, and
   reconnects with the recorded C9 bound - delays `[1,2,4,8,15]s`, exactly five automatic attempts,
-  then manual Reconnect. A failed upgrade probes the cookie-only `/api/ui/chrome?path=/terminal` at
-  most once per retry window (5 s cooldown, never while hidden); `401/403` redirects to
+  then manual Reconnect. A failed upgrade probes the cookie-only, data-free `/api/ui/auth` at most
+  once per retry window (5 s cooldown, never while hidden); `401/403` redirects to
   `/login?next=<fullPath>`. Runtime stopped/error links to chat. `/assets/terminal.js` and its
   legacy document were deleted in Stage 9; terminal rollback is image rollback only.
 
@@ -339,9 +344,10 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   renderer.
 
 - The Vue 3 + Vue Router + Pinia + Vue Query client lives in `ui/`, builds into `assets/ui/`
-  (`npm run build:ui`), and mounts into the existing server shell `<main id="main">` (no second
-  wrapper). Server-rendered chrome is refreshed through `GET /api/ui/chrome?path=`, and page data
-  comes from boot JSON plus per-route `/api/ui/*` endpoints. `/projects` renders the header,
+  (`npm run build:ui`), and mounts into the static shell's `<main id="main">` (no second wrapper).
+  Chrome is client-owned: `ui/stores/chrome.ts` holds `ChromeData`, `usePageChrome` applies boot/page
+  responses, and `AppSidebar`/`BreadcrumbBar` render the sidebar and breadcrumb. Page data comes from
+  boot JSON plus per-route `/api/ui/*` endpoints. `/projects` renders the header,
   six-column ledger, search, empty states, deletion status, and create dialog in Vue. `/` renders
   the header, four-cell watch strip, project ledger, recent handoffs, waiting route cards,
   runtime rail, and empty state. The project-detail page renders the header (Settings, Open
@@ -391,8 +397,9 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   key (or project name when retrying project deletion) and `return_to`. Application, chat, terminal,
   settings, skills, and session links remain plain anchors; project links are client-side, and the
   native new-project dialog is a shared Vue component used by the overview and projects pages.
-- The SPA document loads only the shell `app.js`. No app-scoped SSH key material, provider key, git
-  token, or MCP token enters props, boot JSON, toasts, errors, or the DOM.
+- Authenticated SPA documents load no `app.js`; the Vite entry and boot JSON are the only scripts.
+  No app-scoped SSH key material, provider key, git token, or MCP token enters props, boot JSON,
+  toasts, errors, or the DOM.
 - Built client assets are served from `/assets/ui/*` with immutable caching; compressible responses
   are gzip-encoded when the client offers it (first loads measure ~136 KiB for `/projects`,
   ~134 KiB for `/`, and ~146 KiB for `/projects/:id` on the deterministic fixture). `/ssh`, the
@@ -401,18 +408,21 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   assigned.
 - SPA documents and `/api/ui/*` are cookie-only. `/api/ui/*` returns `401` without a human cookie,
   `403 cookie_required` for a human bearer without a cookie, and `403` for agent tokens; responses are
-  `no-store`.
-- Script split: the legacy `/login` document loads `app.js` + `app-content.js`; SPA documents,
-  including the SPA `/login` document, load only the shell `app.js`. SPA toasts are
-  owned by the Vue `ToastHost`, not `app-content.js`. SPA
-  mutations send `X-Hanse-Client: spa`; `POST /api/projects` answers `200 {ok:true, project}`,
+  `no-store`. Page endpoints require `X-Hanse-UI-Version: 2` and return
+  `409 {error, code: "ui_reload_required"}` otherwise; the data-free `GET /api/ui/auth` probe is
+  exempt and returns `204`/`401`/`403`.
+- Script split: the legacy `/login` document loads `app.js` + `app-content.js`; the SPA `/login`
+  document keeps `app.js`; authenticated SPA documents load neither. SPA toasts are owned by the Vue
+  `ToastHost`, not `app-content.js`. SPA mutations send `X-Hanse-Client: spa` and
+  `X-Hanse-UI-Version: 2`; `POST /api/projects` answers `200 {ok:true, project}`,
   `POST /api/projects/:id/apps` answers `200 {ok:true, app}`, `POST /api/handoffs/:id/decision`
   answers `200 {ok:true, decision}`, and `POST /api/handoffs` answers `201/202` queued/awaiting or
   `403/409/400` denied/existing/summary-required, while the legacy form path keeps its `303` +
   notice. Reply, cancel, policy, and deletion requests reuse the existing JSON handlers.
 - `#ui-fallback` stays hidden, then reveals after 4 s only if the client did not mount;
   `vite:preloadError` reloads once and then renders a route-aware fallback: a classic-interface link
-  for `/login`, reload-only for every other route.
+  for `/login`, reload-only for every other route. A `409 ui_reload_required` uses the same one-shot
+  reload guard, which is cleared after a successful boot.
 - All legacy page renderers and clients are deleted. Every route except `/login` is retired and
   ignores all runtime rollback flags; the only rollback for them is an image rollback with a
   UI-build check. `/login` retains the server-rendered form as its rollback and no-JS fallback.

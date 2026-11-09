@@ -105,9 +105,9 @@ function request(overrides: Partial<HttpRequest> = {}): HttpRequest {
   return {
     method: "GET",
     path: "/api/apps/a/previews",
-    headers: {},
     query: {},
     ...overrides,
+    headers: { "x-hanse-ui-version": "2", ...(overrides.headers ?? {}) },
   };
 }
 

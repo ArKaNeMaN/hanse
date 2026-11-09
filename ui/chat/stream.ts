@@ -206,10 +206,9 @@ export function createChatStream(options: ChatStreamOptions): ChatStream {
     probedAuthThisWindow = true;
     lastAuthProbeAt = now();
     try {
-      const response = await fetchImpl("/api/ui/chrome?path=/chat", {
+      const response = await fetchImpl("/api/ui/auth", {
         credentials: "same-origin",
         cache: "no-store",
-        headers: { accept: "application/json" },
       });
       if (disposed) {
         return true;

@@ -1,6 +1,8 @@
 # 0003 - Cut the legacy SSR renderer and its rollback path
 
-Status: done for all non-login routes (2026-11-08); the `/login` rollback and the shared error/login shell intentionally remain
+Status: done for all non-login routes (2026-11-08); SPA chrome and `GET /api/ui/chrome` removed
+(2026-11-09, journal 0048); the `/login` rollback and the legacy `appShell()` error/login shell
+intentionally remain
 Created: 2026-11-08
 Priority: medium (removes a second UI implementation, its rollback surface, and the last per-request HTML rendering)
 

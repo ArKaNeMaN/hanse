@@ -8,12 +8,12 @@ import type {
   NormalizedTodo,
 } from "../../src/opencode/prompts.js";
 import type { SshApprovalView } from "../../src/ssh/types.js";
-import type { BootChrome } from "../boot.js";
+import type { ChromeData } from "../boot.js";
 import type { NoticeView } from "../stores/chat-feed.js";
 import type { ChatSessionSummary } from "../stores/chat-session.js";
 
 export interface ChatResponse extends ChatProps {
-  readonly chrome: BootChrome;
+  readonly chrome: ChromeData;
 }
 
 export interface ChatSessionsResponse {

@@ -7,15 +7,6 @@ import {
   signIn,
 } from "./support/helpers.js";
 
-const CHROME_FIXTURE = {
-  sidebarNav: '<p class="nav-label">Workbench</p>',
-  breadcrumb: '<span class="crumb">Swapped Projects</span>',
-  title: "Projects",
-  active: "projects",
-  pendingCount: 0,
-  sshPendingCount: 0,
-};
-
 test("deep links, refreshes, swaps chrome, and restores history", async ({ page }) => {
   const errors = collectPageErrors(page);
   await signIn(page, "/projects?q=Project+Two");
@@ -26,20 +17,20 @@ test("deep links, refreshes, swaps chrome, and restores history", async ({ page 
   await expect(page.getByRole("link", { name: "E2E Project Two", exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: "E2E Project One", exact: true })).toHaveCount(0);
 
-  // Only the chrome request is replaced; the projects query keeps its real response.
-  await page.route(/\/api\/ui\/chrome\?/, (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify(CHROME_FIXTURE),
-    }),
-  );
+  await expect(page.locator("#breadcrumb-host")).toContainText("Projects");
+  await expect(page.locator("#breadcrumb-host")).toHaveAttribute("data-nav-id", "projects");
+  await expect(page.locator("#sidebar-nav")).toHaveAttribute("data-nav-id", "projects");
+  await expect(page).toHaveTitle("Projects - hanse");
 
   await page.locator("#project-search").fill("Project One");
   await page.getByRole("button", { name: "Search" }).click();
   await expect(page).toHaveURL(/\/projects\?q=Project(?:\+|%20)One$/);
-  await expect(page.locator("#breadcrumb-host")).toContainText("Swapped Projects");
+  // A same-title query navigation keeps the chrome and is announced from the new routeKey.
+  await expect(page.locator("#breadcrumb-host")).toContainText("Projects");
+  await expect(page.locator("#breadcrumb-host")).toHaveAttribute("data-nav-id", "projects");
+  await expect(page.locator("#sidebar-nav")).toHaveAttribute("data-nav-id", "projects");
   await expect(page).toHaveTitle("Projects - hanse");
+  await expect(page.locator("#route-announcer")).toHaveText("Projects");
   await expect(page.getByRole("link", { name: "E2E Project One", exact: true })).toBeVisible();
 
   await page.reload();

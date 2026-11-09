@@ -86,7 +86,7 @@ function request(
   return {
     method: "GET",
     path: "/api/ui/terminal",
-    headers,
+    headers: { "x-hanse-ui-version": "2", ...headers },
     query,
     ...(host === undefined ? {} : { host }),
   };
@@ -131,7 +131,8 @@ describe("/api/ui/terminal", () => {
       active: "project",
       activeProjectId: "p",
     });
-    expect(payload.chrome.breadcrumb).toContain("Terminal");
+    expect(payload.chrome.breadcrumb).toContainEqual({ label: "Terminal" });
+    expect(payload.chrome.masterHref).toBe("/chat?app=master&project=hanse-master");
   });
 
   it("never records the operator host from the terminal endpoint", () => {

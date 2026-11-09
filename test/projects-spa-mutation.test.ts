@@ -156,6 +156,7 @@ function spaHeaders(
   return {
     "content-type": "application/x-www-form-urlencoded",
     "x-hanse-client": "spa",
+    "x-hanse-ui-version": "2",
     ...(token === undefined ? {} : cookie(token)),
     ...extra,
   };
@@ -328,11 +329,35 @@ describe("POST /api/projects SPA mutation", () => {
       | undefined;
     expect(row?.name).toBe("New Project");
 
-    const list = await send(port, "/api/ui/projects", { headers: cookie(f.token) });
+    const list = await send(port, "/api/ui/projects", {
+      headers: { ...cookie(f.token), "x-hanse-ui-version": "2" },
+    });
     expect(list.status).toBe(200);
     const props = JSON.parse(list.body) as { rows: Array<{ id: string; name: string }> };
     expect(props.rows.map((row) => row.id)).toContain(payload.project.id);
     expect(props.rows.find((row) => row.id === payload.project.id)?.name).toBe("New Project");
+  });
+
+  it("rejects a SPA mutation without the UI version", async () => {
+    const f = fixture();
+    const port = await start(f);
+    const response = await send(port, "/api/projects", {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-hanse-client": "spa",
+        ...cookie(f.token),
+      },
+      body: form({ name: "Old Tab" }),
+    });
+    expect(response.status).toBe(409);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(JSON.parse(response.body)).toEqual({
+      error: "UI reload required",
+      code: "ui_reload_required",
+    });
+    const row = f.db.prepare("SELECT name FROM projects WHERE name = ?").get("Old Tab");
+    expect(row).toBeUndefined();
   });
 
   it("accepts a Content-Type with parameters and rejects every other media type", async () => {

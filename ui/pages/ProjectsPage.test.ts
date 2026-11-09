@@ -72,13 +72,15 @@ function boot(
     spaRoutes: ["projects"],
     topbar: { ideHref: "/ide/" },
     chrome: {
-      sidebarNav: "",
-      breadcrumb: "",
       title: "Projects",
       active: "projects",
+      breadcrumb: [],
+      projects: [],
+      masterHref: "/chat?app=master&project=hanse-master",
       pendingCount: 0,
       sshPendingCount: 0,
     },
+    routeKey: JSON.stringify(["projects", [], []]),
   };
 }
 

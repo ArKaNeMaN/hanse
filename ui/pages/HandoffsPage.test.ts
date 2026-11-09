@@ -184,13 +184,15 @@ function boot(payload: HandoffsProps | null, routeId = "handoffs"): BootPayload 
     spaRoutes: [routeId as BootPayload["route"]["id"]],
     topbar: { ideHref: "/ide/" },
     chrome: {
-      sidebarNav: "",
-      breadcrumb: "",
       title: "Handoffs",
       active: "handoffs",
+      breadcrumb: [],
+      projects: [],
+      masterHref: "/chat?app=master&project=hanse-master",
       pendingCount: 1,
       sshPendingCount: 0,
     },
+    routeKey: JSON.stringify([routeId, [], []]),
   };
 }
 

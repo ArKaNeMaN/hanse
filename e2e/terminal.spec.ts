@@ -220,9 +220,7 @@ test("a 1011 failure reports and reconnects within the bounded retry", async ({ 
 test("auth expiry on a retryable close redirects to login with next", async ({ page }) => {
   await openTerminal(page);
   await waitForLive(page);
-  await page.route("**/api/ui/chrome**", (route) =>
-    route.fulfill({ status: 401, contentType: "application/json", body: "{}" }),
-  );
+  await page.route("**/api/ui/auth**", (route) => route.fulfill({ status: 401 }));
   await page.context().clearCookies();
 
   await closeRunner(page, 1011);

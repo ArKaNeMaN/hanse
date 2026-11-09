@@ -1,6 +1,6 @@
 import { type PageMatch, ROUTES, type RouteId, routeById } from "../src/shared/routes.js";
 
-/** The active navigation id emitted by `appShell()`; kept structural to avoid importing server code. */
+/** The active navigation id emitted by `ChromeData`; kept structural to avoid importing server code. */
 export type NavActive =
   | "overview"
   | "projects"
@@ -11,13 +11,44 @@ export type NavActive =
   | "ssh"
   | "none";
 
-export interface BootChrome {
-  readonly sidebarNav: string;
-  readonly breadcrumb: string;
+const NAV_ACTIVE: ReadonlySet<string> = new Set<NavActive>([
+  "overview",
+  "projects",
+  "project",
+  "handoffs",
+  "skills",
+  "settings",
+  "ssh",
+  "none",
+]);
+
+export interface ChromeCrumb {
+  readonly label: string;
+  readonly href?: string;
+}
+
+export interface ChromeProject {
+  readonly id: string;
+  readonly name: string;
+  readonly appCount: number;
+}
+
+export interface ChromeData {
   readonly title: string;
   readonly active: NavActive;
+  readonly activeProjectId?: string;
+  readonly breadcrumb: readonly ChromeCrumb[];
+  readonly projects: readonly ChromeProject[];
+  readonly masterHref: string;
   readonly pendingCount: number;
   readonly sshPendingCount: number;
+  readonly settingsHref?: string;
+  readonly skillsHref?: string;
+}
+
+export interface BootOperator {
+  readonly name: string;
+  readonly initials: string;
 }
 
 export interface BootNotice {
@@ -36,7 +67,9 @@ export interface BootTopbar {
 export interface BootPayload {
   readonly route: PageMatch;
   readonly props: unknown;
-  readonly chrome: BootChrome;
+  readonly chrome: ChromeData;
+  readonly routeKey: string;
+  readonly operator?: BootOperator;
   readonly spaRoutes: readonly RouteId[];
   readonly topbar: BootTopbar;
   readonly notice?: BootNotice;
@@ -59,16 +92,44 @@ function isRoute(value: unknown): value is PageMatch {
   );
 }
 
-function isChrome(value: unknown): value is BootChrome {
+function isCrumb(value: unknown): value is ChromeCrumb {
   return (
     isRecord(value) &&
-    typeof value.sidebarNav === "string" &&
-    typeof value.breadcrumb === "string" &&
+    typeof value.label === "string" &&
+    (value.href === undefined || typeof value.href === "string")
+  );
+}
+
+function isProject(value: unknown): value is ChromeProject {
+  return (
+    isRecord(value) &&
+    typeof value.id === "string" &&
+    typeof value.name === "string" &&
+    typeof value.appCount === "number"
+  );
+}
+
+function isChrome(value: unknown): value is ChromeData {
+  return (
+    isRecord(value) &&
     typeof value.title === "string" &&
     typeof value.active === "string" &&
+    NAV_ACTIVE.has(value.active) &&
+    (value.activeProjectId === undefined || typeof value.activeProjectId === "string") &&
+    Array.isArray(value.breadcrumb) &&
+    value.breadcrumb.every(isCrumb) &&
+    Array.isArray(value.projects) &&
+    value.projects.every(isProject) &&
+    typeof value.masterHref === "string" &&
     typeof value.pendingCount === "number" &&
-    typeof value.sshPendingCount === "number"
+    typeof value.sshPendingCount === "number" &&
+    (value.settingsHref === undefined || typeof value.settingsHref === "string") &&
+    (value.skillsHref === undefined || typeof value.skillsHref === "string")
   );
+}
+
+function isOperator(value: unknown): value is BootOperator {
+  return isRecord(value) && typeof value.name === "string" && typeof value.initials === "string";
 }
 
 function isTopbar(value: unknown): value is BootTopbar {
@@ -126,6 +187,12 @@ export function readBoot(doc: Document = document): BootPayload | undefined {
   if (!isRecord(parsed) || !isRoute(parsed.route) || !isChrome(parsed.chrome)) {
     return undefined;
   }
+  if (typeof parsed.routeKey !== "string" || parsed.routeKey.length === 0) {
+    return undefined;
+  }
+  if (parsed.operator !== undefined && !isOperator(parsed.operator)) {
+    return undefined;
+  }
   if (parsed.notice !== undefined && !isNotice(parsed.notice)) {
     return undefined;
   }
@@ -154,6 +221,8 @@ export function readBoot(doc: Document = document): BootPayload | undefined {
     route,
     props: parsed.props ?? {},
     chrome: parsed.chrome,
+    routeKey: parsed.routeKey,
+    ...(parsed.operator === undefined ? {} : { operator: parsed.operator }),
     spaRoutes,
     topbar: parsed.topbar,
     ...(parsed.notice === undefined ? {} : { notice: parsed.notice }),

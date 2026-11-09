@@ -7,7 +7,7 @@
  * never provider keys, git tokens, private keys, or known-hosts content.
  */
 
-import type { BootChrome } from "./boot.js";
+import type { ChromeData } from "./boot.js";
 
 export type SettingsScope = "global" | "project" | "app";
 export type SettingsScopeSource = SettingsScope | "default";
@@ -549,7 +549,7 @@ export interface SettingsProps {
 }
 
 export interface SettingsResponse extends SettingsProps {
-  readonly chrome?: BootChrome;
+  readonly chrome?: ChromeData;
 }
 
 export interface GitTestResult {

@@ -7,15 +7,6 @@ import {
   signIn,
 } from "./support/helpers.js";
 
-const CHROME_FIXTURE = {
-  sidebarNav: '<p class="nav-label">Workbench</p>',
-  breadcrumb: '<span class="crumb">Swapped SSH</span>',
-  title: "SSH Swapped",
-  active: "ssh",
-  pendingCount: 0,
-  sshPendingCount: 0,
-};
-
 async function expectSingleLineClientFingerprints(page: Page): Promise<void> {
   const clientFingerprints = page.locator(
     '.ssh-host .ssh-host__fingerprint[title="SHA256:e2e-fixture-fingerprint"]',
@@ -124,27 +115,35 @@ test("section nav marks the current section and the header keeps counts in the s
   expectNoPageErrors(errors);
 });
 
-test("swaps chrome, title, and active nav after a scoped client navigation", async ({ page }) => {
+test("swaps chrome, title, and active nav on client navigation and keeps them for a scoped target", async ({
+  page,
+}) => {
   const errors = collectPageErrors(page);
-  await signIn(page, "/ssh");
+  await signIn(page, "/");
 
-  await page.route(/\/api\/ui\/chrome\?/, (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify(CHROME_FIXTURE),
-    }),
-  );
+  await expect(page.locator("#breadcrumb-host")).toContainText("Overview");
+  await expect(page).toHaveTitle("Fleet overview - hanse");
+
+  await page.locator('#sidebar-nav a[data-nav-id="ssh"]').click();
+  await expect(page).toHaveURL(/\/ssh$/);
+  await expect(page.getByRole("heading", { name: "SSH hosts" })).toBeVisible();
+  await expect(page.locator("#hanse-boot")).toHaveCount(1);
+  await expect(page.locator("#breadcrumb-host")).toContainText("SSH");
+  await expect(page.locator("#breadcrumb-host")).not.toContainText("Overview");
+  await expect(page.locator("#breadcrumb-host")).toHaveAttribute("data-nav-id", "ssh");
+  await expect(page.locator("#sidebar-nav")).toHaveAttribute("data-nav-id", "ssh");
+  await expect(page).toHaveTitle("SSH - hanse");
 
   await page.locator("#ssh-scope").selectOption(`${PROJECT_ONE}:alpha`);
   await page.getByRole("button", { name: "Apply" }).click();
 
   await expect(page).toHaveURL(new RegExp(`/ssh\\?target=${PROJECT_ONE}(?::|%3A)alpha$`));
   await expect(page.locator("#hanse-boot")).toHaveCount(1);
-  await expect(page.locator("#breadcrumb-host")).toContainText("Swapped SSH");
+  await expect(page.locator("#breadcrumb-host")).toContainText("SSH");
   await expect(page.locator("#breadcrumb-host")).toHaveAttribute("data-nav-id", "ssh");
   await expect(page.locator("#sidebar-nav")).toHaveAttribute("data-nav-id", "ssh");
-  await expect(page).toHaveTitle("SSH Swapped - hanse");
+  await expect(page).toHaveTitle("SSH - hanse");
+  await expect(page.locator("#route-announcer")).toHaveText("SSH");
 
   await settle(page);
   expectNoPageErrors(errors);

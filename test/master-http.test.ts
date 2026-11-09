@@ -136,7 +136,14 @@ describe("master HTTP surface", () => {
     const value = fixture({ withOperator: true });
     const overview = maybeServeSpa(value.deps, spaRequest("/", value.token));
     expect(overview?.status).toBe(200);
-    expect(overview?.body).toContain("/chat?app=master&amp;project=hanse-master");
+    const bootMatch = /<script id="hanse-boot" type="application\/json">([\s\S]*?)<\/script>/.exec(
+      overview?.body ?? "",
+    );
+    const boot = JSON.parse(bootMatch?.[1] ?? "{}") as {
+      chrome?: { masterHref?: string; projects?: Array<{ id: string }> };
+    };
+    expect(boot.chrome?.masterHref).toBe("/chat?app=master&project=hanse-master");
+    expect(boot.chrome?.projects?.map((project) => project.id)).toEqual(["p"]);
 
     const api = handleRequest(value.deps, request("GET", "/api/projects", value.token));
     expect(api.status).toBe(200);

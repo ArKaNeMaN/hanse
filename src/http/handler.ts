@@ -34,6 +34,7 @@ import { humanFrom, principalFrom } from "./auth.js";
 import { buildSite, type PageChrome, renderErrorPage, renderNotFound } from "./dashboard.js";
 import { drainingResponse } from "./deploy.js";
 import { loginPage, type Notice, safeLocalPath } from "./ui.js";
+import { requireUiVersion } from "./ui-version.js";
 
 export interface ProjectContext {
   id: string;
@@ -665,6 +666,10 @@ function guardSpaMutation(deps: HttpDeps, request: HttpRequest): SpaMutationGuar
       ok: false,
       response: json(401, { error: "sign in required" }, SPA_MUTATION_HEADERS),
     };
+  }
+  const versionFailure = requireUiVersion(request);
+  if (versionFailure !== undefined) {
+    return { ok: false, response: versionFailure };
   }
   return { ok: true, fields: parseForm(request.body), principal };
 }

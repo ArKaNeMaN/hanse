@@ -29,10 +29,11 @@ vi.mock("../api.js", async (importOriginal) => {
 });
 
 const CHROME = {
-  sidebarNav: "",
-  breadcrumb: "",
   title: "alpha",
   active: "project" as const,
+  breadcrumb: [] as const,
+  projects: [] as const,
+  masterHref: "/chat?app=master&project=hanse-master",
   pendingCount: 1,
   sshPendingCount: 1,
 };
@@ -387,6 +388,16 @@ function boot(
     spaRoutes: [routeId as BootPayload["route"]["id"]],
     topbar: { ideHref: "/ide/" },
     chrome: CHROME,
+    routeKey: JSON.stringify([
+      routeId,
+      routeId === "app"
+        ? [
+            ["app", app],
+            ["id", id],
+          ]
+        : [["id", id]],
+      [],
+    ]),
   };
 }
 

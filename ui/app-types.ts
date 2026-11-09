@@ -6,7 +6,7 @@
  * Node-only imports) into the Vite bundle while still typing the boot payload and query response.
  */
 
-import type { BootChrome } from "./boot.js";
+import type { ChromeData } from "./boot.js";
 import type { ProcessError, ProcessPhase, ProcessState } from "./process/types.js";
 import type { RuntimeState } from "./status.js";
 
@@ -308,7 +308,7 @@ export interface AppProps {
 }
 
 export interface AppResponse extends AppProps {
-  readonly chrome?: BootChrome;
+  readonly chrome?: ChromeData;
 }
 
 /** One affected application row in the overview process summary. */

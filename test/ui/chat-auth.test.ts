@@ -52,6 +52,7 @@ describe("chat auth expiry and logout", () => {
     expect(init?.method).toBe("PUT");
     expect(init?.credentials).toBe("same-origin");
     expect(((init?.headers ?? {}) as Record<string, string>)["x-hanse-client"]).toBe("spa");
+    expect(((init?.headers ?? {}) as Record<string, string>)["x-hanse-ui-version"]).toBe("2");
   });
 
   it("logs out through /login?next= for a 401 without a custom handler", async () => {
@@ -106,7 +107,7 @@ describe("chat auth expiry and logout", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(String(fetchMock.mock.calls[0]?.[0])).toBe("/api/apps/alpha/events?project=p");
-    expect(String(fetchMock.mock.calls[1]?.[0])).toBe("/api/ui/chrome?path=/chat");
+    expect(String(fetchMock.mock.calls[1]?.[0])).toBe("/api/ui/auth");
     expect(source.closed).toBe(true);
     expect(adapter.status()).toBe("paused");
 
@@ -174,12 +175,12 @@ describe("chat auth expiry and logout", () => {
     adapter.dispose();
   });
 
-  it("stays paused without a logout when the session probe returns 200", async () => {
+  it("stays paused without a logout when the session probe returns 204", async () => {
     const onAuthExpired = vi.fn();
     const fetchMock = vi
       .fn(async () => response(401))
       .mockResolvedValueOnce(response(401))
-      .mockResolvedValueOnce(response(200, { ok: true }));
+      .mockResolvedValueOnce(response(204));
     const adapter = createChatStream({
       url: "/api/apps/alpha/events?project=p",
       onAuthExpired,
@@ -206,6 +207,73 @@ describe("chat auth expiry and logout", () => {
     expect(onAuthExpired).not.toHaveBeenCalled();
     expect(fetchMock).toHaveBeenCalledTimes(2);
     adapter.dispose();
+  });
+
+  it("redirects on a 403 session probe", async () => {
+    const onAuthExpired = vi.fn();
+    const fetchMock = vi
+      .fn(async () => response(401))
+      .mockResolvedValueOnce(response(401))
+      .mockResolvedValueOnce(response(403));
+    const adapter = createChatStream({
+      url: "/api/apps/alpha/events?project=p",
+      onAuthExpired,
+      deps: {
+        EventSource: FakeEventSource as unknown as new (url: string) => never,
+        fetch: fetchMock as unknown as typeof fetch,
+        document: { hidden: false } as Document,
+        location: {
+          pathname: "/chat",
+          search: "",
+          hash: "",
+          assign: vi.fn(),
+        } as unknown as Location,
+      },
+    });
+    adapter.connect();
+    const source = FakeEventSource.instances[0];
+    if (source === undefined) throw new Error("missing source");
+    source.onerror?.({});
+    source.onerror?.({});
+    source.onerror?.({});
+    await vi.waitFor(() => expect(onAuthExpired).toHaveBeenCalledTimes(1));
+    adapter.dispose();
+  });
+
+  it("treats a 404 or 409 session probe as alive", async () => {
+    for (const status of [404, 409]) {
+      FakeEventSource.instances = [];
+      const onAuthExpired = vi.fn();
+      const fetchMock = vi
+        .fn(async () => response(401))
+        .mockResolvedValueOnce(response(401))
+        .mockResolvedValueOnce(response(status));
+      const adapter = createChatStream({
+        url: "/api/apps/alpha/events?project=p",
+        onAuthExpired,
+        deps: {
+          EventSource: FakeEventSource as unknown as new (url: string) => never,
+          fetch: fetchMock as unknown as typeof fetch,
+          document: { hidden: false } as Document,
+          location: {
+            pathname: "/chat",
+            search: "",
+            hash: "",
+            assign: vi.fn(),
+          } as unknown as Location,
+        },
+      });
+      adapter.connect();
+      const source = FakeEventSource.instances[0];
+      if (source === undefined) throw new Error("missing source");
+      source.onerror?.({});
+      source.onerror?.({});
+      source.onerror?.({});
+      await vi.waitFor(() => expect(adapter.status()).toBe("paused"));
+      await Promise.resolve();
+      expect(onAuthExpired, String(status)).not.toHaveBeenCalled();
+      adapter.dispose();
+    }
   });
 
   it("redirects a 401 send probe with the current chat path", async () => {

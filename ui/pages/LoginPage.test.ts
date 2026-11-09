@@ -24,13 +24,15 @@ function boot(next: string): BootPayload {
     route: { id: "login", params: {} },
     props: { next },
     chrome: {
-      sidebarNav: "",
-      breadcrumb: "",
       title: "Sign in",
       active: "none",
+      breadcrumb: [],
+      projects: [],
+      masterHref: "/chat?app=master&project=hanse-master",
       pendingCount: 0,
       sshPendingCount: 0,
     },
+    routeKey: JSON.stringify(["login", [], [["next", next]]]),
     spaRoutes: ["login"],
     topbar: { ideHref: "/ide/" },
   };

@@ -204,13 +204,16 @@ function boot(payload: ProjectProps | null, routeId = "project", id = "project-o
     spaRoutes: [routeId as BootPayload["route"]["id"]],
     topbar: { ideHref: "/ide/" },
     chrome: {
-      sidebarNav: "",
-      breadcrumb: "",
       title: "Project One",
       active: "project",
+      activeProjectId: id,
+      breadcrumb: [],
+      projects: [],
+      masterHref: "/chat?app=master&project=hanse-master",
       pendingCount: 1,
       sshPendingCount: 0,
     },
+    routeKey: JSON.stringify([routeId, routeId === "project" ? [["id", id]] : [], []]),
   };
 }
 

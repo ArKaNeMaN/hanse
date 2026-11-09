@@ -328,13 +328,15 @@ function boot(payload: SshProps | null, routeId: BootPayload["route"]["id"] = "s
     spaRoutes: [routeId],
     topbar: { ideHref: "/ide/" },
     chrome: {
-      sidebarNav: "",
-      breadcrumb: "",
       title: "SSH",
       active: "ssh",
+      breadcrumb: [],
+      projects: [],
+      masterHref: "/chat?app=master&project=hanse-master",
       pendingCount: 0,
       sshPendingCount: 1,
     },
+    routeKey: JSON.stringify([routeId, [], []]),
   };
 }
 

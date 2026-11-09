@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, apiMutation, apiQuery } from "./api.js";
+import { ApiError, apiMutation, apiQuery, clearReloadGuard } from "./api.js";
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -14,6 +14,7 @@ describe("api helpers", () => {
   beforeEach(() => {
     fetchMock.mockReset();
     vi.stubGlobal("fetch", fetchMock);
+    clearReloadGuard();
     window.history.replaceState({}, "", "/projects");
   });
 
@@ -31,7 +32,7 @@ describe("api helpers", () => {
     expect(init).toMatchObject({
       method: "GET",
       credentials: "same-origin",
-      headers: { accept: "application/json" },
+      headers: { accept: "application/json", "x-hanse-ui-version": "2" },
     });
   });
 
@@ -50,6 +51,7 @@ describe("api helpers", () => {
         accept: "application/json",
         "content-type": "application/x-www-form-urlencoded",
         "x-hanse-client": "spa",
+        "x-hanse-ui-version": "2",
       },
     });
     expect(init?.body).toBe("name=Alpha+Beta");
@@ -65,6 +67,7 @@ describe("api helpers", () => {
       headers: {
         "content-type": "application/json",
         "x-hanse-client": "spa",
+        "x-hanse-ui-version": "2",
       },
     });
     expect(init?.body).toBe(JSON.stringify({ key: "llm.model", value: "x" }));
@@ -80,6 +83,7 @@ describe("api helpers", () => {
       headers: {
         "content-type": "application/json",
         "x-hanse-client": "spa",
+        "x-hanse-ui-version": "2",
       },
     });
   });
@@ -113,6 +117,61 @@ describe("api helpers", () => {
     );
     expect(error).toBeInstanceOf(ApiError);
     expect(error).toMatchObject({ status: 500, message: "Request failed (500)" });
+  });
+
+  it("reloads once for a ui_reload_required 409 and not again", async () => {
+    const reload = vi.fn();
+    vi.stubGlobal("window", {
+      location: { pathname: "/projects", search: "", hash: "", reload },
+    });
+    fetchMock.mockImplementation(async () =>
+      jsonResponse({ error: "UI reload required", code: "ui_reload_required" }, 409),
+    );
+
+    await expect(apiQuery("/api/ui/projects")).rejects.toMatchObject({
+      status: 409,
+      code: "ui_reload_required",
+    });
+    expect(reload).toHaveBeenCalledTimes(1);
+
+    await expect(apiQuery("/api/ui/projects")).rejects.toMatchObject({
+      status: 409,
+      code: "ui_reload_required",
+    });
+    expect(reload).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears the reload guard after a successful boot", async () => {
+    const reload = vi.fn();
+    vi.stubGlobal("window", {
+      location: { pathname: "/projects", search: "", hash: "", reload },
+    });
+    fetchMock.mockImplementation(async () =>
+      jsonResponse({ error: "UI reload required", code: "ui_reload_required" }, 409),
+    );
+
+    await expect(apiQuery("/api/ui/projects")).rejects.toMatchObject({ status: 409 });
+    expect(reload).toHaveBeenCalledTimes(1);
+
+    clearReloadGuard();
+    await expect(apiQuery("/api/ui/projects")).rejects.toMatchObject({ status: 409 });
+    expect(reload).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not reload for a different 409 code", async () => {
+    const reload = vi.fn();
+    vi.stubGlobal("window", {
+      location: { pathname: "/projects", search: "", hash: "", reload },
+    });
+    fetchMock.mockResolvedValue(
+      jsonResponse({ error: "Project already exists.", code: "project_exists" }, 409),
+    );
+
+    await expect(apiMutation("/api/projects", { form: { name: "x" } })).rejects.toMatchObject({
+      status: 409,
+      code: "project_exists",
+    });
+    expect(reload).not.toHaveBeenCalled();
   });
 
   it("redirects to login with the current local path on 401", async () => {

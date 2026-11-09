@@ -16,15 +16,6 @@ import {
 const APP_SETTINGS = `/projects/${PROJECT_ONE}/apps/alpha/settings`;
 const PROJECT_SETTINGS = `/projects/${PROJECT_ONE}/settings`;
 
-const CHROME_FIXTURE = {
-  sidebarNav: '<p class="nav-label">Workbench</p>',
-  breadcrumb: '<span class="crumb">Swapped Settings</span>',
-  title: "Settings Swapped",
-  active: "settings",
-  pendingCount: 0,
-  sshPendingCount: 0,
-};
-
 test("deep links, refreshes, and scope navigation stay in the SPA document", async ({ page }) => {
   const errors = collectPageErrors(page);
   await signIn(page, APP_SETTINGS);
@@ -102,22 +93,23 @@ test("swaps chrome, title, and active nav after a scoped client navigation", asy
   const errors = collectPageErrors(page);
   await signIn(page, PROJECT_SETTINGS);
 
-  await page.route(/\/api\/ui\/chrome\?/, (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify(CHROME_FIXTURE),
-    }),
-  );
+  await expect(page.locator("#breadcrumb-host")).toContainText("E2E Project One");
+  await expect(page.locator("#breadcrumb-host")).toContainText("Settings");
+  await expect(page.locator("#breadcrumb-host")).not.toContainText("alpha");
+  await expect(page.locator("#breadcrumb-host")).toHaveAttribute("data-nav-id", "settings");
+  await expect(page.locator("#sidebar-nav")).toHaveAttribute("data-nav-id", "settings");
+  await expect(page).toHaveTitle("Settings - hanse");
 
   await page.locator("#settings-target").selectOption(APP_SETTINGS);
 
   await expect(page).toHaveURL(new RegExp(`${APP_SETTINGS}$`));
   await expect(page.locator("#hanse-boot")).toHaveCount(1);
-  await expect(page.locator("#breadcrumb-host")).toContainText("Swapped Settings");
+  await expect(page.locator("#breadcrumb-host")).toContainText("alpha");
+  await expect(page.locator("#breadcrumb-host")).toContainText("Settings");
   await expect(page.locator("#breadcrumb-host")).toHaveAttribute("data-nav-id", "settings");
   await expect(page.locator("#sidebar-nav")).toHaveAttribute("data-nav-id", "settings");
-  await expect(page).toHaveTitle("Settings Swapped - hanse");
+  await expect(page).toHaveTitle("Settings - hanse");
+  await expect(page.locator("#route-announcer")).toHaveText("Settings");
 
   await settle(page);
   expectNoPageErrors(errors);
