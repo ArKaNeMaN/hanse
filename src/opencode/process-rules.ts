@@ -4,7 +4,7 @@ import path from "node:path";
 import type { IsolatedEnv } from "./instance.js";
 
 /** Version of the persistent agent process-safety instruction. */
-export const PROCESS_RULES_VERSION = 1;
+export const PROCESS_RULES_VERSION = 2;
 
 /**
  * Persistent English instruction injected into every managed instance.
@@ -18,6 +18,8 @@ export const PROCESS_RULE_TEXT = `# Agent process safety
 - Do not use \`pkill\`/\`killall\`/\`kill\`/\`kill -9\` against opencode, even to "test" it.
 - To inspect opencode, use a separate instance with a temporary \`HOME\`/\`XDG_*\` and a free port, or read-only \`opencode --version\`/\`opencode debug\` commands. Kill only the recorded PID of that throwaway instance, never by process name.
 - If the server appears stuck, report it to the operator instead of self-terminating.
+- The bash tool defaults to a five-minute timeout. For a command expected to run longer, pass an explicit \`timeout\` (up to one hour) instead of retrying blindly.
+- For unbounded or detached work, cap it in the shell, for example \`nohup timeout 3600 <command> ><log> 2>&1 &\`, then poll the log. Never leave a background process without a hard cap.
 `;
 
 /** Stable lowercase hex SHA-256 of {@link PROCESS_RULE_TEXT}. */

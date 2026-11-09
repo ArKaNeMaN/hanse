@@ -36,11 +36,13 @@ function envFor(root: string) {
 
 describe("process rule content", () => {
   it("keeps the safety instruction and its hash stable", () => {
-    expect(PROCESS_RULES_VERSION).toBe(1);
+    expect(PROCESS_RULES_VERSION).toBe(2);
     expect(PROCESS_RULE_TEXT).toContain("Never signal or kill the opencode server/PID 1");
     expect(PROCESS_RULE_TEXT).toContain("Do not use `pkill`/`killall`/`kill`/`kill -9`");
     expect(PROCESS_RULE_TEXT).toContain("temporary `HOME`/`XDG_*` and a free port");
     expect(PROCESS_RULE_TEXT).toContain("report it to the operator");
+    expect(PROCESS_RULE_TEXT).toContain("defaults to a five-minute timeout");
+    expect(PROCESS_RULE_TEXT).toContain("timeout 3600");
     expect(PROCESS_RULE_HASH).toBe(
       createHash("sha256").update(PROCESS_RULE_TEXT, "utf8").digest("hex"),
     );
