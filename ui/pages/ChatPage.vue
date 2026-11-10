@@ -96,6 +96,7 @@ import { type PromptEntry, useChatPromptsStore } from "../stores/chat-prompts.js
 import { chatSessionLabel, useChatSessionStore } from "../stores/chat-session.js";
 import { useChatUiStore } from "../stores/chat-ui.js";
 import { useToastStore } from "../stores/toasts.js";
+import ChatNoAppsPage from "./ChatNoAppsPage.vue";
 
 const props = defineProps<{ boot: BootPayload }>();
 const route = useRoute();
@@ -144,6 +145,17 @@ sessionStore.setActive(routeState.session.value);
 function encoded(value: string): string {
   return encodeURIComponent(value);
 }
+
+const noApps = computed(() => {
+  const value = props.boot.props;
+  return (
+    props.boot.route.id === "chat" &&
+    routeState.app.value.length === 0 &&
+    typeof value === "object" &&
+    value !== null &&
+    (value as { noApps?: unknown }).noApps === true
+  );
+});
 
 const bootProps = computed<ChatResponse | undefined>(() => {
   if (props.boot.route.id !== "chat") {
@@ -2292,7 +2304,8 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="page__body page__body--chat">
+  <ChatNoAppsPage v-if="noApps" :boot="boot" />
+  <div v-else class="page__body page__body--chat">
     <h1 class="sr-only">{{ appEmpty ? "Chat" : `Chat with ${appKey}` }}</h1>
 
     <section

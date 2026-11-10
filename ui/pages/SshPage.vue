@@ -474,7 +474,6 @@ async function refreshPage(): Promise<void> {
           <button class="btn btn-secondary btn-sm" type="button" @click="sshQuery.refetch()">
             <AppIcon name="refresh" />Retry
           </button>
-          <a class="btn btn-ghost btn-sm" href="?legacy=1">Use the classic interface</a>
         </div>
       </div>
     </section>

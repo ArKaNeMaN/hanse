@@ -470,7 +470,6 @@ async function restart(entry: SkillPendingAppProps): Promise<void> {
             <AppIcon name="refresh" />Retry
           </button>
           <RouterLink class="btn btn-secondary btn-sm" to="/skills">Global skills</RouterLink>
-          <a class="btn btn-ghost btn-sm" href="?legacy=1">Use the classic interface</a>
         </div>
       </div>
     </section>

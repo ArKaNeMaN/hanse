@@ -11,14 +11,11 @@ import { buildSshProps, resolveSshScope } from "../src/http/props/ssh.js";
 import { handleUiApi, maybeServeSpa } from "../src/http/spa.js";
 import { upsertPrincipalWithToken } from "../src/identity/principals.js";
 import { mintAgentToken } from "../src/mcp/agent-tokens.js";
-import { ROUTES } from "../src/shared/routes.js";
 import { SshService } from "../src/ssh/service.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
 
 const dirs: string[] = [];
 const dbs: SqliteDatabase[] = [];
-const originalLegacy = process.env.HANSE_UI_LEGACY;
-const originalAllowlist = process.env.HANSE_UI_SPA_ROUTES;
 const originalDevUrl = process.env.HANSE_UI_DEV_URL;
 
 afterEach(() => {
@@ -32,10 +29,6 @@ afterEach(() => {
   for (const dir of dirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true });
   }
-  if (originalLegacy === undefined) delete process.env.HANSE_UI_LEGACY;
-  else process.env.HANSE_UI_LEGACY = originalLegacy;
-  if (originalAllowlist === undefined) delete process.env.HANSE_UI_SPA_ROUTES;
-  else process.env.HANSE_UI_SPA_ROUTES = originalAllowlist;
   if (originalDevUrl === undefined) delete process.env.HANSE_UI_DEV_URL;
   else process.env.HANSE_UI_DEV_URL = originalDevUrl;
 });
@@ -203,8 +196,6 @@ function payload(response: ReturnType<typeof handleUiApi>): SshApiPayload {
 }
 
 function enableSshRoute(): void {
-  delete process.env.HANSE_UI_LEGACY;
-  process.env.HANSE_UI_SPA_ROUTES = ROUTES.map((route) => route.id).join(",");
   process.env.HANSE_UI_DEV_URL = "http://127.0.0.1:5173";
 }
 
@@ -433,8 +424,6 @@ describe("GET /api/ui/ssh", () => {
 describe("SSH route boot", () => {
   it("boots SSH page props for an enabled document", () => {
     const f = fixture();
-    const sshRoute = ROUTES.find((route) => route.id === "ssh");
-    expect(sshRoute?.spa).toBe(true);
     enableSshRoute();
     const response = maybeServeSpa(
       f.deps,

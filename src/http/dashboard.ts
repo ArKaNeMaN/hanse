@@ -7,15 +7,7 @@ import type { RegisteredApp } from "../registry/index.js";
 import type { SqliteDatabase } from "../store/index.js";
 import { type ProcessCurrent, readProcessSnapshot } from "../store/process.js";
 import { parseHandoffFilter } from "./props/shared.js";
-import {
-  appShell,
-  escapeHtml,
-  icon,
-  type NavProject,
-  type Notice,
-  pageHeader,
-  type RuntimeState,
-} from "./ui.js";
+import type { RuntimeState } from "./ui.js";
 
 export interface ProjectView {
   id: string;
@@ -75,11 +67,6 @@ export interface DashboardDeps {
     service: Pick<CoordinatorService, "listApps">;
   }>;
   manager?: Pick<InstanceManager, "pendingRestart">;
-}
-
-export interface PageChrome {
-  operatorName: string;
-  notice?: Notice;
 }
 
 export type { HandoffFilter } from "./props/shared.js";
@@ -243,102 +230,4 @@ export function buildSite(deps: DashboardDeps): SiteModel {
 /** Projects shown to the operator: everything except the reserved master project. */
 export function operatorProjects(site: SiteModel): ProjectView[] {
   return site.projects.filter((project) => project.builtin !== true);
-}
-
-/* ------------------------------------------------------------------------- */
-/* Shared page chrome                                                       */
-/* ------------------------------------------------------------------------- */
-
-function navProjects(site: SiteModel): NavProject[] {
-  return site.projects.map((project) => ({
-    id: project.id,
-    name: project.name,
-    appCount: project.apps.length,
-  }));
-}
-
-function shell(
-  site: SiteModel,
-  chrome: PageChrome,
-  options: {
-    title: string;
-    active: "overview" | "projects" | "project" | "handoffs" | "none";
-    activeProjectId?: string;
-    breadcrumb: Array<{ label: string; href?: string }>;
-    header: string;
-    body: string;
-    settingsHref?: string;
-    skillsHref?: string;
-    moduleScripts?: string[];
-    contentScript?: boolean;
-  },
-): string {
-  return appShell({
-    title: options.title,
-    active: options.active,
-    activeProjectId: options.activeProjectId,
-    breadcrumb: options.breadcrumb,
-    projects: navProjects(site),
-    pendingCount: site.pendingCount,
-    operatorName: chrome.operatorName,
-    header: options.header,
-    body: options.body,
-    notice: chrome.notice,
-    settingsHref: options.settingsHref,
-    skillsHref: options.skillsHref,
-    moduleScripts: options.moduleScripts,
-    ...(options.contentScript === undefined ? {} : { contentScript: options.contentScript }),
-  });
-}
-
-export function renderNotFound(
-  site: SiteModel,
-  chrome: PageChrome,
-  contentScript?: boolean,
-): string {
-  const header = pageHeader({
-    overline: "404",
-    title: "Page not found",
-    description: "The route does not exist, or the project was not discovered by this coordinator.",
-  });
-  const body = `<div class="error-state" role="alert">
-    <span class="error-state__mark">${icon("alert-triangle", "icon--lg")}</span>
-    <div>
-      <h3 class="error-state__title">Nothing is moored here</h3>
-      <p class="error-state__body">Check the address, or return to the fleet overview to find the project you expected.</p>
-      <div class="cluster"><a class="btn btn-primary btn-sm" href="/">Open overview</a><a class="btn btn-secondary btn-sm" href="/projects">Browse projects</a></div>
-    </div>
-  </div>`;
-  return shell(site, chrome, {
-    title: "Page not found",
-    active: "none",
-    breadcrumb: [{ label: "404" }],
-    header,
-    body,
-    ...(contentScript === undefined ? {} : { contentScript }),
-  });
-}
-
-export function renderErrorPage(site: SiteModel, chrome: PageChrome, message: string): string {
-  const header = pageHeader({
-    overline: "Error",
-    title: "The page could not be rendered",
-    description: "The coordinator hit an unexpected error while building this view.",
-  });
-  const body = `<div class="error-state" role="alert">
-    <span class="error-state__mark">${icon("alert-triangle", "icon--lg")}</span>
-    <div>
-      <h3 class="error-state__title">Coordinator error</h3>
-      <p class="error-state__body">${escapeHtml(message)}</p>
-      <span class="mono">retry the request, or inspect the coordinator log</span>
-      <div class="cluster"><a class="btn btn-secondary btn-sm" href="/">Return to overview</a></div>
-    </div>
-  </div>`;
-  return shell(site, chrome, {
-    title: "Coordinator error",
-    active: "none",
-    breadcrumb: [{ label: "Error" }],
-    header,
-    body,
-  });
 }

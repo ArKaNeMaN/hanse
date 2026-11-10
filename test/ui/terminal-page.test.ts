@@ -62,7 +62,6 @@ function boot(): BootPayload {
         ["project", "p"],
       ],
     ]),
-    spaRoutes: ["terminal"],
     topbar: PROPS.topbar,
   };
 }
@@ -107,7 +106,7 @@ async function page() {
         path: "/terminal",
         name: "terminal",
         component: TerminalPage,
-        meta: { workspace: "terminal", legacyRetired: true },
+        meta: { workspace: "terminal" },
       },
     ],
   });

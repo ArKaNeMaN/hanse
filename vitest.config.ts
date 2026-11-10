@@ -15,7 +15,6 @@ export default defineConfig({
           environment: "node",
           include: ["test/**/*.test.ts", "test/**/*.test.mjs"],
           exclude: ["test/ui/**", "test/fixtures/**", "node_modules/**", "dist/**"],
-          env: { HANSE_UI_LEGACY: "1" },
         },
       },
       {

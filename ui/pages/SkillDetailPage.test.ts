@@ -369,7 +369,6 @@ describe("SkillDetailPage", () => {
     await flushPromises();
     expect(missing.text()).toContain("Skill not found");
     expect(missing.find("button").exists()).toBe(false);
-    expect(missing.get("a[href='?legacy=1']").text()).toBe("Use the classic interface");
 
     mocks.apiQuery.mockRejectedValueOnce(new ApiError("Skill store unavailable.", 503));
     const failed = await mountPage(boot(workspace(), "overview"), "/skills/7");

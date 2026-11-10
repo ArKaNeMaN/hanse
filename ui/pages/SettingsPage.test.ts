@@ -665,7 +665,6 @@ function boot(
   return {
     route: { id: routeId, params },
     props: payload,
-    spaRoutes: [routeId],
     topbar: { ideHref: "/ide/" },
     chrome: {
       title: "Settings",
@@ -1166,7 +1165,6 @@ describe("SettingsPage", () => {
     await flushPromises();
 
     expect(wrapper.text()).toContain("Settings not found");
-    expect(wrapper.get("a[href='?legacy=1']").text()).toBe("Use the classic interface");
 
     mocks.apiQuery.mockRejectedValueOnce(new ApiError("Settings are unavailable.", 503));
     const second = await mountPage(

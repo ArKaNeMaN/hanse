@@ -11,7 +11,7 @@ export interface Toast {
 
 const SUCCESS_DISMISS_MS = 6000;
 
-/** Client-owned toasts. On SPA documents `assets/app-content.js` is not loaded. */
+/** Client-owned toast state. */
 export const useToastStore = defineStore("toasts", () => {
   const toasts = ref<Toast[]>([]);
   const timers = new Map<number, ReturnType<typeof setTimeout>>();

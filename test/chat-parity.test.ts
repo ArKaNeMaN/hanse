@@ -455,7 +455,11 @@ const BEHAVIORS: readonly BehaviorRow[] = [
         "test/ui/workspace-shell.test.ts",
         "applies and restores the workspace",
       ),
-      evidence("component", "test/ui/boot.test.ts", "round-trips the resolved spaRoutes"),
+      evidence(
+        "component",
+        "test/ui/boot.test.ts",
+        "round-trips the route, chrome, routeKey, operator, and topbar seed",
+      ),
       evidence("component", "ui/components/SmartLink.test.ts", "renders a router link"),
     ],
   },

@@ -325,7 +325,6 @@ function boot(payload: SshProps | null, routeId: BootPayload["route"]["id"] = "s
   return {
     route: { id: routeId, params: {} },
     props: payload,
-    spaRoutes: [routeId],
     topbar: { ideHref: "/ide/" },
     chrome: {
       title: "SSH",
@@ -506,7 +505,6 @@ describe("SshPage", () => {
 
     expect(wrapper.text()).toContain("SSH console could not be loaded");
     expect(wrapper.text()).toContain("SSH is unavailable.");
-    expect(wrapper.get("a[href='?legacy=1']").text()).toBe("Use the classic interface");
 
     mocks.apiQuery.mockResolvedValue({ ...props() });
     await wrapper

@@ -35,6 +35,7 @@ import { type HttpDeps, type HttpRequest, type HttpResponse, handleRequest } fro
 import { handleHandoffHttp } from "./handoff.js";
 import { handleImages } from "./images.js";
 import { handleInternalMcp } from "./internal-mcp.js";
+import { isHtmlPageRequest } from "./page-request.js";
 import {
   previewNotFoundPage,
   proxyPreviewHttp,
@@ -54,6 +55,7 @@ import { handleSkillSources, isSkillSourcesRoute } from "./skill-sources.js";
 import { handleSkills, isSkillsRoute } from "./skills.js";
 import { handleAppUiApi, handleUiApi, isAppUiPath, maybeServeSpa } from "./spa.js";
 import { handleSsh, isSshRoute } from "./ssh.js";
+import { staticErrorResponse } from "./static-error.js";
 import { proxyTerminalUpgrade } from "./terminal.js";
 
 const IDE_PORT = Number(process.env.HANSE_IDE_PORT ?? 8080);
@@ -399,7 +401,31 @@ export function createHttpServer(deps: HttpDeps): Server {
     }
 
     const pageRequest = httpRequestFor(request, url, "");
-    const spaResponse = maybeServeSpa(deps, pageRequest);
+    let spaResponse: HttpResponse | undefined;
+    try {
+      spaResponse = maybeServeSpa(deps, pageRequest);
+    } catch {
+      if (!response.headersSent) {
+        if (isHtmlPageRequest(pageRequest)) {
+          writeHttpResponse(
+            request,
+            response,
+            staticErrorResponse({
+              status: 500,
+              title: "Coordinator error",
+              message: "The coordinator hit an unexpected error while building this page.",
+              action: { href: "/", label: "Open overview" },
+            }),
+          );
+        } else {
+          response.writeHead(500, { "content-type": "application/json; charset=utf-8" });
+          response.end(JSON.stringify({ error: "request failed" }));
+        }
+      } else {
+        response.end();
+      }
+      return;
+    }
     if (spaResponse !== undefined) {
       writeHttpResponse(request, response, spaResponse);
       return;
@@ -538,6 +564,19 @@ export function createHttpServer(deps: HttpDeps): Server {
             JSON.stringify({
               error: "request body too large",
               code: "payload_too_large",
+            }),
+          );
+          return;
+        }
+        if (!response.headersSent && isHtmlPageRequest(pageRequest)) {
+          writeHttpResponse(
+            request,
+            response,
+            staticErrorResponse({
+              status: 500,
+              title: "Coordinator error",
+              message: "The coordinator hit an unexpected error while building this page.",
+              action: { href: "/", label: "Open overview" },
             }),
           );
           return;

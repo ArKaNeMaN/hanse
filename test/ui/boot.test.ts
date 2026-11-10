@@ -1,9 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { readBoot } from "../../ui/boot.js";
 
-function bootDocument(payload: unknown): string {
+function bootDocument(payload: unknown): void {
   document.body.innerHTML = `<script id="hanse-boot" type="application/json">${JSON.stringify(payload)}</script>`;
-  return "";
 }
 
 function validPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -21,7 +20,6 @@ function validPayload(overrides: Record<string, unknown> = {}): Record<string, u
     },
     routeKey: JSON.stringify(["projects", [], []]),
     operator: { name: "alice", initials: "AL" },
-    spaRoutes: ["projects", "overview"],
     topbar: { ideHref: "/ide/" },
     ...overrides,
   };
@@ -31,57 +29,76 @@ afterEach(() => {
   document.body.innerHTML = "";
 });
 
-describe("readBoot route set and topbar", () => {
-  it("round-trips the resolved spaRoutes and topbar seed", () => {
+describe("readBoot", () => {
+  it("round-trips the route, chrome, routeKey, operator, and topbar seed", () => {
     bootDocument(validPayload());
     expect(readBoot(document)).toMatchObject({
       route: { id: "projects", params: {} },
-      spaRoutes: ["projects", "overview"],
+      chrome: { title: "Projects", active: "projects" },
+      routeKey: JSON.stringify(["projects", [], []]),
+      operator: { name: "alice", initials: "AL" },
       topbar: { ideHref: "/ide/" },
     });
   });
 
-  it("drops unknown route ids and never enables them", () => {
-    bootDocument(validPayload({ spaRoutes: ["projects", "not-a-route", 7, "chat"] }));
-    expect(readBoot(document)?.spaRoutes).toEqual(["projects", "chat"]);
+  it("accepts a login boot without operator and with empty chrome lists", () => {
+    bootDocument(
+      validPayload({
+        route: { id: "login", params: {} },
+        chrome: {
+          title: "Sign in",
+          active: "none",
+          breadcrumb: [],
+          projects: [],
+          masterHref: "/chat?app=master&project=hanse-master",
+          pendingCount: 0,
+          sshPendingCount: 0,
+        },
+        routeKey: JSON.stringify(["login", [], []]),
+        operator: undefined,
+      }),
+    );
+    const boot = readBoot(document);
+    expect(boot?.route.id).toBe("login");
+    expect(boot?.operator).toBeUndefined();
+    expect(boot?.chrome.breadcrumb).toEqual([]);
   });
 
-  it("accepts the chat route when the test allowlist enables it", () => {
+  it("accepts the synthetic not-found boot and its override", () => {
+    bootDocument(
+      validPayload({
+        route: { id: "not-found", params: {} },
+        override: "not-found",
+        routeKey: JSON.stringify(["not-found", [], []]),
+      }),
+    );
+    expect(readBoot(document)?.override).toBe("not-found");
+  });
+
+  it("accepts chat-no-apps only on the chat route", () => {
     bootDocument(
       validPayload({
         route: { id: "chat", params: {} },
-        spaRoutes: ["projects", "chat"],
+        override: "chat-no-apps",
+        props: { noApps: true },
       }),
     );
-    expect(readBoot(document)?.route.id).toBe("chat");
-    expect(readBoot(document)?.spaRoutes).toEqual(["projects", "chat"]);
-  });
+    expect(readBoot(document)?.override).toBe("chat-no-apps");
 
-  it("accepts the terminal route when the server enables it", () => {
     bootDocument(
       validPayload({
-        route: { id: "terminal", params: {} },
-        spaRoutes: ["projects", "terminal"],
+        route: { id: "projects", params: {} },
+        override: "chat-no-apps",
       }),
     );
-    expect(readBoot(document)?.route.id).toBe("terminal");
-    expect(readBoot(document)?.spaRoutes).toEqual(["projects", "terminal"]);
-  });
-
-  it("rejects a boot route that is absent from the resolved set", () => {
-    bootDocument(validPayload({ route: { id: "projects", params: {} }, spaRoutes: ["overview"] }));
     expect(readBoot(document)).toBeUndefined();
   });
 
-  it("rejects an unknown boot route id", () => {
-    bootDocument(
-      validPayload({ route: { id: "not-a-route", params: {} }, spaRoutes: ["not-a-route"] }),
-    );
+  it("rejects an unknown boot route id or an unknown override", () => {
+    bootDocument(validPayload({ route: { id: "not-a-route", params: {} } }));
     expect(readBoot(document)).toBeUndefined();
-  });
 
-  it("rejects a non-array spaRoutes field", () => {
-    bootDocument(validPayload({ spaRoutes: "projects" }));
+    bootDocument(validPayload({ override: "other" }));
     expect(readBoot(document)).toBeUndefined();
   });
 
@@ -100,54 +117,6 @@ describe("readBoot route set and topbar", () => {
       bootDocument(validPayload({ topbar }));
       expect(readBoot(document), JSON.stringify(topbar)).toBeUndefined();
     }
-  });
-
-  it("returns undefined when the boot script is missing", () => {
-    document.body.innerHTML = "";
-    expect(readBoot(document)).toBeUndefined();
-  });
-});
-
-describe("readBoot chrome data, routeKey, and operator", () => {
-  it("round-trips data-only chrome, routeKey, and operator", () => {
-    bootDocument(validPayload());
-    expect(readBoot(document)).toMatchObject({
-      chrome: {
-        title: "Projects",
-        active: "projects",
-        breadcrumb: [{ label: "Workbench", href: "/" }, { label: "Projects" }],
-        projects: [{ id: "p", name: "Alpha", appCount: 1 }],
-        masterHref: "/chat?app=master&project=hanse-master",
-        pendingCount: 0,
-        sshPendingCount: 0,
-      },
-      routeKey: JSON.stringify(["projects", [], []]),
-      operator: { name: "alice", initials: "AL" },
-    });
-  });
-
-  it("accepts a login boot without operator and with empty chrome lists", () => {
-    bootDocument(
-      validPayload({
-        route: { id: "login", params: {} },
-        spaRoutes: ["login"],
-        chrome: {
-          title: "Sign in",
-          active: "none",
-          breadcrumb: [],
-          projects: [],
-          masterHref: "/chat?app=master&project=hanse-master",
-          pendingCount: 0,
-          sshPendingCount: 0,
-        },
-        routeKey: JSON.stringify(["login", [], []]),
-        operator: undefined,
-      }),
-    );
-    const boot = readBoot(document);
-    expect(boot?.route.id).toBe("login");
-    expect(boot?.operator).toBeUndefined();
-    expect(boot?.chrome.breadcrumb).toEqual([]);
   });
 
   it("rejects a missing, non-string, or empty routeKey", () => {
@@ -182,5 +151,10 @@ describe("readBoot chrome data, routeKey, and operator", () => {
       bootDocument(validPayload({ operator }));
       expect(readBoot(document), JSON.stringify(operator)).toBeUndefined();
     }
+  });
+
+  it("returns undefined when the boot script is missing", () => {
+    document.body.innerHTML = "";
+    expect(readBoot(document)).toBeUndefined();
   });
 });

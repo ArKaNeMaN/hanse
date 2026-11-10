@@ -69,7 +69,6 @@ function boot(
       matchedCount: 2,
       ...overrides,
     },
-    spaRoutes: ["projects"],
     topbar: { ideHref: "/ide/" },
     chrome: {
       title: "Projects",
@@ -220,7 +219,6 @@ describe("ProjectsPage", () => {
     expect(wrapper.text()).toContain("Projects could not be loaded");
     expect(wrapper.text()).toContain("Projects are unavailable.");
     expect(wrapper.text()).toContain("Retry");
-    expect(wrapper.get('a[href="?legacy=1"]').text()).toBe("Use the classic interface");
   });
 
   it("opens the native dialog, creates a project, and full-loads the legacy detail", async () => {

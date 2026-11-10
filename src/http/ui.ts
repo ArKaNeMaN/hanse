@@ -6,7 +6,6 @@ import type {
   HandoffReplyState,
   HandoffState,
 } from "../coordinator/handoff.js";
-import { isMasterProject, masterChatHref } from "../master/constants.js";
 
 /**
  * Shared HTML primitives for the hanse web UI.
@@ -286,13 +285,9 @@ export function toastRegion(notice?: Notice): string {
 export function documentPage(options: {
   title: string;
   body: string;
-  scripts?: string[];
   styles?: string[];
   moduleScripts?: string[];
   viewport?: string;
-  contentScript?: boolean;
-  /** False on SPA documents: Vue owns the shell behavior, so `app.js` is not needed. */
-  shellScript?: boolean;
   bootJson?: string;
 }): string {
   return `<!doctype html>
@@ -315,9 +310,6 @@ export function documentPage(options: {
     <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml" />
     ${(options.styles ?? []).map((style) => `<link rel="stylesheet" href="${escapeHtml(style)}" />`).join("")}
     <link rel="stylesheet" href="/assets/app.css" />
-    ${options.shellScript === false ? "" : '<script src="/assets/app.js" defer></script>'}
-    ${options.contentScript === false ? "" : '<script src="/assets/app-content.js" defer></script>'}
-    ${(options.scripts ?? []).map((script) => `<script src="${escapeHtml(script)}" defer></script>`).join("")}
     ${(options.moduleScripts ?? []).map((script) => `<script type="module" src="${escapeHtml(script)}"></script>`).join("")}
   </head>
   <body class="app-body">
@@ -340,232 +332,7 @@ export interface NavProject {
 }
 
 export interface ShellOptions {
-  title: string;
   active: "overview" | "projects" | "project" | "handoffs" | "skills" | "settings" | "ssh" | "none";
-  activeProjectId?: string;
-  breadcrumb: Crumb[];
-  projects: NavProject[];
-  pendingCount: number;
-  sshPendingCount?: number;
-  operatorName: string;
-  header: string;
-  body: string;
-  pageClass?: string;
-  bodyClass?: string;
-  scripts?: string[];
-  styles?: string[];
-  moduleScripts?: string[];
-  viewport?: string;
-  notice?: Notice;
-  settingsHref?: string;
-  skillsHref?: string;
-  contentScript?: boolean;
-  bootJson?: string;
-}
-
-export interface SidebarNavOptions {
-  active: ShellOptions["active"];
-  activeProjectId?: string;
-  projects: NavProject[];
-  pendingCount: number;
-  sshPendingCount?: number;
-  settingsHref?: string;
-  skillsHref?: string;
-}
-
-function pageClasses(base: string, extra: string | undefined): string {
-  return extra === undefined || extra.length === 0 ? base : `${base} ${extra}`;
-}
-
-/** Inner HTML of `#breadcrumb-host`; the caller owns the single surrounding `<nav>`. */
-export function renderBreadcrumbInner(crumbs: Crumb[]): string {
-  const parts: string[] = [];
-  crumbs.forEach((crumb, index) => {
-    const current = index === crumbs.length - 1;
-    if (current) {
-      parts.push(`<span aria-current="page">${escapeHtml(crumb.label)}</span>`);
-      return;
-    }
-    if (crumb.href === undefined) {
-      parts.push(`<span>${escapeHtml(crumb.label)}</span>`);
-      return;
-    }
-    parts.push(`<a href="${escapeHtml(crumb.href)}">${escapeHtml(crumb.label)}</a>`);
-    parts.push(icon("chevron-right"));
-  });
-  return parts.join("");
-}
-
-function navItem(options: {
-  href: string;
-  label: string;
-  iconName: IconName;
-  active: boolean;
-  count?: number;
-  navId?: string;
-  projectId?: string;
-}): string {
-  const current = options.active ? ' aria-current="page"' : "";
-  const count =
-    options.count === undefined ? "" : `<span class="nav-item__count">${options.count}</span>`;
-  const mark = options.active
-    ? `<span class="nav-item__mark">${icon("check", "icon--sm")}</span>`
-    : "";
-  const navAttr = options.navId === undefined ? "" : ` data-nav-id="${escapeHtml(options.navId)}"`;
-  const projectAttr =
-    options.projectId === undefined ? "" : ` data-project-id="${escapeHtml(options.projectId)}"`;
-  return `<a class="nav-item${options.active ? " is-active" : ""}" href="${escapeHtml(options.href)}"${navAttr}${projectAttr}${current}>${icon(options.iconName)}<span class="nav-item__label">${escapeHtml(options.label)}</span>${mark}${count}</a>`;
-}
-
-function sidebarProjects(options: SidebarNavOptions): string {
-  const all = options.projects.filter((project) => !isMasterProject(project.id));
-  let shown = all.slice(0, 6);
-  if (
-    options.activeProjectId !== undefined &&
-    !shown.some((p) => p.id === options.activeProjectId)
-  ) {
-    const active = all.filter((project) => project.id === options.activeProjectId);
-    const rest = all.filter((project) => project.id !== options.activeProjectId);
-    shown = [...active, ...rest.slice(0, Math.max(0, 6 - active.length))];
-  }
-  const links = shown
-    .map((project) =>
-      navItem({
-        href: `/projects/${encodeURIComponent(project.id)}`,
-        label: project.name,
-        iconName: "folder",
-        active: options.activeProjectId === project.id,
-        count: project.appCount,
-        projectId: project.id,
-      }),
-    )
-    .join("");
-  return `<p class="nav-label">Projects</p>${links}<a class="nav-item" href="/projects" data-nav-id="projects">${icon("layers")}<span class="nav-item__label">All projects</span></a>`;
-}
-
-/** Inner HTML of `#sidebar-nav`; the caller owns the single surrounding `<nav>`. */
-export function renderSidebarNavInner(options: SidebarNavOptions): string {
-  const workbench =
-    navItem({
-      href: "/",
-      label: "Overview",
-      iconName: "dashboard",
-      active: options.active === "overview",
-      navId: "overview",
-    }) +
-    navItem({
-      href: "/projects",
-      label: "Projects",
-      iconName: "folder",
-      active: options.active === "projects",
-      navId: "projects",
-    }) +
-    navItem({
-      href: masterChatHref(),
-      label: "Master",
-      iconName: "gauge",
-      active: false,
-      navId: "master",
-    }) +
-    navItem({
-      href: "/handoffs",
-      label: "Handoffs",
-      iconName: "branch",
-      active: options.active === "handoffs",
-      count: options.pendingCount,
-      navId: "handoffs",
-    }) +
-    navItem({
-      href: options.skillsHref ?? "/skills",
-      label: "Skills",
-      iconName: "code",
-      active: options.active === "skills",
-      navId: "skills",
-    }) +
-    navItem({
-      href: options.settingsHref ?? "/settings",
-      label: "Settings",
-      iconName: "settings",
-      active: options.active === "settings",
-      navId: "settings",
-    }) +
-    navItem({
-      href: "/ssh",
-      label: "SSH",
-      iconName: "terminal",
-      active: options.active === "ssh",
-      navId: "ssh",
-      ...(options.sshPendingCount === undefined ? {} : { count: options.sshPendingCount }),
-    });
-
-  return `<p class="nav-label">Workbench</p>${workbench}${sidebarProjects(options)}`;
-}
-
-function sidebar(options: ShellOptions): string {
-  const projectAttr =
-    options.activeProjectId === undefined
-      ? ""
-      : ` data-project-id="${escapeHtml(options.activeProjectId)}"`;
-  return `<aside class="sidebar" id="sidebar" aria-label="Primary">
-    <div class="sidebar__head">
-      <a class="wordmark" href="/">hanse</a>
-      <span class="sidebar__kicker">coordinator</span>
-      <button class="btn btn-ghost btn-icon btn-sm sidebar__close" type="button" data-nav-close aria-label="Close navigation">${icon("x")}</button>
-    </div>
-    <nav class="sidebar__nav" id="sidebar-nav" aria-label="Workspace" data-nav-id="${escapeHtml(options.active)}"${projectAttr}>
-      ${renderSidebarNavInner(options)}
-    </nav>
-    <div class="sidebar__foot">
-      <span class="avatar avatar--sm">${escapeHtml(initials(options.operatorName))}</span>
-      <span class="sidebar__operator">${escapeHtml(options.operatorName)}</span>
-      <button class="btn btn-ghost btn-sm theme-toggle" type="button" data-theme-toggle aria-label="Switch to light theme" title="Switch theme">
-        <span class="theme-toggle__icon" data-theme-icon="light">${icon("sun")}</span>
-        <span class="theme-toggle__icon" data-theme-icon="dark">${icon("moon")}</span>
-        <span data-theme-label>Light</span>
-      </button>
-      <form method="post" action="/logout">
-        <button class="btn btn-ghost btn-icon btn-sm" type="submit" aria-label="Sign out" title="Sign out">${icon("log-out")}</button>
-      </form>
-    </div>
-  </aside>`;
-}
-
-export function appShell(options: ShellOptions): string {
-  const topbarActions = `<a class="btn btn-ghost btn-icon" href="${escapeHtml(ideBase())}" target="_blank" rel="noreferrer" aria-label="Open IDE in a new tab" title="Open IDE">${icon("external")}</a>`;
-
-  const header = options.header.trim().length === 0 ? "" : options.header;
-  const projectAttr =
-    options.activeProjectId === undefined
-      ? ""
-      : ` data-project-id="${escapeHtml(options.activeProjectId)}"`;
-  return documentPage({
-    title: `${options.title} - hanse`,
-    scripts: options.scripts,
-    styles: options.styles,
-    moduleScripts: options.moduleScripts,
-    viewport: options.viewport,
-    contentScript: options.contentScript,
-    bootJson: options.bootJson,
-    body: `<a class="skip-link" href="#main">Skip to content</a>
-    <div class="sr-only" id="route-announcer" aria-live="polite" aria-atomic="true"></div>
-    <div class="app-shell" data-nav="closed" id="shell" data-nav-id="${escapeHtml(options.active)}"${projectAttr}>
-      ${sidebar(options)}
-      <div class="shell-main">
-        <header class="topbar">
-          <button class="btn btn-ghost btn-icon nav-toggle" type="button" data-nav-toggle aria-expanded="false" aria-controls="sidebar" aria-label="Open navigation">${icon("menu")}</button>
-          <a class="topbar__brand" href="/">hanse</a>
-          <nav class="breadcrumb" id="breadcrumb-host" aria-label="Breadcrumb" data-nav-id="${escapeHtml(options.active)}">${renderBreadcrumbInner(options.breadcrumb)}</nav>
-          <div class="topbar__actions">${topbarActions}</div>
-        </header>
-        <main class="${pageClasses("page", options.pageClass)}" id="main" tabindex="-1">
-          ${header}
-          <div class="${pageClasses("page__body", options.bodyClass)}">${options.body}</div>
-        </main>
-      </div>
-      <div class="scrim" data-nav-close></div>
-    </div>
-    ${toastRegion(options.notice)}`,
-  });
 }
 
 export interface SpaShellOptions {
@@ -575,30 +342,28 @@ export interface SpaShellOptions {
   styles?: string[];
   moduleScripts?: string[];
   bootJson?: string;
-  legacyAvailable?: boolean;
-  fallbackHref?: string;
 }
 
 /**
  * Static SPA document shell. Chrome containers start empty and Vue fills them after mount; the
  * document loads no `app.js` because the drawer and theme behavior is client-owned.
  */
+function pageClasses(base: string, extra: string | undefined): string {
+  return extra === undefined || extra.length === 0 ? base : `${base} ${extra}`;
+}
+
 export function spaShell(options: SpaShellOptions = {}): string {
-  const legacyAvailable = options.legacyAvailable !== false;
-  const fallbackHref = options.fallbackHref ?? "?legacy=1";
   const fallback = `<div class="ui-fallback" id="ui-fallback" data-ui-fallback>
       <p class="overline">Interface</p>
       <h2 class="h3">The new interface did not load.</h2>
-      <p class="body">${legacyAvailable ? "Reload the page, or switch to the classic interface." : "Reload the page."}</p>
-      <a class="btn btn-secondary btn-sm" href="${escapeHtml(fallbackHref)}">${legacyAvailable ? "Use the classic interface" : "Reload the page"}</a>
+      <p class="body">Reload the page.</p>
+      <a class="btn btn-secondary btn-sm" href="">Reload the page</a>
     </div>`;
   return documentPage({
     title: "hanse",
     ...(options.styles === undefined ? {} : { styles: options.styles }),
     ...(options.moduleScripts === undefined ? {} : { moduleScripts: options.moduleScripts }),
     ...(options.viewport === undefined ? {} : { viewport: options.viewport }),
-    contentScript: false,
-    shellScript: false,
     ...(options.bootJson === undefined ? {} : { bootJson: options.bootJson }),
     body: `<a class="skip-link" href="#main">Skip to content</a>
     <div class="sr-only" id="route-announcer" aria-live="polite" aria-atomic="true"></div>
@@ -937,44 +702,3 @@ export function handoffDialog(input: HandoffDialogInput): string {
 /* ------------------------------------------------------------------------- */
 
 /** Inner cover grid shared by the legacy login document and the SPA login document. */
-export function loginPlate(options: { next: string; error?: string }): string {
-  const invalid = options.error !== undefined;
-  const error = invalid
-    ? `<p class="field-error" id="token-error">${icon("alert-circle")}Token rejected. Check the value and try again.</p>`
-    : `<p class="hint" id="token-hint">The operator token is set by HANSE_OPERATOR_TOKEN.</p>`;
-  const describedBy = invalid ? "token-error" : "token-hint";
-  return `<div></div>
-      <section class="login-plate" aria-labelledby="login-title">
-        <div class="login-plate__head">
-          <span class="login-plate__brand">hanse</span>
-          <span class="sidebar__kicker">coordinator</span>
-        </div>
-        <hr class="rule rule--double" />
-        <h1 class="h2" id="login-title">Operator sign-in</h1>
-        <p class="body">Enter the operator token to open the chart room.</p>
-        <form method="post" action="/login" class="stack">
-          <input type="hidden" name="next" value="${escapeHtml(options.next)}" />
-          <div class="field"${invalid ? ' data-invalid="true"' : ""}>
-            <label class="label" for="token">Operator token (required)</label>
-            <div class="field__control">
-              <input class="input" id="token" name="token" type="password" required autofocus autocomplete="current-password"${invalid ? ' aria-invalid="true"' : ""} aria-describedby="${describedBy}" />
-              <button class="btn btn-ghost btn-icon btn-sm" type="button" data-password-toggle aria-label="Show token" aria-pressed="false">
-                <span data-password-icon="hidden">${icon("eye")}</span>
-                <span data-password-icon="visible">${icon("eye-off")}</span>
-              </button>
-            </div>
-            ${error}
-          </div>
-          <button class="btn btn-primary btn-lg btn-block" type="submit"><span class="btn__label">Sign in</span></button>
-        </form>
-        <p class="caption">The session stays on this browser for 30 days. Sign out from the sidebar.</p>
-      </section>
-      <p class="caption login-plate__foot">hanse coordinator / operator access</p>`;
-}
-
-export function loginPage(options: { next: string; error?: string }): string {
-  return documentPage({
-    title: "Sign in - hanse",
-    body: `<main class="cover chart-ground" id="main">${loginPlate(options)}</main>`,
-  });
-}

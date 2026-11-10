@@ -190,7 +190,6 @@ export function boot(overrides: Partial<BootPayload> = {}): BootPayload {
         ["project", "p"],
       ],
     ]),
-    spaRoutes: ["chat"],
     topbar: CHAT_PROPS.topbar,
     ...overrides,
   };
@@ -813,7 +812,7 @@ export async function mountChat(
         path: "/chat",
         name: "chat",
         component: ChatPage,
-        meta: { workspace: "chat", legacyRetired: true },
+        meta: { workspace: "chat" },
       },
       { path: "/projects", name: "projects", component: { template: "<div />" } },
     ],

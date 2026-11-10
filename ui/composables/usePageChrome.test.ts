@@ -23,7 +23,6 @@ function boot(): BootPayload {
     props: {},
     chrome: CHROME,
     routeKey: routeKey("projects", {}, {}),
-    spaRoutes: ["projects"],
     topbar: { ideHref: "/ide/" },
   };
 }

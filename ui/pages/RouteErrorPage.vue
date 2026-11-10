@@ -1,7 +1,5 @@
 <script setup lang="ts">
-import type { BootPayload } from "../boot.js";
-
-defineProps<{ message: string; boot: BootPayload }>();
+defineProps<{ message: string }>();
 
 function retry(): void {
   window.location.reload();
@@ -31,10 +29,7 @@ function retry(): void {
       <p class="empty-state__body">No data was changed.</p>
       <div class="cluster">
         <button class="btn btn-secondary btn-sm" type="button" @click="retry">Reload</button>
-        <a v-if="boot.legacyAvailable !== false" class="btn btn-ghost btn-sm" href="?legacy=1">
-          Use the classic interface
-        </a>
-        <a v-else class="btn btn-ghost btn-sm" href="/">Open overview</a>
+        <a class="btn btn-ghost btn-sm" href="/">Open overview</a>
       </div>
     </div>
   </div>

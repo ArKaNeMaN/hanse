@@ -385,7 +385,6 @@ function boot(
       params: routeId === "app" ? { id, app } : { id },
     },
     props: payload,
-    spaRoutes: [routeId as BootPayload["route"]["id"]],
     topbar: { ideHref: "/ide/" },
     chrome: CHROME,
     routeKey: JSON.stringify([
@@ -1106,13 +1105,11 @@ describe("AppPage", () => {
     expect(wrapper.get("h1").text()).toBe("alpha");
   });
 
-  it("shows a 404 state with retry and the legacy link", async () => {
+  it("shows a 404 state with retry", async () => {
     mocks.apiQuery.mockRejectedValue(new ApiError("not found", 404, "not_found"));
     const wrapper = await mountPage(boot(null));
 
     expect(wrapper.text()).toContain("Application not found");
-    expect(wrapper.text()).toContain("Use the classic interface");
-    expect(wrapper.find("a[href='?legacy=1']").exists()).toBe(true);
     expect(wrapper.get("button").text()).toContain("Retry");
   });
 

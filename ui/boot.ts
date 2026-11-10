@@ -1,4 +1,4 @@
-import { type PageMatch, ROUTES, type RouteId, routeById } from "../src/shared/routes.js";
+import { type PageMatch, routeById } from "../src/shared/routes.js";
 
 /** The active navigation id emitted by `ChromeData`; kept structural to avoid importing server code. */
 export type NavActive =
@@ -64,20 +64,18 @@ export interface BootTopbar {
   readonly contextToggle?: boolean;
 }
 
+export type BootOverride = "not-found" | "chat-no-apps";
+
 export interface BootPayload {
   readonly route: PageMatch;
   readonly props: unknown;
   readonly chrome: ChromeData;
   readonly routeKey: string;
   readonly operator?: BootOperator;
-  readonly spaRoutes: readonly RouteId[];
   readonly topbar: BootTopbar;
   readonly notice?: BootNotice;
-  /** False when this route has no classic fallback; the runtime fallback links to a reload. */
-  readonly legacyAvailable?: boolean;
+  readonly override?: BootOverride;
 }
-
-const KNOWN_ROUTE_IDS = new Set<RouteId>(ROUTES.map((route) => route.id));
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -142,22 +140,6 @@ function isTopbar(value: unknown): value is BootTopbar {
   );
 }
 
-function readSpaRoutes(value: unknown): RouteId[] | undefined {
-  if (!Array.isArray(value)) {
-    return undefined;
-  }
-  const ids: RouteId[] = [];
-  for (const entry of value) {
-    if (typeof entry !== "string") {
-      continue;
-    }
-    if (KNOWN_ROUTE_IDS.has(entry as RouteId)) {
-      ids.push(entry as RouteId);
-    }
-  }
-  return ids;
-}
-
 function isNotice(value: unknown): value is BootNotice {
   return (
     isRecord(value) &&
@@ -196,25 +178,21 @@ export function readBoot(doc: Document = document): BootPayload | undefined {
   if (parsed.notice !== undefined && !isNotice(parsed.notice)) {
     return undefined;
   }
-  if (parsed.legacyAvailable !== undefined && typeof parsed.legacyAvailable !== "boolean") {
-    return undefined;
-  }
   if (!isTopbar(parsed.topbar)) {
     return undefined;
   }
-  const spaRoutes = readSpaRoutes(parsed.spaRoutes);
-  if (spaRoutes === undefined) {
+  const override = parsed.override;
+  if (override !== undefined && override !== "not-found" && override !== "chat-no-apps") {
     return undefined;
   }
-  if (routeById(parsed.route.id as RouteId) === undefined) {
+  if (routeById(parsed.route.id as PageMatch["id"]) === undefined) {
     return undefined;
   }
   const route: PageMatch = {
-    id: parsed.route.id as RouteId,
+    id: parsed.route.id as PageMatch["id"],
     params: parsed.route.params,
   };
-  // Fail closed: never route to a page the server did not enable for this document.
-  if (!spaRoutes.includes(route.id)) {
+  if (override === "chat-no-apps" && route.id !== "chat") {
     return undefined;
   }
   return {
@@ -223,9 +201,8 @@ export function readBoot(doc: Document = document): BootPayload | undefined {
     chrome: parsed.chrome,
     routeKey: parsed.routeKey,
     ...(parsed.operator === undefined ? {} : { operator: parsed.operator }),
-    spaRoutes,
     topbar: parsed.topbar,
     ...(parsed.notice === undefined ? {} : { notice: parsed.notice }),
-    ...(parsed.legacyAvailable === undefined ? {} : { legacyAvailable: parsed.legacyAvailable }),
+    ...(override === undefined ? {} : { override }),
   };
 }

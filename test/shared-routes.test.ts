@@ -2,13 +2,9 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
-  isLegacyRetired,
+  isPagePath,
   isPublicRoute,
-  isSpaPath,
-  isSpaPathIn,
-  isSpaRoute,
   matchPage,
-  parseSpaAllowlist,
   ROUTES,
   routeById,
   routeKey,
@@ -23,7 +19,7 @@ describe("shared route manifest", () => {
     expect(source).not.toMatch(/require\(["']node:/);
   });
 
-  it("publishes the complete route table and cuts every route over by Stage 7C", () => {
+  it("publishes the complete route table", () => {
     expect(ROUTES.map((route) => [route.id, route.path, route.nav])).toEqual([
       ["projects", "/projects", "projects"],
       ["overview", "/", "overview"],
@@ -42,29 +38,14 @@ describe("shared route manifest", () => {
       ["terminal", "/terminal", "project"],
       ["chat", "/chat", "none"],
       ["login", "/login", "none"],
+      ["not-found", "*", "none"],
     ]);
-    expect(ROUTES.filter((route) => route.spa).map((route) => route.id)).toEqual([
-      "projects",
-      "overview",
-      "handoffs",
-      "ssh",
-      "settings-global",
-      "skills-global",
-      "skills-new",
-      "skills-detail",
-      "settings-project",
-      "settings-app",
-      "skills-project",
-      "skills-app",
-      "app",
-      "project",
-      "terminal",
-      "chat",
-      "login",
+    expect(ROUTES.filter((route) => route.synthetic === true).map((route) => route.id)).toEqual([
+      "not-found",
     ]);
   });
 
-  it("matches every route path and decodes parameters", () => {
+  it("matches every concrete route path and decodes parameters", () => {
     expect(matchPage("/projects")).toEqual({ id: "projects", params: {} });
     expect(matchPage("/")).toEqual({ id: "overview", params: {} });
     expect(matchPage("/handoffs")).toEqual({ id: "handoffs", params: {} });
@@ -98,6 +79,7 @@ describe("shared route manifest", () => {
     expect(matchPage("/chat")).toEqual({ id: "chat", params: {} });
     expect(matchPage("/terminal")).toEqual({ id: "terminal", params: {} });
     expect(matchPage("/login")).toEqual({ id: "login", params: {} });
+    expect(matchPage("/not-found")).toBeUndefined();
   });
 
   it("prefers static and longer patterns over dynamic ones", () => {
@@ -110,229 +92,84 @@ describe("shared route manifest", () => {
     expect(matchPage("/projects/p/apps/a")?.id).toBe("app");
   });
 
-  it("matches the chat and terminal page paths but never API, asset, IDE, preview, or upgrade paths", () => {
-    expect(matchPage("/chat")).toEqual({ id: "chat", params: {} });
-    expect(matchPage("/terminal")).toEqual({ id: "terminal", params: {} });
+  it("never matches API, asset, IDE, preview, internal, health, or unknown paths", () => {
     for (const pathname of [
       "/api/projects",
       "/api/ui/projects",
       "/assets/app.js",
       "/ide/",
-      "/preview/p/a/key",
-      "/projects/p/apps/a/git/status",
-      "/api/apps/a/terminal",
+      "/preview/p/a/k",
+      "/internal/mcp",
+      "/healthz",
+      "/readyz",
+      "/nope",
+      "/projects/p/apps/my.app/extra",
     ]) {
       expect(matchPage(pathname), pathname).toBeUndefined();
     }
   });
 
-  it("matches no path with a trailing slash or extra segment", () => {
-    expect(matchPage("/projects/")).toBeUndefined();
-    expect(matchPage("/projects/p/")).toBeUndefined();
-    expect(matchPage("/skills/1/extra")).toBeUndefined();
-    expect(matchPage("/login/")).toBeUndefined();
-  });
-
-  it("enables the cut-over routes by default", () => {
-    for (const route of ROUTES) {
-      const migrated =
-        route.id === "projects" ||
-        route.id === "overview" ||
-        route.id === "project" ||
-        route.id === "handoffs" ||
-        route.id === "ssh" ||
-        route.id === "settings-global" ||
-        route.id === "settings-project" ||
-        route.id === "settings-app" ||
-        route.id === "skills-global" ||
-        route.id === "skills-project" ||
-        route.id === "skills-app" ||
-        route.id === "skills-new" ||
-        route.id === "skills-detail" ||
-        route.id === "app" ||
-        route.id === "terminal" ||
-        route.id === "chat" ||
-        route.id === "login";
-      expect(isSpaRoute(route.id, { env: {} }), route.id).toBe(migrated);
-    }
-    expect(isSpaPath("/projects", { env: {} })).toBe(true);
-    expect(isSpaPath("/", { env: {} })).toBe(true);
-    expect(isSpaPath("/projects/alpha", { env: {} })).toBe(true);
-    expect(isSpaPath("/projects/alpha/apps/web", { env: {} })).toBe(true);
-    expect(isSpaPath("/handoffs", { env: {} })).toBe(true);
-    expect(isSpaPath("/ssh", { env: {} })).toBe(true);
-    expect(isSpaPath("/settings", { env: {} })).toBe(true);
-    expect(isSpaPath("/projects/alpha/settings", { env: {} })).toBe(true);
-    expect(isSpaPath("/projects/alpha/apps/web/settings", { env: {} })).toBe(true);
-    expect(isSpaPath("/skills", { env: {} })).toBe(true);
-    expect(isSpaPath("/projects/alpha/skills", { env: {} })).toBe(true);
-    expect(isSpaPath("/projects/alpha/apps/web/skills", { env: {} })).toBe(true);
-    expect(isSpaPath("/skills/new", { env: {} })).toBe(true);
-    expect(isSpaPath("/skills/42", { env: {} })).toBe(true);
-    expect(isSpaPath("/projects/alpha/apps/web", { env: {} })).toBe(true);
-    expect(isSpaPath("/chat", { env: {} })).toBe(true);
-    expect(isSpaPath("/terminal", { env: {} })).toBe(true);
-    expect(isSpaPath("/login", { env: {} })).toBe(true);
-  });
-
-  it("applies the rollback flags to login only", () => {
-    expect(isSpaRoute("login", { env: { legacy: "1", spaRoutes: "login" } })).toBe(false);
-    expect(isSpaRoute("login", { env: { spaRoutes: "login" }, manifestValid: false })).toBe(false);
-    expect(isSpaRoute("login", { env: { legacy: "0", spaRoutes: "login" } })).toBe(true);
-    expect(isSpaRoute("projects", { env: { legacy: "1", spaRoutes: "" } })).toBe(true);
-  });
-
-  it("treats an unset allowlist as the registry flag", () => {
-    expect(isSpaRoute("projects", { env: {} })).toBe(true);
-    expect(isSpaRoute("projects", { env: { spaRoutes: undefined } })).toBe(true);
-    expect(isSpaRoute("overview", { env: {} })).toBe(true);
-    expect(isSpaRoute("login", { env: {} })).toBe(true);
-  });
-
-  it("treats an empty allowlist as legacy for login only", () => {
-    expect(isSpaRoute("login", { env: { spaRoutes: "" } })).toBe(false);
-    expect(isSpaRoute("login", { env: { spaRoutes: "   " } })).toBe(false);
-    expect(isSpaRoute("projects", { env: { spaRoutes: "" } })).toBe(true);
-  });
-
-  it("enables only listed login and ignores unknown ids", () => {
-    const allowlist = { spaRoutes: "login, not-a-route" };
-    expect(isSpaRoute("login", { env: allowlist })).toBe(true);
-    expect(isSpaRoute("projects", { env: allowlist })).toBe(true);
-    expect(isSpaRoute("handoffs", { env: allowlist })).toBe(true);
-    expect(isSpaRoute("not-a-route" as never, { env: allowlist })).toBe(false);
-    expect(parseSpaAllowlist("login, nope ,overview")).toEqual({
-      ids: new Set(["login", "overview"]),
-      unknown: ["nope"],
-    });
-  });
-
-  it("exposes route metadata by id", () => {
-    expect(routeById("app")).toMatchObject({ path: "/projects/:id/apps/:app", nav: "project" });
-    expect(routeById("chat")).toMatchObject({
-      path: "/chat",
-      nav: "none",
-      spa: true,
-      legacyRetired: true,
-    });
-    expect(routeById("terminal")).toMatchObject({
-      path: "/terminal",
-      nav: "project",
-      spa: true,
-      legacyRetired: true,
-    });
-    expect(routeById("login")).toMatchObject({
-      path: "/login",
-      nav: "none",
-      spa: true,
-      public: true,
-    });
-    expect(routeById("nope" as never)).toBeUndefined();
-  });
-
-  it("keeps login public while still honoring the legacy rollback flags", () => {
+  it("keeps login public and exposes the synthetic not-found route by id", () => {
     expect(isPublicRoute("login")).toBe(true);
     expect(isPublicRoute("projects")).toBe(false);
-    expect(isLegacyRetired("login")).toBe(false);
-    expect(isSpaRoute("login", { env: {} })).toBe(true);
-    expect(isSpaRoute("login", { env: { legacy: "1" } })).toBe(false);
-    expect(isSpaRoute("login", { env: { spaRoutes: "" } })).toBe(false);
-    expect(isSpaRoute("login", { manifestValid: false })).toBe(false);
+    expect(routeById("not-found")).toMatchObject({ synthetic: true, label: "Page not found" });
   });
 
-  it("keeps every non-login route in the boot set regardless of rollback flags", () => {
-    const bootRoutes = ROUTES.filter((route) =>
-      isSpaRoute(route.id, { env: {}, manifestValid: true }),
-    ).map((route) => route.id);
-    for (const route of ROUTES) {
-      if (route.id !== "login") expect(bootRoutes, route.id).toContain(route.id);
-    }
-    expect(isSpaRoute("projects", { env: { legacy: "1" } })).toBe(true);
-    expect(isSpaRoute("projects", { env: { spaRoutes: "" } })).toBe(true);
-    expect(isSpaRoute("projects", { env: { legacy: "1", spaRoutes: "" } })).toBe(true);
-    expect(isSpaRoute("projects", { manifestValid: false })).toBe(false);
-    expect(isSpaRoute("login", { env: { legacy: "1" } })).toBe(false);
-  });
-
-  it("retires every route except login", () => {
-    for (const route of ROUTES) {
-      expect(isLegacyRetired(route.id), route.id).toBe(route.id !== "login");
-    }
-    expect(isLegacyRetired("nope" as never)).toBe(false);
-  });
-
-  it("checks SPA path membership against the resolved boot set", () => {
-    const ids = new Set<"projects" | "chat">(["projects", "chat"]);
-    expect(isSpaPathIn("/projects", ids)).toBe(true);
-    expect(isSpaPathIn("/chat", ids)).toBe(true);
-    expect(isSpaPathIn("/terminal", ids)).toBe(false);
-    expect(isSpaPathIn("/api/projects", ids)).toBe(false);
-    expect(isSpaPathIn("/projects", ["projects"] as const)).toBe(true);
+  it("classifies page-like paths without hiding dotted app keys", () => {
+    expect(isPagePath("/projects/p/apps/my.app")).toBe(true);
+    expect(isPagePath("/nope")).toBe(true);
+    expect(isPagePath("/api/projects")).toBe(false);
+    expect(isPagePath("/assets/app.css")).toBe(false);
+    expect(isPagePath("/ide/")).toBe(false);
+    expect(isPagePath("/preview/p/a/k")).toBe(false);
+    expect(isPagePath("/internal/mcp")).toBe(false);
+    expect(isPagePath("/healthz")).toBe(false);
+    expect(isPagePath("/readyz")).toBe(false);
+    expect(isPagePath("/app.js")).toBe(false);
   });
 });
 
 describe("routeKey", () => {
-  it("includes and sorts path params", () => {
-    expect(routeKey("app", { app: "web", id: "alpha" }, {})).toBe(
-      JSON.stringify([
-        "app",
-        [
-          ["app", "web"],
-          ["id", "alpha"],
-        ],
-        [],
-      ]),
-    );
-    expect(routeKey("app", { id: "alpha", app: "web" }, {})).toBe(
-      routeKey("app", { app: "web", id: "alpha" }, {}),
-    );
-  });
-
-  it("includes and sorts query values", () => {
-    expect(routeKey("chat", {}, { app: "a", tab: "x" })).toBe(
+  it("normalizes params and query, excluding notice, tone, and session", () => {
+    expect(
+      routeKey(
+        "chat",
+        { app: "alpha", project: "p" },
+        {
+          z: "last",
+          a: "first",
+          notice: "hello",
+          tone: "error",
+          session: "s1",
+          empty: "",
+          dropped: undefined,
+        },
+      ),
+    ).toBe(
       JSON.stringify([
         "chat",
-        [],
         [
-          ["app", "a"],
-          ["tab", "x"],
+          ["app", "alpha"],
+          ["project", "p"],
+        ],
+        [
+          ["a", "first"],
+          ["empty", ""],
+          ["z", "last"],
         ],
       ]),
     );
-    expect(routeKey("chat", {}, { tab: "x", app: "a" })).toBe(
-      routeKey("chat", {}, { app: "a", tab: "x" }),
+  });
+
+  it("keeps legacy as a normal query key", () => {
+    expect(routeKey("chat", {}, { legacy: "1" })).toBe(
+      JSON.stringify(["chat", [], [["legacy", "1"]]]),
     );
   });
 
-  it("uses the last value for a repeated query key", () => {
-    expect(routeKey("chat", {}, { app: ["a", "b"] })).toBe(routeKey("chat", {}, { app: "b" }));
-    expect(routeKey("chat", {}, { app: ["a", "b"] })).not.toBe(routeKey("chat", {}, { app: "a" }));
-  });
-
-  it("drops null and undefined query values but keeps an empty string", () => {
-    expect(routeKey("chat", {}, { a: null, b: undefined })).toBe(routeKey("chat", {}, {}));
-    expect(routeKey("chat", {}, { a: "" })).toBe(JSON.stringify(["chat", [], [["a", ""]]]));
-    expect(routeKey("chat", {}, { a: "" })).not.toBe(routeKey("chat", {}, {}));
-  });
-
-  it("excludes legacy, notice, tone, and session", () => {
-    expect(
-      routeKey("chat", {}, { legacy: "1", notice: "saved", tone: "warn", session: "s1" }),
-    ).toBe(routeKey("chat", {}, {}));
-    expect(
-      routeKey("chat", {}, { legacy: "1", notice: "saved", tone: "warn", session: "s1", app: "a" }),
-    ).toBe(routeKey("chat", {}, { app: "a" }));
-  });
-
-  it("produces the same key regardless of key insertion order", () => {
-    expect(routeKey("settings-app", { app: "web", id: "alpha" }, { scope: "x", tab: "y" })).toBe(
-      routeKey("settings-app", { id: "alpha", app: "web" }, { tab: "y", scope: "x" }),
+  it("is stable regardless of insertion order", () => {
+    expect(routeKey("project", { id: "p" }, { b: "2", a: "1" })).toBe(
+      routeKey("project", { id: "p" }, { a: "1", b: "2" }),
     );
-  });
-
-  it("distinguishes different ids, params, and query", () => {
-    expect(routeKey("chat", {}, {})).not.toBe(routeKey("terminal", {}, {}));
-    expect(routeKey("project", { id: "a" }, {})).not.toBe(routeKey("project", { id: "b" }, {}));
-    expect(routeKey("chat", {}, { app: "a" })).not.toBe(routeKey("chat", {}, { app: "b" }));
   });
 });

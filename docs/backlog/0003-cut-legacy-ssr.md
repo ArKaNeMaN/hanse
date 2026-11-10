@@ -1,10 +1,13 @@
 # 0003 - Cut the legacy SSR renderer and its rollback path
 
-Status: done for all non-login routes (2026-11-08); SPA chrome and `GET /api/ui/chrome` removed
-(2026-11-09, journal 0048); the `/login` rollback and the legacy `appShell()` error/login shell
-intentionally remain
+Status: **done** (2026-11-10). SPA chrome and `GET /api/ui/chrome` were removed in journal 0048;
+the zero-SSR stage removed the `/login` server plate and form, the `appShell()` error/login shell,
+`app.js`/`app-content.js`, and the `HANSE_UI_LEGACY`/`?legacy=1`/`HANSE_UI_SPA_ROUTES` rollback
+machinery (journal 0049).
 Created: 2026-11-08
 Priority: medium (removes a second UI implementation, its rollback surface, and the last per-request HTML rendering)
+Owner decision (2026-11-10): no-JS is unsupported as a system requirement; login becomes JS-required,
+with no server-rendered or static no-JS login fallback.
 
 ## Problem
 

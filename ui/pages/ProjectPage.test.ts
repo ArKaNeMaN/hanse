@@ -201,7 +201,6 @@ function boot(payload: ProjectProps | null, routeId = "project", id = "project-o
       params: routeId === "project" ? { id } : {},
     },
     props: payload,
-    spaRoutes: [routeId as BootPayload["route"]["id"]],
     topbar: { ideHref: "/ide/" },
     chrome: {
       title: "Project One",
@@ -377,7 +376,6 @@ describe("ProjectPage", () => {
     expect(wrapper.get("h1").text()).toBe("Project");
     expect(wrapper.text()).toContain("Project not found");
     expect(wrapper.text()).toContain("This project no longer exists.");
-    expect(wrapper.get('a[href="?legacy=1"]').text()).toBe("Use the classic interface");
 
     await wrapper.get("section .cluster button").trigger("click");
     await flushPromises();

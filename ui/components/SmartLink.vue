@@ -1,8 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { RouterLink } from "vue-router";
-import { isSpaPathIn } from "../../src/shared/routes.js";
-import { installedSpaRoutes } from "../spa-routes.js";
+import { matchPage } from "../../src/shared/routes.js";
 
 defineOptions({ inheritAttrs: false });
 
@@ -21,7 +20,7 @@ function pathnameOf(to: string): string {
 
 const spa = computed(() => {
   const pathname = pathnameOf(props.to);
-  return pathname.length > 0 && isSpaPathIn(pathname, installedSpaRoutes());
+  return pathname.length > 0 && matchPage(pathname) !== undefined;
 });
 
 function onClick(event: MouseEvent, navigate: (event?: MouseEvent) => Promise<unknown>): void {

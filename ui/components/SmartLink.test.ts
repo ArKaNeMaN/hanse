@@ -1,7 +1,6 @@
 import { flushPromises, mount } from "@vue/test-utils";
-import { beforeEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { createMemoryHistory, createRouter, type Router } from "vue-router";
-import { installSpaRoutes } from "../spa-routes.js";
 import SmartLink from "./SmartLink.vue";
 
 function createTestRouter(): Router {
@@ -26,18 +25,14 @@ async function mountSpaLink(to: string, router: Router, attrs: Record<string, st
 }
 
 describe("SmartLink", () => {
-  beforeEach(() => {
-    installSpaRoutes(["overview", "projects"]);
-  });
-
-  it("renders a plain anchor for a legacy path", () => {
+  it("renders a plain anchor for an unknown path", () => {
     const wrapper = mount(SmartLink, {
-      props: { to: "/login" },
-      slots: { default: "Sign in" },
+      props: { to: "/classic" },
+      slots: { default: "Classic" },
     });
 
     expect(wrapper.element.tagName).toBe("A");
-    expect(wrapper.attributes("href")).toBe("/login");
+    expect(wrapper.attributes("href")).toBe("/classic");
   });
 
   it("renders a router link and navigates for an SPA path with a query and hash", async () => {

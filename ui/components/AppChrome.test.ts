@@ -35,7 +35,6 @@ function boot(): BootPayload {
     chrome: CHROME,
     routeKey: JSON.stringify(["project", [["id", "p/one"]], []]),
     operator: { name: "alice", initials: "AL" },
-    spaRoutes: ["project"],
     topbar: { ideHref: "/ide/" },
   };
 }

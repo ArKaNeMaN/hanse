@@ -7,14 +7,12 @@ import { GitService } from "../src/git/service.js";
 import type { HttpDeps, HttpRequest } from "../src/http/handler.js";
 import { maybeServeSpa } from "../src/http/spa.js";
 import { createPrincipal } from "../src/identity/principals.js";
-import { isLegacyRetired, routeById } from "../src/shared/routes.js";
+import { routeById } from "../src/shared/routes.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
 
 const dirs: string[] = [];
 const databases: SqliteDatabase[] = [];
 const env = {
-  HANSE_UI_LEGACY: process.env.HANSE_UI_LEGACY,
-  HANSE_UI_SPA_ROUTES: process.env.HANSE_UI_SPA_ROUTES,
   HANSE_UI_DEV_URL: process.env.HANSE_UI_DEV_URL,
   HANSE_ASSETS: process.env.HANSE_ASSETS,
 };
@@ -89,20 +87,21 @@ function request(pathname: string, token: string, query: Record<string, string> 
   };
 }
 
-describe("retired chat and terminal routes", () => {
-  it("marks both routes as retired", () => {
-    expect(routeById("chat")).toMatchObject({ spa: true, legacyRetired: true });
-    expect(routeById("terminal")).toMatchObject({ spa: true, legacyRetired: true });
-    expect(isLegacyRetired("chat")).toBe(true);
-    expect(isLegacyRetired("terminal")).toBe(true);
+function boot(body: string): Record<string, unknown> {
+  const match = /<script id="hanse-boot" type="application\/json">(.*?)<\/script>/s.exec(body);
+  if (match === null) throw new Error("missing boot payload");
+  return JSON.parse(match[1] ?? "") as Record<string, unknown>;
+}
+
+describe("chat and terminal routes", () => {
+  it("keeps both routes in the shared registry", () => {
+    expect(routeById("chat")).toMatchObject({ path: "/chat", nav: "none" });
+    expect(routeById("terminal")).toMatchObject({ path: "/terminal", nav: "project" });
   });
 
-  it("serves SPA despite legacy env, query, and allowlist inputs", () => {
+  it("serves SPA despite a stale legacy query", () => {
     const f = fixture();
-    const headers = { accept: "text/html", cookie: `hanse_token=${encodeURIComponent(f.token)}` };
     process.env.HANSE_UI_DEV_URL = "http://127.0.0.1:5173";
-    process.env.HANSE_UI_LEGACY = "1";
-    process.env.HANSE_UI_SPA_ROUTES = "";
     for (const pathname of ["/chat", "/terminal"]) {
       const response = maybeServeSpa(
         f.deps,
@@ -110,16 +109,14 @@ describe("retired chat and terminal routes", () => {
       );
       expect(response?.status, pathname).toBe(200);
       expect(response?.body, pathname).toContain('id="hanse-boot"');
-      expect(response?.body, pathname).not.toContain("/assets/chat.js");
-      expect(response?.body, pathname).not.toContain("/assets/terminal.js");
-      expect(headers.accept).toBe("text/html");
+      expect(response?.body, pathname).not.toContain("/assets/app.js");
+      expect(response?.body, pathname).not.toContain("/assets/app-content.js");
     }
   });
 
-  it("returns an explicit 503 instead of a deleted legacy page when the UI build is missing", () => {
+  it("returns a self-contained 503 when the UI build is missing", () => {
     const f = fixture();
     delete process.env.HANSE_UI_DEV_URL;
-    delete process.env.HANSE_UI_LEGACY;
     process.env.HANSE_ASSETS = path.join(f.root, "empty-assets");
     for (const pathname of ["/chat", "/terminal"]) {
       const response = maybeServeSpa(
@@ -127,42 +124,56 @@ describe("retired chat and terminal routes", () => {
         request(pathname, f.token, { app: "web", project: "p" }),
       );
       expect(response?.status, pathname).toBe(503);
-      expect(response?.body, pathname).toContain("Interface build missing");
-      expect(response?.body, pathname).not.toContain("/assets/app-content.js");
-      expect(response?.body, pathname).not.toContain("/assets/chat.js");
-      expect(response?.body, pathname).not.toContain("/assets/terminal.js");
+      expect(response?.body, pathname).toContain("Interface unavailable");
+      expect(response?.body, pathname).not.toContain("/assets/app.css");
+      expect(response?.body, pathname).not.toContain("/assets/app.js");
     }
   });
 
-  it("keeps the chat entry semantics inside the SPA dispatcher", () => {
+  it("redirects chat with no app to the first operator app", () => {
     const f = fixture();
     process.env.HANSE_UI_DEV_URL = "http://127.0.0.1:5173";
     const noApp = maybeServeSpa(f.deps, request("/chat", f.token));
     expect(noApp?.status).toBe(302);
     expect(noApp?.headers?.location).toBe("/chat?app=web&project=p");
+  });
 
+  it("serves a Vue 404 boot for an unknown app", () => {
+    const f = fixture();
+    process.env.HANSE_UI_DEV_URL = "http://127.0.0.1:5173";
     const unknown = maybeServeSpa(
       f.deps,
       request("/chat", f.token, { app: "missing", project: "p" }),
     );
     expect(unknown?.status).toBe(404);
-    expect(unknown?.body).toContain("Nothing is moored here");
+    expect(boot(unknown?.body ?? "")).toMatchObject({
+      route: { id: "not-found", params: {} },
+      override: "not-found",
+    });
     expect(unknown?.body).not.toContain("/assets/app-content.js");
   });
 
-  it("renders the shell-only no-apps entry page and terminal 404", () => {
+  it("serves the Vue no-apps boot when there are no operator applications", () => {
     const empty = fixture(false);
     process.env.HANSE_UI_DEV_URL = "http://127.0.0.1:5173";
     const noApps = maybeServeSpa(empty.deps, request("/chat", empty.token));
     expect(noApps?.status).toBe(200);
-    expect(noApps?.body).toContain("No applications yet");
+    expect(boot(noApps?.body ?? "")).toMatchObject({
+      route: { id: "chat", params: {} },
+      props: { noApps: true },
+      override: "chat-no-apps",
+    });
     expect(noApps?.body).not.toContain("/assets/app-content.js");
+  });
 
+  it("serves a Vue 404 boot for terminal without a valid app", () => {
+    const empty = fixture(false);
+    process.env.HANSE_UI_DEV_URL = "http://127.0.0.1:5173";
     const terminal = maybeServeSpa(
       empty.deps,
       request("/terminal", empty.token, { app: "web", project: "p" }),
     );
     expect(terminal?.status).toBe(404);
-    expect(terminal?.body).not.toContain("/assets/app-content.js");
+    expect(boot(terminal?.body ?? "")).toMatchObject({ override: "not-found" });
   });
 });

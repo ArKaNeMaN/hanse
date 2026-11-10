@@ -151,7 +151,7 @@ describe("master HTTP surface", () => {
     expect(body.projects.map((project) => project.id)).toEqual(["p"]);
   });
 
-  it("prefers an operator application for /chat and falls back to the master", () => {
+  it("prefers an operator application for /chat and shows the no-apps page for master-only", () => {
     process.env.HANSE_UI_DEV_URL = "http://127.0.0.1:5173";
     const withOperator = fixture({ withOperator: true });
     const preferred = maybeServeSpa(withOperator.deps, spaRequest("/chat", withOperator.token));
@@ -161,9 +161,9 @@ describe("master HTTP surface", () => {
 
     const masterOnly = fixture({ withOperator: false });
     const fallback = maybeServeSpa(masterOnly.deps, spaRequest("/chat", masterOnly.token));
-    expect(fallback?.status).toBe(302);
-    expect(fallback?.headers?.location).toContain(`app=${MASTER_APP_KEY}`);
-    expect(fallback?.headers?.location).toContain(`project=${MASTER_PROJECT_ID}`);
+    expect(fallback?.status).toBe(200);
+    expect(fallback?.body).toContain('"noApps":true');
+    expect(fallback?.body).toContain('"override":"chat-no-apps"');
   });
 
   it("serves master SPA documents without destructive or git controls", async () => {

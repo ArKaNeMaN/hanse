@@ -21,8 +21,6 @@ import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/i
 const dirs: string[] = [];
 const databases: SqliteDatabase[] = [];
 const servers: Server[] = [];
-const originalLegacy = process.env.HANSE_UI_LEGACY;
-const originalAllowlist = process.env.HANSE_UI_SPA_ROUTES;
 const originalDevUrl = process.env.HANSE_UI_DEV_URL;
 
 afterEach(async () => {
@@ -42,10 +40,6 @@ afterEach(async () => {
     }
   }
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-  if (originalLegacy === undefined) delete process.env.HANSE_UI_LEGACY;
-  else process.env.HANSE_UI_LEGACY = originalLegacy;
-  if (originalAllowlist === undefined) delete process.env.HANSE_UI_SPA_ROUTES;
-  else process.env.HANSE_UI_SPA_ROUTES = originalAllowlist;
   if (originalDevUrl === undefined) delete process.env.HANSE_UI_DEV_URL;
   else process.env.HANSE_UI_DEV_URL = originalDevUrl;
 });
@@ -374,8 +368,6 @@ describe("GET /api/ui/apps/:app", () => {
       expect(endpoint?.body).not.toContain(secret);
     }
 
-    delete process.env.HANSE_UI_LEGACY;
-    process.env.HANSE_UI_SPA_ROUTES = "app";
     process.env.HANSE_UI_DEV_URL = "http://127.0.0.1:5173";
     const page = maybeServeSpa(
       f.deps,
@@ -389,7 +381,7 @@ describe("GET /api/ui/apps/:app", () => {
       expect(page?.body).not.toContain(secret);
     }
 
-    for (const route of ROUTES) {
+    for (const route of ROUTES.filter((entry) => entry.synthetic !== true)) {
       const pagePath = route.path.replace(":id", "p").replace(":app", "web");
       if (route.id === "app") {
         const props = await handleAppUiApi(

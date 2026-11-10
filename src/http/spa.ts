@@ -7,13 +7,9 @@ import { SettingsValidationError } from "../settings/index.js";
 import type { SettingsScope, SettingsTarget } from "../settings/types.js";
 import { setBounded } from "../shared/bounded-cache.js";
 import {
-  isLegacyRetired,
   isPublicRoute,
-  isSpaRoute,
   matchPage,
   type PageMatch,
-  parseSpaAllowlist,
-  ROUTES,
   type RouteId,
   routeById,
   routeKey,
@@ -21,14 +17,7 @@ import {
 import { SkillService, type SkillTarget } from "../skills/index.js";
 import { findApp } from "./apps.js";
 import { humanFromCookie } from "./auth.js";
-import { renderNoApps } from "./chat.js";
-import {
-  buildSite,
-  operatorProjects,
-  type PageChrome,
-  renderNotFound,
-  type SiteModel,
-} from "./dashboard.js";
+import { buildSite, operatorProjects, type SiteModel } from "./dashboard.js";
 import {
   agentTokenFor,
   type HttpDeps,
@@ -36,6 +25,7 @@ import {
   type HttpResponse,
   safeDecode,
 } from "./handler.js";
+import { isHtmlPageRequest } from "./page-request.js";
 import { buildAppProps } from "./props/app.js";
 import { buildChatProps, type ChatProps } from "./props/chat.js";
 import { buildHandoffsProps } from "./props/handoffs.js";
@@ -56,14 +46,12 @@ import {
 } from "./props/skills.js";
 import { buildSshProps, resolveSshScope } from "./props/ssh.js";
 import { buildTerminalProps, type TerminalProps } from "./props/terminal.js";
+import { staticErrorResponse } from "./static-error.js";
 import {
-  appShell,
   type Crumb,
   documentPage,
-  icon,
   ideBase,
   initials,
-  loginPlate,
   type NavProject,
   type Notice,
   type ShellOptions,
@@ -417,6 +405,8 @@ function routeChrome(
       };
     case "login":
       return { title: "Sign in", breadcrumb: [{ label: "Sign in" }] };
+    case "not-found":
+      return { title: "Page not found", breadcrumb: [{ label: "Not found" }] };
   }
 }
 
@@ -512,7 +502,6 @@ export interface SpaDocumentInput {
   readonly chrome: ChromeData;
   readonly routeKey: string;
   readonly operator?: BootOperator;
-  readonly spaRoutes: readonly RouteId[];
   readonly topbar?: SpaTopbar;
   readonly pageClass?: string;
   readonly bodyClass?: string;
@@ -520,8 +509,7 @@ export interface SpaDocumentInput {
   readonly notice?: Notice;
   readonly manifest?: UiManifest;
   readonly devUrl?: string;
-  readonly legacyAvailable?: boolean;
-  readonly fallbackHref?: string;
+  readonly override?: "not-found" | "chat-no-apps";
 }
 
 export function renderSpaDocument(input: SpaDocumentInput): string {
@@ -532,10 +520,9 @@ export function renderSpaDocument(input: SpaDocumentInput): string {
     chrome: input.chrome,
     routeKey: input.routeKey,
     ...(input.operator === undefined ? {} : { operator: input.operator }),
-    spaRoutes: input.spaRoutes,
     topbar,
     ...(input.notice === undefined ? {} : { notice: input.notice }),
-    ...(input.legacyAvailable === false ? { legacyAvailable: false } : {}),
+    ...(input.override === undefined ? {} : { override: input.override }),
   };
   const moduleScripts =
     input.devUrl !== undefined
@@ -549,8 +536,6 @@ export function renderSpaDocument(input: SpaDocumentInput): string {
     ...(input.viewport === undefined ? {} : { viewport: input.viewport }),
     ...(input.manifest === undefined ? {} : { styles: [...input.manifest.css] }),
     moduleScripts,
-    ...(input.legacyAvailable === undefined ? {} : { legacyAvailable: input.legacyAvailable }),
-    ...(input.fallbackHref === undefined ? {} : { fallbackHref: input.fallbackHref }),
     bootJson: `<script id="hanse-boot" type="application/json">${serializeBoot(boot)}</script>`,
   });
 }
@@ -563,12 +548,10 @@ function noticeFromQuery(request: HttpRequest): Notice | undefined {
   return { message, tone: request.query?.tone === "error" ? "error" : "success" };
 }
 
-function pagePath(request: HttpRequest): string {
+function pageRequestPath(request: HttpRequest): string {
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(request.query ?? {})) {
-    if (key !== "legacy") {
-      params.set(key, value);
-    }
+    params.set(key, value);
   }
   const query = params.toString();
   return query.length === 0 ? request.path : `${request.path}?${query}`;
@@ -580,7 +563,7 @@ function loginRedirect(request: HttpRequest): HttpResponse {
     contentType: "text/plain; charset=utf-8",
     body: "",
     headers: {
-      location: `/login?next=${encodeURIComponent(safeLocalPath(pagePath(request), "/"))}`,
+      location: `/login?next=${encodeURIComponent(safeLocalPath(pageRequestPath(request), "/"))}`,
     },
   };
 }
@@ -593,14 +576,12 @@ function loginNext(request: HttpRequest): string {
 /**
  * Public SPA login document.
  *
- * The server-rendered plate stays in `#main` so a browser without the Vue bundle still has a
- * working form; Vue replaces it on mount. `contentScript:false` keeps SPA documents on `app.js` only.
+ * The document is a static shell; Vue owns the login form and requires JavaScript.
  */
 function renderLoginSpaDocument(input: {
   readonly match: PageMatch;
   readonly next: string;
   readonly routeKey: string;
-  readonly spaRoutes: readonly RouteId[];
   readonly manifest?: UiManifest;
   readonly devUrl?: string;
 }): HttpResponse {
@@ -617,7 +598,6 @@ function renderLoginSpaDocument(input: {
       sshPendingCount: 0,
     },
     routeKey: input.routeKey,
-    spaRoutes: input.spaRoutes,
     topbar: { ideHref: ideBase() },
   };
   const moduleScripts =
@@ -634,9 +614,9 @@ function renderLoginSpaDocument(input: {
       title: "Sign in - hanse",
       ...(input.manifest === undefined ? {} : { styles: [...input.manifest.css] }),
       moduleScripts,
-      contentScript: false,
       bootJson: `<script id="hanse-boot" type="application/json">${serializeBoot(boot)}</script>`,
-      body: `<main class="cover chart-ground" id="main">${loginPlate({ next: input.next })}</main>
+      body: `<main class="cover chart-ground" id="main"></main>
+    <noscript><p class="caption">Sign-in requires JavaScript.</p></noscript>
     <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="false"></div>`,
     }),
   };
@@ -653,16 +633,6 @@ function jsonResponse(
     body: JSON.stringify(value),
     ...(headers === undefined ? {} : { headers }),
   };
-}
-
-function logUnknownRoutes(deps: HttpDeps): void {
-  const raw = process.env.HANSE_UI_SPA_ROUTES;
-  if (raw === undefined || raw.trim().length === 0) {
-    return;
-  }
-  for (const id of parseSpaAllowlist(raw).unknown) {
-    deps.logger?.warn("ui.unknown_route", { id });
-  }
 }
 
 function settingsScopeForMatch(match: PageMatch): {
@@ -974,21 +944,91 @@ function agentForbidden(): HttpResponse {
   );
 }
 
+function staticError(status: number, title: string, message: string): HttpResponse {
+  return staticErrorResponse({
+    status,
+    title,
+    message,
+    action: { href: "/", label: "Open overview" },
+  });
+}
+
+function staticBuildMissing(): HttpResponse {
+  return staticErrorResponse({
+    status: 503,
+    title: "Interface unavailable",
+    message: "This deployment has no SPA build. Redeploy the image with the UI build included.",
+    action: { href: "/", label: "Reload overview" },
+  });
+}
+
+function serveNotFound(
+  deps: HttpDeps,
+  request: HttpRequest,
+  principal: { name: string },
+  input: { site?: SiteModel; manifest?: UiManifest; devUrl?: string },
+): HttpResponse {
+  const site = input.site ?? buildSite(deps);
+  const route: PageMatch = { id: "not-found", params: {} };
+  const chrome = chromeFor(site, route, {
+    title: "Page not found",
+    breadcrumb: [{ label: "Not found" }],
+  });
+  return htmlResponse(
+    404,
+    renderSpaDocument({
+      route,
+      props: {},
+      chrome,
+      routeKey: routeKey(route.id, route.params, request.query ?? {}),
+      operator: { name: principal.name, initials: initials(principal.name) },
+      override: "not-found",
+      ...(input.devUrl === undefined ? {} : { devUrl: input.devUrl }),
+      ...(input.manifest === undefined ? {} : { manifest: input.manifest }),
+    }),
+  );
+}
+
+function serveChatNoApps(
+  site: SiteModel,
+  request: HttpRequest,
+  principal: { name: string },
+  input: { manifest?: UiManifest; devUrl?: string },
+): HttpResponse {
+  const route: PageMatch = { id: "chat", params: {} };
+  const chrome = chromeFor(site, route, {
+    title: "Chat",
+    breadcrumb: [{ label: "Workbench", href: "/" }, { label: "Chat" }],
+  });
+  return htmlResponse(
+    200,
+    renderSpaDocument({
+      route,
+      props: { noApps: true },
+      chrome,
+      routeKey: routeKey(route.id, route.params, request.query ?? {}),
+      operator: { name: principal.name, initials: initials(principal.name) },
+      override: "chat-no-apps",
+      ...(input.devUrl === undefined ? {} : { devUrl: input.devUrl }),
+      ...(input.manifest === undefined ? {} : { manifest: input.manifest }),
+    }),
+  );
+}
+
+function firstOperatorApp(
+  site: SiteModel,
+): { project: { id: string }; app: { appKey: string } } | undefined {
+  return operatorProjects(site).flatMap((project) =>
+    project.apps.map((app) => ({ project, app })),
+  )[0];
+}
+
 /**
- * Single page-dispatch point for the SPA. Returns undefined for requests that are not SPA pages or
- * for non-retired routes that should still fall through to a legacy renderer. Retired routes never
- * return undefined: they either render the SPA, a static entry/error page, or an explicit 503.
+ * Single page-dispatch point for the SPA. Every known page route is always served by the SPA;
+ * unknown page-like paths get a Vue 404. Returns undefined only for non-page requests.
  */
 export function maybeServeSpa(deps: HttpDeps, request: HttpRequest): HttpResponse | undefined {
-  if (request.method !== "GET" && request.method !== "HEAD") {
-    return undefined;
-  }
-  const accept = request.headers.accept ?? "";
-  if (!accept.includes("text/html") && !accept.includes("application/xhtml+xml")) {
-    return undefined;
-  }
-  const match = matchPage(request.path);
-  if (match === undefined) {
+  if (!isHtmlPageRequest(request)) {
     return undefined;
   }
 
@@ -996,59 +1036,77 @@ export function maybeServeSpa(deps: HttpDeps, request: HttpRequest): HttpRespons
   if (presented !== undefined && verifyAgentToken(deps.db, presented) !== undefined) {
     return agentForbidden();
   }
-  const retired = isLegacyRetired(match.id);
-  if (request.query?.legacy === "1" && !retired) {
-    return undefined;
-  }
 
-  logUnknownRoutes(deps);
+  const match = matchPage(request.path);
   const devUrl = uiDevUrl();
-  const spaRoutes = ROUTES.filter((route) => isSpaRoute(route.id, { manifestValid: true })).map(
-    (route) => route.id,
-  );
-  if (!spaRoutes.includes(match.id)) {
-    return undefined;
-  }
   const manifest =
     devUrl === undefined
       ? loadUiManifest({ ...(deps.logger === undefined ? {} : { logger: deps.logger }) })
       : undefined;
-  if (!retired && devUrl === undefined && manifest === undefined) {
-    return undefined;
+  const uiAvailable = devUrl !== undefined || manifest !== undefined;
+  const principal = humanFromCookie(deps, request);
+
+  if (match === undefined) {
+    if (!uiAvailable) {
+      return staticError(404, "Page not found", "Nothing is moored here.");
+    }
+    if (principal === undefined) {
+      return loginRedirect(request);
+    }
+    return serveNotFound(deps, request, principal, {
+      ...(devUrl === undefined ? {} : { devUrl }),
+      ...(manifest === undefined ? {} : { manifest }),
+    });
   }
 
-  const principal = humanFromCookie(deps, request);
   if (isPublicRoute(match.id)) {
     const next = loginNext(request);
     if (principal !== undefined) {
       return redirectTo(next);
     }
+    if (!uiAvailable) {
+      return staticBuildMissing();
+    }
     return renderLoginSpaDocument({
       match,
       next,
       routeKey: routeKey(match.id, match.params, request.query ?? {}),
-      spaRoutes,
       ...(devUrl === undefined ? {} : { devUrl }),
       ...(manifest === undefined ? {} : { manifest }),
     });
+  }
+
+  if (!uiAvailable) {
+    return staticBuildMissing();
   }
   if (principal === undefined) {
     return loginRedirect(request);
   }
 
   const site = buildSite(deps);
-  if (retired) {
-    const entry = retiredEntryPage(deps, site, match, request, principal);
-    if (entry !== undefined) {
-      return entry;
-    }
-    if (devUrl === undefined && manifest === undefined) {
-      return uiBuildMissing(site, pageChrome(principal, request));
+  if (match.id === "chat") {
+    const { appKey } = workspaceApp(request);
+    if (appKey.length === 0) {
+      const first = firstOperatorApp(site);
+      if (first === undefined) {
+        return serveChatNoApps(site, request, principal, {
+          ...(devUrl === undefined ? {} : { devUrl }),
+          ...(manifest === undefined ? {} : { manifest }),
+        });
+      }
+      return redirectTo(
+        `/chat?app=${encodeURIComponent(first.app.appKey)}&project=${encodeURIComponent(first.project.id)}`,
+      );
     }
   }
+
   const props = pagePropsFor(deps, site, match, request);
-  if (retired && props === null) {
-    return htmlResponse(404, renderNotFound(site, pageChrome(principal, request), false));
+  if (props === null) {
+    return serveNotFound(deps, request, principal, {
+      site,
+      ...(devUrl === undefined ? {} : { devUrl }),
+      ...(manifest === undefined ? {} : { manifest }),
+    });
   }
   const workspace = workspaceShellFor(match, props);
   const data = chromeFor(
@@ -1074,7 +1132,6 @@ export function maybeServeSpa(deps: HttpDeps, request: HttpRequest): HttpRespons
       chrome: data,
       routeKey: routeKey(match.id, match.params, request.query ?? {}),
       operator: { name: principal.name, initials: initials(principal.name) },
-      spaRoutes,
       ...(workspace === undefined
         ? {}
         : {
@@ -1086,7 +1143,6 @@ export function maybeServeSpa(deps: HttpDeps, request: HttpRequest): HttpRespons
       ...(notice === undefined ? {} : { notice }),
       ...(devUrl === undefined ? {} : { devUrl }),
       ...(manifest === undefined ? {} : { manifest }),
-      ...(retired ? { legacyAvailable: false, fallbackHref: pagePath(request) } : {}),
     }),
   };
 }
@@ -1100,14 +1156,6 @@ function htmlResponse(status: number, body: string): HttpResponse {
   };
 }
 
-function pageChrome(principal: { name: string }, request: HttpRequest): PageChrome {
-  const notice = noticeFromQuery(request);
-  return {
-    operatorName: principal.name,
-    ...(notice === undefined ? {} : { notice }),
-  };
-}
-
 function redirectTo(location: string): HttpResponse {
   return {
     status: 302,
@@ -1115,75 +1163,6 @@ function redirectTo(location: string): HttpResponse {
     body: "",
     headers: { location },
   };
-}
-
-/** Entry/error behavior that used to live in the deleted chat/terminal GET branches. */
-function retiredEntryPage(
-  deps: HttpDeps,
-  site: SiteModel,
-  match: PageMatch,
-  request: HttpRequest,
-  principal: { name: string },
-): HttpResponse | undefined {
-  if (match.id !== "chat" && match.id !== "terminal") {
-    return undefined;
-  }
-  const { projectId, appKey } = workspaceApp(request);
-  if (match.id === "terminal") {
-    if (projectId === undefined || appKey.length === 0) {
-      return htmlResponse(404, renderNotFound(site, pageChrome(principal, request), false));
-    }
-    return findApp(deps, projectId, appKey) === undefined
-      ? htmlResponse(404, renderNotFound(site, pageChrome(principal, request), false))
-      : undefined;
-  }
-  if (appKey.length === 0) {
-    const candidates = operatorProjects(site).flatMap((project) =>
-      project.apps.map((app) => ({ project, app })),
-    );
-    const first =
-      candidates[0] ??
-      site.projects.flatMap((project) => project.apps.map((app) => ({ project, app })))[0];
-    if (first === undefined) {
-      return htmlResponse(200, renderNoApps(site, pageChrome(principal, request)));
-    }
-    return redirectTo(
-      `/chat?app=${encodeURIComponent(first.app.appKey)}&project=${encodeURIComponent(first.project.id)}`,
-    );
-  }
-  return findApp(deps, projectId, appKey) === undefined
-    ? htmlResponse(404, renderNotFound(site, pageChrome(principal, request), false))
-    : undefined;
-}
-
-function uiBuildMissing(site: SiteModel, chrome: PageChrome): HttpResponse {
-  return htmlResponse(
-    503,
-    appShell({
-      title: "Interface unavailable",
-      active: "none",
-      breadcrumb: [{ label: "Interface" }],
-      projects: site.projects.map((project) => ({
-        id: project.id,
-        name: project.name,
-        appCount: project.apps.length,
-      })),
-      pendingCount: site.pendingCount,
-      sshPendingCount: site.sshPendingCount,
-      operatorName: chrome.operatorName,
-      notice: chrome.notice,
-      header: "",
-      contentScript: false,
-      body: `<div class="error-state" role="alert">
-        <span class="error-state__mark">${icon("alert-triangle", "icon--lg")}</span>
-        <div>
-          <h3 class="error-state__title">Interface build missing</h3>
-          <p class="error-state__body">This deployment has no SPA build. Redeploy the image with the UI build included; the legacy chat and terminal clients are retired.</p>
-          <div class="cluster"><a class="btn btn-primary btn-sm" href="/">Reload overview</a></div>
-        </div>
-      </div>`,
-    }),
-  );
 }
 
 const UI_API_PATHS = new Set([
@@ -1282,7 +1261,6 @@ export function handleUiApi(deps: HttpDeps, request: HttpRequest): HttpResponse 
     return versionFailure;
   }
 
-  logUnknownRoutes(deps);
   const site = buildSite(deps);
 
   if (request.path === "/api/ui/chat") {
@@ -1567,7 +1545,6 @@ export async function handleAppUiApi(
     return versionFailure;
   }
 
-  logUnknownRoutes(deps);
   const site = buildSite(deps);
   const projectId = request.query?.project ?? "";
   const input = {

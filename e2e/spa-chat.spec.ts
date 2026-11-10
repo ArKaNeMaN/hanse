@@ -116,8 +116,6 @@ test("the server document has no chrome seed and the client mounts the chat topb
     unknown
   >;
   expect(boot).toMatchObject({ route: { id: "chat" } });
-  expect(Array.isArray(boot.spaRoutes)).toBe(true);
-  expect((boot.spaRoutes as string[]).includes("chat")).toBe(true);
   expect(boot).not.toHaveProperty("initialSession");
   expect(JSON.stringify(boot)).not.toContain("session=");
 
@@ -178,7 +176,8 @@ test("unknown application chat returns the shell-only 404", async ({ page }) => 
 
   const response = await page.goto(`/chat?app=missing&project=${PROJECT_ONE}`);
   expect(response?.status()).toBe(404);
-  await expect(page.locator("#hanse-boot")).toHaveCount(0);
+  await expect(page.locator("#hanse-boot")).toHaveCount(1);
+  await expect(page.getByRole("heading", { name: "Page not found" })).toBeVisible();
   await expect(page.locator("#chat-shell")).toHaveCount(0);
 });
 

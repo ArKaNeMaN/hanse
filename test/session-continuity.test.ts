@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { GitService } from "../src/git/service.js";
 import { type HttpDeps, handleRequest } from "../src/http/handler.js";
+import { maybeServeSpa } from "../src/http/spa.js";
 import { createPrincipal } from "../src/identity/principals.js";
 import { loadOrCreateKey } from "../src/secrets/index.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
@@ -61,13 +62,13 @@ describe("operator session continuity", () => {
     const reopened = openDatabase(dbPath);
     databases.push(reopened);
     runMigrations(reopened);
-    const page = handleRequest(depsFor(reopened, workspace), {
+    const page = maybeServeSpa(depsFor(reopened, workspace), {
       method: "GET",
       path: "/login",
-      headers: { cookie: cookie ?? "" },
+      headers: { accept: "text/html", cookie: cookie ?? "" },
     });
-    expect(page.status).toBe(303);
-    expect(page.headers?.location).toBe("/");
+    expect(page?.status).toBe(302);
+    expect(page?.headers?.location).toBe("/");
   });
 
   it("keeps secret.key stable so encrypted settings stay readable", () => {

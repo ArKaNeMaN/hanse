@@ -67,12 +67,13 @@ be restarted after the build to pick it up.
 - The Vue client lives in `ui/` with its own `tsconfig.ui.json` (`moduleResolution: Bundler`). It
   imports the pure `src/shared/routes.ts` only; do not add `node:*` imports there. No SFC `<style>`
   blocks or `v-html`; use the existing Tailwind classes and `DESIGN.md` tokens.
-- Only routes whose registry `spa` flag is true are served by the Vite client; every page route is
-  SPA. Chat and terminal are `legacyRetired: true`: `HANSE_UI_LEGACY=1`, `?legacy=1`, and allowlist
-  omission no longer affect them, and their legacy renderers/clients are deleted. Their only rollback
-  is an image rollback with a UI-build check; all fixes land in Vue. `/api/ui/*` and SPA documents
-  are cookie-only; SPA documents load only the shell `app.js`.
+- Every page route is served by the Vite client; `/login` is JS-required. Missing UI build returns a
+  self-contained static 503, unknown/missing resources return the Vue 404, and page failures return a
+  static 500. Rollback is image-only with a UI-build check; all fixes land in Vue. `/api/ui/*` and SPA
+  documents are cookie-only; documents load no legacy `app.js` or `app-content.js`.
 - Node-compatible only: do not use Bun or other runtime-specific APIs.
+- JavaScript is required for the UI. Do not add no-JS fallbacks or duplicate server-rendered forms;
+  a `<noscript>` notice is informational only.
 - `.hanse/project.yaml` and `.hanse/app.yaml` schemas (in `src/schema/`) are the source of truth;
   keep docs and code in sync.
 - Runtime state lives outside managed repositories (under `XDG_STATE_HOME` / the `state` volume).

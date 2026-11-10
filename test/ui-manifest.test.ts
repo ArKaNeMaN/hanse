@@ -2,7 +2,6 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { renderNotFound } from "../src/http/dashboard.js";
 import {
   devModuleUrls,
   loadUiManifest,
@@ -149,7 +148,6 @@ describe("UI boot and dev URLs", () => {
       },
       routeKey: JSON.stringify(["projects", [], []]),
       operator: { name: "alice", initials: "AL" },
-      spaRoutes: ["projects", "overview"],
       manifest: {
         entry: "/assets/ui/assets/main.js",
         css: ["/assets/ui/assets/main.css"],
@@ -166,7 +164,7 @@ describe("UI boot and dev URLs", () => {
     expect(html).toContain('id="route-announcer"');
     expect(html).toContain('<aside class="sidebar" id="sidebar"');
     expect(html).toContain('id="breadcrumb-host"');
-    expect(html).toContain('"spaRoutes":["projects","overview"]');
+    expect(html).not.toContain('"spaRoutes"');
     expect(html).toContain('"topbar":{"ideHref":"/ide/"}');
     expect(html).toContain('"routeKey":"[\\"projects\\",[],[]]"');
     expect(html).toContain('"operator":{"name":"alice","initials":"AL"}');
@@ -187,7 +185,6 @@ describe("UI boot and dev URLs", () => {
         sshPendingCount: 0,
       },
       routeKey: JSON.stringify(["projects", [], []]),
-      spaRoutes: ["projects", "overview"],
       devUrl: "http://127.0.0.1:5173",
     });
     expect(html).toContain(
@@ -204,7 +201,6 @@ describe("SPA shell inputs and content script forwarding", () => {
     const html = renderSpaDocument({
       route: { id: "chat", params: {} },
       props: {},
-      spaRoutes: ["projects"],
       topbar: { ideHref: "/ide/", contextToggle: true },
       pageClass: "page--chat",
       bodyClass: "page__body--chat",
@@ -227,31 +223,5 @@ describe("SPA shell inputs and content script forwarding", () => {
     expect(html).toContain('<div class="topbar__actions"></div>');
     expect(html).toContain('"contextToggle":true');
     expect(html).not.toContain('<script src="/assets/app.js" defer></script>');
-  });
-
-  it("forwards contentScript:false through the private shell helper", () => {
-    const site = {
-      projects: [],
-      apps: new Map(),
-      runtime: new Map(),
-      process: new Map(),
-      pendingRestart: new Map(),
-      pendingRestartReasons: new Map(),
-      pendingCount: 0,
-      sshPendingCount: 0,
-      sshPendingByApp: new Map(),
-      sshHostsByApp: new Map(),
-      startingCount: 0,
-      runningCount: 0,
-      errorCount: 0,
-      stoppedCount: 0,
-      appCount: 0,
-      handoffCount: 0,
-    };
-    const shellOnly = renderNotFound(site, { operatorName: "alice" }, false);
-    expect(shellOnly).toContain('<script src="/assets/app.js" defer></script>');
-    expect(shellOnly).not.toContain("/assets/app-content.js");
-    const legacy = renderNotFound(site, { operatorName: "alice" });
-    expect(legacy).toContain("/assets/app-content.js");
   });
 });

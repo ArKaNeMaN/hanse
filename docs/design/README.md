@@ -112,6 +112,12 @@
   sidebar/breadcrumb/theme/drawer/sign-out, `usePageChrome`, the `/api/ui/auth` probe, and the
   `X-Hanse-UI-Version` hard-cutover gate. Status: approved (Oracle round 7 PASS; §10 amendment PASS);
   plan 0040 approved (`momus` PASS); implemented and verified (journal 0048).
+- [Zero SSR](./zero-ssr.md) - removing the last server-rendered page/chrome path: JS-required login,
+  Vue 404 for unknown/missing resources, self-contained static 500/503, Vue chat-no-apps, deletion of
+  `app.js`/`app-content.js` and the `HANSE_UI_LEGACY`/`?legacy=1`/`HANSE_UI_SPA_ROUTES` rollback
+  machinery. Status: approved (Oracle round 2 PASS WITH FIXES, findings folded); plan 0042 approved
+  (`momus` OKAY); implemented; targeted and UI gates green, full repository gate blocked by unrelated
+  concurrent notification-stage changes (journal 0049).
 - [Chat and terminal SPA migration](./chat-terminal-migration.md) - migrating `/chat` and
   `/terminal` to the Vue client before legacy cleanup: the SSE/WebSocket lifecycle inventory,
   the Vue/legacy island trade-off, a recommended hybrid incremental port (terminal first, chat in

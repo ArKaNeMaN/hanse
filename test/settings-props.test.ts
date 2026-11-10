@@ -14,13 +14,10 @@ import { createPrincipal } from "../src/identity/principals.js";
 import { mintAgentToken } from "../src/mcp/agent-tokens.js";
 import { ModelProviderService } from "../src/model-providers/index.js";
 import { SettingsService } from "../src/settings/index.js";
-import { ROUTES } from "../src/shared/routes.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
 
 const dirs: string[] = [];
 const databases: SqliteDatabase[] = [];
-const originalLegacy = process.env.HANSE_UI_LEGACY;
-const originalAllowlist = process.env.HANSE_UI_SPA_ROUTES;
 const originalDevUrl = process.env.HANSE_UI_DEV_URL;
 
 afterEach(() => {
@@ -32,10 +29,6 @@ afterEach(() => {
     }
   }
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-  if (originalLegacy === undefined) delete process.env.HANSE_UI_LEGACY;
-  else process.env.HANSE_UI_LEGACY = originalLegacy;
-  if (originalAllowlist === undefined) delete process.env.HANSE_UI_SPA_ROUTES;
-  else process.env.HANSE_UI_SPA_ROUTES = originalAllowlist;
   if (originalDevUrl === undefined) delete process.env.HANSE_UI_DEV_URL;
   else process.env.HANSE_UI_DEV_URL = originalDevUrl;
 });
@@ -130,8 +123,6 @@ function request(
 }
 
 function enable(): void {
-  delete process.env.HANSE_UI_LEGACY;
-  process.env.HANSE_UI_SPA_ROUTES = ROUTES.map((route) => route.id).join(",");
   process.env.HANSE_UI_DEV_URL = "http://127.0.0.1:5173";
 }
 

@@ -9,15 +9,10 @@ import { LifecycleActivity } from "../src/coordinator/lifecycle-activity.js";
 import { CoordinatorService } from "../src/coordinator/service.js";
 import { GitService } from "../src/git/service.js";
 import { isStartRoute } from "../src/http/chat.js";
-import {
-  type HttpDeps,
-  type HttpRequest,
-  handleRequest,
-  provisioningDeps,
-} from "../src/http/handler.js";
+import { type HttpDeps, handleRequest, provisioningDeps } from "../src/http/handler.js";
 import { createHttpServer } from "../src/http/server.js";
 import { safeLocalPath } from "../src/http/ui.js";
-import { createPrincipal, upsertPrincipalWithToken } from "../src/identity/principals.js";
+import { createPrincipal } from "../src/identity/principals.js";
 import { SettingsService } from "../src/settings/index.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
 
@@ -169,96 +164,18 @@ describe("http auth and login", () => {
     expect(response.headers?.location).toBe("/login?next=%2F");
   });
 
-  it("renders the login plate", () => {
-    const f = fixture();
-    const response = handleRequest(deps(f), { method: "GET", path: "/login", headers: {} });
-    expect(response.status).toBe(200);
-    expect(response.body).toContain('class="cover chart-ground"');
-    expect(response.body).toContain('class="login-plate"');
-    expect(response.body).toContain('autocomplete="current-password"');
-    expect(response.body).toContain("Operator token");
-  });
-
-  it("rejects an invalid token without setting a cookie", () => {
+  it("rejects the removed form login with 405", () => {
     const f = fixture();
     const response = handleRequest(deps(f), {
       method: "POST",
       path: "/login",
-      headers: {},
-      body: form({ token: "wrong", next: "/" }),
+      headers: { accept: "text/html" },
+      body: form({ token: humanToken(f.db), next: "/" }),
     });
-    expect(response.status).toBe(401);
-    expect(response.body).toContain("Token rejected");
+    expect(response.status).toBe(405);
+    expect(response.headers?.allow).toBe("GET, HEAD");
+    expect(response.body).toContain("Sign-in changed");
     expect(response.headers?.["set-cookie"]).toBeUndefined();
-  });
-
-  it("rejects an agent token on the human login form", () => {
-    const f = fixture();
-    const { token } = createPrincipal(f.db, { kind: "agent", name: "web" });
-    const response = handleRequest(deps(f), {
-      method: "POST",
-      path: "/login",
-      headers: {},
-      body: form({ token, next: "/" }),
-    });
-    expect(response.status).toBe(401);
-    expect(response.headers?.["set-cookie"]).toBeUndefined();
-  });
-
-  it("sets the session cookie and redirects to a validated next path", () => {
-    const f = fixture();
-    const token = humanToken(f.db);
-    const response = handleRequest(deps(f), {
-      method: "POST",
-      path: "/login",
-      headers: {},
-      body: form({ token, next: "/handoffs?filter=waiting" }),
-    });
-    expect(response.status).toBe(303);
-    expect(response.headers?.location).toBe("/handoffs?filter=waiting");
-    const setCookie = response.headers?.["set-cookie"] ?? "";
-    expect(setCookie).toContain("hanse_token=");
-    expect(setCookie).toContain("HttpOnly");
-    expect(setCookie).toContain("SameSite=Strict");
-    expect(setCookie).toContain("Path=/");
-    expect(setCookie).toContain("Max-Age=2592000");
-  });
-
-  it("blocks open redirects through next", () => {
-    const f = fixture();
-    const token = humanToken(f.db);
-    for (const next of ["//evil.example", "/\\evil.example", "https://evil.example"]) {
-      const response = handleRequest(deps(f), {
-        method: "POST",
-        path: "/login",
-        headers: {},
-        body: form({ token, next }),
-      });
-      expect(response.status).toBe(303);
-      expect(response.headers?.location).toBe("/");
-    }
-  });
-
-  it("round-trips a token containing cookie-significant characters", () => {
-    const f = fixture();
-    const token = "eq=token/+value";
-    upsertPrincipalWithToken(f.db, { kind: "human", name: "operator", token });
-    const login = handleRequest(deps(f), {
-      method: "POST",
-      path: "/login",
-      headers: {},
-      body: form({ token, next: "/" }),
-    });
-    expect(login.status).toBe(303);
-    const setCookie = login.headers?.["set-cookie"] ?? "";
-    const cookiePair = setCookie.split(";")[0] ?? "";
-    expect(cookiePair.startsWith("hanse_token=")).toBe(true);
-    const projects = handleRequest(deps(f), {
-      method: "GET",
-      path: "/api/projects",
-      headers: { cookie: cookiePair },
-    });
-    expect(projects.status).toBe(200);
   });
 
   it("clears the cookie on logout", () => {
@@ -820,21 +737,14 @@ describe("http API and assets", () => {
 
   it("serves the allowlisted assets without auth", () => {
     const f = fixture();
-    const request: HttpRequest = { method: "GET", path: "/assets/app.js", headers: {} };
-    const response = handleRequest(deps(f), request);
-    expect(response.status).toBe(200);
-    expect(response.contentType).toContain("text/javascript");
-    expect(response.body).toContain("data-nav-toggle");
-    expect(response.body).not.toContain("data-dialog-open");
-
-    const contentScript = handleRequest(deps(f), {
-      method: "GET",
-      path: "/assets/app-content.js",
-      headers: {},
-    });
-    expect(contentScript.status).toBe(200);
-    expect(contentScript.contentType).toContain("text/javascript");
-    expect(contentScript.body).toContain("data-dialog-open");
+    for (const removed of ["/assets/app.js", "/assets/app-content.js"]) {
+      const response = handleRequest(deps(f), {
+        method: "GET",
+        path: removed,
+        headers: {},
+      });
+      expect(response.status, removed).toBe(404);
+    }
 
     const favicon = handleRequest(deps(f), {
       method: "GET",
@@ -1101,7 +1011,7 @@ describe("http API and assets", () => {
     const response = handleRequest(deps(f), {
       method: "GET",
       path: "/nope",
-      headers: auth(token),
+      headers: { ...auth(token), accept: "text/html" },
     });
     expect(response.status).toBe(404);
     expect(response.contentType).toContain("text/html");

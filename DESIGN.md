@@ -811,7 +811,7 @@ auto-open. OpenCode patch parts are hidden.
 
 ### 5.17 Git panel
 
-The application page's git panel is server-rendered and hydrated by `assets/git.js`. Full states,
+The application page's git panel is Vue (`ui/components/AppGitPanel.vue`). Full states,
 copy, and behavior live in [the git workbench design](docs/design/git-workbench.md).
 
 - **Classes:** `.git-status__row` (branch/upstream block plus state pill), `.git-branch` (branch glyph
@@ -1101,22 +1101,20 @@ Enter submits the non-destructive default, dialog focus returns to its trigger.
 |---|---|---|---|
 | 3 font families (serif + sans + mono) | Global | Functional split: identity, UI, machine data. No webfonts allowed; system stacks vary by OS. | Design lead; revisit only if system stacks render poorly on the owner's LAN clients. |
 | System font rendering varies by OS | Global | Offline/LAN constraint forbids webfonts; Ubuntu/Palatino/DejaVu are the practical stacks. | Accepted for pre-alpha. |
-| Chat session/context drawers do not trap focus | `assets/chat.js` | Secondary panes stay reachable by Tab and close with Escape, scrim click, or an explicit close button; focus returns to the opener. Native dialogs elsewhere use trapped focus. | Revisit only if the drawers become destructive or modal. |
-| `dialog`, drawer, toast, theme, and busy-state JS live in `assets/app.js` | `assets/app.js` | A single shared, dependency-free progressive-enhancement file serves every product page. Pages remain server-rendered and forms work without it; the drawer, dialogs, theme toggle, toast dismissal, and submit busy state need it. Chat-specific behavior lives in `assets/chat.js`; the shell helpers stay shared. | Split only if the shell lifecycle changes. |
+| Chat session/context drawers do not trap focus | `ui/pages/ChatPage.vue` | Secondary panes stay reachable by Tab and close with Escape, scrim click, or an explicit close button; focus returns to the opener. Native dialogs elsewhere use trapped focus. | Revisit only if the drawers become destructive or modal. |
 | Embedded IDE is not themed | `/ide/` | Third-party code-server surface; hanse must not restyle it. | Permanently out of scope; compatibility checked by eye. |
 | Legacy compatibility classes remain | `src/http/styles.css` | The daisyUI-era product pages have been replaced; the aliases remain as a low-risk compatibility shim for old cached markup and are no longer used by new pages. daisyUI is not imported. | Remove in a dedicated cleanup with visual regression. |
-| Chat renders every message in a session with no virtualization | `assets/chat.js` | One operator and short handoff sessions do not justify a virtual list; the thread keeps the existing message list and scroll preservation. | Add windowing only for sessions large enough to jank. |
-| Chat markdown is a deliberate safe subset | `assets/chat.js` | Tables, images, embeds, and raw HTML are not rendered. This keeps untrusted agent output safe without an HTML sanitizer dependency. | Extend the DOM renderer; never switch to innerHTML. |
-| Chat session/message timestamps depend on opencode shapes | `assets/chat.js` | Relative/absolute times are derived from `session.time`, `session.updatedAt`, and `info.time.created` when present; missing times are omitted rather than fabricated. | Revisit if opencode changes its response schema. |
+| Chat renders every message in a session with no virtualization | `ui/pages/ChatPage.vue` | One operator and short handoff sessions do not justify a virtual list; the thread keeps the existing message list and scroll preservation. | Add windowing only for sessions large enough to jank. |
+| Chat markdown is a deliberate safe subset | `ui/components/chat/MarkdownBlock.vue` | Tables, images, embeds, and raw HTML are not rendered. This keeps untrusted agent output safe without an HTML sanitizer dependency. | Extend the DOM renderer; never switch to innerHTML. |
+| Chat session/message timestamps depend on opencode shapes | `ui/chat/*` | Relative/absolute times are derived from `session.time`, `session.updatedAt`, and `info.time.created` when present; missing times are omitted rather than fabricated. | Revisit if opencode changes its response schema. |
 | Showcase inline JS is excluded from Biome | `docs/design/showcase.html` | Static documentation harness with inline ES5 toggles, not product code. Product TypeScript and the capture script remain fully linted. | Remove the exclusion if the harness gains a build step. |
 | System display serif varies by OS | Global | DejaVu Serif on this Linux host; Iowan/Palatino/Georgia on macOS/Windows. No webfonts are permitted. | Accepted; the stack is documented and tested on the host. |
-| Theme control is two-state in the product shell | `src/http/ui.ts`, `assets/app.js` | Dark is the default; `data-theme` toggles light/dark and persists in `localStorage["hanse-theme"]`. A system-follow third state is not implemented. | Add only if the owner asks for system-follow. |
-| Settings forms without JS lose values on validation | `src/http/settings.ts`, `assets/settings.js` | The JS path saves live via server-rendered section fragments; without JS, non-Git forms still submit and redirect, and Git credential forms are JSON-only with a visible `<noscript>`. | Revisit if no-JS usage is real. |
-| Terminal reconnect starts a new shell | `assets/terminal.js` | PTYs are ephemeral Docker execs; there is no persistent multiplexer. | Add only as a separate feature. |
+| Theme control is two-state in the product shell | `ui/stores/theme.ts` | Dark is the default; `data-theme` toggles light/dark and persists in `localStorage["hanse-theme"]`. A system-follow third state is not implemented. | Add only if the owner asks for system-follow. |
+| Terminal reconnect starts a new shell | `ui/terminal/socket.ts` | PTYs are ephemeral Docker execs; there is no persistent multiplexer. | Add only as a separate feature. |
 | No terminal search or web-links addon | `assets/vendor/xterm/` | The base terminal is complete without them; adding them needs a new vendored bundle and licence/checksum review. | Add only with a separate allowlist review. |
 | Pre-v10 running instances show `Applied state unknown` | `src/opencode/manager.ts`, migration v10 | The applied hash was not persisted before this pass; the UI shows `Restart required` instead of guessing. | One-time; a restart records the values. |
-| Chat runtime polling can lag up to 10s | `assets/chat.js` | The runtime endpoint is a cheap DB read; there is no runtime SSE. | Add runtime SSE only if state changes often enough to matter. |
-| Terminal clipboard uses `execCommand` on insecure HTTP | `assets/terminal.js` | `navigator.clipboard` requires a secure context; the fallback keeps copy/paste usable on a LAN. | Revisit when TLS/reverse proxy is standard. |
+| Chat runtime polling can lag up to 10s | `ui/composables/useChatStream.ts` | The runtime endpoint is a cheap DB read; there is no runtime SSE. | Add runtime SSE only if state changes often enough to matter. |
+| Terminal clipboard uses `execCommand` on insecure HTTP | `ui/terminal/*` | `navigator.clipboard` requires a secure context; the fallback keeps copy/paste usable on a LAN. | Revisit when TLS/reverse proxy is standard. |
 
 ### 8.3 Showcase harness and evidence
 

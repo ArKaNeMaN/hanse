@@ -11,15 +11,13 @@ import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/i
 const dirs: string[] = [];
 const databases: SqliteDatabase[] = [];
 const env = {
-  HANSE_UI_LEGACY: process.env.HANSE_UI_LEGACY,
-  HANSE_UI_SPA_ROUTES: process.env.HANSE_UI_SPA_ROUTES,
   HANSE_UI_DEV_URL: process.env.HANSE_UI_DEV_URL,
   HANSE_ASSETS: process.env.HANSE_ASSETS,
 };
 
 beforeEach(() => {
-  delete process.env.HANSE_UI_LEGACY;
-  delete process.env.HANSE_UI_SPA_ROUTES;
+  delete process.env.HANSE_UI_DEV_URL;
+  delete process.env.HANSE_ASSETS;
 });
 
 afterEach(() => {
@@ -63,13 +61,13 @@ function fixture(): Fixture {
 
 function request(
   pathname: string,
-  options: { token?: string; query?: Record<string, string> } = {},
+  options: { token?: string; query?: Record<string, string>; accept?: string } = {},
 ): HttpRequest {
   return {
     method: "GET",
     path: pathname,
     headers: {
-      accept: "text/html",
+      accept: options.accept ?? "text/html",
       ...(options.token === undefined
         ? {}
         : { cookie: `hanse_token=${encodeURIComponent(options.token)}` }),
@@ -79,11 +77,9 @@ function request(
 }
 
 describe("SPA login route", () => {
-  it("serves an unauthenticated login document with a no-JS form fallback", () => {
+  it("serves an unauthenticated static login document with no server plate or legacy scripts", () => {
     const f = fixture();
     process.env.HANSE_UI_DEV_URL = "http://127.0.0.1:5173";
-    delete process.env.HANSE_UI_LEGACY;
-    delete process.env.HANSE_UI_SPA_ROUTES;
 
     const response = maybeServeSpa(f.deps, request("/login", { query: { next: "/projects" } }));
 
@@ -91,13 +87,15 @@ describe("SPA login route", () => {
     expect(response?.body).toContain('id="hanse-boot"');
     expect(response?.body).toContain('"route":{"id":"login","params":{}}');
     expect(response?.body).toContain('"next":"/projects"');
-    expect(response?.body).toContain('class="cover chart-ground"');
-    expect(response?.body).toContain('class="login-plate"');
-    expect(response?.body).toContain('action="/login"');
+    expect(response?.body).toContain('<main class="cover chart-ground" id="main"></main>');
+    expect(response?.body).toContain("Sign-in requires JavaScript.");
+    expect(response?.body).not.toContain('class="login-plate"');
+    expect(response?.body).not.toContain('action="/login"');
+    expect(response?.body).not.toContain("/assets/app.js");
+    expect(response?.body).not.toContain("/assets/app-content.js");
     expect(response?.body).toContain(
       '<script type="module" src="http://127.0.0.1:5173/assets/ui/main.ts">',
     );
-    expect(response?.body).not.toContain("/assets/app-content.js");
   });
 
   it("redirects an authenticated session to the validated next path", () => {
@@ -124,25 +122,25 @@ describe("SPA login route", () => {
     expect(open?.headers?.location).toBe("/");
   });
 
-  it("falls back to the legacy login for every rollback input", () => {
+  it("serves the login document for a non-HTML Accept instead of redirect-looping", () => {
     const f = fixture();
     process.env.HANSE_UI_DEV_URL = "http://127.0.0.1:5173";
 
-    process.env.HANSE_UI_LEGACY = "1";
-    expect(maybeServeSpa(f.deps, request("/login"))).toBeUndefined();
-
-    delete process.env.HANSE_UI_LEGACY;
-    expect(maybeServeSpa(f.deps, request("/login", { query: { legacy: "1" } }))).toBeUndefined();
-
-    process.env.HANSE_UI_SPA_ROUTES = "";
-    expect(maybeServeSpa(f.deps, request("/login"))).toBeUndefined();
+    const response = maybeServeSpa(f.deps, request("/login", { accept: "*/*" }));
+    expect(response?.status).toBe(200);
+    expect(response?.body).toContain('"route":{"id":"login","params":{}}');
   });
 
-  it("falls back to the legacy login when the UI build is missing", () => {
+  it("returns a self-contained 503 when the UI build is missing", () => {
     const f = fixture();
-    delete process.env.HANSE_UI_DEV_URL;
     process.env.HANSE_ASSETS = path.join(f.root, "empty-assets");
 
-    expect(maybeServeSpa(f.deps, request("/login"))).toBeUndefined();
+    const response = maybeServeSpa(f.deps, request("/login"));
+    expect(response?.status).toBe(503);
+    expect(response?.body).toContain("Interface unavailable");
+    expect(response?.headers?.["content-security-policy"]).toContain("frame-ancestors 'none'");
+    expect(response?.body).not.toContain("/assets/app.css");
+    expect(response?.body).not.toContain("/assets/app.js");
+    expect(response?.body).not.toContain("login-plate");
   });
 });

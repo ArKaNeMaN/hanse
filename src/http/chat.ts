@@ -141,11 +141,9 @@ import { setBounded } from "../shared/bounded-cache.js";
 import { agentMediaServiceFor } from "./agent-media.js";
 import { type FoundApp, findApp, toManagedApp } from "./apps.js";
 import { principalFrom } from "./auth.js";
-import type { PageChrome, SiteModel } from "./dashboard.js";
 import { registerSseDrain } from "./deploy.js";
 import { lifecycleErrorResponse } from "./errors.js";
 import type { HttpDeps, HttpRequest, HttpResponse } from "./handler.js";
-import { appShell, emptyState, pageHeader } from "./ui.js";
 import { requireUiVersion } from "./ui-version.js";
 
 function json(status: number, value: unknown): HttpResponse {
@@ -205,39 +203,6 @@ function effectiveModel(
   } catch {
     return undefined;
   }
-}
-
-function navProjects(site: SiteModel): Array<{ id: string; name: string; appCount: number }> {
-  return site.projects.map((project) => ({
-    id: project.id,
-    name: project.name,
-    appCount: project.apps.length,
-  }));
-}
-
-export function renderNoApps(site: SiteModel, chrome: PageChrome): string {
-  return appShell({
-    title: "Chat",
-    active: "none",
-    breadcrumb: [{ label: "Workbench", href: "/" }, { label: "Chat" }],
-    projects: navProjects(site),
-    pendingCount: site.pendingCount,
-    operatorName: chrome.operatorName,
-    notice: chrome.notice,
-    header: pageHeader({
-      overline: "Workbench",
-      title: "Chat",
-      description: "A workspace for one application agent at a time.",
-    }),
-    body: emptyState({
-      iconName: "message",
-      title: "No applications yet",
-      body: "Add an application to a project before opening a chat. The agent starts when you open its workspace.",
-      action: '<a class="btn btn-primary btn-sm" href="/projects">Open projects</a>',
-    }),
-    skillsHref: "/skills",
-    contentScript: false,
-  });
 }
 
 /**

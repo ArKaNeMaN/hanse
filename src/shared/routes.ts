@@ -1,9 +1,8 @@
 /**
  * Shared page-route manifest for the coordinator.
  *
- * This module is imported by the server and, later, by the Vite client, so it must stay pure:
- * no `node:*` imports, no filesystem access, and no framework dependency. Environment flags are
- * read through `process.env` only when they exist; `?legacy=1` is handled by the page dispatcher.
+ * This module is imported by the server and the Vite client, so it must stay pure: no `node:*`
+ * imports, no filesystem access, and no framework dependency.
  */
 
 export type RouteId =
@@ -23,7 +22,8 @@ export type RouteId =
   | "app"
   | "terminal"
   | "chat"
-  | "login";
+  | "login"
+  | "not-found";
 
 export type NavId =
   | "overview"
@@ -40,28 +40,15 @@ export interface RouteDefinition {
   readonly path: string;
   readonly nav: NavId;
   readonly label: string;
-  /** Registry cutover flag. */
-  readonly spa: boolean;
-  /** True when the route always serves the SPA and ignores every rollback flag. */
-  readonly legacyRetired?: boolean;
   /** True for a page served without an authenticated session, such as the login page. */
   readonly public?: boolean;
+  /** Synthetic routes are valid boot ids but never match a request path. */
+  readonly synthetic?: boolean;
 }
 
 export interface PageMatch {
   readonly id: RouteId;
   readonly params: Readonly<Record<string, string>>;
-}
-
-export interface UiRouteEnv {
-  readonly legacy?: string;
-  readonly spaRoutes?: string;
-}
-
-export interface SpaRouteOptions {
-  readonly env?: UiRouteEnv;
-  /** False when the UI manifest is missing, invalid, or partial. */
-  readonly manifestValid?: boolean;
 }
 
 const ROUTE_DEFINITIONS: readonly RouteDefinition[] = [
@@ -70,136 +57,110 @@ const ROUTE_DEFINITIONS: readonly RouteDefinition[] = [
     path: "/projects",
     nav: "projects",
     label: "Projects",
-    spa: true,
-    legacyRetired: true,
   },
   {
     id: "overview",
     path: "/",
     nav: "overview",
     label: "Overview",
-    spa: true,
-    legacyRetired: true,
   },
   {
     id: "handoffs",
     path: "/handoffs",
     nav: "handoffs",
     label: "Handoffs",
-    spa: true,
-    legacyRetired: true,
   },
   {
     id: "ssh",
     path: "/ssh",
     nav: "ssh",
     label: "SSH",
-    spa: true,
-    legacyRetired: true,
   },
   {
     id: "settings-global",
     path: "/settings",
     nav: "settings",
     label: "Settings",
-    spa: true,
-    legacyRetired: true,
   },
   {
     id: "skills-global",
     path: "/skills",
     nav: "skills",
     label: "Skills",
-    spa: true,
-    legacyRetired: true,
   },
   {
     id: "skills-new",
     path: "/skills/new",
     nav: "skills",
     label: "New skill",
-    spa: true,
-    legacyRetired: true,
   },
   {
     id: "skills-detail",
     path: "/skills/:id",
     nav: "skills",
     label: "Skill",
-    spa: true,
-    legacyRetired: true,
   },
   {
     id: "settings-project",
     path: "/projects/:id/settings",
     nav: "settings",
     label: "Settings",
-    spa: true,
-    legacyRetired: true,
   },
   {
     id: "settings-app",
     path: "/projects/:id/apps/:app/settings",
     nav: "settings",
     label: "Settings",
-    spa: true,
-    legacyRetired: true,
   },
   {
     id: "skills-project",
     path: "/projects/:id/skills",
     nav: "skills",
     label: "Skills",
-    spa: true,
-    legacyRetired: true,
   },
   {
     id: "skills-app",
     path: "/projects/:id/apps/:app/skills",
     nav: "skills",
     label: "Skills",
-    spa: true,
-    legacyRetired: true,
   },
   {
     id: "app",
     path: "/projects/:id/apps/:app",
     nav: "project",
     label: "Application",
-    spa: true,
-    legacyRetired: true,
   },
   {
     id: "project",
     path: "/projects/:id",
     nav: "project",
     label: "Project",
-    spa: true,
-    legacyRetired: true,
   },
   {
     id: "terminal",
     path: "/terminal",
     nav: "project",
     label: "Terminal",
-    spa: true,
-    legacyRetired: true,
   },
   {
     id: "chat",
     path: "/chat",
     nav: "none",
     label: "Chat",
-    spa: true,
-    legacyRetired: true,
   },
   {
     id: "login",
     path: "/login",
     nav: "none",
     label: "Sign in",
-    spa: true,
     public: true,
+  },
+  {
+    id: "not-found",
+    path: "*",
+    nav: "none",
+    label: "Page not found",
+    synthetic: true,
   },
 ];
 
@@ -230,7 +191,10 @@ function compile(route: RouteDefinition): CompiledRoute {
 
 // Static segments are listed before dynamic ones, and longer dynamic paths before shorter ones,
 // so `/skills/new` wins over `/skills/:id` and `/projects/:id/settings` before `/projects/:id`.
-const COMPILED: readonly CompiledRoute[] = ROUTE_DEFINITIONS.map(compile);
+// Synthetic definitions (the boot-only `not-found` id) are deliberately excluded.
+const COMPILED: readonly CompiledRoute[] = ROUTE_DEFINITIONS.filter(
+  (route) => route.synthetic !== true,
+).map(compile);
 
 function decodeParam(value: string): string {
   try {
@@ -266,10 +230,10 @@ export function routeById(id: RouteId): RouteDefinition | undefined {
 type RouteQueryValue = string | string[] | null | undefined;
 
 /**
- * Query keys that do not affect chrome or page identity: `legacy` (rollback input),
- * `notice`/`tone` (toast presentation), and `session` (chat selection).
+ * Query keys that do not affect chrome or page identity: `notice`/`tone` (toast presentation) and
+ * `session` (chat selection).
  */
-const EXCLUDED_ROUTE_KEYS: ReadonlySet<string> = new Set(["legacy", "notice", "tone", "session"]);
+const EXCLUDED_ROUTE_KEYS: ReadonlySet<string> = new Set(["notice", "tone", "session"]);
 
 function lastQueryValue(value: RouteQueryValue): string | null | undefined {
   return Array.isArray(value) ? value[value.length - 1] : value;
@@ -313,98 +277,26 @@ export function routeKey(
   return JSON.stringify([id, normalizedParams, normalizedQuery]);
 }
 
-export interface SpaAllowlist {
-  readonly ids: ReadonlySet<RouteId>;
-  readonly unknown: readonly string[];
-}
-
-/** Parse `HANSE_UI_SPA_ROUTES`. Unknown ids are returned separately so the server can log them. */
-export function parseSpaAllowlist(value: string): SpaAllowlist {
-  const ids = new Set<RouteId>();
-  const unknown: string[] = [];
-  for (const raw of value.split(",")) {
-    const id = raw.trim();
-    if (id.length === 0) {
-      continue;
-    }
-    if (ROUTE_BY_ID.has(id as RouteId)) {
-      ids.add(id as RouteId);
-    } else {
-      unknown.push(id);
-    }
-  }
-  return { ids, unknown };
-}
-
-function environment(): UiRouteEnv {
-  if (typeof process === "undefined" || process.env === undefined) {
-    return {};
-  }
-  return {
-    legacy: process.env.HANSE_UI_LEGACY,
-    spaRoutes: process.env.HANSE_UI_SPA_ROUTES,
-  };
-}
-
-/**
- * Resolve whether a route is served by the SPA.
- *
- * Precedence: an invalid manifest > a retired route > `HANSE_UI_LEGACY=1` >
- * `HANSE_UI_SPA_ROUTES` > registry `spa`. An unset allowlist falls through to the registry flag;
- * an empty string disables every non-retired route; a comma list enables only the listed ids
- * (unknown ids are ignored). `?legacy=1` is handled by the page dispatcher, not here.
- */
-export function isSpaRoute(id: RouteId, options: SpaRouteOptions = {}): boolean {
-  const route = ROUTE_BY_ID.get(id);
-  if (route === undefined) {
-    return false;
-  }
-  if (options.manifestValid === false) {
-    return false;
-  }
-  if (route.legacyRetired === true) {
-    return true;
-  }
-  const env = options.env ?? environment();
-  if (env.legacy?.trim() === "1") {
-    return false;
-  }
-  const allowlist = env.spaRoutes;
-  if (allowlist === undefined) {
-    return route.spa;
-  }
-  if (allowlist.trim().length === 0) {
-    return false;
-  }
-  return parseSpaAllowlist(allowlist).ids.has(id);
-}
-
-export function isSpaPath(pathname: string, options: SpaRouteOptions = {}): boolean {
-  const match = matchPage(pathname);
-  return match !== undefined && isSpaRoute(match.id, options);
-}
-
-/** True once the route always serves the SPA and ignores the legacy rollback flags. */
-export function isLegacyRetired(id: RouteId): boolean {
-  return ROUTE_BY_ID.get(id)?.legacyRetired === true;
-}
-
 /** True for a page that is served without an authenticated session. */
 export function isPublicRoute(id: RouteId): boolean {
   return ROUTE_BY_ID.get(id)?.public === true;
 }
 
 /**
- * Membership check against the resolved boot route set. The client uses this instead of
- * `isSpaPath()` because `process.env` is not available in the browser.
+ * True for a pathname that can be a page request. Known page routes always win, even when a param
+ * looks like a file extension (for example an app key such as `my.app`).
  */
-export function isSpaPathIn(
-  pathname: string,
-  ids: ReadonlySet<RouteId> | readonly RouteId[],
-): boolean {
-  const match = matchPage(pathname);
-  if (match === undefined) {
-    return false;
+export function isPagePath(pathname: string): boolean {
+  if (matchPage(pathname) !== undefined) {
+    return true;
   }
-  return ids instanceof Set ? ids.has(match.id) : (ids as readonly RouteId[]).includes(match.id);
+  if (pathname === "/api" || pathname.startsWith("/api/")) return false;
+  if (pathname === "/assets" || pathname.startsWith("/assets/")) return false;
+  if (pathname === "/ide" || pathname.startsWith("/ide/")) return false;
+  if (pathname === "/preview" || pathname.startsWith("/preview/")) return false;
+  if (pathname === "/internal" || pathname.startsWith("/internal/")) return false;
+  if (pathname === "/healthz" || pathname.startsWith("/healthz/")) return false;
+  if (pathname === "/readyz" || pathname.startsWith("/readyz/")) return false;
+  if (/\.[A-Za-z0-9]+$/.test(pathname)) return false;
+  return true;
 }

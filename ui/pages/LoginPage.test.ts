@@ -33,7 +33,6 @@ function boot(next: string): BootPayload {
       sshPendingCount: 0,
     },
     routeKey: JSON.stringify(["login", [], [["next", next]]]),
-    spaRoutes: ["login"],
     topbar: { ideHref: "/ide/" },
   };
 }

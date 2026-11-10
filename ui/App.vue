@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, onErrorCaptured, ref, watch } from "vue";
 import { RouterView, useRoute } from "vue-router";
-import type { BootPayload } from "./boot.js";
+import type { BootOverride, BootPayload } from "./boot.js";
 import AppSidebar from "./components/AppSidebar.vue";
 import BreadcrumbBar from "./components/BreadcrumbBar.vue";
 import ToastHost from "./components/ToastHost.vue";
 import TopbarActions from "./components/TopbarActions.vue";
+import ChatNoAppsPage from "./pages/ChatNoAppsPage.vue";
+import NotFoundPage from "./pages/NotFoundPage.vue";
 import RouteErrorPage from "./pages/RouteErrorPage.vue";
 import { useChromeStore } from "./stores/chrome.js";
 import { useShellStore } from "./stores/shell.js";
@@ -16,6 +18,17 @@ const chrome = useChromeStore();
 const shell = useShellStore();
 
 const renderError = ref<string | undefined>(undefined);
+const bootUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+const bootOverride = ref<BootOverride | undefined>(props.boot.override);
+
+watch(
+  () => route.fullPath,
+  (fullPath) => {
+    if (fullPath !== bootUrl) {
+      bootOverride.value = undefined;
+    }
+  },
+);
 
 watch(
   () => chrome.current,
@@ -68,7 +81,9 @@ onErrorCaptured((error) => {
 
 <template>
   <span class="hanse-ui-sentinel" aria-hidden="true"></span>
-  <RouteErrorPage v-if="renderError !== undefined" :message="renderError" :boot="boot" />
+  <RouteErrorPage v-if="renderError !== undefined" :message="renderError" />
+  <NotFoundPage v-else-if="bootOverride === 'not-found'" :boot="boot" />
+  <ChatNoAppsPage v-else-if="bootOverride === 'chat-no-apps'" :boot="boot" />
   <RouterView v-else v-slot="{ Component }">
     <component :is="Component" :key="viewKey" :boot="boot" :data-boot-route="bootRoute" />
   </RouterView>

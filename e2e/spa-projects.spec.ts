@@ -77,7 +77,7 @@ test("reveals the server fallback when the entry module fails", async ({ page })
   await expect(fallback).toContainText("The new interface did not load.");
   await expect(fallback.getByRole("link", { name: "Reload the page" })).toHaveAttribute(
     "href",
-    "/projects",
+    "",
   );
 });
 

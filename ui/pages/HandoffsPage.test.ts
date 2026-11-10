@@ -181,7 +181,6 @@ function boot(payload: HandoffsProps | null, routeId = "handoffs"): BootPayload 
   return {
     route: { id: routeId as BootPayload["route"]["id"], params: {} },
     props: payload,
-    spaRoutes: [routeId as BootPayload["route"]["id"]],
     topbar: { ideHref: "/ide/" },
     chrome: {
       title: "Handoffs",
@@ -438,7 +437,6 @@ describe("HandoffsPage", () => {
     await flushPromises();
     expect(wrapper.text()).toContain("Handoffs not found");
     expect(wrapper.text()).toContain("not found");
-    expect(wrapper.get("a[href='?legacy=1']").text()).toBe("Use the classic interface");
     expect(wrapper.get("#handoffs-error-title").text()).toBe("Handoffs not found");
   });
 

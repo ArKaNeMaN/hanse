@@ -106,7 +106,6 @@ function boot(overrides: Partial<typeof PROPS> = {}, routeId = "overview"): Boot
   return {
     route: { id: routeId as BootPayload["route"]["id"], params: {} },
     props: { ...PROPS, ...overrides },
-    spaRoutes: [routeId as BootPayload["route"]["id"]],
     topbar: { ideHref: "/ide/" },
     chrome: {
       title: "Fleet overview",

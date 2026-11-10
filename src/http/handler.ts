@@ -31,9 +31,11 @@ import { MIGRATIONS, type SqliteDatabase } from "../store/index.js";
 import { readProcessSnapshot } from "../store/process.js";
 import { VERSION } from "../version.js";
 import { humanFrom, principalFrom } from "./auth.js";
-import { buildSite, type PageChrome, renderErrorPage, renderNotFound } from "./dashboard.js";
+import { buildSite } from "./dashboard.js";
 import { drainingResponse } from "./deploy.js";
-import { loginPage, type Notice, safeLocalPath } from "./ui.js";
+import { isHtmlPageRequest } from "./page-request.js";
+import { staticErrorResponse } from "./static-error.js";
+import { safeLocalPath } from "./ui.js";
 import { requireUiVersion } from "./ui-version.js";
 
 export interface ProjectContext {
@@ -98,11 +100,6 @@ const COOKIE_MAX_AGE = 30 * 24 * 60 * 60;
 
 const ASSETS: Record<string, { file: string; contentType: string }> = {
   "/assets/app.css": { file: "app.css", contentType: "text/css; charset=utf-8" },
-  "/assets/app.js": { file: "app.js", contentType: "text/javascript; charset=utf-8" },
-  "/assets/app-content.js": {
-    file: "app-content.js",
-    contentType: "text/javascript; charset=utf-8",
-  },
   "/assets/chat-core.js": {
     file: "chat-core.js",
     contentType: "text/javascript; charset=utf-8",
@@ -161,10 +158,6 @@ function json(status: number, value: unknown, headers?: Record<string, string>):
     body: JSON.stringify(value),
     headers,
   };
-}
-
-function html(status: number, body: string, headers?: Record<string, string>): HttpResponse {
-  return { status, contentType: "text/html; charset=utf-8", body, headers };
 }
 
 function redirect(location: string, headers?: Record<string, string>): HttpResponse {
@@ -273,18 +266,6 @@ function sessionLogin(deps: HttpDeps, request: HttpRequest): HttpResponse {
     { ok: true, next },
     { "set-cookie": sessionCookie(token), "cache-control": "no-store" },
   );
-}
-
-function noticeFrom(query: Record<string, string> | undefined): Notice | undefined {
-  const message = query?.notice;
-  if (message === undefined || message.trim().length === 0) {
-    return undefined;
-  }
-  return { message, tone: query?.tone === "error" ? "error" : "success" };
-}
-
-function pageChrome(principal: Principal, request: HttpRequest): PageChrome {
-  return { operatorName: principal.name, notice: noticeFrom(request.query) };
 }
 
 function withNotice(location: string, message: string, tone: "success" | "error"): string {
@@ -1006,32 +987,18 @@ function route(deps: HttpDeps, request: HttpRequest): HttpResponse {
     );
   }
 
-  if (request.method === "GET" && request.path === "/login") {
-    const human = humanFrom(deps, request);
-    if (human !== undefined) {
-      return redirect(loginDestination(request.query?.next));
-    }
-    return html(200, loginPage({ next: loginDestination(request.query?.next) }));
-  }
-
   if (request.method === "POST" && request.path === "/login") {
-    const fields = parseForm(request.body);
-    const next = loginDestination(fields.next);
-    const token = (fields.token ?? "").trim();
-    if (token.length === 0) {
-      return html(401, loginPage({ next, error: "missing token" }));
-    }
-    try {
-      const principal = authenticate(deps.db, `Bearer ${token}`);
-      if (principal.kind !== "human") {
-        return html(401, loginPage({ next, error: "not a human principal" }));
-      }
-      return redirect(next, {
-        "set-cookie": sessionCookie(token),
+    const headers = { allow: "GET, HEAD" };
+    if (wantsHtml(request)) {
+      return staticErrorResponse({
+        status: 405,
+        title: "Sign-in changed",
+        message: "This form is no longer supported. Open the sign-in page to continue.",
+        action: { href: "/login", label: "Open sign-in" },
+        headers,
       });
-    } catch {
-      return html(401, loginPage({ next, error: "invalid token" }));
     }
+    return json(405, { error: "Method not allowed" }, headers);
   }
 
   if (request.method === "POST" && request.path === "/logout") {
@@ -1249,13 +1216,15 @@ function route(deps: HttpDeps, request: HttpRequest): HttpResponse {
     if (human === undefined) {
       return loginRedirect(request);
     }
-    const chrome = pageChrome(human, request);
-    try {
-      return html(404, renderNotFound(buildSite(deps), chrome));
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      return html(500, renderErrorPage(buildSite(deps), chrome, message));
+    if (!isHtmlPageRequest(request)) {
+      return json(404, { error: "not found" });
     }
+    return staticErrorResponse({
+      status: 404,
+      title: "Page not found",
+      message: "Nothing is moored here.",
+      action: { href: "/", label: "Open overview" },
+    });
   }
 
   return json(404, { error: "not found" });

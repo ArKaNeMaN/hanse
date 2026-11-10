@@ -134,3 +134,17 @@ test("records the project first-load transfer", async ({ page }) => {
   expect(entryBytes).toBeGreaterThan(0);
   expect(routeBytes).toBeGreaterThan(0);
 });
+
+test("renders the project dialogs, manifest, and application links", async ({ page }) => {
+  const errors = collectPageErrors(page);
+  await signIn(page, `/projects/${PROJECT_ONE}`);
+
+  await expect(page.locator("#add-app")).toBeAttached();
+  await expect(page.locator("#new-handoff")).toBeAttached();
+  await expect(page.getByText(".hanse/project.yaml")).toBeVisible();
+  await expect(page.getByRole("link", { name: "alpha", exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: "beta", exact: true })).toBeVisible();
+
+  await settle(page);
+  expectNoPageErrors(errors);
+});

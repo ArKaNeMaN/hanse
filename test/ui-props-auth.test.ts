@@ -17,8 +17,6 @@ import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/i
 
 const dirs: string[] = [];
 const databases: SqliteDatabase[] = [];
-const originalLegacy = process.env.HANSE_UI_LEGACY;
-const originalAllowlist = process.env.HANSE_UI_SPA_ROUTES;
 const originalDevUrl = process.env.HANSE_UI_DEV_URL;
 
 afterEach(() => {
@@ -31,16 +29,6 @@ afterEach(() => {
   }
   for (const dir of dirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true });
-  }
-  if (originalLegacy === undefined) {
-    delete process.env.HANSE_UI_LEGACY;
-  } else {
-    process.env.HANSE_UI_LEGACY = originalLegacy;
-  }
-  if (originalAllowlist === undefined) {
-    delete process.env.HANSE_UI_SPA_ROUTES;
-  } else {
-    process.env.HANSE_UI_SPA_ROUTES = originalAllowlist;
   }
   if (originalDevUrl === undefined) {
     delete process.env.HANSE_UI_DEV_URL;
@@ -56,6 +44,7 @@ interface Fixture {
   humanToken: string;
   agentCookieToken: string;
   agentBearerToken: string;
+  root: string;
   log: { warn: ReturnType<typeof vi.fn> };
 }
 
@@ -101,6 +90,7 @@ function fixture(): Fixture {
     humanToken: human.token,
     agentCookieToken: agentPrincipal.token,
     agentBearerToken,
+    root: dir,
     log,
   };
 }
@@ -179,10 +169,6 @@ function boot(body: string): BootPayload {
 }
 
 function enable(f: Fixture): void {
-  delete process.env.HANSE_UI_LEGACY;
-  process.env.HANSE_UI_SPA_ROUTES = ROUTES.filter((route) => route.spa)
-    .map((route) => route.id)
-    .join(",");
   process.env.HANSE_UI_DEV_URL = "http://127.0.0.1:5173";
   f.log.warn.mockClear();
 }
@@ -730,62 +716,21 @@ describe("/api/ui auth and props", () => {
 });
 
 describe("maybeServeSpa", () => {
-  it("disables only the login rollback", () => {
+  it("serves known pages regardless of Accept and rejects non-page requests", () => {
     const f = fixture();
     enable(f);
-    process.env.HANSE_UI_LEGACY = "1";
-    expect(
-      maybeServeSpa(f.deps, request("/projects", { ...cookie(f.humanToken), accept: "text/html" }))
-        ?.status,
-    ).toBe(200);
-    expect(
-      maybeServeSpa(f.deps, request("/login", { ...cookie(f.humanToken), accept: "text/html" })),
-    ).toBeUndefined();
-
-    delete process.env.HANSE_UI_LEGACY;
-    process.env.HANSE_UI_SPA_ROUTES = "";
-    expect(
-      maybeServeSpa(f.deps, request("/projects", { ...cookie(f.humanToken), accept: "text/html" }))
-        ?.status,
-    ).toBe(200);
-    expect(
-      maybeServeSpa(f.deps, request("/login", { ...cookie(f.humanToken), accept: "text/html" })),
-    ).toBeUndefined();
-  });
-
-  it("ignores the rollback flags for retired routes", () => {
-    const f = fixture();
-    enable(f);
-    process.env.HANSE_UI_SPA_ROUTES = "login";
     expect(
       maybeServeSpa(
         f.deps,
-        request("/projects", { ...cookie(f.humanToken), accept: "text/html" }, { legacy: "1" }),
+        request("/projects", { ...cookie(f.humanToken), accept: "application/json" }),
       )?.status,
     ).toBe(200);
-    expect(
-      maybeServeSpa(
-        f.deps,
-        request("/login", { ...cookie(f.humanToken), accept: "text/html" }, { legacy: "1" }),
-      ),
-    ).toBeUndefined();
-  });
-
-  it("serves the SPA only for GET/HEAD HTML requests", () => {
-    const f = fixture();
-    enable(f);
     expect(
       maybeServeSpa(f.deps, {
         method: "POST",
         path: "/projects",
         headers: { ...cookie(f.humanToken), accept: "text/html" },
       }),
-    ).toBeUndefined();
-    expect(
-      maybeServeSpa(
-        f.deps,
-        request("/projects", { ...cookie(f.humanToken), accept: "application/json" }),
-      ),
     ).toBeUndefined();
   });
 
@@ -870,10 +815,46 @@ describe("maybeServeSpa", () => {
     });
     expect(payload.operator).toBeUndefined();
     expect(payload.routeKey).toBe(JSON.stringify(["login", [], [["next", "/projects"]]]));
-    expect(response?.body).toContain('<script src="/assets/app.js" defer></script>');
+    expect(response?.body).not.toContain("/assets/app.js");
+    expect(response?.body).not.toContain('class="login-plate"');
   });
 
-  it("boots overview and project props for enabled routes", () => {
+  it("serves a Vue 404 boot for an unknown path and a known missing resource", () => {
+    const f = fixture();
+    enable(f);
+    const unknown = maybeServeSpa(
+      f.deps,
+      request("/nope", { ...cookie(f.humanToken), accept: "text/html" }),
+    );
+    expect(unknown?.status).toBe(404);
+    expect(boot(unknown?.body ?? "")).toMatchObject({
+      route: { id: "not-found", params: {} },
+      override: "not-found",
+    });
+
+    const missing = maybeServeSpa(
+      f.deps,
+      request("/projects/missing", { ...cookie(f.humanToken), accept: "text/html" }),
+    );
+    expect(missing?.status).toBe(404);
+    expect(boot(missing?.body ?? "")).toMatchObject({ override: "not-found" });
+  });
+
+  it("returns a self-contained 503 when the UI build is missing", () => {
+    const f = fixture();
+    delete process.env.HANSE_UI_DEV_URL;
+    process.env.HANSE_ASSETS = path.join(f.root, "empty-assets");
+    const response = maybeServeSpa(
+      f.deps,
+      request("/projects", { ...cookie(f.humanToken), accept: "text/html" }),
+    );
+    expect(response?.status).toBe(503);
+    expect(response?.body).toContain("Interface unavailable");
+    expect(response?.body).not.toContain("/assets/app.css");
+    expect(response?.headers?.["content-security-policy"]).toContain("frame-ancestors 'none'");
+  });
+
+  it("boots overview and project props for known routes", () => {
     const f = fixture();
     enable(f);
     const overview = maybeServeSpa(
@@ -899,7 +880,7 @@ describe("maybeServeSpa", () => {
     });
   });
 
-  it("boots handoff props for an allowlisted handoffs document", () => {
+  it("boots handoff props for the handoffs document", () => {
     const f = fixture();
     enable(f);
     const response = maybeServeSpa(
@@ -924,14 +905,5 @@ describe("maybeServeSpa", () => {
     });
     expect(payload.props.rows).toEqual([]);
     expect(payload.chrome).toMatchObject({ title: "Handoffs", active: "handoffs" });
-  });
-
-  it("logs unknown allowlist ids and keeps them legacy", () => {
-    const f = fixture();
-    delete process.env.HANSE_UI_LEGACY;
-    process.env.HANSE_UI_SPA_ROUTES = "projects,not-a-route";
-    process.env.HANSE_UI_DEV_URL = "http://127.0.0.1:5173";
-    maybeServeSpa(f.deps, request("/projects", { ...cookie(f.humanToken), accept: "text/html" }));
-    expect(f.log.warn).toHaveBeenCalledWith("ui.unknown_route", { id: "not-a-route" });
   });
 });

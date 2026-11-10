@@ -111,7 +111,9 @@ describe("installChrome", () => {
     await router.push("/chat?session=s1&legacy=1&app=a&project=p");
     await flushPromises();
 
-    expect(useChromeStore().currentRouteKey).toBe(routeKey("chat", {}, { app: "a", project: "p" }));
+    expect(useChromeStore().currentRouteKey).toBe(
+      routeKey("chat", {}, { app: "a", project: "p", legacy: "1" }),
+    );
   });
 
   it("does not reset .page scroll for a workspace route", async () => {
@@ -230,7 +232,6 @@ describe("installChrome", () => {
       props: {},
       chrome: CHROME,
       routeKey: routeKey("projects", {}, {}),
-      spaRoutes: ["projects"],
       topbar: { ideHref: "/ide/" },
     });
 
@@ -250,7 +251,6 @@ describe("installChrome", () => {
       props: {},
       chrome: CHROME,
       routeKey: key,
-      spaRoutes: ["projects"],
       topbar: { ideHref: "/ide/" },
     });
     const announcer = document.getElementById("route-announcer");
