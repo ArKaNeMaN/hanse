@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { Client } from "ssh2";
 import { afterEach, describe, expect, it } from "vitest";
+import { type NotificationSignal, notificationEvents } from "../src/notifications/events.js";
 import type { connectSsh, SshConnection } from "../src/ssh/connection.js";
 import { SshService } from "../src/ssh/service.js";
 import { SshError } from "../src/ssh/types.js";
@@ -13,6 +14,7 @@ import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/i
 const dirs: string[] = [];
 const dbs: SqliteDatabase[] = [];
 afterEach(() => {
+  notificationEvents.reset();
   for (const db of dbs.splice(0)) {
     try {
       db.close();
@@ -156,5 +158,27 @@ describe("SSH approvals", () => {
     expect(() => f.service.decideApproval(pending.id, f.agent.appId, "approve", "op")).toThrow(
       SshError,
     );
+  });
+
+  it("emits ssh_approval once for a newly created pending row only", async () => {
+    const f = fixture();
+    const signals: NotificationSignal[] = [];
+    notificationEvents.subscribe((signal) => signals.push(signal));
+
+    await expectPending(f.service, f.agent, f.hostId, "echo emit");
+    const pending = f.service.listPending(f.agent.appId)[0];
+    expect(signals).toHaveLength(1);
+    expect(signals[0]).toMatchObject({
+      type: "ssh_approval",
+      appId: f.agent.appId,
+      hostId: f.hostId,
+      approvalId: pending?.id,
+      commandPreview: "echo emit",
+      expiresAt: pending?.expiresAt,
+    });
+    expect(signals[0]?.transitionAt).toBeTruthy();
+
+    await expectPending(f.service, f.agent, f.hostId, "echo emit");
+    expect(signals).toHaveLength(1);
   });
 });

@@ -10,7 +10,13 @@ import type { RunSshKeygen } from "../src/git/credentials.js";
 import { GitService } from "../src/git/service.js";
 import type { HttpDeps, HttpRequest } from "../src/http/handler.js";
 import { createHttpServer } from "../src/http/server.js";
-import { handleSettings, isSettingsRoute } from "../src/http/settings.js";
+import {
+  handleSettings,
+  isSettingsRoute,
+  resetTelegramTestRateLimit,
+  setTelegramTestTransport,
+  type TelegramTestMessage,
+} from "../src/http/settings.js";
 import { createPrincipal } from "../src/identity/principals.js";
 import { DefaultImageUnavailableError, ImageNotReadyError } from "../src/images/service.js";
 import { ModelProviderService } from "../src/model-providers/index.js";
@@ -1804,5 +1810,270 @@ describe("custom model providers settings", () => {
     expect(response.headers?.location).toContain("/settings");
     expect(response.headers?.location).toContain("#custom-providers");
     expect(f.modelProviders.list()).toHaveLength(1);
+  });
+});
+
+describe("telegram settings API", () => {
+  const botToken = "12345:abcdefghijklmnopqrst";
+  const proxyUrl = "http://proxy.example:8080";
+
+  afterEach(() => {
+    setTelegramTestTransport(undefined);
+    resetTelegramTestRateLimit();
+  });
+
+  function configure(f: Fixture): void {
+    f.settings.setNotificationSecret("global", {}, "bot_token", botToken, "owner");
+    f.settings.set("global", {}, "notifications.telegram.chat_id", "@ops", "owner");
+    f.settings.setNotificationSecret("global", {}, "proxy_url", proxyUrl, "owner");
+    f.settings.set(
+      "global",
+      {},
+      "notifications.telegram.api_base_url",
+      "https://telegram.example",
+      "owner",
+    );
+  }
+
+  it("advertises both routes and rejects anonymous, agent, cross-site, and non-JSON callers", async () => {
+    const f = fixture();
+    expect(isSettingsRoute("POST", "/api/settings/telegram")).toBe(true);
+    expect(isSettingsRoute("POST", "/api/settings/telegram/test")).toBe(true);
+    expect(isSettingsRoute("GET", "/api/settings/telegram")).toBe(false);
+    expect(isSettingsRoute("GET", "/api/settings/telegram/test")).toBe(false);
+
+    const body = JSON.stringify({
+      scope: "global",
+      action: "set",
+      field: "bot_token",
+      value: botToken,
+    });
+    const anonymous = await handleSettings(
+      f.deps,
+      request({ method: "POST", path: "/api/settings/telegram", headers: {}, body }),
+    );
+    expect(anonymous.status).toBe(401);
+
+    const agent = await handleSettings(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/settings/telegram",
+        headers: auth(f.agentToken, { "content-type": "application/json" }),
+        body,
+      }),
+    );
+    expect(agent.status).toBe(403);
+
+    const crossSite = await handleSettings(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/settings/telegram",
+        headers: auth(f.token, { "content-type": "application/json" }),
+        body,
+        origin: "http://evil.example",
+        host: "hanse.local",
+      }),
+    );
+    expect(crossSite.status).toBe(403);
+    expect(JSON.parse(crossSite.body)).toMatchObject({ code: "cross_site_request" });
+
+    const nonJson = await handleSettings(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/settings/telegram",
+        headers: auth(f.token, { "content-type": "application/x-www-form-urlencoded" }),
+        body: form({ scope: "global", action: "set", field: "bot_token", value: botToken }),
+      }),
+    );
+    expect(nonJson.status).toBe(400);
+    expect(JSON.parse(nonJson.body)).toMatchObject({ code: "invalid_request" });
+    expect(nonJson.body).not.toContain(botToken);
+  });
+
+  it("sets, clears, and inherits secrets without echoing plaintext", async () => {
+    const f = fixture();
+    const set = await handleSettings(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/settings/telegram",
+        headers: auth(f.token, { "content-type": "application/json" }),
+        body: JSON.stringify({
+          scope: "global",
+          action: "set",
+          field: "bot_token",
+          value: botToken,
+        }),
+      }),
+    );
+    expect(set.status).toBe(200);
+    expect(set.body).not.toContain(botToken);
+    const payload = JSON.parse(set.body) as {
+      ok: boolean;
+      telegram: { botToken: { state: string; source: string } };
+    };
+    expect(payload.ok).toBe(true);
+    expect(payload.telegram.botToken).toEqual({ state: "set", source: "global" });
+
+    const read = await handleSettings(
+      f.deps,
+      request({ headers: auth(f.token), query: { scope: "global" } }),
+    );
+    expect(read.body).not.toContain(botToken);
+    expect(JSON.parse(read.body).telegram.botToken).toEqual({
+      state: "set",
+      source: "global",
+    });
+
+    const clear = await handleSettings(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/settings/telegram",
+        headers: auth(f.token, { "content-type": "application/json" }),
+        body: JSON.stringify({ scope: "global", action: "clear", field: "bot_token" }),
+      }),
+    );
+    expect(clear.status).toBe(200);
+    expect(JSON.parse(clear.body).telegram.botToken).toEqual({
+      state: "cleared",
+      source: "global",
+    });
+
+    const inherit = await handleSettings(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/settings/telegram",
+        headers: auth(f.token, { "content-type": "application/json" }),
+        body: JSON.stringify({ scope: "global", action: "inherit", field: "bot_token" }),
+      }),
+    );
+    expect(inherit.status).toBe(200);
+    expect(JSON.parse(inherit.body).telegram.botToken).toEqual({ state: "missing" });
+    expect(f.db.prepare("SELECT COUNT(*) AS count FROM setting_secrets").get()).toEqual({
+      count: 0,
+    });
+  });
+
+  it("rejects an invalid secret with a field-only sanitized error", async () => {
+    const f = fixture();
+    const invalid = "sentinel-not-a-bot-token";
+    const response = await handleSettings(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/settings/telegram",
+        headers: auth(f.token, { "content-type": "application/json" }),
+        body: JSON.stringify({
+          scope: "global",
+          action: "set",
+          field: "bot_token",
+          value: invalid,
+        }),
+      }),
+    );
+    expect(response.status).toBe(400);
+    expect(JSON.parse(response.body)).toMatchObject({
+      code: "invalid_telegram_secret",
+      field: "bot_token",
+    });
+    expect(response.body).not.toContain(invalid);
+  });
+
+  it("sends a test through the injected transport and limits one per scope per 5 s", async () => {
+    const f = fixture();
+    const calls: TelegramTestMessage[] = [];
+    setTelegramTestTransport({
+      sendTest: async (message) => {
+        calls.push(message);
+      },
+    });
+    configure(f);
+
+    const response = await handleSettings(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/settings/telegram/test",
+        headers: auth(f.token, { "content-type": "application/json" }),
+        body: JSON.stringify({ scope: "global" }),
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(JSON.parse(response.body)).toEqual({ ok: true });
+    expect(calls).toEqual([
+      {
+        botToken,
+        chatId: "@ops",
+        apiBaseUrl: "https://telegram.example",
+        proxyUrl,
+      },
+    ]);
+
+    const limited = await handleSettings(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/settings/telegram/test",
+        headers: auth(f.token, { "content-type": "application/json" }),
+        body: JSON.stringify({ scope: "global" }),
+      }),
+    );
+    expect(limited.status).toBe(429);
+    expect(JSON.parse(limited.body)).toMatchObject({ code: "rate_limited" });
+    expect(calls).toHaveLength(1);
+  });
+
+  it("returns a sanitized 502 when the test transport fails", async () => {
+    const f = fixture();
+    const upstream = "sentinel-upstream-failure";
+    setTelegramTestTransport({
+      sendTest: async () => {
+        throw new Error(upstream);
+      },
+    });
+    configure(f);
+
+    const response = await handleSettings(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/settings/telegram/test",
+        headers: auth(f.token, { "content-type": "application/json" }),
+        body: JSON.stringify({ scope: "global" }),
+      }),
+    );
+    expect(response.status).toBe(502);
+    expect(JSON.parse(response.body)).toMatchObject({ code: "telegram_unavailable" });
+    expect(response.body).not.toContain(upstream);
+    expect(response.body).not.toContain(botToken);
+  });
+
+  it("requires a configured token and chat id before sending a test", async () => {
+    const f = fixture();
+    const calls: TelegramTestMessage[] = [];
+    setTelegramTestTransport({
+      sendTest: async (message) => {
+        calls.push(message);
+      },
+    });
+    f.settings.set("global", {}, "notifications.telegram.chat_id", "@ops", "owner");
+
+    const response = await handleSettings(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/settings/telegram/test",
+        headers: auth(f.token, { "content-type": "application/json" }),
+        body: JSON.stringify({ scope: "global" }),
+      }),
+    );
+    expect(response.status).toBe(400);
+    expect(JSON.parse(response.body)).toMatchObject({ code: "invalid_request" });
+    expect(calls).toEqual([]);
   });
 });

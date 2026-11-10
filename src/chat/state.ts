@@ -569,6 +569,10 @@ export function deleteSessionChatRows(db: SqliteDatabase, appId: string, session
       appId,
       sessionId,
     );
+    db.prepare("DELETE FROM notification_watermarks WHERE app_id = ? AND session_id = ?").run(
+      appId,
+      sessionId,
+    );
   });
   run();
 }

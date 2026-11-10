@@ -3,6 +3,7 @@ import { realpathSync } from "node:fs";
 import path from "node:path";
 import type { ClientChannel } from "ssh2";
 import type { AgentTokenIdentity } from "../mcp/agent-tokens.js";
+import { notificationEvents } from "../notifications/events.js";
 import { open, seal } from "../secrets/crypto.js";
 import type { SqliteDatabase } from "../store/index.js";
 import { actionHash, actionPreview, commandBytes, waitForApproval } from "./approvals.js";
@@ -703,9 +704,16 @@ export class SshService {
     if (existing.host.requireApproval) {
       grant = this.#store.activeGrant(agent.appId, hostId, now);
       if (grant === undefined) {
-        const pending =
-          this.#store.findPending(agent.appId, hostId, action, request.commandHash, now) ??
-          this.#store.createPending({
+        let pending = this.#store.findPending(
+          agent.appId,
+          hostId,
+          action,
+          request.commandHash,
+          now,
+        );
+        let createdPending = false;
+        if (pending === undefined) {
+          pending = this.#store.createPending({
             id: randomUUID(),
             appId: agent.appId,
             hostId,
@@ -716,7 +724,22 @@ export class SshService {
             now,
             expiresAt: new Date(Date.parse(now) + 300_000).toISOString(),
           });
+          // `createPending` re-checks for a concurrent pending row; only the row created with this
+          // request's `now` is new.
+          createdPending = pending.requestedAt === now;
+        }
         approvalId = pending.id;
+        if (createdPending) {
+          notificationEvents.emit({
+            type: "ssh_approval",
+            appId: agent.appId,
+            hostId,
+            approvalId: pending.id,
+            commandPreview: request.commandPreview,
+            expiresAt: pending.expiresAt,
+            transitionAt: now,
+          });
+        }
         const waiters = (this.#waiters.get(pending.id) ?? 0) + 1;
         if (waiters > WAITERS_PER_APPROVAL) {
           throw new SshError("ssh_busy", "Too many callers are waiting for this SSH approval");

@@ -45,7 +45,6 @@ import {
 import {
   createEventAttachmentResolver,
   createMessageProjector,
-  type MessageProjector,
 } from "../attachments/projection.js";
 import {
   activeUploadIds,
@@ -110,7 +109,7 @@ import {
   upsertSessionState,
   writeDraft,
 } from "../chat/state.js";
-import { deriveTurn, hasVisibleAssistant, type TurnSnapshot } from "../chat/turn.js";
+import { readTurnSnapshot, type TurnSnapshot } from "../chat/turn.js";
 import { projectHandoffMessages } from "../coordinator/handoff-messages.js";
 import {
   abortSession,
@@ -121,17 +120,14 @@ import {
   lastAssistant,
   listMessagePage,
   listMessages,
-  listSessionStatusesStrict,
   listSessions,
   listSessionsBounded,
   MESSAGES_EMPTY_CHECK_MAX_BYTES,
   OpencodeHttpError,
   type OpencodeMessage,
-  type OpencodeSessionStatus,
   patchSessionTitle,
   sendPrompt,
   sendPromptAsync,
-  TURN_TAIL_MAX_BYTES,
 } from "../opencode/client.js";
 import { authorizationFor } from "../opencode/endpoint-auth.js";
 import { APP_STREAM_MAX_FRAME_BYTES, createRawEventStream } from "../opencode/events.js";
@@ -2002,17 +1998,10 @@ async function readMessagesResponse(
 
 const TURN_CACHE_TTL_MS = 300;
 const MAX_TURN_CACHE_ENTRIES = 512;
-const TURN_PAGE_LIMIT = 50;
-const TURN_PAGE_BUDGET = 3;
 
 interface TurnCacheEntry {
   expiresAt: number;
   snapshot: TurnSnapshot;
-}
-
-interface TurnTail {
-  messages: OpencodeMessage[];
-  truncated: boolean;
 }
 
 const turnSnapshotCache = new Map<string, TurnCacheEntry>();
@@ -2041,14 +2030,6 @@ function invalidateTurnSnapshotCache(appId: string, sessionId: string): void {
   }
 }
 
-function statusPhase(status: OpencodeSessionStatus | undefined): string {
-  if (status === undefined) return "idle";
-  if (status.type === "idle" || status.type === "busy" || status.type === "retry") {
-    return status.type;
-  }
-  return "unknown";
-}
-
 async function sessionIsSubagent(endpoint: string, sessionId: string): Promise<boolean> {
   try {
     const sessions = await listSessionsBounded(endpoint);
@@ -2059,29 +2040,6 @@ async function sessionIsSubagent(endpoint: string, sessionId: string): Promise<b
     // Best effort: an unreadable session list leaves the session treated as top-level.
     return false;
   }
-}
-
-async function readTurnTail(
-  endpoint: string,
-  sessionId: string,
-  project: MessageProjector,
-): Promise<TurnTail> {
-  let messages: OpencodeMessage[] = [];
-  let before: string | undefined;
-  for (let pageIndex = 0; pageIndex < TURN_PAGE_BUDGET; pageIndex += 1) {
-    const page = await listMessagePage(endpoint, sessionId, {
-      limit: TURN_PAGE_LIMIT,
-      ...(before === undefined ? {} : { before }),
-      maxBytes: TURN_TAIL_MAX_BYTES,
-      project,
-    });
-    messages = [...page.messages, ...messages];
-    if (hasVisibleAssistant(messages)) return { messages, truncated: false };
-    if (page.nextCursor === undefined) return { messages, truncated: false };
-    if (pageIndex === TURN_PAGE_BUDGET - 1) break;
-    before = page.nextCursor;
-  }
-  return { messages, truncated: true };
 }
 
 async function computeTurnSnapshot(
@@ -2104,30 +2062,12 @@ async function computeTurnSnapshot(
     projectHandoffMessages(deps.db, sessionId, messages);
   };
 
-  let tail: TurnTail = { messages: [], truncated: false };
-  let status: OpencodeSessionStatus | undefined;
-  let settling = false;
-  for (let attempt = 0; ; attempt += 1) {
-    const before = await listSessionStatusesStrict(endpoint);
-    tail = await readTurnTail(endpoint, sessionId, projectHistory);
-    const after = await listSessionStatusesStrict(endpoint);
-    const changed = statusPhase(before[sessionId]) !== statusPhase(after[sessionId]);
-    status = after[sessionId];
-    if (!changed || attempt >= 1) {
-      settling = changed && statusPhase(status) === "idle";
-      break;
-    }
-  }
-
-  const isSubagent = status === undefined && (await sessionIsSubagent(endpoint, sessionId));
-  return {
-    ...deriveTurn(tail.messages, status, {
-      isSubagent,
-      settling,
-      queuedTruncated: tail.truncated,
-    }),
-    sessionID: sessionId,
-  };
+  const read = await readTurnSnapshot(endpoint, sessionId, {
+    isSubagent: (status) =>
+      status === undefined ? sessionIsSubagent(endpoint, sessionId) : Promise.resolve(false),
+    projector: projectHistory,
+  });
+  return read.snapshot;
 }
 
 async function turnSnapshotFor(

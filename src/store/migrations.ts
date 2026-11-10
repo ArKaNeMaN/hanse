@@ -1051,4 +1051,67 @@ CREATE TABLE restart_claims (
 );
 `,
   },
+  {
+    version: 26,
+    name: "telegram-notification-outbox",
+    sql: `
+CREATE TABLE notification_outbox (
+  id TEXT PRIMARY KEY,
+  group_id TEXT NOT NULL,
+  chunk_index INTEGER NOT NULL DEFAULT 0 CHECK (chunk_index >= 0),
+  chunk_count INTEGER NOT NULL DEFAULT 1 CHECK (chunk_count >= 1),
+  dedupe_key TEXT NOT NULL UNIQUE,
+  kind TEXT NOT NULL CHECK (kind IN (
+    'turn_completed','question','permission','ssh_approval',
+    'handoff_approval','handoff_waiting_operator','handoff_failed',
+    'thread_message_waiting','agent_interrupted'
+  )),
+  format TEXT NOT NULL DEFAULT 'rich' CHECK (format IN ('rich','plain')),
+  scope TEXT NOT NULL CHECK (scope IN ('global','project','app')),
+  project_id TEXT,
+  app_key TEXT,
+  app_id TEXT,
+  session_id TEXT,
+  payload_json TEXT NOT NULL
+    CHECK (json_valid(payload_json) AND length(CAST(payload_json AS BLOB)) <= 1048576),
+  state TEXT NOT NULL DEFAULT 'pending'
+    CHECK (state IN ('pending','sending','sent','dead')),
+  attempts INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at TEXT NOT NULL,
+  error_code TEXT,
+  last_error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  sent_at TEXT,
+  FOREIGN KEY (app_id) REFERENCES apps(id) ON DELETE CASCADE,
+  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
+CREATE UNIQUE INDEX notification_outbox_group_chunk ON notification_outbox(group_id, chunk_index);
+CREATE INDEX notification_outbox_due ON notification_outbox(state, next_attempt_at);
+CREATE INDEX notification_outbox_app ON notification_outbox(app_id, created_at);
+CREATE INDEX notification_outbox_session ON notification_outbox(session_id, created_at);
+
+CREATE TABLE notification_watermarks (
+  app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+  session_id TEXT NOT NULL,
+  last_notified_message_id TEXT,
+  initialized_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (app_id, session_id)
+);
+
+CREATE TABLE notification_meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE notification_channel_state (
+  channel TEXT PRIMARY KEY,
+  state TEXT NOT NULL CHECK (state IN ('ok','error')),
+  last_error TEXT,
+  updated_at TEXT NOT NULL
+);
+`,
+  },
 ];

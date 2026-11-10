@@ -20,10 +20,12 @@ import {
   type GitAuthScoped,
   type GitAuthScopedState,
   type GitAuthStatus,
+  type NotificationMode,
   type PendingRestart,
   type ProviderKeyStatus,
   type ResolvedSettings,
   type ScopedValue,
+  type SecretStatus,
   type SettingsScope,
   type SettingsTarget,
   SettingsValidationError,
@@ -37,6 +39,7 @@ export const SETTINGS_SECTION_KEYS = [
   "agent",
   "web",
   "context",
+  "notifications",
   "git",
   "restart",
   "warnings",
@@ -192,7 +195,11 @@ export type SettingsRowKind =
   | "web"
   | "context-enabled"
   | "context-percent"
-  | "git-identity";
+  | "git-identity"
+  | "notification-mode"
+  | "notification-enabled"
+  | "notification-text"
+  | "notification-include-answer";
 
 export interface SettingsRowProps {
   readonly id: string;
@@ -310,6 +317,44 @@ export interface SettingsGitProps {
   readonly securityNotes: string;
 }
 
+export interface SettingsTelegramSecretProps {
+  readonly field: "bot_token" | "proxy_url";
+  readonly label: string;
+  readonly status: SecretStatus;
+  readonly state: "set" | "cleared" | "missing";
+  readonly configured: boolean;
+  readonly masked: string;
+  readonly effectiveText: string;
+  readonly sourceLine: string;
+  readonly actions: SettingsRowActionsProps;
+  readonly form: SettingsFormProps;
+}
+
+export interface SettingsNotificationsProps {
+  readonly enabled: boolean;
+  readonly configured: boolean;
+  readonly warning: string | null;
+  readonly rows: {
+    readonly mode: SettingsRowProps;
+    readonly telegramEnabled: SettingsRowProps;
+    readonly chatId: SettingsRowProps;
+    readonly publicBaseUrl: SettingsRowProps;
+    readonly apiBaseUrl: SettingsRowProps;
+    readonly includeAnswer: SettingsRowProps;
+  };
+  readonly secrets: {
+    readonly botToken: SettingsTelegramSecretProps;
+    readonly proxyUrl: SettingsTelegramSecretProps;
+  };
+  readonly test: {
+    readonly action: string;
+    readonly returnTo: string;
+    readonly errorId: string;
+    readonly label: string;
+    readonly hint: string;
+  };
+}
+
 export interface SettingsPendingRowProps {
   readonly appId: string;
   readonly appKey: string;
@@ -339,6 +384,7 @@ export interface SettingsLabelsProps {
       readonly agent: string;
       readonly web: string;
       readonly context: string;
+      readonly notifications: string;
       readonly git: string;
       readonly restart: string;
     };
@@ -347,6 +393,7 @@ export interface SettingsLabelsProps {
     readonly agent: string;
     readonly web: string;
     readonly context: string;
+    readonly notifications: string;
     readonly git: string;
     readonly restart: string;
   };
@@ -438,6 +485,22 @@ export interface SettingsLabelsProps {
     readonly testHint: string;
     readonly securityNotes: string;
   };
+  readonly notifications: {
+    readonly title: string;
+    readonly hint: string;
+    readonly mode: string;
+    readonly enabled: string;
+    readonly chatId: string;
+    readonly publicBaseUrl: string;
+    readonly apiBaseUrl: string;
+    readonly includeAnswer: string;
+    readonly botToken: string;
+    readonly proxyUrl: string;
+    readonly secretHint: string;
+    readonly test: string;
+    readonly testHint: string;
+    readonly unconfigured: string;
+  };
   readonly restart: {
     readonly title: string;
     readonly badge: string;
@@ -471,6 +534,7 @@ export interface SettingsProps {
   readonly providerKeys: Record<string, ProviderKeyStatus>;
   readonly gitAuth: ResolvedSettings["gitAuth"];
   readonly gitAuthScoped: GitAuthScoped;
+  readonly telegram: ResolvedSettings["telegram"];
   readonly warnings: readonly string[];
   readonly pendingRestart: readonly PendingRestart[];
   readonly notice: Notice | null;
@@ -486,6 +550,7 @@ export interface SettingsProps {
   readonly providers: readonly SettingsProviderRowProps[];
   readonly modelProviders: SettingsModelProvidersProps;
   readonly git: SettingsGitProps;
+  readonly notifications: SettingsNotificationsProps;
   readonly restart: SettingsRestartProps;
   readonly labels: SettingsLabelsProps;
   readonly dialogs: SettingsDialogsProps;
@@ -1121,6 +1186,7 @@ const LABELS: SettingsLabelsProps = {
       agent: "Agent",
       web: "Web tools",
       context: "Context",
+      notifications: "Notifications",
       git: "Git",
       restart: "Restart",
     },
@@ -1129,6 +1195,7 @@ const LABELS: SettingsLabelsProps = {
     agent: "Agent",
     web: "Web tools",
     context: "Context",
+    notifications: "Notifications",
     git: "Git",
     restart: "Restart & pending",
   },
@@ -1225,6 +1292,25 @@ const LABELS: SettingsLabelsProps = {
       "Test connection checks the form values against the remote without saving them. An empty SSH private key tests the saved credential. The agent must be running.",
     securityNotes:
       "Passphrase-protected SSH keys are not supported in v1; use an unencrypted deploy key. Without known_hosts, SSH uses accept-new (TOFU) on first connection. HTTPS hosts are mandatory and matched exactly; remote URLs with a different host fail closed. Use scoped deploy keys or fine-grained tokens with the least privilege — the agent can read its own materialized credentials.",
+  },
+  notifications: {
+    title: "Notifications",
+    hint: "Telegram delivery for turn completion and attention events. Secrets are encrypted at rest and never shown again.",
+    mode: "Notification mode",
+    enabled: "Telegram delivery",
+    chatId: "Chat id",
+    publicBaseUrl: "Public base URL",
+    apiBaseUrl: "API base URL",
+    includeAnswer: "Include full answer",
+    botToken: "Bot token",
+    proxyUrl: "Proxy URL",
+    secretHint:
+      "A cleared secret suppresses wider scopes. Set it again or inherit to restore delivery.",
+    test: "Send test message",
+    testHint:
+      "Sends a fixed test message through the effective bot token, chat id, proxy, and API base URL.",
+    unconfigured:
+      "Telegram notifications are enabled, but the bot token or chat id is not configured.",
   },
   restart: {
     title: "Restart & pending",
@@ -1561,6 +1647,8 @@ export function buildSettingsProps(input: SettingsBuildInput): SettingsProps | u
     testAppPath: scope === "app" ? null : (firstAppSettingsPath(site, project?.id) ?? null),
   });
 
+  const notifications = buildNotificationsProps({ scope, target, resolved, returnTo });
+
   const profileWarnings =
     scope === "app" && app !== undefined ? (input.deps.manager?.profileWarnings(app.id) ?? []) : [];
   const restart: SettingsRestartProps = {
@@ -1587,6 +1675,7 @@ export function buildSettingsProps(input: SettingsBuildInput): SettingsProps | u
     providerKeys: resolved.providerKeys,
     gitAuth: resolved.gitAuth,
     gitAuthScoped: resolved.gitAuthScoped,
+    telegram: resolved.telegram,
     warnings: resolved.warnings,
     pendingRestart: resolved.pendingRestart,
     notice: input.notice ?? null,
@@ -1602,6 +1691,7 @@ export function buildSettingsProps(input: SettingsBuildInput): SettingsProps | u
     providers,
     modelProviders,
     git,
+    notifications,
     restart,
     labels: LABELS,
     dialogs: {
@@ -1888,6 +1978,303 @@ function buildIdentityRow(options: {
       errorSlotId: `${options.rowId}-error`,
     }),
     id: options.id,
+  };
+}
+
+function notificationModeLabel(value: NotificationMode | null): string {
+  if (value === "off") {
+    return "Off";
+  }
+  return value === "attention" ? "Attention only" : "All";
+}
+
+function telegramSecretText(status: SecretStatus): string {
+  if (status.state === "set") {
+    return `Set at ${settingsScopeLabel(status.source)}`;
+  }
+  if (status.state === "cleared") {
+    return `Cleared at ${settingsScopeLabel(status.source)}`;
+  }
+  return "Not set";
+}
+
+function telegramSecretSourceLine(status: SecretStatus): string {
+  if (status.state === "set") {
+    return `from ${settingsScopeLabel(status.source)}`;
+  }
+  if (status.state === "cleared") {
+    return `Cleared at ${settingsScopeLabel(status.source)}`;
+  }
+  return "Not set";
+}
+
+function buildNotificationModeRow(options: {
+  scope: SettingsScope;
+  target: SettingsTarget;
+  resolved: ResolvedSettings;
+  effective: EffectiveValue<NotificationMode>;
+  returnTo: string;
+}): SettingsRowProps {
+  const own = ownValue(options.resolved, options.scope, "notifications.mode");
+  const current = own.state === "set" && typeof own.value === "string" ? own.value : undefined;
+  const placeholder =
+    current === undefined
+      ? selectOption(
+          "",
+          `${options.scope === "global" ? "Default" : "Inherited"}: ${notificationModeLabel(options.effective.value)}`,
+          true,
+          true,
+        )
+      : null;
+  return buildRow({
+    id: "setting-notifications-mode",
+    key: "notifications.mode",
+    title: LABELS.notifications.mode,
+    hint: "Off sends nothing, Attention only sends interruptions, and All also sends turn completion.",
+    kind: "notification-mode",
+    scope: options.scope,
+    target: options.target,
+    resolved: options.resolved,
+    effective: options.effective,
+    warnings: [],
+    effectiveText: notificationModeLabel(options.effective.value),
+    clearable: true,
+    select: {
+      options: [
+        selectOption("off", "Off", current === "off"),
+        selectOption("attention", "Attention only", current === "attention"),
+        selectOption("all", "All", current === "all"),
+      ],
+      placeholder,
+    },
+    returnTo: `${options.returnTo}#setting-notifications-mode`,
+    errorSlotId: "setting-notifications-mode-error",
+  });
+}
+
+function buildNotificationBooleanRow(options: {
+  key: string;
+  id: string;
+  title: string;
+  hint: string;
+  kind: "notification-enabled" | "notification-include-answer";
+  scope: SettingsScope;
+  target: SettingsTarget;
+  resolved: ResolvedSettings;
+  effective: EffectiveValue<boolean>;
+  returnTo: string;
+}): SettingsRowProps {
+  const own = ownValue(options.resolved, options.scope, options.key);
+  const prefill =
+    own.state === "set" && typeof own.value === "boolean" ? (own.value ? "true" : "false") : "";
+  const enabled = options.effective.value === true;
+  const placeholder =
+    prefill.length > 0
+      ? null
+      : selectOption(
+          "",
+          `${options.scope === "global" ? "Default" : "Inherited"}: ${enabled ? "On" : "Off"}`,
+          true,
+          true,
+        );
+  return buildRow({
+    id: options.id,
+    key: options.key,
+    title: options.title,
+    hint: options.hint,
+    kind: options.kind,
+    scope: options.scope,
+    target: options.target,
+    resolved: options.resolved,
+    effective: options.effective,
+    warnings: [],
+    effectiveText: enabled ? "On" : "Off",
+    clearable: true,
+    select: {
+      options: [
+        selectOption("true", "On", prefill === "true"),
+        selectOption("false", "Off", prefill === "false"),
+      ],
+      placeholder,
+    },
+    returnTo: `${options.returnTo}#${options.id}`,
+    errorSlotId: `${options.id}-error`,
+  });
+}
+
+function buildNotificationTextRow(options: {
+  key: string;
+  id: string;
+  title: string;
+  hint: string;
+  scope: SettingsScope;
+  target: SettingsTarget;
+  resolved: ResolvedSettings;
+  effective: EffectiveValue<string>;
+  returnTo: string;
+}): SettingsRowProps {
+  const own = ownValue(options.resolved, options.scope, options.key);
+  const prefill = stringPrefill(options.scope, own, options.effective);
+  return buildRow({
+    id: options.id,
+    key: options.key,
+    title: options.title,
+    hint: options.hint,
+    kind: "notification-text",
+    scope: options.scope,
+    target: options.target,
+    resolved: options.resolved,
+    effective: options.effective,
+    warnings: [],
+    effectiveText: effectiveText(options.effective),
+    clearable: true,
+    text: {
+      value: prefill.value,
+      placeholder: prefill.placeholder,
+      required: false,
+      autocomplete: "off",
+      listId: null,
+      options: [],
+    },
+    returnTo: `${options.returnTo}#${options.id}`,
+    errorSlotId: `${options.id}-error`,
+  });
+}
+
+function telegramSecretProps(options: {
+  field: "bot_token" | "proxy_url";
+  label: string;
+  status: SecretStatus;
+  scope: SettingsScope;
+  target: SettingsTarget;
+  returnTo: string;
+}): SettingsTelegramSecretProps {
+  return {
+    field: options.field,
+    label: options.label,
+    status: options.status,
+    state: options.status.state,
+    configured: options.status.state === "set",
+    masked: LABELS.providers.masked,
+    effectiveText: telegramSecretText(options.status),
+    sourceLine: telegramSecretSourceLine(options.status),
+    actions: providerActions(options.status, options.scope, options.label),
+    form: formProps(
+      options.scope,
+      options.target,
+      `${options.returnTo}#telegram-${options.field}`,
+      "/api/settings/telegram",
+      "Telegram secret updated.",
+    ),
+  };
+}
+
+function buildNotificationsProps(options: {
+  scope: SettingsScope;
+  target: SettingsTarget;
+  resolved: ResolvedSettings;
+  returnTo: string;
+}): SettingsNotificationsProps {
+  const effective = options.resolved.effective.notifications;
+  const enabled = effective.telegram.enabled.value === true;
+  const chatId = effective.telegram.chatId.value;
+  const configured =
+    options.resolved.telegram.botToken.state === "set" && chatId !== null && chatId.length > 0;
+  return {
+    enabled,
+    configured,
+    warning: enabled && !configured ? LABELS.notifications.unconfigured : null,
+    rows: {
+      mode: buildNotificationModeRow({
+        scope: options.scope,
+        target: options.target,
+        resolved: options.resolved,
+        effective: effective.mode,
+        returnTo: options.returnTo,
+      }),
+      telegramEnabled: buildNotificationBooleanRow({
+        key: "notifications.telegram.enabled",
+        id: "setting-notifications-telegram-enabled",
+        title: LABELS.notifications.enabled,
+        hint: "Delivers notifications through Telegram. Disabling stops delivery without a restart.",
+        kind: "notification-enabled",
+        scope: options.scope,
+        target: options.target,
+        resolved: options.resolved,
+        effective: effective.telegram.enabled,
+        returnTo: options.returnTo,
+      }),
+      chatId: buildNotificationTextRow({
+        key: "notifications.telegram.chat_id",
+        id: "setting-notifications-chat-id",
+        title: LABELS.notifications.chatId,
+        hint: "Numeric chat id (optionally negative) or an @name.",
+        scope: options.scope,
+        target: options.target,
+        resolved: options.resolved,
+        effective: effective.telegram.chatId,
+        returnTo: options.returnTo,
+      }),
+      publicBaseUrl: buildNotificationTextRow({
+        key: "notifications.public_base_url",
+        id: "setting-notifications-public-base-url",
+        title: LABELS.notifications.publicBaseUrl,
+        hint: "Base URL used for session links in messages. No query or fragment.",
+        scope: options.scope,
+        target: options.target,
+        resolved: options.resolved,
+        effective: effective.publicBaseUrl,
+        returnTo: options.returnTo,
+      }),
+      apiBaseUrl: buildNotificationTextRow({
+        key: "notifications.telegram.api_base_url",
+        id: "setting-notifications-api-base-url",
+        title: LABELS.notifications.apiBaseUrl,
+        hint: "Bot API base URL. Keep the default unless a compatible gateway is used.",
+        scope: options.scope,
+        target: options.target,
+        resolved: options.resolved,
+        effective: effective.telegram.apiBaseUrl,
+        returnTo: options.returnTo,
+      }),
+      includeAnswer: buildNotificationBooleanRow({
+        key: "notifications.include_answer",
+        id: "setting-notifications-include-answer",
+        title: LABELS.notifications.includeAnswer,
+        hint: "Include the full final assistant answer in completion messages.",
+        kind: "notification-include-answer",
+        scope: options.scope,
+        target: options.target,
+        resolved: options.resolved,
+        effective: effective.includeAnswer,
+        returnTo: options.returnTo,
+      }),
+    },
+    secrets: {
+      botToken: telegramSecretProps({
+        field: "bot_token",
+        label: LABELS.notifications.botToken,
+        status: options.resolved.telegram.botToken,
+        scope: options.scope,
+        target: options.target,
+        returnTo: options.returnTo,
+      }),
+      proxyUrl: telegramSecretProps({
+        field: "proxy_url",
+        label: LABELS.notifications.proxyUrl,
+        status: options.resolved.telegram.proxyUrl,
+        scope: options.scope,
+        target: options.target,
+        returnTo: options.returnTo,
+      }),
+    },
+    test: {
+      action: "/api/settings/telegram/test",
+      returnTo: options.returnTo,
+      errorId: "telegram-test-error",
+      label: LABELS.notifications.test,
+      hint: LABELS.notifications.testHint,
+    },
   };
 }
 

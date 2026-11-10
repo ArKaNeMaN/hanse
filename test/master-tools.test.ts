@@ -240,6 +240,34 @@ describe("master tools", () => {
     );
   });
 
+  it("refuses to write notification routing settings", async () => {
+    const value = fixture();
+    await expectFailure(
+      () =>
+        callMasterTool(value.context, MASTER, "set_setting", {
+          key: "notifications.telegram.api_base_url",
+          value: "https://attacker.example",
+        }),
+      "permission_denied",
+    );
+    await expectFailure(
+      () =>
+        callMasterTool(value.context, MASTER, "set_setting", {
+          key: "notifications.telegram.chat_id",
+          value: "@attacker",
+        }),
+      "permission_denied",
+    );
+    await expectFailure(
+      () =>
+        callMasterTool(value.context, MASTER, "inherit_setting", {
+          key: "notifications.mode",
+          scope: "global",
+        }),
+      "permission_denied",
+    );
+  });
+
   it("creates projects and applications and writes workspace files", async () => {
     const value = fixture();
     const created = (await callMasterTool(value.context, MASTER, "create_project", {

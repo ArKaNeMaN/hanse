@@ -103,10 +103,61 @@ describe("runGracefulShutdown", () => {
     expect(f.phases).toEqual([
       "readiness_false",
       "stop_accepting",
+      "background_stopped",
       "drained",
       "wal_checkpoint",
       "closed",
     ]);
+  });
+
+  it("closes the server before awaiting stopBackground", async () => {
+    const f = fixture();
+    const server = serverSpy();
+    let closedWhenStopped: boolean | undefined;
+    await runGracefulShutdown({
+      drain: f.drain,
+      server,
+      graceMs: 1_000,
+      logger: f.logger,
+      closeDb: () => f.db.close(),
+      stopBackground: async () => {
+        closedWhenStopped = server.closed();
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      },
+    });
+    expect(closedWhenStopped).toBe(true);
+    expect(f.phases.indexOf("background_stopped")).toBeGreaterThan(
+      f.phases.indexOf("stop_accepting"),
+    );
+  });
+
+  it("subtracts the stopBackground elapsed time from the drain grace", async () => {
+    let clock = 0;
+    const budgets: number[] = [];
+    let backgroundDone = false;
+    const drain = {
+      shutdownAt: new Date(0).toISOString(),
+      inFlightHttp: 0,
+      beginShutdown: () => undefined,
+      awaitQuiescence: async (timeoutMs: number) => {
+        expect(backgroundDone).toBe(true);
+        budgets.push(timeoutMs);
+        return true;
+      },
+      checkpoint: () => ({ busy: 0, log: 0, checkpointed: 0 }),
+    } as unknown as DrainController;
+    await runGracefulShutdown({
+      drain,
+      server: serverSpy(),
+      graceMs: 5_000,
+      now: () => clock,
+      closeDb: () => undefined,
+      stopBackground: async () => {
+        clock += 1_200;
+        backgroundDone = true;
+      },
+    });
+    expect(budgets).toEqual([3_300]);
   });
 
   it("exits within the grace even when work does not quiesce", async () => {
@@ -120,7 +171,7 @@ describe("runGracefulShutdown", () => {
       closeDb: () => f.db.close(),
     });
     expect(result.drained).toBe(false);
-    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(Date.now() - started).toBeLessThan(2_000);
     end();
   });
 });

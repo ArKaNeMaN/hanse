@@ -1095,8 +1095,8 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   and are clearable. `context.auto_compact.enabled` (default `false`) and
   `context.auto_compact.percent` (default `80`, integer 1..99) are non-clearable live settings.
   `git.user.name`/`git.user.email` are clearable strings (default `null`).
-  The Vue settings page renders the sticky scope/section nav, five section cards (Agent, Web tools,
-  Context, Git, Restart & pending), and one collapsed setting row per setting. Rows show the effective
+  The Vue settings page renders the sticky scope/section nav, six section cards (Agent, Web tools,
+  Context, Notifications, Git, Restart & pending), and one collapsed setting row per setting. Rows show the effective
   value and source at rest; the editor, scope history (`Scope details`), warnings, and actions are
   disclosed on demand. Saves use the JSON settings endpoints and refresh the affected props; there is
   no fragment contract and no server-rendered settings page. Context settings are excluded from the
@@ -1412,6 +1412,45 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   are implemented; target question events are auto-rejected instead of routed. The one-shot
   envelope/security redesign remains deferred; its pre-existing note/redaction risks remain residual.
 
+## Telegram notifications
+
+- The coordinator-side notifier sends Telegram messages for turn completion and operator attention.
+  It is send-only in v1: no `getUpdates`/webhook, no quick replies, and one chat at a time.
+- Settings resolve global -> project -> application and can be cleared/inherited:
+  `notifications.mode` (`off|attention|all`, default `all`), `notifications.telegram.enabled`
+  (default `false`), `notifications.telegram.chat_id`, `notifications.public_base_url`,
+  `notifications.telegram.api_base_url`, and `notifications.include_answer` (default `true`).
+  The bot token and proxy URL are AES-256-GCM encrypted in `setting_secrets`; the settings API and
+  UI expose status only and never the value. Notification routing settings are human-only for
+  writes; the master agent can read them but cannot change them. `POST /api/settings/telegram`
+  handles set/clear/inherit; `POST /api/settings/telegram/test` sends a fixed test message and is
+  limited to one call per 5 s per scope.
+- Completion is enqueued only for a top-level session that is idle with a known activity snapshot,
+  no active child or pending task, no active/queued prompt, no pending question/permission in the
+  subtree, no in-flight one-shot handoff, no outstanding thread work, and no unbound handoff inside
+  the 60 s grace. A 2.5 s debounce absorbs child-idle and prompt-answer transitions. The first enable
+  initializes a per-session watermark silently; later turns notify once per distinct answer id (or a
+  time-bucketed occurrence for a tool-only turn), and a turn completed while the coordinator was down
+  is caught up on boot.
+- Attention covers questions, permissions, SSH approvals, handoff approvals, parked/failed/terminal
+  handoffs, parked thread messages, agent errors (aborts ignored), and persisted session notices.
+  Thread-target questions are ignored. `mode=attention` suppresses completions; `off` suppresses
+  everything; while disabled the watermarks and notice marker advance without sending.
+- The durable outbox stores one row per Telegram chunk (`group_id`, `chunk_index`, `chunk_count`,
+  per-chunk dedupe/retry). Completion answers use Telegram rich messages with the full answer
+  (30,000 code points / 32,768 UTF-8 bytes per chunk, 20-chunk cap, plain fallback at 4,000), a
+  session/app/project link on the last chunk, and a per-chat 1.1 s gap. A format/limit 400 or 404
+  re-chunks the remaining suffix into a new plain group and marks the rich suffix dead; 429 honors
+  `retry_after`, 5xx/network backs off up to eight attempts, and 401/403 or a non-format 400
+  dead-letters the group. Sent/dead payloads are cleared; pending payloads expire after seven days;
+  sent/dead rows are pruned after 30 days and the outbox is capped at 500 groups.
+- Transport uses `fetch` directly or `node:http(s)` through `HttpsProxyAgent`/`HttpProxyAgent`/
+  `SocksProxyAgent` (HTTP(S) and SOCKS5/SOCKS5H), with a 15 s timeout and a 1 MiB response cap.
+  The token and proxy are redacted from errors and never logged. Rich messages cannot disable link
+  previews in the Bot API; plain messages disable them.
+- The settings page has a Notifications card for the six keys, write-only bot token/proxy forms, the
+  unconfigured warning, and the Send test action.
+
 ## Web IDE
 
 - Bundled first-party extension `extensions/hanse-agent` (packaged as `extensions/hanse-agent.vsix`,
@@ -1455,7 +1494,8 @@ Host `./state` is mounted at `/data/state` in `hanse` only:
 
 - `hanse/coordinator.db` (+ `-wal`, `-shm`) - projects, apps, instances, tasks, handoffs, handoff
   policies, approvals, principals, events, settings, skills, provider keys, custom model providers
-  (`model_providers`), and encrypted git credentials (`setting_secrets`).
+  (`model_providers`), encrypted git credentials (`setting_secrets`), and the Telegram notification
+  outbox/watermarks/meta/channel state (migration v26).
 - `hanse/secret.key` - AES-256-GCM key for the credential store and provider keys (mode `0600`).
 - `hanse/skill-sources/` - content-addressed blobs, per-source snapshot manifests, staging, and trash
   for external skill sources. The DB and this directory are backed up together; the cache is
@@ -1542,7 +1582,8 @@ coordinator; operators do not set them.
 ## Verification
 
 `npm run lint && npm run typecheck && npm run typecheck:ui && npm test && npm run build &&
-npm run check:ui` (all green; 2758 tests in 148 files; the suite includes the jsdom UI project).
+npm run check:ui && npm run check:sensitive && npm run test:e2e` (all green; 3,793 tests in
+262 files, 1 skipped; 134 E2E passed / 1 skipped; the suite includes the jsdom UI project).
 The agent process lifecycle stage (journal 0043) passes `npm run lint` (806 files),
 `npm run typecheck`, `npm run typecheck:ui`, `npm test` (238 files, 3,580 tests), `npm run build`,
 `npm run check:sensitive`, and `npm run test:e2e` (223 passed, 6 skipped). The deterministic
@@ -1699,6 +1740,14 @@ Settings stage verification:
 - Cross-app handoff delivery is automatic but policy-gated: the target runs in a fresh session and its
   reply wakes the source session; strict pairs require operator approval, and replies with no live
   source session wait for an operator relaunch.
+- Telegram notifications are send-only v1: one chat, no inbound quick replies/webhook, and no
+  per-operator routing. The full answer is stored in the outbox payload until it is sent/dead or
+  expires after seven days; payloads are cleared then. Rich messages cannot disable Telegram link
+  previews. Rich-format fallback and proxy transports are covered by unit tests but still need an
+  operator live smoke against a real bot/chat/proxy after deployment. The completion predicate
+  defers when the context tracker is not hydrated or the agent read fails; it never guesses a
+  completion.
+
 - SSH host keys are coordinator-held; the agent can run arbitrary commands as the configured SSH
   user on an approved host. The remote user's privileges are the real boundary; use least-privilege
   deploy users. Do not grant SSH to the coordinator host or a host that can read coordinator state

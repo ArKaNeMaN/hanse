@@ -12,7 +12,7 @@ export interface GracefulShutdownOptions {
   server: ShutdownServer;
   closeDb: () => void;
   graceMs: number;
-  stopBackground?: () => void;
+  stopBackground?: () => void | Promise<void>;
   onClose?: () => void;
   logger?: Logger;
   now?: () => number;
@@ -41,7 +41,6 @@ export async function runGracefulShutdown(
 
   options.drain.beginShutdown();
   log("readiness_false", { shutdownAt: options.drain.shutdownAt });
-  options.stopBackground?.();
 
   try {
     options.server.close(() => undefined);
@@ -51,8 +50,19 @@ export async function runGracefulShutdown(
   options.server.closeIdleConnections?.();
   log("stop_accepting");
 
+  const stopStarted = now();
+  try {
+    await options.stopBackground?.();
+  } catch (error) {
+    options.logger?.warn("shutdown_background_failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+  const stopElapsedMs = now() - stopStarted;
+  log("background_stopped", { stopElapsedMs });
+
   const drained = await options.drain.awaitQuiescence(
-    Math.max(0, options.graceMs - SHUTDOWN_RESERVE_MS),
+    Math.max(0, options.graceMs - SHUTDOWN_RESERVE_MS - stopElapsedMs),
   );
   log("drained", { drained, inFlightHttp: options.drain.inFlightHttp });
 

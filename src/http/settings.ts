@@ -10,10 +10,13 @@ import {
   providerBaseUrlWarnings,
 } from "../model-providers/index.js";
 import {
+  DEFAULT_TELEGRAM_API_BASE_URL,
+  type NotificationSecretField,
   type PendingRestart,
   type ResolvedSettings,
   type SettingsService,
   SettingsValidationError,
+  TelegramSecretValidationError,
 } from "../settings/index.js";
 import type { SettingsScope, SettingsTarget } from "../settings/types.js";
 import { findApp, toManagedApp } from "./apps.js";
@@ -25,6 +28,52 @@ import { parseSettingsTarget, settingsPagePath } from "./props/settings.js";
 import { safeLocalPath } from "./ui.js";
 
 const JSON_HEADERS = { "cache-control": "no-store" };
+
+export interface TelegramTestMessage {
+  botToken: string;
+  chatId: string;
+  apiBaseUrl: string;
+  proxyUrl?: string;
+}
+
+export interface TelegramTestTransport {
+  sendTest(message: TelegramTestMessage): Promise<void>;
+}
+
+let telegramTestTransport: TelegramTestTransport | undefined;
+
+export function setTelegramTestTransport(transport: TelegramTestTransport | undefined): void {
+  telegramTestTransport = transport;
+}
+
+const TELEGRAM_TEST_INTERVAL_MS = 5_000;
+const telegramTestLastAt = new Map<string, number>();
+
+export function resetTelegramTestRateLimit(): void {
+  telegramTestLastAt.clear();
+}
+
+function consumeTelegramTest(key: string, now: number): boolean {
+  for (const [candidate, at] of telegramTestLastAt) {
+    if (now - at >= TELEGRAM_TEST_INTERVAL_MS) telegramTestLastAt.delete(candidate);
+  }
+  const last = telegramTestLastAt.get(key);
+  if (last !== undefined && now - last < TELEGRAM_TEST_INTERVAL_MS) {
+    return false;
+  }
+  telegramTestLastAt.set(key, now);
+  return true;
+}
+
+function telegramScopeKey(scope: SettingsScope, target: SettingsTarget): string {
+  if (scope === "global") {
+    return "global";
+  }
+  if (scope === "project") {
+    return `project:${target.projectId ?? ""}`;
+  }
+  return `app:${target.projectId ?? ""}:${target.appKey ?? ""}`;
+}
 
 class BodyValidationError extends Error {
   constructor(message: string) {
@@ -365,6 +414,27 @@ function gitAuthMutationError(error: unknown): HttpResponse {
   throw error;
 }
 
+function requireNotificationSecretField(value: unknown): NotificationSecretField {
+  if (value === "bot_token" || value === "proxy_url") {
+    return value;
+  }
+  throw new SettingsValidationError("field must be bot_token or proxy_url");
+}
+
+function telegramMutationError(error: unknown): HttpResponse {
+  if (error instanceof TelegramSecretValidationError) {
+    return json(400, {
+      error: error.message,
+      code: "invalid_telegram_secret",
+      field: error.field,
+    });
+  }
+  if (error instanceof SettingsValidationError || error instanceof BodyValidationError) {
+    return json(400, { error: error.message, code: "invalid_request" });
+  }
+  throw error;
+}
+
 function modelProviderWarnings(
   providers: readonly ModelProvider[],
   existingProviderIds: ReadonlySet<string>,
@@ -429,6 +499,9 @@ export function isSettingsRoute(method: string, pathname: string): boolean {
   if (pathname === "/api/settings/git") {
     return method === "POST";
   }
+  if (pathname === "/api/settings/telegram" || pathname === "/api/settings/telegram/test") {
+    return method === "POST";
+  }
   return method === "POST" && /^\/api\/apps\/[^/]+\/restart$/.test(pathname);
 }
 
@@ -480,6 +553,9 @@ export async function handleSettings(deps: HttpDeps, request: HttpRequest): Prom
   }
 
   if (request.path === "/api/settings" && request.method === "POST") {
+    if (crossSiteMutation(request)) {
+      return json(403, { error: "cross-site request rejected", code: "cross_site" });
+    }
     let payload: Record<string, unknown>;
     let scope: SettingsScope;
     let target: SettingsTarget;
@@ -542,6 +618,99 @@ export async function handleSettings(deps: HttpDeps, request: HttpRequest): Prom
     } catch (error) {
       return gitAuthMutationError(error);
     }
+  }
+
+  if (request.path === "/api/settings/telegram" && request.method === "POST") {
+    if (crossSiteMutation(request)) {
+      return json(403, { error: "cross-site request rejected", code: "cross_site_request" });
+    }
+    try {
+      if (!isJsonRequest(request)) {
+        throw new BodyValidationError("Telegram secret requests must use a JSON body.");
+      }
+      const payload = parseObjectBody(request);
+      const { scope, target } = parseTarget(payload);
+      const field = requireNotificationSecretField(stringValue(payload.field));
+      const action = stringValue(payload.action) ?? "";
+      if (action === "set") {
+        if (payload.value === undefined) {
+          throw new SettingsValidationError("value is required for set");
+        }
+        settings.setNotificationSecret(scope, target, field, payload.value, actor);
+      } else if (action === "clear" || action === "inherit") {
+        if (payload.value !== undefined) {
+          throw new SettingsValidationError("value is not allowed for clear or inherit");
+        }
+        if (action === "clear") {
+          settings.clearNotificationSecret(scope, target, field, actor);
+        } else {
+          settings.inheritNotificationSecret(scope, target, field);
+        }
+      } else {
+        throw new SettingsValidationError("action must be set, clear, or inherit");
+      }
+      return json(200, { ok: true, ...settingsResponse(settings, deps, scope, target) });
+    } catch (error) {
+      return telegramMutationError(error);
+    }
+  }
+
+  if (request.path === "/api/settings/telegram/test" && request.method === "POST") {
+    if (crossSiteMutation(request)) {
+      return json(403, { error: "cross-site request rejected", code: "cross_site_request" });
+    }
+    let scope: SettingsScope;
+    let target: SettingsTarget;
+    try {
+      if (!isJsonRequest(request)) {
+        throw new BodyValidationError("Telegram test requests must use a JSON body.");
+      }
+      const payload = parseObjectBody(request);
+      ({ scope, target } = parseTarget(payload));
+    } catch (error) {
+      return telegramMutationError(error);
+    }
+    const resolved = settings.resolve(target);
+    const chatId = resolved.effective.notifications.telegram.chatId.value;
+    if (resolved.telegram.botToken.state !== "set" || chatId === null || chatId.length === 0) {
+      return json(400, {
+        error: "a bot token and chat id are required",
+        code: "invalid_request",
+      });
+    }
+    const config = settings.telegramConfig(target);
+    if (config.botToken === undefined) {
+      return json(400, { error: "a bot token is required", code: "invalid_request" });
+    }
+    if (!consumeTelegramTest(telegramScopeKey(scope, target), Date.now())) {
+      return json(429, {
+        error: "a test message was sent recently; wait 5 seconds",
+        code: "rate_limited",
+      });
+    }
+    const transport = telegramTestTransport;
+    if (transport === undefined) {
+      return json(502, {
+        error: "Telegram transport is not configured.",
+        code: "telegram_unavailable",
+      });
+    }
+    try {
+      await transport.sendTest({
+        botToken: config.botToken,
+        chatId,
+        apiBaseUrl:
+          resolved.effective.notifications.telegram.apiBaseUrl.value ??
+          DEFAULT_TELEGRAM_API_BASE_URL,
+        ...(config.proxyUrl === undefined ? {} : { proxyUrl: config.proxyUrl }),
+      });
+    } catch {
+      return json(502, {
+        error: "Telegram test failed. Check the bot token, chat id, proxy, and API base URL.",
+        code: "telegram_unavailable",
+      });
+    }
+    return json(200, { ok: true });
   }
 
   if (request.path === "/api/settings/model-providers") {

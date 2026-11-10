@@ -75,10 +75,7 @@ test("reveals the server fallback when the entry module fails", async ({ page })
   const fallback = page.locator("#ui-fallback");
   await expect(fallback).toBeVisible({ timeout: 8_000 });
   await expect(fallback).toContainText("The new interface did not load.");
-  await expect(fallback.getByRole("link", { name: "Reload the page" })).toHaveAttribute(
-    "href",
-    "",
-  );
+  await expect(fallback.getByRole("link", { name: "Reload the page" })).toHaveAttribute("href", "");
 });
 
 test("mounts without a fallback flash or console errors", async ({ page }) => {

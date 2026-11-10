@@ -307,6 +307,7 @@ function monitorFor(
     compactTimeoutMs?: number;
     isCurrent?: () => boolean;
     onContextUpdate?: (snapshot: ContextSnapshot) => void;
+    onEvent?: (event: { type: string }) => void;
   } = {},
 ): ContextMonitor {
   upstreams.push(upstream);
@@ -322,6 +323,7 @@ function monitorFor(
     compactTimeoutMs: options.compactTimeoutMs ?? 500,
     ...(options.client === undefined ? {} : { client: options.client }),
     ...(options.onContextUpdate === undefined ? {} : { onContextUpdate: options.onContextUpdate }),
+    ...(options.onEvent === undefined ? {} : { onEvent: options.onEvent }),
   });
   monitors.push(monitor);
   return monitor;
@@ -444,6 +446,32 @@ describe("ContextMonitor snapshots", () => {
     expect(snapshot.limit).toBe(PROVIDER_LIMIT);
     expect(snapshot.percent).toBe(40);
     expect(snapshot.model).toEqual(MODEL);
+    expect(upstream.requests.some((request) => request.path.includes("/message?limit=30"))).toBe(
+      true,
+    );
+  });
+
+  it("emits a synthetic stream.ready on every successful attach and reconnect", async () => {
+    const upstream = await fakeUpstream();
+    const events: string[] = [];
+    await startMonitor(upstream, { onEvent: (event) => events.push(event.type) });
+    await waitFor(() => events.includes("stream.ready"));
+    expect(events.filter((type) => type === "stream.ready")).toHaveLength(1);
+
+    upstream.endStream();
+    await waitFor(() => upstream.eventConnections === 2);
+    await waitFor(() => events.filter((type) => type === "stream.ready").length === 2);
+  });
+
+  it("hydrates sessionActivity from the whole subtree with auto-compaction off", async () => {
+    const upstream = await fakeUpstream();
+    upstream.setSessions([{ id: "parent" }, { id: "child", parentID: "parent" }]);
+    const monitor = await startMonitor(upstream, { policy: policy({ enabled: false }) });
+
+    upstream.emit(statusEvent("child", "busy"));
+
+    const activity = await monitor.sessionActivity("parent");
+    expect(activity).toEqual({ activeChildren: true, pendingTask: false, known: true });
     expect(upstream.requests.some((request) => request.path.includes("/message?limit=30"))).toBe(
       true,
     );

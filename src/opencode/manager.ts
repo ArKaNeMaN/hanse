@@ -93,6 +93,7 @@ import {
   type ContextMonitorOptions,
   type ContextPolicy,
   type ContextSnapshot,
+  type SessionActivitySnapshot,
 } from "./context.js";
 import {
   authorizationFor,
@@ -2411,6 +2412,22 @@ export class InstanceManager {
     const monitor = this.#running.has(appId) ? this.#monitors.get(appId)?.monitor : undefined;
     if (monitor === undefined) throw new AgentNotRunningError();
     return monitor.compact(sessionId);
+  }
+
+  /**
+   * Confirm subtree activity for the completion predicate. Hydrates the tracker and never starts
+   * the agent; an absent monitor or a failed hydration reports `known: false` so the caller defers.
+   */
+  async sessionActivity(appId: string, sessionId: string): Promise<SessionActivitySnapshot> {
+    const monitor = this.#running.has(appId) ? this.#monitors.get(appId)?.monitor : undefined;
+    if (monitor?.sessionActivity === undefined) {
+      return { activeChildren: false, pendingTask: false, known: false };
+    }
+    try {
+      return await monitor.sessionActivity(sessionId);
+    } catch {
+      return { activeChildren: false, pendingTask: false, known: false };
+    }
   }
 
   #monitorsEnabled(): boolean {

@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 import type { RunSshKeygen } from "../src/git/credentials.js";
+import { settingsHashFor } from "../src/opencode/manager.js";
 import {
   hashValue,
   launchEffectiveSettings,
@@ -13,6 +14,7 @@ import {
   SettingsService,
   SettingsValidationError,
   stableStringify,
+  TelegramSecretValidationError,
 } from "../src/settings/index.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
 
@@ -393,6 +395,157 @@ describe("context policy and launch projection", () => {
     expect(hashValue(launchEffectiveSettings(service.resolve(appTarget).effective))).not.toBe(
       hashValue(preChangeEffective),
     );
+  });
+
+  it("keeps every notification key out of the agent launch hash", () => {
+    const { service } = fixture();
+    const appTarget = { projectId: "p", appKey: "web" };
+    const baseHash = settingsHashFor(service.snapshot(appTarget), "profile");
+    const keys: Array<[string, unknown]> = [
+      ["notifications.mode", "attention"],
+      ["notifications.telegram.enabled", true],
+      ["notifications.telegram.chat_id", "@ops"],
+      ["notifications.public_base_url", "https://hanse.example/"],
+      ["notifications.telegram.api_base_url", "https://telegram.example/"],
+      ["notifications.include_answer", false],
+    ];
+    for (const [key, value] of keys) {
+      service.set("global", {}, key, value, "owner");
+      expect(settingsHashFor(service.snapshot(appTarget), "profile"), key).toBe(baseHash);
+    }
+
+    service.setProviderKey("global", {}, "deepseek", "sentinel-provider-key", "owner");
+    const withProviderKey = settingsHashFor(service.snapshot(appTarget), "profile");
+    expect(withProviderKey).not.toBe(baseHash);
+
+    service.setGitAuth(
+      "global",
+      {},
+      "https",
+      { hosts: ["github.com"], username: "x-access-token", token: "sentinel-token" },
+      "owner",
+    );
+    expect(settingsHashFor(service.snapshot(appTarget), "profile")).not.toBe(withProviderKey);
+  });
+});
+
+describe("notification settings", () => {
+  const appTarget = { projectId: "p", appKey: "web" };
+
+  it("resolves notification keys global -> project -> app and supports clear/inherit", () => {
+    const { service } = fixture();
+    service.set("global", {}, "notifications.mode", "attention", "owner");
+    service.set("project", { projectId: "p" }, "notifications.mode", "off", "owner");
+    service.set("app", appTarget, "notifications.mode", "all", "owner");
+    expect(service.resolve(appTarget).effective.notifications.mode).toMatchObject({
+      value: "all",
+      source: "app",
+    });
+
+    service.inherit("app", appTarget, "notifications.mode");
+    expect(service.resolve(appTarget).effective.notifications.mode).toMatchObject({
+      value: "off",
+      source: "project",
+    });
+
+    service.clear("project", { projectId: "p" }, "notifications.mode", "owner");
+    expect(service.resolve(appTarget).effective.notifications.mode).toMatchObject({
+      value: null,
+      state: "cleared",
+      source: "project",
+    });
+  });
+
+  it("validates and normalizes non-secret notification values", () => {
+    const { service } = fixture();
+    service.set("global", {}, "notifications.public_base_url", "https://hanse.example/", "owner");
+    service.set(
+      "global",
+      {},
+      "notifications.telegram.api_base_url",
+      "https://telegram.example/api/",
+      "owner",
+    );
+    service.set("global", {}, "notifications.telegram.chat_id", " -1001234567890 ", "owner");
+    const resolved = service.resolve({}).effective.notifications;
+    expect(resolved.publicBaseUrl.value).toBe("https://hanse.example");
+    expect(resolved.telegram.apiBaseUrl.value).toBe("https://telegram.example/api");
+    expect(resolved.telegram.chatId.value).toBe("-1001234567890");
+
+    expect(() =>
+      service.set("global", {}, "notifications.telegram.chat_id", "not a chat", "owner"),
+    ).toThrow(SettingsValidationError);
+    expect(() =>
+      service.set(
+        "global",
+        {},
+        "notifications.public_base_url",
+        "https://hanse.example/?q=1",
+        "owner",
+      ),
+    ).toThrow(SettingsValidationError);
+    expect(() =>
+      service.set(
+        "global",
+        {},
+        "notifications.public_base_url",
+        "https://user:pass@hanse.example",
+        "owner",
+      ),
+    ).toThrow(SettingsValidationError);
+    expect(() =>
+      service.set(
+        "global",
+        {},
+        "notifications.telegram.api_base_url",
+        "https://user:pass@telegram.example",
+        "owner",
+      ),
+    ).toThrow(SettingsValidationError);
+  });
+
+  it("stores telegram secrets as status-only and returns plaintext only to callers", () => {
+    const { service } = fixture();
+    const botToken = "12345:abcdefghijklmnopqrst";
+    const proxyUrl = "http://proxy.example:8080";
+    service.setNotificationSecret("global", {}, "bot_token", botToken, "owner");
+    service.setNotificationSecret("project", { projectId: "p" }, "proxy_url", proxyUrl, "owner");
+
+    const resolved = service.resolve(appTarget);
+    expect(resolved.telegram).toEqual({
+      botToken: { state: "set", source: "global" },
+      proxyUrl: { state: "set", source: "project" },
+    });
+    expect(JSON.stringify(resolved)).not.toContain(botToken);
+    expect(JSON.stringify(resolved)).not.toContain(proxyUrl);
+    expect(service.telegramConfig(appTarget)).toEqual({ botToken, proxyUrl });
+
+    service.clearNotificationSecret("app", appTarget, "bot_token", "owner");
+    expect(service.resolve(appTarget).telegram.botToken).toEqual({
+      state: "cleared",
+      source: "app",
+    });
+    expect(service.telegramConfig(appTarget).botToken).toBeUndefined();
+
+    service.inheritNotificationSecret("app", appTarget, "bot_token");
+    expect(service.telegramConfig(appTarget).botToken).toBe(botToken);
+  });
+
+  it("rejects invalid telegram secrets without echoing the submitted value", () => {
+    const { service } = fixture();
+    const invalidToken = "sentinel-not-a-token";
+    let caught: unknown;
+    try {
+      service.setNotificationSecret("global", {}, "bot_token", invalidToken, "owner");
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(TelegramSecretValidationError);
+    expect((caught as Error).message).not.toContain(invalidToken);
+
+    expect(() =>
+      service.setNotificationSecret("global", {}, "proxy_url", "ftp://proxy.example", "owner"),
+    ).toThrow(TelegramSecretValidationError);
   });
 });
 

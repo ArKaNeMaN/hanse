@@ -484,6 +484,34 @@ describe("ContextTracker session graph", () => {
     expect(tracker.hasActiveChildren("parent", 16)).toBe(true);
   });
 
+  it("walks the whole subtree, not only direct children", () => {
+    const tracker = new ContextTracker();
+    tracker.setSessionParents(sessions);
+    tracker.applyEvent(
+      { type: "session.status", sessionID: "grand", status: { type: "busy" } },
+      10,
+    );
+    expect(tracker.hasActiveChildren("parent", 11)).toBe(true);
+    expect(tracker.hasActiveChildren("child", 11)).toBe(true);
+    expect(tracker.hasActiveChildren("grand", 11)).toBe(false);
+  });
+
+  it("reports known only after the session graph is loaded", () => {
+    const tracker = new ContextTracker();
+    expect(tracker.sessionActivity("parent", 1)).toEqual({
+      activeChildren: false,
+      pendingTask: false,
+      known: false,
+    });
+    tracker.setSessionParents(sessions);
+    expect(tracker.sessionActivity("parent", 1)).toEqual({
+      activeChildren: false,
+      pendingTask: false,
+      known: true,
+    });
+    expect(tracker.sessionActivity("missing", 1).known).toBe(false);
+  });
+
   it("does not report a known idle child as active", () => {
     const tracker = new ContextTracker();
     tracker.setSessionParents(sessions);

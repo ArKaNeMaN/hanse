@@ -48,6 +48,14 @@ export interface ContextTokens {
   cacheWrite?: number;
 }
 
+/** Positive activity confirmation for a session subtree (design §4.1 check 3). */
+export interface SessionActivitySnapshot {
+  activeChildren: boolean;
+  pendingTask: boolean;
+  /** False until the tracker has loaded the app's session graph; the caller must defer. */
+  known: boolean;
+}
+
 export interface ContextSnapshot {
   sessionID: string;
   state: ContextState;
@@ -555,9 +563,14 @@ export class ContextTracker {
   readonly #parents = new Map<string, string | null>();
   readonly #children = new Map<string, Set<string>>();
   readonly #sessionUpdated = new Map<string, number>();
+  #parentsKnown = false;
 
   get sessionCount(): number {
     return this.#sessions.size;
+  }
+
+  get parentsKnown(): boolean {
+    return this.#parentsKnown;
   }
 
   hasSession(sessionID: string): boolean {
@@ -569,6 +582,7 @@ export class ContextTracker {
   }
 
   setSessionParents(sessions: OpencodeSession[]): void {
+    this.#parentsKnown = true;
     this.#parents.clear();
     this.#children.clear();
     this.#sessionUpdated.clear();
@@ -601,9 +615,12 @@ export class ContextTracker {
   }
 
   hasActiveChildren(sessionID: string, now: number = Date.now()): boolean {
-    const children = this.#children.get(sessionID);
-    if (children === undefined) return false;
-    for (const childID of children) {
+    const seen = new Set<string>();
+    const stack: string[] = [...(this.#children.get(sessionID) ?? [])];
+    while (stack.length > 0) {
+      const childID = stack.pop();
+      if (childID === undefined || seen.has(childID)) continue;
+      seen.add(childID);
       const record = this.#sessions.get(childID);
       if (
         record !== undefined &&
@@ -611,13 +628,18 @@ export class ContextTracker {
       ) {
         return true;
       }
-      if ((record?.status ?? "unknown") !== "unknown") continue;
-      const lastActivity = Math.max(
-        record?.lastActivityAt ?? Number.NEGATIVE_INFINITY,
-        this.#sessionUpdated.get(childID) ?? Number.NEGATIVE_INFINITY,
-      );
-      if (Number.isFinite(lastActivity) && now - lastActivity < CHILD_ACTIVITY_WINDOW_MS) {
-        return true;
+      if ((record?.status ?? "unknown") === "unknown") {
+        const lastActivity = Math.max(
+          record?.lastActivityAt ?? Number.NEGATIVE_INFINITY,
+          this.#sessionUpdated.get(childID) ?? Number.NEGATIVE_INFINITY,
+        );
+        if (Number.isFinite(lastActivity) && now - lastActivity < CHILD_ACTIVITY_WINDOW_MS) {
+          return true;
+        }
+      }
+      const grandchildren = this.#children.get(childID);
+      if (grandchildren !== undefined) {
+        for (const grandchild of grandchildren) stack.push(grandchild);
       }
     }
     return false;
@@ -625,6 +647,14 @@ export class ContextTracker {
 
   hasPendingTask(sessionID: string): boolean {
     return (this.#sessions.get(sessionID)?.pendingTaskParts.size ?? 0) > 0;
+  }
+
+  sessionActivity(sessionID: string, now: number = Date.now()): SessionActivitySnapshot {
+    return {
+      activeChildren: this.hasActiveChildren(sessionID, now),
+      pendingTask: this.hasPendingTask(sessionID),
+      known: this.#parentsKnown && this.#parents.has(sessionID),
+    };
   }
 
   hasActiveCompactionBlocker(sessionID: string, now: number = Date.now()): boolean {
@@ -1184,6 +1214,8 @@ export interface ContextMonitorLike {
   stop(): void;
   snapshot(sessionId: string): Promise<ContextSnapshot>;
   compact(sessionId: string): Promise<{ accepted: true }>;
+  /** Hydrate the session graph, then confirm subtree activity; absent means `known: false`. */
+  sessionActivity?(sessionId: string): Promise<SessionActivitySnapshot>;
   /** Event-stream connection state; used to decide whether a pending send needs a fallback. */
   state?(): "connecting" | "connected";
 }
@@ -1394,6 +1426,18 @@ export class ContextMonitor implements ContextMonitorLike {
     return this.#tracker.snapshot(sessionId, policy, this.#now());
   }
 
+  async sessionActivity(sessionId: string): Promise<SessionActivitySnapshot> {
+    const wasHydrated = this.#hydrated.has(sessionId);
+    await this.#hydrate(sessionId);
+    if (wasHydrated) {
+      const parentsOk = await this.#refreshParents();
+      if (!parentsOk || this.#stopped) {
+        return { activeChildren: false, pendingTask: false, known: false };
+      }
+    }
+    return this.#tracker.sessionActivity(sessionId, this.#now());
+  }
+
   async compact(sessionId: string): Promise<{ accepted: true }> {
     if (this.#stopped) throw new AgentNotRunningError();
     const policy = this.#policy();
@@ -1465,6 +1509,11 @@ export class ContextMonitor implements ContextMonitorLike {
         return;
       }
       this.#connected = true;
+      try {
+        this.#onEvent?.({ type: "stream.ready" });
+      } catch {
+        // A subscriber failure must never stop the monitor or its stream.
+      }
       const stream = createEventStream(response.body, {
         includeUsage: true,
         maxFrameBytes: APP_STREAM_MAX_FRAME_BYTES,

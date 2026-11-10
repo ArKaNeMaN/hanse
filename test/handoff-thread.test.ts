@@ -19,11 +19,13 @@ import {
   transitionHandoffMessage,
 } from "../src/coordinator/thread.js";
 import { createPrincipal } from "../src/identity/principals.js";
+import { type NotificationSignal, notificationEvents } from "../src/notifications/events.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
 
 const dirs: string[] = [];
 
 afterEach(() => {
+  notificationEvents.reset();
   for (const dir of dirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -185,6 +187,8 @@ describe("handoff thread start", () => {
     const { db, service } = fixture();
     const handoffsBefore = countRows(db, "handoffs");
     const messagesBefore = countRows(db, "handoff_messages");
+    const signals: NotificationSignal[] = [];
+    notificationEvents.subscribe((signal) => signals.push(signal));
     db.exec(
       "CREATE TRIGGER fail_approval_insert BEFORE INSERT ON approvals BEGIN SELECT RAISE(ABORT, 'forced'); END",
     );
@@ -198,6 +202,77 @@ describe("handoff thread start", () => {
     expect(countRows(db, "handoffs")).toBe(handoffsBefore);
     expect(countRows(db, "handoff_messages")).toBe(messagesBefore);
     expect(countRows(db, "approvals")).toBe(0);
+    expect(signals).toHaveLength(0);
+  });
+
+  it("emits handoff_approval after the thread transaction commits", () => {
+    const { db, service } = fixture();
+    const signals: NotificationSignal[] = [];
+    notificationEvents.subscribe((signal) => {
+      signals.push(signal);
+      if (signal.type === "handoff_approval") {
+        expect(getPendingApproval(db, signal.handoffId, "dispatch")?.id).toBe(signal.approvalId);
+      }
+    });
+
+    const result = startThread(service, {
+      idempotencyKey: "emit-thread-approval",
+      requiresApproval: true,
+    });
+    const approval = getPendingApproval(db, result.handoffId, "dispatch");
+    expect(signals).toHaveLength(1);
+    expect(signals[0]).toMatchObject({
+      type: "handoff_approval",
+      handoffId: result.handoffId,
+      approvalKind: "dispatch",
+      approvalId: approval?.id,
+      requestedAt: approval?.requestedAt,
+      transitionAt: approval?.requestedAt,
+    });
+  });
+
+  it("emits handoff_approval after one-shot dispatch and reply approvals commit", () => {
+    const { db, service } = fixture();
+    const signals: NotificationSignal[] = [];
+    notificationEvents.subscribe((signal) => signals.push(signal));
+
+    const dispatch = service.requestSiblingChange({
+      fromAppKey: "a",
+      toAppKey: "b",
+      summary: "one shot",
+      spec: "spec",
+      requiresApproval: true,
+    });
+    const dispatchApproval = getPendingApproval(db, dispatch.handoffId, "dispatch");
+    expect(signals[0]).toMatchObject({
+      type: "handoff_approval",
+      handoffId: dispatch.handoffId,
+      approvalKind: "dispatch",
+      approvalId: dispatchApproval?.id,
+    });
+
+    setHandoffPolicy(db, {
+      projectId: "p",
+      fromAppKey: "a",
+      toAppKey: "b",
+      dispatchMode: "auto",
+      replyMode: "approve",
+    });
+    const reply = service.requestSiblingChange({
+      fromAppKey: "a",
+      toAppKey: "b",
+      summary: "reply approval",
+      spec: "spec",
+    });
+    updateHandoff(db, reply.handoffId, { state: "in_progress" });
+    service.deliverHandoff(reply.handoffId, "done", "completed", "b");
+    const replyApproval = getPendingApproval(db, reply.handoffId, "reply");
+    expect(signals[1]).toMatchObject({
+      type: "handoff_approval",
+      handoffId: reply.handoffId,
+      approvalKind: "reply",
+      approvalId: replyApproval?.id,
+    });
   });
 
   it("denies a thread without creating an approval", () => {

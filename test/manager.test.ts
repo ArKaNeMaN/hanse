@@ -569,6 +569,7 @@ function fakeMonitorFactory(): {
         },
         snapshot: async (sessionID) => snapshotStub(sessionID),
         compact: async () => ({ accepted: true }),
+        sessionActivity: async () => ({ activeChildren: false, pendingTask: false, known: true }),
       };
       monitors.push(monitor);
       return monitor;
@@ -2397,6 +2398,34 @@ describe("InstanceManager context monitors", () => {
     await manager.ensure(APP);
     expect(monitors.monitors).toHaveLength(1);
     expect(monitors.monitors[0]?.startCount).toBe(1);
+  });
+
+  it("delegates sessionActivity to the attached monitor and reports unknown without one", async () => {
+    const runtime = new FakeAgentRuntime(() => "http://127.0.0.1:4201");
+    const monitors = fakeMonitorFactory();
+    const { manager } = fixture(
+      runtime,
+      fakeSettings({ context: {} }),
+      fakeProfiles().source,
+      undefined,
+      async () => [],
+      undefined,
+      { monitorFactory: monitors.factory },
+    );
+
+    await manager.ensure(APP);
+    await expect(manager.sessionActivity(APP.id, "s")).resolves.toEqual({
+      activeChildren: false,
+      pendingTask: false,
+      known: true,
+    });
+
+    await manager.stopApp(APP.id);
+    await expect(manager.sessionActivity(APP.id, "s")).resolves.toEqual({
+      activeChildren: false,
+      pendingTask: false,
+      known: false,
+    });
   });
 
   it("does not start a monitor when settings lack a context policy", async () => {

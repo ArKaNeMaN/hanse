@@ -39,6 +39,9 @@
   "dependencies": {
     "@balena/dockerignore": "^1.0.2",
     "better-sqlite3": "^13.0.3",
+    "http-proxy-agent": "^9.1.0",
+    "https-proxy-agent": "^9.1.0",
+    "socks-proxy-agent": "^10.1.0",
     "ssh2": "^1.17.0",
     "yaml": "^2.5.0",
     "zod": "^3.23.0"

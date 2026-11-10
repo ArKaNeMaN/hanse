@@ -33,6 +33,7 @@ import { sweepStaleRuntimeDirs } from "../git/temp-dir.js";
 import { findApp, toManagedApp } from "../http/apps.js";
 import type { ProjectContext } from "../http/handler.js";
 import { createHttpServer } from "../http/server.js";
+import { setTelegramTestTransport } from "../http/settings.js";
 import { upsertPrincipalWithToken } from "../identity/principals.js";
 import { RunnerImageClient } from "../images/client.js";
 import { ImageService, ImageServiceError } from "../images/service.js";
@@ -42,6 +43,10 @@ import { isMasterProject, MASTER_DIR_NAME } from "../master/constants.js";
 import { runRemoteMcpServer } from "../mcp/remote.js";
 import { runMcpServer } from "../mcp/server.js";
 import { ModelProviderService } from "../model-providers/index.js";
+import { NotificationRouter } from "../notifications/router.js";
+import { TelegramSender } from "../notifications/sender.js";
+import { createTelegramClient } from "../notifications/telegram/client.js";
+import { createTelegramTransport } from "../notifications/telegram/transport.js";
 import { waitForOpenCodeReady } from "../opencode/client.js";
 import {
   AgentStartingError,
@@ -890,6 +895,7 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
           lifecycleActivity,
         });
   let handoffDispatcher: HandoffDispatcher | undefined;
+  let notifierRouter: NotificationRouter | undefined;
   const manager = new InstanceManager(db, path.resolve(agentsHome()), {
     runtime,
     settings,
@@ -908,7 +914,10 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
     ...(hostAgents === undefined ? {} : { hostAgents }),
     deploymentLock,
     lifecycleActivity,
-    onEvent: (app, event) => handoffDispatcher?.observe(app, event),
+    onEvent: (app, event) => {
+      handoffDispatcher?.observe(app, event);
+      notifierRouter?.handleAgentEvent(app.id, event);
+    },
   });
   const getProjects = (): ProjectContext[] => {
     const rows = db.prepare("SELECT id, name, root_path, deleting FROM projects").all() as {
@@ -954,6 +963,27 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
     settings,
     workspaceRoot: workspace,
     logger: (message) => ctx.io.stderr(`hanse: ${message}`),
+  });
+  notifierRouter = new NotificationRouter({ db, manager, settings });
+  const sender = new TelegramSender({
+    db,
+    settings,
+    lifecycleActivity,
+    logger: (message) => ctx.io.stderr(`hanse: ${message}`),
+  });
+  setTelegramTestTransport({
+    async sendTest(message) {
+      const transport = createTelegramTransport({
+        token: message.botToken,
+        apiBaseUrl: message.apiBaseUrl,
+        proxyUrl: message.proxyUrl ?? null,
+      });
+      const client = createTelegramClient({ transport, chatId: message.chatId });
+      const result = await client.sendMessage("Hanse test notification", {
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (result.kind !== "sent") throw new Error("telegram test failed");
+    },
   });
   const server = createHttpServer({
     db,
@@ -1016,6 +1046,12 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
     process.stderr.write("hanse: restart-claim recovery failed\n");
   });
   handoffDispatcher.start();
+  notifierRouter.start();
+  sender.start();
+  void handoffDispatcher
+    .ready()
+    .then(() => notifierRouter?.sweep())
+    .catch(() => undefined);
   skillSources.start();
   const operatorCount = getProjects().filter((project) => !isMasterProject(project.id)).length;
   ctx.io.stdout(
@@ -1034,10 +1070,15 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
         server,
         graceMs: shutdownGraceMs(),
         logger,
-        stopBackground: () => {
-          handoffDispatcher?.stop();
-          skillSources.stop();
-          manager.stopStatusReconciler();
+        stopBackground: async () => {
+          notifierRouter?.stop();
+          try {
+            await sender.stop();
+          } finally {
+            handoffDispatcher?.stop();
+            skillSources.stop();
+            manager.stopStatusReconciler();
+          }
         },
         onClose: () => {
           manager.detach();

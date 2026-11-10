@@ -18,11 +18,18 @@ import {
   type ResolverRow,
   resolveEffectiveValue,
 } from "./registry.js";
+import {
+  type NotificationSecretField,
+  type NotificationSecretLocation,
+  NotificationSecretStore,
+  type TelegramSecretConfig,
+} from "./telegram.js";
 import type {
   EffectiveSettings,
   EffectiveValue,
   GitAuthKind,
   LaunchSettingsSnapshot,
+  NotificationMode,
   ProviderKeyState,
   ProviderKeyStatus,
   ResolvedSettings,
@@ -214,12 +221,12 @@ function resolverRowsFor(
 }
 
 /**
- * Effective settings without the live `context` group. Launch hashing uses this
- * projection so context changes never mark a running agent as needing a restart.
+ * Effective settings without the live `context` or `notifications` groups. Launch hashing uses
+ * this projection so those changes never mark a running agent as needing a restart.
  */
 export function launchEffectiveSettings(
   effective: EffectiveSettings,
-): Omit<EffectiveSettings, "context"> {
+): Omit<EffectiveSettings, "context" | "notifications"> {
   return {
     llm: effective.llm,
     web: effective.web,
@@ -237,6 +244,7 @@ export class SettingsService {
   readonly #now: (() => Date) | undefined;
   readonly #providerKeys: ProviderKeyStore;
   readonly #gitAuth: GitAuthStore;
+  readonly #notifications: NotificationSecretStore;
   readonly #providerIdSource: (() => readonly string[]) | undefined;
 
   constructor(options: SettingsServiceOptions) {
@@ -248,6 +256,7 @@ export class SettingsService {
     this.#gitAuth = new GitAuthStore(options.db, options.secretKey, {
       runSshKeygen: options.runSshKeygen,
     });
+    this.#notifications = new NotificationSecretStore(options.db, options.secretKey);
   }
 
   /** Provider ids with a key row in any scope plus the host-auth keys. */
@@ -437,6 +446,44 @@ export class SettingsService {
     this.#gitAuth.inherit(location, requireGitAuthKind(kind));
   }
 
+  setNotificationSecret(
+    scope: SettingsScope,
+    target: SettingsTarget,
+    field: NotificationSecretField,
+    value: unknown,
+    actor: string,
+  ): void {
+    const location: NotificationSecretLocation = scopeLocation(scope, target);
+    this.#notifications.set(location, field, value, actor, this.#timestamp());
+  }
+
+  clearNotificationSecret(
+    scope: SettingsScope,
+    target: SettingsTarget,
+    field: NotificationSecretField,
+    actor: string,
+  ): void {
+    const location: NotificationSecretLocation = scopeLocation(scope, target);
+    this.#notifications.clear(location, field, actor, this.#timestamp());
+  }
+
+  inheritNotificationSecret(
+    scope: SettingsScope,
+    target: SettingsTarget,
+    field: NotificationSecretField,
+  ): void {
+    const location: NotificationSecretLocation = scopeLocation(scope, target);
+    this.#notifications.inherit(location, field);
+  }
+
+  /** Plaintext Telegram secrets for the notifier only; never part of `resolve`/`snapshot`. */
+  telegramConfig(target: SettingsTarget): TelegramSecretConfig {
+    const normalized = normalizeTarget(target);
+    return this.#notifications.resolve(
+      this.#notifications.listFor(normalized.projectId, normalized.appKey),
+    ).config;
+  }
+
   /** Resolve the effective git credential for a project (global + project scopes only). */
   projectGitAuth(projectId: string): GitAuthResolution {
     return this.#gitAuth.resolve(this.#gitAuth.listFor(projectId));
@@ -586,6 +633,16 @@ export class SettingsService {
           email: effectiveFor<string>(values, "git.user.email"),
         },
       },
+      notifications: {
+        mode: effectiveFor<NotificationMode>(values, "notifications.mode"),
+        telegram: {
+          enabled: effectiveFor<boolean>(values, "notifications.telegram.enabled"),
+          chatId: effectiveFor<string>(values, "notifications.telegram.chat_id"),
+          apiBaseUrl: effectiveFor<string>(values, "notifications.telegram.api_base_url"),
+        },
+        publicBaseUrl: effectiveFor<string>(values, "notifications.public_base_url"),
+        includeAnswer: effectiveFor<boolean>(values, "notifications.include_answer"),
+      },
     };
 
     const providerRows = this.#providerKeys.listFor(normalized.projectId, normalized.appKey);
@@ -604,6 +661,9 @@ export class SettingsService {
     const gitAuth = this.#gitAuth.resolve(
       this.#gitAuth.listFor(normalized.projectId, normalized.appKey),
     );
+    const telegram = this.#notifications.resolve(
+      this.#notifications.listFor(normalized.projectId, normalized.appKey),
+    );
 
     return {
       resolved: {
@@ -617,6 +677,10 @@ export class SettingsService {
         gitAuthScoped: {
           ssh: gitAuth.ssh.scoped,
           https: gitAuth.https.scoped,
+        },
+        telegram: {
+          botToken: telegram.botToken,
+          proxyUrl: telegram.proxyUrl,
         },
         warnings,
       },

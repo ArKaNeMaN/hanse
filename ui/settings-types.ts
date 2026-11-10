@@ -54,6 +54,11 @@ export type GitAuthStatus =
   | { readonly state: "error"; readonly kind: GitAuthKind; readonly message: string }
   | { readonly state: "missing"; readonly kind: GitAuthKind };
 
+export type SecretStatus =
+  | { readonly state: "set"; readonly source: SettingsScope }
+  | { readonly state: "cleared"; readonly source: SettingsScope }
+  | { readonly state: "missing" };
+
 export interface SettingsScopeOptionProps {
   readonly value: string;
   readonly label: string;
@@ -199,7 +204,11 @@ export type SettingsRowKind =
   | "web"
   | "context-enabled"
   | "context-percent"
-  | "git-identity";
+  | "git-identity"
+  | "notification-mode"
+  | "notification-enabled"
+  | "notification-text"
+  | "notification-include-answer";
 
 export interface SettingsRowProps {
   readonly id: string;
@@ -357,6 +366,44 @@ export interface SettingsGitProps {
   readonly securityNotes: string;
 }
 
+export interface SettingsTelegramSecretProps {
+  readonly field: "bot_token" | "proxy_url";
+  readonly label: string;
+  readonly status: SecretStatus;
+  readonly state: "set" | "cleared" | "missing";
+  readonly configured: boolean;
+  readonly masked: string;
+  readonly effectiveText: string;
+  readonly sourceLine: string;
+  readonly actions: SettingsRowActionsProps;
+  readonly form: SettingsFormProps;
+}
+
+export interface SettingsNotificationsProps {
+  readonly enabled: boolean;
+  readonly configured: boolean;
+  readonly warning: string | null;
+  readonly rows: {
+    readonly mode: SettingsRowProps;
+    readonly telegramEnabled: SettingsRowProps;
+    readonly chatId: SettingsRowProps;
+    readonly publicBaseUrl: SettingsRowProps;
+    readonly apiBaseUrl: SettingsRowProps;
+    readonly includeAnswer: SettingsRowProps;
+  };
+  readonly secrets: {
+    readonly botToken: SettingsTelegramSecretProps;
+    readonly proxyUrl: SettingsTelegramSecretProps;
+  };
+  readonly test: {
+    readonly action: string;
+    readonly returnTo: string;
+    readonly errorId: string;
+    readonly label: string;
+    readonly hint: string;
+  };
+}
+
 export interface SettingsPendingRowProps {
   readonly appId: string;
   readonly appKey: string;
@@ -386,6 +433,7 @@ export interface SettingsLabelsProps {
       readonly agent: string;
       readonly web: string;
       readonly context: string;
+      readonly notifications: string;
       readonly git: string;
       readonly restart: string;
     };
@@ -394,6 +442,7 @@ export interface SettingsLabelsProps {
     readonly agent: string;
     readonly web: string;
     readonly context: string;
+    readonly notifications: string;
     readonly git: string;
     readonly restart: string;
   };
@@ -485,6 +534,22 @@ export interface SettingsLabelsProps {
     readonly testHint: string;
     readonly securityNotes: string;
   };
+  readonly notifications: {
+    readonly title: string;
+    readonly hint: string;
+    readonly mode: string;
+    readonly enabled: string;
+    readonly chatId: string;
+    readonly publicBaseUrl: string;
+    readonly apiBaseUrl: string;
+    readonly includeAnswer: string;
+    readonly botToken: string;
+    readonly proxyUrl: string;
+    readonly secretHint: string;
+    readonly test: string;
+    readonly testHint: string;
+    readonly unconfigured: string;
+  };
   readonly restart: {
     readonly title: string;
     readonly badge: string;
@@ -521,6 +586,7 @@ export interface SettingsProps {
     readonly ssh: Record<SettingsScope, GitAuthScopedState>;
     readonly https: Record<SettingsScope, GitAuthScopedState>;
   };
+  readonly telegram: { readonly botToken: SecretStatus; readonly proxyUrl: SecretStatus };
   readonly warnings: readonly string[];
   readonly pendingRestart: readonly {
     readonly appId: string;
@@ -541,6 +607,7 @@ export interface SettingsProps {
   readonly providers: readonly SettingsProviderRowProps[];
   readonly modelProviders: SettingsModelProvidersProps;
   readonly git: SettingsGitProps;
+  readonly notifications: SettingsNotificationsProps;
   readonly restart: SettingsRestartProps;
   readonly labels: SettingsLabelsProps;
   readonly dialogs: SettingsDialogsProps;

@@ -48,8 +48,8 @@ describe("hanse migrate", () => {
     expect(code).toBe(0);
     const report = JSON.parse(lines.join("\n")) as Record<string, unknown>;
     expect(report).toMatchObject({
-      current: 25,
-      target: 25,
+      current: 26,
+      target: 26,
       pending: [],
       pendingCount: 0,
       backwardCompatible: true,
@@ -68,12 +68,12 @@ describe("hanse migrate", () => {
     const report = JSON.parse(lines.join("\n")) as Record<string, unknown>;
     expect(report).toMatchObject({
       current: 0,
-      target: 25,
-      pendingCount: 25,
+      target: 26,
+      pendingCount: 26,
       backwardCompatible: false,
       requiresExclusive: true,
     });
-    expect((report.pending as unknown[]).length).toBe(25);
+    expect((report.pending as unknown[]).length).toBe(26);
   });
 
   it("returns exit 20 for a database newer than the binary", async () => {
@@ -94,16 +94,21 @@ describe("hanse migrate", () => {
     const file = tempDb();
     ensureDatabase(file);
     const db = openDatabase(file);
-    db.exec("DELETE FROM schema_migrations WHERE version = 25; DROP TABLE restart_claims;");
-    db.exec("DROP TABLE deploy_state;");
+    db.exec(
+      "DELETE FROM schema_migrations WHERE version = 26; " +
+        "DROP TABLE notification_outbox; DROP TABLE notification_watermarks; " +
+        "DROP TABLE notification_meta; DROP TABLE notification_channel_state;",
+    );
     db.close();
     const { lines, io } = collector();
     const code = await runCli(["migrate", "--online", "--db", file, "--json"], io);
     expect(code).toBe(0);
-    expect(JSON.parse(lines.join("\n"))).toMatchObject({ applied: 1, current: 25, target: 25 });
+    expect(JSON.parse(lines.join("\n"))).toMatchObject({ applied: 1, current: 26, target: 26 });
     const verify = openDatabase(file);
     const row = verify
-      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'deploy_state'")
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'notification_outbox'",
+      )
       .get();
     expect(row).toBeDefined();
     verify.close();

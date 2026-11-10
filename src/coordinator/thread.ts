@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
+import { notificationEvents } from "../notifications/events.js";
 import { recordEvent } from "../store/events.js";
 import type { SqliteDatabase } from "../store/index.js";
+import { getPendingApproval } from "./approval.js";
 import {
   canTransitionHandoffMessage,
   getHandoff,
@@ -708,6 +710,19 @@ export function createThread(
 ): CreateThreadResult {
   try {
     const result = createThreadInternal(db, input, limits);
+    if (result.status === "awaiting_approval") {
+      const approval = getPendingApproval(db, result.handoff.id, "dispatch");
+      if (approval !== undefined) {
+        notificationEvents.emit({
+          type: "handoff_approval",
+          handoffId: result.handoff.id,
+          approvalKind: "dispatch",
+          approvalId: approval.id,
+          requestedAt: approval.requestedAt,
+          transitionAt: approval.requestedAt,
+        });
+      }
+    }
     recordThreadAttempt(
       db,
       input.fromAppId,

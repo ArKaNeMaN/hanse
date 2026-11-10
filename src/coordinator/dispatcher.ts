@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { DefaultImageUnavailableError, ImageNotReadyError } from "../images/service.js";
+import { notificationEvents } from "../notifications/events.js";
 import { resolveAppInstructionSources } from "../opencode/app-instructions.js";
 import {
   createSession,
@@ -27,6 +28,8 @@ import {
   getHandoff,
   type Handoff,
   type HandoffMessage,
+  type HandoffPatch,
+  type HandoffReplyState,
   isTerminalHandoffState,
   transitionHandoff,
   updateHandoff,
@@ -262,6 +265,9 @@ export class HandoffDispatcher {
   #stopped = false;
   #tickCount = 0;
   #startedAt = 0;
+  #ready: Promise<void>;
+  #resolveReady!: () => void;
+  #readyResolved = false;
 
   constructor(options: HandoffDispatcherOptions) {
     this.#db = options.db;
@@ -277,6 +283,21 @@ export class HandoffDispatcher {
     this.#maxReplyAttempts = options.maxReplyAttempts ?? HANDOFF_MAX_REPLY_ATTEMPTS;
     this.#now = options.now ?? Date.now;
     this.#threadLimits = { ...DEFAULT_THREAD_LIMITS, ...options.threadLimits };
+    this.#ready = new Promise<void>((resolve) => {
+      this.#resolveReady = () => {
+        if (this.#readyResolved) return;
+        this.#readyResolved = true;
+        resolve();
+      };
+    });
+  }
+
+  /**
+   * Resolves after the first startup unbound/binding reconcile, whether it succeeds or throws.
+   * The notifier's boot sweep awaits this before deciding whether an unbound handoff is in grace.
+   */
+  ready(): Promise<void> {
+    return this.#ready;
   }
 
   get threadLimits(): ThreadLimits {
@@ -302,6 +323,7 @@ export class HandoffDispatcher {
 
   stop(): void {
     this.#stopped = true;
+    this.#resolveReady();
     if (this.#timer !== undefined) clearInterval(this.#timer);
     if (this.#reconcileTimer !== undefined) clearTimeout(this.#reconcileTimer);
     this.#timer = undefined;
@@ -495,8 +517,7 @@ export class HandoffDispatcher {
       undefined,
       this.#model(source.projectId, source.appKey),
     );
-    updateHandoff(this.#db, handoff.id, {
-      replyState: "delivered",
+    this.#setReplyState(handoff.id, "delivered", {
       replyMessageId: id,
       replyDeliveredSessionId: session.id,
       replyDeliveredAt: new Date(this.#now()).toISOString(),
@@ -521,8 +542,7 @@ export class HandoffDispatcher {
     ) {
       throw new Error(`Handoff ${handoffId} reply is not waiting for delivery`);
     }
-    const updated = updateHandoff(this.#db, handoffId, {
-      replyState: "pending",
+    const updated = this.#setReplyState(handoffId, "pending", {
       replyError: null,
       replyAttempts: 0,
     });
@@ -538,7 +558,7 @@ export class HandoffDispatcher {
       throw new Error(`Handoff ${handoffId} has no reply to cancel`);
     }
     expirePendingApprovals(this.#db, handoffId, "reply");
-    return updateHandoff(this.#db, handoffId, { replyState: "cancelled", replyError: null });
+    return this.#setReplyState(handoffId, "cancelled", { replyError: null });
   }
 
   async #tick(): Promise<void> {
@@ -575,8 +595,12 @@ export class HandoffDispatcher {
   }
 
   async #reconcile(): Promise<void> {
-    await this.#reconcileUnbound();
-    await this.#reconcileBindings();
+    try {
+      await this.#reconcileUnbound();
+      await this.#reconcileBindings();
+    } finally {
+      this.#resolveReady();
+    }
   }
 
   async #dispatchQueued(): Promise<void> {
@@ -732,6 +756,13 @@ export class HandoffDispatcher {
       return true;
     });
     if (run.immediate()) {
+      notificationEvents.emit({
+        type: "handoff_failed",
+        handoffId,
+        scope: "terminal",
+        state: "failed",
+        transitionAt: nowIso,
+      });
       this.#log(`handoff ${shortId(handoffId)} thread start failed`);
     }
   }
@@ -778,8 +809,15 @@ export class HandoffDispatcher {
       .all(cutoff) as { id: string; state: "queued" | "dispatching" }[];
     for (const row of rows) {
       try {
-        transitionHandoff(this.#db, row.id, "failed", {
+        const failed = transitionHandoff(this.#db, row.id, "failed", {
           error: "source session was not bound before the deadline",
+        });
+        notificationEvents.emit({
+          type: "handoff_failed",
+          handoffId: row.id,
+          scope: "terminal",
+          state: failed.state,
+          transitionAt: failed.updatedAt,
         });
       } catch {
         // A concurrent binding/approval/cancel wins.
@@ -889,13 +927,12 @@ export class HandoffDispatcher {
     if (handoff.mode !== "one_shot") return;
     if (handoff.replyState !== "pending") return;
     if (handoff.sourceSessionId === null) {
-      updateHandoff(this.#db, handoff.id, { replyState: "waiting_operator" });
+      this.#setReplyState(handoff.id, "waiting_operator");
       return;
     }
     const source = this.#app(handoff.fromAppId);
     if (source === undefined) {
-      updateHandoff(this.#db, handoff.id, {
-        replyState: "waiting_operator",
+      this.#setReplyState(handoff.id, "waiting_operator", {
         replyError: "source application is not available",
       });
       return;
@@ -909,8 +946,7 @@ export class HandoffDispatcher {
         reason: "handoff",
       });
     } catch (error) {
-      updateHandoff(this.#db, handoff.id, {
-        replyState: "waiting_operator",
+      this.#setReplyState(handoff.id, "waiting_operator", {
         replyError: `source application failed to start: ${ensureFailureMessage(error)}`,
       });
       return;
@@ -923,8 +959,7 @@ export class HandoffDispatcher {
       return;
     }
     if (!sessions.some((session) => session.id === handoff.sourceSessionId)) {
-      updateHandoff(this.#db, handoff.id, {
-        replyState: "waiting_operator",
+      this.#setReplyState(handoff.id, "waiting_operator", {
         sourceSessionDeletedAt: new Date(this.#now()).toISOString(),
         replyError: "source session no longer exists",
       });
@@ -953,19 +988,15 @@ export class HandoffDispatcher {
       this.#markReplyDelivered(handoff.id, handoff.sourceSessionId);
     } catch (error) {
       if (error instanceof OpencodeHttpError && error.status === 404) {
-        updateHandoff(this.#db, handoff.id, {
-          replyState: "waiting_operator",
+        this.#setReplyState(handoff.id, "waiting_operator", {
           sourceSessionDeletedAt: new Date(this.#now()).toISOString(),
           replyError: "source session no longer exists",
         });
         return;
       }
       const message = `reply delivery failed: ${logMessage(error)}`;
-      const state = attempt >= this.#maxReplyAttempts ? "failed" : "pending";
-      updateHandoff(this.#db, handoff.id, {
-        replyState: state,
-        replyError: message,
-      });
+      const state: HandoffReplyState = attempt >= this.#maxReplyAttempts ? "failed" : "pending";
+      this.#setReplyState(handoff.id, state, { replyError: message });
       if (state === "failed") {
         this.#log(`handoff ${shortId(handoff.id)} reply failed`);
       }
@@ -975,24 +1006,51 @@ export class HandoffDispatcher {
   #recordReplyFailure(handoff: Handoff, message: string): void {
     const attempts = handoff.replyAttempts + 1;
     if (attempts >= this.#maxReplyAttempts) {
-      updateHandoff(this.#db, handoff.id, {
-        replyState: "failed",
+      this.#setReplyState(handoff.id, "failed", {
         replyAttempts: attempts,
         replyError: message,
       });
       this.#log(`handoff ${shortId(handoff.id)} reply failed`);
       return;
     }
-    updateHandoff(this.#db, handoff.id, {
-      replyState: "pending",
+    this.#setReplyState(handoff.id, "pending", {
       replyAttempts: attempts,
       replyError: message,
     });
   }
 
+  #setReplyState(
+    handoffId: string,
+    replyState: HandoffReplyState,
+    patch: Omit<HandoffPatch, "replyState"> = {},
+  ): Handoff {
+    const updated = updateHandoff(this.#db, handoffId, { ...patch, replyState });
+    this.#emitReplyTransition(handoffId, replyState, updated.updatedAt);
+    return updated;
+  }
+
+  #emitReplyTransition(
+    handoffId: string,
+    replyState: HandoffReplyState,
+    transitionAt: string,
+  ): void {
+    if (replyState === "waiting_operator") {
+      notificationEvents.emit({ type: "handoff_waiting_operator", handoffId, transitionAt });
+    } else if (replyState === "failed") {
+      notificationEvents.emit({
+        type: "handoff_failed",
+        handoffId,
+        scope: "reply",
+        transitionAt,
+      });
+    } else if (replyState === "delivered") {
+      notificationEvents.emit({ type: "handoff_reply_delivered", handoffId, transitionAt });
+    }
+  }
+
   #markReplyDelivered(handoffId: string, sessionId: string): void {
     const now = new Date(this.#now()).toISOString();
-    this.#db
+    const result = this.#db
       .prepare(
         `UPDATE handoffs SET
            reply_state = 'delivered',
@@ -1004,6 +1062,9 @@ export class HandoffDispatcher {
          WHERE id = ? AND reply_state = 'pending'`,
       )
       .run(sessionId, now, now, handoffId);
+    if (result.changes > 0) {
+      this.#emitReplyTransition(handoffId, "delivered", now);
+    }
   }
 
   async #messageExists(
@@ -1436,7 +1497,7 @@ export class HandoffDispatcher {
   #recoverStaleThreadDispatches(now: number): void {
     const nowIso = new Date(now).toISOString();
     const cutoff = new Date(now - this.#threadLimits.messageDispatchTimeoutMs).toISOString();
-    const result = this.#db
+    const rows = this.#db
       .prepare(
         `UPDATE handoff_messages SET
            state = 'waiting_operator',
@@ -1444,11 +1505,15 @@ export class HandoffDispatcher {
            claimed_at = NULL,
            updated_at = ?
          WHERE state = 'dispatching' AND claimed_at IS NOT NULL AND claimed_at <= ?
-           AND handoff_id IN (SELECT id FROM handoffs WHERE mode = 'thread')`,
+           AND handoff_id IN (SELECT id FROM handoffs WHERE mode = 'thread')
+         RETURNING id, handoff_id AS handoffId, updated_at AS transitionAt`,
       )
-      .run(nowIso, cutoff);
-    if (result.changes > 0) {
-      this.#log(`parked ${result.changes} stale thread message dispatch(es)`);
+      .all(nowIso, cutoff) as Array<{ id: number; handoffId: string; transitionAt: string }>;
+    for (const row of rows) {
+      this.#emitThreadMessageWaiting(row.id, row.handoffId, row.transitionAt);
+    }
+    if (rows.length > 0) {
+      this.#log(`parked ${rows.length} stale thread message dispatch(es)`);
     }
   }
 
@@ -1566,7 +1631,7 @@ export class HandoffDispatcher {
     const message = getHandoffMessage(this.#db, claim.id);
     const handoff = message === undefined ? undefined : getHandoff(this.#db, claim.handoffId);
     if (message === undefined || handoff === undefined || handoff.state !== "in_progress") {
-      this.#parkThreadMessage(claim.id, "transport_error");
+      this.#parkThreadMessage(claim.id, claim.handoffId, "transport_error");
       return;
     }
     const destinationAppId = message.authorSide === "target" ? handoff.fromAppId : handoff.toAppId;
@@ -1578,7 +1643,7 @@ export class HandoffDispatcher {
       message.deliverySessionId === null ||
       message.deliveryMessageId === null
     ) {
-      this.#parkThreadMessage(message.id, "transport_error");
+      this.#parkThreadMessage(message.id, message.handoffId, "transport_error");
       return;
     }
     const fromKey = this.#appKey(handoff.fromAppId);
@@ -1601,7 +1666,7 @@ export class HandoffDispatcher {
           : error instanceof OpencodeHttpError && error.status === 400
             ? "prompt_rejected"
             : "transport_error";
-      this.#parkThreadMessage(message.id, code);
+      this.#parkThreadMessage(message.id, message.handoffId, code);
       this.#log(`thread message ${message.id} dispatch failed (${code})`);
     }
   }
@@ -1629,14 +1694,27 @@ export class HandoffDispatcher {
     run.immediate();
   }
 
-  #parkThreadMessage(messageId: number, errorCode: string): void {
-    this.#db
+  #parkThreadMessage(messageId: number, handoffId: string, errorCode: string): void {
+    const nowIso = new Date(this.#now()).toISOString();
+    const result = this.#db
       .prepare(
         `UPDATE handoff_messages SET
            state = 'waiting_operator', error_code = ?, claimed_at = NULL, updated_at = ?
          WHERE id = ? AND state = 'dispatching'`,
       )
-      .run(errorCode, new Date(this.#now()).toISOString(), messageId);
+      .run(errorCode, nowIso, messageId);
+    if (result.changes > 0) {
+      this.#emitThreadMessageWaiting(messageId, handoffId, nowIso);
+    }
+  }
+
+  #emitThreadMessageWaiting(messageId: number, handoffId: string, transitionAt: string): void {
+    notificationEvents.emit({
+      type: "thread_message_waiting",
+      messageId,
+      handoffId,
+      transitionAt,
+    });
   }
 
   #threadPrompt(handoff: Handoff, message: HandoffMessage, fromKey: string, toKey: string): string {

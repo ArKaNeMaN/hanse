@@ -11,6 +11,7 @@ import type { ThreadLimits } from "../src/coordinator/thread.js";
 import { getHandoffMessage, listHandoffMessages } from "../src/coordinator/thread.js";
 import { createPrincipal } from "../src/identity/principals.js";
 import { ImageNotReadyError } from "../src/images/service.js";
+import { type NotificationSignal, notificationEvents } from "../src/notifications/events.js";
 import {
   OpencodeHttpError,
   type OpencodeSession,
@@ -25,6 +26,7 @@ const dirs: string[] = [];
 const active: Array<{ dispatcher: HandoffDispatcher; db: SqliteDatabase }> = [];
 
 afterEach(() => {
+  notificationEvents.reset();
   for (const entry of active.splice(0)) {
     entry.dispatcher.stop();
     entry.db.close();
@@ -1398,5 +1400,198 @@ describe("handoff thread question guard", () => {
     const replyPrompt = f.prompts.at(-1)?.text ?? "";
     expect(replyPrompt).toContain("[Hanse handoff thread reply]");
     expect(replyPrompt).not.toContain(QUESTION_BAN_LINE);
+  });
+});
+
+describe("handoff dispatcher notification events", () => {
+  it("emits handoff_waiting_operator once when a reply is parked", async () => {
+    const f = fixture();
+    const id = await createBound(f);
+    f.sessions.set("http://a.test", []);
+    f.service.deliverHandoff(id, "done", "completed", "b");
+
+    const signals: NotificationSignal[] = [];
+    notificationEvents.subscribe((signal) => {
+      signals.push(signal);
+      if (signal.type === "handoff_waiting_operator") {
+        expect(getHandoff(f.db, signal.handoffId)?.replyState).toBe("waiting_operator");
+      }
+    });
+    await f.dispatcher.tickNow();
+
+    const waiting = signals.filter((signal) => signal.type === "handoff_waiting_operator");
+    expect(waiting).toHaveLength(1);
+    expect(waiting[0]).toMatchObject({ handoffId: id });
+    expect(waiting[0]?.transitionAt).toBe(getHandoff(f.db, id)?.updatedAt);
+  });
+
+  it("emits handoff_reply_delivered once after the reply commits", async () => {
+    const f = fixture();
+    const id = await createBound(f);
+    f.service.deliverHandoff(id, "done", "completed", "b");
+
+    const signals: NotificationSignal[] = [];
+    notificationEvents.subscribe((signal) => {
+      signals.push(signal);
+      if (signal.type === "handoff_reply_delivered") {
+        expect(getHandoff(f.db, signal.handoffId)?.replyState).toBe("delivered");
+      }
+    });
+    await f.dispatcher.tickNow();
+
+    const delivered = signals.filter((signal) => signal.type === "handoff_reply_delivered");
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]).toMatchObject({ handoffId: id });
+    expect(delivered[0]?.transitionAt).toBe(getHandoff(f.db, id)?.updatedAt);
+  });
+
+  it("emits handoff_failed once when reply delivery exhausts its attempts", async () => {
+    const f = fixture();
+    const id = await createBound(f);
+    f.service.deliverHandoff(id, "done", "completed", "b");
+    f.client.sendPromptAsync.mockRejectedValue(new Error("transport down"));
+
+    const signals: NotificationSignal[] = [];
+    notificationEvents.subscribe((signal) => signals.push(signal));
+    await f.dispatcher.tickNow();
+    await f.dispatcher.tickNow();
+    await f.dispatcher.tickNow();
+
+    const failed = signals.filter(
+      (signal) => signal.type === "handoff_failed" && signal.scope === "reply",
+    );
+    expect(failed).toHaveLength(1);
+    expect(failed[0]).toMatchObject({ handoffId: id });
+    expect(getHandoff(f.db, id)?.replyState).toBe("failed");
+    expect(failed[0]?.transitionAt).toBe(getHandoff(f.db, id)?.updatedAt);
+  });
+
+  it("emits thread_message_waiting once when a thread message is parked", async () => {
+    const f = fixture();
+    f.client.sendPromptAsync.mockRejectedValueOnce(
+      new OpencodeHttpError("/session/ses_1/message", 404, "missing"),
+    );
+
+    const signals: NotificationSignal[] = [];
+    notificationEvents.subscribe((signal) => signals.push(signal));
+    const handoffId = await boundThread(f);
+    const initial = listHandoffMessages(f.db, handoffId)[0];
+
+    const waiting = signals.filter((signal) => signal.type === "thread_message_waiting");
+    expect(waiting).toHaveLength(1);
+    expect(waiting[0]).toMatchObject({ handoffId, messageId: initial?.id });
+    expect(waiting[0]?.transitionAt).toBe(
+      initial === undefined ? undefined : getHandoffMessage(f.db, initial.id)?.updatedAt,
+    );
+  });
+
+  it("emits thread_message_waiting once for a stale thread dispatch", async () => {
+    const f = fixture();
+    const handoffId = await boundThread(f);
+    const second = f.service.sendThreadMessage(handoffId, "follow up", undefined, "a");
+    f.dispatcher.observe(appA, sendEvent(handoffId, second.message));
+    await f.dispatcher.tickNow();
+    f.db
+      .prepare(
+        "UPDATE handoff_messages SET state = 'dispatching', claimed_at = ?, delivered_at = NULL WHERE id = ?",
+      )
+      .run(new Date(Date.now() - 10 * 60 * 1000).toISOString(), second.message.id);
+
+    const signals: NotificationSignal[] = [];
+    notificationEvents.subscribe((signal) => signals.push(signal));
+    await f.dispatcher.tickNow();
+
+    const waiting = signals.filter((signal) => signal.type === "thread_message_waiting");
+    expect(waiting).toHaveLength(1);
+    expect(waiting[0]).toMatchObject({ handoffId, messageId: second.message.id });
+    expect(waiting[0]?.transitionAt).toBe(getHandoffMessage(f.db, second.message.id)?.updatedAt);
+  });
+
+  it("emits a terminal handoff_failed when an unbound handoff expires", async () => {
+    const f = fixture();
+    const { handoffId } = f.service.requestSiblingChange({
+      fromAppKey: "a",
+      toAppKey: "b",
+      summary: "unbound",
+      spec: "do Q",
+    });
+    f.db
+      .prepare("UPDATE handoffs SET updated_at = ? WHERE id = ?")
+      .run(new Date(Date.now() - 20 * 60 * 1000).toISOString(), handoffId);
+
+    const signals: NotificationSignal[] = [];
+    notificationEvents.subscribe((signal) => signals.push(signal));
+    await f.dispatcher.tickNow();
+
+    const failed = signals.filter((signal) => signal.type === "handoff_failed");
+    expect(failed).toHaveLength(1);
+    expect(failed[0]).toMatchObject({ handoffId, scope: "terminal", state: "failed" });
+    expect(failed[0]?.transitionAt).toBe(getHandoff(f.db, handoffId)?.updatedAt);
+  });
+
+  it("emits a terminal handoff_failed when a thread start fails", async () => {
+    const f = fixture();
+    const result = startThread(f, { idempotencyKey: "emit-start-failure" });
+    const past = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    f.db
+      .prepare(
+        "UPDATE handoffs SET state = 'dispatching', deadline_at = ?, updated_at = ? WHERE id = ?",
+      )
+      .run(past, past, result.handoffId);
+
+    const signals: NotificationSignal[] = [];
+    notificationEvents.subscribe((signal) => signals.push(signal));
+    await f.dispatcher.tickNow();
+
+    const failed = signals.filter((signal) => signal.type === "handoff_failed");
+    expect(failed).toHaveLength(1);
+    expect(failed[0]).toMatchObject({
+      handoffId: result.handoffId,
+      scope: "terminal",
+      state: "failed",
+    });
+  });
+
+  it("emits a terminal handoff_failed when a thread binding times out", async () => {
+    const f = fixture();
+    const result = startThread(f, { idempotencyKey: "emit-binding-timeout" });
+    const old = new Date(Date.now() - 20 * 60 * 1000).toISOString();
+    f.db
+      .prepare("UPDATE handoff_messages SET updated_at = ? WHERE handoff_id = ? AND seq = 1")
+      .run(old, result.handoffId);
+
+    const signals: NotificationSignal[] = [];
+    notificationEvents.subscribe((signal) => signals.push(signal));
+    await f.dispatcher.tickNow();
+
+    const failed = signals.filter((signal) => signal.type === "handoff_failed");
+    expect(failed).toHaveLength(1);
+    expect(failed[0]).toMatchObject({
+      handoffId: result.handoffId,
+      scope: "terminal",
+      state: "failed",
+    });
+    expect(getHandoff(f.db, result.handoffId)?.state).toBe("failed");
+  });
+
+  it("resolves ready() after the startup reconcile", async () => {
+    const f = fixture();
+    f.dispatcher.start();
+    await expect(f.dispatcher.ready()).resolves.toBeUndefined();
+  });
+
+  it("resolves ready() when the startup reconcile throws", async () => {
+    const f = fixture();
+    f.service.requestSiblingChange({
+      fromAppKey: "a",
+      toAppKey: "b",
+      summary: "unbound",
+      spec: "do Q",
+    });
+    f.manager.endpointFor.mockImplementation(() => {
+      throw new Error("reconcile boom");
+    });
+    f.dispatcher.start();
+    await expect(f.dispatcher.ready()).resolves.toBeUndefined();
   });
 });

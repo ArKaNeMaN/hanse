@@ -11,6 +11,7 @@ import SettingsModelProviderSection from "../components/SettingsModelProviderSec
 import SettingsProviderSection from "../components/SettingsProviderSection.vue";
 import SettingsRestartSection from "../components/SettingsRestartSection.vue";
 import SettingsRow from "../components/SettingsRow.vue";
+import SettingsTelegramSection from "../components/SettingsTelegramSection.vue";
 import SmartLink from "../components/SmartLink.vue";
 import { usePageChrome } from "../composables/usePageChrome.js";
 import { useSectionNav } from "../composables/useSectionNav.js";
@@ -131,6 +132,7 @@ const SETTINGS_SECTION_IDS = [
   "settings-agent",
   "settings-web",
   "settings-context",
+  "settings-notifications",
   "settings-git",
   "settings-restart",
 ] as const;
@@ -423,6 +425,14 @@ watch(
           </a>
           <a
             class="settings-nav__link"
+            href="#settings-notifications"
+            :aria-current="activeSection === 'settings-notifications' ? 'page' : undefined"
+            @click.prevent="activateSection('settings-notifications')"
+          >
+            {{ view.labels.sections.notifications }}
+          </a>
+          <a
+            class="settings-nav__link"
             href="#settings-git"
             :aria-current="activeSection === 'settings-git' ? 'page' : undefined"
             @click.prevent="activateSection('settings-git')"
@@ -565,6 +575,26 @@ watch(
               @set="(row, value) => mutateRow(row, 'set', value)"
               @inherit="mutateRow($event, 'inherit')"
               @clear="pendingClear = $event"
+              @dirty="markDirty"
+            />
+          </div>
+        </section>
+
+        <section
+          class="card settings-section"
+          id="settings-notifications"
+          aria-labelledby="settings-notifications-title"
+        >
+          <div class="card__head">
+            <h2 class="card__title" id="settings-notifications-title">
+              {{ view.labels.sections.notifications }}
+            </h2>
+            <span class="badge">Telegram</span>
+          </div>
+          <div class="card__body card__body--flush">
+            <SettingsTelegramSection
+              :settings="view"
+              @changed="onSectionChanged"
               @dirty="markDirty"
             />
           </div>

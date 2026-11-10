@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { AuthError } from "../identity/auth.js";
 import type { Principal } from "../identity/principals.js";
+import { notificationEvents } from "../notifications/events.js";
 import type { RegisteredApp } from "../registry/index.js";
 import type { SqliteDatabase } from "../store/index.js";
 import { expirePendingApprovals, getPendingApproval, requestApproval } from "./approval.js";
@@ -303,7 +304,15 @@ export class CoordinatorService {
       };
     }
     if (handoff.state === "awaiting_approval" && !this.#hasApproval(handoff.id, "dispatch")) {
-      requestApproval(this.#db, handoff.id, "dispatch");
+      const approval = requestApproval(this.#db, handoff.id, "dispatch");
+      notificationEvents.emit({
+        type: "handoff_approval",
+        handoffId: handoff.id,
+        approvalKind: "dispatch",
+        approvalId: approval.id,
+        requestedAt: approval.requestedAt,
+        transitionAt: approval.requestedAt,
+      });
     }
     const status: HandoffRequestStatus =
       handoff.state === "awaiting_approval"
@@ -461,7 +470,15 @@ export class CoordinatorService {
     const delivered = transitionHandoff(this.#db, id, "delivered", { result, outcome });
     if (delivered.policyReplyMode === "approve") {
       updateHandoff(this.#db, id, { replyState: "awaiting_approval", replyError: null });
-      requestApproval(this.#db, id, "reply");
+      const approval = requestApproval(this.#db, id, "reply");
+      notificationEvents.emit({
+        type: "handoff_approval",
+        handoffId: id,
+        approvalKind: "reply",
+        approvalId: approval.id,
+        requestedAt: approval.requestedAt,
+        transitionAt: approval.requestedAt,
+      });
     } else {
       updateHandoff(this.#db, id, { replyState: "pending", replyError: null });
     }

@@ -8,7 +8,7 @@ import type { RunSshKeygen } from "../src/git/credentials.js";
 import { GitService } from "../src/git/service.js";
 import { buildSite } from "../src/http/dashboard.js";
 import type { HttpDeps, HttpRequest } from "../src/http/handler.js";
-import { buildSettingsProps } from "../src/http/props/settings.js";
+import { buildSettingsProps, SETTINGS_SECTION_KEYS } from "../src/http/props/settings.js";
 import { handleUiApi, maybeServeSpa } from "../src/http/spa.js";
 import { createPrincipal } from "../src/identity/principals.js";
 import { mintAgentToken } from "../src/mcp/agent-tokens.js";
@@ -345,6 +345,66 @@ describe("settings props", () => {
     expect(serialized).not.toContain("privateKey");
     expect(serialized).not.toContain("cipher");
     expect(serialized).not.toContain("sealed");
+  });
+
+  it("builds the notifications section with status-only secrets", () => {
+    const f = fixture();
+    expect(SETTINGS_SECTION_KEYS).toContain("notifications");
+    f.settings.set("global", {}, "notifications.mode", "attention", "owner");
+    f.settings.set("global", {}, "notifications.telegram.enabled", true, "owner");
+    f.settings.set("global", {}, "notifications.telegram.chat_id", "@ops", "owner");
+    f.settings.set("global", {}, "notifications.public_base_url", "https://hanse.example", "owner");
+    const botToken = "12345:abcdefghijklmnopqrst";
+    const proxyUrl = "http://proxy.example:8080";
+    f.settings.setNotificationSecret("global", {}, "bot_token", botToken, "owner");
+    f.settings.setNotificationSecret("global", {}, "proxy_url", proxyUrl, "owner");
+
+    const props = buildSettingsProps({
+      deps: f.deps,
+      site: buildSite(f.deps),
+      scope: "global",
+      target: {},
+    });
+    expect(props).toBeDefined();
+    if (props === undefined) return;
+    expect(props.notifications.rows.mode.effectiveText).toBe("Attention only");
+    expect(props.notifications.rows.telegramEnabled.effectiveText).toBe("On");
+    expect(props.notifications.rows.chatId.effectiveText).toBe("@ops");
+    expect(props.notifications.rows.publicBaseUrl.effectiveText).toBe("https://hanse.example");
+    expect(props.notifications.warning).toBeNull();
+    expect(props.telegram).toEqual({
+      botToken: { state: "set", source: "global" },
+      proxyUrl: { state: "set", source: "global" },
+    });
+    expect(props.notifications.secrets.botToken).toMatchObject({
+      configured: true,
+      masked: "Not shown",
+      effectiveText: "Set at Global",
+    });
+    expect(props.notifications.secrets.proxyUrl).toMatchObject({
+      configured: true,
+      masked: "Not shown",
+    });
+    expect(props.notifications.test).toMatchObject({
+      action: "/api/settings/telegram/test",
+      errorId: "telegram-test-error",
+    });
+    const serialized = JSON.stringify(props);
+    expect(serialized).not.toContain(botToken);
+    expect(serialized).not.toContain(proxyUrl);
+
+    f.settings.clearNotificationSecret("global", {}, "bot_token", "owner");
+    const warned = buildSettingsProps({
+      deps: f.deps,
+      site: buildSite(f.deps),
+      scope: "global",
+      target: {},
+    });
+    expect(warned?.notifications.warning).toContain("enabled");
+    expect(warned?.notifications.secrets.botToken).toMatchObject({
+      configured: false,
+      effectiveText: "Cleared at Global",
+    });
   });
 
   it("returns undefined for an unknown project or app", () => {

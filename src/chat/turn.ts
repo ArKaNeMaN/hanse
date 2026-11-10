@@ -1,5 +1,13 @@
 import { createHash } from "node:crypto";
-import type { OpencodeMessage, OpencodePart, OpencodeSessionStatus } from "../opencode/client.js";
+import type { MessageProjector } from "../attachments/projection.js";
+import {
+  listMessagePage,
+  listSessionStatusesStrict,
+  type OpencodeMessage,
+  type OpencodePart,
+  type OpencodeSessionStatus,
+  TURN_TAIL_MAX_BYTES,
+} from "../opencode/client.js";
 
 export type TurnStatusType = "idle" | "busy" | "retry" | "unknown";
 
@@ -323,5 +331,200 @@ export function deriveTurn(
       queuedPromptIDs,
       queuedTruncated: options.queuedTruncated,
     }),
+  };
+}
+
+const TURN_PAGE_LIMIT = 50;
+const TURN_PAGE_BUDGET = 3;
+
+export interface TurnAnswer {
+  answerMessageId: string | null;
+  answerText: string;
+}
+
+export interface CurrentTurnPrompt {
+  id: string;
+  createdAt?: number;
+}
+
+export interface ReadTurnSnapshotOptions {
+  /**
+   * A known value avoids a second session-list read. A resolver is used by `/turn` when an absent
+   * status entry may mean a subagent.
+   */
+  isSubagent: boolean | ((status: OpencodeSessionStatus | undefined) => Promise<boolean>);
+  /** History projector shared with `/turn`; composes attachment and handoff projection. */
+  projector?: MessageProjector;
+}
+
+export interface TurnSnapshotRead {
+  snapshot: TurnSnapshot;
+  messages: OpencodeMessage[];
+  answerMessageId: string | null;
+  answerText: string;
+}
+
+interface TurnTail {
+  messages: OpencodeMessage[];
+  truncated: boolean;
+}
+
+function statusPhase(status: OpencodeSessionStatus | undefined): string {
+  if (status === undefined) return "idle";
+  if (status.type === "idle" || status.type === "busy" || status.type === "retry") {
+    return status.type;
+  }
+  return "unknown";
+}
+
+function currentTurnBoundary(
+  messages: OpencodeMessage[],
+  lastVisibleAssistantIndex: number,
+): number {
+  const assistant = messages[lastVisibleAssistantIndex];
+  const parentID = asString(assistant?.info.parentID);
+  if (parentID !== undefined && parentID.length > 0) {
+    const parentIndex = messages.findIndex((message) => message.info.id === parentID);
+    const parent = parentIndex >= 0 ? messages[parentIndex] : undefined;
+    if (
+      parent !== undefined &&
+      parentIndex < lastVisibleAssistantIndex &&
+      isNormalUserRow(parent)
+    ) {
+      return parentIndex;
+    }
+  }
+  for (let index = lastVisibleAssistantIndex; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message !== undefined && isNormalUserRow(message)) return index;
+  }
+  return 0;
+}
+
+function hasVisibleTextAssistant(messages: OpencodeMessage[]): boolean {
+  return messages.some(
+    (message) =>
+      message.info.role === "assistant" && message.parts.some((part) => isVisibleTextPart(part)),
+  );
+}
+
+function visibleAssistantText(message: OpencodeMessage): string | undefined {
+  const texts: string[] = [];
+  for (const part of message.parts) {
+    if (!isVisibleTextPart(part)) continue;
+    const text = partText(part);
+    if (text !== undefined) texts.push(text);
+  }
+  if (texts.length === 0) return undefined;
+  const joined = texts.join("\n\n");
+  return joined.trim().length > 0 ? joined : undefined;
+}
+
+/**
+ * The last assistant with visible text inside the current turn. A trailing tool/reasoning-only
+ * assistant is never the answer, and a new turn with no text does not reuse the previous answer.
+ */
+export function readFinalAnswer(messages: OpencodeMessage[]): TurnAnswer {
+  let lastVisibleAssistantIndex = -1;
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index];
+    if (message !== undefined && message.info.role === "assistant" && hasVisiblePart(message)) {
+      lastVisibleAssistantIndex = index;
+    }
+  }
+  if (lastVisibleAssistantIndex < 0) return { answerMessageId: null, answerText: "" };
+
+  const boundary = currentTurnBoundary(messages, lastVisibleAssistantIndex);
+  for (let index = messages.length - 1; index >= boundary; index -= 1) {
+    const message = messages[index];
+    if (message === undefined || message.info.role !== "assistant") continue;
+    const text = visibleAssistantText(message);
+    const id = messageID(message);
+    if (text !== undefined && id !== undefined) {
+      return { answerMessageId: id, answerText: text };
+    }
+  }
+  return { answerMessageId: null, answerText: "" };
+}
+
+/** The last non-handoff, non-synthetic user prompt; anchors a tool-only turn occurrence. */
+export function currentTurnPrompt(messages: OpencodeMessage[]): CurrentTurnPrompt | undefined {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message === undefined || !isNormalUserRow(message)) continue;
+    const id = messageID(message);
+    if (id === undefined) continue;
+    const created = asRecord(message.info.time)?.created;
+    return typeof created === "number" ? { id, createdAt: created } : { id };
+  }
+  return undefined;
+}
+
+async function readTurnTail(
+  endpoint: string,
+  sessionId: string,
+  projector: MessageProjector | undefined,
+): Promise<TurnTail> {
+  let messages: OpencodeMessage[] = [];
+  let before: string | undefined;
+  let boundaryFound = false;
+  for (let pageIndex = 0; pageIndex < TURN_PAGE_BUDGET; pageIndex += 1) {
+    const page = await listMessagePage(endpoint, sessionId, {
+      limit: TURN_PAGE_LIMIT,
+      ...(before === undefined ? {} : { before }),
+      maxBytes: TURN_TAIL_MAX_BYTES,
+      ...(projector === undefined ? {} : { project: projector }),
+    });
+    messages = [...page.messages, ...messages];
+    if (hasVisibleTextAssistant(messages)) return { messages, truncated: false };
+    if (hasVisibleAssistant(messages)) boundaryFound = true;
+    if (page.nextCursor === undefined) return { messages, truncated: false };
+    if (pageIndex === TURN_PAGE_BUDGET - 1) break;
+    before = page.nextCursor;
+  }
+  return { messages, truncated: !boundaryFound };
+}
+
+/**
+ * The single status -> history -> status read shared by `/turn` and the notifier. It pages back to
+ * the visible-assistant boundary within the fixed budget and derives both the snapshot and answer
+ * from the same message list, so the answer id and body cannot disagree.
+ */
+export async function readTurnSnapshot(
+  endpoint: string,
+  sessionId: string,
+  options: ReadTurnSnapshotOptions,
+): Promise<TurnSnapshotRead> {
+  let tail: TurnTail = { messages: [], truncated: false };
+  let status: OpencodeSessionStatus | undefined;
+  let settling = false;
+  for (let attempt = 0; ; attempt += 1) {
+    const before = await listSessionStatusesStrict(endpoint);
+    tail = await readTurnTail(endpoint, sessionId, options.projector);
+    const after = await listSessionStatusesStrict(endpoint);
+    const changed = statusPhase(before[sessionId]) !== statusPhase(after[sessionId]);
+    status = after[sessionId];
+    if (!changed || attempt >= 1) {
+      settling = changed && statusPhase(status) === "idle";
+      break;
+    }
+  }
+
+  const isSubagent =
+    typeof options.isSubagent === "boolean" ? options.isSubagent : await options.isSubagent(status);
+  const snapshot: TurnSnapshot = {
+    ...deriveTurn(tail.messages, status, {
+      isSubagent,
+      settling,
+      queuedTruncated: tail.truncated,
+    }),
+    sessionID: sessionId,
+  };
+  const answer = readFinalAnswer(tail.messages);
+  return {
+    snapshot,
+    messages: tail.messages,
+    answerMessageId: answer.answerMessageId,
+    answerText: answer.answerText,
   };
 }

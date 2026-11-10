@@ -1,12 +1,15 @@
 import { z } from "zod";
 import type { WebToolConfig } from "../web/types.js";
-import type { EffectiveValue, MergeStrategy, SettingsScope } from "./types.js";
+import { apiBaseUrlSchema, chatIdSchema, publicBaseUrlSchema } from "./telegram.js";
+import type { EffectiveValue, MergeStrategy, NotificationMode, SettingsScope } from "./types.js";
 
 /** Default model preserves the image-baked OMO baseline. */
 export const DEFAULT_LLM_MODEL = "deepseek/deepseek-flash";
 
 /** Default web driver preserves the existing built-in tools. */
 export const DEFAULT_WEB_TOOL_CONFIG: WebToolConfig = { driver: "builtin" };
+
+export const DEFAULT_TELEGRAM_API_BASE_URL = "https://api.telegram.org";
 
 export interface SettingsKeyDefinition<T = unknown> {
   /** Stable key used in the database and the settings API. */
@@ -138,6 +141,54 @@ export const gitUserEmailDefinition: SettingsKeyDefinition<string | null> = {
   defaultValue: null,
 };
 
+export const notificationsModeDefinition: SettingsKeyDefinition<NotificationMode> = {
+  key: "notifications.mode",
+  schema: z.enum(["off", "attention", "all"]),
+  merge: "replace",
+  clearable: true,
+  defaultValue: "all",
+};
+
+export const notificationsTelegramEnabledDefinition: SettingsKeyDefinition<boolean> = {
+  key: "notifications.telegram.enabled",
+  schema: z.boolean(),
+  merge: "replace",
+  clearable: true,
+  defaultValue: false,
+};
+
+export const notificationsTelegramChatIdDefinition: SettingsKeyDefinition<string | null> = {
+  key: "notifications.telegram.chat_id",
+  schema: chatIdSchema,
+  merge: "replace",
+  clearable: true,
+  defaultValue: null,
+};
+
+export const notificationsPublicBaseUrlDefinition: SettingsKeyDefinition<string | null> = {
+  key: "notifications.public_base_url",
+  schema: publicBaseUrlSchema,
+  merge: "replace",
+  clearable: true,
+  defaultValue: null,
+};
+
+export const notificationsTelegramApiBaseUrlDefinition: SettingsKeyDefinition<string | null> = {
+  key: "notifications.telegram.api_base_url",
+  schema: apiBaseUrlSchema,
+  merge: "replace",
+  clearable: true,
+  defaultValue: DEFAULT_TELEGRAM_API_BASE_URL,
+};
+
+export const notificationsIncludeAnswerDefinition: SettingsKeyDefinition<boolean> = {
+  key: "notifications.include_answer",
+  schema: z.boolean(),
+  merge: "replace",
+  clearable: true,
+  defaultValue: true,
+};
+
 /** Production key registry. */
 export const KEY_DEFINITIONS: readonly SettingsKeyDefinition[] = [
   llmModelDefinition,
@@ -147,6 +198,12 @@ export const KEY_DEFINITIONS: readonly SettingsKeyDefinition[] = [
   contextAutoCompactPercentDefinition,
   gitUserNameDefinition,
   gitUserEmailDefinition,
+  notificationsModeDefinition,
+  notificationsTelegramEnabledDefinition,
+  notificationsTelegramChatIdDefinition,
+  notificationsPublicBaseUrlDefinition,
+  notificationsTelegramApiBaseUrlDefinition,
+  notificationsIncludeAnswerDefinition,
 ];
 
 const DEFINITIONS_BY_KEY = new Map(

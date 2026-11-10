@@ -15,7 +15,21 @@ export type SettingsKey =
   | "context.auto_compact.enabled"
   | "context.auto_compact.percent"
   | "git.user.name"
-  | "git.user.email";
+  | "git.user.email"
+  | "notifications.mode"
+  | "notifications.telegram.enabled"
+  | "notifications.telegram.chat_id"
+  | "notifications.public_base_url"
+  | "notifications.telegram.api_base_url"
+  | "notifications.include_answer";
+
+export type NotificationMode = "off" | "attention" | "all";
+
+/** Secret state exposed to pages, APIs, and the master; never the plaintext. */
+export type SecretStatus =
+  | { state: "set"; source: SettingsScope }
+  | { state: "cleared"; source: SettingsScope }
+  | { state: "missing" };
 
 export type GitAuthKind = "ssh" | "https";
 
@@ -80,6 +94,16 @@ export interface EffectiveSettings {
       email: EffectiveValue<string>;
     };
   };
+  notifications: {
+    mode: EffectiveValue<NotificationMode>;
+    telegram: {
+      enabled: EffectiveValue<boolean>;
+      chatId: EffectiveValue<string>;
+      apiBaseUrl: EffectiveValue<string>;
+    };
+    publicBaseUrl: EffectiveValue<string>;
+    includeAnswer: EffectiveValue<boolean>;
+  };
 }
 
 export interface PendingRestart {
@@ -103,6 +127,8 @@ export interface ResolvedSettings {
   /** Status-only credential metadata; never contains private keys, tokens, or known-hosts content. */
   gitAuth: { ssh: GitAuthStatus; https: GitAuthStatus };
   gitAuthScoped: GitAuthScoped;
+  /** Status-only Telegram secrets; plaintext is available only from `telegramConfig`. */
+  telegram: { botToken: SecretStatus; proxyUrl: SecretStatus };
   warnings: string[];
 }
 

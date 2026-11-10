@@ -12,6 +12,7 @@ import type {
   SettingsRowProps,
   SettingsScope,
   SettingsScopeProps,
+  SettingsTelegramSecretProps,
 } from "../settings-types.js";
 import { useToastStore } from "../stores/toasts.js";
 import SettingsPage from "./SettingsPage.vue";
@@ -41,6 +42,7 @@ const LABELS: SettingsLabelsProps = {
       agent: "Agent",
       web: "Web tools",
       context: "Context",
+      notifications: "Notifications",
       git: "Git",
       restart: "Restart",
     },
@@ -49,6 +51,7 @@ const LABELS: SettingsLabelsProps = {
     agent: "Agent",
     web: "Web tools",
     context: "Context",
+    notifications: "Notifications",
     git: "Git",
     restart: "Restart & pending",
   },
@@ -146,6 +149,23 @@ const LABELS: SettingsLabelsProps = {
     hint: "Settings changes apply only on an explicit restart.",
     empty: "No running agents are waiting for a restart.",
     profileWarnings: "OMO profile warnings",
+  },
+  notifications: {
+    title: "Notifications",
+    hint: "Telegram delivery for turn completion and attention events.",
+    mode: "Notification mode",
+    enabled: "Telegram delivery",
+    chatId: "Chat id",
+    publicBaseUrl: "Public base URL",
+    apiBaseUrl: "API base URL",
+    includeAnswer: "Include full answer",
+    botToken: "Bot token",
+    proxyUrl: "Proxy URL",
+    secretHint: "A cleared secret suppresses wider scopes.",
+    test: "Send test message",
+    testHint: "Sends a fixed test message through the effective bot.",
+    unconfigured:
+      "Telegram notifications are enabled, but the bot token or chat id is not configured.",
   },
   warnings: "Warnings",
 };
@@ -524,6 +544,152 @@ function gitCredential(kind: "ssh" | "https"): SettingsGitCredentialProps {
   };
 }
 
+function telegramSecret(
+  field: "bot_token" | "proxy_url",
+  scope: SettingsScope,
+): SettingsTelegramSecretProps {
+  const label =
+    field === "bot_token" ? LABELS.notifications.botToken : LABELS.notifications.proxyUrl;
+  return {
+    field,
+    label,
+    status: { state: "set", source: "global" },
+    state: "set",
+    configured: true,
+    masked: "Not shown",
+    effectiveText: "Set at Global",
+    sourceLine: "from Global",
+    actions: {
+      save: action("Save"),
+      inherit: scope === "global" ? null : action("Inherit"),
+      clear: action("Clear", { confirmLabel: label }),
+    },
+    form: {
+      ...formFor(scope, scopeProps(scope).href),
+      action: "/api/settings/telegram",
+      returnTo: `${scopeProps(scope).href}#telegram-${field}`,
+    },
+  };
+}
+
+function notificationsFor(scope: SettingsScope): SettingsProps["notifications"] {
+  const mode = row({
+    id: "setting-notifications-mode",
+    key: "notifications.mode",
+    title: LABELS.notifications.mode,
+    kind: "notification-mode",
+    scope,
+    effectiveText: "All",
+    select: {
+      options: [
+        { value: "off", label: "Off", selected: false, disabled: false },
+        { value: "attention", label: "Attention only", selected: false, disabled: false },
+        { value: "all", label: "All", selected: false, disabled: false },
+      ],
+      placeholder: { value: "", label: "Inherited: All", selected: true, disabled: true },
+    },
+  });
+  const telegramEnabled = row({
+    id: "setting-notifications-telegram-enabled",
+    key: "notifications.telegram.enabled",
+    title: LABELS.notifications.enabled,
+    kind: "notification-enabled",
+    scope,
+    own: { state: "absent", value: null },
+    effectiveText: "Off",
+    select: {
+      options: [
+        { value: "true", label: "On", selected: false, disabled: false },
+        { value: "false", label: "Off", selected: false, disabled: false },
+      ],
+      placeholder: { value: "", label: "Inherited: Off", selected: true, disabled: true },
+    },
+  });
+  const chatId = row({
+    id: "setting-notifications-chat-id",
+    key: "notifications.telegram.chat_id",
+    title: LABELS.notifications.chatId,
+    kind: "notification-text",
+    scope,
+    own: { state: "absent", value: null },
+    effectiveText: "Not set",
+    text: {
+      value: "",
+      placeholder: "Inherited: Not set",
+      required: false,
+      autocomplete: "off",
+      listId: null,
+      options: [],
+    },
+  });
+  const publicBaseUrl = row({
+    id: "setting-notifications-public-base-url",
+    key: "notifications.public_base_url",
+    title: LABELS.notifications.publicBaseUrl,
+    kind: "notification-text",
+    scope,
+    own: { state: "absent", value: null },
+    effectiveText: "Not set",
+    text: {
+      value: "",
+      placeholder: "Inherited: Not set",
+      required: false,
+      autocomplete: "off",
+      listId: null,
+      options: [],
+    },
+  });
+  const apiBaseUrl = row({
+    id: "setting-notifications-api-base-url",
+    key: "notifications.telegram.api_base_url",
+    title: LABELS.notifications.apiBaseUrl,
+    kind: "notification-text",
+    scope,
+    own: { state: "absent", value: null },
+    effectiveText: "https://api.telegram.org",
+    text: {
+      value: "",
+      placeholder: "Inherited: https://api.telegram.org",
+      required: false,
+      autocomplete: "off",
+      listId: null,
+      options: [],
+    },
+  });
+  const includeAnswer = row({
+    id: "setting-notifications-include-answer",
+    key: "notifications.include_answer",
+    title: LABELS.notifications.includeAnswer,
+    kind: "notification-include-answer",
+    scope,
+    effectiveText: "On",
+    select: {
+      options: [
+        { value: "true", label: "On", selected: false, disabled: false },
+        { value: "false", label: "Off", selected: false, disabled: false },
+      ],
+      placeholder: null,
+    },
+  });
+  return {
+    enabled: false,
+    configured: true,
+    warning: null,
+    rows: { mode, telegramEnabled, chatId, publicBaseUrl, apiBaseUrl, includeAnswer },
+    secrets: {
+      botToken: telegramSecret("bot_token", scope),
+      proxyUrl: telegramSecret("proxy_url", scope),
+    },
+    test: {
+      action: "/api/settings/telegram/test",
+      returnTo: scopeProps(scope).href,
+      errorId: "telegram-test-error",
+      label: LABELS.notifications.test,
+      hint: LABELS.notifications.testHint,
+    },
+  };
+}
+
 function props(scope: SettingsScope = "global"): SettingsProps {
   return {
     scope: scopeProps(scope),
@@ -534,6 +700,10 @@ function props(scope: SettingsScope = "global"): SettingsProps {
     gitAuthScoped: {
       ssh: { global: "absent", project: "absent", app: "set" },
       https: { global: "absent", project: "absent", app: "set" },
+    },
+    telegram: {
+      botToken: { state: "set", source: "global" },
+      proxyUrl: { state: "missing" },
     },
     warnings: [],
     pendingRestart: [],
@@ -615,6 +785,7 @@ function props(scope: SettingsScope = "global"): SettingsProps {
       },
       securityNotes: LABELS.git.securityNotes,
     },
+    notifications: notificationsFor(scope),
     restart: {
       pending:
         scope === "global"
@@ -788,15 +959,53 @@ describe("SettingsPage", () => {
     const wrapper = await mountPage(boot(props("global")));
     const links = wrapper.findAll(".settings-nav__sections a");
 
-    expect(links).toHaveLength(5);
+    expect(links).toHaveLength(6);
     expect(links[0]?.attributes("aria-current")).toBe("page");
     expect(links[0]?.text()).toBe("Agent");
 
-    await links[3]?.trigger("click");
+    await links[4]?.trigger("click");
 
     expect(links[0]?.attributes("aria-current")).toBeUndefined();
-    expect(links[3]?.attributes("aria-current")).toBe("page");
-    expect(links[3]?.text()).toBe("Git");
+    expect(links[4]?.attributes("aria-current")).toBe("page");
+    expect(links[4]?.text()).toBe("Git");
+  });
+
+  it("renders the notifications nav item and section", async () => {
+    const wrapper = await mountPage(boot(props("global")));
+    const links = wrapper.findAll(".settings-nav__sections a");
+    const notifications = links.find(
+      (link) => link.attributes("href") === "#settings-notifications",
+    );
+
+    expect(notifications?.text()).toBe("Notifications");
+    expect(wrapper.get("#settings-notifications").text()).toContain("Notification mode");
+    expect(wrapper.get("#settings-notifications").text()).toContain("Bot token");
+    expect(wrapper.get("#settings-notifications").text()).toContain("Send test message");
+    expect(wrapper.find("style").exists()).toBe(false);
+  });
+
+  it("saves a notification row and refreshes the page", async () => {
+    const wrapper = await mountPage(boot(props("global")));
+    mocks.apiMutation.mockResolvedValue({ ok: true });
+    mocks.apiQuery.mockResolvedValue(props("global"));
+
+    await wrapper.get("#setting-notifications-mode select[name='value']").setValue("attention");
+    await wrapper.get("#setting-notifications-mode form").trigger("submit");
+    await flushPromises();
+    await flushPromises();
+
+    expect(mocks.apiMutation).toHaveBeenCalledWith("/api/settings", {
+      json: expect.objectContaining({
+        scope: "global",
+        key: "notifications.mode",
+        action: "set",
+        value: "attention",
+      }),
+    });
+    expect(mocks.apiQuery).toHaveBeenCalledWith("/api/ui/settings?scope=global");
+    expect(toasts()).toContainEqual(
+      expect.objectContaining({ message: "Settings saved.", tone: "success" }),
+    );
   });
 
   it("renders inherited project rows and scope details", async () => {

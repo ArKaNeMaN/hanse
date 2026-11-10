@@ -54,14 +54,14 @@ function insertProjectAndApp(db: ReturnType<typeof openDatabase>): void {
 describe("migration v6 app-images", () => {
   it("applies fresh migrations and defaults existing app inserts to missing", () => {
     const db = openDatabase(":memory:");
-    expect(runMigrations(db)).toBe(25);
+    expect(runMigrations(db)).toBe(26);
     expect(runMigrations(db)).toBe(0);
 
     const versions = db.prepare("SELECT version FROM schema_migrations ORDER BY version").all() as {
       version: number;
     }[];
     expect(versions.map((row) => row.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,
     ]);
     const secretTables = (
       db
@@ -222,7 +222,7 @@ describe("migration v6 app-images", () => {
     insertProjectAndApp(db);
     expect(appColumns(db)).not.toContain("image_status");
 
-    expect(runMigrations(db)).toBe(20);
+    expect(runMigrations(db)).toBe(21);
 
     const row = db.prepare("SELECT image_status, image_error FROM apps WHERE id = 'a1'").get() as {
       image_status: string;
@@ -250,7 +250,7 @@ describe("migration v6 app-images", () => {
       "INSERT INTO instances (id, app_id, state, runtime_state, updated_at) VALUES ('a1','a1','running','running',?)",
     ).run(now);
 
-    expect(runMigrations(db)).toBe(16);
+    expect(runMigrations(db)).toBe(17);
 
     const row = db
       .prepare(
@@ -282,7 +282,7 @@ describe("migration v6 app-images", () => {
     expect(appColumns(db)).not.toContain("deleting");
     expect(projectColumns(db)).not.toContain("deleting");
 
-    expect(runMigrations(db)).toBe(15);
+    expect(runMigrations(db)).toBe(16);
 
     const app = db.prepare("SELECT deleting FROM apps WHERE id = 'a1'").get() as {
       deleting: number;
@@ -313,7 +313,7 @@ describe("migration v6 app-images", () => {
     insertProjectAndApp(db);
     expect(() => db.prepare("SELECT 1 FROM skills").get()).toThrow();
 
-    expect(runMigrations(db)).toBe(14);
+    expect(runMigrations(db)).toBe(15);
     expect(runMigrations(db)).toBe(0);
 
     const columns = (db.prepare("PRAGMA table_info(skills)").all() as Array<{ name: string }>).map(
@@ -362,7 +362,7 @@ describe("migration v6 app-images", () => {
     );
     db.prepare(
       "INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?, ?, ?, ?)",
-    ).run(26, "future", "future-checksum", now);
+    ).run(27, "future", "future-checksum", now);
 
     expect(() => runMigrations(db)).toThrowError(SchemaTooNewError);
     try {
@@ -370,11 +370,11 @@ describe("migration v6 app-images", () => {
     } catch (error) {
       expect(error).toMatchObject({
         code: "schema_too_new",
-        applied: 26,
-        known: 25,
+        applied: 27,
+        known: 26,
       });
+      expect((error as Error).message).toContain("27");
       expect((error as Error).message).toContain("26");
-      expect((error as Error).message).toContain("25");
     }
     expect(() => db.prepare("SELECT 1 FROM skills").get()).toThrow();
     db.close();
@@ -393,7 +393,7 @@ describe("migration v6 app-images", () => {
       db.exec(migration.sql);
       record.run(migration.version, migration.name, migrationChecksum(migration.sql), now);
     }
-    record.run(26, "future", "future-checksum", now);
+    record.run(27, "future", "future-checksum", now);
 
     expect(() => runMigrations(db)).toThrowError(SchemaTooNewError);
     expect(() => db.prepare("SELECT 1 FROM skills").get()).toThrow();
@@ -418,7 +418,7 @@ describe("migration v6 app-images", () => {
     try {
       runMigrations(db);
     } catch (error) {
-      expect(error).toMatchObject({ code: "unknown_migration", version: 0, knownMax: 25 });
+      expect(error).toMatchObject({ code: "unknown_migration", version: 0, knownMax: 26 });
     }
     db.close();
   });
@@ -467,7 +467,7 @@ describe("migration v6 app-images", () => {
       const reopened = openDatabase(file);
       const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
       try {
-        expect(runMigrations(reopened)).toBe(13);
+        expect(runMigrations(reopened)).toBe(14);
         expect(runMigrations(reopened)).toBe(0);
         expect(warn).not.toHaveBeenCalled();
       } finally {
@@ -476,7 +476,7 @@ describe("migration v6 app-images", () => {
       const max = reopened
         .prepare("SELECT MAX(version) AS version FROM schema_migrations")
         .get() as { version: number };
-      expect(max.version).toBe(25);
+      expect(max.version).toBe(26);
       const skill = reopened
         .prepare("SELECT license, compatibility, metadata_json FROM skills WHERE name = 'review'")
         .get() as { license: string | null; compatibility: string | null; metadata_json: string };
@@ -539,7 +539,7 @@ describe("migration v6 app-images", () => {
     const file = path.join(dir, "coordinator.db");
     try {
       const first = openDatabase(file);
-      expect(runMigrations(first)).toBe(25);
+      expect(runMigrations(first)).toBe(26);
       first.close();
 
       const reopened = openDatabase(file);
@@ -553,7 +553,7 @@ describe("migration v6 app-images", () => {
       const max = reopened
         .prepare("SELECT MAX(version) AS version FROM schema_migrations")
         .get() as { version: number };
-      expect(max.version).toBe(25);
+      expect(max.version).toBe(26);
       reopened.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -564,7 +564,7 @@ describe("migration v6 app-images", () => {
 describe("migration v19 custom model providers", () => {
   it("adds the model_providers table with JSON and npm checks", () => {
     const db = openDatabase(":memory:");
-    expect(runMigrations(db)).toBe(25);
+    expect(runMigrations(db)).toBe(26);
     expect(tableColumns(db, "model_providers")).toEqual([
       "id",
       "name",
@@ -618,7 +618,7 @@ describe("migration v19 custom model providers", () => {
       db.exec(migration.sql);
       record.run(migration.version, migration.name, migrationChecksum(migration.sql), now);
     }
-    expect(runMigrations(db)).toBe(7);
+    expect(runMigrations(db)).toBe(8);
     expect(tableColumns(db, "model_providers")).toContain("id");
     db.close();
   });
@@ -646,7 +646,7 @@ function namedIndexes(db: ReturnType<typeof openDatabase>): string[] {
 describe("migration v15 chat drafts and pending sends", () => {
   it("applies from an empty database with tables, indexes, defaults, and constraints", () => {
     const db = openDatabase(":memory:");
-    expect(runMigrations(db)).toBe(25);
+    expect(runMigrations(db)).toBe(26);
     expect(runMigrations(db)).toBe(0);
 
     const tables = (
@@ -756,13 +756,13 @@ describe("migration v15 chat drafts and pending sends", () => {
 
     expect(() => db.prepare("SELECT 1 FROM message_drafts").get()).toThrow();
 
-    expect(runMigrations(db)).toBe(11);
+    expect(runMigrations(db)).toBe(12);
     expect(runMigrations(db)).toBe(0);
 
     const max = db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as {
       version: number;
     };
-    expect(max.version).toBe(25);
+    expect(max.version).toBe(26);
     expect(namedIndexes(db)).toEqual(["pending_sends_session_state", "session_state_activity"]);
     expect(db.prepare("SELECT id FROM handoffs WHERE id = 'h1'").get()).toEqual({ id: "h1" });
     expect(db.prepare("SELECT id FROM apps WHERE id = 'a1'").get()).toEqual({ id: "a1" });
@@ -796,7 +796,7 @@ function indexColumns(db: ReturnType<typeof openDatabase>, name: string): string
 describe("migration v16 chat attachments and deliveries", () => {
   it("applies from an empty database with tables, columns, and indexes", () => {
     const db = openDatabase(":memory:");
-    expect(runMigrations(db)).toBe(25);
+    expect(runMigrations(db)).toBe(26);
     expect(runMigrations(db)).toBe(0);
 
     const tables = (
@@ -903,13 +903,13 @@ describe("migration v16 chat attachments and deliveries", () => {
     ).run(now);
     expect(() => db.prepare("SELECT 1 FROM app_attachments").get()).toThrow();
 
-    expect(runMigrations(db)).toBe(10);
+    expect(runMigrations(db)).toBe(11);
     expect(runMigrations(db)).toBe(0);
 
     const max = db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as {
       version: number;
     };
-    expect(max.version).toBe(25);
+    expect(max.version).toBe(26);
     expect(db.prepare("SELECT id FROM apps WHERE id = 'a1'").get()).toEqual({ id: "a1" });
     expect(db.prepare("SELECT text FROM message_drafts WHERE app_id = 'a1'").get()).toEqual({
       text: "draft",
@@ -1082,7 +1082,7 @@ describe("migration v16 chat attachments and deliveries", () => {
 describe("migration v18 agent image validity", () => {
   it("adds durable build identity columns with defaults and constraints", () => {
     const db = openDatabase(":memory:");
-    expect(runMigrations(db)).toBe(25);
+    expect(runMigrations(db)).toBe(26);
     insertProjectAndApp(db);
 
     const app = db
@@ -1182,11 +1182,11 @@ describe("migration v18 agent image validity", () => {
     expect(appColumns(db)).not.toContain("build_configured");
     expect(tableColumns(db, "app_image_versions")).not.toContain("hash_version");
 
-    expect(runMigrations(db)).toBe(8);
+    expect(runMigrations(db)).toBe(9);
     expect(runMigrations(db)).toBe(0);
 
     expect(db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get()).toEqual({
-      version: 25,
+      version: 26,
     });
     expect(
       db
@@ -1238,7 +1238,7 @@ describe("migration v18 agent image validity", () => {
 describe("migration v20 agent process protection", () => {
   it("adds instances columns, session tables, indexes, and constraints", () => {
     const db = openDatabase(":memory:");
-    expect(runMigrations(db)).toBe(25);
+    expect(runMigrations(db)).toBe(26);
     expect(runMigrations(db)).toBe(0);
 
     const instanceColumns = tableColumns(db, "instances");
@@ -1378,7 +1378,7 @@ describe("migration v20 agent process protection", () => {
     expect(tableColumns(db, "instances")).not.toContain("applied_rule_hash");
     expect(() => db.prepare("SELECT 1 FROM session_resume").get()).toThrow();
 
-    expect(runMigrations(db)).toBe(6);
+    expect(runMigrations(db)).toBe(7);
     expect(runMigrations(db)).toBe(0);
 
     expect(
@@ -1413,7 +1413,7 @@ describe("migration v20 agent process protection", () => {
 describe("migration v22 handoff threads", () => {
   it("adds the handoff header columns and message defaults", () => {
     const db = openDatabase(":memory:");
-    expect(runMigrations(db)).toBe(25);
+    expect(runMigrations(db)).toBe(26);
     expect(runMigrations(db)).toBe(0);
 
     const handoffColumns = tableColumns(db, "handoffs");
@@ -1632,7 +1632,7 @@ describe("migration v22 handoff threads", () => {
       count: 0,
     });
 
-    expect(runMigrations(db)).toBe(4);
+    expect(runMigrations(db)).toBe(5);
     expect(runMigrations(db)).toBe(0);
 
     expect(tableColumns(db, "handoffs")).toContain("mode");
@@ -1744,7 +1744,7 @@ describe("migration v22 handoff threads", () => {
 describe("migration v23 agent process status", () => {
   it("adds the process columns, history table, indexes, and CHECKs", () => {
     const db = openDatabase(":memory:");
-    expect(runMigrations(db)).toBe(25);
+    expect(runMigrations(db)).toBe(26);
     expect(runMigrations(db)).toBe(0);
 
     const instanceColumns = tableColumns(db, "instances");
@@ -1975,7 +1975,7 @@ describe("migration v23 agent process status", () => {
     }
     expect(tableColumns(db, "instances")).not.toContain("process_phase");
 
-    expect(runMigrations(db)).toBe(3);
+    expect(runMigrations(db)).toBe(4);
     expect(runMigrations(db)).toBe(0);
 
     const rows = db
@@ -2018,6 +2018,190 @@ describe("migration v23 agent process status", () => {
       expect(row.errorMessage).toBeNull();
       expect(row.errorAt).toBeNull();
     }
+    db.close();
+  });
+});
+
+describe("migration v26 telegram notification outbox", () => {
+  type OutboxInsert = {
+    id?: string;
+    groupId?: string;
+    chunkIndex?: number;
+    chunkCount?: number;
+    dedupeKey?: string;
+    kind?: string;
+    format?: string;
+    scope?: string;
+    projectId?: string | null;
+    appKey?: string | null;
+    appId?: string | null;
+    sessionId?: string | null;
+    payloadJson?: string;
+    state?: string;
+    nextAttemptAt?: string;
+    createdAt?: string;
+    updatedAt?: string;
+  };
+
+  function insertOutbox(db: ReturnType<typeof openDatabase>, row: OutboxInsert = {}): void {
+    db.prepare(
+      `INSERT INTO notification_outbox (
+         id, group_id, chunk_index, chunk_count, dedupe_key, kind, format, scope,
+         project_id, app_key, app_id, session_id, payload_json, state, attempts,
+         next_attempt_at, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
+    ).run(
+      row.id ?? "o1",
+      row.groupId ?? "g1",
+      row.chunkIndex ?? 0,
+      row.chunkCount ?? 1,
+      row.dedupeKey ?? "d1",
+      row.kind ?? "turn_completed",
+      row.format ?? "rich",
+      row.scope ?? "app",
+      row.projectId === undefined ? "p" : row.projectId,
+      row.appKey === undefined ? "a" : row.appKey,
+      row.appId === undefined ? "a1" : row.appId,
+      row.sessionId === undefined ? "ses_1" : row.sessionId,
+      row.payloadJson ?? '{"text":"hi"}',
+      row.state ?? "pending",
+      row.nextAttemptAt ?? now,
+      row.createdAt ?? now,
+      row.updatedAt ?? now,
+    );
+  }
+
+  it("upgrades a populated v25 database with tables, checks, indexes, and cascades", () => {
+    const db = openDatabase(":memory:");
+    db.exec(
+      "CREATE TABLE schema_migrations (" +
+        "version INTEGER PRIMARY KEY, name TEXT NOT NULL, checksum TEXT NOT NULL, applied_at TEXT NOT NULL)",
+    );
+    const record = db.prepare(
+      "INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?, ?, ?, ?)",
+    );
+    for (const migration of MIGRATIONS.filter((candidate) => candidate.version <= 25)) {
+      db.exec(migration.sql);
+      record.run(migration.version, migration.name, migrationChecksum(migration.sql), now);
+    }
+    insertProjectAndApp(db);
+    expect(() => db.prepare("SELECT 1 FROM notification_outbox").get()).toThrow();
+
+    expect(runMigrations(db)).toBe(1);
+    expect(runMigrations(db)).toBe(0);
+
+    const tables = (
+      db
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type = 'table' " +
+            "AND name IN ('notification_outbox','notification_watermarks','notification_meta'," +
+            "'notification_channel_state') ORDER BY name",
+        )
+        .all() as Array<{ name: string }>
+    ).map((row) => row.name);
+    expect(tables).toEqual([
+      "notification_channel_state",
+      "notification_meta",
+      "notification_outbox",
+      "notification_watermarks",
+    ]);
+
+    expect(tableColumns(db, "notification_outbox")).toEqual([
+      "id",
+      "group_id",
+      "chunk_index",
+      "chunk_count",
+      "dedupe_key",
+      "kind",
+      "format",
+      "scope",
+      "project_id",
+      "app_key",
+      "app_id",
+      "session_id",
+      "payload_json",
+      "state",
+      "attempts",
+      "next_attempt_at",
+      "error_code",
+      "last_error",
+      "created_at",
+      "updated_at",
+      "sent_at",
+    ]);
+    expect(tableColumns(db, "notification_watermarks")).toEqual([
+      "app_id",
+      "session_id",
+      "last_notified_message_id",
+      "initialized_at",
+      "updated_at",
+    ]);
+    expect(tableColumns(db, "notification_meta")).toEqual(["key", "value", "updated_at"]);
+    expect(tableColumns(db, "notification_channel_state")).toEqual([
+      "channel",
+      "state",
+      "last_error",
+      "updated_at",
+    ]);
+
+    const indexes = (
+      db
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'notification_outbox' " +
+            "AND name NOT LIKE 'sqlite_autoindex_%' ORDER BY name",
+        )
+        .all() as Array<{ name: string }>
+    ).map((row) => row.name);
+    expect(indexes).toEqual([
+      "notification_outbox_app",
+      "notification_outbox_due",
+      "notification_outbox_group_chunk",
+      "notification_outbox_session",
+    ]);
+
+    insertOutbox(db);
+    expect(() => insertOutbox(db, { id: "o2", dedupeKey: "d2" })).toThrow();
+    const constraint = { id: "o2", groupId: "g2", dedupeKey: "d2" };
+    expect(() => insertOutbox(db, { ...constraint, state: "failed" })).toThrow();
+    expect(() => insertOutbox(db, { ...constraint, kind: "failed" })).toThrow();
+    expect(() => insertOutbox(db, { ...constraint, format: "markdown" })).toThrow();
+    expect(() => insertOutbox(db, { ...constraint, scope: "team" })).toThrow();
+    expect(() => insertOutbox(db, { ...constraint, chunkIndex: -1 })).toThrow();
+    expect(() => insertOutbox(db, { ...constraint, chunkCount: 0 })).toThrow();
+    expect(() => insertOutbox(db, { ...constraint, payloadJson: "{not json}" })).toThrow();
+    expect(() =>
+      insertOutbox(db, {
+        ...constraint,
+        payloadJson: JSON.stringify({ text: "x".repeat(1048576) }),
+      }),
+    ).toThrow();
+
+    db.prepare(
+      "INSERT INTO notification_watermarks (app_id, session_id, initialized_at, updated_at) VALUES ('a1','ses_1',?,?)",
+    ).run(now, now);
+    insertOutbox(db, { id: "o3", groupId: "g3", dedupeKey: "d3" });
+
+    db.prepare("DELETE FROM apps WHERE id = 'a1'").run();
+    expect(db.prepare("SELECT COUNT(*) AS count FROM notification_outbox").get()).toEqual({
+      count: 0,
+    });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM notification_watermarks").get()).toEqual({
+      count: 0,
+    });
+
+    insertOutbox(db, {
+      id: "o4",
+      groupId: "g4",
+      dedupeKey: "d4",
+      scope: "project",
+      appId: null,
+      appKey: null,
+      sessionId: null,
+    });
+    db.prepare("DELETE FROM projects WHERE id = 'p'").run();
+    expect(db.prepare("SELECT COUNT(*) AS count FROM notification_outbox").get()).toEqual({
+      count: 0,
+    });
     db.close();
   });
 });

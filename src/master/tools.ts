@@ -77,6 +77,21 @@ export class MasterToolError extends Error {
   }
 }
 
+const HUMAN_ONLY_SETTING_PREFIXES = ["notifications."] as const;
+
+/**
+ * Notification routing settings are human-only even though they are not secrets: they choose where
+ * the human-only bot token and notification content are sent.
+ */
+function requireAgentWritableSetting(key: string): void {
+  if (HUMAN_ONLY_SETTING_PREFIXES.some((prefix) => key.startsWith(prefix))) {
+    throw new MasterToolError(
+      "permission_denied",
+      `settings key ${key} is human-only because it controls notification routing`,
+    );
+  }
+}
+
 export interface MasterToolContext extends SkillToolContext {
   workspaceRoot: string;
   settings?: SettingsService;
@@ -460,6 +475,12 @@ function effectiveValue(effective: EffectiveSettings, key: string): EffectiveVal
     "context.auto_compact.percent": effective.context.autoCompact.percent,
     "git.user.name": effective.git.user.name,
     "git.user.email": effective.git.user.email,
+    "notifications.mode": effective.notifications.mode,
+    "notifications.telegram.enabled": effective.notifications.telegram.enabled,
+    "notifications.telegram.chat_id": effective.notifications.telegram.chatId,
+    "notifications.public_base_url": effective.notifications.publicBaseUrl,
+    "notifications.telegram.api_base_url": effective.notifications.telegram.apiBaseUrl,
+    "notifications.include_answer": effective.notifications.includeAnswer,
   };
   const value = groups[key];
   if (value === undefined) {
@@ -727,6 +748,7 @@ export async function callMasterTool(
         if (findKeyDefinition(key) === undefined) {
           throw new MasterToolError("invalid_argument", `unknown settings key: ${key}`);
         }
+        requireAgentWritableSetting(key);
         const scope = (typeof args.scope === "string" ? args.scope : undefined) as
           | SettingsScope
           | undefined;
@@ -781,6 +803,7 @@ export async function callMasterTool(
         if (findKeyDefinition(key) === undefined) {
           throw new MasterToolError("invalid_argument", `unknown settings key: ${key}`);
         }
+        requireAgentWritableSetting(key);
         const target = targetFor(args, scope);
         requireTargetExists(context.db, scope, target);
         const settings = requireSettings(context);

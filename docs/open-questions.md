@@ -1,5 +1,23 @@
 # Open questions
 
+> Stage: `0041-telegram-notifications`. Owner decisions were collected on 2026-11-10. There are no
+> open items for this stage.
+
+## Stage `0041-telegram-notifications` - resolved owner decisions
+
+1. **Completion** - `turn idle`, but only when no subagent of the session is running and the
+   session is not waiting for an in-flight handoff reply (in-process handoffs only).
+2. **Recipients** - one Telegram chat for now; the settings hierarchy is used so project/app
+   separation is possible later.
+3. **Public URL** - configured in settings, because the operator sometimes opens the UI through
+   different addresses. It resolves per scope.
+4. **Scope** - everything that interrupted the agent (questions, permissions, SSH approvals,
+   handoff approvals, parked handoff replies, stop/error) plus completion.
+5. **Text** - the full final assistant answer with Telegram rich formatting.
+6. **Proxy** - outbound Telegram traffic must support an HTTP(S) or SOCKS5 proxy.
+7. **Delivery cycle** - the owner authorized the full cycle: design, design review, plan, plan
+   review, implementation, record, and commit.
+
 > Stage: `0039-chat-notice-grouping`. Owner decisions were collected on 2026-11-09. There are no
 > open items for this stage.
 

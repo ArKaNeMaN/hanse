@@ -71,7 +71,7 @@ describe("deploy drain HTTP contracts", () => {
       status: "ok",
       version: expect.any(String),
       revision: expect.any(String),
-      schemaVersion: 25,
+      schemaVersion: 26,
       deploying: false,
       inFlightLifecycle: 0,
       draining: false,
@@ -108,7 +108,7 @@ describe("deploy drain HTTP contracts", () => {
       drained: true,
       inFlightLifecycle: 0,
       inFlightHttp: 0,
-      schemaVersion: 25,
+      schemaVersion: 26,
       revision: expect.any(String),
       walCheckpoint: {
         busy: expect.any(Number),
