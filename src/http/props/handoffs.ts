@@ -17,6 +17,7 @@ import {
   allHandoffs,
   appKeyFor,
   CLOSED_HANDOFF_STATES,
+  crossProject,
   displayState,
   filterHref,
   type HandoffCounts,
@@ -24,6 +25,7 @@ import {
   handoffCounts,
   matchesQuery,
   parseHandoffFilter,
+  projectNameFor,
   shortId,
   sortedHandoffs,
 } from "./shared.js";
@@ -49,6 +51,11 @@ export interface HandoffRowProps {
   readonly toAppId: string;
   readonly fromAppKey: string;
   readonly toAppKey: string;
+  readonly crossProject: boolean;
+  readonly fromProjectId: string;
+  readonly toProjectId: string;
+  readonly fromProjectName: string;
+  readonly toProjectName: string;
   readonly summary: string;
   readonly state: HandoffState;
   readonly replyState: HandoffReplyState;
@@ -94,9 +101,13 @@ const FILTER_LABELS: ReadonlyArray<{ value: HandoffFilter; label: string }> = [
   { value: "active", label: "Active" },
   { value: "closed", label: "Closed" },
   { value: "replies", label: "Replies" },
+  { value: "cross", label: "Cross-project" },
 ];
 
 function filterMatches(filter: HandoffFilter, handoff: Handoff): boolean {
+  if (filter === "cross" && !crossProject(handoff)) {
+    return false;
+  }
   if (
     filter === "waiting" &&
     handoff.state !== "awaiting_approval" &&
@@ -137,7 +148,9 @@ function emptyStateFor(
           ? "No active handoffs"
           : filter === "replies"
             ? "No replies waiting"
-            : "No closed handoffs";
+            : filter === "cross"
+              ? "No cross-project handoffs"
+              : "No closed handoffs";
   const body = allEmpty
     ? "Handoffs route work between applications. Open a project to create the first one."
     : query.length > 0
@@ -148,7 +161,9 @@ function emptyStateFor(
           ? "Queued, dispatching, and in-progress handoffs appear here."
           : filter === "replies"
             ? "Sibling replies that need a source session or an operator decision appear here."
-            : "Delivered, rejected, failed, expired, and cancelled handoffs appear here.";
+            : filter === "cross"
+              ? "Handoffs routed to an application in another project appear here."
+              : "Delivered, rejected, failed, expired, and cancelled handoffs appear here.";
   if (allEmpty) {
     return {
       iconName: "branch",
@@ -183,7 +198,9 @@ function tableTitleFor(filter: HandoffFilter): string {
       ? "Waiting for approval"
       : filter === "active"
         ? "Active handoffs"
-        : "Closed handoffs";
+        : filter === "cross"
+          ? "Cross-project handoffs"
+          : "Closed handoffs";
 }
 
 export function buildHandoffsProps(
@@ -221,6 +238,11 @@ export function buildHandoffsProps(
       toAppId: handoff.toAppId,
       fromAppKey: appKeyFor(site, handoff.fromAppId),
       toAppKey: appKeyFor(site, handoff.toAppId),
+      crossProject: crossProject(handoff),
+      fromProjectId: handoff.projectId,
+      toProjectId: handoff.targetProjectId ?? handoff.projectId,
+      fromProjectName: projectNameFor(site, handoff.projectId),
+      toProjectName: projectNameFor(site, handoff.targetProjectId ?? handoff.projectId),
       summary: handoff.summary,
       state: handoff.state,
       replyState: handoff.replyState,

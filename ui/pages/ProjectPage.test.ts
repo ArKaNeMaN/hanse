@@ -60,6 +60,11 @@ const HANDOFF: ProjectHandoff = {
   toAppId: "project-one:beta",
   fromAppKey: "alpha",
   toAppKey: "beta",
+  crossProject: false,
+  fromProjectId: "project-one",
+  toProjectId: "project-one",
+  fromProjectName: "Project One",
+  toProjectName: "Project One",
   summary: "Ship the handoff",
   state: "queued",
   replyState: "none",
@@ -100,6 +105,11 @@ const WAITING: ProjectWaitingHandoff = {
   toAppId: HANDOFF.toAppId,
   fromAppKey: HANDOFF.fromAppKey,
   toAppKey: HANDOFF.toAppKey,
+  crossProject: false,
+  fromProjectId: "project-one",
+  toProjectId: "project-one",
+  fromProjectName: "Project One",
+  toProjectName: "Project One",
   state: "awaiting_approval",
   replyState: "none",
   displayState: "awaiting_approval",
@@ -140,6 +150,39 @@ const PROPS: ProjectProps = {
     appOptions: ["alpha", "beta"],
     wildcard: "*",
     dispatchModes: ["auto", "approve", "deny"],
+    replyModes: ["auto", "approve"],
+  },
+  grants: {
+    outbound: [
+      {
+        id: 1,
+        sourceProjectId: "project-one",
+        sourceProjectName: "Project One",
+        fromAppKey: "alpha",
+        targetProjectId: "project-two",
+        targetProjectName: "Project Two",
+        toAppKey: "gamma",
+        dispatchMode: "auto",
+        replyMode: "auto",
+      },
+    ],
+    inbound: [
+      {
+        id: 2,
+        sourceProjectId: "project-three",
+        sourceProjectName: "Project Three",
+        fromAppKey: "epsilon",
+        targetProjectId: "project-one",
+        targetProjectName: "Project One",
+        toAppKey: "alpha",
+        dispatchMode: "approve",
+        replyMode: "auto",
+      },
+    ],
+    fromOptions: ["alpha", "beta", "*"],
+    targetProjects: [{ id: "project-two", name: "Project Two", appKeys: ["gamma", "delta"] }],
+    wildcard: "*",
+    dispatchModes: ["auto", "approve"],
     replyModes: ["auto", "approve"],
   },
   deletion: {
@@ -644,6 +687,33 @@ describe("ProjectPage", () => {
     await wrapper.get("section[aria-labelledby='handoff-policy-title'] form").trigger("submit");
     await flushPromises();
     expect(toasts().at(-1)).toMatchObject({ message: "Bad rule.", tone: "error" });
+  });
+
+  it("renders the grant card and refreshes after a grant change", async () => {
+    mocks.apiQuery.mockResolvedValue({ ...PROPS });
+    mocks.apiMutation.mockResolvedValue({ ok: true });
+    const wrapper = await mountPage(boot(PROPS));
+
+    expect(wrapper.get("#handoff-grants-title").text()).toBe("Cross-project grants");
+    expect(wrapper.text()).toContain("Project Two");
+    expect(wrapper.text()).toContain("Project Three");
+    expect(wrapper.text()).toContain("Inbound grants");
+
+    await wrapper.get("section[aria-labelledby='handoff-grants-title'] form").trigger("submit");
+    await flushPromises();
+
+    expect(mocks.apiMutation).toHaveBeenCalledWith("/api/projects/project-one/handoff-grants", {
+      form: {
+        from: "*",
+        target_project: "project-two",
+        to: "*",
+        dispatch_mode: "auto",
+        reply_mode: "auto",
+        return_to: "/projects/project-one",
+      },
+    });
+    expect(mocks.apiQuery).toHaveBeenCalledWith("/api/ui/projects/project-one");
+    expect(toasts().at(-1)).toMatchObject({ message: "Cross-project grant saved." });
   });
 
   it("deletes a project only for an exact name and navigates with a notice", async () => {

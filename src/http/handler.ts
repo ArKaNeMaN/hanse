@@ -34,6 +34,7 @@ import { humanFrom, principalFrom } from "./auth.js";
 import { buildSite } from "./dashboard.js";
 import { drainingResponse } from "./deploy.js";
 import { isHtmlPageRequest } from "./page-request.js";
+import { allHandoffs } from "./props/shared.js";
 import { staticErrorResponse } from "./static-error.js";
 import type { TerminalSessionRegistry } from "./terminal.js";
 import { safeLocalPath } from "./ui.js";
@@ -428,6 +429,41 @@ export function publicHandoffProjection(
     threadIdleExpiresAt: handoff.threadIdleExpiresAt,
     mode: handoff.mode,
     messageCount: handoff.messageCount,
+  };
+}
+
+export interface HumanHandoffProjection extends PublicHandoffProjection {
+  crossProject: boolean;
+  fromProjectId: string;
+  toProjectId: string;
+  fromProjectName: string;
+  toProjectName: string;
+}
+
+function projectNameFor(db: SqliteDatabase, projectId: string): string {
+  const row = db.prepare("SELECT name FROM projects WHERE id = ?").get(projectId) as
+    | { name: string }
+    | undefined;
+  return row?.name ?? projectId;
+}
+
+/**
+ * The human-only allowlist: the public fields plus the project pair needed to disambiguate a
+ * cross-project route. Bodies, results, notes, errors, and session identifiers stay excluded.
+ */
+export function humanHandoffProjection(
+  db: SqliteDatabase,
+  handoff: Handoff,
+): HumanHandoffProjection {
+  const fromProjectId = handoff.projectId;
+  const toProjectId = handoff.targetProjectId ?? handoff.projectId;
+  return {
+    ...publicHandoffProjection(db, handoff),
+    crossProject: fromProjectId !== toProjectId,
+    fromProjectId,
+    toProjectId,
+    fromProjectName: projectNameFor(db, fromProjectId),
+    toProjectName: projectNameFor(db, toProjectId),
   };
 }
 
@@ -1017,10 +1053,19 @@ function route(deps: HttpDeps, request: HttpRequest): HttpResponse {
   if (request.method === "GET" && request.path === "/api/projects") {
     const projects = projectViews(deps)
       .filter((project) => project.builtin !== true)
-      .map((project) => ({
-        ...project,
-        handoffs: project.handoffs.map((handoff) => publicHandoffProjection(deps.db, handoff)),
-      }));
+      .map((project) => {
+        const { handoffGrants: _handoffGrants, inboundHandoffGrants: _inbound, ...rest } = project;
+        return {
+          ...rest,
+          handoffs: project.handoffs
+            .filter(
+              (handoff) =>
+                handoff.projectId === project.id &&
+                (handoff.targetProjectId ?? handoff.projectId) === project.id,
+            )
+            .map((handoff) => publicHandoffProjection(deps.db, handoff)),
+        };
+      });
     return json(200, { projects });
   }
   if (request.method === "GET" && request.path === "/api/handoffs") {
@@ -1033,9 +1078,7 @@ function route(deps: HttpDeps, request: HttpRequest): HttpResponse {
     }
     const site = buildSite(deps);
     return json(200, {
-      handoffs: site.projects.flatMap((project) =>
-        project.handoffs.map((handoff) => publicHandoffProjection(deps.db, handoff)),
-      ),
+      handoffs: allHandoffs(site).map((handoff) => humanHandoffProjection(deps.db, handoff)),
     });
   }
 

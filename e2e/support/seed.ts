@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { setHandoffGrant } from "../../src/coordinator/grants.js";
 import { transitionHandoff, updateHandoff } from "../../src/coordinator/handoff.js";
 import { CoordinatorService } from "../../src/coordinator/service.js";
 import type { RunSshKeygen } from "../../src/git/credentials.js";
@@ -531,6 +532,8 @@ export interface SeedResult {
   replyHandoffId: string;
   retryReplyHandoffId: string;
   cancelHandoffId: string;
+  crossHandoffId: string;
+  crossGrantId: number;
   fixtureRemotePath: string | null;
   skillIds: number[];
   sshHostId: string;
@@ -1127,6 +1130,31 @@ export function seed(options: SeedOptions = {}): SeedResult {
     inboxRetryReplyId,
     inboxCancelId,
   );
+
+  // Cross-project fixture: an outbound grant from project one (alpha) to project two (gamma) and
+  // one handoff routed through it. The grant is created before the request; the handoff row is
+  // pinned to a fixed timestamp so the specs can assert deterministic ordering/time.
+  const crossGrant = setHandoffGrant(db, {
+    projectId: PROJECT_ONE,
+    fromAppKey: "alpha",
+    targetProjectId: PROJECT_TWO,
+    toAppKey: "gamma",
+    actor: E2E_OPERATOR,
+  });
+  const { handoffId: crossHandoffId } = projectOne.requestSiblingChange({
+    fromAppKey: "alpha",
+    toAppKey: "gamma",
+    toProjectId: PROJECT_TWO,
+    summary: "E2E cross-project handoff",
+    spec: "E2E cross-project spec",
+  });
+  const crossFixed = "2021-01-01T00:00:00.000Z";
+  db.prepare(
+    `UPDATE handoffs
+       SET created_at = ?, updated_at = ?, last_message_at = ?
+     WHERE id = ?`,
+  ).run(crossFixed, crossFixed, crossFixed, crossHandoffId);
+
   // Keep the overview's recent-handoffs row stable even after the inbox spec updates its own rows
   // (relaunch/retry/cancel refresh `updated_at`). The fixture sorts by `updated_at`, so the
   // long-lived summary must rank above those test-owned rows.
@@ -1157,6 +1185,8 @@ export function seed(options: SeedOptions = {}): SeedResult {
     replyHandoffId,
     retryReplyHandoffId,
     cancelHandoffId,
+    crossHandoffId,
+    crossGrantId: crossGrant.id,
     fixtureRemotePath,
     skillIds: [globalSkill.id, projectSkill.id],
     sshHostId: host.id,

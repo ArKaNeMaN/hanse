@@ -48,8 +48,8 @@ describe("hanse migrate", () => {
     expect(code).toBe(0);
     const report = JSON.parse(lines.join("\n")) as Record<string, unknown>;
     expect(report).toMatchObject({
-      current: 27,
-      target: 27,
+      current: 28,
+      target: 28,
       pending: [],
       pendingCount: 0,
       backwardCompatible: true,
@@ -68,12 +68,12 @@ describe("hanse migrate", () => {
     const report = JSON.parse(lines.join("\n")) as Record<string, unknown>;
     expect(report).toMatchObject({
       current: 0,
-      target: 27,
-      pendingCount: 27,
+      target: 28,
+      pendingCount: 28,
       backwardCompatible: false,
       requiresExclusive: true,
     });
-    expect((report.pending as unknown[]).length).toBe(27);
+    expect((report.pending as unknown[]).length).toBe(28);
   });
 
   it("returns exit 20 for a database newer than the binary", async () => {
@@ -95,20 +95,20 @@ describe("hanse migrate", () => {
     ensureDatabase(file);
     const db = openDatabase(file);
     db.exec(
-      "DELETE FROM schema_migrations WHERE version = 26; " +
-        "DROP TABLE notification_outbox; DROP TABLE notification_watermarks; " +
-        "DROP TABLE notification_meta; DROP TABLE notification_channel_state;",
+      "DROP INDEX handoffs_target_project; " +
+        "ALTER TABLE handoffs DROP COLUMN target_project_id; " +
+        "ALTER TABLE handoffs DROP COLUMN grant_id; " +
+        "DROP TABLE handoff_grants; " +
+        "DELETE FROM schema_migrations WHERE version = 28;",
     );
     db.close();
     const { lines, io } = collector();
     const code = await runCli(["migrate", "--online", "--db", file, "--json"], io);
     expect(code).toBe(0);
-    expect(JSON.parse(lines.join("\n"))).toMatchObject({ applied: 1, current: 27, target: 27 });
+    expect(JSON.parse(lines.join("\n"))).toMatchObject({ applied: 1, current: 28, target: 28 });
     const verify = openDatabase(file);
     const row = verify
-      .prepare(
-        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'notification_outbox'",
-      )
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'handoff_grants'")
       .get();
     expect(row).toBeDefined();
     verify.close();
@@ -137,8 +137,8 @@ describe("hanse migrate", () => {
     const report = JSON.parse(lines.join("\n")) as Record<string, unknown>;
     expect(report).toMatchObject({
       code: "migration_requires_offline",
-      current: 26,
-      target: 27,
+      current: 28,
+      target: 28,
       pendingCount: 1,
       requiresExclusive: true,
     });

@@ -86,7 +86,7 @@ LABEL org.opencontainers.image.title="hanse" \
       org.hanse.api.min="1" \
       org.hanse.api.max="1" \
       org.hanse.schema.min="1" \
-      org.hanse.schema.max="27"
+      org.hanse.schema.max="28"
 
 USER root
 ENV NODE_ENV=production \

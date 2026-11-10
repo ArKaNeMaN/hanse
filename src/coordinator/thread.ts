@@ -441,7 +441,11 @@ export function buildThreadIdempotencyKey(
   fromAppId: string,
   toAppId: string,
   userKey: string,
+  targetProjectId?: string,
 ): string {
+  if (targetProjectId !== undefined && targetProjectId !== projectId) {
+    return `v2|${projectId}|${fromAppId}|${targetProjectId}|${toAppId}|thread|${userKey}`;
+  }
   return `v1|${projectId}|${fromAppId}|${toAppId}|thread|${userKey}`;
 }
 
@@ -508,6 +512,7 @@ export function toThreadMessageView(message: HandoffMessage): ThreadMessageView 
 
 export interface ThreadIdempotencyInput {
   projectId: string;
+  targetProjectId?: string;
   fromAppId: string;
   toAppId: string;
   idempotencyKey: string;
@@ -524,17 +529,19 @@ export function resolveThreadIdempotency(
   db: SqliteDatabase,
   input: ThreadIdempotencyInput,
 ): ThreadIdempotencyMatch | undefined {
+  const effectiveTargetProjectId = input.targetProjectId ?? input.projectId;
   const namespacedKey = buildThreadIdempotencyKey(
     input.projectId,
     input.fromAppId,
     input.toAppId,
     input.idempotencyKey,
+    input.targetProjectId,
   );
   const namespaced = db
     .prepare("SELECT id FROM handoffs WHERE idempotency_key = ?")
     .get(namespacedKey) as { id: string } | undefined;
   const legacy =
-    namespaced === undefined
+    namespaced === undefined && effectiveTargetProjectId === input.projectId
       ? (db
           .prepare(
             `SELECT id FROM handoffs
@@ -555,6 +562,7 @@ export function resolveThreadIdempotency(
   }
   if (
     handoff.projectId !== input.projectId ||
+    (handoff.targetProjectId ?? handoff.projectId) !== effectiveTargetProjectId ||
     handoff.fromAppId !== input.fromAppId ||
     handoff.toAppId !== input.toAppId ||
     handoff.mode !== "thread"
@@ -628,8 +636,12 @@ function securityFailureCount(db: SqliteDatabase, appId: string, windowStart: st
     db
       .prepare(
         `SELECT COUNT(*) AS count FROM events
-         WHERE scope = ? AND type = 'handoff.thread.attempt'
-           AND json_extract(payload, '$.outcome') = 'failure'
+         WHERE scope = ?
+           AND (
+             (type = 'handoff.thread.attempt'
+              AND json_extract(payload, '$.outcome') = 'failure')
+             OR type = 'handoff.cross_project.denied'
+           )
            AND created_at > ?`,
       )
       .get(appId, windowStart) as { count: number }
@@ -674,6 +686,8 @@ export type ThreadStartStatus = "queued" | "awaiting_approval" | "denied" | "exi
 
 export interface CreateThreadInput {
   projectId: string;
+  targetProjectId?: string;
+  grantId?: number | null;
   fromAppId: string;
   toAppId: string;
   summary: string;
@@ -756,6 +770,7 @@ function createThreadInternal(
   const run = db.transaction((): CreateThreadResult => {
     const existing = resolveThreadIdempotency(db, {
       projectId: input.projectId,
+      targetProjectId: input.targetProjectId,
       fromAppId: input.fromAppId,
       toAppId: input.toAppId,
       idempotencyKey: userKey,
@@ -784,16 +799,19 @@ function createThreadInternal(
 
     db.prepare(
       `INSERT INTO handoffs
-         (id, project_id, from_app_id, to_app_id, state, mode, summary, spec, idempotency_key,
-          attempts, origin, root_handoff_id, depth, policy_dispatch_mode, policy_reply_mode,
-          message_seq, message_count, last_message_at, thread_idle_expires_at, created_at, updated_at)
+         (id, project_id, target_project_id, grant_id, from_app_id, to_app_id, state, mode, summary,
+          spec, idempotency_key, attempts, origin, root_handoff_id, depth, policy_dispatch_mode,
+          policy_reply_mode, message_seq, message_count, last_message_at, thread_idle_expires_at,
+          created_at, updated_at)
        VALUES
-         (@id, @project_id, @from_app_id, @to_app_id, @state, 'thread', @summary, @spec,
-          @idempotency_key, 0, @origin, @id, 0, @policy_dispatch_mode, @policy_reply_mode,
-          1, 1, @created_at, @thread_idle_expires_at, @created_at, @updated_at)`,
+         (@id, @project_id, @target_project_id, @grant_id, @from_app_id, @to_app_id, @state, 'thread',
+          @summary, @spec, @idempotency_key, 0, @origin, @id, 0, @policy_dispatch_mode,
+          @policy_reply_mode, 1, 1, @created_at, @thread_idle_expires_at, @created_at, @updated_at)`,
     ).run({
       id,
       project_id: input.projectId,
+      target_project_id: input.targetProjectId ?? input.projectId,
+      grant_id: input.grantId ?? null,
       from_app_id: input.fromAppId,
       to_app_id: input.toAppId,
       state: initialState,
@@ -804,6 +822,7 @@ function createThreadInternal(
         input.fromAppId,
         input.toAppId,
         userKey,
+        input.targetProjectId,
       ),
       origin: input.origin ?? "agent",
       policy_dispatch_mode: dispatchMode,

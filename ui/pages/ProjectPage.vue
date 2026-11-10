@@ -9,6 +9,7 @@ import AppIcon from "../components/AppIcon.vue";
 import HandoffReviewDialog from "../components/HandoffReviewDialog.vue";
 import NewHandoffDialog from "../components/NewHandoffDialog.vue";
 import ProjectDeleteDialog from "../components/ProjectDeleteDialog.vue";
+import ProjectGrantsCard from "../components/ProjectGrantsCard.vue";
 import ProjectPolicyCard from "../components/ProjectPolicyCard.vue";
 import RouteText from "../components/RouteText.vue";
 import SmartLink from "../components/SmartLink.vue";
@@ -468,6 +469,13 @@ async function refreshProject(): Promise<void> {
           <ProjectPolicyCard
             :project-id="view.project.id"
             :policy="view.policy"
+            :return-to="view.deletion.returnTo"
+            @changed="refreshProject"
+          />
+
+          <ProjectGrantsCard
+            :project-id="view.project.id"
+            :grants="view.grants"
             :return-to="view.deletion.returnTo"
             @changed="refreshProject"
           />

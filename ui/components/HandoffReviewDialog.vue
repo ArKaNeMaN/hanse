@@ -160,6 +160,13 @@ defineExpose({ open });
         <p class="dialog__meta">
           {{ handoff.id }} / {{ handoff.fromAppKey }} to {{ handoff.toAppKey }}
         </p>
+        <p v-if="handoff.crossProject" class="dialog__meta">
+          <span class="badge badge-sm">Cross-project</span>
+          <span class="mono" :title="`${handoff.fromProjectId} → ${handoff.toProjectId}`">
+            {{ handoff.fromProjectName }}
+            → {{ handoff.toProjectName }}
+          </span>
+        </p>
       </header>
 
       <form

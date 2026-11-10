@@ -53,7 +53,7 @@ describe("DrainController", () => {
     const f = fixture();
     const report = await f.drain.drain({
       timeoutSeconds: 1,
-      schemaVersion: 26,
+      schemaVersion: 28,
       revision: "abc123",
     });
     expect(report).toMatchObject({
@@ -61,7 +61,7 @@ describe("DrainController", () => {
       drained: true,
       inFlightLifecycle: 0,
       inFlightHttp: 0,
-      schemaVersion: 26,
+      schemaVersion: 28,
       revision: "abc123",
     });
     expect(report.drainId.length).toBeGreaterThan(0);

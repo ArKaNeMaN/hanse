@@ -58,6 +58,11 @@ export interface ProjectHandoff {
   readonly toAppId: string;
   readonly fromAppKey: string;
   readonly toAppKey: string;
+  readonly crossProject: boolean;
+  readonly fromProjectId: string;
+  readonly toProjectId: string;
+  readonly fromProjectName: string;
+  readonly toProjectName: string;
   readonly summary: string;
   readonly state: HandoffState;
   readonly replyState: HandoffReplyState;
@@ -98,6 +103,11 @@ export interface ProjectWaitingHandoff {
   readonly toAppId: string;
   readonly fromAppKey: string;
   readonly toAppKey: string;
+  readonly crossProject: boolean;
+  readonly fromProjectId: string;
+  readonly toProjectId: string;
+  readonly fromProjectName: string;
+  readonly toProjectName: string;
   readonly state: HandoffState;
   readonly replyState: HandoffReplyState;
   readonly displayState: HandoffState;
@@ -120,6 +130,32 @@ export interface ProjectPolicy {
   readonly wildcard: "*";
   readonly dispatchModes: readonly HandoffDispatchMode[];
   readonly replyModes: readonly HandoffReplyMode[];
+}
+
+export interface ProjectGrantProps {
+  readonly id: number;
+  readonly sourceProjectId: string;
+  readonly sourceProjectName: string;
+  readonly fromAppKey: string;
+  readonly targetProjectId: string;
+  readonly targetProjectName: string;
+  readonly toAppKey: string;
+  readonly dispatchMode: "auto" | "approve";
+  readonly replyMode: "auto" | "approve";
+}
+
+export interface ProjectGrantsProps {
+  readonly outbound: readonly ProjectGrantProps[];
+  readonly inbound: readonly ProjectGrantProps[];
+  readonly fromOptions: readonly string[];
+  readonly targetProjects: readonly {
+    readonly id: string;
+    readonly name: string;
+    readonly appKeys: readonly string[];
+  }[];
+  readonly wildcard: "*";
+  readonly dispatchModes: readonly ("auto" | "approve")[];
+  readonly replyModes: readonly ("auto" | "approve")[];
 }
 
 export interface ProjectDeletion {
@@ -174,6 +210,7 @@ export interface ProjectProps {
   readonly handoffs: readonly ProjectHandoff[];
   readonly waitingHandoffs: readonly ProjectWaitingHandoff[];
   readonly policy: ProjectPolicy;
+  readonly grants: ProjectGrantsProps;
   readonly deletion: ProjectDeletion;
   readonly dialogs: ProjectDialogs;
   readonly master: boolean;

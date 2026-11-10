@@ -103,6 +103,23 @@ describe("mcp protocol", () => {
     ).toThrow(/appKey/);
   });
 
+  it('rejects null, "" and non-string to_project as invalid_target_project (m1)', () => {
+    const service = fixture();
+    for (const toProject of [null, "", 42]) {
+      const response = handleRpc(service, {
+        jsonrpc: "2.0",
+        id: 17,
+        method: "tools/call",
+        params: {
+          name: "request_sibling_change",
+          arguments: { from: "a", to: "b", summary: "s", spec: "x", to_project: toProject },
+        },
+      });
+      const error = (response as { error?: { message?: string } }).error;
+      expect(error?.message).toBe("invalid_target_project: to_project must be a project id");
+    }
+  });
+
   it("calls request_sibling_change and handoff_status", () => {
     const service = fixture();
     const request = handleRpc(service, {

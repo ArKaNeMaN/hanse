@@ -129,6 +129,33 @@ test("renders Markdown safely without fallback flash or console errors", async (
   expectNoPageErrors(errors);
 });
 
+test("filters cross-project handoffs and shows the project-qualified route", async ({ page }) => {
+  const errors = collectPageErrors(page);
+  await signIn(page, "/handoffs?filter=cross");
+
+  await expect(page.locator("#hanse-boot")).toHaveCount(1);
+  await expect(page.locator(".segmented__item[aria-current='page']")).toContainText(
+    "Cross-project",
+  );
+  await expect(page.getByRole("heading", { name: "Cross-project handoffs" })).toBeVisible();
+
+  const row = page.locator("tbody tr", { hasText: "E2E cross-project handoff" });
+  await expect(row).toHaveCount(1);
+  await expect(row.locator(".badge", { hasText: "Cross-project" })).toBeVisible();
+  await expect(row.locator("time")).toHaveAttribute("datetime", "2021-01-01T00:00:00.000Z");
+
+  await row.getByRole("button", { name: "Review" }).click();
+  const dialog = page.locator("dialog.handoff-dialog");
+  await expect(dialog).toBeVisible();
+  await expect(dialog.locator(".badge", { hasText: "Cross-project" })).toBeVisible();
+  await expect(dialog.locator(".dialog__meta .mono")).toContainText("E2E Project One");
+  await expect(dialog.locator(".dialog__meta .mono")).toContainText("E2E Project Two");
+  await expect(dialog.locator(".dialog__meta .mono")).toContainText("→");
+
+  await settle(page);
+  expectNoPageErrors(errors);
+});
+
 test("a project link in the empty state navigates client-side", async ({ page }) => {
   const errors = collectPageErrors(page);
   await signIn(page, "/handoffs?filter=waiting");

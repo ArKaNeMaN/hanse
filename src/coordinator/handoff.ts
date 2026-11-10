@@ -164,6 +164,8 @@ const MESSAGE_TRANSITIONS: Record<HandoffMessageState, readonly HandoffMessageSt
 export interface Handoff {
   id: string;
   projectId: string;
+  targetProjectId: string;
+  grantId: number | null;
   fromAppId: string;
   toAppId: string;
   state: HandoffState;
@@ -254,6 +256,8 @@ export function isTerminalHandoffState(state: HandoffState): boolean {
 
 export interface CreateHandoffInput {
   projectId: string;
+  targetProjectId?: string;
+  grantId?: number | null;
   fromAppId: string;
   toAppId: string;
   summary: string;
@@ -312,6 +316,8 @@ export interface HandoffPatch {
 interface HandoffRow {
   id: string;
   project_id: string;
+  target_project_id: string | null;
+  grant_id: number | null;
   from_app_id: string;
   to_app_id: string;
   state: HandoffState;
@@ -361,6 +367,8 @@ function rowToHandoff(row: HandoffRow): Handoff {
   return {
     id: row.id,
     projectId: row.project_id,
+    targetProjectId: row.target_project_id ?? row.project_id,
+    grantId: row.grant_id,
     fromAppId: row.from_app_id,
     toAppId: row.to_app_id,
     state: row.state,
@@ -465,17 +473,19 @@ export function createHandoff(db: SqliteDatabase, input: CreateHandoffInput): Ha
   const replyMode = input.policyReplyMode ?? "auto";
   db.prepare(
     `INSERT INTO handoffs
-       (id, project_id, from_app_id, to_app_id, state, summary, spec, idempotency_key, attempts,
-        expires_at, origin, source_session_id, root_handoff_id, depth, policy_dispatch_mode,
-        policy_reply_mode, created_at, updated_at)
+       (id, project_id, target_project_id, grant_id, from_app_id, to_app_id, state, summary, spec,
+        idempotency_key, attempts, expires_at, origin, source_session_id, root_handoff_id, depth,
+        policy_dispatch_mode, policy_reply_mode, created_at, updated_at)
      VALUES
-       (@id, @project_id, @from_app_id, @to_app_id, @state, @summary, @spec, @idempotency_key, 0,
-        @expires_at, @origin, @source_session_id, @root_handoff_id, 0, @policy_dispatch_mode,
-        @policy_reply_mode, @created_at, @updated_at)
+       (@id, @project_id, @target_project_id, @grant_id, @from_app_id, @to_app_id, @state, @summary,
+        @spec, @idempotency_key, 0, @expires_at, @origin, @source_session_id, @root_handoff_id, 0,
+        @policy_dispatch_mode, @policy_reply_mode, @created_at, @updated_at)
      ON CONFLICT(idempotency_key) DO NOTHING`,
   ).run({
     id,
     project_id: input.projectId,
+    target_project_id: input.targetProjectId ?? input.projectId,
+    grant_id: input.grantId ?? null,
     from_app_id: input.fromAppId,
     to_app_id: input.toAppId,
     state,
@@ -541,8 +551,10 @@ export function listHandoffs(db: SqliteDatabase, projectId?: string): Handoff[] 
     projectId === undefined
       ? (db.prepare("SELECT * FROM handoffs ORDER BY created_at").all() as HandoffRow[])
       : (db
-          .prepare("SELECT * FROM handoffs WHERE project_id = ? ORDER BY created_at")
-          .all(projectId) as HandoffRow[]);
+          .prepare(
+            "SELECT * FROM handoffs WHERE project_id = ? OR target_project_id = ? ORDER BY created_at",
+          )
+          .all(projectId, projectId) as HandoffRow[]);
   return rows.map(rowToHandoff);
 }
 

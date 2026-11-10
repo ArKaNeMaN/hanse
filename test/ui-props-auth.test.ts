@@ -356,7 +356,14 @@ describe("/api/ui auth and props", () => {
     expect(response).toMatchObject({ status: 200 });
     expect(response?.headers?.["cache-control"]).toBe("no-store");
     const payload = JSON.parse(response?.body ?? "{}");
-    expect(payload.counts).toEqual({ all: 0, waiting: 0, active: 0, closed: 0, replies: 0 });
+    expect(payload.counts).toEqual({
+      all: 0,
+      waiting: 0,
+      active: 0,
+      closed: 0,
+      replies: 0,
+      cross: 0,
+    });
     expect(payload.filter).toBe("waiting");
     expect(payload.query).toBe("demo");
     expect(payload.filters).toEqual([
@@ -369,6 +376,7 @@ describe("/api/ui auth and props", () => {
       expect.objectContaining({ value: "active", current: false }),
       expect.objectContaining({ value: "closed", current: false }),
       expect.objectContaining({ value: "replies", current: false }),
+      expect.objectContaining({ value: "cross", current: false }),
     ]);
     expect(payload.search).toMatchObject({
       action: "/handoffs",
@@ -902,6 +910,7 @@ describe("maybeServeSpa", () => {
       active: 0,
       closed: 0,
       replies: 0,
+      cross: 0,
     });
     expect(payload.props.rows).toEqual([]);
     expect(payload.chrome).toMatchObject({ title: "Handoffs", active: "handoffs" });

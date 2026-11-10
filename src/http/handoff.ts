@@ -1,3 +1,9 @@
+import {
+  deleteHandoffGrant,
+  HandoffGrantError,
+  listHandoffGrants,
+  setHandoffGrant,
+} from "../coordinator/grants.js";
 import { getHandoff } from "../coordinator/handoff.js";
 import {
   deleteHandoffPolicy,
@@ -85,6 +91,10 @@ export async function handleHandoffHttp(
   if (policyMatch !== null && (request.method === "POST" || request.method === "GET")) {
     return handlePolicy(deps, request, policyMatch);
   }
+  const grantMatch = /^\/api\/projects\/([^/]+)\/handoff-grants(\/delete)?$/.exec(request.path);
+  if (grantMatch !== null && (request.method === "POST" || request.method === "GET")) {
+    return handleGrants(deps, request, grantMatch);
+  }
   const replyMatch = /^\/api\/handoffs\/([^/]+)\/reply\/(relaunch|deliver|cancel)$/.exec(
     request.path,
   );
@@ -139,6 +149,76 @@ function handlePolicy(deps: HttpDeps, request: HttpRequest, match: RegExpExecArr
       : json(200, { policy });
   } catch (error) {
     if (error instanceof HandoffPolicyError) {
+      return fail(request, returnTo, 400, error.message, error.code);
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    return fail(request, returnTo, 500, message);
+  }
+}
+
+function handleGrants(deps: HttpDeps, request: HttpRequest, match: RegExpExecArray): HttpResponse {
+  const principal = principalFrom(deps, request);
+  if (principal === undefined) {
+    return json(401, { error: "sign in required" });
+  }
+  if (principal.kind !== "human") {
+    return json(403, { error: "only a human principal may manage handoff grants" });
+  }
+  const projectId = safeDecode(match[1] ?? "");
+  const project = deps.getProjects().find((candidate) => candidate.id === projectId);
+  if (project === undefined) {
+    return json(404, { error: "project not found" });
+  }
+  if (project.deleting === true) {
+    return json(409, { error: "project is being deleted" });
+  }
+  const returnTo = safeLocalPath(
+    request.query?.return_to ?? parseForm(request.body).return_to,
+    `/projects/${encodeURIComponent(project.id)}`,
+  );
+  if (request.method === "GET") {
+    return json(200, { grants: listHandoffGrants(deps.db, project.id) });
+  }
+  const fields = parseForm(request.body);
+  const targetProject = (fields.target_project ?? "").trim();
+  if (targetProject.length === 0) {
+    return fail(request, returnTo, 400, "A target project is required.", "invalid_grant");
+  }
+  const from = (fields.from ?? "").trim() || "*";
+  const to = (fields.to ?? "").trim() || "*";
+  try {
+    if (match[2] === "/delete") {
+      const deleted = deleteHandoffGrant(
+        deps.db,
+        project.id,
+        from,
+        targetProject,
+        to,
+        principal.id,
+      );
+      if (!deleted) {
+        return wantsHtml(request)
+          ? redirectWithNotice(returnTo, "Handoff grant not found.", "error")
+          : json(404, { ok: false });
+      }
+      return wantsHtml(request)
+        ? redirectWithNotice(returnTo, "Handoff grant deleted.", "success")
+        : json(200, { ok: true });
+    }
+    const grant = setHandoffGrant(deps.db, {
+      projectId: project.id,
+      fromAppKey: from,
+      targetProjectId: targetProject,
+      toAppKey: to,
+      dispatchMode: fields.dispatch_mode,
+      replyMode: fields.reply_mode,
+      actor: principal.id,
+    });
+    return wantsHtml(request)
+      ? redirectWithNotice(returnTo, "Handoff grant saved.", "success")
+      : json(200, { grant });
+  } catch (error) {
+    if (error instanceof HandoffGrantError) {
       return fail(request, returnTo, 400, error.message, error.code);
     }
     const message = error instanceof Error ? error.message : String(error);

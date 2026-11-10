@@ -10,6 +10,7 @@ import { CoordinatorService } from "../src/coordinator/service.js";
 import {
   appendThreadReply,
   buildThreadIdempotencyKey,
+  createThread,
   DEFAULT_THREAD_LIMITS,
   getHandoffMessage,
   insertHandoffMessage,
@@ -45,6 +46,12 @@ function fixture(): { db: SqliteDatabase; service: CoordinatorService } {
       "INSERT INTO apps (id,project_id,app_key,path,contract,created_at) VALUES (?, 'p', ?, ?, 'AGENTS.md', ?)",
     ).run(`p:${key}`, key, `apps/${key}`, now);
   }
+  db.prepare(
+    "INSERT INTO projects (id,name,base_branch,root_path,created_at,updated_at) VALUES ('q','Q','main','/y',?,?)",
+  ).run(now, now);
+  db.prepare(
+    "INSERT INTO apps (id,project_id,app_key,path,contract,created_at) VALUES ('q:b','q','b','apps/b','AGENTS.md',?)",
+  ).run(now);
   return { db, service: new CoordinatorService(db, "p") };
 }
 
@@ -438,6 +445,112 @@ describe("handoff thread start", () => {
   });
 });
 
+describe("handoff thread cross-project idempotency", () => {
+  const crossBase = {
+    projectId: "p",
+    targetProjectId: "q",
+    fromAppId: "p:a",
+    toAppId: "q:b",
+    summary: "cross summary",
+    spec: "cross spec",
+    policyDispatchMode: "auto" as const,
+    policyReplyMode: "auto" as const,
+  };
+
+  it("keeps a same-project retry existing when targetProjectId is omitted or equal", () => {
+    const { db, service } = fixture();
+    const first = startThread(service, { idempotencyKey: "same-project-omitted" });
+    const retry = startThread(service, { idempotencyKey: "same-project-omitted" });
+    expect(retry.status).toBe("existing");
+    expect(retry.handoffId).toBe(first.handoffId);
+    expect(retry.initialMessage?.id).toBe(first.initialMessage?.id);
+
+    const equalInput = {
+      projectId: "p",
+      targetProjectId: "p",
+      fromAppId: "p:a",
+      toAppId: "p:b",
+      summary: "thread summary",
+      spec: "initial spec",
+      idempotencyKey: "same-project-equal",
+      policyDispatchMode: "auto" as const,
+      policyReplyMode: "auto" as const,
+    };
+    const equal = createThread(db, equalInput);
+    const equalRetry = createThread(db, equalInput);
+    expect(equalRetry.status).toBe("existing");
+    expect(equalRetry.handoff.id).toBe(equal.handoff.id);
+    expect(equalRetry.initialMessage.id).toBe(equal.initialMessage.id);
+    expect(equal.handoff.targetProjectId).toBe("p");
+    db.close();
+  });
+
+  it("uses a v2 key for a cross-project thread and a v1 key for same-project", () => {
+    expect(buildThreadIdempotencyKey("p", "p:a", "p:b", "k")).toBe("v1|p|p:a|p:b|thread|k");
+    expect(buildThreadIdempotencyKey("p", "p:a", "p:b", "k", "p")).toBe("v1|p|p:a|p:b|thread|k");
+    expect(buildThreadIdempotencyKey("p", "p:a", "q:b", "k", "q")).toBe("v2|p|p:a|q|q:b|thread|k");
+
+    const { db } = fixture();
+    const cross = createThread(db, { ...crossBase, idempotencyKey: "v2-key" });
+    expect(getHandoff(db, cross.handoff.id)?.idempotencyKey).toBe("v2|p|p:a|q|q:b|thread|v2-key");
+    expect(cross.handoff.targetProjectId).toBe("q");
+    expect(cross.handoff.grantId).toBeNull();
+
+    const same = createThread(db, {
+      projectId: "p",
+      fromAppId: "p:a",
+      toAppId: "p:b",
+      summary: "thread summary",
+      spec: "initial spec",
+      idempotencyKey: "v1-key",
+      policyDispatchMode: "auto",
+      policyReplyMode: "auto",
+    });
+    expect(getHandoff(db, same.handoff.id)?.idempotencyKey).toBe("v1|p|p:a|p:b|thread|v1-key");
+    expect(same.handoff.targetProjectId).toBe("p");
+    db.close();
+  });
+
+  it("does not resolve a cross-project thread from a legacy raw key", () => {
+    const { db } = fixture();
+    const now = new Date().toISOString();
+    db.prepare(
+      `INSERT INTO handoffs
+         (id, project_id, target_project_id, from_app_id, to_app_id, state, mode, summary, spec,
+          idempotency_key, message_seq, message_count, created_at, updated_at)
+       VALUES ('legacy-cross', 'p', 'q', 'p:a', 'q:b', 'queued', 'thread', 'cross summary',
+               'cross spec', 'cross-legacy', 1, 1, ?, ?)`,
+    ).run(now, now);
+    insertHandoffMessage(db, {
+      handoffId: "legacy-cross",
+      seq: 1,
+      kind: "request",
+      body: "cross spec",
+      authorSide: "source",
+      authorAppId: "p:a",
+      clientMessageId: "legacy-cross-client",
+      bindingNonce: "legacy-cross-nonce",
+      createdAt: now,
+    });
+
+    const created = createThread(db, { ...crossBase, idempotencyKey: "cross-legacy" });
+    expect(created.status).toBe("queued");
+    expect(created.handoff.id).not.toBe("legacy-cross");
+    expect(created.handoff.idempotencyKey).toBe("v2|p|p:a|q|q:b|thread|cross-legacy");
+    db.close();
+  });
+
+  it("rejects the same key with different content across projects", () => {
+    const { db } = fixture();
+    createThread(db, { ...crossBase, idempotencyKey: "cross-conflict", spec: "one" });
+    expectThreadError(
+      () => createThread(db, { ...crossBase, idempotencyKey: "cross-conflict", spec: "two" }),
+      "idempotency_conflict",
+    );
+    db.close();
+  });
+});
+
 describe("handoff thread quotas and attempts", () => {
   function attemptRows(db: SqliteDatabase): Array<{ scope: string; payload: string }> {
     return db
@@ -551,6 +664,37 @@ describe("handoff thread quotas and attempts", () => {
     );
     db1.close();
     db2.close();
+  });
+
+  it("counts a cross-project denial toward the security failure limit", () => {
+    const { db } = fixture();
+    const limits = {
+      ...DEFAULT_THREAD_LIMITS,
+      rateLimitPerApp: 100,
+      securityFailuresPerApp: 1,
+    };
+    const service = new CoordinatorService(db, "p", limits);
+    expect(() =>
+      service.requestSiblingChange({
+        fromAppKey: "a",
+        toAppKey: "b",
+        summary: "denied",
+        spec: "spec",
+        toProjectId: "q",
+      }),
+    ).toThrow(/cross_project_denied/);
+    const denied = db
+      .prepare(
+        "SELECT COUNT(*) AS count FROM events WHERE scope = 'p:a' AND type = 'handoff.cross_project.denied'",
+      )
+      .get() as { count: number };
+    expect(denied.count).toBe(1);
+
+    expectThreadError(
+      () => startThread(service, { idempotencyKey: "after-denial" }),
+      "rate_limited",
+    );
+    expect(countRows(db, "handoffs")).toBe(0);
   });
 
   it("blocks after the failure limit and stays blocked across a new service", () => {

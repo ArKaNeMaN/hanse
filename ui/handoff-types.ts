@@ -8,7 +8,7 @@
 import type { ChromeData } from "./boot.js";
 import type { ProjectHandoff } from "./project-types.js";
 
-export type HandoffFilter = "all" | "waiting" | "active" | "closed" | "replies";
+export type HandoffFilter = "all" | "waiting" | "active" | "closed" | "replies" | "cross";
 
 export interface HandoffCounts {
   readonly all: number;
@@ -16,6 +16,7 @@ export interface HandoffCounts {
   readonly active: number;
   readonly closed: number;
   readonly replies: number;
+  readonly cross: number;
 }
 
 export interface HandoffFilterEntry {
@@ -39,6 +40,11 @@ export interface HandoffRow {
   readonly toAppId: string;
   readonly fromAppKey: string;
   readonly toAppKey: string;
+  readonly crossProject: boolean;
+  readonly fromProjectId: string;
+  readonly toProjectId: string;
+  readonly fromProjectName: string;
+  readonly toProjectName: string;
   readonly summary: string;
   readonly state: ProjectHandoff["state"];
   readonly replyState: ProjectHandoff["replyState"];

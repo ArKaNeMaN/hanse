@@ -78,6 +78,12 @@
   `HandoffCard` thread variant, first-line thread body extraction, the target-session question guard,
   SSE/prompts visibility filtering, and the target-only prompt line. Status: approved (`oracle`
   PASS); plan PASS (`momus`); implemented and verified (journal 0042); commit `<commit-hash>`.
+- [Cross-project handoffs](./cross-project-handoffs.md) - source-owned outbound grants in a separate
+  `handoff_grants` table (default-deny, `auto/auto` default, no deny rows), optional `to_project`
+  admission, `remoteApps` discovery, one-shot/thread coverage with no reverse reply grant, builtin/
+  master exclusion, insert-only snapshot semantics, read-only inbound visibility, public/human
+  projection split, and deletion/audit. Status: design `oracle` PASS WITH FIXES (findings folded);
+  plan `momus` OKAY WITH FIXES (findings folded); implemented and verified (journal 0052).
 - [Chat session tree](./chat-session-tree.md) - group `opencode` subagent sessions under their
   parent in the chat rail with disclosure chevrons, multi-level nesting, active-ancestor expansion,
   orphan/cycle handling, subtree delete cleanup, and a deferred realtime follow-up. Status:

@@ -7,7 +7,9 @@ import {
   createHandoff,
   expireDueHandoffs,
   HandoffTransitionError,
+  listHandoffs,
   transitionHandoff,
+  updateHandoff,
 } from "../src/coordinator/handoff.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
 
@@ -95,5 +97,64 @@ describe("handoff", () => {
     expect(canTransitionThread("in_progress", "delivered")).toBe(false);
     expect(canTransitionThread("in_progress", "failed")).toBe(false);
     expect(canTransitionThread("delivered", "in_progress")).toBe(false);
+  });
+
+  it("listHandoffs includes a row under both source and target projects", () => {
+    const db = fixture();
+    const same = createHandoff(db, { ...base, idempotencyKey: "list-same" });
+    const cross = createHandoff(db, {
+      ...base,
+      idempotencyKey: "list-cross",
+      targetProjectId: "q",
+    });
+    expect(cross.targetProjectId).toBe("q");
+    expect(cross.grantId).toBeNull();
+
+    const source = listHandoffs(db, "p").map((handoff) => handoff.id);
+    expect(source).toContain(same.id);
+    expect(source).toContain(cross.id);
+
+    const target = listHandoffs(db, "q").map((handoff) => handoff.id);
+    expect(target).toEqual([cross.id]);
+    expect(target).not.toContain(same.id);
+    db.close();
+  });
+
+  it("listHandoffs returns every row when projectId is undefined (m9)", () => {
+    const db = fixture();
+    const same = createHandoff(db, { ...base, idempotencyKey: "all-same" });
+    const cross = createHandoff(db, {
+      ...base,
+      idempotencyKey: "all-cross",
+      targetProjectId: "q",
+    });
+    expect(
+      listHandoffs(db)
+        .map((handoff) => handoff.id)
+        .sort(),
+    ).toEqual([same.id, cross.id].sort());
+    db.close();
+  });
+
+  it("updateHandoff does not rewrite target_project_id or grant_id (M2)", () => {
+    const db = fixture();
+    const cross = createHandoff(db, {
+      ...base,
+      idempotencyKey: "snapshot",
+      targetProjectId: "q",
+      grantId: 7,
+    });
+    const updated = updateHandoff(db, cross.id, {
+      operatorNote: "edited",
+      policyDispatchMode: "approve",
+    });
+    expect(updated.operatorNote).toBe("edited");
+    expect(updated.targetProjectId).toBe("q");
+    expect(updated.grantId).toBe(7);
+    const raw = db
+      .prepare("SELECT target_project_id, grant_id FROM handoffs WHERE id = ?")
+      .get(cross.id) as { target_project_id: string | null; grant_id: number | null };
+    expect(raw).toEqual({ target_project_id: "q", grant_id: 7 });
+    db.close();
   });
 });

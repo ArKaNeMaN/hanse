@@ -21,8 +21,15 @@ import type { ProjectHandoff } from "../project-types.js";
 import { replyPill, statusPill } from "../status.js";
 import { useToastStore } from "../stores/toasts.js";
 
-const FILTERS: readonly HandoffFilter[] = ["all", "waiting", "active", "closed", "replies"];
-const EMPTY_COUNTS = { all: 0, waiting: 0, active: 0, closed: 0, replies: 0 } as const;
+const FILTERS: readonly HandoffFilter[] = [
+  "all",
+  "waiting",
+  "active",
+  "closed",
+  "replies",
+  "cross",
+];
+const EMPTY_COUNTS = { all: 0, waiting: 0, active: 0, closed: 0, replies: 0, cross: 0 } as const;
 
 const props = defineProps<{ boot: BootPayload }>();
 const route = useRoute();
@@ -297,6 +304,7 @@ async function openReview(row: HandoffRow): Promise<void> {
                   </td>
                   <td data-label="Route">
                     <RouteText :from="row.fromAppKey" :to="row.toAppKey" />
+                    <span v-if="row.crossProject" class="badge badge-sm">Cross-project</span>
                   </td>
                   <td data-label="State">
                     <div class="cluster">

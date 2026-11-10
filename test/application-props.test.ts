@@ -79,6 +79,8 @@ function makeSite(
         apps: [app],
         handoffs: [],
         handoffPolicies: [],
+        handoffGrants: [],
+        inboundHandoffGrants: [],
       },
     ],
     apps: new Map([

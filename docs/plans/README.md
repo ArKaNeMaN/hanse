@@ -88,3 +88,4 @@
   guard, an active-terminal veto, migration v27, and a **Rebuild only** chat action. Status: design
   approved (`oracle` round 6 PASS WITH FIXES); plan `momus` OKAY; implemented and verified
   (journal 0051).
+- [0044 - Cross-project handoffs](./0044-cross-project-handoffs.md) - source-owned outbound grants in a separate `handoff_grants` table (default-deny, `auto/auto` default), optional `to_project` admission, `remoteApps` discovery, one-shot/thread coverage with no reverse reply grant, builtin/master exclusion, insert-only snapshot semantics, read-only inbound visibility, public/human projection split, deletion/audit, migration v28, and the grant card / cross-filter UI. Status: design `oracle` PASS WITH FIXES (findings folded); plan `momus` OKAY WITH FIXES (findings folded); implemented and verified (journal 0052).

@@ -19,6 +19,7 @@ import {
   DeletionService,
 } from "../src/coordinator/deletion.js";
 import { DeploymentInProgressError, DeploymentLock } from "../src/coordinator/deployment-lock.js";
+import { setHandoffGrant } from "../src/coordinator/grants.js";
 import { LifecycleActivity } from "../src/coordinator/lifecycle-activity.js";
 import type { RunnerImageRecord } from "../src/images/client.js";
 import { ImageServiceError } from "../src/images/service.js";
@@ -507,6 +508,48 @@ describe("DeletionService application deletion", () => {
     expect(f.manager.stops).toEqual([webId]);
     expect(f.images.purged).toEqual([webId]);
     expect(f.images.ended).toContain(webId);
+  });
+
+  it("deleting an app removes exact grants on both sides and leaves wildcard grants", async () => {
+    const f = fixture();
+    const other = addOtherProject(f);
+    const fromExact = setHandoffGrant(f.db, {
+      projectId: f.projectId,
+      fromAppKey: "web",
+      targetProjectId: other.id,
+      toAppKey: other.key,
+    });
+    const toExact = setHandoffGrant(f.db, {
+      projectId: other.id,
+      fromAppKey: other.key,
+      targetProjectId: f.projectId,
+      toAppKey: "web",
+    });
+    const sourceWildcard = setHandoffGrant(f.db, {
+      projectId: f.projectId,
+      targetProjectId: other.id,
+    });
+    const targetWildcard = setHandoffGrant(f.db, {
+      projectId: other.id,
+      targetProjectId: f.projectId,
+    });
+    const otherApp = setHandoffGrant(f.db, {
+      projectId: f.projectId,
+      fromAppKey: "api",
+      targetProjectId: other.id,
+      toAppKey: other.key,
+    });
+
+    await f.service.deleteApp(f.projectId, "web", { confirm: "web" });
+
+    const ids = (
+      f.db.prepare("SELECT id FROM handoff_grants ORDER BY id").all() as Array<{ id: number }>
+    ).map((row) => row.id);
+    expect(ids).toContain(sourceWildcard.id);
+    expect(ids).toContain(targetWildcard.id);
+    expect(ids).toContain(otherApp.id);
+    expect(ids).not.toContain(fromExact.id);
+    expect(ids).not.toContain(toExact.id);
   });
 
   it("removes only the app-scoped skill rows and starts a re-added key clean", async () => {

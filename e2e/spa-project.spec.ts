@@ -3,6 +3,7 @@ import {
   collectPageErrors,
   expectNoPageErrors,
   PROJECT_ONE,
+  PROJECT_TWO,
   settle,
   signIn,
 } from "./support/helpers.js";
@@ -144,6 +145,39 @@ test("renders the project dialogs, manifest, and application links", async ({ pa
   await expect(page.getByText(".hanse/project.yaml")).toBeVisible();
   await expect(page.getByRole("link", { name: "alpha", exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: "beta", exact: true })).toBeVisible();
+
+  await settle(page);
+  expectNoPageErrors(errors);
+});
+
+test("shows outbound grants on the source and read-only inbound grants on the target", async ({
+  page,
+}) => {
+  const errors = collectPageErrors(page);
+  await signIn(page, `/projects/${PROJECT_ONE}`);
+
+  await expect(page.getByRole("heading", { name: "Cross-project grants" })).toBeVisible();
+  const grants = page.locator('section[aria-labelledby="handoff-grants-title"]');
+  const outbound = grants.locator("table").first();
+  const outboundRow = outbound.locator("tbody tr", { hasText: "gamma" });
+  await expect(outboundRow).toHaveCount(1);
+  await expect(outboundRow).toContainText("alpha");
+  await expect(outboundRow).toContainText("E2E Project Two");
+  await expect(outboundRow).toContainText("auto");
+
+  const handoffs = page.locator('section[aria-labelledby="project-handoffs-title"]');
+  const crossRow = handoffs.locator("tbody tr", { hasText: "E2E cross-project handoff" });
+  await expect(crossRow).toHaveCount(1);
+  await expect(crossRow.locator("time")).toHaveAttribute("datetime", "2021-01-01T00:00:00.000Z");
+
+  await page.goto(`/projects/${PROJECT_TWO}`);
+  await expect(page.getByRole("heading", { name: "Cross-project grants" })).toBeVisible();
+  const targetGrants = page.locator('section[aria-labelledby="handoff-grants-title"]');
+  await expect(targetGrants).toContainText("Read-only.");
+  const inboundRow = targetGrants.locator("table tbody tr", { hasText: "gamma" });
+  await expect(inboundRow).toHaveCount(1);
+  await expect(inboundRow).toContainText("E2E Project One");
+  await expect(inboundRow).toContainText("alpha");
 
   await settle(page);
   expectNoPageErrors(errors);

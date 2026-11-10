@@ -674,16 +674,19 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   order; migrations v10 (applied settings/profile state), v11 (deletion markers), v12 (skills),
   v13 (skill bundles), v14 (session-bound handoffs, reply routing, and handoff policy), and v15
   (chat drafts, session state, and pending sends) and v16 (file-only attachments and deliveries)
-  follow. The current schema versions are `[1..27]` (v17 adds handoff message-id lookup indexes;
+  follow. The current schema versions are `[1..28]` (v17 adds handoff message-id lookup indexes;
   v18 adds agent image validity; v19 adds the global custom model provider registry; v20 adds the
   process-rule hash, runtime epoch/exit fields, and the session resume/notice tables; v21 adds
   `agent_media` for agent-published chat images; v22 adds the handoff-thread header fields, ordered
   `handoff_messages` columns, triggers, and indexes; v23 adds the `instances.process_*` current
   fields and the durable `agent_run_events` history; v24 adds arbitrary `skill_files`, external
   skill-source tables, fork provenance, and `instances.applied_skills_hash`; v25 adds the durable
-  `deploy_state` drain row and `restart_claims`; v26 adds the durable Telegram notification outbox;
-  v27 adds `apps.last_agent_activity_at` and `instances.applied_launch_hash` with the handoff
-  activity backfill and the `handoffs(from_app_id, state)` index).
+  `deploy_state` drain row and `restart_claims`; v26 adds the durable Telegram notification outbox,
+  watermarks, and channel state; v27 adds `apps.last_agent_activity_at` and
+  `instances.applied_launch_hash` with the handoff activity backfill and the
+  `handoffs(from_app_id, state)` index; v28 adds the `handoff_grants` table, the
+  `handoffs.target_project_id` and `handoffs.grant_id` snapshot columns, and the target-project
+  indexes).
 - Live on `deployment-host` (`sha-e2d89a2`): a temporary SSH target pinned and authenticated, an approval was
   approved, `echo QA_OK` and a 65 s `sleep` succeeded, upload/download round-tripped, a real
   `opencode` turn called `hanse_ssh_exec` and received the result after 65 s, and audit rows survived
@@ -1430,11 +1433,13 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   connection. If context monitors are disabled, source-session binding is unavailable and agent-created
   handoffs stay unbound (and are failed by the binding deadline).
 - Operator UI: `/handoffs` (Vue SPA) has
-  `All`/`Waiting`/`Active`/`Closed`/`Replies` filters, inline approvals, and a detail dialog with
-  source/target session links, policy, outcome, reply state, and the relaunch/retry/cancel actions.
-  The review/detail dialog is wide and renders the spec, result, and operator note as safe Markdown
-  through the shared browser renderer; the Vue dialog uses the `SafeMarkdown` component instead of
-  `v-html`. Project pages have a **Handoff policy** card.
+  `All`/`Waiting`/`Active`/`Closed`/`Replies`/`Cross-project` filters, inline approvals, and a
+  detail dialog with source/target session links, policy, outcome, reply state, and the
+  relaunch/retry/cancel actions. Cross-project rows carry a badge and, in the detail dialog, the
+  project-qualified `From project -> To project` route. The review/detail dialog is wide and renders
+  the spec, result, and operator note as safe Markdown through the shared browser renderer; the Vue
+  dialog uses the `SafeMarkdown` component instead of `v-html`. Project pages have a **Handoff
+  policy** card and a **Cross-project grants** card (outbound grants plus a read-only inbound list).
 - Human-only API: `POST /api/handoffs/:id/decision` (optional `approval_kind=dispatch|reply`),
   `POST /api/handoffs/:id/reply/relaunch|deliver|cancel`, `POST /api/handoffs/:id/cancel`,
   `POST /api/projects/:id/handoff-policy`, `POST /api/projects/:id/handoff-policy/delete`, and
@@ -1448,12 +1453,51 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   cookie; invalid tokens do not trigger the gate. The handler-level check remains defense in depth.
 - Not implemented: thread close/`close_handoff`, per-message retry/resend, relaunch/retarget/
   failThread, the shared-session operator path, target-initiated messages, thread-management UI/routes,
-  operator-created threads, cross-project or same-app threads, worktree isolation between concurrent
+  operator-created threads, same-app threads, worktree isolation between concurrent
   target sessions, session reuse, target-initiated attachments, failure/rejection notifications back
   into the source session (the operator sees failed/rejected handoffs), and hard cancellation (there
   is no abort wrapper for an opencode turn; cancel is soft). Thread chat projection and the thread card
   are implemented; target question events are auto-rejected instead of routed. The one-shot
   envelope/security redesign remains deferred; its pre-existing note/redaction risks remain residual.
+
+## Cross-project handoffs
+
+- A cross-project handoff needs an explicit, source-owned **outbound grant** in `handoff_grants`:
+  "app X of project A may hand off to app Y in project B". The source project owns and manages the
+  grant; the target project does not consent in this stage. No grant is deny (default-deny); there
+  are no deny/exception rows, so narrowing a wildcard means deleting it and adding exact grants.
+- `request_sibling_change` accepts an optional `to_project`. Omitted (`undefined`) selects the
+  same-project branch, which is unchanged. A non-empty project id routes to the target project only;
+  `""`, `null`, and non-strings are `invalid_target_project`. The grant is resolved before the target
+  app, so an ungranted caller cannot use app-existence errors as an oracle.
+- `list_apps` returns the local `apps` unchanged plus `remoteApps`: only the caller's reachable
+  granted targets (`projectId`, `projectName`, `appKey`, `appId`, `grantId`, `dispatchMode`,
+  `replyMode`). An unbound MCP server returns `remoteApps: []`.
+- A grant carries `dispatch_mode`/`reply_mode` (`auto` | `approve`). New grants default to
+  **`auto/auto`**; the operator can tighten a pair to `approve` on either side. The agent's
+  `requires_approval` may raise `auto` to `approve`, never lower it. One grant covers one-shot and
+  threaded handoffs, and replies never require a reverse grant.
+- **Read-only inbound visibility.** The target project page shows which source project/app may reach
+  which target app, with no accept/revoke control. This is visibility, not consent.
+- **Builtin/master exclusion.** A grant cannot involve the master project on either side; creating a
+  grant to/from a deleting project or app is rejected, and admission fails closed.
+- **Snapshot semantics.** Admission writes `target_project_id`, `grant_id`,
+  `policy_dispatch_mode`, and `policy_reply_mode` onto the handoff. They are insert-only, so editing
+  or revoking a grant affects only new handoffs; an in-flight handoff/thread keeps its snapshot and
+  is stopped through the existing human cancel route.
+- **Public redaction.** Public `GET /api/projects` filters each project's handoffs to same-project
+  rows before `publicHandoffProjection`, so a foreign app key/project id cannot leak and a cross row
+  cannot appear twice. Human `GET /api/handoffs` uses the deduped `allHandoffs` and a human-only
+  projection that adds `crossProject` and both project ids/names but still excludes bodies, errors,
+  sessions, and results. `buildSite` counts a cross row once.
+- **Deletion/audit.** Project deletion cascades grants from either side; app deletion removes
+  exact-app grants on both sides (wildcards remain). Grant lifecycle and cross-project admission
+  write content-free events (`handoff.grant.created|updated|deleted`,
+  `handoff.cross_project.created|denied`) with ids/keys/modes only. Repeated denials are deduped per
+  app per rate window and count toward the existing failure limiter.
+- Human-only grant CRUD lives at `/api/projects/:id/handoff-grants` and
+  `/api/projects/:id/handoff-grants/delete`; there is no agent/MCP grant tool. Migration v28 is
+  additive/backward-compatible and backfills existing handoffs with `target_project_id = project_id`.
 
 ## Telegram notifications
 

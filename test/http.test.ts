@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DeploymentLock } from "../src/coordinator/deployment-lock.js";
+import { setHandoffGrant } from "../src/coordinator/grants.js";
 import { getHandoff, type HandoffState } from "../src/coordinator/handoff.js";
 import { LifecycleActivity } from "../src/coordinator/lifecycle-activity.js";
 import { CoordinatorService } from "../src/coordinator/service.js";
@@ -83,21 +84,48 @@ function deps(f: Fixture): HttpDeps {
     workspaceRoot: f.workspace,
     git: new GitService({ workspaceRoot: f.workspace }),
     getProjects: () => {
-      const row = f.db
-        .prepare("SELECT name, root_path, deleting FROM projects WHERE id = 'p'")
-        .get() as { name: string; root_path: string; deleting: number } | undefined;
-      return [
-        {
-          id: "p",
-          name: row?.name ?? "P",
-          rootPath: row?.root_path ?? f.projectRoot,
-          workspaceRoot: f.workspace,
-          deleting: row?.deleting === 1,
-          service: f.service,
-        },
-      ];
+      const rows = f.db
+        .prepare("SELECT id, name, root_path, deleting FROM projects ORDER BY id")
+        .all() as Array<{ id: string; name: string; root_path: string; deleting: number }>;
+      return rows.map((row) => ({
+        id: row.id,
+        name: row.name,
+        rootPath: row.root_path,
+        workspaceRoot: f.workspace,
+        deleting: row.deleting === 1,
+        service: row.id === "p" ? f.service : new CoordinatorService(f.db, row.id),
+      }));
     },
   };
+}
+
+function crossFixture(): Fixture & { crossHandoffId: string } {
+  const f = fixture();
+  const now = new Date().toISOString();
+  f.db
+    .prepare(
+      "INSERT INTO projects (id,name,base_branch,root_path,created_at,updated_at) VALUES ('p2','P2','main',?,?,?)",
+    )
+    .run(f.projectRoot, now, now);
+  f.db
+    .prepare(
+      "INSERT INTO apps (id,project_id,app_key,path,contract,created_at) VALUES ('p2:x','p2','x','apps/x','AGENTS.md',?)",
+    )
+    .run(now);
+  setHandoffGrant(f.db, {
+    projectId: "p",
+    targetProjectId: "p2",
+    fromAppKey: "a",
+    toAppKey: "x",
+  });
+  const { handoffId } = f.service.requestSiblingChange({
+    fromAppKey: "a",
+    toAppKey: "x",
+    toProjectId: "p2",
+    summary: "cross project",
+    spec: "cross project spec",
+  });
+  return { ...f, crossHandoffId: handoffId };
 }
 
 function humanToken(db: SqliteDatabase): string {
@@ -488,10 +516,98 @@ describe("http API and assets", () => {
     expect(human.status).toBe(200);
     const handoffs = (JSON.parse(human.body) as { handoffs: Record<string, unknown>[] }).handoffs;
     expect(handoffs).toHaveLength(1);
-    expect(Object.keys(handoffs[0] ?? {}).sort()).toEqual(expected);
+    const humanExpected = [
+      ...expected,
+      "crossProject",
+      "fromProjectId",
+      "toProjectId",
+      "fromProjectName",
+      "toProjectName",
+    ].sort();
+    expect(Object.keys(handoffs[0] ?? {}).sort()).toEqual(humanExpected);
     for (const key of forbidden) {
       expect(handoffs[0]).not.toHaveProperty(key);
     }
+  });
+
+  it("drops cross-project handoffs from the public project projection and keeps the same-project allowlist", () => {
+    const f = crossFixture();
+    const response = handleRequest(deps(f), {
+      method: "GET",
+      path: "/api/projects",
+      headers: {},
+    });
+    expect(response.status).toBe(200);
+    const projects = (
+      JSON.parse(response.body) as {
+        projects: { id: string; handoffs: Record<string, unknown>[] }[];
+      }
+    ).projects;
+    const source = projects.find((project) => project.id === "p");
+    const target = projects.find((project) => project.id === "p2");
+    expect(source?.handoffs).toHaveLength(1);
+    expect(source?.handoffs.map((handoff) => handoff.id)).not.toContain(f.crossHandoffId);
+    expect(target?.handoffs).toEqual([]);
+    const expected = [
+      "createdAt",
+      "fromAppKey",
+      "id",
+      "lastMessageAt",
+      "messageCount",
+      "mode",
+      "state",
+      "summary",
+      "threadIdleExpiresAt",
+      "toAppKey",
+      "updatedAt",
+    ].sort();
+    expect(Object.keys(source?.handoffs[0] ?? {}).sort()).toEqual(expected);
+    expect(source?.handoffs[0]).not.toHaveProperty("fromProjectId");
+    expect(source?.handoffs[0]).not.toHaveProperty("toProjectId");
+    expect(source).not.toHaveProperty("handoffGrants");
+    expect(source).not.toHaveProperty("inboundHandoffGrants");
+    expect(target).not.toHaveProperty("handoffGrants");
+    expect(target).not.toHaveProperty("inboundHandoffGrants");
+  });
+
+  it("lists a cross-project handoff once on the human route with both project ids and names", () => {
+    const f = crossFixture();
+    const response = handleRequest(deps(f), {
+      method: "GET",
+      path: "/api/handoffs",
+      headers: auth(humanToken(f.db)),
+    });
+    expect(response.status).toBe(200);
+    const handoffs = (JSON.parse(response.body) as { handoffs: Record<string, unknown>[] })
+      .handoffs;
+    const cross = handoffs.filter((handoff) => handoff.id === f.crossHandoffId);
+    expect(cross).toHaveLength(1);
+    expect(cross[0]).toMatchObject({
+      crossProject: true,
+      fromProjectId: "p",
+      toProjectId: "p2",
+      fromProjectName: "P",
+      toProjectName: "P2",
+    });
+    const same = handoffs.find((handoff) => handoff.id === f.handoffId);
+    expect(same).toMatchObject({
+      crossProject: false,
+      fromProjectId: "p",
+      toProjectId: "p",
+      fromProjectName: "P",
+      toProjectName: "P",
+    });
+    for (const forbidden of [
+      "spec",
+      "result",
+      "operatorNote",
+      "error",
+      "sourceSessionId",
+      "targetSessionId",
+    ]) {
+      expect(cross[0]).not.toHaveProperty(forbidden);
+    }
+    expect(new Set(handoffs.map((handoff) => handoff.id)).size).toBe(handoffs.length);
   });
 
   it("rejects an unauthenticated mutation with 401", () => {
@@ -606,7 +722,7 @@ describe("http API and assets", () => {
         status: "ok",
         version: expect.any(String),
         revision: "unknown",
-        schemaVersion: 27,
+        schemaVersion: 28,
         deploying: false,
         inFlightLifecycle: 0,
         draining: false,

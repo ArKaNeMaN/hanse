@@ -1145,4 +1145,33 @@ SET last_agent_activity_at = MAX(
 ALTER TABLE instances ADD COLUMN applied_launch_hash TEXT;
 `,
   },
+  {
+    version: 28,
+    name: "cross-project-handoff-grants",
+    backwardCompatible: true,
+    sql: `
+-- v28: explicit cross-project handoff grants
+CREATE TABLE handoff_grants (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  from_app_key TEXT NOT NULL DEFAULT '*',
+  target_project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  to_app_key TEXT NOT NULL DEFAULT '*',
+  dispatch_mode TEXT NOT NULL CHECK (dispatch_mode IN ('auto','approve')),
+  reply_mode TEXT NOT NULL CHECK (reply_mode IN ('auto','approve')),
+  created_at TEXT NOT NULL,
+  created_by TEXT,
+  updated_at TEXT NOT NULL,
+  updated_by TEXT,
+  UNIQUE (project_id, from_app_key, target_project_id, to_app_key),
+  CHECK (project_id <> target_project_id)
+);
+CREATE INDEX handoff_grants_target ON handoff_grants(target_project_id, to_app_key);
+
+ALTER TABLE handoffs ADD COLUMN target_project_id TEXT;
+ALTER TABLE handoffs ADD COLUMN grant_id INTEGER;
+UPDATE handoffs SET target_project_id = project_id WHERE target_project_id IS NULL;
+CREATE INDEX handoffs_target_project ON handoffs(target_project_id, state);
+`,
+  },
 ];

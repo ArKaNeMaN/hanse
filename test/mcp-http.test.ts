@@ -3,6 +3,7 @@ import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { setHandoffGrant } from "../src/coordinator/grants.js";
 import { CoordinatorService } from "../src/coordinator/service.js";
 import { GitService } from "../src/git/service.js";
 import { type HttpDeps, type HttpRequest, handleRequest } from "../src/http/handler.js";
@@ -256,6 +257,93 @@ describe("internal MCP over HTTP", () => {
     const row = f.db
       .prepare("SELECT from_app_id AS fromAppId FROM handoffs WHERE summary = 's'")
       .get() as { fromAppId: string } | undefined;
+    expect(row?.fromAppId).toBe("p:a");
+  });
+
+  it("passes to_project through and maps a grant error without leaking the target app list", async () => {
+    const f = fixture();
+    const token = mintAgentToken(f.db, "p:a");
+    const payload = {
+      jsonrpc: "2.0",
+      id: 21,
+      method: "tools/call",
+      params: {
+        name: "request_sibling_change",
+        arguments: { from: "a", to: "c", summary: "cross", spec: "x", to_project: "q" },
+      },
+    };
+
+    const denied = await handleInternalMcp(deps(f), rpc(token, payload));
+    expect(denied.status).toBe(200);
+    const deniedMessage = (JSON.parse(denied.body) as { error: { message: string } }).error.message;
+    expect(deniedMessage).toBe("cross_project_denied: no outbound grant from p to q");
+    expect(deniedMessage).not.toContain("q:c");
+    expect(deniedMessage).not.toContain("apps/");
+
+    setHandoffGrant(f.db, {
+      projectId: "p",
+      fromAppKey: "a",
+      targetProjectId: "q",
+      toAppKey: "c",
+    });
+    const response = await handleInternalMcp(deps(f), rpc(token, payload));
+    expect(response.status).toBe(200);
+    const { handoffId } = toolResult(response) as { handoffId: string };
+    const row = f.db
+      .prepare(
+        "SELECT target_project_id AS targetProjectId, to_app_id AS toAppId FROM handoffs WHERE id = ?",
+      )
+      .get(handoffId) as { targetProjectId: string; toAppId: string } | undefined;
+    expect(row).toEqual({ targetProjectId: "q", toAppId: "q:c" });
+  });
+
+  it("returns the HandoffGrantError message unchanged with a single code prefix (m2)", async () => {
+    const f = fixture();
+    const token = mintAgentToken(f.db, "p:a");
+    const response = await handleInternalMcp(
+      deps(f),
+      rpc(token, {
+        jsonrpc: "2.0",
+        id: 22,
+        method: "tools/call",
+        params: {
+          name: "request_sibling_change",
+          arguments: { from: "a", to: "c", summary: "cross", spec: "x", to_project: "q" },
+        },
+      }),
+    );
+    const message = (JSON.parse(response.body) as { error: { message: string } }).error.message;
+    expect(message).toBe("cross_project_denied: no outbound grant from p to q");
+    expect(message).not.toMatch(/cross_project_denied: cross_project_denied/);
+  });
+
+  it("binds the cross-project source to the token app, ignoring a client-supplied from", async () => {
+    const f = fixture();
+    const token = mintAgentToken(f.db, "p:a");
+    setHandoffGrant(f.db, {
+      projectId: "p",
+      fromAppKey: "a",
+      targetProjectId: "q",
+      toAppKey: "c",
+    });
+
+    const response = await handleInternalMcp(
+      deps(f),
+      rpc(token, {
+        jsonrpc: "2.0",
+        id: 23,
+        method: "tools/call",
+        params: {
+          name: "request_sibling_change",
+          arguments: { from: "b", to: "c", summary: "bound", spec: "x", to_project: "q" },
+        },
+      }),
+    );
+    expect(response.status).toBe(200);
+    const { handoffId } = toolResult(response) as { handoffId: string };
+    const row = f.db
+      .prepare("SELECT from_app_id AS fromAppId FROM handoffs WHERE id = ?")
+      .get(handoffId) as { fromAppId: string } | undefined;
     expect(row?.fromAppId).toBe("p:a");
   });
 

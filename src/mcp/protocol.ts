@@ -1,3 +1,4 @@
+import { HandoffGrantError } from "../coordinator/grants.js";
 import { type HandoffMode, normalizeOutcome } from "../coordinator/handoff.js";
 import type { CoordinatorService } from "../coordinator/service.js";
 import { PACKAGE_NAME, VERSION } from "../version.js";
@@ -22,7 +23,7 @@ export const TOOLS = [
   {
     name: "request_sibling_change",
     description:
-      'Ask a sibling application to do work. Returns a handoff id immediately. The coordinator binds the request to this session, applies the project handoff policy, starts a fresh session on the target, and later delivers the target\'s reply back into this session as a new message. After this tool returns, end your turn: do NOT call handoff_status to wait, do NOT sleep or retry, and do NOT poll - the reply arrives on its own, and polling does not speed it up. Call list_apps first and pass application keys (the "appKey" field, for example "hanse-deploy") in "from" and "to" - never full application ids such as "<projectId>:<appKey>". "to" must be another application in the same project.',
+      'Ask a sibling application to do work. Returns a handoff id immediately. The coordinator binds the request to this session, applies the project handoff policy, starts a fresh session on the target, and later delivers the target\'s reply back into this session as a new message. After this tool returns, end your turn: do NOT call handoff_status to wait, do NOT sleep or retry, and do NOT poll - the reply arrives on its own, and polling does not speed it up. Call list_apps first and pass application keys (the "appKey" field, for example "hanse-deploy") in "from" and "to" - never full application ids such as "<projectId>:<appKey>". "to" must be another application in the same project. To hand off to another project, pass its project id in "to_project" (from list_apps remoteApps[].projectId); a cross-project target is available only when the operator granted it.',
     inputSchema: {
       type: "object",
       properties: {
@@ -34,7 +35,12 @@ export const TOOLS = [
         to: {
           type: "string",
           description:
-            'Application key of the target application in the same project (the "appKey" from list_apps, for example "hanse-deploy"). Never pass a full application id such as "<projectId>:<appKey>".',
+            'Application key of the target application in the same project (the "appKey" from list_apps, for example "hanse-deploy"). Never pass a full application id such as "<projectId>:<appKey>". For another project, pass its project id in "to_project" and use the target app key from list_apps remoteApps.',
+        },
+        to_project: {
+          type: "string",
+          description:
+            "Project id of the target application when handing off to another project. Omit for the same project. Get it from list_apps remoteApps[].projectId. Passing your own project id is treated as same-project. Never pass a project name.",
         },
         summary: { type: "string", description: "Short human-readable title for the request." },
         spec: {
@@ -90,7 +96,8 @@ export const TOOLS = [
   },
   {
     name: "list_apps",
-    description: "List the applications in the project.",
+    description:
+      "List the applications in the project and, when this server is bound to an application, the remote applications it may reach through cross-project grants (remoteApps).",
     inputSchema: { type: "object", properties: {} },
   },
   {
@@ -144,6 +151,21 @@ function asMode(value: unknown): HandoffMode | undefined {
   throw new Error('"mode" must be "one_shot" or "thread"');
 }
 
+function asTargetProject(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || value.length === 0) {
+    throw new HandoffGrantError("invalid_target_project", "to_project must be a project id");
+  }
+  return value;
+}
+
+function errorMessage(error: unknown): string {
+  if (error instanceof HandoffGrantError) {
+    return error.message;
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
 function callTool(
   service: CoordinatorService,
   params: Record<string, unknown>,
@@ -158,11 +180,13 @@ function callTool(
       if (from === undefined) {
         throw new Error('"from" is required when the server is not bound to an application');
       }
+      const toProjectId = asTargetProject(args.to_project);
       result = service.requestSiblingChange({
         fromAppKey: from,
         toAppKey: asString(args.to, "to"),
         summary: asString(args.summary, "summary"),
         spec: asString(args.spec, "spec"),
+        ...(toProjectId === undefined ? {} : { toProjectId }),
         requiresApproval: args.requires_approval === true,
         idempotencyKey: typeof args.idempotency_key === "string" ? args.idempotency_key : undefined,
         mode: asMode(args.mode),
@@ -181,7 +205,10 @@ function callTool(
       );
       break;
     case "list_apps":
-      result = { apps: service.listApps() };
+      result = {
+        apps: service.listApps(),
+        remoteApps: boundFrom === undefined ? [] : service.listReachableRemoteTargets(boundFrom),
+      };
       break;
     case "handoff_status":
       result = { handoff: service.handoffStatus(asString(args.id, "id"), boundFrom) ?? null };
@@ -248,7 +275,7 @@ export function handleRpc(
     return {
       jsonrpc: "2.0",
       id,
-      error: { code: -32000, message: error instanceof Error ? error.message : String(error) },
+      error: { code: -32000, message: errorMessage(error) },
     };
   }
 }

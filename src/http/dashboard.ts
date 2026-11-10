@@ -1,3 +1,8 @@
+import {
+  type HandoffGrant,
+  listHandoffGrants,
+  listInboundHandoffGrants,
+} from "../coordinator/grants.js";
 import { type Handoff, listHandoffs } from "../coordinator/handoff.js";
 import { type HandoffPolicy, listHandoffPolicies } from "../coordinator/policy.js";
 import type { CoordinatorService } from "../coordinator/service.js";
@@ -21,6 +26,8 @@ export interface ProjectView {
   apps: RegisteredApp[];
   handoffs: Handoff[];
   handoffPolicies: HandoffPolicy[];
+  handoffGrants: HandoffGrant[];
+  inboundHandoffGrants: HandoffGrant[];
 }
 
 export interface AppRef {
@@ -139,6 +146,8 @@ export function buildSite(deps: DashboardDeps): SiteModel {
       apps: projectApps,
       handoffs: listHandoffs(deps.db, project.id),
       handoffPolicies: listHandoffPolicies(deps.db, project.id),
+      handoffGrants: listHandoffGrants(deps.db, project.id),
+      inboundHandoffGrants: listInboundHandoffGrants(deps.db, project.id),
     };
   });
 
@@ -179,13 +188,18 @@ export function buildSite(deps: DashboardDeps): SiteModel {
   let stoppedCount = 0;
   let appCount = 0;
   let handoffCount = 0;
+  const seenHandoffIds = new Set<string>();
   for (const project of projects) {
     if (project.builtin === true) {
       continue;
     }
-    handoffCount += project.handoffs.length;
     appCount += project.apps.length;
     for (const handoff of project.handoffs) {
+      if (seenHandoffIds.has(handoff.id)) {
+        continue;
+      }
+      seenHandoffIds.add(handoff.id);
+      handoffCount += 1;
       if (handoff.state === "awaiting_approval" || handoff.replyState === "awaiting_approval") {
         pendingCount += 1;
       }

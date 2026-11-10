@@ -8,6 +8,7 @@ import {
   DeletionService,
 } from "../src/coordinator/deletion.js";
 import { DeploymentLock } from "../src/coordinator/deployment-lock.js";
+import { setHandoffGrant } from "../src/coordinator/grants.js";
 import { CoordinatorService } from "../src/coordinator/service.js";
 import { GitService } from "../src/git/service.js";
 import { handleDeletion, isDeletionRoute } from "../src/http/deletion.js";
@@ -338,6 +339,57 @@ describe("deletion HTTP handler", () => {
     });
     expect(errorResponse?.status).toBe(303);
     expect(errorResponse?.headers?.location).toContain("tone=error");
+  });
+
+  it("deleting an app through the HTTP route removes its exact grants", async () => {
+    const f = fixture();
+    const otherId = "33333333-3333-4333-8333-333333333333";
+    const now = new Date().toISOString();
+    f.db
+      .prepare(
+        "INSERT INTO projects (id,name,base_branch,root_path,created_at,updated_at) VALUES (?,?,?,?,?,?)",
+      )
+      .run(otherId, "Other", "main", path.join(f.workspace, "other"), now, now);
+    f.db
+      .prepare(
+        "INSERT INTO apps (id,project_id,app_key,path,contract,created_at) VALUES (?,?,?,?,?,?)",
+      )
+      .run(`${otherId}:svc`, otherId, "svc", "apps/svc", "AGENTS.md", now);
+    const fromExact = setHandoffGrant(f.db, {
+      projectId: PROJECT_ID,
+      fromAppKey: APP_KEY,
+      targetProjectId: otherId,
+      toAppKey: "svc",
+    });
+    const toExact = setHandoffGrant(f.db, {
+      projectId: otherId,
+      fromAppKey: "svc",
+      targetProjectId: PROJECT_ID,
+      toAppKey: APP_KEY,
+    });
+    const wildcard = setHandoffGrant(f.db, {
+      projectId: PROJECT_ID,
+      targetProjectId: otherId,
+    });
+    const token = humanToken(f.db);
+
+    const response = await handleDeletion(deps(f), {
+      method: "POST",
+      path: `/api/projects/${PROJECT_ID}/apps/${APP_KEY}/delete`,
+      headers: auth(token, {
+        accept: "text/html",
+        "content-type": "application/x-www-form-urlencoded",
+      }),
+      body: form({ confirm: APP_KEY }),
+    });
+
+    expect(response?.status).toBe(303);
+    const ids = (
+      f.db.prepare("SELECT id FROM handoff_grants ORDER BY id").all() as Array<{ id: number }>
+    ).map((row) => row.id);
+    expect(ids).toContain(wildcard.id);
+    expect(ids).not.toContain(fromExact.id);
+    expect(ids).not.toContain(toExact.id);
   });
 
   it("reports image purge warnings in the browser notice with the error tone", async () => {

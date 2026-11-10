@@ -22,6 +22,7 @@ import { projectSchema } from "../schema/index.js";
 import type { SqliteDatabase } from "../store/index.js";
 import type { DeploymentLock } from "./deployment-lock.js";
 import { DeploymentInProgressError } from "./deployment-lock.js";
+import { deleteAppHandoffGrants } from "./grants.js";
 import type { LifecycleActivity } from "./lifecycle-activity.js";
 import { deleteAppHandoffPolicies } from "./policy.js";
 
@@ -1020,6 +1021,7 @@ export class DeletionService {
         .prepare("DELETE FROM handoffs WHERE from_app_id = ? OR to_app_id = ?")
         .run(app.id, app.id);
       deleteAppHandoffPolicies(this.#db, app.project_id, app.app_key);
+      deleteAppHandoffGrants(this.#db, app.project_id, app.app_key);
       this.#db
         .prepare("DELETE FROM settings WHERE scope = 'app' AND project_id = ? AND app_key = ?")
         .run(app.project_id, app.app_key);

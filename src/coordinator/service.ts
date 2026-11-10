@@ -1,16 +1,27 @@
 import { randomUUID } from "node:crypto";
 import { AuthError } from "../identity/auth.js";
 import type { Principal } from "../identity/principals.js";
+import { isMasterProject } from "../master/constants.js";
 import { notificationEvents } from "../notifications/events.js";
 import type { RegisteredApp } from "../registry/index.js";
+import { recordEvent } from "../store/events.js";
 import type { SqliteDatabase } from "../store/index.js";
 import { expirePendingApprovals, getPendingApproval, requestApproval } from "./approval.js";
+import {
+  HandoffGrantError,
+  listReachableRemoteTargets as listReachableRemoteTargetsForApp,
+  type RemoteTarget,
+  recordCrossProjectDenied,
+  resolveCrossProjectGrant,
+} from "./grants.js";
 import {
   createHandoff,
   getHandoff,
   type Handoff,
+  type HandoffDispatchMode,
   type HandoffMode,
   type HandoffOutcome,
+  type HandoffReplyMode,
   type HandoffState,
   transitionHandoff,
   updateHandoff,
@@ -41,6 +52,20 @@ export interface RequestSiblingChangeInput {
   expiresAt?: string;
   origin?: "agent" | "operator";
   mode?: HandoffMode;
+  toProjectId?: string;
+}
+
+interface ResolvedSiblingRequest {
+  sourceProjectId: string;
+  targetProjectId: string;
+  grantId: number | null;
+  fromAppKey: string;
+  toAppKey: string;
+  fromAppId: string;
+  toAppId: string;
+  dispatchMode: HandoffDispatchMode;
+  replyMode: HandoffReplyMode;
+  crossProject: boolean;
 }
 
 export interface RequestSiblingChangeResult {
@@ -72,7 +97,9 @@ type NewThreadHeaderKey =
   | "threadIdleExpiresAt"
   | "sourceInvokingSessionId";
 
-export type OneShotAgentHandoffStatus = Omit<Handoff, NewThreadHeaderKey>;
+type AgentHiddenHandoffKey = NewThreadHeaderKey | "targetProjectId" | "grantId";
+
+export type OneShotAgentHandoffStatus = Omit<Handoff, AgentHiddenHandoffKey>;
 
 export interface ThreadAgentHandoffStatus {
   id: string;
@@ -240,22 +267,111 @@ export class CoordinatorService {
   requestSiblingChange(input: RequestSiblingChangeInput): RequestSiblingChangeResult {
     const fromAppKey = input.fromAppKey.trim();
     const toAppKey = input.toAppKey.trim();
-    if (fromAppKey === toAppKey) {
+    const sourceProjectId = this.#projectId;
+    // `unknown` keeps the defensive checks below meaningful for a direct caller that bypasses the
+    // MCP argument validation (m1).
+    const requestedTargetProjectId: unknown = input.toProjectId;
+
+    if (requestedTargetProjectId === undefined || requestedTargetProjectId === sourceProjectId) {
+      // Same-project: byte-for-byte today's behavior, including the early key comparison.
+      if (fromAppKey === toAppKey) {
+        throw new Error("a handoff must target a different application");
+      }
+      const fromAppId = this.#appIdByKey(fromAppKey);
+      const toAppId = this.#appIdByKey(toAppKey);
+      if (fromAppId === toAppId) {
+        throw new Error("a handoff must target a different application");
+      }
+      const policy = resolveHandoffPolicy(this.#db, sourceProjectId, fromAppKey, toAppKey);
+      // An agent's `requires_approval` flag may raise the policy bar, never lower it.
+      const dispatchMode =
+        policy.dispatchMode === "auto" && input.requiresApproval === true
+          ? "approve"
+          : policy.dispatchMode;
+      return this.#createSiblingRequest(input, {
+        sourceProjectId,
+        targetProjectId: sourceProjectId,
+        grantId: null,
+        fromAppKey,
+        toAppKey,
+        fromAppId,
+        toAppId,
+        dispatchMode,
+        replyMode: policy.replyMode,
+        crossProject: false,
+      });
+    }
+
+    if (typeof requestedTargetProjectId !== "string" || requestedTargetProjectId.length === 0) {
+      throw new HandoffGrantError("invalid_target_project", "to_project must be a project id");
+    }
+    const targetProjectId = requestedTargetProjectId;
+    const fromAppId = this.#appIdByKey(fromAppKey);
+    const targetProject = this.#projectForCrossProject(targetProjectId);
+    // Admission before app resolution: the resolver matches key text only, so an ungranted caller
+    // cannot use unknown_application as an app-existence oracle (M3).
+    const grant = resolveCrossProjectGrant(
+      this.#db,
+      sourceProjectId,
+      fromAppKey,
+      targetProjectId,
+      toAppKey,
+    );
+    if (grant === undefined) {
+      recordCrossProjectDenied(this.#db, fromAppId, {
+        projectId: sourceProjectId,
+        targetProjectId,
+        fromAppKey,
+        toAppKey,
+      });
+      throw new HandoffGrantError(
+        "cross_project_denied",
+        `no outbound grant from ${sourceProjectId} to ${targetProjectId}`,
+      );
+    }
+    const toAppId = this.#appIdByProjectAndKey(targetProjectId, toAppKey);
+    if (fromAppId === toAppId) {
       throw new Error("a handoff must target a different application");
     }
-    const fromAppId = this.#appIdByKey(fromAppKey);
-    const toAppId = this.#appIdByKey(toAppKey);
-    const policy = resolveHandoffPolicy(this.#db, this.#projectId, fromAppKey, toAppKey);
-    // An agent's `requires_approval` flag may raise the policy bar, never lower it.
     const dispatchMode =
-      policy.dispatchMode === "auto" && input.requiresApproval === true
+      grant.dispatchMode === "auto" && input.requiresApproval === true
         ? "approve"
-        : policy.dispatchMode;
+        : grant.dispatchMode;
+    return this.#createSiblingRequest(input, {
+      sourceProjectId,
+      targetProjectId: targetProject.id,
+      grantId: grant.grant.id,
+      fromAppKey,
+      toAppKey,
+      fromAppId,
+      toAppId,
+      dispatchMode,
+      replyMode: grant.replyMode,
+      crossProject: true,
+    });
+  }
+
+  #createSiblingRequest(
+    input: RequestSiblingChangeInput,
+    resolved: ResolvedSiblingRequest,
+  ): RequestSiblingChangeResult {
+    const {
+      sourceProjectId,
+      targetProjectId,
+      grantId,
+      fromAppId,
+      toAppId,
+      dispatchMode,
+      replyMode,
+      crossProject,
+    } = resolved;
     if (input.mode === "thread") {
       const thread = createThread(
         this.#db,
         {
-          projectId: this.#projectId,
+          projectId: sourceProjectId,
+          targetProjectId,
+          grantId,
           fromAppId,
           toAppId,
           summary: input.summary,
@@ -263,11 +379,14 @@ export class CoordinatorService {
           idempotencyKey: input.idempotencyKey,
           requiresApproval: input.requiresApproval,
           policyDispatchMode: dispatchMode,
-          policyReplyMode: policy.replyMode,
+          policyReplyMode: replyMode,
           origin: input.origin ?? "agent",
         },
         this.#threadLimits,
       );
+      if (crossProject && thread.status !== "existing") {
+        this.#recordCrossProjectCreated(thread.handoff.id, resolved);
+      }
       return {
         handoffId: thread.handoff.id,
         status: thread.status,
@@ -277,19 +396,28 @@ export class CoordinatorService {
         initialMessage: thread.initialMessage,
       };
     }
+    const userKey = input.idempotencyKey ?? randomUUID();
+    const idempotencyKey = crossProject
+      ? `xp|${sourceProjectId}|${fromAppId}|${targetProjectId}|${toAppId}|${userKey}`
+      : userKey;
     const handoff = createHandoff(this.#db, {
-      projectId: this.#projectId,
+      projectId: sourceProjectId,
+      targetProjectId,
+      grantId,
       fromAppId,
       toAppId,
       summary: input.summary,
       spec: input.spec,
-      idempotencyKey: input.idempotencyKey ?? randomUUID(),
+      idempotencyKey,
       requiresApproval: dispatchMode === "approve",
       expiresAt: input.expiresAt,
       origin: input.origin ?? "agent",
       policyDispatchMode: dispatchMode,
-      policyReplyMode: policy.replyMode,
+      policyReplyMode: replyMode,
     });
+    if (crossProject) {
+      this.#recordCrossProjectCreated(handoff.id, resolved);
+    }
     if (dispatchMode === "deny") {
       if (handoff.state === "queued" || handoff.state === "awaiting_approval") {
         const denied = transitionHandoff(this.#db, handoff.id, "rejected", {
@@ -323,6 +451,27 @@ export class CoordinatorService {
             ? "denied"
             : "existing";
     return { handoffId: handoff.id, status, state: handoff.state };
+  }
+
+  #recordCrossProjectCreated(handoffId: string, resolved: ResolvedSiblingRequest): void {
+    recordEvent(this.#db, resolved.sourceProjectId, "handoff.cross_project.created", {
+      handoffId,
+      grantId: resolved.grantId,
+      projectId: resolved.sourceProjectId,
+      targetProjectId: resolved.targetProjectId,
+      fromAppKey: resolved.fromAppKey,
+      toAppKey: resolved.toAppKey,
+      dispatchMode: resolved.dispatchMode,
+      replyMode: resolved.replyMode,
+    });
+  }
+
+  /** Remote applications the caller app may reach through its outbound grants. */
+  listReachableRemoteTargets(fromAppKey: string): RemoteTarget[] {
+    if (fromAppKey.length === 0) {
+      return [];
+    }
+    return listReachableRemoteTargetsForApp(this.#db, this.#projectId, fromAppKey);
   }
 
   /**
@@ -541,6 +690,41 @@ export class CoordinatorService {
       );
     }
     return id;
+  }
+
+  #projectForCrossProject(projectId: string): { id: string } {
+    const row = this.#db.prepare("SELECT id, deleting FROM projects WHERE id = ?").get(projectId) as
+      | { id: string; deleting: number }
+      | undefined;
+    if (row === undefined) {
+      throw new HandoffGrantError("unknown_target_project", "project not found");
+    }
+    if (isMasterProject(row.id)) {
+      throw new HandoffGrantError(
+        "builtin_target_forbidden",
+        "the master project cannot be a handoff target",
+      );
+    }
+    if (row.deleting === 1) {
+      throw new HandoffGrantError("deleting_target_forbidden", "target is being deleted");
+    }
+    return { id: row.id };
+  }
+
+  #appIdByProjectAndKey(projectId: string, appKey: string): string {
+    const row = this.#db
+      .prepare("SELECT id, deleting FROM apps WHERE project_id = ? AND app_key = ?")
+      .get(projectId, appKey) as { id: string; deleting: number } | undefined;
+    if (row === undefined) {
+      throw new HandoffGrantError(
+        "unknown_application",
+        `"${appKey}" is not an application in the target project`,
+      );
+    }
+    if (row.deleting === 1) {
+      throw new HandoffGrantError("deleting_target_forbidden", "target is being deleted");
+    }
+    return row.id;
   }
 
   #tryAppIdByKey(appKey: string): string | undefined {

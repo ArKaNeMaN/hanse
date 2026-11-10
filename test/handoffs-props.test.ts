@@ -1,8 +1,12 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { setHandoffGrant } from "../src/coordinator/grants.js";
 import type { HandoffReplyState, HandoffState } from "../src/coordinator/handoff.js";
 import { CoordinatorService } from "../src/coordinator/service.js";
 import { buildSite, type SiteModel } from "../src/http/dashboard.js";
 import { buildHandoffsProps } from "../src/http/props/handoffs.js";
+import { buildProjectProps } from "../src/http/props/project.js";
+import { allHandoffs } from "../src/http/props/shared.js";
+import { MASTER_PROJECT_ID } from "../src/master/constants.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
 
 const databases: SqliteDatabase[] = [];
@@ -37,6 +41,10 @@ interface SeedHandoff {
   readonly replyState?: HandoffReplyState;
   readonly summary?: string;
   readonly updatedAt: string;
+  readonly projectId?: string;
+  readonly targetProjectId?: string;
+  readonly fromAppId?: string;
+  readonly toAppId?: string;
   readonly result?: string;
   readonly error?: string;
   readonly outcome?: "completed" | "blocked" | "failed";
@@ -53,7 +61,27 @@ interface SeedHandoff {
   readonly origin?: "agent" | "operator";
 }
 
-function fixture(seeds?: readonly SeedHandoff[]): SiteModel {
+interface ExtraProject {
+  readonly id: string;
+  readonly name?: string;
+  readonly deleting?: boolean;
+  readonly appKeys?: readonly string[];
+}
+
+interface GrantSeed {
+  readonly projectId: string;
+  readonly targetProjectId: string;
+  readonly fromAppKey?: string;
+  readonly toAppKey?: string;
+  readonly dispatchMode?: "auto" | "approve";
+  readonly replyMode?: "auto" | "approve";
+}
+
+function fixture(
+  seeds?: readonly SeedHandoff[],
+  extraProjects: readonly ExtraProject[] = [],
+  grants: readonly GrantSeed[] = [],
+): SiteModel {
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-01-02T12:00:00.000Z"));
   const db = openDatabase(":memory:");
@@ -68,23 +96,44 @@ function fixture(seeds?: readonly SeedHandoff[]): SiteModel {
       "INSERT INTO apps (id,project_id,app_key,path,kind,contract,created_at) VALUES (?, 'p', ?, ?, 'app', 'AGENTS.md', ?)",
     ).run(`p:${key}`, key, `apps/${key}`, created);
   }
+  for (const extra of extraProjects) {
+    db.prepare(
+      "INSERT INTO projects (id,name,base_branch,root_path,created_at,updated_at,deleting) VALUES (?,?, 'main', ?,?,?,?)",
+    ).run(
+      extra.id,
+      extra.name ?? extra.id,
+      `/workspace/${extra.id}`,
+      created,
+      created,
+      extra.deleting === true ? 1 : 0,
+    );
+    for (const key of extra.appKeys ?? ["x"]) {
+      db.prepare(
+        "INSERT INTO apps (id,project_id,app_key,path,kind,contract,created_at) VALUES (?, ?, ?, ?, 'app', 'AGENTS.md', ?)",
+      ).run(`${extra.id}:${key}`, extra.id, key, `apps/${key}`, created);
+    }
+  }
   const insert = db.prepare(
     `INSERT INTO handoffs
-      (id, project_id, from_app_id, to_app_id, state, summary, spec, idempotency_key, attempts,
-       result, error, outcome, origin, source_session_id, source_session_deleted_at,
-       target_session_id, reply_state, reply_delivered_session_id, reply_delivered_at,
-       reply_error, operator_note, delivered_via, policy_dispatch_mode, policy_reply_mode,
-       created_at, updated_at)
+      (id, project_id, target_project_id, from_app_id, to_app_id, state, summary, spec,
+       idempotency_key, attempts, result, error, outcome, origin, source_session_id,
+       source_session_deleted_at, target_session_id, reply_state, reply_delivered_session_id,
+       reply_delivered_at, reply_error, operator_note, delivered_via, policy_dispatch_mode,
+       policy_reply_mode, created_at, updated_at)
      VALUES
-      (@id, 'p', 'p:a', 'p:b', @state, @summary, @spec, @key, 1, @result, @error, @outcome,
-       @origin, @sourceSessionId, @sourceSessionDeletedAt, @targetSessionId, @replyState,
-       @replyDeliveredSessionId, @replyDeliveredAt, @replyError, @operatorNote, @deliveredVia,
-       @policyDispatchMode, @policyReplyMode, @createdAt, @updatedAt)`,
+      (@id, @projectId, @targetProjectId, @fromAppId, @toAppId, @state, @summary, @spec, @key, 1,
+       @result, @error, @outcome, @origin, @sourceSessionId, @sourceSessionDeletedAt,
+       @targetSessionId, @replyState, @replyDeliveredSessionId, @replyDeliveredAt, @replyError,
+       @operatorNote, @deliveredVia, @policyDispatchMode, @policyReplyMode, @createdAt, @updatedAt)`,
   );
   const rows = seeds ?? defaultSeeds();
   for (const seed of rows) {
     insert.run({
       id: seed.id,
+      projectId: seed.projectId ?? "p",
+      targetProjectId: seed.targetProjectId ?? "p",
+      fromAppId: seed.fromAppId ?? "p:a",
+      toAppId: seed.toAppId ?? "p:b",
       state: seed.state,
       summary: seed.summary ?? `Summary ${seed.id}`,
       spec: `Spec for ${seed.id}`,
@@ -108,6 +157,9 @@ function fixture(seeds?: readonly SeedHandoff[]): SiteModel {
       updatedAt: seed.updatedAt,
     });
   }
+  for (const grant of grants) {
+    setHandoffGrant(db, { ...grant, actor: "human" });
+  }
   return buildSite({
     db,
     getProjects: () => [
@@ -118,6 +170,14 @@ function fixture(seeds?: readonly SeedHandoff[]): SiteModel {
         workspaceRoot: "/workspace",
         service: new CoordinatorService(db, "p"),
       },
+      ...extraProjects.map((extra) => ({
+        id: extra.id,
+        name: extra.name ?? extra.id,
+        rootPath: `/workspace/${extra.id}`,
+        workspaceRoot: "/workspace",
+        deleting: extra.deleting === true,
+        service: new CoordinatorService(db, extra.id),
+      })),
     ],
   });
 }
@@ -192,7 +252,14 @@ describe("handoffs page props", () => {
     const props = buildHandoffsProps(fixture(), "waiting", "  reply  ");
     expect(props.filter).toBe("waiting");
     expect(props.query).toBe("reply");
-    expect(props.counts).toEqual({ all: 12, waiting: 2, active: 3, closed: 8, replies: 3 });
+    expect(props.counts).toEqual({
+      all: 12,
+      waiting: 2,
+      active: 3,
+      closed: 8,
+      replies: 3,
+      cross: 0,
+    });
     expect(props.filters).toEqual([
       {
         value: "all",
@@ -227,6 +294,13 @@ describe("handoffs page props", () => {
         label: "Replies",
         href: "/handoffs?filter=replies&q=reply",
         count: 3,
+        current: false,
+      },
+      {
+        value: "cross",
+        label: "Cross-project",
+        href: "/handoffs?filter=cross&q=reply",
+        count: 0,
         current: false,
       },
     ]);
@@ -347,5 +421,177 @@ describe("handoffs page props", () => {
     expect(buildHandoffsProps(closed, "replies", undefined).emptyState).toMatchObject({
       title: "No replies waiting",
     });
+  });
+
+  it("builds crossProject, project ids/names, and the cross count/filter", () => {
+    const site = fixture(
+      [
+        { id: "h-same", state: "queued", updatedAt: "2026-01-02T11:50:00.000Z" },
+        {
+          id: "h-cross",
+          state: "queued",
+          projectId: "p",
+          targetProjectId: "p2",
+          fromAppId: "p:a",
+          toAppId: "p2:x",
+          summary: "Cross route",
+          updatedAt: "2026-01-02T11:40:00.000Z",
+        },
+      ],
+      [{ id: "p2", name: "Second", appKeys: ["x"] }],
+    );
+    const props = buildHandoffsProps(site, "cross", undefined);
+    expect(props.counts).toMatchObject({ all: 2, cross: 1 });
+    expect(props.filters.find((filter) => filter.value === "cross")).toMatchObject({
+      label: "Cross-project",
+      count: 1,
+      current: true,
+    });
+    expect(props.rows.map((row) => row.id)).toEqual(["h-cross"]);
+    expect(props.tableTitle).toBe("Cross-project handoffs");
+    const row = props.rows[0];
+    expect(row).toMatchObject({
+      crossProject: true,
+      fromProjectId: "p",
+      toProjectId: "p2",
+      fromProjectName: "Demo",
+      toProjectName: "Second",
+    });
+    expect(row?.dialog).toMatchObject({
+      crossProject: true,
+      fromProjectId: "p",
+      toProjectId: "p2",
+      fromProjectName: "Demo",
+      toProjectName: "Second",
+    });
+    expect(site.projects.find((project) => project.id === "p")?.handoffs).toHaveLength(2);
+    expect(site.projects.find((project) => project.id === "p2")?.handoffs).toHaveLength(1);
+  });
+
+  it("dedupes a cross-project row in allHandoffs", () => {
+    const site = fixture(
+      [
+        { id: "h-same", state: "queued", updatedAt: "2026-01-02T11:50:00.000Z" },
+        {
+          id: "h-cross",
+          state: "queued",
+          projectId: "p",
+          targetProjectId: "p2",
+          fromAppId: "p:a",
+          toAppId: "p2:x",
+          updatedAt: "2026-01-02T11:40:00.000Z",
+        },
+      ],
+      [{ id: "p2", name: "Second", appKeys: ["x"] }],
+    );
+    expect(site.projects.find((project) => project.id === "p")?.handoffs).toHaveLength(2);
+    expect(site.projects.find((project) => project.id === "p2")?.handoffs).toHaveLength(1);
+    const ids = allHandoffs(site).map((handoff) => handoff.id);
+    expect(ids).toHaveLength(2);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it("counts a cross-project row once in global handoffCount and pendingCount (m4)", () => {
+    const site = fixture(
+      [
+        { id: "h-same", state: "queued", updatedAt: "2026-01-02T11:50:00.000Z" },
+        {
+          id: "h-cross",
+          state: "awaiting_approval",
+          projectId: "p",
+          targetProjectId: "p2",
+          fromAppId: "p:a",
+          toAppId: "p2:x",
+          updatedAt: "2026-01-02T11:40:00.000Z",
+        },
+      ],
+      [{ id: "p2", name: "Second", appKeys: ["x"] }],
+    );
+    expect(site.handoffCount).toBe(2);
+    expect(site.pendingCount).toBe(1);
+  });
+
+  it("keeps the same-project payload unchanged", () => {
+    const site = fixture();
+    const props = buildHandoffsProps(site, undefined, undefined);
+    const row = props.rows.find((candidate) => candidate.id === "h-queued");
+    expect(row).toMatchObject({
+      crossProject: false,
+      fromProjectId: "p",
+      toProjectId: "p",
+      fromProjectName: "Demo",
+      toProjectName: "Demo",
+    });
+    expect(props.counts.cross).toBe(0);
+    const project = buildProjectProps(site, "p");
+    expect(project?.grants).toEqual({
+      outbound: [],
+      inbound: [],
+      fromOptions: ["a", "b", "*"],
+      targetProjects: [],
+      wildcard: "*",
+      dispatchModes: ["auto", "approve"],
+      replyModes: ["auto", "approve"],
+    });
+  });
+
+  it("maps outbound and inbound grants with targetProjects excluding builtin/deleting/current", () => {
+    const site = fixture(
+      [],
+      [
+        { id: "p2", name: "Second", appKeys: ["x"] },
+        { id: "pdel", name: "Deleting", deleting: true, appKeys: ["y"] },
+        { id: MASTER_PROJECT_ID, name: "Hanse master", appKeys: ["master"] },
+      ],
+      [
+        {
+          projectId: "p",
+          fromAppKey: "a",
+          targetProjectId: "p2",
+          toAppKey: "x",
+          dispatchMode: "approve",
+          replyMode: "approve",
+        },
+        {
+          projectId: "p2",
+          fromAppKey: "*",
+          targetProjectId: "p",
+          toAppKey: "b",
+        },
+      ],
+    );
+    const projectView = site.projects.find((project) => project.id === "p");
+    expect(projectView?.handoffGrants).toHaveLength(1);
+    expect(projectView?.inboundHandoffGrants).toHaveLength(1);
+    const project = buildProjectProps(site, "p");
+    expect(project?.grants.outbound).toMatchObject([
+      {
+        sourceProjectId: "p",
+        sourceProjectName: "Demo",
+        fromAppKey: "a",
+        targetProjectId: "p2",
+        targetProjectName: "Second",
+        toAppKey: "x",
+        dispatchMode: "approve",
+        replyMode: "approve",
+      },
+    ]);
+    expect(project?.grants.inbound).toMatchObject([
+      {
+        sourceProjectId: "p2",
+        sourceProjectName: "Second",
+        fromAppKey: "*",
+        targetProjectId: "p",
+        targetProjectName: "Demo",
+        toAppKey: "b",
+      },
+    ]);
+    expect(project?.grants.fromOptions).toEqual(["a", "b", "*"]);
+    expect(project?.grants.targetProjects).toEqual([{ id: "p2", name: "Second", appKeys: ["x"] }]);
+    expect(project?.grants.targetProjects.map((target) => target.id)).not.toContain("p");
+    expect(project?.grants.targetProjects.map((target) => target.id)).not.toContain("pdel");
+    expect(project?.grants.targetProjects.map((target) => target.id)).not.toContain(
+      MASTER_PROJECT_ID,
+    );
   });
 });

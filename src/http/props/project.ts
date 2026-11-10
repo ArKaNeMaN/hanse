@@ -9,6 +9,7 @@
  * metadata, app/runtime rows, handoff rows, and the dialog state needed by the SPA.
  */
 
+import type { HandoffGrant } from "../../coordinator/grants.js";
 import type {
   Handoff,
   HandoffDispatchMode,
@@ -24,9 +25,11 @@ import type { ProjectView, SiteModel } from "../dashboard.js";
 import { ideFolderUrl, type RuntimeState } from "../ui.js";
 import {
   appKeyFor,
+  crossProject,
   displayState,
   handoffCounts,
   projectLastActivity,
+  projectNameFor,
   reviewHref,
   sortedHandoffs,
 } from "./shared.js";
@@ -75,6 +78,11 @@ export interface ProjectHandoffProps {
   readonly toAppId: string;
   readonly fromAppKey: string;
   readonly toAppKey: string;
+  readonly crossProject: boolean;
+  readonly fromProjectId: string;
+  readonly toProjectId: string;
+  readonly fromProjectName: string;
+  readonly toProjectName: string;
   readonly summary: string;
   readonly state: HandoffState;
   readonly replyState: HandoffReplyState;
@@ -115,6 +123,11 @@ export interface ProjectWaitingHandoffProps {
   readonly toAppId: string;
   readonly fromAppKey: string;
   readonly toAppKey: string;
+  readonly crossProject: boolean;
+  readonly fromProjectId: string;
+  readonly toProjectId: string;
+  readonly fromProjectName: string;
+  readonly toProjectName: string;
   readonly state: HandoffState;
   readonly replyState: HandoffReplyState;
   readonly displayState: HandoffState;
@@ -137,6 +150,32 @@ export interface ProjectPolicyProps {
   readonly wildcard: "*";
   readonly dispatchModes: readonly HandoffDispatchMode[];
   readonly replyModes: readonly HandoffReplyMode[];
+}
+
+export interface ProjectGrantProps {
+  readonly id: number;
+  readonly sourceProjectId: string;
+  readonly sourceProjectName: string;
+  readonly fromAppKey: string;
+  readonly targetProjectId: string;
+  readonly targetProjectName: string;
+  readonly toAppKey: string;
+  readonly dispatchMode: "auto" | "approve";
+  readonly replyMode: "auto" | "approve";
+}
+
+export interface ProjectGrantsProps {
+  readonly outbound: readonly ProjectGrantProps[];
+  readonly inbound: readonly ProjectGrantProps[];
+  readonly fromOptions: readonly string[];
+  readonly targetProjects: readonly {
+    readonly id: string;
+    readonly name: string;
+    readonly appKeys: readonly string[];
+  }[];
+  readonly wildcard: "*";
+  readonly dispatchModes: readonly ("auto" | "approve")[];
+  readonly replyModes: readonly ("auto" | "approve")[];
 }
 
 export interface ProjectDeletionProps {
@@ -191,6 +230,7 @@ export interface ProjectProps {
   readonly handoffs: readonly ProjectHandoffProps[];
   readonly waitingHandoffs: readonly ProjectWaitingHandoffProps[];
   readonly policy: ProjectPolicyProps;
+  readonly grants: ProjectGrantsProps;
   readonly deletion: ProjectDeletionProps;
   readonly dialogs: ProjectDialogsProps;
   readonly master: boolean;
@@ -241,6 +281,11 @@ export function buildProjectHandoffProps(
     toAppId: handoff.toAppId,
     fromAppKey: appKeyFor(site, handoff.fromAppId),
     toAppKey: appKeyFor(site, handoff.toAppId),
+    crossProject: crossProject(handoff),
+    fromProjectId: handoff.projectId,
+    toProjectId: handoff.targetProjectId ?? handoff.projectId,
+    fromProjectName: projectNameFor(site, handoff.projectId),
+    toProjectName: projectNameFor(site, handoff.targetProjectId ?? handoff.projectId),
     summary: handoff.summary,
     state: handoff.state,
     replyState: handoff.replyState,
@@ -335,6 +380,11 @@ export function buildProjectProps(site: SiteModel, projectId: string): ProjectPr
     toAppId: handoff.toAppId,
     fromAppKey: appKeyFor(site, handoff.fromAppId),
     toAppKey: appKeyFor(site, handoff.toAppId),
+    crossProject: crossProject(handoff),
+    fromProjectId: handoff.projectId,
+    toProjectId: handoff.targetProjectId ?? handoff.projectId,
+    fromProjectName: projectNameFor(site, handoff.projectId),
+    toProjectName: projectNameFor(site, handoff.targetProjectId ?? handoff.projectId),
     state: handoff.state,
     replyState: handoff.replyState,
     displayState: displayState(handoff),
@@ -366,6 +416,36 @@ export function buildProjectProps(site: SiteModel, projectId: string): ProjectPr
     appOptions,
     wildcard: "*",
     dispatchModes: ["auto", "approve", "deny"],
+    replyModes: ["auto", "approve"],
+  };
+
+  const grantProps = (grant: HandoffGrant): ProjectGrantProps => ({
+    id: grant.id,
+    sourceProjectId: grant.projectId,
+    sourceProjectName: projectNameFor(site, grant.projectId),
+    fromAppKey: grant.fromAppKey,
+    targetProjectId: grant.targetProjectId,
+    targetProjectName: projectNameFor(site, grant.targetProjectId),
+    toAppKey: grant.toAppKey,
+    dispatchMode: grant.dispatchMode,
+    replyMode: grant.replyMode,
+  });
+  const grants: ProjectGrantsProps = {
+    outbound: project.handoffGrants.map(grantProps),
+    inbound: project.inboundHandoffGrants.map(grantProps),
+    fromOptions: [...appOptions, "*"],
+    targetProjects: site.projects
+      .filter(
+        (candidate) =>
+          candidate.id !== project.id && candidate.builtin !== true && !candidate.deleting,
+      )
+      .map((candidate) => ({
+        id: candidate.id,
+        name: candidate.name,
+        appKeys: candidate.apps.map((app) => app.appKey),
+      })),
+    wildcard: "*",
+    dispatchModes: ["auto", "approve"],
     replyModes: ["auto", "approve"],
   };
 
@@ -430,6 +510,7 @@ export function buildProjectProps(site: SiteModel, projectId: string): ProjectPr
     handoffs,
     waitingHandoffs,
     policy,
+    grants,
     deletion,
     dialogs,
     master: project.builtin === true,

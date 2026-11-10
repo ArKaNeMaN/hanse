@@ -27,6 +27,11 @@ function dialog(overrides: Partial<ProjectHandoff> = {}): ProjectHandoff {
     toAppId: "project-one:beta",
     fromAppKey: "alpha",
     toAppKey: "beta",
+    crossProject: false,
+    fromProjectId: "project-one",
+    toProjectId: "project-one",
+    fromProjectName: "Project One",
+    toProjectName: "Project One",
     summary: "Ship the handoff",
     state: "awaiting_approval",
     replyState: "none",
@@ -71,6 +76,11 @@ function row(overrides: Partial<HandoffRow> = {}): HandoffRow {
     toAppId: "project-one:beta",
     fromAppKey: "alpha",
     toAppKey: "beta",
+    crossProject: false,
+    fromProjectId: "project-one",
+    toProjectId: "project-one",
+    fromProjectName: "Project One",
+    toProjectName: "Project One",
     summary: "Ship the handoff",
     state: "awaiting_approval",
     replyState: "none",
@@ -125,12 +135,48 @@ const REPLY = row({
   }),
 });
 
+const CROSS = row({
+  id: "handoff-cross",
+  shortId: "handoff-",
+  fromAppId: "project-one:alpha",
+  toAppId: "project-two:gamma",
+  fromAppKey: "alpha",
+  toAppKey: "gamma",
+  crossProject: true,
+  fromProjectId: "project-one",
+  toProjectId: "project-two",
+  fromProjectName: "Project One",
+  toProjectName: "Project Two",
+  summary: "Cross-project work",
+  state: "queued",
+  displayState: "queued",
+  inlineDecision: null,
+  dialog: dialog({
+    id: "handoff-cross",
+    fromAppId: "project-one:alpha",
+    toAppId: "project-two:gamma",
+    fromAppKey: "alpha",
+    toAppKey: "gamma",
+    crossProject: true,
+    fromProjectId: "project-one",
+    toProjectId: "project-two",
+    fromProjectName: "Project One",
+    toProjectName: "Project Two",
+    summary: "Cross-project work",
+    state: "queued",
+    displayState: "queued",
+    approvalKind: null,
+    spec: "Cross-project specification.",
+  }),
+});
+
 const FILTER_LABELS: ReadonlyArray<{ value: HandoffFilter; label: string }> = [
   { value: "all", label: "All" },
   { value: "waiting", label: "Waiting" },
   { value: "active", label: "Active" },
   { value: "closed", label: "Closed" },
   { value: "replies", label: "Replies" },
+  { value: "cross", label: "Cross-project" },
 ];
 
 function propsFor(
@@ -140,7 +186,7 @@ function propsFor(
   emptyState: HandoffsProps["emptyState"] = null,
 ): HandoffsProps {
   return {
-    counts: { all: 3, waiting: 1, active: 1, closed: 1, replies: 1 },
+    counts: { all: 3, waiting: 1, active: 1, closed: 1, replies: 1, cross: 0 },
     filter,
     query,
     filters: FILTER_LABELS.map(({ value, label }) => ({
@@ -163,7 +209,12 @@ function propsFor(
         query.length > 0 ? (filter === "all" ? "/handoffs" : `/handoffs?filter=${filter}`) : null,
     },
     returnTo: filter === "all" ? "/handoffs" : `/handoffs?filter=${filter}`,
-    tableTitle: filter === "waiting" ? "Waiting for approval" : "All handoffs",
+    tableTitle:
+      filter === "waiting"
+        ? "Waiting for approval"
+        : filter === "cross"
+          ? "Cross-project handoffs"
+          : "All handoffs",
     rows,
     emptyState,
   };
@@ -256,6 +307,7 @@ describe("HandoffsPage", () => {
       "Active 1",
       "Closed 1",
       "Replies 1",
+      "Cross-project 1",
     ]);
     expect(filters[0]?.attributes("aria-current")).toBe("page");
     expect(filters[1]?.attributes("aria-current")).toBeUndefined();
@@ -389,6 +441,51 @@ describe("HandoffsPage", () => {
       expect.objectContaining({ message: "Handoff approved.", tone: "success" }),
     );
     expect(mocks.apiQuery).toHaveBeenCalledWith("/api/ui/handoffs?filter=all&q=");
+  });
+
+  it("filters cross-project rows and renders the row badge", async () => {
+    const router = testRouter();
+    const wrapper = await mountPage(
+      boot(propsFor("all", "", [AWAITING, CROSS])),
+      "/handoffs",
+      router,
+    );
+    mocks.apiQuery.mockResolvedValue({ ...propsFor("cross", "", [CROSS]) });
+
+    expect(wrapper.get("#handoff-handoff-1234567890").text()).not.toContain("Cross-project");
+
+    const crossFilter = wrapper
+      .findAll(".segmented__item")
+      .find((entry) => entry.text().startsWith("Cross-project"));
+    expect(crossFilter).toBeDefined();
+    await crossFilter?.trigger("click");
+    await flushPromises();
+
+    expect(router.currentRoute.value.fullPath).toBe("/handoffs?filter=cross");
+    expect(mocks.apiQuery).toHaveBeenCalledWith("/api/ui/handoffs?filter=cross&q=");
+    await flushPromises();
+
+    expect(wrapper.findAll("tbody tr")).toHaveLength(1);
+    const crossRow = wrapper.get("#handoff-handoff-cross");
+    expect(crossRow.text()).toContain("Cross-project");
+    expect(wrapper.text()).not.toContain("Ship the handoff");
+  });
+
+  it("shows the cross-project pill and project-qualified route in the dialog", async () => {
+    const wrapper = await mountPage(boot(propsFor("all", "", [CROSS])));
+
+    await wrapper.get("#handoff-handoff-cross").get("button.btn-ghost").trigger("click");
+    await flushPromises();
+
+    const dialogElement = wrapper.get("dialog.handoff-dialog");
+    expect(dialogElement.attributes("open")).toBeDefined();
+    expect(dialogElement.text()).toContain("Cross-project");
+    const metas = dialogElement.findAll(".dialog__meta");
+    expect(metas[0]?.text()).toContain("alpha");
+    expect(metas[0]?.text()).toContain("gamma");
+    const qualified = metas.find((meta) => meta.text().includes("Project One"));
+    expect(qualified?.text()).toContain("Project One → Project Two");
+    expect(qualified?.get(".mono").attributes("title")).toBe("project-one → project-two");
   });
 
   it("renders the empty state as a project SmartLink", async () => {

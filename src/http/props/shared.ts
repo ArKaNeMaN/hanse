@@ -7,7 +7,7 @@
 
 import type { Handoff, HandoffReplyState, HandoffState } from "../../coordinator/handoff.js";
 
-export type HandoffFilter = "all" | "waiting" | "active" | "closed" | "replies";
+export type HandoffFilter = "all" | "waiting" | "active" | "closed" | "replies" | "cross";
 
 export const ACTIVE_HANDOFF_STATES: readonly HandoffState[] = [
   "queued",
@@ -29,6 +29,7 @@ export interface HandoffCounts {
   readonly active: number;
   readonly closed: number;
   readonly replies: number;
+  readonly cross: number;
 }
 
 export interface AppKeySource {
@@ -44,11 +45,24 @@ export interface HandoffCollection {
   readonly projects: readonly { readonly handoffs: readonly Handoff[] }[];
 }
 
+export interface ProjectNameSource {
+  readonly projects: readonly { readonly id: string; readonly name: string }[];
+}
+
+export function crossProject(handoff: Pick<Handoff, "projectId" | "targetProjectId">): boolean {
+  return handoff.projectId !== (handoff.targetProjectId ?? handoff.projectId);
+}
+
+export function projectNameFor(site: ProjectNameSource, projectId: string): string {
+  return site.projects.find((project) => project.id === projectId)?.name ?? projectId;
+}
+
 export function handoffCounts(handoffs: readonly Handoff[]): HandoffCounts {
   let waiting = 0;
   let active = 0;
   let closed = 0;
   let replies = 0;
+  let cross = 0;
   for (const handoff of handoffs) {
     if (handoff.state === "awaiting_approval" || handoff.replyState === "awaiting_approval") {
       waiting += 1;
@@ -66,8 +80,11 @@ export function handoffCounts(handoffs: readonly Handoff[]): HandoffCounts {
     ) {
       replies += 1;
     }
+    if (crossProject(handoff)) {
+      cross += 1;
+    }
   }
-  return { all: handoffs.length, waiting, active, closed, replies };
+  return { all: handoffs.length, waiting, active, closed, replies, cross };
 }
 
 export function appKeyFor(site: AppKeySource, appId: string): string {
@@ -85,7 +102,16 @@ export function projectLastActivity(project: ActivitySource): string {
 }
 
 export function allHandoffs(site: HandoffCollection): Handoff[] {
-  return site.projects.flatMap((project) => project.handoffs);
+  const seen = new Set<string>();
+  const out: Handoff[] = [];
+  for (const project of site.projects) {
+    for (const handoff of project.handoffs) {
+      if (seen.has(handoff.id)) continue;
+      seen.add(handoff.id);
+      out.push(handoff);
+    }
+  }
+  return out;
 }
 
 export function sortedHandoffs<T extends { readonly updatedAt: string }>(
@@ -118,7 +144,11 @@ export function shortId(id: string): string {
 }
 
 export function parseHandoffFilter(value: string | undefined): HandoffFilter {
-  return value === "waiting" || value === "active" || value === "closed" || value === "replies"
+  return value === "waiting" ||
+    value === "active" ||
+    value === "closed" ||
+    value === "replies" ||
+    value === "cross"
     ? value
     : "all";
 }
