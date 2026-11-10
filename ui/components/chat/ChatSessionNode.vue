@@ -79,12 +79,8 @@ const depth = computed(() => Math.min(props.depth, 5));
           <span class="session-item__title">{{ label }}</span>
           <AppIcon v-if="active" name="check" class-name="icon--sm" />
         </span>
-        <span class="session-item__meta">
-          <span class="mono">{{ nodeId.slice(0, 8) }}</span>
-          <span
-            v-if="waiting > 0"
-            class="session-item__flag"
-            :aria-label="`${waiting} requests need input`"
+        <span v-if="waiting > 0" class="session-item__meta">
+          <span class="session-item__flag" :aria-label="`${waiting} requests need input`"
             >{{ waiting }}
             waiting</span
           >

@@ -783,14 +783,16 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   `userMessageID`), with projected parts under 8 MiB or `{messageID, userMessageID, info:null,
   truncated:true}` on overflow. Async text is capped at 32 KiB; an older upstream without
   `prompt_async` returns `502 async_unavailable`, and the blocking route remains available.
-- The sessions rail (17rem wide) groups `opencode` subagent sessions by their authoritative
-  `parentID` under the parent row, built client-side from the unchanged flat session list. Children
-  are reached with a disclosure chevron (collapsed by default, multi-level nesting) and the active
-  session's ancestor branch is expanded automatically, including `?session=<child>` deep links. A
+- The sessions rail (17rem wide, 25.5rem at >= 1536px viewports) groups `opencode` subagent
+  sessions by their authoritative `parentID` under the parent row, built client-side from the
+  unchanged flat session list. Children are reached with a disclosure chevron (collapsed by
+  default, multi-level nesting) and the active session's ancestor branch is expanded automatically,
+  including `?session=<child>` deep links. A
   collapsed parent shows one aggregate waiting count over its own and its descendants' sessions;
   children keep their own counts. Deleting a parent removes the whole subtree and clears Hanse
   session-scoped chat state (drafts, attachments, deliveries, pending sends, `session_state`, and
-  the session folder) for its descendants, best effort under opencode's 100-session window.
+  the session folder) for its descendants, best effort under opencode's 100-session window. Titles
+  wrap to two lines and the rail no longer shows the short session id.
   Session lifecycle is not realtime in this stage: child sessions appear on the existing refresh
   triggers (boot, focus, visibility, selection, send, idle/reconnect).
 - Session switching is optimistic and cancelable: the rail, title, URL, and message skeleton switch

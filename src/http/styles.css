@@ -136,6 +136,7 @@
     --chat-feed-min: 60ch;
     --chat-feed-max: 96rem;
     --chat-sessions: 17rem;
+    --chat-sessions-wide: 25.5rem;
     --chat-context: 20rem;
     --pane-drawer-w: 20rem;
 
@@ -2270,6 +2271,12 @@
     min-block-size: 0;
   }
 
+  @media (min-width: 1536px) {
+    .chat-shell {
+      --chat-sessions: var(--chat-sessions-wide);
+    }
+  }
+
   .chat-sessions,
   .chat-context {
     min-block-size: 0;
@@ -4050,21 +4057,25 @@
 
   .session-item__top {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     justify-content: space-between;
     gap: var(--space-2);
     min-inline-size: 0;
   }
 
   .session-item__title {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
     min-inline-size: 0;
     overflow: hidden;
+    overflow-wrap: anywhere;
     color: inherit;
     font-size: var(--text-sm);
     font-weight: 500;
     line-height: 1.35;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    white-space: normal;
   }
 
   .session-item__meta {
@@ -4159,7 +4170,9 @@
   }
 
   .chat-session-title {
-    max-inline-size: 32ch;
+    flex: 0 1 auto;
+    min-inline-size: 0;
+    max-inline-size: none;
     overflow: hidden;
     color: var(--text-1);
     font-weight: 600;

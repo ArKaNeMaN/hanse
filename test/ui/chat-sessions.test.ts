@@ -124,6 +124,23 @@ describe("chat sessions rail", () => {
     wrapper.unmount();
   });
 
+  it("omits the session short id from rail rows", async () => {
+    const { wrapper, pinia } = await mountChat("/chat?app=alpha&project=p&session=child", {
+      sessions: TREE,
+    });
+    const sessions = useChatSessionStore(pinia);
+    sessions.trackPromptPending("root", "question:root");
+    await wrapper.vm.$nextTick();
+
+    const row = wrapper.find('.session-item[data-session-id="root"]');
+    const meta = row.find(".session-item__meta");
+    expect(meta.exists()).toBe(true);
+    expect(meta.find(".mono").exists()).toBe(false);
+    expect(meta.text()).toContain("1 waiting");
+    expect(row.text()).toContain("Root session");
+    wrapper.unmount();
+  });
+
   it("aggregates child prompt waits onto ancestors and excludes the active session", async () => {
     const { wrapper, pinia } = await mountChat("/chat?app=alpha&project=p&session=child", {
       sessions: TREE,

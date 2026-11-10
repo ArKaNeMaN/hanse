@@ -259,7 +259,8 @@ insets for text baselines, not layout rhythm; all layout gaps use the 4px scale 
 | `--gutter-md` | `1.5rem` (24px) | 768-1023px |
 | `--gutter-sm` | `1rem` (16px) | < 768px |
 | `--reading-measure` | `68ch` | Prose and handoff spec |
-| `--chat-sessions` | `16rem` (256px) | Chat session rail |
+| `--chat-sessions` | `17rem` (272px) | Chat session rail below 1536px |
+| `--chat-sessions-wide` | `25.5rem` (408px) | Chat session rail at >= 1536px |
 | `--chat-context` | `20rem` (320px) | Chat handoff panel |
 | `--pane-drawer-w` | `20rem` (320px) | Mobile drawer / context sheet |
 
@@ -380,8 +381,9 @@ a search input. Rows are `.handoff-row` with route line + summary + mono id + st
 Awaiting rows expose Approve (primary) and Reject (danger ghost) inline; approval opens a
 `.dialog` with the spec excerpt and a reason field. On mobile rows stack with the route line
 above the summary.
-6. **Chat workspace.** Three panes at >= 1360: session rail 256px (`list-detail` list), thread
-`minmax(0,1fr)` (the scroll owner), handoff context 320px (`supporting-pane`). The page itself
+6. **Chat workspace.** Three panes at >= 1360: session rail 272px, widening to 408px at
+>= 1536px (`list-detail` list), thread `minmax(0,1fr)` (the scroll owner), handoff context 320px
+(`supporting-pane`). The page itself
 never scrolls; the thread owns the only vertical scroll and the composer is a fixed footer inside
 it. At 1024-1359 and 768-1023 the session rail stays static and the context pane becomes a
 right-side drawer opened from the top bar, with scrim, Escape, and focus return. Below 768 the
@@ -791,11 +793,13 @@ is a compact link with a mono id, state pill, summary, and route.
   carries the `tabindex="-1"` status chip used as the focus fallback; `.tool-call__preview` is the
   wrapping key plus `Open preview` action row; `.tool-call__note` is the demo hint with 12px inline
   padding. No accent edge, no disclosure behavior, no port.
-- `.session-item`: full-width list button, title plus mono short id/time; hover wash, active
-`--wash-2` plus a brass check and `aria-current`.
-- `.chat-thread__meta`: session title, mono short id, live status, message count, working indicator,
-and stream retry. `.chat-live` carries a status dot plus text (`Live`, `Reconnecting`, `Paused`,
-`Starting agent...`); `.chat-working` is a spinner plus label. `.chat-new-messages` floats above the
+- `.session-item`: full-width list button; title clamps to two lines with a full-title `title`
+attribute, the rail row omits the session short id, and the waiting flag stays in
+`.session-item__meta`; hover wash, active `--wash-2` plus a brass check and `aria-current`.
+- `.chat-thread__meta`: session title (uses the available header width, ellipsizing only when it
+must), mono short id, live status, message count, working indicator, and stream retry. `.chat-live`
+carries a status dot plus text (`Live`, `Reconnecting`, `Paused`, `Starting agent...`);
+`.chat-working` is a spinner plus label. `.chat-new-messages` floats above the
 composer only when the reader is away from the bottom.
 - `.page--chat` / `.page__body--chat`: a non-scrolling page shell for the workspace; no chart ground.
 `.chat-shell--workspace` is the three-pane grid. `.chat-scrim` is the drawer scrim; drawer state is
