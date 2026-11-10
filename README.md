@@ -196,4 +196,7 @@ docker compose -f compose.yaml -f compose.build.yaml up -d --build
 
 ## License
 
-Not yet chosen. See [`LICENSE`](LICENSE).
+[MIT](LICENSE) © 2026 ArKaNeMaN.
+
+Third-party components and their licenses are listed in
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).

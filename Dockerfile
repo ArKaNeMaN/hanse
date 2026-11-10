@@ -100,7 +100,7 @@ COPY --from=nodejs /usr/local/bin/node /usr/local/bin/node
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/assets ./assets
-COPY package.json LICENSE ./
+COPY package.json LICENSE THIRD_PARTY_NOTICES.md ./
 COPY extensions ./extensions
 COPY shell/hanse-shell /usr/local/bin/hanse-shell
 COPY omo/omo.jsonc /home/coder/.omo/omo.jsonc
@@ -197,7 +197,7 @@ RUN apt-get update \
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
-COPY package.json LICENSE ./
+COPY package.json LICENSE THIRD_PARTY_NOTICES.md ./
 COPY --from=opencode /usr/local/lib/node_modules/opencode-ai /usr/local/lib/node_modules/opencode-ai
 COPY --from=omo /opt/hanse/omo /opt/hanse/omo
 COPY --from=codegraph /opt/hanse/codegraph /opt/hanse/codegraph

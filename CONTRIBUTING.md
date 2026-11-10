@@ -27,3 +27,8 @@ npm run build
 
 - Keep changes focused and describe the motivation.
 - Ensure CI passes.
+
+## License
+
+By contributing, you agree that your contributions are licensed under the project's
+[MIT license](LICENSE).

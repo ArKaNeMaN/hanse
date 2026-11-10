@@ -4,6 +4,7 @@
   "description": "Chat with the hanse agent for each application.",
   "publisher": "hanse",
   "version": "0.1.0",
+  "license": "MIT",
   "engines": {
     "vscode": "^1.80.0"
   },
