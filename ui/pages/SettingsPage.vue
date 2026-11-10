@@ -319,7 +319,6 @@ watch(
             <AppIcon name="refresh" />Retry
           </button>
           <RouterLink class="btn btn-secondary btn-sm" to="/settings">Global settings</RouterLink>
-          <a class="btn btn-ghost btn-sm" href="?legacy=1">Use the classic interface</a>
         </div>
       </div>
     </section>
