@@ -185,12 +185,12 @@ Query parameters:
 
 ## Chat QA
 
-`CHAT_QA_ONLY=session-tree node docs/design/chat-qa.mjs` runs only the session-tree scenario; its
-report is copied to `artifacts/chat/session-tree-report.json`. The Phase C turn-state gate runs
-`CHAT_QA_MODE=spa CHAT_QA_ONLY=turn-status node docs/design/chat-qa.mjs`. The full deterministic SPA
-run still stops at the pre-existing `main` feed/composer width assertion (`501` vs `568`), whose
-legacy selectors and measurements predate the SPA chat cutover; the Phase C gate therefore uses the
-exact `turn-status` scenario set and does not attribute that failure to this stage.
+The deterministic harness is SPA-only. Targeted runs use
+`CHAT_QA_ONLY=<name> node docs/design/chat-qa.mjs`, for example
+`CHAT_QA_ONLY=turn-status node docs/design/chat-qa.mjs`. The full deterministic run still stops at
+the pre-existing `main` feed/composer width assertion (`501` vs `568`), whose legacy selectors and
+measurements predate the SPA chat cutover; targeted SPA scenarios are the usable path and do not
+attribute that failure to a single stage.
 
 `node docs/design/chat-qa.mjs` is the phase-6 browser gate for the chat UX overhaul. It self-starts
 a throwaway server (or targets `CHAT_QA_URL`/`CHAT_QA_TOKEN`), intercepts `/api/apps/**` with
