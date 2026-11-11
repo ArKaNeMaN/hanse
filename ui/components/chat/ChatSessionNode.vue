@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import type { SessionTree } from "../../../assets/chat-core.js";
+import type { HanseSessionStatus } from "../../../src/opencode/events.js";
 import { type ChatSessionSummary, chatSessionLabel } from "../../stores/chat-session.js";
 import AppIcon from "../AppIcon.vue";
 
@@ -16,6 +17,7 @@ const props = defineProps<{
   activeSession: string | null;
   deleting: ReadonlySet<string>;
   waitingTotals: ReadonlyMap<string, number>;
+  statusBySession: ReadonlyMap<string, HanseSessionStatus>;
 }>();
 
 const emit = defineEmits<{
@@ -41,6 +43,19 @@ const isExpanded = computed(
 );
 const childrenID = computed(() => `session-children-${props.nodeId}`);
 const waiting = computed(() => props.waitingTotals.get(props.nodeId) ?? 0);
+const ownStatus = computed(() => props.statusBySession.get(props.nodeId) ?? null);
+const statusText = computed(() => {
+  if (waiting.value > 0) {
+    return null;
+  }
+  if (ownStatus.value?.type === "busy") {
+    return "Working";
+  }
+  if (ownStatus.value?.type === "retry") {
+    return "Retrying";
+  }
+  return null;
+});
 const isDeleting = computed(() => props.deleting.has(props.nodeId));
 const depth = computed(() => Math.min(props.depth, 5));
 </script>
@@ -79,11 +94,18 @@ const depth = computed(() => Math.min(props.depth, 5));
           <span class="session-item__title">{{ label }}</span>
           <AppIcon v-if="active" name="check" class-name="icon--sm" />
         </span>
-        <span v-if="waiting > 0" class="session-item__meta">
-          <span class="session-item__flag" :aria-label="`${waiting} requests need input`"
+        <span v-if="waiting > 0 || statusText !== null" class="session-item__meta">
+          <span
+            v-if="waiting > 0"
+            class="session-item__flag"
+            :aria-label="`${waiting} requests need input`"
             >{{ waiting }}
             waiting</span
           >
+          <span v-else-if="statusText !== null" class="session-item__status">
+            <span class="session-item__status-dot" aria-hidden="true"></span>
+            {{ statusText }}
+          </span>
         </span>
       </button>
       <button
@@ -117,6 +139,7 @@ const depth = computed(() => Math.min(props.depth, 5));
         :active-session="activeSession"
         :deleting="deleting"
         :waiting-totals="waitingTotals"
+        :status-by-session="statusBySession"
         @select="emit('select', $event)"
         @toggle="emit('toggle', $event)"
         @delete="emit('delete', $event)"

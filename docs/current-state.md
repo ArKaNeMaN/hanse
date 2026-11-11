@@ -812,6 +812,10 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   `POST .../sessions/:sid/pending/:pid/retry`, `DELETE .../sessions/:sid/pending/:pid`,
   `POST /api/apps/:app/attachments`, and `GET/PATCH/DELETE /api/apps/:app/attachments/:id`;
   all accept `?project=<projectId>`.
+  `GET /api/apps/:app/sessions` also returns an additive per-session
+  `status: {type}` (`idle | busy | retry`). The field is omitted when the bounded (1.5 s)
+  `/session/status` read fails or the upstream type is unrecognized; only `type` is exposed, and an
+  absent upstream entry means `idle`.
   `GET .../messages` accepts optional `limit` (1..200) and `before` (an opaque upstream cursor);
   with `limit` it returns `{messages, nextCursor}` and the chat opens a 30-message tail. Without
   `limit` the legacy `{messages}` full-history response is unchanged.
@@ -831,8 +835,13 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   session-scoped chat state (drafts, attachments, deliveries, pending sends, `session_state`, and
   the session folder) for its descendants, best effort under opencode's 100-session window. Titles
   wrap to two lines and the rail no longer shows the short session id.
-  Session lifecycle is not realtime in this stage: child sessions appear on the existing refresh
-  triggers (boot, focus, visibility, selection, send, idle/reconnect).
+  The rail also shows a live per-session agent status from the list snapshot plus the existing app
+  SSE: `Working` for `busy`, `Retrying` for `retry`, and nothing for `idle`/unknown. The waiting
+  badge always wins over the status. A stream gap or reconnect clears and refetches the status map,
+  and the active row is reconciled from the `/turn` snapshot.
+  Session lifecycle (list membership) is not realtime in this stage: child sessions appear on the
+  existing refresh triggers (boot, focus, visibility, selection, send, idle/reconnect). The
+  per-session agent status above is live via SSE.
 - Session switching is optimistic and cancelable: the rail, title, URL, and message skeleton switch
   immediately, the previous draft is flushed in the background, the in-flight message/history read is
   aborted, and a selection generation makes the last click win. The thread mutes its current content

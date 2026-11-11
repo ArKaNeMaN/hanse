@@ -40,6 +40,54 @@ describe("chat session store", () => {
     expect(session.agentStatusFor("ses_b")).toEqual({ type: "busy" });
     expect(session.agentStatusFor("ses_a")).toBeNull();
   });
+
+  it("seeds a missing agent status from the session list", () => {
+    const session = useChatSessionStore();
+    session.setSessions([
+      { id: "ses_a", status: { type: "busy" } },
+      { id: "ses_b", status: { type: "retry" } },
+      { id: "ses_c" },
+    ]);
+
+    expect(session.agentStatusFor("ses_a")).toEqual({ type: "busy" });
+    expect(session.agentStatusFor("ses_b")).toEqual({ type: "retry" });
+    expect(session.agentStatusFor("ses_c")).toBeNull();
+  });
+
+  it("preserves an existing agent status over a list snapshot", () => {
+    const session = useChatSessionStore();
+    session.setAgentStatus("ses_a", { type: "idle" });
+    session.setSessions([{ id: "ses_a", status: { type: "busy" } }]);
+
+    expect(session.agentStatusFor("ses_a")).toEqual({ type: "idle" });
+  });
+
+  it("prunes agent statuses for sessions removed from the list", () => {
+    const session = useChatSessionStore();
+    session.setSessions([{ id: "ses_a" }, { id: "ses_b" }]);
+    session.setAgentStatus("ses_a", { type: "busy" });
+    session.setAgentStatus("ses_b", { type: "retry" });
+
+    session.setSessions([{ id: "ses_b", status: { type: "idle" } }]);
+
+    expect(session.agentStatusFor("ses_a")).toBeNull();
+    expect(session.agentStatusFor("ses_b")).toEqual({ type: "retry" });
+  });
+
+  it("clears agent statuses without touching waiting counts, tree, or selection", () => {
+    const session = useChatSessionStore();
+    session.setSessions([{ id: "ses_a", title: "A" }]);
+    session.setActive("ses_a");
+    session.trackPromptPending("ses_a", "question:1");
+    session.setAgentStatus("ses_a", { type: "busy" });
+
+    session.clearAgentStatuses();
+
+    expect(session.statusBySession.size).toBe(0);
+    expect(session.sessions.map((item) => item.id)).toEqual(["ses_a"]);
+    expect(session.activeSessionID).toBe("ses_a");
+    expect(session.waitingCountFor("ses_a")).toBe(1);
+  });
 });
 
 describe("chat context store", () => {

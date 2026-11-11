@@ -120,6 +120,7 @@ import {
   lastAssistant,
   listMessagePage,
   listMessages,
+  listSessionStatusesForList,
   listSessions,
   listSessionsBounded,
   MESSAGES_EMPTY_CHECK_MAX_BYTES,
@@ -1894,22 +1895,42 @@ async function withReadEndpoint<T>(
 async function readSessionsResponse(deps: HttpDeps, found: FoundApp): Promise<HttpResponse> {
   try {
     return await withReadEndpoint(deps, found, async (endpoint) => {
+      const statusesPromise = listSessionStatusesForList(endpoint).catch(() => undefined);
       const sessions = await listSessions(endpoint);
+      const statuses = await statusesPromise;
       const summaries = draftSummaries(
         deps.db,
         found.app.id,
         sessions.map((session) => session.id),
       );
       return json(200, {
-        sessions: sessions.map((session) => ({
-          ...session,
-          draft: summaries.get(session.id) ?? {
-            hasText: false,
-            attachmentCount: 0,
-            emptyDraft: false,
-            updatedAt: null,
-          },
-        })),
+        sessions: sessions.map((session) => {
+          const base = { ...session };
+          delete base.status;
+          const upstream = statuses?.[session.id];
+          let status: { type: string } | undefined;
+          if (statuses !== undefined) {
+            if (upstream === undefined) {
+              status = { type: "idle" };
+            } else if (
+              upstream.type === "idle" ||
+              upstream.type === "busy" ||
+              upstream.type === "retry"
+            ) {
+              status = { type: upstream.type };
+            }
+          }
+          return {
+            ...base,
+            ...(status === undefined ? {} : { status }),
+            draft: summaries.get(session.id) ?? {
+              hasText: false,
+              attachmentCount: 0,
+              emptyDraft: false,
+              updatedAt: null,
+            },
+          };
+        }),
       });
     });
   } catch (error) {

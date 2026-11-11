@@ -209,6 +209,7 @@ export const SESSIONS_RESPONSE_MAX_BYTES = 2 * 1024 * 1024;
 export const SESSIONS_RESPONSE_TIMEOUT_MS = 5_000;
 export const SESSION_STATUS_RESPONSE_MAX_BYTES = 1024 * 1024;
 export const SESSION_STATUS_RESPONSE_TIMEOUT_MS = 5_000;
+export const SESSION_LIST_STATUS_TIMEOUT_MS = 1_500;
 const MAX_SESSION_STATUS_ENTRIES = 2_000;
 /** Explicit small cap for the bounded turn-tail read (design §4.1 / plan A2). */
 export const TURN_TAIL_MAX_BYTES = 2 * 1024 * 1024;
@@ -277,7 +278,36 @@ export async function listSessionStatuses(endpoint: string): Promise<OpencodeSes
     },
     SESSION_STATUS_RESPONSE_TIMEOUT_MS,
   );
-  if (typeof body !== "object" || body === null || Array.isArray(body)) return {};
+  return parseSessionStatusMap(body) ?? {};
+}
+
+/**
+ * Tolerant reader for the session-list merge: a valid empty object means "no active sessions",
+ * while a malformed top-level body is an error so the caller can omit the status instead of
+ * fabricating idle.
+ */
+export async function listSessionStatusesForList(
+  endpoint: string,
+): Promise<OpencodeSessionStatusMap> {
+  const path = "/session/status";
+  const body = await getJson<unknown>(
+    endpoint,
+    path,
+    {
+      maxBytes: SESSION_STATUS_RESPONSE_MAX_BYTES,
+      timeoutMs: SESSION_LIST_STATUS_TIMEOUT_MS,
+    },
+    SESSION_LIST_STATUS_TIMEOUT_MS,
+  );
+  const statuses = parseSessionStatusMap(body);
+  if (statuses === null) {
+    throw new OpencodeHttpError(path, 0, "response body is not a session status map");
+  }
+  return statuses;
+}
+
+function parseSessionStatusMap(body: unknown): OpencodeSessionStatusMap | null {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) return null;
   const statuses: OpencodeSessionStatusMap = {};
   let count = 0;
   for (const [sessionId, value] of Object.entries(body)) {

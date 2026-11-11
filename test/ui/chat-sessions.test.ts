@@ -161,4 +161,84 @@ describe("chat sessions rail", () => {
     expect(wrapper.find('[data-session-id="root"] .session-item__flag').exists()).toBe(false);
     wrapper.unmount();
   });
+
+  it("renders Working and Retrying for busy and retry rows and nothing for idle or absent", async () => {
+    const { wrapper } = await mountChat("/chat?app=alpha&project=p&session=root", {
+      sessions: [
+        { id: "root", title: "Root session" },
+        { id: "busy", title: "Busy session", status: { type: "busy" } },
+        { id: "retry", title: "Retry session", status: { type: "retry" } },
+        { id: "idle", title: "Idle session", status: { type: "idle" } },
+        { id: "absent", title: "Absent session" },
+      ],
+    });
+
+    expect(wrapper.find('.session-item[data-session-id="busy"] .session-item__status').text()).toBe(
+      "Working",
+    );
+    expect(
+      wrapper.find('.session-item[data-session-id="retry"] .session-item__status').text(),
+    ).toBe("Retrying");
+    expect(
+      wrapper.find('.session-item[data-session-id="idle"] .session-item__status').exists(),
+    ).toBe(false);
+    expect(
+      wrapper.find('.session-item[data-session-id="absent"] .session-item__status').exists(),
+    ).toBe(false);
+    expect(
+      wrapper.find('.session-item[data-session-id="root"] .session-item__status').exists(),
+    ).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("keeps the waiting badge above a busy status", async () => {
+    const { wrapper, pinia } = await mountChat("/chat?app=alpha&project=p&session=root", {
+      sessions: [
+        { id: "root", title: "Root session" },
+        { id: "busy", title: "Busy session", status: { type: "busy" } },
+      ],
+    });
+    const sessions = useChatSessionStore(pinia);
+    sessions.trackPromptPending("busy", "question:busy");
+    await wrapper.vm.$nextTick();
+
+    const row = wrapper.find('.session-item[data-session-id="busy"]');
+    expect(row.find(".session-item__flag").text()).toContain("1 waiting");
+    expect(row.find(".session-item__status").exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("shows the waiting badge instead of a status for the active session with a waiting descendant", async () => {
+    const { wrapper, pinia } = await mountChat("/chat?app=alpha&project=p&session=child", {
+      sessions: TREE,
+      turn: { status: { type: "busy" } },
+    });
+    const sessions = useChatSessionStore(pinia);
+    sessions.trackPromptPending("grand", "question:grand");
+    await wrapper.vm.$nextTick();
+
+    const row = wrapper.find('.session-item[data-session-id="child"]');
+    expect(row.find(".session-item__flag").text()).toContain("1 waiting");
+    expect(row.find(".session-item__status").exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("adds no live region and no extra focusable element for the status indicator", async () => {
+    const { wrapper } = await mountChat("/chat?app=alpha&project=p&session=root", {
+      sessions: [
+        { id: "root", title: "Root session" },
+        { id: "busy", title: "Busy session", status: { type: "busy" } },
+      ],
+    });
+
+    const status = wrapper.find('.session-item[data-session-id="busy"] .session-item__status');
+    expect(status.exists()).toBe(true);
+    expect(status.attributes("role")).toBeUndefined();
+    expect(status.find('[role="status"]').exists()).toBe(false);
+    expect(status.find(".session-item__status-dot").attributes("aria-hidden")).toBe("true");
+    expect(
+      status.findAll('a[href], button, input, select, textarea, [tabindex]:not([tabindex="-1"])'),
+    ).toHaveLength(0);
+    wrapper.unmount();
+  });
 });

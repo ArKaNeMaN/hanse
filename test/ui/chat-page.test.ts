@@ -1,6 +1,7 @@
 import { QueryClient } from "@tanstack/vue-query";
 import { flushPromises } from "@vue/test-utils";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { useChatSessionStore } from "../../ui/stores/chat-session.js";
 import { useToastStore } from "../../ui/stores/toasts.js";
 import {
   chatEventSource,
@@ -1217,6 +1218,125 @@ describe("ChatPage read-only shell", () => {
       wrapper?.unmount();
       vi.useRealTimers();
     }
+  });
+});
+
+describe("ChatPage agent status wiring", () => {
+  function sessionGetCount(
+    fetchState: Awaited<ReturnType<typeof mountChat>>["fetchState"],
+  ): number {
+    return fetchState.requests.filter(
+      (request) => request.method === "GET" && /\/sessions(?:\?|$)/.test(request.url),
+    ).length;
+  }
+
+  it("clears the status map and refetches sessions on a seq gap", async () => {
+    const { wrapper, pinia, fetchState } = await mountChat("/chat?app=alpha&project=p&session=s1", {
+      sessions: [{ id: "s1" }, { id: "s2" }],
+    });
+    const sessions = useChatSessionStore(pinia);
+    const source = chatEventSource();
+    if (source === undefined) throw new Error("missing source");
+    source.open();
+    source.emit({ type: "stream.ready", seq: 1, streamID: "stream-gap" });
+    await flushPromises();
+    sessions.setAgentStatus("s2", { type: "busy" });
+    const before = sessionGetCount(fetchState);
+
+    source.emit({
+      type: "stream.warning",
+      seq: 5,
+      streamID: "stream-gap",
+      sessionID: "s1",
+      code: "stream_budget",
+      message: "Synthetic gap warning.",
+    });
+    await flushPromises();
+
+    expect(sessions.agentStatusFor("s2")).toBeNull();
+    expect(sessionGetCount(fetchState)).toBeGreaterThan(before);
+    wrapper.unmount();
+  });
+
+  it("clears the status map and refetches sessions on a new stream id", async () => {
+    const { wrapper, pinia, fetchState } = await mountChat("/chat?app=alpha&project=p&session=s1", {
+      sessions: [{ id: "s1" }, { id: "s2" }],
+    });
+    const sessions = useChatSessionStore(pinia);
+    const source = chatEventSource();
+    if (source === undefined) throw new Error("missing source");
+    source.open();
+    source.emit({ type: "stream.ready", seq: 0, streamID: "stream-old" });
+    await flushPromises();
+    sessions.setAgentStatus("s2", { type: "busy" });
+    const before = sessionGetCount(fetchState);
+
+    source.emit({
+      type: "stream.warning",
+      seq: 1,
+      streamID: "stream-new",
+      sessionID: "s1",
+      code: "stream_budget",
+      message: "Synthetic reconnect warning.",
+    });
+    await flushPromises();
+
+    expect(sessions.agentStatusFor("s2")).toBeNull();
+    expect(sessionGetCount(fetchState)).toBeGreaterThan(before);
+    wrapper.unmount();
+  });
+
+  it("reconciles the active row from the turn snapshot and ignores unknown", async () => {
+    const cases = [
+      { status: "busy", text: "Working" },
+      { status: "retry", text: "Retrying" },
+      { status: "idle", text: null },
+      { status: "unknown", text: null },
+    ] as const;
+
+    for (const entry of cases) {
+      const { wrapper, pinia } = await mountChat("/chat?app=alpha&project=p&session=s1", {
+        turn: { status: { type: entry.status } },
+      });
+      const sessions = useChatSessionStore(pinia);
+      const indicator = wrapper.find('.session-item[data-session-id="s1"] .session-item__status');
+
+      if (entry.status === "unknown") {
+        expect(sessions.agentStatusFor("s1")).toBeNull();
+      } else {
+        expect(sessions.agentStatusFor("s1")?.type).toBe(entry.status);
+      }
+      if (entry.text === null) {
+        expect(indicator.exists()).toBe(false);
+      } else {
+        expect(indicator.text()).toBe(entry.text);
+      }
+      wrapper.unmount();
+    }
+  });
+
+  it("resets the aborted session status on the intentional-abort early return", async () => {
+    const { wrapper, pinia } = await mountChat("/chat?app=alpha&project=p&session=s1");
+    const sessions = useChatSessionStore(pinia);
+    const source = chatEventSource();
+    if (source === undefined) throw new Error("missing source");
+    source.open();
+    source.emit({ type: "stream.ready", seq: 0, streamID: "stream-abort" });
+    await flushPromises();
+    sessions.setAgentStatus("s2", { type: "busy" });
+
+    source.emit({
+      type: "session.error",
+      seq: 1,
+      streamID: "stream-abort",
+      sessionID: "s2",
+      name: "MessageAbortedError",
+      message: "aborted by user",
+    });
+    await flushPromises();
+
+    expect(sessions.agentStatusFor("s2")).toEqual({ type: "idle" });
+    wrapper.unmount();
   });
 });
 

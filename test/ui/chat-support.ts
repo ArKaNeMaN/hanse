@@ -81,7 +81,12 @@ export interface ChatFixture {
   readonly processAfterStart?: ProcessSnapshot | null;
   readonly processMissing?: boolean;
   readonly runtimeState?: ChatResponse["runtime"]["state"];
-  readonly sessions?: readonly { id: string; title?: string; parentID?: string }[];
+  readonly sessions?: readonly {
+    id: string;
+    title?: string;
+    parentID?: string;
+    status?: { type: string };
+  }[];
   readonly sessionsStatus?: number;
   readonly sessionsCode?: string;
   readonly sessionsGate?: Promise<void>;

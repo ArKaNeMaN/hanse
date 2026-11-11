@@ -5740,6 +5740,43 @@
     block-size: 0.75rem;
   }
 
+  .session-item__status {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    color: var(--text-2);
+    font-family: var(--font-mono);
+    font-size: var(--text-micro);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  .session-item__status-dot {
+    inline-size: 0.375rem;
+    block-size: 0.375rem;
+    border-radius: 999px;
+    background: currentColor;
+    animation: hns-session-status-pulse 1.4s ease-in-out infinite;
+  }
+
+  @keyframes hns-session-status-pulse {
+    0%,
+    100% {
+      opacity: 0.4;
+    }
+
+    50% {
+      opacity: 1;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .session-item__status-dot {
+      animation: none;
+      opacity: 0.8;
+    }
+  }
+
   /* ------------------------------------------------------------------ */
   /* Chat UX overhaul: queue, notices, optimistic/system rows           */
   /* ------------------------------------------------------------------ */

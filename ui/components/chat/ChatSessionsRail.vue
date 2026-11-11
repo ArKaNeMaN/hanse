@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { collectSubtreeIds, type SessionTree } from "../../../assets/chat-core.js";
+import type { HanseSessionStatus } from "../../../src/opencode/events.js";
 import { type ChatSessionSummary, chatSessionLabel } from "../../stores/chat-session.js";
 import AppIcon from "../AppIcon.vue";
 import ChatSessionNode from "./ChatSessionNode.vue";
@@ -15,6 +16,7 @@ const props = defineProps<{
   stopped: boolean;
   deleting: ReadonlySet<string>;
   waitingCounts: ReadonlyMap<string, number>;
+  statusBySession: ReadonlyMap<string, HanseSessionStatus>;
 }>();
 
 const emit = defineEmits<{
@@ -184,6 +186,7 @@ function requestDelete(sessionID: string): void {
           :active-session="activeSession"
           :deleting="deleting"
           :waiting-totals="waitingTotals"
+          :status-by-session="statusBySession"
           @select="emit('select', $event)"
           @toggle="emit('toggle', $event)"
           @delete="requestDelete"

@@ -22,6 +22,7 @@ export interface ChatSessionSummary {
   title?: string;
   parentID?: string;
   time?: { created?: number; updated?: number };
+  status?: HanseSessionStatus;
   [key: string]: unknown;
 }
 
@@ -88,6 +89,26 @@ export const useChatSessionStore = defineStore("chat-session", () => {
     sessions.value = markRaw([...normalized]);
     tree.value = markRaw(buildSessionTree(normalized));
     expandAncestors(activeSessionID.value);
+
+    // Keep a live SSE transition over an older list snapshot: prune removed ids, then seed only
+    // rows that have no kept entry. A row without `status` is unknown, never idle.
+    const present = new Set(normalized.map((session) => session.id));
+    const nextStatus = new Map<string, HanseSessionStatus>();
+    for (const [id, status] of statusBySession.value) {
+      if (present.has(id)) {
+        nextStatus.set(id, status);
+      }
+    }
+    for (const session of normalized) {
+      if (nextStatus.has(session.id)) {
+        continue;
+      }
+      if (session.status === undefined) {
+        continue;
+      }
+      nextStatus.set(session.id, session.status);
+    }
+    statusBySession.value = markRaw(nextStatus);
   }
 
   function setTree(next: SessionTree | null): void {
@@ -141,6 +162,10 @@ export const useChatSessionStore = defineStore("chat-session", () => {
       return null;
     }
     return statusBySession.value.get(sessionID) ?? null;
+  }
+
+  function clearAgentStatuses(): void {
+    statusBySession.value = markRaw(new Map<string, HanseSessionStatus>());
   }
 
   function publishWaiting(): void {
@@ -282,6 +307,7 @@ export const useChatSessionStore = defineStore("chat-session", () => {
     toggleExpanded,
     setAgentStatus,
     agentStatusFor,
+    clearAgentStatuses,
     trackPromptPending,
     resolvePromptPending,
     waitingCountFor,

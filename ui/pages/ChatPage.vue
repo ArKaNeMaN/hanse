@@ -208,6 +208,15 @@ watch(
   turnProjection,
   (projection) => {
     feed.applyTurnState(projection);
+    const activeId = routeState.session.value;
+    const type = projection.statusType;
+    if (
+      activeId !== null &&
+      (type === "idle" || type === "busy" || type === "retry") &&
+      sessionStore.agentStatusFor(activeId)?.type !== type
+    ) {
+      sessionStore.setAgentStatus(activeId, { type });
+    }
   },
   { immediate: true, deep: true },
 );
@@ -1743,6 +1752,7 @@ function handleEvent(event: InboundChatEvent): void {
     feed.settleIdle();
     if (typeof event.sessionID === "string") {
       turn.applySseStatus(event.sessionID, { type: "idle" });
+      sessionStore.setAgentStatus(event.sessionID, { type: "idle" });
     }
     refreshTurn("session-error");
     return;
@@ -1780,6 +1790,8 @@ const chatStream = useChatStream({
     feed.setStreamWarning(message);
     scheduleReconcile(reason, 0);
     refreshTurn(`stream-${reason}`);
+    sessionStore.clearAgentStatuses();
+    void sessionsQuery.refetch();
   },
   onLimit: (message) => {
     feed.setStreamWarning(message);
@@ -2353,6 +2365,7 @@ onBeforeUnmount(() => {
         :active-session="routeState.session.value"
         :expanded="sessionStore.expanded"
         :waiting-counts="sessionStore.waitingCountBySession"
+        :status-by-session="sessionStore.statusBySession"
         :loading="sessionsQuery.isPending.value"
         :error="sessionsError"
         :stopped="stopped"

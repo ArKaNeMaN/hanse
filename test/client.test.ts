@@ -19,6 +19,7 @@ import {
   listQuestionsV2Strict,
   listSavedPermissions,
   listSessionStatuses,
+  listSessionStatusesForList,
   listSessionStatusesStrict,
   listSessions,
   listSessionsBounded,
@@ -36,6 +37,7 @@ import {
   replyPermissionV2,
   replyQuestion,
   replyQuestionV2,
+  SESSION_LIST_STATUS_TIMEOUT_MS,
   SESSION_STATUS_RESPONSE_MAX_BYTES,
   SESSION_STATUS_RESPONSE_TIMEOUT_MS,
   SESSIONS_RESPONSE_MAX_BYTES,
@@ -918,6 +920,45 @@ describe("session status client", () => {
     );
     expect(error).toBeInstanceOf(OpencodeHttpError);
     expect((error as OpencodeHttpError).bodyExcerpt).toContain("malformed status entry");
+  });
+
+  it("reads the list status map and accepts a valid empty map", async () => {
+    let body: unknown = {
+      ses_busy: { type: "busy" },
+      ses_retry: { type: "retry", attempt: 2, message: "retrying", next: 5 },
+    };
+    const server = await upstream((_request, response) => json(response, body));
+
+    await expect(listSessionStatusesForList(server.endpoint)).resolves.toEqual(body);
+
+    body = {};
+    await expect(listSessionStatusesForList(server.endpoint)).resolves.toEqual({});
+    expect(SESSION_LIST_STATUS_TIMEOUT_MS).toBe(1_500);
+  });
+
+  it("rejects a malformed list status body", async () => {
+    const server = await upstream((_request, response) => json(response, []));
+
+    const error = await listSessionStatusesForList(server.endpoint).catch(
+      (caught: unknown) => caught,
+    );
+    expect(error).toBeInstanceOf(OpencodeHttpError);
+    expect((error as OpencodeHttpError).bodyExcerpt).toContain("not a session status map");
+  });
+
+  it("drops malformed list status entries and keeps good ones", async () => {
+    const server = await upstream((_request, response) =>
+      json(response, {
+        ses_busy: { type: "busy", action: { kind: "run" } },
+        ses_bad: { label: "no type" },
+        ses_null: null,
+        ses_list: [],
+      }),
+    );
+
+    await expect(listSessionStatusesForList(server.endpoint)).resolves.toEqual({
+      ses_busy: { type: "busy", action: { kind: "run" } },
+    });
   });
 });
 

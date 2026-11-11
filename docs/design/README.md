@@ -88,6 +88,11 @@
   parent in the chat rail with disclosure chevrons, multi-level nesting, active-ancestor expansion,
   orphan/cycle handling, subtree delete cleanup, and a deferred realtime follow-up. Status:
   implemented and verified (journal 0032); design review PASS (`oracle` round 3).
+- [Session list live agent status](./session-list-status.md) - an additive per-session coarse status
+  (`idle | busy | retry`) in `GET /sessions`, seeded into the existing SSE status map, and a rail
+  indicator (`Working` / `Retrying`) that is hidden when idle and overridden by the waiting badge.
+  Status: design `oracle` PASS WITH FIXES (findings folded); plan `momus` OKAY WITH FIXES
+  (findings folded); implemented and verified (journal 0053).
 - [Slash commands](./slash-commands.md) - a thin opencode server-command proxy and a small
   Hanse-native command registry merged into one chat palette, with the wire contract, collision
   policy, detached execution, and security analysis. Status: approved (oracle PASS after 2 rounds);

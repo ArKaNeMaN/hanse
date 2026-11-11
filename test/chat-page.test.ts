@@ -228,6 +228,13 @@ async function fakeOpencodeHandler(
   return { endpoint: `http://127.0.0.1:${address.port}`, calls };
 }
 
+async function waitForCalls(calls: UpstreamCall[], count: number): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (calls.length < count && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 function noContent(response: ServerResponse): void {
   response.writeHead(204);
   response.end();
@@ -1382,13 +1389,40 @@ describe("read routes attach to the running agent", () => {
   function emptyUpstream() {
     return fakeOpencodeHandler((incoming, outgoing) => {
       if (incoming.method === "GET") {
+        const path = new URL(incoming.url ?? "/", "http://localhost").pathname;
         outgoing.writeHead(200, { "content-type": "application/json" });
-        outgoing.end("[]");
+        outgoing.end(path === "/session/status" ? "{}" : "[]");
         return;
       }
       outgoing.writeHead(404);
       outgoing.end("missing");
     });
+  }
+
+  function sessionsHandler(input: {
+    sessions: () => unknown;
+    status: () => { code?: number; body: unknown };
+  }): (incoming: IncomingMessage, outgoing: ServerResponse) => void {
+    return (incoming, outgoing) => {
+      const path = new URL(incoming.url ?? "/", "http://localhost").pathname;
+      if (incoming.method === "GET" && path === "/session") {
+        outgoing.writeHead(200, { "content-type": "application/json" });
+        outgoing.end(JSON.stringify(input.sessions()));
+        return;
+      }
+      if (incoming.method === "GET" && path === "/session/status") {
+        const reply = input.status();
+        outgoing.writeHead(reply.code ?? 200, { "content-type": "application/json" });
+        outgoing.end(typeof reply.body === "string" ? reply.body : JSON.stringify(reply.body));
+        return;
+      }
+      outgoing.writeHead(404);
+      outgoing.end("missing");
+    };
+  }
+
+  function sessionRows(response: { body: string }): Array<Record<string, unknown>> {
+    return (JSON.parse(response.body) as { sessions: Array<Record<string, unknown>> }).sessions;
   }
 
   it("reads the session list without ensure when an endpoint is attached", async () => {
@@ -1402,7 +1436,206 @@ describe("read routes attach to the running agent", () => {
     expect(response.status).toBe(200);
     expect(JSON.parse(response.body).sessions).toEqual([]);
     expect(calls).toEqual({ ensure: 0, endpoint: 1 });
-    expect(upstream.calls.map((call) => `${call.method} ${call.url}`)).toEqual(["GET /session"]);
+    await waitForCalls(upstream.calls, 2);
+    expect(upstream.calls.map((call) => `${call.method} ${call.url}`).sort()).toEqual([
+      "GET /session",
+      "GET /session/status",
+    ]);
+  });
+
+  it("merges busy/retry/idle status and defaults an absent entry to idle", async () => {
+    const f = fixture();
+    const upstream = await fakeOpencodeHandler(
+      sessionsHandler({
+        sessions: () => [
+          { id: "ses_busy", title: "Busy" },
+          { id: "ses_retry", title: "Retry" },
+          { id: "ses_idle", title: "Idle" },
+          { id: "ses_absent", title: "Absent" },
+        ],
+        status: () => ({
+          body: {
+            ses_busy: { type: "busy" },
+            ses_retry: { type: "retry" },
+            ses_idle: { type: "idle" },
+          },
+        }),
+      }),
+    );
+    const calls = counters();
+    f.deps.manager = readManager(upstream.endpoint, upstream.endpoint, calls);
+
+    const response = await handleChat(f.deps, sessionsRequest(f));
+
+    expect(response.status).toBe(200);
+    const rows = sessionRows(response);
+    expect(rows.map((row) => row.id)).toEqual(["ses_busy", "ses_retry", "ses_idle", "ses_absent"]);
+    expect(rows.find((row) => row.id === "ses_busy")?.status).toEqual({ type: "busy" });
+    expect(rows.find((row) => row.id === "ses_retry")?.status).toEqual({ type: "retry" });
+    expect(rows.find((row) => row.id === "ses_idle")?.status).toEqual({ type: "idle" });
+    expect(rows.find((row) => row.id === "ses_absent")?.status).toEqual({ type: "idle" });
+  });
+
+  it("omits status for an unrecognized upstream type", async () => {
+    const f = fixture();
+    const upstream = await fakeOpencodeHandler(
+      sessionsHandler({
+        sessions: () => [{ id: "ses_1", title: "One" }],
+        status: () => ({ body: { ses_1: { type: "thinking" } } }),
+      }),
+    );
+    const calls = counters();
+    f.deps.manager = readManager(upstream.endpoint, upstream.endpoint, calls);
+
+    const response = await handleChat(f.deps, sessionsRequest(f));
+
+    expect(response.status).toBe(200);
+    const row = sessionRows(response)[0];
+    expect(row?.id).toBe("ses_1");
+    expect(row).not.toHaveProperty("status");
+  });
+
+  it("keeps the session list and omits status when the status read returns 500", async () => {
+    const f = fixture();
+    const upstream = await fakeOpencodeHandler(
+      sessionsHandler({
+        sessions: () => [{ id: "ses_1", title: "One" }],
+        status: () => ({ code: 500, body: { error: "boom" } }),
+      }),
+    );
+    const calls = counters();
+    f.deps.manager = readManager(upstream.endpoint, upstream.endpoint, calls);
+
+    const response = await handleChat(f.deps, sessionsRequest(f));
+
+    expect(response.status).toBe(200);
+    const row = sessionRows(response)[0];
+    expect(row).toMatchObject({ id: "ses_1", title: "One" });
+    expect(row).not.toHaveProperty("status");
+    expect(row?.draft).toEqual({
+      hasText: false,
+      attachmentCount: 0,
+      emptyDraft: false,
+      updatedAt: null,
+    });
+  });
+
+  it("keeps the session list and omits status when the status read fails in transport", async () => {
+    const f = fixture();
+    const upstream = await fakeOpencodeHandler((incoming, outgoing) => {
+      const path = new URL(incoming.url ?? "/", "http://localhost").pathname;
+      if (incoming.method === "GET" && path === "/session") {
+        outgoing.writeHead(200, { "content-type": "application/json" });
+        outgoing.end(JSON.stringify([{ id: "ses_1", title: "One" }]));
+        return;
+      }
+      if (incoming.method === "GET" && path === "/session/status") {
+        outgoing.destroy();
+        return;
+      }
+      outgoing.writeHead(404);
+      outgoing.end("missing");
+    });
+    const calls = counters();
+    f.deps.manager = readManager(upstream.endpoint, upstream.endpoint, calls);
+
+    const response = await handleChat(f.deps, sessionsRequest(f));
+
+    expect(response.status).toBe(200);
+    const row = sessionRows(response)[0];
+    expect(row).toMatchObject({ id: "ses_1", title: "One" });
+    expect(row).not.toHaveProperty("status");
+  });
+
+  it("omits status when the status body is not a map", async () => {
+    const f = fixture();
+    const upstream = await fakeOpencodeHandler(
+      sessionsHandler({
+        sessions: () => [{ id: "ses_1", title: "One" }],
+        status: () => ({ body: [] }),
+      }),
+    );
+    const calls = counters();
+    f.deps.manager = readManager(upstream.endpoint, upstream.endpoint, calls);
+
+    const response = await handleChat(f.deps, sessionsRequest(f));
+
+    expect(response.status).toBe(200);
+    const row = sessionRows(response)[0];
+    expect(row?.id).toBe("ses_1");
+    expect(row).not.toHaveProperty("status");
+  });
+
+  it("drops a malformed status entry and reports the affected row idle", async () => {
+    const f = fixture();
+    const upstream = await fakeOpencodeHandler(
+      sessionsHandler({
+        sessions: () => [
+          { id: "ses_busy", title: "Busy" },
+          { id: "ses_bad", title: "Bad" },
+        ],
+        status: () => ({
+          body: { ses_busy: { type: "busy" }, ses_bad: { label: "no type" } },
+        }),
+      }),
+    );
+    const calls = counters();
+    f.deps.manager = readManager(upstream.endpoint, upstream.endpoint, calls);
+
+    const response = await handleChat(f.deps, sessionsRequest(f));
+
+    expect(response.status).toBe(200);
+    const rows = sessionRows(response);
+    expect(rows.find((row) => row.id === "ses_busy")?.status).toEqual({ type: "busy" });
+    expect(rows.find((row) => row.id === "ses_bad")?.status).toEqual({ type: "idle" });
+  });
+
+  it("exposes only the status type", async () => {
+    const f = fixture();
+    const upstream = await fakeOpencodeHandler(
+      sessionsHandler({
+        sessions: () => [{ id: "ses_busy", title: "Busy" }],
+        status: () => ({
+          body: {
+            ses_busy: {
+              type: "busy",
+              attempt: 2,
+              message: "working",
+              next: 5,
+              action: { kind: "run" },
+            },
+          },
+        }),
+      }),
+    );
+    const calls = counters();
+    f.deps.manager = readManager(upstream.endpoint, upstream.endpoint, calls);
+
+    const response = await handleChat(f.deps, sessionsRequest(f));
+
+    expect(response.status).toBe(200);
+    const status = sessionRows(response)[0]?.status as Record<string, unknown>;
+    expect(status).toEqual({ type: "busy" });
+    expect(Object.keys(status)).toEqual(["type"]);
+  });
+
+  it("strips an upstream session status when the status read fails", async () => {
+    const f = fixture();
+    const upstream = await fakeOpencodeHandler(
+      sessionsHandler({
+        sessions: () => [{ id: "ses_1", title: "One", status: { type: "busy", message: "leak" } }],
+        status: () => ({ code: 500, body: { error: "boom" } }),
+      }),
+    );
+    const calls = counters();
+    f.deps.manager = readManager(upstream.endpoint, upstream.endpoint, calls);
+
+    const response = await handleChat(f.deps, sessionsRequest(f));
+
+    expect(response.status).toBe(200);
+    const row = sessionRows(response)[0];
+    expect(row).toMatchObject({ id: "ses_1", title: "One" });
+    expect(row).not.toHaveProperty("status");
   });
 
   it("reads a message page without ensure when an endpoint is attached", async () => {
@@ -2365,6 +2598,11 @@ describe("async chat send", () => {
         outgoing.end("[]");
         return;
       }
+      if (incoming.method === "GET" && incoming.url === "/session/status") {
+        outgoing.writeHead(200, { "content-type": "application/json" });
+        outgoing.end("{}");
+        return;
+      }
       if (incoming.method === "GET" && incoming.url === "/session/ses_1/message") {
         outgoing.writeHead(200, { "content-type": "application/json" });
         outgoing.end("[]");
@@ -2406,9 +2644,11 @@ describe("async chat send", () => {
       asyncRequest({ headers: auth(f.token), query: { project: "p2", async: "1" } }),
     );
     expect(sent.status).toBe(202);
-    expect(upstream.calls.map((call) => `${call.method} ${call.url}`)).toEqual([
+    await waitForCalls(upstream.calls, 4);
+    expect(upstream.calls.map((call) => `${call.method} ${call.url}`).sort()).toEqual([
       "GET /session",
       "GET /session/ses_1/message",
+      "GET /session/status",
       "POST /session/ses_1/prompt_async",
     ]);
   });
