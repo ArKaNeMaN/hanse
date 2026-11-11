@@ -610,12 +610,21 @@ export async function handlePrompts(deps: HttpDeps, request: HttpRequest): Promi
   switch (match.kind) {
     case "prompts":
       return handlePromptsList(deps, found, endpoint);
-    case "question-reply":
-      return handleQuestionReply(request, match, found, endpoint);
-    case "question-reject":
-      return handleQuestionReject(request, match, found, endpoint);
-    case "permission-reply":
-      return handlePermissionReply(request, match, found, endpoint);
+    case "question-reply": {
+      const response = await handleQuestionReply(request, match, found, endpoint);
+      if (response.status === 200) deps.manager.noteActivity?.(found.app.id, "answer");
+      return response;
+    }
+    case "question-reject": {
+      const response = await handleQuestionReject(request, match, found, endpoint);
+      if (response.status === 200) deps.manager.noteActivity?.(found.app.id, "answer");
+      return response;
+    }
+    case "permission-reply": {
+      const response = await handlePermissionReply(request, match, found, endpoint);
+      if (response.status === 200) deps.manager.noteActivity?.(found.app.id, "answer");
+      return response;
+    }
     case "saved-permissions":
       try {
         return json(200, {

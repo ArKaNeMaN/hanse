@@ -243,6 +243,22 @@ describe("group summary metrics", () => {
     expect(item.group.metricsText).toBe("3 notices · 2 restarts");
   });
 
+  it("counts auto_update as a restart", () => {
+    const result = groups([
+      noticeItem(
+        notice({ kind: "agent_stopped", reason: "auto_update", payload: { runtimeEpoch: "e1" } }),
+      ),
+      noticeItem(
+        notice({ kind: "agent_stopped", reason: "auto_update", payload: { runtimeEpoch: "e2" } }),
+      ),
+    ]);
+
+    const [item] = result;
+    if (item?.type !== "notice-group") throw new Error("missing group");
+    expect(item.group.restartCount).toBe(2);
+    expect(item.group.metricsText).toBe("2 notices · 2 restarts");
+  });
+
   it("does not count restarts for non-restart reasons", () => {
     const result = groups([
       noticeItem(

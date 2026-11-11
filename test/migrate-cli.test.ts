@@ -48,8 +48,8 @@ describe("hanse migrate", () => {
     expect(code).toBe(0);
     const report = JSON.parse(lines.join("\n")) as Record<string, unknown>;
     expect(report).toMatchObject({
-      current: 26,
-      target: 26,
+      current: 27,
+      target: 27,
       pending: [],
       pendingCount: 0,
       backwardCompatible: true,
@@ -68,12 +68,12 @@ describe("hanse migrate", () => {
     const report = JSON.parse(lines.join("\n")) as Record<string, unknown>;
     expect(report).toMatchObject({
       current: 0,
-      target: 26,
-      pendingCount: 26,
+      target: 27,
+      pendingCount: 27,
       backwardCompatible: false,
       requiresExclusive: true,
     });
-    expect((report.pending as unknown[]).length).toBe(26);
+    expect((report.pending as unknown[]).length).toBe(27);
   });
 
   it("returns exit 20 for a database newer than the binary", async () => {
@@ -103,7 +103,7 @@ describe("hanse migrate", () => {
     const { lines, io } = collector();
     const code = await runCli(["migrate", "--online", "--db", file, "--json"], io);
     expect(code).toBe(0);
-    expect(JSON.parse(lines.join("\n"))).toMatchObject({ applied: 1, current: 26, target: 26 });
+    expect(JSON.parse(lines.join("\n"))).toMatchObject({ applied: 1, current: 27, target: 27 });
     const verify = openDatabase(file);
     const row = verify
       .prepare(
@@ -122,5 +122,25 @@ describe("hanse migrate", () => {
     const code = await runCli(["migrate", "--online", "--db", file, "--json"], io);
     expect(code).toBe(1);
     expect(lines.join("\n")).toContain("migration_requires_offline");
+  });
+
+  it("refuses --online for the v27 idle-maintenance migration", async () => {
+    const file = tempDb();
+    ensureDatabase(file);
+    const db = openDatabase(file);
+    db.prepare("DELETE FROM schema_migrations WHERE version = 27").run();
+    db.close();
+    const { lines, io } = collector();
+    const code = await runCli(["migrate", "--online", "--db", file, "--json"], io);
+    expect(code).toBe(1);
+    expect(lines.join("\n")).toContain("migration_requires_offline");
+    const report = JSON.parse(lines.join("\n")) as Record<string, unknown>;
+    expect(report).toMatchObject({
+      code: "migration_requires_offline",
+      current: 26,
+      target: 27,
+      pendingCount: 1,
+      requiresExclusive: true,
+    });
   });
 });

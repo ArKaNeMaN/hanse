@@ -9,6 +9,7 @@ import { CoordinatorService } from "../src/coordinator/service.js";
 import { GitService } from "../src/git/service.js";
 import type { HttpDeps } from "../src/http/handler.js";
 import { createHttpServer } from "../src/http/server.js";
+import { TerminalSessionRegistry } from "../src/http/terminal.js";
 import { createPrincipal } from "../src/identity/principals.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
 import {
@@ -54,6 +55,9 @@ interface UpstreamState {
   authorizations: Array<string | undefined>;
   cookies: Array<string | undefined>;
   frames: ParsedFrame[];
+  closes: number;
+  ends: number;
+  sockets: Duplex[];
 }
 
 async function startRunnerUpstream(): Promise<{ port: number; state: UpstreamState }> {
@@ -62,6 +66,9 @@ async function startRunnerUpstream(): Promise<{ port: number; state: UpstreamSta
     authorizations: [],
     cookies: [],
     frames: [],
+    closes: 0,
+    ends: 0,
+    sockets: [],
   };
   let buffered = Buffer.alloc(0);
   const server = createServer((_request, response) => {
@@ -74,6 +81,14 @@ async function startRunnerUpstream(): Promise<{ port: number; state: UpstreamSta
     state.paths.push(request.url ?? "");
     state.authorizations.push(request.headers.authorization);
     state.cookies.push(request.headers.cookie);
+    state.sockets.push(socket);
+    socket.on("close", () => {
+      state.closes += 1;
+    });
+    socket.on("end", () => {
+      state.ends += 1;
+      socket.destroy();
+    });
     const key = String(request.headers["sec-websocket-key"] ?? "");
     const accept = createHash("sha1")
       .update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
@@ -114,6 +129,7 @@ interface Fixture {
   agentToken: string;
   upstream: UpstreamState;
   port: number;
+  terminalSessions: TerminalSessionRegistry;
 }
 
 async function fixture(): Promise<Fixture> {
@@ -133,10 +149,12 @@ async function fixture(): Promise<Fixture> {
   const humanToken = createPrincipal(db, { kind: "human", name: "operator" }).token;
   const agentToken = createPrincipal(db, { kind: "agent", name: "agent" }).token;
   const { port, state } = await startRunnerUpstream();
+  const terminalSessions = new TerminalSessionRegistry();
   const deps: HttpDeps = {
     db,
     workspaceRoot: dir,
     git: new GitService({ workspaceRoot: dir }),
+    terminalSessions,
     getProjects: () => [
       {
         id: "p",
@@ -154,7 +172,15 @@ async function fixture(): Promise<Fixture> {
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
   if (address === null || typeof address === "string") throw new Error("no address");
-  return { db, deps, humanToken, agentToken, upstream: state, port: address.port };
+  return {
+    db,
+    deps,
+    humanToken,
+    agentToken,
+    upstream: state,
+    port: address.port,
+    terminalSessions,
+  };
 }
 
 async function waitFor(condition: () => boolean, timeoutMs = 2000): Promise<void> {
@@ -279,5 +305,57 @@ describe("operator terminal websocket proxy", () => {
     });
     expect(result.status).toBe(503);
     expect(f.upstream.paths).toEqual([]);
+  });
+
+  it("registers the terminal before forwarding the upgrade and releases it on close", async () => {
+    const f = await fixture();
+    const client = await WsClient.connect({
+      port: f.port,
+      path: "/api/apps/a/terminal?project=p",
+      headers: { cookie: `hanse_token=${f.humanToken}` },
+    });
+
+    expect(f.terminalSessions.isActive("p:a")).toBe(true);
+
+    client.destroy();
+    await waitFor(() => !f.terminalSessions.isActive("p:a"));
+  });
+
+  it("releases the terminal when the upstream socket closes", async () => {
+    const f = await fixture();
+    await WsClient.connect({
+      port: f.port,
+      path: "/api/apps/a/terminal?project=p",
+      headers: { cookie: `hanse_token=${f.humanToken}` },
+    });
+    expect(f.terminalSessions.isActive("p:a")).toBe(true);
+
+    for (const socket of f.upstream.sockets.splice(0)) socket.destroy();
+    await waitFor(() => !f.terminalSessions.isActive("p:a"));
+  });
+
+  it("returns 409 agent_maintenance and destroys the upstream socket when refused", async () => {
+    const f = await fixture();
+    const release = f.terminalSessions.beginMaintenance("p:a");
+
+    const result = await requestUpgrade({
+      port: f.port,
+      path: "/api/apps/a/terminal?project=p",
+      headers: { cookie: `hanse_token=${f.humanToken}` },
+    });
+
+    expect(result.status).toBe(409);
+    expect(JSON.parse(result.body)).toEqual({ error: "agent_maintenance" });
+    expect(f.terminalSessions.isActive("p:a")).toBe(false);
+    await waitFor(() => f.upstream.ends >= 1);
+
+    release();
+    const client = await WsClient.connect({
+      port: f.port,
+      path: "/api/apps/a/terminal?project=p",
+      headers: { cookie: `hanse_token=${f.humanToken}` },
+    });
+    expect(f.terminalSessions.isActive("p:a")).toBe(true);
+    client.destroy();
   });
 });

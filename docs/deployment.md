@@ -153,7 +153,8 @@ A running app on an older image is `restart_required`; a changed Dockerfile/args
 `rebuild_required`; a running stale app keeps working and warns in chat. An absent or unpulled image
 is `unknown`, never current. Starting a build-configured app is blocked only when it has no usable
 image; a prior usable image stays startable during a rebuild or after a failed build. A plain build
-never restarts an app; only the explicit Rebuild & restart does.
+never restarts an app; only an explicit **Rebuild & restart**, **Rebuild only**, or the conditional
+idle auto-update does.
 
 The application page shows the derived image state, base kind/reference, build logs, and a rollback
 action. Only the current and previous image versions are retained; explicit GC protects
@@ -162,6 +163,33 @@ runner's own non-terminal build tags, and only removes Hanse app images. `GET /a
 reports filesystem/Docker usage and warns at 75% used / critical at 85%; crossing the threshold never
 deletes anything automatically. The runner mounts the host workspace read-only for build contexts and
 validation, and never receives `/data/state`.
+
+### Idle agent maintenance
+
+A durable per-app activity clock drives two background passes. The idle pass stops a running app
+after `HANSE_AGENT_AUTO_STOP_MS` (default two days) without agent work, and restarts a running app
+after `HANSE_AGENT_AUTO_UPDATE_MS` (default three hours) only when the image state is
+`restart_required`, the target image identity is pinned and unchanged, and the launch fingerprint
+still matches the applied one. Pending settings/skills/model/provider/git/rule/instruction/plugin
+changes are never applied; a changed fingerprint or image skips the update. An active operator
+terminal WebSocket vetoes both actions. Auto-stop and auto-update write process history with source
+`system` and reasons `auto_stop`/`auto_update`; a failed update leaves the app in `error` with a
+one-hour cooldown, and rollback stays manual.
+
+The pull pass asks the runner to pull the configured default agent and shared base images every
+`HANSE_AGENT_AUTO_PULL_MS` (default 15 minutes). The runner validates the reference against its exact
+allowlist, serializes pulls with builds/GC, streams the Docker pull, and enforces a fail-closed disk
+guard before and during the pull: `warning`/`critical` (75%/85%) or an unavailable statfs rejects
+with `507`; a pull that reaches `critical` is aborted. `HANSE_IMAGE_DISK_PATH` is the runner path
+statfs'd for this guard and defaults to `HANSE_HOST_WORKSPACE`; point it at the filesystem that backs
+Docker images (mount it read-only if it differs) or disable auto-pull. If Docker's data root is on a
+different filesystem, the guard can under-report. Pulls are skipped while drained or deployment-locked
+and for digest-pinned references; the explicit image GC remains the cleanup path.
+
+**Supply chain.** Auto-pull with mutable tags can introduce an image that no human reviewed. A
+digest-pinned reference (`@sha256:...`) does not move, so auto-pull is a no-op there; set
+`HANSE_AGENT_AUTO_PULL_MS=0` to disable pulling entirely. Signature verification is not implemented
+in this iteration; `image.auto_pull` records the old/new image identity and resolved digest.
 
 ## Model credentials
 
@@ -236,6 +264,11 @@ Compose reads `.env` in the directory containing `compose.yaml`.
 | `HANSE_HOST_WORKSPACE` | **required** | Absolute host path corresponding to `/data/workspace`. |
 | `HANSE_HOST_AGENTS` | **required** | Absolute host path corresponding to `/data/agents`. |
 | `HANSE_HOST_RUNNER_TMP` | `/var/lib/hanse/tmp` | Absolute writable host path for ephemeral Test-connection credential dirs. Mounted into the runner at the same absolute path; must not overlap the workspace or agents roots. Do not place it on a shared or backed-up volume. |
+| `HANSE_AGENT_AUTO_STOP_MS` | `172800000` | Idle auto-stop threshold in milliseconds (2 days); `0` disables auto-stop. |
+| `HANSE_AGENT_AUTO_UPDATE_MS` | `10800000` | Idle auto-update threshold in milliseconds (3 hours); `0` disables auto-update. |
+| `HANSE_AGENT_MAINTENANCE_INTERVAL_MS` | `300000` | Idle scheduler tick (5 minutes), clamped to at least 30 seconds. |
+| `HANSE_AGENT_AUTO_PULL_MS` | `900000` | Default/base image pull interval (15 minutes); `0` disables auto-pull. |
+| `HANSE_IMAGE_DISK_PATH` | `HANSE_HOST_WORKSPACE` | Runner path statfs'd for the pull disk guard. Point it at the filesystem that backs Docker images (mount it read-only if they differ) or disable auto-pull. |
 | `HANSE_BUILD_IMAGE` | `hanse:dev` | Local coordinator tag used by the source-build overlay. |
 | `HANSE_IDE_BUILD_IMAGE` | `hanse-agent-ide:dev` | Local IDE tag used by the source-build overlay. |
 | `HANSE_RUNNER_BUILD_IMAGE` | `hanse-runner:dev` | Local runner tag used by the source-build overlay. |
@@ -399,7 +432,7 @@ Drain and resume are idempotent. The drain response is:
   "drained": true,
   "inFlightLifecycle": 0,
   "inFlightHttp": 0,
-  "schemaVersion": 25,
+  "schemaVersion": 27,
   "revision": "<full-commit>",
   "walCheckpoint": { "busy": 0, "log": 0, "checkpointed": 0 }
 }
@@ -421,7 +454,7 @@ old image. A custom app that declares `build.base: base` fails its next build if
 
 The coordinator must work with the previous IDE and runner for one release. Images carry
 `org.hanse.api.min` / `org.hanse.api.max` and `org.hanse.schema.min` / `org.hanse.schema.max` labels.
-The coordinator image currently declares API `1..1` and schema `1..25`; the IDE, runner, and agent
+The coordinator image currently declares API `1..1` and schema `1..27`; the IDE, runner, and agent
 images declare API `1..1` and schema `0..0` (they do not read the coordinator database).
 
 The coordinator reads the runner's unauthenticated `/healthz` handshake (`apiVersion`,
@@ -430,6 +463,12 @@ The coordinator reads the runner's unauthenticated `/healthz` handshake (`apiVer
 return their normal bounded errors instead of crashing the coordinator. Update the coordinator first
 with `docker compose up -d --no-deps hanse`, then update the IDE and runner separately; never run a
 runner more than one release ahead of the coordinator.
+
+Idle maintenance adds one stricter requirement: upgrade the coordinator and runner together. Auto-pull,
+the pull disk guard, and pinned-image `ensure` all need the new runner; with an old runner the
+coordinator treats the missing pull route as an unsupported skip, so auto-pull pauses while stop and
+update still work. Recreate both with `docker compose up -d hanse runner` after the migration and
+verify the runner handshake in the coordinator logs; the IDE can follow separately.
 
 Async restart claims are persisted in SQLite before the `202` is returned. If the coordinator exits
 mid-restart, the next startup finds the claim and completes the start; a stopped app left by an
@@ -489,6 +528,14 @@ coordinator refuses the schema. Roll back by restoring the pre-upgrade database 
 matching `agents` state and the old image; there is no down migration. `show_image` is omitted for
 non-master apps when the media store or instance manager is not configured; the rest of chat is
 unchanged.
+
+**Migration 27 (idle agent maintenance) is forward-only.** It adds `apps.last_agent_activity_at`,
+`instances.applied_launch_hash`, and the `handoffs(from_app_id, state)` index, and backfills the
+activity clock from existing signals; rows are otherwise untouched and no agent is stopped,
+restarted, or built by the upgrade. After it runs, the schema guard blocks a pre-v27 binary. A binary
+rollback therefore requires restoring the pre-v27 database backup (with matching `agents` state and
+the old image); there is no down migration. Roll back the images first, then restore the backup, or
+the old binary exits before listening.
 
 On the first start after this upgrade, each application's managed skills are materialized before
 `opencode serve`. If an instance already has entries outside the effective set in its Hanse-owned

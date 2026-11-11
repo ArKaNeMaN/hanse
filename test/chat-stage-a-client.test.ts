@@ -211,3 +211,168 @@ describe("flushDraftTransport", () => {
     expect(flushDraftTransport(99, 99)).toBe("keepalive");
   });
 });
+
+import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
+import { CoordinatorService } from "../src/coordinator/service.js";
+import { GitService } from "../src/git/service.js";
+import { handleChat } from "../src/http/chat.js";
+import type { HttpDeps, HttpRequest } from "../src/http/handler.js";
+import { createPrincipal } from "../src/identity/principals.js";
+import type { InstanceManager } from "../src/opencode/manager.js";
+import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
+
+describe("chat activity hooks", () => {
+  async function fixture(): Promise<{
+    db: SqliteDatabase;
+    deps: HttpDeps;
+    token: string;
+    server: Server;
+    activity: Array<[string, string]>;
+    close(): Promise<void>;
+  }> {
+    const server = createServer((request, response) => {
+      const chunks: Buffer[] = [];
+      request.on("data", (chunk: Buffer) => chunks.push(chunk));
+      request.on("end", () => {
+        if (request.method === "GET" && request.url === "/session") {
+          response.writeHead(200, { "content-type": "application/json" });
+          response.end("[]");
+          return;
+        }
+        if (request.method === "GET" && request.url === "/session/ses_1/message") {
+          response.writeHead(200, { "content-type": "application/json" });
+          response.end("[]");
+          return;
+        }
+        if (request.method === "POST" && request.url === "/session/ses_1/prompt_async") {
+          response.writeHead(204);
+          response.end();
+          return;
+        }
+        if (request.method === "POST" && request.url === "/session/ses_1/abort") {
+          response.writeHead(200, { "content-type": "application/json" });
+          response.end("true");
+          return;
+        }
+        response.writeHead(404);
+        response.end("missing");
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address() as AddressInfo;
+    const endpoint = `http://127.0.0.1:${address.port}`;
+    const db = openDatabase(":memory:");
+    runMigrations(db);
+    const now = new Date().toISOString();
+    db.prepare(
+      "INSERT INTO projects (id,name,base_branch,root_path,created_at,updated_at) VALUES ('p1','Alpha','main','/tmp/p1',?,?)",
+    ).run(now, now);
+    db.prepare(
+      "INSERT INTO apps (id,project_id,app_key,path,contract,created_at) VALUES ('p1:storefront','p1','storefront','apps/storefront','AGENTS.md',?)",
+    ).run(now);
+    const token = createPrincipal(db, { kind: "human", name: "operator" }).token;
+    const activity: Array<[string, string]> = [];
+    const deps: HttpDeps = {
+      db,
+      workspaceRoot: "/tmp",
+      git: new GitService({ workspaceRoot: "/tmp" }),
+      getProjects: () =>
+        (
+          db.prepare("SELECT id, name, root_path FROM projects ORDER BY rowid").all() as Array<{
+            id: string;
+            name: string;
+            root_path: string;
+          }>
+        ).map((row) => ({
+          id: row.id,
+          name: row.name,
+          rootPath: row.root_path,
+          workspaceRoot: "/tmp",
+          service: new CoordinatorService(db, row.id),
+        })),
+      manager: {
+        ensure: async () => endpoint,
+        endpointFor: () => endpoint,
+        noteActivity: (appId: string, reason: string) => activity.push([appId, reason]),
+        recordOperatorAbort: () => undefined,
+      } as unknown as InstanceManager,
+    };
+    return {
+      db,
+      deps,
+      token,
+      server,
+      activity,
+      close: async () => {
+        db.close();
+        await new Promise<void>((resolve) => {
+          server.closeAllConnections();
+          server.close(() => resolve());
+        });
+      },
+    };
+  }
+
+  function request(token: string, overrides: Partial<HttpRequest> = {}): HttpRequest {
+    return {
+      method: "GET",
+      path: "/api/apps/storefront/sessions",
+      headers: { authorization: `Bearer ${token}` },
+      query: { project: "p1" },
+      ...overrides,
+    };
+  }
+
+  it("touches prompt before ensure and after the pending insert, but not reads or abort", async () => {
+    const f = await fixture();
+    try {
+      const sessions = await handleChat(f.deps, request(f.token));
+      expect(sessions.status).toBe(200);
+      const messages = await handleChat(
+        f.deps,
+        request(f.token, {
+          path: "/api/apps/storefront/sessions/ses_1/messages",
+        }),
+      );
+      expect(messages.status).toBe(200);
+      const draft = await handleChat(
+        f.deps,
+        request(f.token, {
+          path: "/api/apps/storefront/sessions/ses_1/draft",
+        }),
+      );
+      expect(draft.status).toBe(200);
+      const abort = await handleChat(
+        f.deps,
+        request(f.token, {
+          method: "POST",
+          path: "/api/apps/storefront/sessions/ses_1/abort",
+        }),
+      );
+      expect(abort.status).toBe(200);
+      expect(f.activity).toEqual([]);
+
+      const send = await handleChat(
+        f.deps,
+        request(f.token, {
+          method: "POST",
+          path: "/api/apps/storefront/sessions/ses_1/messages",
+          query: { project: "p1", async: "1" },
+          headers: {
+            authorization: `Bearer ${f.token}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ text: "hello" }),
+        }),
+      );
+      expect(send.status).toBe(202);
+      expect(f.activity).toEqual([
+        ["p1:storefront", "prompt"],
+        ["p1:storefront", "prompt"],
+      ]);
+    } finally {
+      await f.close();
+    }
+  });
+});

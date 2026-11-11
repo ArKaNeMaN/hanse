@@ -5,6 +5,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { type CliIo, runCli } from "../src/cli/cli.js";
 import { serveCommand } from "../src/cli/commands.js";
 import type { ImageServiceOptions } from "../src/images/service.js";
+import { coordinatorDbPath } from "../src/runtime/paths.js";
+import { claimPersistedRestart, openCoordinatorDatabase } from "../src/store/index.js";
 
 const cliEvents = vi.hoisted(() => ({
   events: [] as string[],
@@ -32,6 +34,22 @@ vi.mock("../src/images/service.js", async (importOriginal) => {
   return { ...actual, ImageService: RecordingImageService };
 });
 
+vi.mock("../src/coordinator/agent-maintenance.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/coordinator/agent-maintenance.js")>();
+  class RecordingMaintenanceScheduler extends actual.AgentMaintenanceScheduler {
+    override start(): void {
+      cliEvents.events.push("scheduler-start");
+      super.start();
+    }
+
+    override stop(): void {
+      cliEvents.events.push("scheduler-stop");
+      super.stop();
+    }
+  }
+  return { ...actual, AgentMaintenanceScheduler: RecordingMaintenanceScheduler };
+});
+
 vi.mock("../src/opencode/manager.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/opencode/manager.js")>();
   class RecordingManager extends actual.InstanceManager {
@@ -50,6 +68,17 @@ vi.mock("../src/opencode/manager.js", async (importOriginal) => {
     }
 
     override async resumeRunning(): Promise<void> {}
+
+    override async ensure(
+      app: Parameters<actual.InstanceManager["ensure"]>[0],
+      options?: Parameters<actual.InstanceManager["ensure"]>[1],
+    ): Promise<string> {
+      if (options?.reason === "restart_recovery") {
+        cliEvents.events.push("recovery");
+        return "http://recovered";
+      }
+      return super.ensure(app, options);
+    }
 
     override detach(): void {}
   }
@@ -224,8 +253,77 @@ describe("serve startup order", () => {
       "adopt",
       "reconciler",
       "http",
+      "scheduler-start",
+      "scheduler-stop",
+      "scheduler-stop",
     ]);
     expect(cliEvents.managerImages).toBe(cliEvents.images);
     expect(cliEvents.images).toBeDefined();
+  });
+
+  it("finishes restart-claim recovery before starting the maintenance scheduler", async () => {
+    const workspace = tempDir("hanse-cli-workspace-");
+    const stateHome = tempDir("hanse-cli-state-");
+    const hostWorkspace = tempDir("hanse-cli-host-workspace-");
+    const hostAgents = tempDir("hanse-cli-host-agents-");
+    const seeded = openCoordinatorDatabase(stateHome);
+    try {
+      const now = new Date().toISOString();
+      seeded
+        .prepare(
+          "INSERT INTO projects (id,name,base_branch,root_path,created_at,updated_at) VALUES ('p','P','main',?,?,?)",
+        )
+        .run(workspace, now, now);
+      seeded
+        .prepare(
+          "INSERT INTO apps (id,project_id,app_key,path,contract,created_at) VALUES ('p:a','p','a','apps/a','AGENTS.md',?)",
+        )
+        .run(now);
+      claimPersistedRestart(seeded, "p:a", "restart");
+    } finally {
+      seeded.close();
+    }
+    const { lines, io } = collector();
+    const variables = {
+      HANSE_RUNNER_URL: process.env.HANSE_RUNNER_URL,
+      HANSE_RUNTIME_TOKEN: process.env.HANSE_RUNTIME_TOKEN,
+      HANSE_HOST_WORKSPACE: process.env.HANSE_HOST_WORKSPACE,
+      HANSE_HOST_AGENTS: process.env.HANSE_HOST_AGENTS,
+      HANSE_IDE: process.env.HANSE_IDE,
+    };
+    process.env.HANSE_RUNNER_URL = "http://127.0.0.1:9";
+    process.env.HANSE_RUNTIME_TOKEN = "test-runtime-token";
+    process.env.HANSE_HOST_WORKSPACE = hostWorkspace;
+    process.env.HANSE_HOST_AGENTS = hostAgents;
+    process.env.HANSE_IDE = "0";
+    const priorListeners = process.listeners("SIGTERM");
+    try {
+      const pending = serveCommand(
+        { workspace, hostname: "127.0.0.1", port: 0 },
+        { cwd: workspace, stateHome, io },
+      );
+      while (!lines.some((line) => line.includes("serving"))) {
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        if (lines.some((line) => line.includes("serve:"))) break;
+      }
+      process.emit("SIGTERM");
+      await expect(pending).resolves.toBe(0);
+    } finally {
+      for (const listener of process.listeners("SIGTERM")) {
+        if (!priorListeners.includes(listener)) {
+          process.removeListener("SIGTERM", listener);
+        }
+      }
+      for (const [key, value] of Object.entries(variables)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+
+    const recovery = cliEvents.events.indexOf("recovery");
+    const schedulerStart = cliEvents.events.indexOf("scheduler-start");
+    expect(recovery).toBeGreaterThanOrEqual(0);
+    expect(schedulerStart).toBeGreaterThan(recovery);
+    expect(coordinatorDbPath(stateHome)).toContain("coordinator.db");
   });
 });

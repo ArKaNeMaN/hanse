@@ -1018,7 +1018,8 @@ const imageGate = computed(() => imageGateFromView(imageView.value));
 const imageBlocked = computed(() => imageGate.value.blocked);
 const imageActionBusy = ref(false);
 let imagePollTimer: ReturnType<typeof setTimeout> | undefined;
-let imagePollMode: "build_start" | "rebuild_restart" | null = null;
+type ImagePollMode = "build_start" | "rebuild_restart" | "rebuild";
+let imagePollMode: ImagePollMode | null = null;
 let imagePollStartedAt = 0;
 
 function stopImagePolling(): void {
@@ -1066,12 +1067,20 @@ async function pollImageBuild(): Promise<void> {
     return;
   }
   stopImagePolling();
-  if (typeof view?.usableImageRef === "string" && view.usableImageRef.length > 0) {
-    try {
-      await continueImageAction(mode);
-    } catch (error) {
-      toasts.push(errorText(error, "The image action failed. Try again."), "error");
+  const state = typeof view?.state === "string" ? view.state : "unknown";
+  if (state !== "restart_required" && state !== "current") {
+    return;
+  }
+  if (mode === "rebuild") {
+    if (state === "restart_required") {
+      toasts.push("Image built. Restart the agent to use the new image.", "success");
     }
+    return;
+  }
+  try {
+    await continueImageAction(mode);
+  } catch (error) {
+    toasts.push(errorText(error, "The image action failed. Try again."), "error");
   }
 }
 
@@ -1081,7 +1090,7 @@ async function runImageAction(action: string): Promise<void> {
   }
   imageActionBusy.value = true;
   try {
-    if (action === "build_start" || action === "rebuild_restart") {
+    if (action === "build_start" || action === "rebuild_restart" || action === "rebuild") {
       stopImagePolling();
       imagePollMode = action;
       imagePollStartedAt = Date.now();
@@ -1092,9 +1101,12 @@ async function runImageAction(action: string): Promise<void> {
       } else {
         await pollImageBuild();
       }
-    } else {
+    } else if (action === "restart") {
       await apiMutation<unknown>(withProject(`${apiBase.value}/restart`), { json: {} });
       await imageQuery.refetch();
+    } else {
+      // A fixed client switch: unknown actions are ignored, never mapped to a request.
+      return;
     }
   } catch (error) {
     stopImagePolling();

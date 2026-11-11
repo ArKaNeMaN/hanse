@@ -11,6 +11,7 @@ export const RUNNER_CONTAINER_AGENTS_ROOT = "/data/agents";
 
 const MAX_IMAGE_REFERENCE_LENGTH = 255;
 const IMAGE_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9_.:/@+-]*$/;
+const IMAGE_ID = /^sha256:[0-9a-f]{64}$/;
 
 function hasControlCharacters(value: string): boolean {
   for (const character of value) {
@@ -76,6 +77,13 @@ export interface RunnerConfig {
 
 /** A validated spec with the host/container paths the runner needs to create the container. */
 export interface RunnerSpec extends AppRuntimeSpec {
+  /**
+   * Pinned Docker image ID carried beside the hashed spec (never part of `specHash`).
+   *
+   * When present the runner verifies the allowlisted reference still resolves to this ID and
+   * creates the container from the ID instead of the mutable tag.
+   */
+  readonly expectedImageId?: string;
   readonly hostAppDir: string;
   readonly hostStateDir: string;
   readonly hostAgentsRoot: string;
@@ -184,6 +192,14 @@ function invalid(message: string): ConfigError {
   return new ConfigError("VALIDATION_FAILED", message);
 }
 
+function parseExpectedImageId(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !IMAGE_ID.test(value)) {
+    throw invalid("expectedImageId must be sha256:<64 lowercase hex>");
+  }
+  return value;
+}
+
 /**
  * Validate an untrusted runtime spec for the per-app runner.
  *
@@ -199,6 +215,11 @@ export function validateRunnerSpec(
     workspaceRoot: config.hostWorkspace,
     agentsRoot: config.hostAgents,
   });
+  const expectedImageId = parseExpectedImageId(
+    typeof value === "object" && value !== null
+      ? (value as Record<string, unknown>).expectedImageId
+      : undefined,
+  );
   if (spec.pathMode !== "host") {
     throw invalid("runner requires pathMode: host");
   }
@@ -268,6 +289,7 @@ export function validateRunnerSpec(
 
   return {
     ...spec,
+    ...(expectedImageId === undefined ? {} : { expectedImageId }),
     pathMode: "host",
     port: RUNNER_APP_PORT,
     hostAppDir,

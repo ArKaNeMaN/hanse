@@ -13,6 +13,7 @@ import type { ChatNoticeGroupView, ChatThreadItem } from "./types.js";
 const RESTART_REASONS = new Set([
   "process_exit",
   "operator_restart",
+  "auto_update",
   "deployment",
   "unknown_restart",
 ]);

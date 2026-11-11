@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { stoppedStatus } from "../src/agent/protocol.js";
+import { type EnsureAppRequest, stoppedStatus } from "../src/agent/protocol.js";
 import {
   computeSpecHash,
   isValidAppId,
@@ -304,5 +304,20 @@ describe("runtime protocol", () => {
     const spec = validateAppRuntimeSpec(rawSpec(roots), options(roots));
     const input: SpecHashInput = spec;
     expect(computeSpecHash(input)).toBe(spec.specHash);
+  });
+
+  it("carries an optional expectedImageId beside the spec", () => {
+    const roots = fixture();
+    const spec = validateAppRuntimeSpec(rawSpec(roots), options(roots));
+    const pinned = `sha256:${"a".repeat(64)}`;
+    const request: EnsureAppRequest = { ...spec, expectedImageId: pinned };
+
+    expect(JSON.parse(JSON.stringify(request))).toMatchObject({
+      appId: spec.appId,
+      specHash: spec.specHash,
+      expectedImageId: pinned,
+    });
+    const without = JSON.parse(JSON.stringify(spec)) as Record<string, unknown>;
+    expect(without.expectedImageId).toBeUndefined();
   });
 });

@@ -35,6 +35,7 @@ import { buildSite } from "./dashboard.js";
 import { drainingResponse } from "./deploy.js";
 import { isHtmlPageRequest } from "./page-request.js";
 import { staticErrorResponse } from "./static-error.js";
+import type { TerminalSessionRegistry } from "./terminal.js";
 import { safeLocalPath } from "./ui.js";
 import { requireUiVersion } from "./ui-version.js";
 
@@ -73,6 +74,8 @@ export interface HttpDeps {
   deploymentLock?: DeploymentLock;
   /** Process-local destructive-operation counter reported by `/readyz`. */
   lifecycleActivity?: LifecycleActivity;
+  /** Attached operator terminal sessions and the per-app maintenance gate. */
+  terminalSessions?: TerminalSessionRegistry;
   /** Persisted drain/resume state, in-flight HTTP count, and graceful-shutdown view. */
   drain?: DrainController;
   /** Structured operator log; optional so tests and embeds may omit it. */
@@ -600,7 +603,7 @@ function isFormEncoded(request: HttpRequest): boolean {
 }
 
 /** An absent `Origin` is allowed; a present one must parse and match the request host exactly. */
-function isSameOrigin(request: HttpRequest): boolean {
+export function isSameOrigin(request: HttpRequest): boolean {
   const origin = request.origin ?? request.headers.origin;
   if (origin === undefined) {
     return true;

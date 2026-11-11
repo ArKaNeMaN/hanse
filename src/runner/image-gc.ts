@@ -6,6 +6,11 @@ import {
   type DockerRuntime,
   type DockerSystemDf,
 } from "./docker.js";
+import {
+  ImageMutationConflictError,
+  type ImageMutationLease,
+  ImageMutationMutex,
+} from "./image-mutation.js";
 import { appContainerName } from "./names.js";
 
 export const DISK_WARNING_PERCENT = 75;
@@ -94,6 +99,7 @@ export interface ImageGcServiceOptions {
   timeoutMs?: number;
   now?: () => number;
   protectedRefs?: () => readonly string[];
+  mutex?: ImageMutationMutex;
 }
 
 export function usageLevel(usedPercent: number): DiskUsageLevel {
@@ -109,6 +115,7 @@ export class ImageGcService {
   readonly #timeoutMs: number;
   readonly #now: () => number;
   readonly #protectedRefs: (() => readonly string[]) | undefined;
+  readonly #mutex: ImageMutationMutex;
   #running = false;
 
   constructor(options: ImageGcServiceOptions) {
@@ -118,6 +125,7 @@ export class ImageGcService {
     this.#timeoutMs = options.timeoutMs ?? DEFAULT_GC_TIMEOUT_MS;
     this.#now = options.now ?? (() => Date.now());
     this.#protectedRefs = options.protectedRefs;
+    this.#mutex = options.mutex ?? new ImageMutationMutex();
   }
 
   async usage(): Promise<ImageUsageReport> {
@@ -155,7 +163,12 @@ export class ImageGcService {
     }
     this.#running = true;
     try {
-      return await this.#runGc(raw);
+      const lease = this.#acquire("gc");
+      try {
+        return await this.#runGc(raw);
+      } finally {
+        lease.release();
+      }
     } finally {
       this.#running = false;
     }
@@ -305,9 +318,25 @@ export class ImageGcService {
     }
     this.#running = true;
     try {
-      return await this.#runPurge(appId);
+      const lease = this.#acquire("purge");
+      try {
+        return await this.#runPurge(appId);
+      } finally {
+        lease.release();
+      }
     } finally {
       this.#running = false;
+    }
+  }
+
+  #acquire(kind: "gc" | "purge"): ImageMutationLease {
+    try {
+      return this.#mutex.tryAcquire(kind);
+    } catch (error) {
+      if (error instanceof ImageMutationConflictError) {
+        throw new ImageGcError(error.status, error.message, error.code);
+      }
+      throw error;
     }
   }
 

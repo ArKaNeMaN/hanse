@@ -87,6 +87,7 @@ export interface HandoffDispatcherClient {
 export interface HandoffDispatcherManager {
   ensure(app: ManagedApp, options?: EnsureOptions): Promise<string>;
   endpointFor?(appId: string): string | undefined;
+  noteActivity?(appId: string, reason: "handoff"): void;
 }
 
 export interface HandoffDispatcherSettings {
@@ -664,6 +665,7 @@ export class HandoffDispatcher {
         origin: "system",
         reason: "handoff",
       });
+      this.#manager.noteActivity?.(target.managed.id, "handoff");
       const title = handoffTitle(fromKey, toKey, handoff.summary);
       const session = await this.#client.createSession(endpoint, title);
       this.#completeThreadStart(handoff.id, session.id, session.title ?? title);
@@ -872,6 +874,7 @@ export class HandoffDispatcher {
       origin: "system",
       reason: "handoff",
     });
+    this.#manager.noteActivity?.(target.managed.id, "handoff");
     const title = handoffTitle(fromKey, toKey, handoff.summary);
     const session = await this.#client.createSession(endpoint, title);
     updateHandoff(this.#db, handoff.id, {
@@ -945,6 +948,7 @@ export class HandoffDispatcher {
         origin: "system",
         reason: "handoff",
       });
+      this.#manager.noteActivity?.(source.managed.id, "handoff");
     } catch (error) {
       this.#setReplyState(handoff.id, "waiting_operator", {
         replyError: `source application failed to start: ${ensureFailureMessage(error)}`,

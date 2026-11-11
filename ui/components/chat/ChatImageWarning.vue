@@ -10,6 +10,11 @@ const warning = computed(() => (props.blocked === true ? null : imageWarningFrom
 const actionLabel = computed(() =>
   warning.value === null ? "" : imageActionLabel(warning.value.action),
 );
+const secondaryLabel = computed(() =>
+  warning.value?.secondaryAction === undefined
+    ? ""
+    : imageActionLabel(warning.value.secondaryAction),
+);
 </script>
 
 <template>
@@ -26,11 +31,21 @@ const actionLabel = computed(() =>
       <button
         class="btn btn-secondary btn-sm"
         type="button"
-        data-chat-image-action
+        :data-chat-image-action="warning.action"
         :disabled="busy === true"
         @click="notify('action', warning.action)"
       >
         {{ actionLabel }}
+      </button>
+      <button
+        v-if="secondaryLabel.length > 0"
+        class="btn btn-secondary btn-sm"
+        type="button"
+        data-chat-image-action="rebuild"
+        :disabled="busy === true"
+        @click="notify('action', warning.secondaryAction ?? '')"
+      >
+        {{ secondaryLabel }}
       </button>
     </div>
   </div>

@@ -23,9 +23,9 @@ import {
   MAX_BUILD_LOG_BYTES,
   type RunnerImageRecord,
 } from "../src/runner/images.js";
-import { appContainerName } from "../src/runner/names.js";
+import { appContainerName, appNetworkName } from "../src/runner/names.js";
 import { RunnerService } from "../src/runner/server.js";
-import type { RunnerConfig } from "../src/runner/validate.js";
+import { RUNNER_APP_PORT, type RunnerConfig } from "../src/runner/validate.js";
 import { BUILD_SPEC_HASH_VERSION } from "../src/runtime/build-spec.js";
 
 const dirs: string[] = [];
@@ -550,6 +550,14 @@ describe("runner image build API", () => {
     expect(concurrent.status).toBe(409);
     expect(await concurrent.json()).toMatchObject({ code: "build_in_progress" });
 
+    const pullDuringBuild = await fetch(`${base}/v1/images/pull`, {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({ reference: "agent-default:test" }),
+    });
+    expect(pullDuringBuild.status).toBe(409);
+    expect(await pullDuringBuild.json()).toMatchObject({ code: "image_mutation_in_progress" });
+
     const sameApp = await postBuild(base, bodyFor(f));
     expect(sameApp.status).toBe(409);
 
@@ -582,6 +590,7 @@ describe("runner image build API", () => {
       ["/v1/images/usage", "GET"],
       ["/v1/images/gc", "POST"],
       ["/v1/images/build", "POST"],
+      ["/v1/images/pull", "POST"],
       ["/v1/images/builds/unknown", "GET"],
     ];
     for (const [pathname, allow] of reserved) {
@@ -857,6 +866,206 @@ describe("runner image inspect route", () => {
   });
 });
 
+describe("runner pinned image ensure", () => {
+  const pinned = `sha256:${"a".repeat(64)}`;
+  const other = `sha256:${"b".repeat(64)}`;
+
+  class ContainerDocker extends FakeDocker {
+    readonly containers = new Map<string, DockerContainerInspect>();
+    readonly started: string[] = [];
+    readonly removedContainers: string[] = [];
+    createErrorAfterContainer: Error | undefined;
+    forcedImage: string | undefined;
+    #next = 1;
+
+    override async createContainer(options: DockerContainerCreateOptions): Promise<string> {
+      this.creates.push(options);
+      const id = `container-${this.#next++}`;
+      const inspect: DockerContainerInspect = {
+        Id: id,
+        Name: `/${options.name}`,
+        Image: this.forcedImage ?? this.inspected.get(options.image)?.Id ?? options.image,
+        Config: {
+          Image: options.image,
+          Labels: options.labels,
+          Env: Object.entries(options.env).map(([key, value]) => `${key}=${value}`),
+          Entrypoint: options.entrypoint,
+          Cmd: options.cmd,
+          User: options.user,
+        },
+        State: { Status: "created", Running: false, ExitCode: 0 },
+        HostConfig: {
+          Binds: options.binds,
+          NetworkMode: options.networkName,
+          ReadonlyRootfs: true,
+          CapDrop: ["ALL"],
+          SecurityOpt: ["no-new-privileges:true"],
+          Privileged: false,
+          Init: options.init ?? true,
+          Memory: options.memoryBytes,
+          NanoCpus: options.nanoCpus,
+          PidsLimit: options.pidsLimit,
+        },
+        NetworkSettings: { Networks: { [options.networkName]: {} } },
+      };
+      this.containers.set(id, inspect);
+      if (this.createErrorAfterContainer !== undefined) throw this.createErrorAfterContainer;
+      return id;
+    }
+
+    override async startContainer(id: string): Promise<void> {
+      this.started.push(id);
+      const container = this.containers.get(id);
+      if (container !== undefined) {
+        container.State = { Status: "running", Running: true, ExitCode: 0 };
+      }
+    }
+
+    override async stopContainer(id: string): Promise<void> {
+      const container = this.containers.get(id);
+      if (container !== undefined) {
+        container.State = { Status: "exited", Running: false, ExitCode: 0 };
+      }
+    }
+
+    override async removeContainer(id: string): Promise<void> {
+      this.removedContainers.push(id);
+      this.containers.delete(id);
+    }
+
+    override async inspectContainer(idOrName: string): Promise<DockerContainerInspect | undefined> {
+      const direct = this.containers.get(idOrName);
+      if (direct !== undefined) return direct;
+      return [...this.containers.values()].find((container) => container.Name === `/${idOrName}`);
+    }
+  }
+
+  function ensureBody(
+    f: Fixture,
+    overrides: Record<string, unknown> = {},
+  ): Record<string, unknown> {
+    const agentsRoot = path.join(f.agents, "project", "app");
+    const stateDir = path.join(agentsRoot, "state");
+    mkdirSync(stateDir, { recursive: true });
+    mkdirSync(path.join(agentsRoot, "home"), { recursive: true });
+    writeFileSync(path.join(stateDir, "opencode-password"), "password\n");
+    return {
+      appId: "project:app",
+      image: "agent-default:test",
+      pathMode: "host",
+      appDir: f.appDir,
+      stateDir,
+      networkName: appNetworkName("project:app"),
+      port: RUNNER_APP_PORT,
+      env: {
+        HOME: "/data/agents/project/app/home",
+        XDG_DATA_HOME: "/data/agents/project/app/data",
+        XDG_STATE_HOME: "/data/agents/project/app/state",
+        XDG_CONFIG_HOME: "/data/agents/project/app/config",
+        XDG_CACHE_HOME: "/data/agents/project/app/cache",
+        OPENCODE_DB: "/data/agents/project/app/state/opencode.db",
+        TMPDIR: "/data/agents/project/app/tmp",
+        MISE_DATA_DIR: "/data/agents/project/app/mise",
+        HANSE_OPENCODE_PASSWORD_FILE: "/data/agents/project/app/state/opencode-password",
+      },
+      resources: { memoryBytes: 1024, nanoCpus: 1, pidsLimit: 128 },
+      labels: { "hanse.managed": "true" },
+      ...overrides,
+    };
+  }
+
+  function serviceFor(f: Fixture, docker: ContainerDocker): RunnerService {
+    return new RunnerService({ config: config(f), docker });
+  }
+
+  it("creates the container from the pinned image ID and verifies it", async () => {
+    const f = fixture();
+    const docker = new ContainerDocker();
+    docker.inspected.set("agent-default:test", { Id: pinned });
+    const service = serviceFor(f, docker);
+
+    const status = await service.ensure(ensureBody(f, { expectedImageId: pinned }), "project:app");
+
+    expect(docker.creates).toHaveLength(1);
+    expect(docker.creates[0]?.image).toBe(pinned);
+    expect(status.imageId).toBe(pinned);
+    expect(docker.started).toEqual(["container-1"]);
+  });
+
+  it("rejects a reference that no longer resolves to the pinned ID before create", async () => {
+    const f = fixture();
+    const docker = new ContainerDocker();
+    docker.inspected.set("agent-default:test", { Id: other });
+    const service = serviceFor(f, docker);
+
+    await expect(
+      service.ensure(ensureBody(f, { expectedImageId: pinned }), "project:app"),
+    ).rejects.toMatchObject({ status: 409, code: "image_changed" });
+    expect(docker.creates).toHaveLength(0);
+    expect(docker.started).toEqual([]);
+  });
+
+  it("removes a created container whose image ID does not match before start", async () => {
+    const f = fixture();
+    const docker = new ContainerDocker();
+    docker.inspected.set("agent-default:test", { Id: pinned });
+    docker.forcedImage = other;
+    const service = serviceFor(f, docker);
+
+    await expect(
+      service.ensure(ensureBody(f, { expectedImageId: pinned }), "project:app"),
+    ).rejects.toMatchObject({ status: 409, code: "image_changed" });
+    expect(docker.removedContainers).toEqual(["container-1"]);
+    expect(docker.started).toEqual([]);
+    expect(docker.containers.size).toBe(0);
+  });
+
+  it("reuses a running container only when its image ID matches the pinned ID", async () => {
+    const f = fixture();
+    const docker = new ContainerDocker();
+    docker.inspected.set("agent-default:test", { Id: pinned });
+    const service = serviceFor(f, docker);
+
+    await service.ensure(ensureBody(f), "project:app");
+    const reused = await service.ensure(ensureBody(f, { expectedImageId: pinned }), "project:app");
+    expect(reused.state).toBe("running");
+    expect(docker.creates).toHaveLength(1);
+
+    docker.inspected.set("agent-default:test", { Id: other });
+    await expect(
+      service.ensure(ensureBody(f, { expectedImageId: other }), "project:app"),
+    ).rejects.toMatchObject({ status: 409, code: "image_changed" });
+    expect(docker.creates).toHaveLength(1);
+  });
+
+  it("removes an adopted container whose image ID does not match", async () => {
+    const f = fixture();
+    const docker = new ContainerDocker();
+    docker.inspected.set("agent-default:test", { Id: pinned });
+    docker.forcedImage = other;
+    docker.createErrorAfterContainer = new Error("create timed out after creating");
+    const service = serviceFor(f, docker);
+
+    await expect(
+      service.ensure(ensureBody(f, { expectedImageId: pinned }), "project:app"),
+    ).rejects.toMatchObject({ status: 409, code: "image_changed" });
+    expect(docker.removedContainers).toEqual(["container-1"]);
+    expect(docker.started).toEqual([]);
+  });
+
+  it("fails closed when image inspection is unavailable and an ID is pinned", async () => {
+    const f = fixture();
+    const docker = new ContainerDocker();
+    (docker as unknown as { inspectImage?: unknown }).inspectImage = undefined;
+    const service = serviceFor(f, docker);
+
+    await expect(
+      service.ensure(ensureBody(f, { expectedImageId: pinned }), "project:app"),
+    ).rejects.toMatchObject({ status: 409, code: "image_changed" });
+    expect(docker.creates).toHaveLength(0);
+  });
+});
+
 describe("runner image gc build protection", () => {
   it("protects the in-flight build target until the build ends", async () => {
     const { f, base, build, docker } = await harness();
@@ -880,11 +1089,8 @@ describe("runner image gc build protection", () => {
       headers: authHeaders(),
       body: "{}",
     });
-    expect(inFlight.status).toBe(200);
-    expect(await inFlight.json()).toMatchObject({
-      removedImageCount: 0,
-      skipped: [{ ref: accepted.targetRef, reason: "protected" }],
-    });
+    expect(inFlight.status).toBe(409);
+    expect(await inFlight.json()).toMatchObject({ code: "image_mutation_in_progress" });
     expect(docker.removed).toEqual([]);
 
     build.succeed("sha256:target");

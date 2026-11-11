@@ -222,6 +222,7 @@ export interface ImageWarningView {
   title: string;
   body: string;
   action: string;
+  secondaryAction?: string;
 }
 
 export function imageGateFromView(view: unknown): ImageGateView;

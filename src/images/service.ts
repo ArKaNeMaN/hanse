@@ -13,11 +13,13 @@ import {
   computeLegacyBuildSpecHashV1,
   computeLegacyBuildSpecHashV2,
 } from "../runtime/build-spec.js";
+import { recordEvent } from "../store/events.js";
 import type { SqliteDatabase } from "../store/index.js";
 import type {
   ImageBuildInput,
   ImageBuildResult,
   RunnerImageInspect,
+  RunnerImagePullResult,
   RunnerImageRecord,
 } from "./client.js";
 import { ImageClientError } from "./client.js";
@@ -48,6 +50,7 @@ export interface ImageRunnerClient {
   usage?(): Promise<ImageUsageReport>;
   gc?(protectedRefs: string[]): Promise<ImageGcReport>;
   purgeApp?(appId: string): Promise<ImageGcReport>;
+  pull?(reference: string, options?: { signal?: AbortSignal }): Promise<RunnerImagePullResult>;
 }
 
 /** Every derived image state (D5). */
@@ -127,6 +130,28 @@ export interface AppImageLogsView {
   status: AppImageStatus;
   logs: string;
   runnerAvailable: boolean;
+}
+
+export type ImagePullOutcome = "changed" | "unchanged" | "skipped" | "failed";
+
+export interface ImagePullAttemptReport {
+  reference: string;
+  outcome: ImagePullOutcome;
+  previousImageId: string | null;
+  imageId: string | null;
+  digest: string | null;
+  changed: boolean;
+  reason?: string;
+  error?: string;
+}
+
+export interface ImagePullReport {
+  ok: boolean;
+  startedAt: string;
+  finishedAt: string;
+  durationMs: number;
+  attempts: ImagePullAttemptReport[];
+  truncated: boolean;
 }
 
 /** Typed image-service failure; the HTTP layer maps `status`/`code` directly. */
@@ -329,6 +354,8 @@ interface Derivation {
 }
 
 const MAX_LOG_BYTES = 64 * 1024;
+const MAX_PULL_ATTEMPTS = 16;
+const MAX_PULL_AUDIT_APPS = 500;
 const IDENTITY_CACHE_TTL_MS = 60_000;
 const BUILD_REACHABLE_GRACE_MS = 60_000;
 const BUILD_UNREACHABLE_TIMEOUT_MS = 30 * 60 * 1_000;
@@ -546,6 +573,219 @@ export class ImageService {
 
   invalidateCache(): void {
     this.#identities.clear();
+  }
+
+  /**
+   * Pull the configured default agent image and, when used, the shared base image.
+   *
+   * Skips digest-pinned, draining, deployment-locked, and critically-full targets; the runner-side
+   * guard remains authoritative. Never throws for one reference: the bounded report carries each
+   * outcome and the audit rows are written here.
+   */
+  async pullConfigured(
+    options: { signal?: AbortSignal; isDraining?: () => boolean } = {},
+  ): Promise<ImagePullReport> {
+    const startedMs = Date.now();
+    const attempts: ImagePullAttemptReport[] = [];
+    let truncated = false;
+    const push = (attempt: ImagePullAttemptReport): void => {
+      if (attempts.length >= MAX_PULL_ATTEMPTS) {
+        truncated = true;
+        return;
+      }
+      attempts.push(attempt);
+    };
+    const skipped = (reference: string, reason: string): ImagePullAttemptReport => ({
+      reference,
+      outcome: "skipped",
+      previousImageId: null,
+      imageId: null,
+      digest: null,
+      changed: false,
+      reason,
+    });
+
+    const pull = this.#runner.pull?.bind(this.#runner);
+    const usage = this.#runner.usage?.bind(this.#runner);
+
+    let diskCritical = false;
+    if (usage !== undefined) {
+      try {
+        diskCritical = (await usage()).level === "critical";
+      } catch {
+        diskCritical = false;
+      }
+    }
+
+    for (const reference of this.#pullReferences()) {
+      if (reference.includes("@")) {
+        push(skipped(reference, "digest_pinned"));
+        continue;
+      }
+      if (options.isDraining?.() === true) {
+        push(skipped(reference, "draining"));
+        continue;
+      }
+      if (this.#deploymentLock?.isActive() === true) {
+        push(skipped(reference, "deployment_locked"));
+        continue;
+      }
+      if (diskCritical) {
+        push(skipped(reference, "disk_critical"));
+        continue;
+      }
+      if (pull === undefined) {
+        push(skipped(reference, "unsupported"));
+        continue;
+      }
+
+      const previousDigest = await this.#currentDigest(reference);
+      let result: RunnerImagePullResult;
+      try {
+        result = await pull(
+          reference,
+          options.signal === undefined ? {} : { signal: options.signal },
+        );
+      } catch (error) {
+        const message = boundedErrorMessage(error);
+        push({
+          reference,
+          outcome: "failed",
+          previousImageId: null,
+          imageId: null,
+          digest: null,
+          changed: false,
+          error: message,
+        });
+        recordEvent(this.#db, "global", "image.auto_pull", {
+          reference,
+          previousImageId: null,
+          imageId: null,
+          digest: null,
+          changed: false,
+          outcome: "failed",
+        });
+        continue;
+      }
+
+      if (result.skipped) {
+        const reason = result.skipReason ?? "skipped";
+        push(skipped(result.reference, reason));
+        recordEvent(this.#db, "global", "image.auto_pull", {
+          reference: result.reference,
+          previousImageId: null,
+          imageId: null,
+          digest: null,
+          changed: false,
+          outcome: "skipped",
+          reason,
+        });
+        continue;
+      }
+
+      this.invalidateCache();
+      const outcome: ImagePullOutcome = result.changed ? "changed" : "unchanged";
+      push({
+        reference: result.reference,
+        outcome,
+        previousImageId: result.previousImageId,
+        imageId: result.imageId,
+        digest: result.digest,
+        changed: result.changed,
+      });
+      recordEvent(this.#db, "global", "image.auto_pull", {
+        reference: result.reference,
+        previousImageId: result.previousImageId,
+        imageId: result.imageId,
+        digest: result.digest,
+        changed: result.changed,
+        outcome,
+      });
+      if (result.changed) {
+        this.#auditPullChange(result, reference, previousDigest);
+      }
+    }
+
+    const finishedMs = Date.now();
+    return {
+      ok: attempts.every((attempt) => attempt.outcome !== "failed"),
+      startedAt: new Date(startedMs).toISOString(),
+      finishedAt: new Date(finishedMs).toISOString(),
+      durationMs: Math.max(0, finishedMs - startedMs),
+      attempts,
+      truncated,
+    };
+  }
+
+  #pullReferences(): string[] {
+    const references = new Set<string>();
+    if (this.#defaultImage.length > 0) references.add(this.#defaultImage);
+    if (this.#baseImage !== undefined) {
+      const used = this.#db
+        .prepare(
+          `SELECT 1 AS used FROM apps a
+           JOIN projects p ON p.id = a.project_id
+           WHERE (a.image_base_kind = 'base' OR a.image_base_ref = @base)
+             AND a.deleting = 0 AND p.deleting = 0
+           LIMIT 1`,
+        )
+        .get({ base: this.#baseImage });
+      if (used !== undefined) references.add(this.#baseImage);
+    }
+    return [...references];
+  }
+
+  #auditPullChange(
+    result: RunnerImagePullResult,
+    reference: string,
+    previousDigest: string | null,
+  ): void {
+    const isDefault = reference === this.#defaultImage;
+    const isBase = reference === this.#baseImage;
+    if (isDefault) {
+      const apps = this.#db
+        .prepare(
+          `SELECT a.id FROM apps a
+           JOIN projects p ON p.id = a.project_id
+           WHERE a.build_configured = 0 AND a.deleting = 0 AND p.deleting = 0
+           ORDER BY a.id LIMIT @limit`,
+        )
+        .all({ limit: MAX_PULL_AUDIT_APPS }) as { id: string }[];
+      for (const app of apps) {
+        recordEvent(this.#db, app.id, "app.auto_pulled", {
+          appId: app.id,
+          reference,
+          previousImageId: result.previousImageId,
+          imageId: result.imageId,
+          digest: result.digest,
+        });
+      }
+    }
+    const kind = isDefault ? "default" : isBase ? "base" : null;
+    if (kind === null || result.digest === null) return;
+    const apps = this.#db
+      .prepare(
+        `SELECT a.id, a.image_base_digest FROM apps a
+         JOIN projects p ON p.id = a.project_id
+         WHERE a.build_configured = 1 AND a.image_base_kind = @kind
+           AND a.image_base_digest IS NOT NULL
+           AND a.deleting = 0 AND p.deleting = 0
+         ORDER BY a.id LIMIT @limit`,
+      )
+      .all({ kind, limit: MAX_PULL_AUDIT_APPS }) as {
+      id: string;
+      image_base_digest: string;
+    }[];
+    for (const app of apps) {
+      if (app.image_base_digest === result.digest) continue;
+      if (previousDigest !== null && app.image_base_digest !== previousDigest) continue;
+      recordEvent(this.#db, app.id, "app.rebuild_required", {
+        appId: app.id,
+        reference,
+        previousDigest: app.image_base_digest,
+        digest: result.digest,
+      });
+    }
   }
 
   /**

@@ -620,6 +620,47 @@ describe("app image check", () => {
   });
 });
 
+describe("app image mutation origin", () => {
+  it.each([
+    { path: "/api/apps/web/build", scoped: true },
+    { path: "/api/apps/web/image/rollback", scoped: true },
+    { path: "/api/apps/web/image/check", scoped: true },
+    { path: "/api/images/gc", scoped: false },
+  ])("rejects a cross-site Origin on $path", async ({ path, scoped }) => {
+    const f = await fixture();
+    const response = await handleImages(f.deps, {
+      method: "POST",
+      path,
+      headers: auth(f.token, { "content-type": "application/json" }),
+      ...(scoped ? { query: { project: f.projectId } } : {}),
+      body: "{}",
+      origin: "https://evil.example",
+      host: "app.example",
+    });
+
+    expect(response.status).toBe(403);
+    expect(JSON.parse(response.body)).toEqual({
+      error: "cross-site request rejected",
+      code: "cross_origin",
+    });
+    expect(f.runner.inputs).toHaveLength(0);
+  });
+
+  it("accepts a same-origin image mutation and an absent Origin", async () => {
+    const sameOriginFixture = await fixture();
+    const sameOrigin = await handleImages(sameOriginFixture.deps, {
+      ...buildRequest(sameOriginFixture),
+      origin: "http://app.example",
+      host: "app.example",
+    });
+    expect(sameOrigin.status).toBe(202);
+
+    const absentFixture = await fixture();
+    const absent = await handleImages(absentFixture.deps, checkRequest(absentFixture));
+    expect(absent.status).toBe(200);
+  });
+});
+
 describe("app image HTTP view", () => {
   it("exposes every shared-state field with durable and diagnostic build identities separated", async () => {
     const f = await fixture();

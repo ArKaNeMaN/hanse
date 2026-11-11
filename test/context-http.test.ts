@@ -145,6 +145,7 @@ interface Calls {
   ensure: ManagedApp[];
   snapshots: Array<{ appId: string; sessionId: string }>;
   compacts: Array<{ appId: string; sessionId: string }>;
+  activity: Array<{ appId: string; reason: string }>;
 }
 
 function managerStub(
@@ -154,7 +155,7 @@ function managerStub(
     compact?: (appId: string, sessionId: string) => Promise<{ accepted: true }>;
   } = {},
 ): { manager: InstanceManager; calls: Calls } {
-  const calls: Calls = { ensure: [], snapshots: [], compacts: [] };
+  const calls: Calls = { ensure: [], snapshots: [], compacts: [], activity: [] };
   const manager = {
     ensure: async (app: ManagedApp): Promise<string> => {
       calls.ensure.push(app);
@@ -170,6 +171,7 @@ function managerStub(
       calls.compacts.push({ appId, sessionId });
       return options.compact === undefined ? { accepted: true } : options.compact(appId, sessionId);
     },
+    noteActivity: (appId: string, reason: string) => calls.activity.push({ appId, reason }),
   } as unknown as InstanceManager;
   return { manager, calls };
 }
@@ -388,6 +390,18 @@ describe("POST compact", () => {
       appDir: "/tmp/p1/apps/storefront",
     });
     expect(stub.calls.compacts).toEqual([{ appId: "p1:storefront", sessionId: "ses_1" }]);
+    expect(stub.calls.activity).toEqual([{ appId: "p1:storefront", reason: "compact" }]);
+  });
+
+  it("does not touch activity for a context read", async () => {
+    const f = fixture();
+    const stub = managerStub();
+    f.deps.manager = stub.manager;
+
+    const response = await handleContext(f.deps, request({ headers: auth(f.token) }));
+
+    expect(response.status).toBe(200);
+    expect(stub.calls.activity).toEqual([]);
   });
 
   it("maps deletion-pending starts to 409 without compacting", async () => {

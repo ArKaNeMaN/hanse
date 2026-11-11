@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+import type { RuntimeAppStatus } from "../src/agent/protocol.js";
 import {
+  ProcessRecovery,
   SESSION_RESUME_TTL_MS,
   type SessionResumeState,
   SessionResumeStore,
@@ -265,6 +267,56 @@ describe("SessionResumeStore", () => {
       expect(store.deleteSessionRows(APP_ID, "ses_child")).toBe(1);
       expect(store.get(APP_ID, "ses_child")).toBeUndefined();
       expect(store.deleteSessionRows(APP_ID, "ses_child")).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe("ProcessRecovery activity hook", () => {
+  function runtimeStatus(): RuntimeAppStatus {
+    return {
+      appId: APP_ID,
+      endpoint: "http://opencode.test",
+      state: "running",
+      specHash: "spec",
+      version: null,
+      startedAt: START,
+      restartCount: 0,
+      exitCode: null,
+      oomKilled: false,
+      finishedAt: null,
+    };
+  }
+
+  it("touches resume after a synthetic resume prompt is dispatched", async () => {
+    const db = database();
+    try {
+      const store = new SessionResumeStore(db);
+      busy(store, "ses_1", T1);
+      interrupt(store, "ses_1");
+      const dispatched: string[] = [];
+      const touched: string[] = [];
+      const recovery = new ProcessRecovery({
+        db,
+        runtimeStatus: async () => runtimeStatus(),
+        endpointFor: () => "http://opencode.test",
+        listSessionsBounded: async () => [{ id: "ses_1" }],
+        listSessionStatuses: async () => ({}),
+        listMessages: async () => [],
+        sendPromptAsync: async () => {
+          dispatched.push("ses_1");
+        },
+        isRestarting: () => false,
+        isDeploymentLocked: () => false,
+        now: () => Date.parse(T2),
+        noteActivity: (appId) => touched.push(appId),
+      });
+
+      await recovery.resumePass();
+
+      expect(dispatched).toEqual(["ses_1"]);
+      expect(touched).toEqual([APP_ID]);
     } finally {
       db.close();
     }

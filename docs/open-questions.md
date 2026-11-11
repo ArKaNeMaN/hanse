@@ -1,5 +1,54 @@
 # Open questions
 
+> Stage: `0044-cross-project-handoffs`. Owner decisions were collected on 2026-11-10. There are no
+> open items for this stage.
+
+## Stage `0044-cross-project-handoffs` - resolved owner decisions
+
+1. **Grant ownership** - outbound: the source project owns the grant ("app X of this project may
+   hand off to app Y in project Z"); the target project does not consent in this stage.
+2. **Grant model** - a separate `handoff_grants` table, not an extension of `handoff_policies`.
+   Absence of a grant is deny; the grant carries `dispatch_mode` and `reply_mode`; the agent's
+   `requires_approval` may raise `auto` to `approve`, never lower it.
+3. **Policy scope** - `handoff_policies` remain the authority for same-project pairs only; the
+   matching outbound grant is authoritative for cross-project pairs.
+4. **Threads** - cross-project one-shot and threaded handoffs use the same grant; replies do not
+   require a reverse grant.
+5. **Discovery** - `list_apps` includes reachable remote targets (`remoteApps`).
+6. **Default grant mode** - `auto/auto` (owner choice); the operator can tighten a specific pair to
+   `approve` on either side.
+7. **Target-project inbound visibility** - yes, read-only; visibility only, not consent.
+8. **Delivery cycle** - the owner authorized the full cycle: design, design review, owner questions,
+   plan, plan review, implementation, record, and commit.
+
+> Stage: `0043-idle-agent-maintenance`. Owner decisions were collected on 2026-11-10. There are no
+> open items for this stage.
+
+## Stage `0043-idle-agent-maintenance` - resolved owner decisions
+
+1. **Auto-stop threshold** - 2 days without agent work.
+2. **Auto-update threshold** - 3 hours without agent work, only when the target image is already
+   built or pulled.
+3. **Activity** - any agent work counts; opening chat and any other `GET` do not. Waiting for an
+   interactive answer counts as active; a text answer that merely contains questions counts as
+   inactive.
+4. **Rebuild** - always explicit. Auto-update never rebuilds; it only restarts onto an already
+   built/pulled image. A separate "Rebuild only" button is added to the chat restart banner.
+5. **Auto-pull** - allowed and on by default; mutable-tag supply-chain risk is accepted, with
+   digest pinning or disabling auto-pull as the operator opt-out.
+6. **Terminal** - an active operator terminal WebSocket blocks both auto-stop and auto-update;
+   previews/demo services remain stoppable; the IDE is separate and not app-specific.
+7. **Pending configuration** - auto-update never applies pending settings/skills/model restarts; it
+   requires an unchanged launch fingerprint.
+8. **Rollback** - automatic rollback is deferred; manual rollback is acceptable for the first
+   iteration.
+9. **Configuration surface** - environment thresholds only for v1; per-app overrides are a
+   follow-up.
+10. **Base image** - auto-pull also pulls the configured shared base image; a changed base only marks
+    custom apps `rebuild_required` and still needs an explicit rebuild.
+11. **Delivery cycle** - the owner authorized the full cycle: design, design review, plan, plan
+    review, implementation, record, and commit.
+
 > Stage: `0041-telegram-notifications`. Owner decisions were collected on 2026-11-10. There are no
 > open items for this stage.
 

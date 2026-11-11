@@ -1113,6 +1113,8 @@ const NOTICE_REASONS = Object.freeze({
   process_exit: "Process exited",
   operator_restart: "Operator restart",
   operator_stop: "Operator stop",
+  auto_stop: "Stopped automatically after inactivity",
+  auto_update: "Restarted automatically to apply an image update",
   deletion: "Application deleted",
   deployment: "Deployment",
   unknown_restart: "Restart detected",
@@ -3671,7 +3673,7 @@ export function collectSubtreeIds(tree, id) {
 
 /**
  * @typedef {"none" | "build_start"} ImageGateAction
- * @typedef {"none" | "restart" | "rebuild_restart"} ImageWarningAction
+ * @typedef {"none" | "restart" | "rebuild_restart" | "rebuild"} ImageWarningAction
  * @typedef {"info" | "warning" | "error"} ImageWarningTone
  */
 
@@ -3696,6 +3698,7 @@ export function collectSubtreeIds(tree, id) {
  * @property {string} title
  * @property {string} body
  * @property {ImageWarningAction} action
+ * @property {ImageWarningAction} [secondaryAction]
  */
 
 const IMAGE_POLL_INTERVAL_MS = 2000;
@@ -3798,8 +3801,9 @@ export function imageWarningFromView(view) {
         return {
           tone: "warning",
           title: "Image out of date",
-          body: "Rebuild and restart the agent to use the new image.",
+          body: "Rebuild and restart, or rebuild only to apply later.",
           action: "rebuild_restart",
+          secondaryAction: "rebuild",
         };
       case "not_ready":
         return {
@@ -3878,6 +3882,8 @@ export function imageActionLabel(action) {
       return "Build and start";
     case "rebuild_restart":
       return "Rebuild & restart";
+    case "rebuild":
+      return "Rebuild only";
     case "restart":
       return "Restart";
     default:

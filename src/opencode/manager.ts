@@ -33,6 +33,7 @@ import { ChatSweep } from "../chat/sweep.js";
 import { DeploymentInProgressError, type DeploymentLock } from "../coordinator/deployment-lock.js";
 import type { LifecycleActivity } from "../coordinator/lifecycle-activity.js";
 import { materializeGitCredentials } from "../git/materialize.js";
+import type { TerminalSessionRegistry } from "../http/terminal.js";
 import {
   type AppImageRollbackResult,
   DefaultImageUnavailableError,
@@ -73,8 +74,10 @@ import {
   pruneAllProcessEvents,
   pruneProcessEvents,
   readProcess,
+  writeAppliedLaunchHash,
 } from "../store/process.js";
 import { buildWebMcpConfig } from "../web/config.js";
+import type { ActivityEndpoint, AgentActivityReason, AgentActivityService } from "./activity.js";
 import { writeAuthFile } from "./auth.js";
 import {
   listMessagePage,
@@ -111,6 +114,11 @@ import {
   resolveInstanceEnv,
   sanitizeAppKey,
 } from "./instance.js";
+import {
+  launchFingerprint as computeLaunchFingerprint,
+  type LaunchSnapshot,
+  readInstructionContents,
+} from "./launch.js";
 import { NON_INTERACTIVE_SHELL_ENV } from "./non-interactive-env.js";
 import type { OmoProfileInput, OmoProfileResult } from "./omo-profile.js";
 import { ensureOpencodePassword, opencodePasswordPath, readOpencodePassword } from "./password.js";
@@ -185,6 +193,24 @@ export class RestartInProgressError extends Error {
   constructor(appId: string) {
     super(`restart already in progress for ${appId}`);
     this.name = "RestartInProgressError";
+    this.appId = appId;
+  }
+}
+
+/**
+ * Thrown when the captured launch configuration differs from the fingerprint the caller guarded.
+ *
+ * A restart that races a settings/skills/instruction change fails closed instead of applying the
+ * new configuration silently.
+ */
+export class LaunchChangedError extends Error {
+  readonly code = "launch_changed";
+  readonly status = 409;
+  readonly appId: string;
+
+  constructor(appId: string) {
+    super(`launch configuration changed for ${appId}`);
+    this.name = "LaunchChangedError";
     this.appId = appId;
   }
 }
@@ -284,6 +310,30 @@ interface EnsureAttemptContext {
   attemptId?: string;
   source: ProcessSource;
   reason: string;
+  /** Fingerprint the caller guarded before the destructive stop. */
+  expectedLaunchFingerprint?: string;
+  /** Docker image ID the caller resolved and guarded before the destructive stop. */
+  expectedImageId?: string;
+}
+
+/** Options for {@link InstanceManager.stopApp}. */
+export interface StopOptions {
+  /** Process-history identity for the stop; manual stops stay `operator`. */
+  source?: ProcessSource;
+  /** Process-history reason and stop intent; manual stops stay `stop`. */
+  reason?: string;
+  /** Caller guard evaluated after the maintenance gate closes, before any side effect. */
+  guard?: () => boolean | Promise<boolean>;
+}
+
+/** Options for another attempt called through {@link InstanceManager.restartIfRunning}. */
+export interface RestartOptions {
+  source?: ProcessSource;
+  reason?: string;
+  /** Caller guard evaluated at the top of `#restartLocked`, before any side effect. */
+  guard?: () => boolean | Promise<boolean>;
+  expectedLaunchFingerprint?: string;
+  expectedImageId?: string;
 }
 
 /** One locked process transition; the caller must already hold the app lock. */
@@ -410,6 +460,13 @@ interface Entry {
   modelWarnings?: string[];
 }
 
+interface CapturedLaunch {
+  snapshot: LaunchSnapshot;
+  settingsSnapshot?: LaunchSettingsSnapshot;
+  skillCapture?: SkillCapture;
+  modelProviderSnapshot?: ModelProviderSnapshot;
+}
+
 interface ImageStateSnapshot {
   imageStatus: AppImageStatus;
   imageRef: string | null;
@@ -491,6 +548,10 @@ export interface InstanceManagerOptions {
    * which case the manager falls back to the static build inspection without a preflight.
    */
   images?: InstanceImageSource;
+  /** Durable activity clock and live active check shared with the HTTP work routes. */
+  activity?: Pick<AgentActivityService, "touch">;
+  /** Attached operator terminals and the per-app maintenance gate. */
+  terminalSessions?: TerminalSessionRegistry;
 }
 
 interface MonitorEntry {
@@ -718,6 +779,7 @@ export class InstanceManager {
       now: () => Date.now(),
       ...(this.#options.logger === undefined ? {} : { logger: this.#options.logger }),
       onNotice: (appId, notice) => this.#emitNotice(appId, notice),
+      noteActivity: (appId) => this.noteActivity(appId, "resume"),
     });
   }
 
@@ -1004,7 +1066,17 @@ export class InstanceManager {
     }
     let lastStatus: RuntimeStatus | undefined;
     try {
-      await this.#preflightImage(app);
+      const captured = this.#captureLaunch(app);
+      const fingerprint = computeLaunchFingerprint(captured.snapshot);
+      if (
+        context?.expectedLaunchFingerprint !== undefined &&
+        context.expectedLaunchFingerprint !== fingerprint
+      ) {
+        throw new LaunchChangedError(app.id);
+      }
+      if (context?.expectedImageId === undefined) {
+        await this.#preflightImage(app);
+      }
       // Adoption can select a new image ref; resolve the launch image from the adopted row.
       app = this.#authoritativeApp(app);
       this.#transitionProcess(app.id, {
@@ -1025,7 +1097,7 @@ export class InstanceManager {
       const passwordFile = opencodePasswordPath(isolated.XDG_STATE_HOME);
       const existing = this.#running.get(app.id);
       const current = await this.#options.runtime.status(app.id);
-      const baselinePlugins = resolveBaselinePlugins();
+      const baselinePlugins = captured.snapshot.baselinePlugins;
       const skills = this.#options.skills;
       const skillsTarget = { projectId: app.projectId, appKey: app.appKey };
       const skillOptions: SkillApplyOptions = {
@@ -1035,11 +1107,10 @@ export class InstanceManager {
         appDir: app.appDir,
         baselinePlugins,
       };
-      let skillsHash: string | undefined;
-      let skillCapture: SkillCapture | undefined;
-      if (skills !== undefined) {
+      const skillCapture = captured.skillCapture;
+      let skillsHash: string | undefined = captured.snapshot.skillsHash ?? undefined;
+      if (skills !== undefined && skillCapture !== undefined) {
         try {
-          skillCapture = skills.capture(skillsTarget);
           const probed = skills.probe(
             skillsTarget,
             isolated.XDG_CONFIG_HOME,
@@ -1093,11 +1164,11 @@ export class InstanceManager {
       let appliedProfile = true;
       let profileWarning: string | undefined;
 
-      const settings = this.#options.settings;
       const omoProfiles = this.#options.omoProfiles;
-      const modelProviderSnapshot = this.#options.modelProviders?.snapshot();
-      if (settings !== undefined && omoProfiles !== undefined) {
-        const snapshot = settings.snapshot({ projectId: app.projectId, appKey: app.appKey });
+      const modelProviderSnapshot = captured.modelProviderSnapshot;
+      const settingsSnapshot = captured.settingsSnapshot;
+      if (settingsSnapshot !== undefined && omoProfiles !== undefined) {
+        const snapshot = settingsSnapshot;
         web = snapshot.resolved.effective.web;
         model = snapshot.resolved.effective.llm.model.value ?? DEFAULT_MODEL;
         if (app.gitCredentials !== false) {
@@ -1165,48 +1236,28 @@ export class InstanceManager {
       ensureAgentToken(this.#db, app.id, tokenFile);
       const password = ensureOpencodePassword(passwordFile);
 
-      const agentApiBase = process.env.HANSE_AGENT_API_BASE?.trim();
       const coordinatorEnvironment = {
-        HANSE_MCP_API_BASE:
-          agentApiBase !== undefined && agentApiBase.length > 0
-            ? agentApiBase
-            : DEFAULT_AGENT_API_BASE,
+        HANSE_MCP_API_BASE: captured.snapshot.coordinatorMcp.apiBase,
         HANSE_AGENT_TOKEN_FILE: tokenFile,
       };
-      const permission = buildPermissionPolicy(
-        resolvePermissionPaths({
-          home: isolated.HOME,
-          xdgDataHome: isolated.XDG_DATA_HOME,
-          xdgConfigHome: isolated.XDG_CONFIG_HOME,
-          xdgCacheHome: isolated.XDG_CACHE_HOME,
-          tmpdir: isolated.TMPDIR,
-          attachmentsRoot: this.attachmentVisibleRoot(app),
-          baselinePlugins,
-        }),
-        {
-          ...webPermissionOptions(web),
-          denyPatterns: credentialDenyPatterns({
-            appRoot: path.dirname(isolated.HOME),
-            home: isolated.HOME,
-            xdgDataHome: isolated.XDG_DATA_HOME,
-            passwordFile,
-          }),
-        },
-      );
+      const permission = buildPermissionPolicy(captured.snapshot.permission.roots, {
+        ...captured.snapshot.permission.web,
+        denyPatterns: captured.snapshot.permission.denyPatterns,
+      });
       const sharedInstructions = materializeSharedInstructions(
         isolated,
         app.sharedInstructions ?? [],
       );
       const overlay = buildConfigOverlay({
-        coordinatorCommand: [process.execPath, process.argv[1] ?? "", "mcp"],
-        codegraphCommand: resolveCodegraphCommand(),
+        coordinatorCommand: captured.snapshot.coordinatorCommand,
+        codegraphCommand: captured.snapshot.codegraphCommand ?? undefined,
         environment: coordinatorEnvironment,
         instructions: [
           ...sharedInstructions,
           ...(app.instructions ?? []),
           processRulePath(isolated),
         ],
-        plugins: baselinePlugins,
+        plugins: captured.snapshot.baselinePlugins,
         permission,
         model,
         providers: modelProviderSnapshot?.overlay,
@@ -1255,7 +1306,7 @@ export class InstanceManager {
         networkName: specNetworkName,
         ...(specPort === undefined ? {} : { port: specPort }),
         env,
-        resources: resolveRuntimeResources(),
+        resources: captured.snapshot.resources,
         labels: {
           "hanse.managed": "true",
           "hanse.app.id": app.id,
@@ -1282,7 +1333,11 @@ export class InstanceManager {
         appliedSkillsHash: skillsHash,
         appliedRuleHash: PROCESS_RULE_HASH,
       });
-      const status = await this.#options.runtime.ensure(spec);
+      const expectedImageId = context?.expectedImageId;
+      const status =
+        expectedImageId === undefined
+          ? await this.#options.runtime.ensure(spec)
+          : await this.#options.runtime.ensure(spec, { expectedImageId });
       lastStatus = status;
       if ((status.state !== "running" && status.state !== "starting") || status.endpoint === null) {
         throw new Error(`agent runtime did not start ${app.id}: ${status.error ?? status.state}`);
@@ -1325,7 +1380,10 @@ export class InstanceManager {
         appliedProfile,
         PROCESS_RULE_HASH,
         skillsHash,
+        attempt,
       );
+      writeAppliedLaunchHash(this.#db, app.id, fingerprint);
+      this.noteActivity(app.id, attempt.reason === "restart" ? "restart" : "start");
 
       const entry: Entry = {
         endpoint,
@@ -1464,6 +1522,152 @@ export class InstanceManager {
 
   isRunning(appId: string): boolean {
     return this.#running.has(appId);
+  }
+
+  noteActivity(appId: string, reason: AgentActivityReason): void {
+    this.#options.activity?.touch(appId, reason);
+  }
+
+  /**
+   * Lock-free tri-state endpoint for the activity check. It installs endpoint authorization from the
+   * runtime status when the in-memory entry is absent so a coordinator restart cannot disable idle
+   * maintenance.
+   */
+  async activityEndpoint(appId: string): Promise<ActivityEndpoint> {
+    const entry = this.#running.get(appId);
+    if (entry !== undefined) {
+      return { state: "running", endpoint: entry.endpoint };
+    }
+    let status: Awaited<ReturnType<AgentRuntimeClient["status"]>>;
+    try {
+      status = await this.#options.runtime.status(appId);
+    } catch {
+      return { state: "unprobeable", reason: "runtime_probe_failed" };
+    }
+    if (status === undefined || (status.state !== "running" && status.state !== "starting")) {
+      return { state: "not_running" };
+    }
+    if (status.endpoint === undefined || status.endpoint === null) {
+      return { state: "unprobeable", reason: "endpoint_missing" };
+    }
+    const row = this.#db
+      .prepare("SELECT project_id AS projectId, app_key AS appKey FROM apps WHERE id = ?")
+      .get(appId) as { projectId: string; appKey: string } | undefined;
+    if (row === undefined) {
+      return { state: "unprobeable", reason: "app_missing" };
+    }
+    const isolated = resolveInstanceEnv(this.#runtimeRoot, {
+      projectId: row.projectId,
+      app: row.appKey,
+    });
+    const password = readOpencodePassword(opencodePasswordPath(isolated.XDG_STATE_HOME));
+    if (password === undefined) {
+      return { state: "unprobeable", reason: "password_missing" };
+    }
+    setEndpointAuthorization(status.endpoint, OPENCODE_BASIC_USERNAME, password);
+    return { state: "running", endpoint: status.endpoint };
+  }
+
+  /**
+   * Capture the current launch inputs without taking the per-app lock or mutating anything.
+   *
+   * The fingerprint derived from this snapshot is authoritative for the destructive launch; callers
+   * compare it before and after a stop so a concurrent configuration change fails closed.
+   */
+  #captureLaunch(app: ManagedApp): CapturedLaunch {
+    const target = { projectId: app.projectId, appKey: app.appKey };
+    const identity = { projectId: app.projectId, app: app.appKey };
+    const isolated = resolveInstanceEnv(this.#runtimeRoot, identity);
+    const tokenFile = mcpTokenPath(this.#runtimeRoot, identity);
+    const baselinePlugins = resolveBaselinePlugins();
+    const skills = this.#options.skills;
+    let skillCapture: SkillCapture | undefined;
+    if (skills !== undefined) {
+      try {
+        skillCapture = skills.capture(target);
+      } catch (error) {
+        throw skillsMaterializeFailure(error);
+      }
+    }
+    const modelProviderSnapshot = this.#options.modelProviders?.snapshot();
+    const settings = this.#options.settings;
+    const omoProfiles = this.#options.omoProfiles;
+    const settingsSnapshot =
+      settings !== undefined && omoProfiles !== undefined ? settings.snapshot(target) : undefined;
+    const effective = settingsSnapshot?.resolved.effective;
+    const web = effective?.web;
+    const model = effective?.llm.model.value ?? (effective === undefined ? "" : DEFAULT_MODEL);
+    const profileHash =
+      effective !== undefined && omoProfiles !== undefined
+        ? omoProfiles.preview({
+            appId: app.id,
+            model,
+            disableWebsearch: disableWebsearch(effective.web),
+          }).contentHash
+        : null;
+    const agentApiBase = process.env.HANSE_AGENT_API_BASE?.trim();
+    const apiBase =
+      agentApiBase !== undefined && agentApiBase.length > 0 ? agentApiBase : DEFAULT_AGENT_API_BASE;
+    const passwordFile = opencodePasswordPath(isolated.XDG_STATE_HOME);
+    const snapshot: LaunchSnapshot = {
+      settings:
+        settingsSnapshot === undefined
+          ? null
+          : {
+              effective: launchEffectiveSettings(settingsSnapshot.resolved.effective),
+              providerKeys: settingsSnapshot.resolved.providerKeys,
+              authHash: settingsSnapshot.authHash,
+              gitAuthHash: settingsSnapshot.gitAuthHash,
+              policyVersion: ATTACHMENTS_POLICY_VERSION,
+            },
+      profileHash,
+      skillsHash: skillCapture?.hash ?? null,
+      modelProvidersHash: modelProviderSnapshot?.hash ?? null,
+      ruleHash: PROCESS_RULE_HASH,
+      appInstructions: readInstructionContents(app.instructions),
+      sharedInstructions: readInstructionContents(app.sharedInstructions),
+      baselinePlugins,
+      codegraphCommand: resolveCodegraphCommand() ?? null,
+      coordinatorCommand: [process.execPath, process.argv[1] ?? "", "mcp"],
+      coordinatorMcp: { apiBase, tokenFile },
+      webOverlay: web === undefined ? null : (buildWebMcpConfig(web) ?? null),
+      permission: {
+        roots: resolvePermissionPaths({
+          home: isolated.HOME,
+          xdgDataHome: isolated.XDG_DATA_HOME,
+          xdgConfigHome: isolated.XDG_CONFIG_HOME,
+          xdgCacheHome: isolated.XDG_CACHE_HOME,
+          tmpdir: isolated.TMPDIR,
+          attachmentsRoot: this.attachmentVisibleRoot(app),
+          baselinePlugins,
+        }),
+        web: webPermissionOptions(web),
+        denyPatterns: credentialDenyPatterns({
+          appRoot: path.dirname(isolated.HOME),
+          home: isolated.HOME,
+          xdgDataHome: isolated.XDG_DATA_HOME,
+          passwordFile,
+        }),
+      },
+      resources: resolveRuntimeResources(),
+      agentApiBase: agentApiBase !== undefined && agentApiBase.length > 0 ? agentApiBase : null,
+    };
+    return {
+      snapshot,
+      ...(settingsSnapshot === undefined ? {} : { settingsSnapshot }),
+      ...(skillCapture === undefined ? {} : { skillCapture }),
+      ...(modelProviderSnapshot === undefined ? {} : { modelProviderSnapshot }),
+    };
+  }
+
+  /** Lock-free launch snapshot used by the idle-maintenance guard. */
+  launchSnapshot(app: ManagedApp): LaunchSnapshot {
+    return this.#captureLaunch(app).snapshot;
+  }
+
+  /** Lock-free fingerprint of a launch snapshot. */
+  launchFingerprint(snapshot: LaunchSnapshot): string {
+    return computeLaunchFingerprint(snapshot);
   }
 
   #recordAppliedImageId(appId: string, imageId: string | null | undefined): void {
@@ -1672,13 +1876,25 @@ export class InstanceManager {
     return { pending: reasons.length > 0, reasons };
   }
 
-  async stopApp(appId: string): Promise<boolean> {
+  async stopApp(appId: string, options: StopOptions = {}): Promise<boolean> {
     return this.#withAppLock(appId, async () => {
       const end = this.#beginLifecycle("stop");
+      const releaseMaintenance = this.#options.terminalSessions?.beginMaintenance(appId);
       try {
         this.#assertDeploymentUnlocked("stop");
-        return await this.#stopLocked(appId, "stop");
+        if (this.isRestarting(appId) || this.isLaunching(appId) || (await this.isBuilding(appId))) {
+          return false;
+        }
+        if (options.guard !== undefined && !(await options.guard())) {
+          return false;
+        }
+        const intent: StopIntentReason = options.reason === "auto_stop" ? "auto_stop" : "stop";
+        return await this.#stopLocked(appId, intent, {
+          source: options.source,
+          attemptReason: options.reason ?? intent,
+        });
       } finally {
+        releaseMaintenance?.();
         end();
       }
     });
@@ -1716,7 +1932,12 @@ export class InstanceManager {
   async #stopLocked(
     appId: string,
     reason: StopIntentReason,
-    options: { terminal?: boolean; attemptId?: string } = {},
+    options: {
+      terminal?: boolean;
+      attemptId?: string;
+      source?: ProcessSource;
+      attemptReason?: string;
+    } = {},
   ): Promise<boolean> {
     const terminal = options.terminal ?? true;
     const entry = this.#running.get(appId);
@@ -1732,7 +1953,8 @@ export class InstanceManager {
     const endpoint = entry?.endpoint ?? status?.endpoint ?? undefined;
     const persisted = readProcess(this.#db, appId);
     const attemptId = options.attemptId ?? persisted.attemptId ?? this.#syntheticAttemptId(appId);
-    const source: ProcessSource = reason === "delete" ? "system" : "operator";
+    const source: ProcessSource = options.source ?? (reason === "delete" ? "system" : "operator");
+    const attemptReason = options.attemptReason ?? reason;
     await this.#recovery.recordStopIntent(appId, reason);
     const stoppedAt = new Date().toISOString();
     this.#db
@@ -1743,7 +1965,7 @@ export class InstanceManager {
       state: "starting",
       phase: "stopping",
       source,
-      reason,
+      reason: attemptReason,
     });
     let finalStatus: Awaited<ReturnType<AgentRuntimeClient["delete"]>>;
     try {
@@ -1756,8 +1978,8 @@ export class InstanceManager {
         attemptId,
         state: "error",
         phase: "failed",
-        source: "runtime",
-        reason,
+        source,
+        reason: attemptReason,
         errorCode: "runtime_unavailable",
         message: error,
       });
@@ -1773,7 +1995,7 @@ export class InstanceManager {
       await this.#recordStatusById(appId, finalStatus, {
         attemptId,
         source,
-        reason,
+        reason: attemptReason,
         clearError: true,
       });
     }
@@ -1862,7 +2084,7 @@ export class InstanceManager {
     return { accepted: true, completion };
   }
 
-  async restartIfRunning(app: ManagedApp): Promise<boolean> {
+  async restartIfRunning(app: ManagedApp, options: RestartOptions = {}): Promise<boolean> {
     const release = this.#acquireRestartClaim(app.id);
     if (release === undefined) {
       throw new RestartInProgressError(app.id);
@@ -1872,12 +2094,12 @@ export class InstanceManager {
     let restarted = false;
     try {
       await this.#registerLaunch(app.id, async () => {
-        restarted = await this.#runRestartClaimed(app, preparedAttemptId);
+        restarted = await this.#runRestartClaimed(app, preparedAttemptId, options);
         return restarted ? (this.endpointFor(app.id) ?? "") : "";
       });
       return restarted;
     } catch (error) {
-      await this.#handleRestartFailure(app.id, error, preparedAttemptId);
+      await this.#handleRestartFailure(app.id, error, preparedAttemptId, options);
       throw error;
     } finally {
       release();
@@ -1887,6 +2109,27 @@ export class InstanceManager {
   /** True while a sync, async, or image-rollback restart holds the app's claim. */
   isRestarting(appId: string): boolean {
     return this.#restartClaims.has(appId);
+  }
+
+  /** True while an asynchronous or synchronous launch is in flight for the app. */
+  isLaunching(appId: string): boolean {
+    return this.#launches.has(appId);
+  }
+
+  /** Lock-free check for an in-flight image build; never takes the per-app lock. */
+  async isBuilding(appId: string): Promise<boolean> {
+    const images = this.#options.images;
+    if (images !== undefined) {
+      try {
+        if ((await images.imageState(appId)).state === "building") return true;
+      } catch {
+        // Fall back to the durable status when the live image view is unavailable.
+      }
+    }
+    const row = this.#db
+      .prepare("SELECT image_status AS status FROM apps WHERE id = ?")
+      .get(appId) as { status: string } | undefined;
+    return row?.status === "building";
   }
 
   /**
@@ -1948,19 +2191,30 @@ export class InstanceManager {
     return release;
   }
 
-  async #runRestartClaimed(app: ManagedApp, attemptId?: string): Promise<boolean> {
+  async #runRestartClaimed(
+    app: ManagedApp,
+    attemptId?: string,
+    options: RestartOptions = {},
+  ): Promise<boolean> {
     return this.#withAppLock(app.id, async () => {
       const end = this.#beginLifecycle("restart");
+      const releaseMaintenance = this.#options.terminalSessions?.beginMaintenance(app.id);
       try {
         this.#assertDeploymentUnlocked("restart");
-        return await this.#restartLocked(app, attemptId);
+        return await this.#restartLocked(app, attemptId, options);
       } finally {
+        releaseMaintenance?.();
         end();
       }
     });
   }
 
-  async #handleRestartFailure(appId: string, error: unknown, attemptId?: string): Promise<void> {
+  async #handleRestartFailure(
+    appId: string,
+    error: unknown,
+    attemptId?: string,
+    options: RestartOptions = {},
+  ): Promise<void> {
     const detail = error instanceof Error ? error.message : "unknown error";
     this.#options.logger?.warn("restart_failed", { appId, error: detail.slice(0, 300) });
     if (error instanceof DeploymentInProgressError) {
@@ -1973,8 +2227,8 @@ export class InstanceManager {
           attemptId: attemptId ?? persisted.attemptId ?? this.#syntheticAttemptId(appId),
           state: "error",
           phase: "failed",
-          source: "operator",
-          reason: "restart",
+          source: options.source ?? "operator",
+          reason: options.reason ?? "restart",
           errorCode: processErrorCode(error),
           message: error,
         });
@@ -1984,7 +2238,16 @@ export class InstanceManager {
     }
   }
 
-  async #restartLocked(app: ManagedApp, attemptId?: string): Promise<boolean> {
+  async #restartLocked(
+    app: ManagedApp,
+    attemptId?: string,
+    options: RestartOptions = {},
+  ): Promise<boolean> {
+    if (options.guard !== undefined && !(await options.guard())) {
+      return false;
+    }
+    const source = options.source ?? "operator";
+    const reason = options.reason ?? "restart";
     const status = await this.#options.runtime.status(app.id);
     const running = status?.state === "running" || status?.state === "starting";
     if (!running) {
@@ -2009,8 +2272,8 @@ export class InstanceManager {
         attemptId: attempt,
         state: "starting",
         phase: "requested",
-        source: "operator",
-        reason: "restart",
+        source,
+        reason,
         clearError: true,
       });
     }
@@ -2022,8 +2285,8 @@ export class InstanceManager {
           attemptId: attempt,
           state: "error",
           phase: "failed",
-          source: "operator",
-          reason: "restart",
+          source,
+          reason,
           errorCode: processErrorCode(error),
           message: error,
         });
@@ -2032,11 +2295,23 @@ export class InstanceManager {
       }
       throw error;
     }
-    await this.#stopLocked(app.id, "restart", { terminal: false, attemptId: attempt });
+    const stopIntent: StopIntentReason = reason === "auto_update" ? "auto_update" : "restart";
+    await this.#stopLocked(app.id, stopIntent, {
+      terminal: false,
+      attemptId: attempt,
+      source,
+      attemptReason: reason,
+    });
     await this.#ensureLocked(app, {
       attemptId: attempt,
-      source: "operator",
-      reason: "restart",
+      source,
+      reason,
+      ...(options.expectedLaunchFingerprint === undefined
+        ? {}
+        : { expectedLaunchFingerprint: options.expectedLaunchFingerprint }),
+      ...(options.expectedImageId === undefined
+        ? {}
+        : { expectedImageId: options.expectedImageId }),
     });
     return true;
   }
@@ -2290,7 +2565,6 @@ export class InstanceManager {
       return;
     }
     this.armPendingConfirmation(app.id);
-    if (!this.#monitorsEnabled()) return;
     if (status.endpoint === undefined || status.endpoint === null) return;
     const endpoint = status.endpoint;
     setEndpointAuthorization(endpoint, OPENCODE_BASIC_USERNAME, password);
@@ -2307,11 +2581,16 @@ export class InstanceManager {
     const persisted = this.#db
       .prepare(
         `SELECT applied_settings_hash AS appliedSettingsHash,
-                applied_profile AS appliedProfile
+                applied_profile AS appliedProfile,
+                applied_skills_hash AS appliedSkillsHash
          FROM instances WHERE app_id = ?`,
       )
       .get(app.id) as
-      | { appliedSettingsHash: string | null; appliedProfile: number | null }
+      | {
+          appliedSettingsHash: string | null;
+          appliedProfile: number | null;
+          appliedSkillsHash: string | null;
+        }
       | undefined;
     const entry: Entry = {
       endpoint,
@@ -2323,6 +2602,7 @@ export class InstanceManager {
         persisted?.appliedProfile === null || persisted?.appliedProfile === undefined
           ? undefined
           : persisted.appliedProfile !== 0,
+      appliedSkillsHash: persisted?.appliedSkillsHash ?? undefined,
     };
     this.#running.set(app.id, entry);
     this.#startMonitor(app, entry);
@@ -2461,12 +2741,23 @@ export class InstanceManager {
       onEvent: (event: HanseEvent) => {
         this.#pending.observe(app.id, event);
         if (event.type === "session.status") {
+          if (event.status.type === "busy" || event.status.type === "retry") {
+            this.noteActivity(app.id, "status");
+          }
           void this.#recovery
             .observeSessionStatus(app, {
               sessionID: event.sessionID,
               status: event.status,
             })
             .catch(() => undefined);
+        } else if (event.type === "question.asked" || event.type === "permission.asked") {
+          this.noteActivity(app.id, "waiting");
+        } else if (
+          event.type === "question.replied" ||
+          event.type === "question.rejected" ||
+          event.type === "permission.replied"
+        ) {
+          this.noteActivity(app.id, "answer");
         } else if (event.type === "stream.ready") {
           void this.#sampleAppSessionStatuses(app.id, entry.endpoint).catch(() => undefined);
         } else if (event.type === "session.error") {
@@ -2742,14 +3033,17 @@ export class InstanceManager {
       return;
     }
     const seen = new Set<string>();
+    let activityObserved = false;
     for (const [sessionID, status] of Object.entries(statuses)) {
       seen.add(sessionID);
+      if (status.type === "busy" || status.type === "retry") activityObserved = true;
       try {
         await this.#recovery.observeSessionStatus({ id: appId }, { sessionID, status });
       } catch {
         // One bad session entry must not block the rest of the sample.
       }
     }
+    if (activityObserved) this.noteActivity(appId, "status");
     const active = this.#recovery.listActiveSessions(appId);
     for (const row of active) {
       if (seen.has(row.sessionId)) continue;
@@ -3238,6 +3532,7 @@ export class InstanceManager {
     appliedProfile?: boolean,
     appliedRuleHash?: string,
     appliedSkillsHash?: string,
+    attempt?: ProcessAttemptContext,
   ): Promise<void> {
     const persisted = readProcess(this.#db, app.id);
     const state = normalizeProcessState(status.state);
@@ -3245,8 +3540,8 @@ export class InstanceManager {
       attemptId: persisted.attemptId ?? this.#syntheticAttemptId(app.id),
       state,
       phase: processPhaseForState(state),
-      source: "runtime",
-      reason: `runtime_${state}`,
+      source: attempt?.source ?? "runtime",
+      reason: attempt?.reason ?? `runtime_${state}`,
       status,
       image,
       ...(settingsHash === undefined ? {} : { settingsHash }),

@@ -262,6 +262,30 @@ describe("runner spec validation", () => {
     );
   });
 
+  it("validates expectedImageId and excludes it from the spec hash", () => {
+    const f = fixture();
+    const pinned = `sha256:${"a".repeat(64)}`;
+    const base = validateRunnerSpec(raw(f), config(f));
+    const pinnedSpec = validateRunnerSpec(raw(f, { expectedImageId: pinned }), config(f));
+
+    expect(pinnedSpec.expectedImageId).toBe(pinned);
+    expect(pinnedSpec.specHash).toBe(base.specHash);
+    expect(computeSpecHash({ ...pinnedSpec, expectedImageId: undefined as never })).toBe(
+      base.specHash,
+    );
+
+    for (const value of [
+      "",
+      "sha256:short",
+      `sha256:${"A".repeat(64)}`,
+      `md5:${"a".repeat(64)}`,
+      ` sha256:${"a".repeat(64)}`,
+      42,
+    ]) {
+      expectConfigError(() => validateRunnerSpec(raw(f, { expectedImageId: value }), config(f)));
+    }
+  });
+
   it("rejects managed git path keys outside the app mounts", () => {
     const f = fixture();
     const env = raw(f).env as Record<string, string>;

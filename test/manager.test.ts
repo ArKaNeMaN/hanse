@@ -13,10 +13,12 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { stoppedStatus } from "../src/agent/protocol.js";
+import { RuntimeClientError } from "../src/agent/client.js";
+import { type EnsureAppOptions, stoppedStatus } from "../src/agent/protocol.js";
 import { computeSpecHash } from "../src/agent/spec.js";
 import { DeploymentInProgressError, DeploymentLock } from "../src/coordinator/deployment-lock.js";
 import { LifecycleActivity } from "../src/coordinator/lifecycle-activity.js";
+import { TerminalSessionRegistry } from "../src/http/terminal.js";
 import {
   DefaultImageUnavailableError,
   ImageNotReadyError,
@@ -32,6 +34,7 @@ import type {
   ContextSnapshot,
 } from "../src/opencode/context.js";
 import { authorizationFor, setEndpointAuthorization } from "../src/opencode/endpoint-auth.js";
+import type { HanseEvent } from "../src/opencode/events.js";
 import { resolveInstanceEnv } from "../src/opencode/instance.js";
 import {
   AgentStartingError,
@@ -85,7 +88,12 @@ import {
   type SkillWarning,
 } from "../src/skills/index.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
-import { type ProcessEvent, readProcess, readProcessEvents } from "../src/store/process.js";
+import {
+  type ProcessEvent,
+  readAppliedLaunchHash,
+  readProcess,
+  readProcessEvents,
+} from "../src/store/process.js";
 import type { WebToolConfig } from "../src/web/types.js";
 import { FakeAgentRuntime } from "./fixtures/fake-runtime.js";
 
@@ -356,6 +364,8 @@ function fixture(
     parts?: Array<{ type: string; text?: string; [key: string]: unknown }>,
   ) => Promise<void>,
   waitForReady?: (appId: string, endpoint: string) => Promise<void>,
+  activity?: { touch(appId: string, reason: string): void },
+  terminalSessions?: TerminalSessionRegistry,
 ): Fixture {
   const dir = mkdtempSync(path.join(tmpdir(), "hanse-manager-"));
   dirs.push(dir);
@@ -387,6 +397,8 @@ function fixture(
     ...(previews === undefined ? {} : { previews }),
     ...(dispatch === undefined ? {} : { sendPromptAsync: dispatch }),
     ...(waitForReady === undefined ? {} : { waitForReady }),
+    ...(activity === undefined ? {} : { activity }),
+    ...(terminalSessions === undefined ? {} : { terminalSessions }),
   });
   return { manager, runtime, db, dir };
 }
@@ -1814,7 +1826,7 @@ describe("InstanceManager lifecycle", () => {
     expect(existsSync(tokenFile)).toBe(false);
   });
 
-  it("waits for an in-flight ensure before restarting", async () => {
+  it("skips a stop while an ensure is in flight", async () => {
     const runtime = new FakeAgentRuntime();
     const gate = deferred<void>();
     let verifyStarted = false;
@@ -1832,20 +1844,20 @@ describe("InstanceManager lifecycle", () => {
 
     const ensured = manager.ensure(APP);
     await waitFor(() => verifyStarted);
-    let stopped = false;
+    let settled = false;
     const stopping = manager.stopApp(APP.id).then((result) => {
-      stopped = true;
+      settled = true;
       return result;
     });
     await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(stopped).toBe(false);
+    expect(settled).toBe(false);
 
     gate.resolve(undefined);
     const endpoint = await ensured;
     expect(endpoint).toContain("127.0.0.1");
-    await expect(stopping).resolves.toBe(true);
-    expect(manager.isRunning(APP.id)).toBe(false);
-    expect(runtime.deleted).toEqual([APP.id]);
+    await expect(stopping).resolves.toBe(false);
+    expect(manager.isRunning(APP.id)).toBe(true);
+    expect(runtime.deleted).toEqual([]);
   });
 
   it("reports settings_changed when the snapshot hash changes", async () => {
@@ -2863,11 +2875,13 @@ describe("InstanceManager applied image identity", () => {
     appliedImageId: string | null;
     appliedSettingsHash: string | null;
     appliedProfile: number | null;
+    appliedSkillsHash: string | null;
   } {
     return db
       .prepare(
         `SELECT state, runtime_state AS runtimeState, applied_image_id AS appliedImageId,
-                applied_settings_hash AS appliedSettingsHash, applied_profile AS appliedProfile
+                applied_settings_hash AS appliedSettingsHash, applied_profile AS appliedProfile,
+                applied_skills_hash AS appliedSkillsHash
          FROM instances WHERE app_id = 'p:web'`,
       )
       .get() as {
@@ -2876,6 +2890,7 @@ describe("InstanceManager applied image identity", () => {
       appliedImageId: string | null;
       appliedSettingsHash: string | null;
       appliedProfile: number | null;
+      appliedSkillsHash: string | null;
     };
   }
 
@@ -2924,6 +2939,40 @@ describe("InstanceManager applied image identity", () => {
     expect(row.appliedImageId).toBe("sha256:one");
     expect(row.appliedSettingsHash).toBe(recorded.appliedSettingsHash);
     expect(row.appliedProfile).toBe(recorded.appliedProfile);
+  });
+
+  it("restores applied_skills_hash on resume so a skills change is classified correctly", async () => {
+    const runtime = new FakeAgentRuntime();
+    const skills = fakeSkills("skills-hash");
+    const initial = fixture(
+      runtime,
+      fakeSettings(),
+      fakeProfiles().source,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      skills.source,
+    );
+    await initial.manager.ensure(APP);
+    expect(instanceRow(initial.db).appliedSkillsHash).toBe("skills-hash");
+    initial.manager.detach();
+    skills.setHash("skills-hash-2");
+
+    const manager = new InstanceManager(initial.db, initial.dir, {
+      runtime,
+      settings: fakeSettings(),
+      omoProfiles: fakeProfiles().source,
+      skills: skills.source,
+      workspaceRoot: "/srv",
+      verify: async () => [],
+    });
+    await manager.resumeRunning([{ id: APP.id, projectId: "p", appKey: "web" }]);
+
+    expect(manager.pendingRestart(APP.id)).toEqual({
+      pending: true,
+      reasons: ["skills_changed"],
+    });
   });
 
   it("records the applied image ID from the reconciler", async () => {
@@ -4164,6 +4213,184 @@ describe("InstanceManager process rule materialization", () => {
   });
 });
 
+describe("InstanceManager activity hooks", () => {
+  function activitySpy(): {
+    calls: Array<[string, string]>;
+    touch(appId: string, reason: string): void;
+  } {
+    const calls: Array<[string, string]> = [];
+    return { calls, touch: (appId, reason) => calls.push([appId, reason]) };
+  }
+
+  it("resolves a running endpoint after detach and installs authorization", async () => {
+    const runtime = new FakeAgentRuntime(() => "http://127.0.0.1:4213");
+    const f = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    await f.manager.ensure(APP);
+    const endpoint = runtime.endpoints.get(APP.id);
+    if (endpoint === undefined) throw new Error("missing endpoint");
+    f.manager.detach();
+    expect(authorizationFor(endpoint)).toBeUndefined();
+
+    await expect(f.manager.activityEndpoint(APP.id)).resolves.toEqual({
+      state: "running",
+      endpoint,
+    });
+    expect(authorizationFor(endpoint)).toMatch(/^Basic /);
+  });
+
+  it("returns not_running for a stopped runtime and unprobeable without a password", async () => {
+    const runtime = new FakeAgentRuntime(() => "http://127.0.0.1:4214");
+    const f = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    await f.manager.ensure(APP);
+    f.manager.detach();
+    markRuntimeStopped(runtime, APP.id);
+    await expect(f.manager.activityEndpoint(APP.id)).resolves.toEqual({ state: "not_running" });
+
+    const status = runtime.statuses.get(APP.id);
+    if (status === undefined) throw new Error("missing status");
+    runtime.statuses.set(APP.id, {
+      ...status,
+      state: "running",
+      endpoint: "http://127.0.0.1:4214",
+    });
+    const env = resolveInstanceEnv(f.dir, { projectId: "p", app: "web" });
+    rmSync(path.join(env.XDG_STATE_HOME, "opencode-password"), { force: true });
+    await expect(f.manager.activityEndpoint(APP.id)).resolves.toEqual({
+      state: "unprobeable",
+      reason: "password_missing",
+    });
+  });
+
+  it("touches start on a destructive ensure and restart on a restart", async () => {
+    const runtime = new FakeAgentRuntime();
+    const activity = activitySpy();
+    const f = fixture(
+      runtime,
+      fakeSettings(),
+      fakeProfiles().source,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      activity,
+    );
+
+    await f.manager.ensure(APP);
+    expect(activity.calls).toEqual([[APP.id, "start"]]);
+
+    activity.calls.length = 0;
+    await f.manager.restartIfRunning(APP);
+    expect(activity.calls).toEqual([[APP.id, "restart"]]);
+  });
+
+  it("touches waiting and answer for monitor question and permission events", async () => {
+    const runtime = new FakeAgentRuntime();
+    const monitors = fakeMonitorFactory();
+    const activity = activitySpy();
+    const f = fixture(
+      runtime,
+      fakeSettings({ context: {} }),
+      fakeProfiles().source,
+      undefined,
+      undefined,
+      undefined,
+      { monitorFactory: monitors.factory },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      activity,
+    );
+    await f.manager.ensure(APP);
+    activity.calls.length = 0;
+    const monitor = monitors.monitors[0];
+    if (monitor === undefined) throw new Error("missing monitor");
+
+    monitor.options.onEvent?.({
+      type: "question.asked",
+      request: { id: "q", sessionID: "ses_1", questions: [] },
+    } as HanseEvent);
+    monitor.options.onEvent?.({
+      type: "question.replied",
+      sessionID: "ses_1",
+      requestID: "q",
+      source: "v1",
+    } as HanseEvent);
+    monitor.options.onEvent?.({
+      type: "permission.asked",
+      request: {
+        id: "p",
+        sessionID: "ses_1",
+        permission: "bash",
+        patterns: [],
+        always: [],
+      },
+    } as HanseEvent);
+    monitor.options.onEvent?.({
+      type: "permission.replied",
+      sessionID: "ses_1",
+      requestID: "p",
+      reply: "once",
+      source: "v1",
+    } as HanseEvent);
+
+    expect(activity.calls).toEqual([
+      [APP.id, "waiting"],
+      [APP.id, "answer"],
+      [APP.id, "waiting"],
+      [APP.id, "answer"],
+    ]);
+  });
+
+  it("touches status for sampled busy and retry session statuses", async () => {
+    const server = createServer((request, response) => {
+      if (request.method === "GET" && request.url === "/session/status") {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ ses_live: { type: "retry" } }));
+        return;
+      }
+      response.writeHead(404);
+      response.end("{}");
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address() as AddressInfo;
+    const endpoint = `http://127.0.0.1:${address.port}`;
+    const runtime = new FakeAgentRuntime(() => endpoint);
+    const activity = activitySpy();
+    const f = fixture(
+      runtime,
+      fakeSettings(),
+      fakeProfiles().source,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      activity,
+    );
+    await f.manager.ensure(APP);
+    activity.calls.length = 0;
+
+    await f.manager.reconcileStatuses();
+
+    expect(activity.calls).toContainEqual([APP.id, "status"]);
+  });
+});
+
 describe("InstanceManager process lifecycle", () => {
   class BlockedRuntime extends FakeAgentRuntime {
     readonly entered = deferred<void>();
@@ -4600,5 +4827,609 @@ describe("InstanceManager process lifecycle", () => {
       "waiting_ready",
       "ready",
     ]);
+  });
+});
+
+describe("launch snapshot and pinned image identity", () => {
+  function launchFixture(
+    options: { settings?: FakeSettings; skills?: FakeSkills; runtime?: FakeAgentRuntime } = {},
+  ) {
+    const settings = options.settings ?? fakeSettings();
+    const skills = options.skills ?? fakeSkills("skills-one");
+    const profiles = fakeProfiles();
+    const runtime = options.runtime ?? new FakeAgentRuntime();
+    const f = fixture(
+      runtime,
+      settings,
+      profiles.source,
+      undefined,
+      async () => [],
+      undefined,
+      undefined,
+      skills.source,
+    );
+    return { ...f, settings, skills, profiles };
+  }
+
+  it("hashes instruction, settings, and skill content but not paths or the target image", () => {
+    const contractDir = mkdtempSync(path.join(tmpdir(), "hanse-launch-"));
+    dirs.push(contractDir);
+    const first = path.join(contractDir, "a.md");
+    const second = path.join(contractDir, "b.md");
+    const body = "same contract body\n";
+    writeFileSync(first, body, "utf8");
+    writeFileSync(second, body, "utf8");
+    const { manager, settings, skills } = launchFixture();
+    const fingerprint = (app: ManagedApp): string =>
+      manager.launchFingerprint(manager.launchSnapshot(app));
+    const appA = { ...APP, instructions: [first] };
+    const appB = { ...APP, instructions: [second] };
+    const baseline = fingerprint(appA);
+
+    expect(fingerprint(appB)).toBe(baseline);
+
+    writeFileSync(first, "changed contract body\n", "utf8");
+    expect(fingerprint(appA)).not.toBe(baseline);
+    writeFileSync(first, body, "utf8");
+    expect(fingerprint(appA)).toBe(baseline);
+
+    settings.setModel("deepseek/deepseek-pro");
+    expect(fingerprint(appA)).not.toBe(baseline);
+    settings.setModel("deepseek/deepseek-flash");
+    expect(fingerprint(appA)).toBe(baseline);
+
+    skills.setHash("skills-two");
+    expect(fingerprint(appA)).not.toBe(baseline);
+    skills.setHash("skills-one");
+    expect(fingerprint(appA)).toBe(baseline);
+
+    const imageChanged = {
+      ...appA,
+      imageStatus: "ready" as const,
+      imageRef: "hanse-app-p:web:build-9",
+      imageId: "sha256:other",
+    };
+    expect(fingerprint(imageChanged)).toBe(baseline);
+  });
+
+  it("does not write the applied launch hash when reconnecting", async () => {
+    const runtime = new FakeAgentRuntime();
+    const settings = fakeSettings();
+    const profiles = fakeProfiles();
+    const { manager, db, dir } = fixture(runtime, settings, profiles.source);
+    await manager.ensure(APP);
+    expect(readAppliedLaunchHash(db, APP.id)).toEqual(expect.any(String));
+    db.prepare("UPDATE instances SET applied_launch_hash = 'sentinel' WHERE app_id = ?").run(
+      APP.id,
+    );
+
+    const reattached = new InstanceManager(db, dir, {
+      runtime,
+      verify: async () => [],
+      settings,
+      omoProfiles: profiles.source,
+      workspaceRoot: "/srv",
+    });
+    await reattached.ensure(APP);
+
+    expect(readAppliedLaunchHash(db, APP.id)).toBe("sentinel");
+  });
+
+  it("treats a legacy NULL applied launch hash as not eligible for auto-update", async () => {
+    const { manager, db, runtime } = launchFixture();
+    await manager.ensure(APP);
+    db.prepare("UPDATE instances SET applied_launch_hash = NULL WHERE app_id = ?").run(APP.id);
+    const expected = manager.launchFingerprint(manager.launchSnapshot(APP));
+    const applied = readAppliedLaunchHash(db, APP.id);
+    runtime.deleted.length = 0;
+
+    const restarted = await manager.restartIfRunning(APP, {
+      guard: () => applied !== null && applied === expected,
+      expectedLaunchFingerprint: expected,
+    });
+
+    expect(applied).toBeNull();
+    expect(restarted).toBe(false);
+    expect(runtime.deleted).toEqual([]);
+    expect(instanceState(db)).toBe("running");
+  });
+
+  it("evaluates the caller guard before any side effect", async () => {
+    class GuardedRuntime extends FakeAgentRuntime {
+      statusCalls = 0;
+      override async status(appId: string) {
+        this.statusCalls += 1;
+        return super.status(appId);
+      }
+    }
+    const runtime = new GuardedRuntime();
+    const { manager, db } = launchFixture({ runtime });
+    await manager.ensure(APP);
+    const before = maxProcessEventId(db);
+    runtime.statusCalls = 0;
+    runtime.deleted.length = 0;
+
+    const result = await manager.restartIfRunning(APP, {
+      guard: () => false,
+      expectedImageId: `sha256:${"b".repeat(64)}`,
+    });
+
+    expect(result).toBe(false);
+    expect(runtime.statusCalls).toBe(0);
+    expect(runtime.deleted).toEqual([]);
+    expect(maxProcessEventId(db)).toBe(before);
+    expect(instanceState(db)).toBe("running");
+  });
+
+  it("fails with launch_changed when configuration changes after the guard", async () => {
+    const { manager, db, runtime, settings } = launchFixture();
+    await manager.ensure(APP);
+    const expected = manager.launchFingerprint(manager.launchSnapshot(APP));
+
+    await expect(
+      manager.restartIfRunning(APP, {
+        expectedLaunchFingerprint: expected,
+        guard: async () => {
+          settings.setModel("deepseek/deepseek-pro");
+          return true;
+        },
+      }),
+    ).rejects.toMatchObject({ code: "launch_changed" });
+
+    expect(runtime.deleted).toContain(APP.id);
+    expect(instanceState(db)).toBe("error");
+    expect(readProcess(db, APP.id).error?.code).toBe("launch_changed");
+  });
+
+  it("passes the pinned image ID to the runner and records the guarded fingerprint", async () => {
+    class RecordingRuntime extends FakeAgentRuntime {
+      readonly ensureOptions: Array<EnsureAppOptions | undefined> = [];
+      override async ensure(
+        spec: Parameters<FakeAgentRuntime["ensure"]>[0],
+        options?: EnsureAppOptions,
+      ) {
+        this.ensureOptions.push(options);
+        return super.ensure(spec);
+      }
+    }
+    const runtime = new RecordingRuntime();
+    const { manager, db } = launchFixture({ runtime });
+    await manager.ensure(APP);
+    runtime.ensureOptions.length = 0;
+    const expected = manager.launchFingerprint(manager.launchSnapshot(APP));
+    const imageId = `sha256:${"c".repeat(64)}`;
+
+    await expect(
+      manager.restartIfRunning(APP, {
+        expectedLaunchFingerprint: expected,
+        expectedImageId: imageId,
+        guard: () => true,
+      }),
+    ).resolves.toBe(true);
+
+    expect(runtime.ensureOptions).toEqual([{ expectedImageId: imageId }]);
+    expect(readAppliedLaunchHash(db, APP.id)).toBe(expected);
+  });
+
+  it("records image_changed and leaves the app in error when the runner rejects the image", async () => {
+    class ImageChangedRuntime extends FakeAgentRuntime {
+      failEnsure = false;
+      override async ensure(spec: Parameters<FakeAgentRuntime["ensure"]>[0]) {
+        if (this.failEnsure) {
+          throw new RuntimeClientError(
+            409,
+            "runtime POST /ensure -> 409: target image changed",
+            "image_changed",
+          );
+        }
+        return super.ensure(spec);
+      }
+    }
+    const runtime = new ImageChangedRuntime();
+    const { manager, db } = launchFixture({ runtime });
+    await manager.ensure(APP);
+    runtime.failEnsure = true;
+    const expected = manager.launchFingerprint(manager.launchSnapshot(APP));
+
+    await expect(
+      manager.restartIfRunning(APP, {
+        expectedLaunchFingerprint: expected,
+        expectedImageId: `sha256:${"d".repeat(64)}`,
+        guard: () => true,
+      }),
+    ).rejects.toMatchObject({ code: "image_changed" });
+
+    expect(runtime.deleted).toContain(APP.id);
+    expect(instanceState(db)).toBe("error");
+    expect(readProcess(db, APP.id).error?.code).toBe("image_changed");
+  });
+});
+
+describe("terminal maintenance gate", () => {
+  function terminalFixture(runtime: FakeAgentRuntime = new FakeAgentRuntime()) {
+    const terminalSessions = new TerminalSessionRegistry();
+    const f = fixture(
+      runtime,
+      fakeSettings(),
+      fakeProfiles().source,
+      undefined,
+      async () => [],
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      terminalSessions,
+    );
+    return { ...f, terminalSessions };
+  }
+
+  it("skips a stop when a terminal attached before the maintenance gate", async () => {
+    const f = terminalFixture();
+    await f.manager.ensure(APP);
+    const release = f.terminalSessions.register(APP.id);
+
+    const stopped = await f.manager.stopApp(APP.id, {
+      guard: () => !f.terminalSessions.isActive(APP.id),
+    });
+
+    expect(stopped).toBe(false);
+    expect(f.runtime.deleted).toEqual([]);
+    expect(instanceState(f.db)).toBe("running");
+    expect(f.terminalSessions.isActive(APP.id)).toBe(true);
+    release?.();
+  });
+
+  it("refuses a terminal during the stop gate and releases it afterwards", async () => {
+    const f = terminalFixture();
+    await f.manager.ensure(APP);
+    let refused: (() => void) | undefined = () => undefined;
+
+    const stopped = await f.manager.stopApp(APP.id, {
+      guard: () => {
+        refused = f.terminalSessions.register(APP.id);
+        return true;
+      },
+    });
+
+    expect(stopped).toBe(true);
+    expect(refused).toBeUndefined();
+    expect(f.runtime.deleted).toEqual([APP.id]);
+    const afterStop = f.terminalSessions.register(APP.id);
+    expect(afterStop).toBeTypeOf("function");
+    afterStop?.();
+  });
+
+  it("releases the stop gate when the guard returns false", async () => {
+    const f = terminalFixture();
+    await f.manager.ensure(APP);
+    let refused: (() => void) | undefined = () => undefined;
+
+    const stopped = await f.manager.stopApp(APP.id, {
+      guard: () => {
+        refused = f.terminalSessions.register(APP.id);
+        return false;
+      },
+    });
+
+    expect(stopped).toBe(false);
+    expect(refused).toBeUndefined();
+    expect(instanceState(f.db)).toBe("running");
+    const afterRestart = f.terminalSessions.register(APP.id);
+    expect(afterRestart).toBeTypeOf("function");
+    afterRestart?.();
+  });
+
+  it("releases the stop gate when the destructive branch fails", async () => {
+    class FailingDeleteRuntime extends FakeAgentRuntime {
+      override async delete(): Promise<never> {
+        throw new Error("runtime unavailable");
+      }
+    }
+    const f = terminalFixture(new FailingDeleteRuntime());
+    await f.manager.ensure(APP);
+
+    await expect(f.manager.stopApp(APP.id)).rejects.toThrow("runtime unavailable");
+
+    const release = f.terminalSessions.register(APP.id);
+    expect(release).toBeTypeOf("function");
+    release?.();
+  });
+
+  it("skips a restart when a terminal attached before the maintenance gate", async () => {
+    const f = terminalFixture();
+    await f.manager.ensure(APP);
+    const release = f.terminalSessions.register(APP.id);
+
+    const restarted = await f.manager.restartIfRunning(APP, {
+      guard: () => !f.terminalSessions.isActive(APP.id),
+    });
+
+    expect(restarted).toBe(false);
+    expect(f.runtime.deleted).toEqual([]);
+    expect(instanceState(f.db)).toBe("running");
+    expect(f.terminalSessions.isActive(APP.id)).toBe(true);
+    release?.();
+  });
+
+  it("refuses a terminal during the restart gate and releases it afterwards", async () => {
+    const f = terminalFixture();
+    await f.manager.ensure(APP);
+    let refused: (() => void) | undefined = () => undefined;
+
+    const restarted = await f.manager.restartIfRunning(APP, {
+      guard: () => {
+        refused = f.terminalSessions.register(APP.id);
+        return true;
+      },
+    });
+
+    expect(restarted).toBe(true);
+    expect(refused).toBeUndefined();
+    expect(f.runtime.deleted).toEqual([APP.id]);
+    const after = f.terminalSessions.register(APP.id);
+    expect(after).toBeTypeOf("function");
+    after?.();
+  });
+
+  it("releases the restart gate when the destructive branch fails", async () => {
+    class FailingEnsureRuntime extends FakeAgentRuntime {
+      fail = false;
+      override async ensure(...args: Parameters<FakeAgentRuntime["ensure"]>) {
+        if (this.fail) {
+          throw new Error("ensure failed");
+        }
+        return super.ensure(...args);
+      }
+    }
+    const runtime = new FailingEnsureRuntime();
+    const f = terminalFixture(runtime);
+    await f.manager.ensure(APP);
+    runtime.fail = true;
+
+    await expect(f.manager.restartIfRunning(APP)).rejects.toThrow("ensure failed");
+
+    const release = f.terminalSessions.register(APP.id);
+    expect(release).toBeTypeOf("function");
+    release?.();
+  });
+
+  it("does not set the gate on the restart claim-failure path", async () => {
+    const f = terminalFixture();
+    await f.manager.ensure(APP);
+    f.db
+      .prepare(
+        "INSERT INTO restart_claims (app_id, claim_id, reason, created_at) VALUES (?, ?, ?, ?)",
+      )
+      .run(APP.id, "existing-claim", "restart", new Date().toISOString());
+
+    await expect(f.manager.restartIfRunning(APP)).rejects.toBeInstanceOf(RestartInProgressError);
+
+    const release = f.terminalSessions.register(APP.id);
+    expect(release).toBeTypeOf("function");
+    release?.();
+  });
+});
+
+describe("maintenance stop and restart source/reason plumbing", () => {
+  it("records system/auto_stop through the stop and its process history", async () => {
+    const runtime = new EpochRuntime();
+    runtime.startedAt = RECOVERY_START;
+    const f = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    await f.manager.ensure(APP);
+    recoveryBusy(f.db);
+    const before = maxProcessEventId(f.db);
+
+    await expect(
+      f.manager.stopApp(APP.id, { source: "system", reason: "auto_stop", guard: () => true }),
+    ).resolves.toBe(true);
+
+    expect(runtime.deleted).toEqual([APP.id]);
+    const events = processEventsAfter(f.db, before);
+    expect(events.length).toBeGreaterThan(0);
+    expect(events.every((event) => event.source === "system" && event.reason === "auto_stop")).toBe(
+      true,
+    );
+    const stopped = f.db
+      .prepare("SELECT last_stop_reason AS reason FROM instances WHERE app_id = ?")
+      .get(APP.id) as { reason: string };
+    expect(stopped.reason).toBe("auto_stop");
+    expect(new SessionNoticeStore(f.db).list(APP.id, "ses_1").notices[0]).toMatchObject({
+      kind: "agent_stopped",
+      reason: "auto_stop",
+    });
+    expect(new SessionResumeStore(f.db).get(APP.id, "ses_1")?.resumeState).toBe("skipped_stopped");
+  });
+
+  it("records the attempt source/reason on a failed auto-stop delete", async () => {
+    class FailingDeleteRuntime extends EpochRuntime {
+      override async delete(): Promise<never> {
+        throw new Error("runtime unavailable");
+      }
+    }
+    const runtime = new FailingDeleteRuntime();
+    runtime.startedAt = RECOVERY_START;
+    const f = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    await f.manager.ensure(APP);
+    const before = maxProcessEventId(f.db);
+
+    await expect(
+      f.manager.stopApp(APP.id, { source: "system", reason: "auto_stop", guard: () => true }),
+    ).rejects.toThrow("runtime unavailable");
+
+    const events = processEventsAfter(f.db, before);
+    const failed = events.find((event) => event.state === "error");
+    expect(failed).toMatchObject({
+      source: "system",
+      reason: "auto_stop",
+      errorCode: "runtime_unavailable",
+    });
+  });
+
+  it("records an auto_update stop intent and notice and resumes like a restart", async () => {
+    const runtime = new EpochRuntime();
+    runtime.startedAt = RECOVERY_START;
+    const f = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    await f.manager.ensure(APP);
+    recoveryBusy(f.db);
+    runtime.startedAt = RECOVERY_NEXT;
+    const before = maxProcessEventId(f.db);
+
+    await expect(
+      f.manager.restartIfRunning(APP, {
+        source: "system",
+        reason: "auto_update",
+        guard: () => true,
+      }),
+    ).resolves.toBe(true);
+
+    expect(runtime.deleted).toContain(APP.id);
+    expect(new SessionNoticeStore(f.db).list(APP.id, "ses_1").notices[0]).toMatchObject({
+      kind: "agent_stopped",
+      reason: "auto_update",
+    });
+    expect(new SessionResumeStore(f.db).get(APP.id, "ses_1")?.resumeState).toBe("observing");
+    const events = processEventsAfter(f.db, before);
+    expect(events.length).toBeGreaterThan(0);
+    expect(
+      events.every((event) => event.source === "system" && event.reason === "auto_update"),
+    ).toBe(true);
+  });
+
+  it("keeps the restart stop intent for a manual restart", async () => {
+    const runtime = new EpochRuntime();
+    runtime.startedAt = RECOVERY_START;
+    const f = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    await f.manager.ensure(APP);
+    recoveryBusy(f.db);
+    runtime.startedAt = RECOVERY_NEXT;
+
+    await expect(f.manager.restartIfRunning(APP)).resolves.toBe(true);
+
+    expect(new SessionNoticeStore(f.db).list(APP.id, "ses_1").notices[0]).toMatchObject({
+      kind: "agent_stopped",
+      reason: "operator_restart",
+    });
+  });
+
+  it("stops the container before marking the app deleting during a restart", async () => {
+    const gate = deferred<void>();
+    let deleteCalls = 0;
+    let deletingDuringRestartDelete: number | undefined;
+    const ref: { db?: SqliteDatabase } = {};
+    class GatedDeleteRuntime extends EpochRuntime {
+      override async delete(appId: string) {
+        deleteCalls += 1;
+        if (deleteCalls === 1) {
+          const row = ref.db?.prepare("SELECT deleting FROM apps WHERE id = ?").get(APP.id) as
+            | { deleting: number }
+            | undefined;
+          deletingDuringRestartDelete = row?.deleting;
+          await gate.promise;
+        }
+        return super.delete(appId);
+      }
+    }
+    const runtime = new GatedDeleteRuntime();
+    runtime.startedAt = RECOVERY_START;
+    const f = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    ref.db = f.db;
+    await f.manager.ensure(APP);
+
+    const restarting = f.manager.restartIfRunning(APP);
+    await waitFor(() => deleteCalls === 1);
+    const deleting = f.manager.stopForDeletion(APP.id);
+    gate.resolve(undefined);
+
+    await expect(restarting).resolves.toBe(true);
+    await expect(deleting).resolves.toBe(true);
+
+    expect(deletingDuringRestartDelete).toBe(0);
+    expect(runtime.deleted.filter((appId) => appId === APP.id).length).toBeGreaterThanOrEqual(2);
+    const row = f.db.prepare("SELECT deleting FROM apps WHERE id = ?").get(APP.id) as {
+      deleting: number;
+    };
+    expect(row.deleting).toBe(1);
+  });
+
+  it("returns false while an ensure launch is in flight", async () => {
+    class GatedEnsureRuntime extends FakeAgentRuntime {
+      readonly entered = deferred<void>();
+      readonly gate = deferred<void>();
+      override async ensure(
+        spec: Parameters<FakeAgentRuntime["ensure"]>[0],
+      ): ReturnType<FakeAgentRuntime["ensure"]> {
+        this.entered.resolve();
+        await this.gate.promise;
+        return super.ensure(spec);
+      }
+    }
+    const runtime = new GatedEnsureRuntime();
+    const f = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    const pending = f.manager.ensure(APP);
+    await runtime.entered.promise;
+
+    const stopping = f.manager.stopApp(APP.id, {
+      guard: () => {
+        throw new Error("guard must not run while a launch is in flight");
+      },
+    });
+    runtime.gate.resolve(undefined);
+    await pending;
+
+    await expect(stopping).resolves.toBe(false);
+    expect(runtime.deleted).toEqual([]);
+  });
+
+  it("returns false while a restart is claimed", async () => {
+    class GatedEnsureRuntime extends FakeAgentRuntime {
+      readonly entered = deferred<void>();
+      readonly gate = deferred<void>();
+      override async ensure(
+        spec: Parameters<FakeAgentRuntime["ensure"]>[0],
+      ): ReturnType<FakeAgentRuntime["ensure"]> {
+        this.entered.resolve();
+        await this.gate.promise;
+        return super.ensure(spec);
+      }
+    }
+    const runtime = new GatedEnsureRuntime();
+    const f = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    const pending = f.manager.ensure(APP);
+    await runtime.entered.promise;
+    const restarting = f.manager.restartIfRunning(APP);
+    const stopping = f.manager.stopApp(APP.id, {
+      guard: () => {
+        throw new Error("guard must not run while a restart is claimed");
+      },
+    });
+
+    runtime.gate.resolve(undefined);
+    await pending;
+
+    await expect(stopping).resolves.toBe(false);
+    await expect(restarting).resolves.toBe(true);
+    expect(f.manager.isRestarting(APP.id)).toBe(false);
+  });
+
+  it("returns false while an image build is active", async () => {
+    const builtRef = "hanse-app-p:web:build-1";
+    const images = new FakeImages(imageStateView({ usableImageRef: builtRef }));
+    const f = imageFixture("ready", builtRef, true, {}, images);
+    await f.manager.ensure(f.app);
+    images.view = imageStateView({ state: "building", usableImageRef: builtRef });
+
+    const stopped = await f.manager.stopApp(f.app.id, {
+      guard: () => {
+        throw new Error("guard must not run while a build is active");
+      },
+    });
+
+    expect(stopped).toBe(false);
+    expect(f.runtime.deleted).toEqual([]);
   });
 });

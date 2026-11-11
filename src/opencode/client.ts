@@ -947,6 +947,32 @@ async function sendVoid(
   await readCapped(response, options?.maxBytes ?? OPENCODE_MAX_BODY_BYTES);
 }
 
+function strictObjectList(body: unknown, path: string): Record<string, unknown>[] {
+  if (!Array.isArray(body)) {
+    throw new OpencodeHttpError(path, 0, "response body is not an array");
+  }
+  const items: Record<string, unknown>[] = [];
+  for (const entry of body) {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+      throw new OpencodeHttpError(path, 0, "response body contains a malformed entry");
+    }
+    items.push(entry as Record<string, unknown>);
+  }
+  return items;
+}
+
+/** Strict prompt list for the activity check: a malformed body can never look idle. */
+export async function listQuestionsStrict(
+  endpoint: string,
+  options?: OpencodeRequestOptions,
+): Promise<OpencodeQuestionRequest[]> {
+  const path = "/question";
+  return strictObjectList(
+    await getJson<unknown>(endpoint, path, options),
+    path,
+  ) as unknown as OpencodeQuestionRequest[];
+}
+
 export function listQuestions(
   endpoint: string,
   options?: OpencodeRequestOptions,
@@ -981,6 +1007,18 @@ export function rejectQuestion(
   );
 }
 
+/** Strict prompt list for the activity check: a malformed body can never look idle. */
+export async function listPermissionsStrict(
+  endpoint: string,
+  options?: OpencodeRequestOptions,
+): Promise<OpencodePermissionRequest[]> {
+  const path = "/permission";
+  return strictObjectList(
+    await getJson<unknown>(endpoint, path, options),
+    path,
+  ) as unknown as OpencodePermissionRequest[];
+}
+
 export function listPermissions(
   endpoint: string,
   options?: OpencodeRequestOptions,
@@ -1013,6 +1051,27 @@ export function listTodos(
     `/session/${encodeURIComponent(sessionId)}/todo`,
     options,
   );
+}
+
+function strictV2List(body: unknown, path: string): Record<string, unknown>[] {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    throw new OpencodeHttpError(path, 0, "response body is not an object");
+  }
+  const data = (body as { data?: unknown }).data;
+  return strictObjectList(data, path);
+}
+
+/** Strict prompt list for the activity check: a missing/non-array `data` is an error, not empty. */
+export async function listQuestionsV2Strict(
+  endpoint: string,
+  appDir: string,
+  options?: OpencodeRequestOptions,
+): Promise<OpencodeQuestionRequest[]> {
+  const path = `/api/question/request?${v2LocationQuery(appDir)}`;
+  return strictV2List(
+    await getJson<unknown>(endpoint, path, options),
+    path,
+  ) as unknown as OpencodeQuestionRequest[];
 }
 
 export async function listQuestionsV2(
@@ -1054,6 +1113,19 @@ export function rejectQuestionV2(
     "POST",
     options,
   );
+}
+
+/** Strict prompt list for the activity check: a missing/non-array `data` is an error, not empty. */
+export async function listPermissionsV2Strict(
+  endpoint: string,
+  appDir: string,
+  options?: OpencodeRequestOptions,
+): Promise<OpencodePermissionV2Request[]> {
+  const path = `/api/permission/request?${v2LocationQuery(appDir)}`;
+  return strictV2List(
+    await getJson<unknown>(endpoint, path, options),
+    path,
+  ) as unknown as OpencodePermissionV2Request[];
 }
 
 export async function listPermissionsV2(

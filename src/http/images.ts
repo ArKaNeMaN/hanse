@@ -7,7 +7,7 @@ import {
 import { findApp, toManagedApp } from "./apps.js";
 import { principalFrom } from "./auth.js";
 import { lifecycleErrorResponse } from "./errors.js";
-import type { HttpDeps, HttpRequest, HttpResponse } from "./handler.js";
+import { type HttpDeps, type HttpRequest, type HttpResponse, isSameOrigin } from "./handler.js";
 
 const BUILD_PATH = /^\/api\/apps\/([^/]+)\/build$/;
 const IMAGE_PATH = /^\/api\/apps\/([^/]+)\/image$/;
@@ -124,6 +124,14 @@ function invalidMutationContentType(request: HttpRequest): HttpResponse | undefi
   return undefined;
 }
 
+/** Defense-in-depth for human image mutations; the SameSite=Strict cookie stays primary. */
+function crossOrigin(request: HttpRequest): HttpResponse | undefined {
+  if (isSameOrigin(request)) {
+    return undefined;
+  }
+  return json(403, { error: "cross-site request rejected", code: "cross_origin" });
+}
+
 async function handleGlobalImages(deps: HttpDeps, request: HttpRequest): Promise<HttpResponse> {
   if (deps.images === undefined) {
     return json(503, { error: "image builds are not configured", code: "images_unavailable" });
@@ -147,6 +155,10 @@ async function handleGlobalImages(deps: HttpDeps, request: HttpRequest): Promise
   const invalid = invalidMutationContentType(request);
   if (invalid !== undefined) {
     return invalid;
+  }
+  const origin = crossOrigin(request);
+  if (origin !== undefined) {
+    return origin;
   }
   try {
     return json(200, await deps.images.gc());
@@ -217,6 +229,10 @@ export async function handleImages(deps: HttpDeps, request: HttpRequest): Promis
     if (invalid !== undefined) {
       return invalid;
     }
+    const origin = crossOrigin(request);
+    if (origin !== undefined) {
+      return origin;
+    }
     try {
       const result = await deps.images.build(found.app.id, found.app.appKey);
       if (wantsHtml(request) || isFormContentType(request.headers["content-type"])) {
@@ -249,6 +265,10 @@ export async function handleImages(deps: HttpDeps, request: HttpRequest): Promis
     const invalid = invalidMutationContentType(request);
     if (invalid !== undefined) {
       return invalid;
+    }
+    const origin = crossOrigin(request);
+    if (origin !== undefined) {
+      return origin;
     }
     const images = deps.images;
     try {
@@ -310,6 +330,10 @@ export async function handleImages(deps: HttpDeps, request: HttpRequest): Promis
     const invalid = invalidMutationContentType(request);
     if (invalid !== undefined) {
       return invalid;
+    }
+    const origin = crossOrigin(request);
+    if (origin !== undefined) {
+      return origin;
     }
     try {
       const result = await deps.images.check(found.app.id, found.app.appKey);

@@ -1237,15 +1237,18 @@ async function fixtureResponse(route, result, fallbackStatus = 200) {
 async function imageUi(page) {
   return page.evaluate(() => {
     const text = (node) => (node ? (node.textContent ?? "").replace(/\s+/g, " ").trim() : "");
-    const gate = document.getElementById("image-gate");
-    const warning = document.getElementById("image-warning");
+    const gate =
+      document.getElementById("image-gate") ?? document.querySelector("[data-chat-image-gate]");
+    const warning =
+      document.getElementById("image-warning") ??
+      document.querySelector("[data-chat-image-warning]");
     const composer = document.getElementById("chat-composer");
     const viewport = document.querySelector(".chat-thread__viewport");
     const prompt = document.getElementById("chat-prompt");
     const send = document.getElementById("chat-send");
     return {
       gate: {
-        hidden: gate?.hidden ?? null,
+        hidden: gate === null ? true : gate.hidden,
         role: gate?.getAttribute("role") ?? null,
         tone: gate?.dataset.tone ?? null,
         title: text(gate?.querySelector(".chat-image-gate__title")),
@@ -1253,7 +1256,7 @@ async function imageUi(page) {
         buttons: Array.from(gate?.querySelectorAll("button") ?? [], (node) => text(node)),
       },
       warning: {
-        hidden: warning?.hidden ?? null,
+        hidden: warning === null ? true : warning.hidden,
         role: warning?.getAttribute("role") ?? null,
         tone: warning?.dataset.tone ?? null,
         title: text(warning?.querySelector(".chat-image-warning__title")),
@@ -7224,7 +7227,7 @@ async function scenarioImageWarning(browser, target) {
       },
     });
     await gotoChat(page, target);
-    await page.waitForSelector("#image-warning:not([hidden])");
+    await page.waitForSelector("#image-warning:not([hidden]), [data-chat-image-warning]");
 
     const rebuild = await imageUi(page);
     assertEqual(rebuild.warning.hidden, false, "rebuild-required shows the warning");
@@ -7232,10 +7235,14 @@ async function scenarioImageWarning(browser, target) {
     assertEqual(rebuild.warning.title, "Image out of date", "rebuild warning title");
     assertEqual(
       rebuild.warning.body,
-      "Rebuild and restart the agent to use the new image.",
+      "Rebuild and restart, or rebuild only to apply later.",
       "rebuild warning body",
     );
-    assertEqual(rebuild.warning.buttons, ["Rebuild & restart"], "rebuild warning action");
+    assertEqual(
+      rebuild.warning.buttons,
+      ["Rebuild & restart", "Rebuild only"],
+      "rebuild warning actions",
+    );
     assertEqual(rebuild.gate.hidden, true, "a running app never shows the blocked card");
     assertEqual(rebuild.composer.hidden, false, "the warning keeps the composer usable");
     assertEqual(rebuild.composer.promptDisabled, false, "the warning keeps the prompt enabled");
@@ -7243,11 +7250,19 @@ async function scenarioImageWarning(browser, target) {
     assertEqual(rebuild.eventSourceCount, 1, "a warned running app subscribes to SSE");
     await captureImageVariants(page, "image-warning-rebuild");
 
-    await page.locator("#image-warning button").click();
+    await page
+      .locator("#image-warning, [data-chat-image-warning]")
+      .getByRole("button", { name: "Rebuild & restart" })
+      .click();
     const restartDeadline = Date.now() + 6_000;
     while (routeState.restartPosts.length === 0 && Date.now() < restartDeadline) await wait(50);
     await page.waitForFunction(
-      () => document.getElementById("image-warning")?.hidden === true,
+      () => {
+        const warning =
+          document.getElementById("image-warning") ??
+          document.querySelector("[data-chat-image-warning]");
+        return warning === null || warning.hidden === true;
+      },
       undefined,
       {
         timeout: 6_000,
@@ -7268,7 +7283,7 @@ async function scenarioImageWarning(browser, target) {
 
     phase = "restart";
     await page.reload({ waitUntil: "networkidle" });
-    await page.waitForSelector("#image-warning:not([hidden])");
+    await page.waitForSelector("#image-warning:not([hidden]), [data-chat-image-warning]");
     const restart = await imageUi(page);
     assertEqual(restart.warning.title, "Image updated", "restart-required warning title");
     assertEqual(
@@ -7280,11 +7295,19 @@ async function scenarioImageWarning(browser, target) {
     assertEqual(restart.composer.hidden, false, "restart-required keeps the composer usable");
     await captureImageVariants(page, "image-warning-restart");
 
-    await page.locator("#image-warning button").click();
+    await page
+      .locator("#image-warning, [data-chat-image-warning]")
+      .getByRole("button", { name: "Restart", exact: true })
+      .click();
     const secondDeadline = Date.now() + 5_000;
     while (routeState.restartPosts.length < 2 && Date.now() < secondDeadline) await wait(50);
     await page.waitForFunction(
-      () => document.getElementById("image-warning")?.hidden === true,
+      () => {
+        const warning =
+          document.getElementById("image-warning") ??
+          document.querySelector("[data-chat-image-warning]");
+        return warning === null || warning.hidden === true;
+      },
       undefined,
       {
         timeout: 5_000,
@@ -7293,6 +7316,127 @@ async function scenarioImageWarning(browser, target) {
     assertEqual(routeState.restartPosts.length, 2, "restart-required POSTs restart once");
     assertEqual(routeState.buildPosts.length, 1, "restart-required never POSTs build");
     assertEqual(routeState.startPosts.length, 0, "restart-required never POSTs start");
+    checkNoErrors(errors);
+    return {
+      buildPosts: routeState.buildPosts.length,
+      restartPosts: routeState.restartPosts.length,
+      startPosts: routeState.startPosts.length,
+    };
+  } finally {
+    await context.close();
+  }
+}
+
+async function scenarioImageRebuildOnly(browser, target) {
+  const { context, page, errors } = await newPage(browser, target);
+  try {
+    let phase = "rebuild";
+    let builtGets = 0;
+    const view = () => {
+      if (phase === "rebuild") {
+        return imageStateView({
+          state: "rebuild_required",
+          status: "stale",
+          imageRef: "hanse-agent-custom:qa",
+          usableImageRef: "hanse-agent-custom:qa",
+          running: true,
+          blocked: false,
+          selectedImage: "present",
+          imageId: QA_DIGEST_A,
+          targetImageId: QA_DIGEST_B,
+          appliedImageId: QA_DIGEST_A,
+          baseKind: "base",
+          baseRef: "hanse-agent-base:qa",
+          baseDigest: QA_DIGEST_A,
+          currentBaseDigest: QA_DIGEST_B,
+          baseDrift: true,
+          hashDrift: false,
+        });
+      }
+      if (phase === "building") {
+        builtGets += 1;
+        if (builtGets >= 2) phase = "restart";
+        if (phase === "building") {
+          return imageStateView({
+            state: "building",
+            status: "building",
+            imageRef: "hanse-agent-custom:qa",
+            usableImageRef: "hanse-agent-custom:qa",
+            running: true,
+            blocked: false,
+            selectedImage: "present",
+            imageId: QA_DIGEST_A,
+            targetImageId: QA_DIGEST_B,
+            appliedImageId: QA_DIGEST_A,
+            baseKind: "base",
+            baseRef: "hanse-agent-base:qa",
+            baseDigest: QA_DIGEST_A,
+            currentBaseDigest: QA_DIGEST_B,
+            baseDrift: false,
+            hashDrift: false,
+          });
+        }
+      }
+      return imageStateView({
+        state: "restart_required",
+        status: "ready",
+        imageRef: "hanse-agent-custom:qa",
+        usableImageRef: "hanse-agent-custom:qa",
+        running: true,
+        blocked: false,
+        selectedImage: "present",
+        imageId: QA_DIGEST_B,
+        targetImageId: QA_DIGEST_B,
+        appliedImageId: QA_DIGEST_A,
+        baseKind: "base",
+        baseRef: "hanse-agent-base:qa",
+        baseDigest: QA_DIGEST_A,
+        currentBaseDigest: QA_DIGEST_A,
+        baseDrift: false,
+        hashDrift: false,
+      });
+    };
+    const routeState = await installRoutes(page, {
+      sessionId: THREADS.main,
+      messages: [],
+      image: {
+        view,
+        build: () => {
+          phase = "building";
+          builtGets = 0;
+          return { httpStatus: 202, body: { accepted: true, buildId: "build_qa" } };
+        },
+        runtime: () => ({ state: "running", imageRef: "hanse-agent-custom:qa" }),
+      },
+    });
+    await gotoChat(page, target);
+    await page.waitForSelector("#image-warning:not([hidden]), [data-chat-image-warning]");
+
+    const rebuild = await imageUi(page);
+    assertEqual(
+      rebuild.warning.buttons,
+      ["Rebuild & restart", "Rebuild only"],
+      "rebuild-only scenario offers both actions",
+    );
+
+    await page.getByRole("button", { name: "Rebuild only", exact: true }).click();
+    await page.waitForFunction(
+      () =>
+        document.querySelector(".chat-image-warning__title")?.textContent?.trim() ===
+        "Image updated",
+      undefined,
+      { timeout: 8_000 },
+    );
+    const after = await imageUi(page);
+    assertEqual(routeState.buildPosts.length, 1, "rebuild-only POSTs build once");
+    assertEqual(routeState.restartPosts.length, 0, "rebuild-only never POSTs restart");
+    assertEqual(routeState.startPosts.length, 0, "rebuild-only never POSTs start");
+    assertEqual(after.warning.title, "Image updated", "the banner shows the restart action");
+    assertEqual(after.warning.buttons, ["Restart"], "the rebuild-only action is gone");
+    check(
+      after.toastText.includes("Image built"),
+      `the success toast says the image is built (${after.toastText})`,
+    );
     checkNoErrors(errors);
     return {
       buildPosts: routeState.buildPosts.length,
@@ -7607,9 +7751,12 @@ async function scenarioImageActions(browser, target) {
         },
       });
       await gotoChat(page, target);
-      await page.waitForSelector("#image-warning:not([hidden])");
+      await page.waitForSelector("#image-warning:not([hidden]), [data-chat-image-warning]");
       const before = routeState.imageGets.length;
-      await page.locator("#image-warning button").click();
+      await page
+        .locator("#image-warning, [data-chat-image-warning]")
+        .getByRole("button", { name: "Restart", exact: true })
+        .click();
       await page.waitForFunction(
         () =>
           (document.getElementById("toast-region")?.textContent ?? "").includes(
@@ -7957,6 +8104,7 @@ try {
     await run("image-building", () => scenarioImageBuilding(browser, target));
     await run("image-build-error", () => scenarioImageBuildError(browser, target));
     await run("image-warning", () => scenarioImageWarning(browser, target));
+    await run("image-rebuild-only", () => scenarioImageRebuildOnly(browser, target));
     await run("image-actions", () => scenarioImageActions(browser, target));
     await run("image-panels", () => scenarioImagePanels(browser, target));
   }

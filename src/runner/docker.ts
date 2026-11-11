@@ -5,6 +5,11 @@ import type { Duplex } from "node:stream";
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 const MAX_BUILD_RESPONSE_BYTES = 16 * 1024 * 1024;
 const DEFAULT_BUILD_TIMEOUT_MS = 30 * 60 * 1000;
+const DEFAULT_PULL_TIMEOUT_MS = 10 * 60 * 1000;
+const MAX_STREAM_LINE_BYTES = 1024 * 1024;
+const MAX_STREAM_BYTES = 128 * 1024 * 1024;
+const MAX_STREAM_ERROR_CHARS = 300;
+const SAFE_PULL_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9_.:/@+-]*$/;
 
 export interface DockerResponse {
   status: number;
@@ -18,6 +23,25 @@ export interface DockerUpgradedConnection {
 
 export interface DockerRequestOptions {
   timeoutMs?: number;
+}
+
+/** Options for a streaming Docker response (the pull endpoint). */
+export interface DockerStreamOptions {
+  signal?: AbortSignal;
+  timeoutMs?: number;
+  maxLineBytes?: number;
+  maxTotalBytes?: number;
+}
+
+/** Options for `DockerClient.pullImage`. */
+export interface DockerPullOptions {
+  signal?: AbortSignal;
+}
+
+/** The identity a pull resolved; the caller inspects for the repo digest. */
+export interface DockerPullResult {
+  imageId: string | null;
+  digest: string | null;
 }
 
 export interface DockerBuildOptions {
@@ -52,6 +76,12 @@ export interface DockerTransport {
     options?: DockerRequestOptions,
   ): Promise<DockerResponse>;
   build?(path: string, body: Buffer, options?: DockerRequestOptions): Promise<DockerResponse>;
+  stream?(
+    method: "GET" | "POST",
+    path: string,
+    body?: unknown,
+    options?: DockerStreamOptions,
+  ): AsyncIterable<string>;
   upgrade?(
     method: "GET" | "POST" | "DELETE",
     path: string,
@@ -119,6 +149,117 @@ export class UnixDockerTransport implements DockerTransport {
       { timeoutMs: options?.timeoutMs ?? DEFAULT_BUILD_TIMEOUT_MS },
       MAX_BUILD_RESPONSE_BYTES,
     );
+  }
+
+  stream(
+    method: "GET" | "POST",
+    requestPath: string,
+    body?: unknown,
+    options?: DockerStreamOptions,
+  ): AsyncIterable<string> {
+    const payload = body === undefined ? undefined : Buffer.from(JSON.stringify(body), "utf8");
+    const path = requestPath.startsWith("/v") ? requestPath : `/${this.#apiVersion}${requestPath}`;
+    return this.#streamLines(method, path, payload, options);
+  }
+
+  async *#streamLines(
+    method: "GET" | "POST",
+    path: string,
+    payload: Buffer | undefined,
+    options: DockerStreamOptions | undefined,
+  ): AsyncGenerator<string> {
+    const signal = options?.signal;
+    const maxLineBytes = options?.maxLineBytes ?? MAX_STREAM_LINE_BYTES;
+    const maxTotalBytes = options?.maxTotalBytes ?? MAX_STREAM_BYTES;
+    const response = await new Promise<http.IncomingMessage>((resolve, reject) => {
+      const request = http.request(
+        {
+          socketPath: this.#socketPath,
+          path,
+          method,
+          headers: {
+            accept: "application/json",
+            ...(payload === undefined
+              ? {}
+              : {
+                  "content-type": "application/json",
+                  "content-length": String(payload.length),
+                }),
+          },
+          ...(signal === undefined ? {} : { signal }),
+        },
+        resolve,
+      );
+      request.setTimeout(options?.timeoutMs ?? DEFAULT_PULL_TIMEOUT_MS, () => {
+        request.destroy(new DockerError(0, "docker stream timed out"));
+      });
+      request.on("error", (error) => {
+        reject(
+          error instanceof DockerError
+            ? error
+            : signal?.aborted === true
+              ? new DockerError(0, "docker stream aborted")
+              : new DockerError(0, `docker stream failed: ${error.message}`),
+        );
+      });
+      if (payload !== undefined) request.write(payload);
+      request.end();
+    });
+
+    const status = response.statusCode ?? 0;
+    if (status < 200 || status >= 300) {
+      const detail = (await readBoundedBody(response, maxLineBytes)).trim().slice(0, 500);
+      response.destroy();
+      throw new DockerError(
+        status,
+        `docker request failed with HTTP ${status}${detail.length > 0 ? `: ${detail}` : ""}`,
+        detail,
+      );
+    }
+
+    let buffer = "";
+    let total = 0;
+    try {
+      for await (const chunk of response) {
+        const part = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string);
+        total += part.length;
+        if (total > maxTotalBytes) {
+          throw new DockerError(413, "docker stream too large");
+        }
+        buffer += part.toString("utf8");
+        let newline = buffer.indexOf("\n");
+        while (newline >= 0) {
+          const raw = buffer.slice(0, newline);
+          buffer = buffer.slice(newline + 1);
+          const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+          if (Buffer.byteLength(line, "utf8") > maxLineBytes) {
+            throw new DockerError(413, "docker stream line too large");
+          }
+          if (line.length > 0) yield line;
+          newline = buffer.indexOf("\n");
+        }
+        if (Buffer.byteLength(buffer, "utf8") > maxLineBytes) {
+          throw new DockerError(413, "docker stream line too large");
+        }
+      }
+    } catch (error) {
+      if (error instanceof DockerError) throw error;
+      if (signal?.aborted === true) throw new DockerError(0, "docker stream aborted");
+      throw new DockerError(
+        0,
+        `docker stream failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    } finally {
+      response.destroy();
+    }
+
+    const tail = buffer.endsWith("\r") ? buffer.slice(0, -1) : buffer;
+    if (tail.length > 0) {
+      if (Buffer.byteLength(tail, "utf8") > maxLineBytes) {
+        throw new DockerError(413, "docker stream line too large");
+      }
+      yield tail;
+    }
   }
 
   #send(
@@ -263,6 +404,7 @@ export interface DockerNetworkInspect {
 
 export interface DockerContainerCreateOptions {
   name: string;
+  /** Image reference or immutable image ID; the runner passes the pinned ID when provided. */
   image: string;
   hostname: string;
   user: string;
@@ -540,6 +682,50 @@ function responseText(response: DockerResponse): string {
   return response.body.toString("utf8").trim().slice(0, 500);
 }
 
+async function readBoundedBody(response: http.IncomingMessage, maxBytes: number): Promise<string> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of response) {
+    const part = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string);
+    size += part.length;
+    if (size > maxBytes) {
+      response.destroy();
+      throw new DockerError(413, "docker response too large");
+    }
+    chunks.push(part);
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+function splitPullReference(reference: string): { fromImage: string; tag?: string } {
+  const at = reference.indexOf("@");
+  if (at > 0) {
+    return { fromImage: reference.slice(0, at), tag: reference.slice(at + 1) };
+  }
+  const slash = reference.lastIndexOf("/");
+  const colon = reference.lastIndexOf(":");
+  if (colon > slash) {
+    return { fromImage: reference.slice(0, colon), tag: reference.slice(colon + 1) };
+  }
+  return { fromImage: reference, tag: "latest" };
+}
+
+function stripControlCharacters(value: string): string {
+  let result = "";
+  for (const character of value) {
+    const code = character.codePointAt(0) ?? 0;
+    result += code <= 0x1f || (code >= 0x7f && code <= 0x9f) ? " " : character;
+  }
+  return result;
+}
+
+function sanitizeStreamError(value: string): string {
+  const stripped = stripControlCharacters(value).trim();
+  return stripped.length > MAX_STREAM_ERROR_CHARS
+    ? `${stripped.slice(0, MAX_STREAM_ERROR_CHARS)}...`
+    : stripped;
+}
+
 /** Demultiplex Docker's 8-byte-framed stdout/stderr stream. */
 export function demuxDockerStream(buffer: Buffer): string {
   const chunks: Buffer[] = [];
@@ -760,6 +946,59 @@ export class DockerClient {
       return { imageId: null, logs, error: "docker build completed without an image id" };
     }
     return { imageId, logs, error: null };
+  }
+
+  async pullImage(reference: string, options: DockerPullOptions = {}): Promise<DockerPullResult> {
+    const stream = this.#transport.stream?.bind(this.#transport);
+    if (stream === undefined) {
+      throw new DockerError(0, "docker transport does not support image pulls");
+    }
+    if (
+      reference.length === 0 ||
+      reference.length > 255 ||
+      /\s/.test(reference) ||
+      !SAFE_PULL_REFERENCE.test(reference)
+    ) {
+      throw new DockerError(400, "invalid image reference");
+    }
+    const { fromImage, tag } = splitPullReference(reference);
+    const query = new URLSearchParams({ fromImage });
+    if (tag !== undefined) query.set("tag", tag);
+
+    let imageId: string | null = null;
+    let digest: string | null = null;
+    let error: string | null = null;
+    for await (const line of stream("POST", `/images/create?${query.toString()}`, undefined, {
+      signal: options.signal,
+      timeoutMs: DEFAULT_PULL_TIMEOUT_MS,
+    })) {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(line) as unknown;
+      } catch {
+        continue;
+      }
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) continue;
+      const event = parsed as { error?: unknown; errorDetail?: unknown; aux?: unknown };
+      if (typeof event.errorDetail === "object" && event.errorDetail !== null) {
+        const detail = event.errorDetail as { message?: unknown };
+        if (typeof detail.message === "string" && detail.message.length > 0) {
+          error = detail.message;
+        }
+      }
+      if (typeof event.error === "string" && event.error.length > 0) {
+        error = event.error;
+      }
+      if (typeof event.aux === "object" && event.aux !== null) {
+        const aux = event.aux as { ID?: unknown; Digest?: unknown };
+        if (typeof aux.ID === "string" && aux.ID.length > 0) imageId = aux.ID;
+        if (typeof aux.Digest === "string" && aux.Digest.length > 0) digest = aux.Digest;
+      }
+    }
+    if (error !== null) {
+      throw new DockerError(0, sanitizeStreamError(error));
+    }
+    return { imageId, digest };
   }
 
   async #supportsBuildKit(): Promise<boolean> {
@@ -1022,6 +1261,7 @@ export interface DockerRuntime {
   removeContainer(id: string, force?: boolean): Promise<void>;
   inspectContainer(idOrName: string): Promise<DockerContainerInspect | undefined>;
   inspectImage?(reference: string): Promise<DockerImageInspect | undefined>;
+  pullImage?(reference: string, options?: DockerPullOptions): Promise<DockerPullResult>;
   systemDf?(): Promise<DockerSystemDf>;
   removeImage?(referenceOrId: string, force?: boolean): Promise<void>;
   pruneImages?(filters?: Record<string, string[]>): Promise<DockerImagePruneResult>;

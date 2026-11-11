@@ -6,6 +6,11 @@ import { BUILD_SPEC_HASH_VERSION, boundedErrorMessage } from "../runtime/build-s
 import { BuildContextError, createBuildContext, DEFAULT_DOCKERFILE } from "./build-context.js";
 import type { DockerBuildRuntime, DockerImageInspect } from "./docker.js";
 import {
+  ImageMutationConflictError,
+  type ImageMutationLease,
+  ImageMutationMutex,
+} from "./image-mutation.js";
+import {
   type ImageValidationResult,
   type ImageValidationRuntime,
   ImageValidationService,
@@ -141,6 +146,7 @@ export interface ImageBuildServiceOptions {
   readonly build?: DockerBuildRuntime;
   readonly validation?: ImageValidationRuntime;
   readonly inspectImage?: (reference: string) => Promise<DockerImageInspect | undefined>;
+  readonly mutex?: ImageMutationMutex;
 }
 
 export class ImageBuildService {
@@ -150,6 +156,7 @@ export class ImageBuildService {
   readonly #inspectImage:
     | ((reference: string) => Promise<DockerImageInspect | undefined>)
     | undefined;
+  readonly #mutex: ImageMutationMutex;
   readonly #byApp = new Map<string, RunnerImageRecord>();
   readonly #byBuild = new Map<string, RunnerImageRecord>();
   readonly #starting = new Map<string, string>();
@@ -161,6 +168,7 @@ export class ImageBuildService {
     this.#build = options.build;
     this.#validation = options.validation;
     this.#inspectImage = options.inspectImage;
+    this.#mutex = options.mutex ?? new ImageMutationMutex();
   }
 
   async start(raw: unknown): Promise<ImageBuildResult> {
@@ -172,16 +180,26 @@ export class ImageBuildService {
     if (rawAppId !== undefined) {
       this.#assertStartAllowed(rawAppId);
     }
-    if (this.#active !== undefined) {
-      throw new ImageBuildError(409, "another image build is in progress", "build_in_progress");
-    }
-
-    const buildId = randomUUID();
-    this.#active = buildId;
-    if (rawAppId !== undefined) {
-      this.#starting.set(rawAppId, buildId);
-    }
+    let lease: ImageMutationLease;
     try {
+      lease = this.#mutex.tryAcquire("build");
+    } catch (error) {
+      if (error instanceof ImageMutationConflictError) {
+        throw new ImageBuildError(error.status, error.message, error.code);
+      }
+      throw error;
+    }
+    let handedOff = false;
+    let buildId: string | undefined;
+    try {
+      if (this.#active !== undefined) {
+        throw new ImageBuildError(409, "another image build is in progress", "build_in_progress");
+      }
+      buildId = randomUUID();
+      this.#active = buildId;
+      if (rawAppId !== undefined) {
+        this.#starting.set(rawAppId, buildId);
+      }
       const request = await validateBuildRequest(raw, this.#config);
       this.#assertStartAllowed(request.appId, buildId);
       const context = await createBuildContext(request.appDir, {
@@ -221,16 +239,23 @@ export class ImageBuildService {
         request,
         tar: context.tar,
       };
-      void this.#execute(record, job).catch(() => undefined);
+      void this.#execute(record, job, lease).catch(() => undefined);
+      handedOff = true;
       return { buildId, appId: request.appId, status: "building", targetRef: tag };
     } catch (error) {
       if (this.#active === buildId) {
         this.#active = undefined;
       }
-      if (rawAppId !== undefined && this.#starting.get(rawAppId) === buildId) {
+      if (
+        rawAppId !== undefined &&
+        buildId !== undefined &&
+        this.#starting.get(rawAppId) === buildId
+      ) {
         this.#starting.delete(rawAppId);
       }
       throw mapBuildError(error);
+    } finally {
+      if (!handedOff) lease.release();
     }
   }
 
@@ -340,9 +365,16 @@ export class ImageBuildService {
     }
   }
 
-  async #execute(record: RunnerImageRecord, job: BuildJob): Promise<void> {
+  async #execute(
+    record: RunnerImageRecord,
+    job: BuildJob,
+    lease: ImageMutationLease,
+  ): Promise<void> {
     const build = this.#build;
-    if (build === undefined) return;
+    if (build === undefined) {
+      lease.release();
+      return;
+    }
     try {
       const result = await build.buildImage({
         tag: job.tag,
@@ -394,6 +426,7 @@ export class ImageBuildService {
       if (this.#starting.get(record.appId) === record.buildId) {
         this.#starting.delete(record.appId);
       }
+      lease.release();
     }
   }
 

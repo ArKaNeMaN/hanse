@@ -1,5 +1,7 @@
 import type { RunnerHandshake } from "../shared/runner-api.js";
 import type {
+  EnsureAppOptions,
+  EnsureAppRequest,
   ReconcileResponse,
   RuntimeAppStatus,
   RuntimeErrorBody,
@@ -15,7 +17,7 @@ import type { AppRuntimeSpec } from "./spec.js";
  */
 export interface AgentRuntimeClient {
   /** Ensure one app host and return its effective status. Idempotent by `specHash`. */
-  ensure(spec: AppRuntimeSpec): Promise<RuntimeAppStatus>;
+  ensure(spec: AppRuntimeSpec, options?: EnsureAppOptions): Promise<RuntimeAppStatus>;
   /** Stop one app host and return its final status. Unknown apps are a no-op. */
   delete(appId: string): Promise<RuntimeAppStatus>;
   /** Current status, or `undefined` when the app has never been started. */
@@ -110,11 +112,15 @@ export class HttpAgentRuntimeClient implements AgentRuntimeClient {
     this.#timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   }
 
-  async ensure(spec: AppRuntimeSpec): Promise<RuntimeAppStatus> {
+  async ensure(spec: AppRuntimeSpec, options?: EnsureAppOptions): Promise<RuntimeAppStatus> {
+    const body: EnsureAppRequest =
+      options?.expectedImageId === undefined
+        ? spec
+        : { ...spec, expectedImageId: options.expectedImageId };
     return (await this.#request<RuntimeAppStatus>(
       "POST",
       `/v1/apps/${encodeURIComponent(spec.appId)}/ensure`,
-      spec,
+      body,
     )) as RuntimeAppStatus;
   }
 

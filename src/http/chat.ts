@@ -1115,6 +1115,7 @@ async function dispatchTextSend(
   if (!prepared.ok) {
     return json(prepared.status, { error: prepared.message, code: prepared.code });
   }
+  deps.manager?.noteActivity?.(found.app.id, "prompt");
   const parts = attachParts({ deps, found, sessionId, text, attachments });
   const warningFields = warnings.length === 0 ? {} : { warnings };
   appStreams.registerActive(found.app.id, streamID);
@@ -2403,6 +2404,9 @@ export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<
     return readMessagesResponse(deps, found, sessionId, limit, before);
   }
   let endpoint: string;
+  if (messagesMatch !== null && request.method === "POST") {
+    deps.manager.noteActivity?.(found.app.id, "prompt");
+  }
   try {
     endpoint = await deps.manager.ensure(toManagedApp(found), {
       origin: "system",

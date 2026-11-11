@@ -155,5 +155,6 @@ export async function handleContext(deps: HttpDeps, request: HttpRequest): Promi
     return json(502, { error: "compaction is unavailable", code: "compaction_unavailable" });
   }
 
+  deps.manager.noteActivity?.(found.app.id, "compact");
   return json(202, { accepted: true, sessionID: sessionId });
 }

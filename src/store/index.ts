@@ -4,6 +4,7 @@ import { reconcileSkillFiles } from "./reconcile-skill-files.js";
 
 export * from "./database.js";
 export * from "./migrations.js";
+export * from "./process.js";
 export * from "./reconcile-skill-files.js";
 export * from "./restart-claims.js";
 

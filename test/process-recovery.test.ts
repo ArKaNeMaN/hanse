@@ -13,6 +13,7 @@ import {
   RESUME_LEASE_MS,
   RESUME_PROMPT,
   type RuntimeObservation,
+  restartLike,
   SessionNoticeStore,
   type SessionNoticeView,
   SessionResumeStore,
@@ -351,6 +352,48 @@ describe("ProcessRecovery runtime classification", () => {
     );
 
     expect(h.emitted[0]).toMatchObject({ reason: "unknown_restart" });
+  });
+
+  it("recognizes an auto_update stop intent and schedules a resume", async () => {
+    const h = harness();
+    busy(h);
+
+    await h.recovery.observeRuntime(
+      APP,
+      observation(S1, "running", {
+        stopReason: "auto_update",
+        stopAt: at(START_MS + 30_000),
+      }),
+      observation(S2, "running"),
+    );
+
+    expect(h.emitted[0]).toMatchObject({ kind: "agent_stopped", reason: "auto_update" });
+    expect(h.resumes.get(APP, "ses_1")?.resumeState).toBe("observing");
+  });
+
+  it("recognizes an auto_stop stop intent and terminalizes the cycle", async () => {
+    const h = harness();
+    busy(h);
+
+    await h.recovery.observeRuntime(
+      APP,
+      observation(S1, "running", {
+        stopReason: "auto_stop",
+        stopAt: at(START_MS + 30_000),
+      }),
+      observation(S2, "stopped"),
+    );
+
+    expect(h.emitted[0]).toMatchObject({ kind: "agent_stopped", reason: "auto_stop" });
+    expect(h.resumes.get(APP, "ses_1")?.resumeState).toBe("skipped_stopped");
+  });
+
+  it("classifies restart-like intents", () => {
+    expect(restartLike("operator_restart")).toBe(true);
+    expect(restartLike("auto_update")).toBe(true);
+    expect(restartLike("operator_stop")).toBe(false);
+    expect(restartLike("auto_stop")).toBe(false);
+    expect(restartLike(undefined)).toBe(false);
   });
 
   it("suppresses the notice and clears the marker for a completed tail", async () => {

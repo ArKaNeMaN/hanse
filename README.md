@@ -40,7 +40,12 @@ and requirements) to each other through the coordinator - like independent teams
   follow-up; the API is available now.
 - Optional per-tool web drivers: built-in OMO/opencode tools or the DeepSeek standalone Search/Fetch
   APIs, exposed through the managed `hanse_web` MCP server only when configured.
-- Explicit "restart required" markers and a restart action; settings never restart agents silently.
+- Explicit "restart required" markers and a restart action; settings never restart agents silently
+  (the idle auto-update restarts only when the launch fingerprint is unchanged).
+- Idle agent maintenance: a durable per-app activity clock, auto-stop after two days without agent
+  work, auto-update after three hours only onto an already present pinned image with an unchanged
+  launch fingerprint, scheduled auto-pull of the default and shared base images, an active-operator-
+  terminal veto, and a **Rebuild only** chat action.
 - Integrated chat with agents: sessions, messages, SSE updates, tool-call/diff rendering,
   operator and agent images rendered large, and a native-dialog lightbox. Agents publish an image
   explicitly through the `show_image` MCP tool; tool attachments are never mirrored automatically.

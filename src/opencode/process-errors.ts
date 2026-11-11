@@ -8,7 +8,9 @@ export type ProcessErrorCode =
   | "skills_materialize_failed"
   | "readiness_timeout"
   | "runtime_unavailable"
-  | "interrupted";
+  | "interrupted"
+  | "launch_changed"
+  | "image_changed";
 
 const KNOWN_CODES: ReadonlySet<string> = new Set<ProcessErrorCode>([
   "image_unavailable",
@@ -18,6 +20,8 @@ const KNOWN_CODES: ReadonlySet<string> = new Set<ProcessErrorCode>([
   "readiness_timeout",
   "runtime_unavailable",
   "interrupted",
+  "launch_changed",
+  "image_changed",
 ]);
 
 const GENERIC_MESSAGES: Record<ProcessErrorCode, string> = {
@@ -28,6 +32,8 @@ const GENERIC_MESSAGES: Record<ProcessErrorCode, string> = {
   readiness_timeout: "The agent did not become ready in time.",
   runtime_unavailable: "The agent runtime is unavailable.",
   interrupted: "The agent start was interrupted.",
+  launch_changed: "The launch configuration changed; the agent was not restarted.",
+  image_changed: "The target image changed; the agent was not restarted.",
 };
 
 const MAX_MESSAGE_LENGTH = 2_000;

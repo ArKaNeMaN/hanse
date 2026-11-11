@@ -118,6 +118,12 @@
   machinery. Status: approved (Oracle round 2 PASS WITH FIXES, findings folded); plan 0042 approved
   (`momus` OKAY); implemented; targeted and UI gates green, full repository gate blocked by unrelated
   concurrent notification-stage changes (journal 0049).
+- [Idle agent maintenance](./idle-agent-maintenance.md) - a durable per-app activity clock, a
+  maintenance scheduler (auto-stop after two days, conditional auto-update after three hours), a
+  runner-side streaming image pull with an exact allowlist, a serialized mutation mutex, and a
+  fail-closed disk guard, an active-terminal veto, and a **Rebuild only** chat action. Status: design
+  approved (Oracle round 6 PASS WITH FIXES); plan 0043 `momus` OKAY; implemented and verified
+  (journal 0051).
 - [Chat and terminal SPA migration](./chat-terminal-migration.md) - migrating `/chat` and
   `/terminal` to the Vue client before legacy cleanup: the SSE/WebSocket lifecycle inventory,
   the Vue/legacy island trade-off, a recommended hybrid incremental port (terminal first, chat in

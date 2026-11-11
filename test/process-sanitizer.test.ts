@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { AgentStartingError, AgentTokenReconcileError } from "../src/opencode/manager.js";
-import { processErrorCode, sanitizeProcessError } from "../src/opencode/process-errors.js";
+import {
+  AgentStartingError,
+  AgentTokenReconcileError,
+  LaunchChangedError,
+} from "../src/opencode/manager.js";
+import {
+  genericProcessErrorMessage,
+  processErrorCode,
+  sanitizeProcessError,
+} from "../src/opencode/process-errors.js";
 
 describe("process error sanitizer", () => {
   it("keeps only the first line and strips ANSI and control characters", () => {
@@ -66,6 +74,20 @@ describe("process error sanitizer", () => {
     expect(processErrorCode(new Error("skills_materialize_failed: nope"))).toBe(
       "skills_materialize_failed",
     );
+    expect(processErrorCode(new LaunchChangedError("a"))).toBe("launch_changed");
+    const imageChanged = Object.assign(new Error("image changed"), { code: "image_changed" });
+    expect(processErrorCode(imageChanged)).toBe("image_changed");
     expect(processErrorCode(new Error("generic boom"))).toBe("runtime_unavailable");
+  });
+
+  it("has generic messages for the launch and image failure codes", () => {
+    expect(genericProcessErrorMessage("launch_changed")).toContain("configuration changed");
+    expect(genericProcessErrorMessage("image_changed")).toContain("image changed");
+    expect(sanitizeProcessError(new Error("internal detail"), { code: "launch_changed" })).toBe(
+      "The launch configuration changed; the agent was not restarted.",
+    );
+    expect(sanitizeProcessError(new Error("internal detail"), { code: "image_changed" })).toBe(
+      "The target image changed; the agent was not restarted.",
+    );
   });
 });

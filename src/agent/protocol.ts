@@ -52,7 +52,15 @@ export function stoppedStatus(appId: string): RuntimeAppStatus {
 }
 
 /** Request body for `POST /v1/apps/:appId/ensure`. */
-export type EnsureAppRequest = AppRuntimeSpec;
+export interface EnsureAppRequest extends AppRuntimeSpec {
+  /** Pinned Docker image ID the caller resolved before the destructive stop. */
+  expectedImageId?: string;
+}
+
+/** Options carried beside the hashed runtime spec on an ensure request. */
+export interface EnsureAppOptions {
+  expectedImageId?: string;
+}
 
 /** Response body for `GET /v1/apps/:appId/logs`. */
 export interface RuntimeLogs {

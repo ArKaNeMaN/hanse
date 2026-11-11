@@ -55,6 +55,8 @@ import {
   type DockerRuntime,
 } from "./docker.js";
 import { ImageGcError, ImageGcService } from "./image-gc.js";
+import { ImageMutationMutex } from "./image-mutation.js";
+import { ImagePullError, ImagePullService } from "./image-pull.js";
 import type { ImageValidationRuntime } from "./image-validation.js";
 import { ImageBuildError, ImageBuildService, resolveImageDigest } from "./images.js";
 import { appContainerName, appNetworkName } from "./names.js";
@@ -70,6 +72,7 @@ import {
 import { acceptWebSocket, websocketHandshakeError } from "./ws.js";
 
 const MAX_BODY_BYTES = 64 * 1024;
+const IMAGE_PULL_DEADLINE_MS = 10 * 60 * 1000;
 const MAX_RECONCILE_APPS = 1000;
 const MAX_INSPECT_DIGESTS = 16;
 const MAX_INSPECT_DIGEST_LENGTH = 255;
@@ -645,6 +648,7 @@ export interface RunnerServiceOptions {
   build?: DockerBuildRuntime;
   validation?: ImageValidationRuntime;
   imageGc?: ImageGcService;
+  mutex?: ImageMutationMutex;
 }
 
 /** Per-app container runtime behind the same API shape as the B0 supervisor. */
@@ -654,14 +658,17 @@ export class RunnerService {
   readonly #exec: DockerExecRuntime | undefined;
   readonly #images: ImageBuildService;
   readonly #imageGc: ImageGcService;
+  readonly #imagePull: ImagePullService;
 
   constructor(options: RunnerServiceOptions) {
     this.#config = options.config;
     this.#docker = options.docker;
     this.#exec = options.exec;
     const inspectImage = options.docker.inspectImage?.bind(options.docker);
+    const mutex = options.mutex ?? new ImageMutationMutex();
     this.#images = new ImageBuildService({
       config: options.config,
+      mutex,
       ...(options.build === undefined ? {} : { build: options.build }),
       ...(options.validation === undefined ? {} : { validation: options.validation }),
       ...(inspectImage === undefined ? {} : { inspectImage }),
@@ -670,9 +677,16 @@ export class RunnerService {
       options.imageGc ??
       new ImageGcService({
         docker: options.docker,
-        diskPath: options.config.hostWorkspace,
+        diskPath: process.env.HANSE_IMAGE_DISK_PATH?.trim() || options.config.hostWorkspace,
+        mutex,
         protectedRefs: () => this.#images.protectedBuildTags(),
       });
+    this.#imagePull = new ImagePullService({
+      config: options.config,
+      docker: options.docker,
+      imageGc: this.#imageGc,
+      mutex,
+    });
   }
 
   async health(): Promise<RuntimeHealth> {
@@ -814,6 +828,7 @@ export class RunnerService {
         );
       }
     }
+    const pinnedImageId = await this.#resolvePinnedImageId(spec);
     await this.#docker.ensureNetwork({
       name: spec.networkName,
       labels: {
@@ -826,7 +841,7 @@ export class RunnerService {
     if (existing !== undefined && existing.Config?.Labels?.["hanse.spec.hash"] === spec.specHash) {
       const running = existing.State?.Running === true;
       if (!running) {
-        const targetImageId = await this.#targetImageId(spec.image);
+        const targetImageId = pinnedImageId ?? (await this.#targetImageId(spec.image));
         if (targetImageId === null) {
           throw new RunnerError(
             503,
@@ -846,6 +861,9 @@ export class RunnerService {
         await this.#docker.stopContainer(existing.Id);
         await this.#docker.removeContainer(existing.Id, true);
       } else {
+        if (pinnedImageId !== null && existing.Image !== pinnedImageId) {
+          throw new RunnerError(409, "running container image changed", "image_changed");
+        }
         await this.#connectCoordinator(spec.networkName);
         return statusFromInspect(spec.appId, spec.containerName, existing);
       }
@@ -854,7 +872,14 @@ export class RunnerService {
       await this.#docker.removeContainer(existing.Id, true);
     }
 
-    const id = await this.#createOrAdoptContainer(spec);
+    const id = await this.#createOrAdoptContainer(spec, pinnedImageId ?? spec.image);
+    if (pinnedImageId !== null) {
+      const created = await this.#docker.inspectContainer(id);
+      if (created === undefined || created.Image !== pinnedImageId) {
+        await this.#docker.removeContainer(id, true).catch(() => undefined);
+        throw new RunnerError(409, "created container image changed", "image_changed");
+      }
+    }
     try {
       await this.#docker.startContainer(id);
       await this.#connectCoordinator(spec.networkName);
@@ -869,6 +894,17 @@ export class RunnerService {
     return statusFromInspect(spec.appId, spec.containerName, inspected);
   }
 
+  async #resolvePinnedImageId(spec: RunnerSpec): Promise<string | null> {
+    if (spec.expectedImageId === undefined) {
+      return null;
+    }
+    const resolved = await this.#targetImageId(spec.image);
+    if (resolved === null || resolved !== spec.expectedImageId) {
+      throw new RunnerError(409, "target image changed", "image_changed");
+    }
+    return spec.expectedImageId;
+  }
+
   /**
    * Create the app container, recovering the one a timed-out create may already have made.
    *
@@ -876,12 +912,12 @@ export class RunnerService {
    * ours (same app and spec hash) it is adopted, so a slow create cannot leave the app in
    * `created` forever with no start attempted. A container belonging to another spec is left alone.
    */
-  async #createOrAdoptContainer(spec: RunnerSpec): Promise<string> {
+  async #createOrAdoptContainer(spec: RunnerSpec, image: string): Promise<string> {
     try {
       return await this.#docker.createContainer(
         {
           name: spec.containerName,
-          image: spec.image,
+          image,
           hostname: spec.containerName,
           user: "1000:1000",
           entrypoint: [RUNNER_ENTRYPOINT],
@@ -945,6 +981,10 @@ export class RunnerService {
       labels["hanse.spec.hash"] !== spec.specHash
     ) {
       return undefined;
+    }
+    if (spec.expectedImageId !== undefined && existing.Image !== spec.expectedImageId) {
+      await this.#docker.removeContainer(existing.Id, true).catch(() => undefined);
+      throw new RunnerError(409, "created container image changed", "image_changed");
     }
     return existing.Id;
   }
@@ -1323,6 +1363,48 @@ export class RunnerService {
         return;
       }
       writeJson(response, 202, await this.#images.start(await readJson(request)));
+      return;
+    }
+
+    if (url.pathname === "/v1/images/pull") {
+      if (method !== "POST") {
+        writeJson(response, 405, { error: "method not allowed" }, { Allow: "POST" });
+        return;
+      }
+      const raw = await readJson(request);
+      const controller = new AbortController();
+      let disconnected = false;
+      const onResponseClose = (): void => {
+        if (response.writableFinished) return;
+        disconnected = true;
+        controller.abort();
+      };
+      const onSocketClose = (): void => {
+        disconnected = true;
+        controller.abort();
+      };
+      response.on("close", onResponseClose);
+      request.socket.on("close", onSocketClose);
+      const deadline = setTimeout(() => controller.abort(), IMAGE_PULL_DEADLINE_MS);
+      deadline.unref();
+      try {
+        const result = await this.#imagePull.pull(raw, { signal: controller.signal });
+        writeJson(response, 200, result);
+      } catch (error) {
+        if (disconnected && !response.writableFinished) {
+          response.destroy();
+          return;
+        }
+        if (error instanceof ImagePullError) {
+          writeJson(response, error.status, { error: error.message, code: error.code });
+          return;
+        }
+        throw error;
+      } finally {
+        clearTimeout(deadline);
+        response.off("close", onResponseClose);
+        request.socket.off("close", onSocketClose);
+      }
       return;
     }
 

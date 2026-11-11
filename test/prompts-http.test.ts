@@ -466,6 +466,62 @@ describe("prompts HTTP", () => {
     expect(callsTo(upstream, "POST", "/api/session/ses_2/question/q2/reject")).toHaveLength(1);
   });
 
+  it("touches answer for successful question and permission mutations but not reads", async () => {
+    const f = fixture();
+    const upstream = await fakeOpencode();
+    upstream.reply("GET", "/question", [question()]);
+    upstream.reply("GET", "/permission", [permission()]);
+    upstream.reply("POST", "/question/q1/reply", true);
+    upstream.reply("POST", "/question/q1/reject", true);
+    upstream.reply("POST", "/permission/p1/reply", true);
+    const activity: Array<[string, string]> = [];
+    f.deps.manager = {
+      ensure: async () => upstream.endpoint,
+      endpointFor: () => upstream.endpoint,
+      noteActivity: (appId: string, reason: string) => activity.push([appId, reason]),
+      policyWarnings: () => [],
+    } as unknown as InstanceManager;
+
+    const list = await handlePrompts(
+      f.deps,
+      request({
+        path: "/api/apps/storefront/prompts",
+        query: { project: "p1" },
+        headers: auth(f.token),
+      }),
+    );
+    expect(list.status).toBe(200);
+    expect(activity).toEqual([]);
+
+    const reply = await handlePrompts(
+      f.deps,
+      post(f.token, "/api/apps/storefront/questions/q1/reply", {
+        source: "v1",
+        answers: [["A"]],
+      }),
+    );
+    const reject = await handlePrompts(
+      f.deps,
+      post(f.token, "/api/apps/storefront/questions/q1/reject", { source: "v1" }),
+    );
+    const permissionReply = await handlePrompts(
+      f.deps,
+      post(f.token, "/api/apps/storefront/permissions/p1/reply", {
+        source: "v1",
+        reply: "once",
+      }),
+    );
+
+    expect(reply.status).toBe(200);
+    expect(reject.status).toBe(200);
+    expect(permissionReply.status).toBe(200);
+    expect(activity).toEqual([
+      ["p1:storefront", "answer"],
+      ["p1:storefront", "answer"],
+      ["p1:storefront", "answer"],
+    ]);
+  });
+
   it("validates answer counts, rules, and label shapes", async () => {
     const cases: Array<{ question: Record<string, unknown>; answers: unknown }> = [
       {

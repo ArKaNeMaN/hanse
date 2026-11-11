@@ -24,6 +24,12 @@ describe("chat session storage", () => {
     expect(readImageIntent(BETA)).toBeNull();
   });
 
+  it("round-trips the rebuild-only image intent", () => {
+    writeImageIntent(ALPHA, { action: "rebuild", startedAt: 321 });
+
+    expect(readImageIntent(ALPHA)).toEqual({ action: "rebuild", startedAt: 321 });
+  });
+
   it("clears image intent for one session without touching another workspace", () => {
     writeImageIntent(ALPHA, { action: "rebuild_restart", startedAt: 5 });
     writeImageIntent(BETA, { action: "build_start", startedAt: 7 });

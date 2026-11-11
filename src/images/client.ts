@@ -66,6 +66,22 @@ export interface RunnerImageInspect {
   resolvedDigest: string | null;
 }
 
+export type ImagePullSkipReason =
+  | "mutation_in_progress"
+  | "disk_critical"
+  | "disk_guard_unavailable"
+  | "unsupported";
+
+export interface RunnerImagePullResult {
+  reference: string;
+  previousImageId: string | null;
+  imageId: string | null;
+  changed: boolean;
+  digest: string | null;
+  skipped: boolean;
+  skipReason?: ImagePullSkipReason;
+}
+
 export interface RunnerImageClientOptions {
   baseUrl: string;
   token: string;
@@ -77,6 +93,7 @@ export interface RunnerImageClientOptions {
 const DEFAULT_TIMEOUT_MS = 30_000;
 const BUILD_TIMEOUT_MS = 120_000;
 const GC_TIMEOUT_MS = 120_000;
+const PULL_TIMEOUT_MS = 12 * 60 * 1000;
 const ERROR_EXCERPT_CHARS = 300;
 const MAX_REPORT_ENTRIES = 100;
 const STATUSES: ReadonlySet<string> = new Set(["missing", "building", "ready", "error"]);
@@ -178,6 +195,37 @@ function parseInspect(value: unknown): RunnerImageInspect {
     imageId,
     repoDigests,
     resolvedDigest: digestOrNull(value.resolvedDigest),
+  };
+}
+
+function skipReasonFor(status: number, payload: unknown): ImagePullSkipReason | undefined {
+  if (status === 404 || status === 405) return "unsupported";
+  if (status === 409) return "mutation_in_progress";
+  if (status === 507) {
+    const code = isRecord(payload) && typeof payload.code === "string" ? payload.code : undefined;
+    return code === "disk_guard_unavailable" ? "disk_guard_unavailable" : "disk_critical";
+  }
+  return undefined;
+}
+
+function parsePull(value: unknown, reference: string): RunnerImagePullResult {
+  if (!isRecord(value)) {
+    throw new ImageClientError("image runner returned an invalid pull response");
+  }
+  const imageId = stringOrNull(value.imageId);
+  if (typeof value.reference !== "string" || value.reference.length === 0 || imageId === null) {
+    throw new ImageClientError("image runner returned an invalid pull response");
+  }
+  if (typeof value.changed !== "boolean") {
+    throw new ImageClientError("image runner returned an invalid pull response");
+  }
+  return {
+    reference,
+    previousImageId: stringOrNull(value.previousImageId),
+    imageId,
+    changed: value.changed,
+    digest: digestOrNull(value.digest),
+    skipped: false,
   };
 }
 
@@ -399,6 +447,70 @@ export class RunnerImageClient {
       GC_TIMEOUT_MS,
     );
     return parseGc(parsed);
+  }
+
+  /** Pull one already-allowlisted reference; conflicts and disk guards are benign skips. */
+  async pull(
+    reference: string,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<RunnerImagePullResult> {
+    const timeout = AbortSignal.timeout(PULL_TIMEOUT_MS);
+    const signal =
+      options.signal === undefined ? timeout : AbortSignal.any([options.signal, timeout]);
+    let response: Response;
+    try {
+      response = await this.#fetch(`${this.#baseUrl}/v1/images/pull`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${this.#token}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ reference }),
+        signal,
+      });
+    } catch (error) {
+      const message =
+        error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")
+          ? "image runner pull timed out"
+          : `image runner pull failed: ${transportMessage(error)}`;
+      throw new ImageClientError(message, { transport: true });
+    }
+
+    const text = await response.text().catch(() => "");
+    let payload: unknown;
+    try {
+      payload = text.trim().length === 0 ? undefined : JSON.parse(text);
+    } catch {
+      payload = undefined;
+    }
+    if (!response.ok) {
+      const skipReason = skipReasonFor(response.status, payload);
+      if (skipReason !== undefined) {
+        return {
+          reference,
+          previousImageId: null,
+          imageId: null,
+          changed: false,
+          digest: null,
+          skipped: true,
+          skipReason,
+        };
+      }
+      if (isRecord(payload) && typeof payload.error === "string") {
+        throw new ImageClientError(payload.error, {
+          status: response.status,
+          code: typeof payload.code === "string" ? payload.code : undefined,
+        });
+      }
+      throw new ImageClientError(
+        `image runner rejected the pull with HTTP ${response.status}: ${text.slice(
+          0,
+          ERROR_EXCERPT_CHARS,
+        )}`,
+        { status: response.status },
+      );
+    }
+    return parsePull(payload, reference);
   }
 
   async #request(path: string, init: RequestInit, timeoutMs: number): Promise<unknown> {

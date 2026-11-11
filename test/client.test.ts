@@ -9,10 +9,14 @@ import {
   listMessagePage,
   listMessages,
   listPermissions,
+  listPermissionsStrict,
   listPermissionsV2,
+  listPermissionsV2Strict,
   listProviders,
   listQuestions,
+  listQuestionsStrict,
   listQuestionsV2,
+  listQuestionsV2Strict,
   listSavedPermissions,
   listSessionStatuses,
   listSessionStatusesStrict,
@@ -237,6 +241,72 @@ describe("v2 client", () => {
       replyPermissionV2(server.endpoint, "ses_1", "per_1", "always"),
     ).resolves.toBeUndefined();
     await expect(deleteSavedPermission(server.endpoint, "psv_1")).resolves.toBeUndefined();
+  });
+});
+
+describe("strict prompt clients", () => {
+  it("accepts valid v1 and v2 prompt lists", async () => {
+    const server = await upstream((request, response) => {
+      if (request.url === "/question") {
+        json(response, [question]);
+        return;
+      }
+      if (request.url === "/permission") {
+        json(response, [permission]);
+        return;
+      }
+      if (request.url?.startsWith("/api/question/request")) {
+        json(response, { data: [question] });
+        return;
+      }
+      if (request.url?.startsWith("/api/permission/request")) {
+        json(response, { data: [{ ...permission, action: "bash", resources: ["ls*"] }] });
+        return;
+      }
+      response.writeHead(404);
+      response.end("missing");
+    });
+
+    await expect(listQuestionsStrict(server.endpoint)).resolves.toEqual([question]);
+    await expect(listPermissionsStrict(server.endpoint)).resolves.toEqual([permission]);
+    await expect(listQuestionsV2Strict(server.endpoint, "/tmp/app")).resolves.toEqual([question]);
+    await expect(listPermissionsV2Strict(server.endpoint, "/tmp/app")).resolves.toEqual([
+      { ...permission, action: "bash", resources: ["ls*"] },
+    ]);
+  });
+
+  it("rejects a non-array v1 body and a malformed v1 entry", async () => {
+    let body: unknown = { data: [] };
+    const server = await upstream((_request, response) => json(response, body));
+
+    const notArray = await listQuestionsStrict(server.endpoint).catch((caught: unknown) => caught);
+    expect(notArray).toBeInstanceOf(OpencodeHttpError);
+    expect((notArray as OpencodeHttpError).status).toBe(0);
+
+    body = [null];
+    const malformed = await listPermissionsStrict(server.endpoint).catch(
+      (caught: unknown) => caught,
+    );
+    expect(malformed).toBeInstanceOf(OpencodeHttpError);
+    expect((malformed as OpencodeHttpError).bodyExcerpt).toContain("malformed");
+  });
+
+  it("rejects a missing/non-array v2 data field and a malformed v2 entry", async () => {
+    let body: unknown = {};
+    const server = await upstream((_request, response) => json(response, body));
+
+    const missing = await listQuestionsV2Strict(server.endpoint, "/tmp/app").catch(
+      (caught: unknown) => caught,
+    );
+    expect(missing).toBeInstanceOf(OpencodeHttpError);
+    expect((missing as OpencodeHttpError).bodyExcerpt).toContain("not an array");
+
+    body = { data: [{ id: "q1" }, "bad"] };
+    const malformed = await listPermissionsV2Strict(server.endpoint, "/tmp/app").catch(
+      (caught: unknown) => caught,
+    );
+    expect(malformed).toBeInstanceOf(OpencodeHttpError);
+    expect((malformed as OpencodeHttpError).bodyExcerpt).toContain("malformed");
   });
 });
 

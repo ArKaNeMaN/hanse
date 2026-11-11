@@ -2973,8 +2973,9 @@ describe("agent image presentation", () => {
         expected: {
           tone: "warning",
           title: "Image out of date",
-          body: "Rebuild and restart the agent to use the new image.",
+          body: "Rebuild and restart, or rebuild only to apply later.",
           action: "rebuild_restart",
+          secondaryAction: "rebuild",
         },
       },
       {
@@ -3094,6 +3095,7 @@ describe("agent image presentation", () => {
     it.each([
       { action: "build_start", expected: "Build and start" },
       { action: "rebuild_restart", expected: "Rebuild & restart" },
+      { action: "rebuild", expected: "Rebuild only" },
       { action: "restart", expected: "Restart" },
       { action: "none", expected: "" },
       { action: "unknown", expected: "" },
@@ -3200,6 +3202,14 @@ describe("feed notices", () => {
       reason: "Operator restart",
     });
     expect(noticeLabel({ kind: "subagent_interrupted" }).label).toBe("Subagent interrupted");
+    expect(noticeLabel({ kind: "agent_stopped", reason: "auto_stop" })).toEqual({
+      label: "Agent was restarted here",
+      reason: "Stopped automatically after inactivity",
+    });
+    expect(noticeLabel({ kind: "agent_stopped", reason: "auto_update" })).toEqual({
+      label: "Agent was restarted here",
+      reason: "Restarted automatically to apply an image update",
+    });
     expect(noticeLabel({ kind: "unknown_kind", reason: "custom_reason" })).toEqual({
       label: "Agent notice",
       reason: "custom reason",

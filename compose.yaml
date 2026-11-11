@@ -26,6 +26,10 @@ services:
       HANSE_DEPLOY_LOCK_FILE: ${HANSE_DEPLOY_LOCK_FILE:-/data/state/hanse/deploy.lock}
       HANSE_AGENT_IMAGE: ${HANSE_AGENT_IMAGE:-ghcr.io/arkaneman/hanse-agent-default}:${HANSE_AGENT_TAG:-${HANSE_TAG:-latest}}
       HANSE_AGENT_BASE_IMAGE: ${HANSE_AGENT_BASE_IMAGE:-ghcr.io/arkaneman/hanse-agent-base:${HANSE_AGENT_TAG:-${HANSE_TAG:-latest}}}
+      HANSE_AGENT_AUTO_STOP_MS: ${HANSE_AGENT_AUTO_STOP_MS:-172800000}
+      HANSE_AGENT_AUTO_UPDATE_MS: ${HANSE_AGENT_AUTO_UPDATE_MS:-10800000}
+      HANSE_AGENT_MAINTENANCE_INTERVAL_MS: ${HANSE_AGENT_MAINTENANCE_INTERVAL_MS:-300000}
+      HANSE_AGENT_AUTO_PULL_MS: ${HANSE_AGENT_AUTO_PULL_MS:-900000}
       HANSE_IDE_URL: /ide/
       HANSE_IDE: "0"
       HANSE_IDE_HOST: ide
@@ -105,6 +109,7 @@ services:
       HANSE_HOST_AGENTS: ${HANSE_HOST_AGENTS:?set HANSE_HOST_AGENTS to the absolute host agents path}
       HANSE_AGENT_IMAGE: ${HANSE_AGENT_IMAGE:-ghcr.io/arkaneman/hanse-agent-default}:${HANSE_AGENT_TAG:-${HANSE_TAG:-latest}}
       HANSE_AGENT_BASE_IMAGE: ${HANSE_AGENT_BASE_IMAGE:-ghcr.io/arkaneman/hanse-agent-base:${HANSE_AGENT_TAG:-${HANSE_TAG:-latest}}}
+      HANSE_IMAGE_DISK_PATH: ${HANSE_IMAGE_DISK_PATH:-${HANSE_HOST_WORKSPACE}}
       HANSE_COORDINATOR_CONTAINER: hanse
       HANSE_DOCKER_SOCKET: /var/run/docker.sock
       HANSE_HOST_RUNNER_TMP: ${HANSE_HOST_RUNNER_TMP:-/var/lib/hanse/tmp}

@@ -248,8 +248,32 @@ describe("chat cards", () => {
     const wrapper = mount(Parent);
     await nextTick();
     expect(wrapper.find("[data-chat-image-warning]").text()).toContain("Image updated");
-    await wrapper.find("[data-chat-image-action]").trigger("click");
+    await wrapper.find('[data-chat-image-action="restart"]').trigger("click");
     expect(action).toHaveBeenCalledWith("restart");
+    wrapper.unmount();
+  });
+
+  it("renders both rebuild-required actions and emits the secondary rebuild-only action", async () => {
+    const view = {
+      state: "rebuild_required",
+      buildConfigured: true,
+      usableImageRef: "image:old",
+      running: true,
+    };
+    const action = vi.fn();
+    const Parent = defineComponent({
+      setup: () => () => h(ChatImageWarning, { view, onAction: action }),
+    });
+    const wrapper = mount(Parent);
+    await nextTick();
+    expect(wrapper.find("[data-chat-image-warning]").text()).toContain("Image out of date");
+    expect(wrapper.find('[data-chat-image-action="rebuild_restart"]').text()).toBe(
+      "Rebuild & restart",
+    );
+    const secondary = wrapper.find('[data-chat-image-action="rebuild"]');
+    expect(secondary.text()).toBe("Rebuild only");
+    await secondary.trigger("click");
+    expect(action).toHaveBeenCalledWith("rebuild");
     wrapper.unmount();
   });
 });

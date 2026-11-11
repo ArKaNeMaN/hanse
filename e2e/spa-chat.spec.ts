@@ -1544,6 +1544,105 @@ test("SPA slash palette filters, confirms a shell command, and posts a 202", asy
   expectNoPageErrors(errors);
 });
 
+test("SPA rebuild-only builds the image without restarting the agent", async ({ page }) => {
+  test.skip(!isSpa(), "SPA mode only");
+  const errors = collectPageErrors(page);
+  let phase: "rebuild" | "building" | "restart" = "rebuild";
+  let builtGets = 0;
+  let builds = 0;
+  let restarts = 0;
+  let starts = 0;
+  const view = () => {
+    if (phase === "rebuild") {
+      return {
+        buildConfigured: true,
+        state: "rebuild_required",
+        running: true,
+        usableImageRef: "hanse-alpha:old",
+        targetImageId: "sha256:alpha-new",
+        imageBuildId: null,
+        error: null,
+      };
+    }
+    if (phase === "building") {
+      builtGets += 1;
+      if (builtGets >= 2) phase = "restart";
+      if (phase === "building") {
+        return {
+          buildConfigured: true,
+          state: "building",
+          running: true,
+          usableImageRef: "hanse-alpha:old",
+          targetImageId: "sha256:alpha-new",
+          imageBuildId: "e2e-build-alpha",
+          error: null,
+        };
+      }
+    }
+    return {
+      buildConfigured: true,
+      state: "restart_required",
+      running: true,
+      usableImageRef: "hanse-alpha:new",
+      targetImageId: "sha256:alpha-new",
+      imageBuildId: null,
+      error: null,
+    };
+  };
+
+  await page.route(/\/api\/apps\/alpha\/image(?:\?|$)/, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(view()),
+    });
+  });
+  await page.route(/\/api\/apps\/alpha\/build(?:\?|$)/, async (route) => {
+    builds += 1;
+    phase = "building";
+    builtGets = 0;
+    await route.fulfill({
+      status: 202,
+      contentType: "application/json",
+      body: JSON.stringify({ accepted: true, buildId: "e2e-build-alpha" }),
+    });
+  });
+  await page.route(/\/api\/apps\/alpha\/restart(?:\?|$)/, async (route) => {
+    restarts += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ restarted: true }),
+    });
+  });
+  await page.route(/\/api\/apps\/alpha\/start(?:\?|$)/, async (route) => {
+    starts += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ state: "running" }),
+    });
+  });
+
+  await signIn(page, CHAT_PATH);
+  const warning = page.locator("[data-chat-image-warning]");
+  await expect(warning).toBeVisible();
+  await expect(warning).toContainText("Image out of date");
+  const rebuildOnly = page.locator('[data-chat-image-action="rebuild"]');
+  await expect(rebuildOnly).toBeVisible();
+  await expect(rebuildOnly).toHaveText("Rebuild only");
+
+  await rebuildOnly.click();
+  await expect(warning).toContainText("Image updated", { timeout: 10_000 });
+  await expect(page.locator('[data-chat-image-action="rebuild"]')).toHaveCount(0);
+  await expect(page.locator("#toast-region .toast", { hasText: "Image built" })).toBeVisible();
+
+  expect(builds).toBe(1);
+  expect(restarts).toBe(0);
+  expect(starts).toBe(0);
+  expectNoPageErrors(errors);
+});
+
 test("SPA app menu flushes the draft and remounts the workspace", async ({ page }) => {
   test.skip(!isSpa(), "SPA mode only");
   const errors = collectPageErrors(page);

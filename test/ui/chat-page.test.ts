@@ -1,6 +1,7 @@
 import { QueryClient } from "@tanstack/vue-query";
 import { flushPromises } from "@vue/test-utils";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { useToastStore } from "../../ui/stores/toasts.js";
 import {
   chatEventSource,
   FakeEventSource,
@@ -1076,6 +1077,146 @@ describe("ChatPage read-only shell", () => {
       }
     }
     wrapper.unmount();
+  });
+
+  it("rebuild-only polls the image view without restarting or starting the agent", async () => {
+    let built = false;
+    let builtGets = 0;
+    const imageView = () => {
+      if (!built) {
+        return {
+          buildConfigured: true,
+          state: "rebuild_required",
+          running: true,
+          usableImageRef: "image:old",
+          targetImageId: "sha256:new",
+          error: null,
+        };
+      }
+      builtGets += 1;
+      if (builtGets === 1) {
+        return {
+          buildConfigured: true,
+          state: "building",
+          running: true,
+          usableImageRef: "image:old",
+          targetImageId: "sha256:new",
+          error: null,
+        };
+      }
+      return {
+        buildConfigured: true,
+        state: "restart_required",
+        running: true,
+        usableImageRef: "image:new",
+        targetImageId: "sha256:new",
+        error: null,
+      };
+    };
+    let wrapper: Awaited<ReturnType<typeof mountChat>>["wrapper"] | undefined;
+    try {
+      const mounted = await mountChat("/chat?app=alpha&project=p&session=s1", {
+        custom: ({ method, url }) => {
+          if (method === "GET" && /^\/api\/apps\/alpha\/image(?:\?|$)/.test(url)) {
+            return { status: 200, body: imageView() };
+          }
+          if (method === "POST" && /^\/api\/apps\/alpha\/build(?:\?|$)/.test(url)) {
+            built = true;
+            builtGets = 0;
+            return { status: 202, body: { accepted: true, buildId: "build-1" } };
+          }
+          return undefined;
+        },
+      });
+      wrapper = mounted.wrapper;
+      const rebuild = wrapper.find('[data-chat-image-action="rebuild"]');
+      expect(rebuild.exists()).toBe(true);
+      expect(rebuild.text()).toBe("Rebuild only");
+
+      vi.useFakeTimers();
+      await rebuild.trigger("click");
+      await flushPromises();
+      expect(
+        mounted.fetchState.requests.filter(
+          (request) => request.method === "POST" && request.url.includes("/api/apps/alpha/build"),
+        ),
+      ).toHaveLength(1);
+
+      await vi.advanceTimersByTimeAsync(2_000);
+      await flushPromises();
+
+      const posts = (path: string) =>
+        mounted.fetchState.requests.filter(
+          (request) => request.method === "POST" && request.url.includes(path),
+        );
+      expect(posts("/api/apps/alpha/restart")).toHaveLength(0);
+      expect(posts("/api/apps/alpha/start")).toHaveLength(0);
+      expect(
+        useToastStore(mounted.pinia).toasts.some(
+          (toast) => toast.tone === "success" && toast.message.includes("Image built"),
+        ),
+      ).toBe(true);
+      expect(wrapper.find("[data-chat-image-warning]").text()).toContain("Image updated");
+      expect(wrapper.find('[data-chat-image-action="rebuild"]').exists()).toBe(false);
+    } finally {
+      wrapper?.unmount();
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not restart onto the old image when a rebuild-only build fails", async () => {
+    let built = false;
+    const imageView = () =>
+      built
+        ? {
+            buildConfigured: true,
+            state: "build_error",
+            running: true,
+            usableImageRef: "image:old",
+            targetImageId: "sha256:new",
+            error: "build failed",
+          }
+        : {
+            buildConfigured: true,
+            state: "rebuild_required",
+            running: true,
+            usableImageRef: "image:old",
+            targetImageId: "sha256:new",
+            error: null,
+          };
+    let wrapper: Awaited<ReturnType<typeof mountChat>>["wrapper"] | undefined;
+    try {
+      const mounted = await mountChat("/chat?app=alpha&project=p&session=s1", {
+        custom: ({ method, url }) => {
+          if (method === "GET" && /^\/api\/apps\/alpha\/image(?:\?|$)/.test(url)) {
+            return { status: 200, body: imageView() };
+          }
+          if (method === "POST" && /^\/api\/apps\/alpha\/build(?:\?|$)/.test(url)) {
+            built = true;
+            return { status: 202, body: { accepted: true, buildId: "build-1" } };
+          }
+          return undefined;
+        },
+      });
+      wrapper = mounted.wrapper;
+
+      vi.useFakeTimers();
+      await wrapper.find('[data-chat-image-action="rebuild"]').trigger("click");
+      await flushPromises();
+      await flushPromises();
+
+      const posts = (path: string) =>
+        mounted.fetchState.requests.filter(
+          (request) => request.method === "POST" && request.url.includes(path),
+        );
+      expect(posts("/api/apps/alpha/build")).toHaveLength(1);
+      expect(posts("/api/apps/alpha/restart")).toHaveLength(0);
+      expect(posts("/api/apps/alpha/start")).toHaveLength(0);
+      expect(wrapper.find("[data-chat-image-warning]").text()).toContain("Image build failed");
+    } finally {
+      wrapper?.unmount();
+      vi.useRealTimers();
+    }
   });
 });
 

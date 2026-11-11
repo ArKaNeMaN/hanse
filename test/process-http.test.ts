@@ -230,6 +230,46 @@ describe("GET /api/apps/:app/process", () => {
     expect(payload.nextCursor).toBe(String(f.webEventIds[0]));
   });
 
+  it("returns system auto-stop and auto-update history entries", () => {
+    const f = fixture();
+    f.db
+      .prepare(
+        `INSERT INTO agent_run_events
+           (app_id, attempt_id, seq, state, phase, source, reason, error_code, message, created_at)
+         VALUES ('p:web', 'a-auto-stop', 1, 'stopped', 'stopped', 'system', 'auto_stop',
+                 NULL, NULL, '2026-11-07T10:06:00.000Z')`,
+      )
+      .run();
+    f.db
+      .prepare(
+        `INSERT INTO agent_run_events
+           (app_id, attempt_id, seq, state, phase, source, reason, error_code, message, created_at)
+         VALUES ('p:web', 'a-auto-update', 1, 'running', 'ready', 'system', 'auto_update',
+                 NULL, NULL, '2026-11-07T10:07:00.000Z')`,
+      )
+      .run();
+
+    const response = handleProcess(
+      f.deps,
+      request("/api/apps/web/process", f.humanToken, cookies()),
+    );
+
+    expect(response.status).toBe(200);
+    const events = body(response).events as Array<Record<string, unknown>>;
+    expect(events.find((event) => event.reason === "auto_stop")).toMatchObject({
+      source: "system",
+      reason: "auto_stop",
+      state: "stopped",
+      phase: "stopped",
+    });
+    expect(events.find((event) => event.reason === "auto_update")).toMatchObject({
+      source: "system",
+      reason: "auto_update",
+      state: "running",
+      phase: "ready",
+    });
+  });
+
   it("reports 401 for no principal and 403 for an agent principal", () => {
     const f = fixture();
     const anonymous = handleProcess(f.deps, request("/api/apps/web/process", undefined, cookies()));

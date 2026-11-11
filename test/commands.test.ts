@@ -132,7 +132,7 @@ describe("cli commands", () => {
     );
     db.prepare(
       "INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?, ?, ?, ?)",
-    ).run(27, "future", "future-checksum", new Date().toISOString());
+    ).run(28, "future", "future-checksum", new Date().toISOString());
     db.close();
 
     const previousToken = process.env.HANSE_RUNTIME_TOKEN;
@@ -142,7 +142,7 @@ describe("cli commands", () => {
       expect(code).toBe(1);
       const output = lines.join("\n");
       expect(output).toContain("serve:");
-      expect(output).toContain("26");
+      expect(output).toContain("27");
       expect(output).not.toContain("serving");
     } finally {
       if (previousToken === undefined) delete process.env.HANSE_RUNTIME_TOKEN;

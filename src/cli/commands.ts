@@ -8,6 +8,10 @@ import { HttpAgentRuntimeClient } from "../agent/client.js";
 import { runAgentHost } from "../agent/host.js";
 import { runAgentSupervisor } from "../agent/supervisor.js";
 import { ConfigError } from "../config/load.js";
+import {
+  AgentMaintenanceScheduler,
+  resolveMaintenanceConfig,
+} from "../coordinator/agent-maintenance.js";
 import { DeletionService } from "../coordinator/deletion.js";
 import { DeploymentLock, deploymentLockPath } from "../coordinator/deployment-lock.js";
 import { HandoffDispatcher } from "../coordinator/dispatcher.js";
@@ -34,6 +38,7 @@ import { findApp, toManagedApp } from "../http/apps.js";
 import type { ProjectContext } from "../http/handler.js";
 import { createHttpServer } from "../http/server.js";
 import { setTelegramTestTransport } from "../http/settings.js";
+import { TerminalSessionRegistry } from "../http/terminal.js";
 import { upsertPrincipalWithToken } from "../identity/principals.js";
 import { RunnerImageClient } from "../images/client.js";
 import { ImageService, ImageServiceError } from "../images/service.js";
@@ -47,6 +52,7 @@ import { NotificationRouter } from "../notifications/router.js";
 import { TelegramSender } from "../notifications/sender.js";
 import { createTelegramClient } from "../notifications/telegram/client.js";
 import { createTelegramTransport } from "../notifications/telegram/transport.js";
+import { AgentActivityService } from "../opencode/activity.js";
 import { waitForOpenCodeReady } from "../opencode/client.js";
 import {
   AgentStartingError,
@@ -59,6 +65,7 @@ import { discoverProject, registerProject } from "../registry/index.js";
 import { DockerClient } from "../runner/docker.js";
 import { runRunner } from "../runner/server.js";
 import { loadRunnerConfig } from "../runner/validate.js";
+import { resolveAppPath } from "../runtime/app-path.js";
 import { defaultImageReference } from "../runtime/build-spec.js";
 import {
   agentsHome,
@@ -896,12 +903,40 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
         });
   let handoffDispatcher: HandoffDispatcher | undefined;
   let notifierRouter: NotificationRouter | undefined;
-  const manager = new InstanceManager(db, path.resolve(agentsHome()), {
+  let manager: InstanceManager;
+  const terminalSessions = new TerminalSessionRegistry();
+  const activity = new AgentActivityService({
+    db,
+    activityEndpoint: (appId) => manager.activityEndpoint(appId),
+    appDirFor: (appId) => {
+      const row = db
+        .prepare(
+          `SELECT a.path AS appPath, p.root_path AS rootPath
+           FROM apps a JOIN projects p ON p.id = a.project_id
+           WHERE a.id = ?`,
+        )
+        .get(appId) as { appPath: string; rootPath: string } | undefined;
+      if (row === undefined) return undefined;
+      try {
+        return resolveAppPath({
+          appPath: row.appPath,
+          projectRoot: row.rootPath,
+          workspaceRoot: workspace,
+        });
+      } catch {
+        return undefined;
+      }
+    },
+    logger,
+  });
+  manager = new InstanceManager(db, path.resolve(agentsHome()), {
     runtime,
     settings,
     omoProfiles,
     skills: effectiveSkills,
     modelProviders,
+    activity,
+    terminalSessions,
     waitForReady: async (appId, endpoint) => {
       if (!(await waitForOpenCodeReady(endpoint))) {
         throw new AgentStartingError(appId);
@@ -935,6 +970,31 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
       service: new CoordinatorService(db, row.id, handoffDispatcher?.threadLimits),
     }));
   };
+  const managedAppFor = (appId: string): ReturnType<typeof toManagedApp> | undefined => {
+    const row = db
+      .prepare("SELECT project_id AS projectId, app_key AS appKey FROM apps WHERE id = ?")
+      .get(appId) as { projectId: string; appKey: string } | undefined;
+    if (row === undefined) {
+      return undefined;
+    }
+    const found = findApp({ getProjects }, row.projectId, row.appKey);
+    return found === undefined ? undefined : toManagedApp(found);
+  };
+  const maintenance = new AgentMaintenanceScheduler({
+    db,
+    manager,
+    ...(images === undefined ? {} : { images }),
+    activity,
+    logger,
+    deploymentLock,
+    drain,
+    terminalSessions,
+    managedAppFor,
+    config: resolveMaintenanceConfig(process.env, (message, fields) => {
+      logger.warn(message, fields);
+    }),
+    isMasterApp: (projectId: string) => isMasterProject(projectId),
+  });
   const git = new GitService({
     workspaceRoot: workspace,
     ...(runnerUrl === undefined || runnerUrl.length === 0
@@ -1008,6 +1068,7 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
     ...(deletion === undefined ? {} : { deletion }),
     deploymentLock,
     lifecycleActivity,
+    terminalSessions,
     drain,
     logger,
   });
@@ -1042,9 +1103,14 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
   void resumeContextMonitors(manager, listResumableApps(db)).catch(() => {
     process.stderr.write("hanse: context monitor resume failed\n");
   });
-  void recoverRestartClaims(db, manager, getProjects, logger).catch(() => {
-    process.stderr.write("hanse: restart-claim recovery failed\n");
-  });
+  try {
+    await recoverRestartClaims(db, manager, getProjects, logger);
+  } catch (error) {
+    logger.warn("restart_claim_recovery_failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+  maintenance.start();
   handoffDispatcher.start();
   notifierRouter.start();
   sender.start();
@@ -1071,6 +1137,7 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
         graceMs: shutdownGraceMs(),
         logger,
         stopBackground: async () => {
+          maintenance.stop();
           notifierRouter?.stop();
           try {
             await sender.stop();
@@ -1081,6 +1148,7 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
           }
         },
         onClose: () => {
+          maintenance.stop();
           manager.detach();
           ide?.kill("SIGTERM");
         },

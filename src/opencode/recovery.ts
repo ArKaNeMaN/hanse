@@ -88,6 +88,8 @@ export const SESSION_NOTICE_REASONS: ReadonlySet<string> = new Set([
   "process_exit",
   "operator_restart",
   "operator_stop",
+  "auto_stop",
+  "auto_update",
   "deletion",
   "deployment",
   "unknown_restart",
@@ -295,11 +297,12 @@ export interface ProcessRecoveryDeps {
   now: () => number;
   logger?: Logger;
   onNotice?: (appId: string, notice: SessionNoticeView) => void;
+  noteActivity?: (appId: string) => void;
   stoppedGraceMs?: number;
   terminalConfirmationMs?: number;
 }
 
-export type StopIntentReason = "restart" | "stop" | "delete";
+export type StopIntentReason = "restart" | "stop" | "delete" | "auto_stop" | "auto_update";
 
 interface PendingTerminal {
   appId: string;
@@ -313,7 +316,14 @@ const STOP_INTENT_REASON: Record<StopIntentReason, string> = {
   restart: "operator_restart",
   stop: "operator_stop",
   delete: "deletion",
+  auto_stop: "auto_stop",
+  auto_update: "auto_update",
 };
+
+/** True for stop intents after which the interrupted turn should resume on its own. */
+export function restartLike(reason: string | null | undefined): boolean {
+  return reason === "operator_restart" || reason === "auto_update";
+}
 
 export function runtimeEpochKey(epoch: RuntimeEpoch | null | undefined): string {
   if (epoch === null || epoch === undefined) return "unknown";
@@ -1404,7 +1414,7 @@ export class ProcessRecovery {
       epoch,
       reason: STOP_INTENT_REASON[reason],
       writeNotice: true,
-      resumeState: reason === "restart" ? undefined : "skipped_stopped",
+      resumeState: reason === "restart" || reason === "auto_update" ? undefined : "skipped_stopped",
     });
   }
 
@@ -1448,7 +1458,7 @@ export class ProcessRecovery {
         epoch,
         reason,
         writeNotice: true,
-        resumeState: fresh === "operator_restart" ? undefined : "skipped_stopped",
+        resumeState: restartLike(fresh) ? undefined : "skipped_stopped",
       });
       return;
     }
@@ -1458,8 +1468,8 @@ export class ProcessRecovery {
         epoch,
         reason: fresh,
         writeNotice: true,
-        resumeState: fresh === "operator_restart" ? undefined : "skipped_stopped",
-        scheduleResume: fresh === "operator_restart",
+        resumeState: restartLike(fresh) ? undefined : "skipped_stopped",
+        scheduleResume: restartLike(fresh),
       });
       return;
     }
@@ -1855,6 +1865,7 @@ export class ProcessRecovery {
             },
           ],
         );
+        this.#deps.noteActivity?.(row.appId);
       } catch (error) {
         const bounded = this.#boundedError(error);
         if (isProvablyNotSent(error)) {
@@ -2521,7 +2532,15 @@ export class ProcessRecovery {
 
   #freshIntent(previous: RuntimeObservation): string | null {
     const intent = previous.stopReason;
-    if (intent !== "restart" && intent !== "stop" && intent !== "delete") return null;
+    if (
+      intent !== "restart" &&
+      intent !== "stop" &&
+      intent !== "delete" &&
+      intent !== "auto_stop" &&
+      intent !== "auto_update"
+    ) {
+      return null;
+    }
     if (previous.stopAt === null || previous.stopAt === undefined) return null;
     const at = Date.parse(previous.stopAt);
     if (!Number.isFinite(at)) return null;

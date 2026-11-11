@@ -606,7 +606,7 @@ describe("http API and assets", () => {
         status: "ok",
         version: expect.any(String),
         revision: "unknown",
-        schemaVersion: 26,
+        schemaVersion: 27,
         deploying: false,
         inFlightLifecycle: 0,
         draining: false,

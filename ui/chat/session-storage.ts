@@ -11,7 +11,7 @@ export interface ChatStorageScope {
 }
 
 export interface ImageIntent {
-  readonly action: "build_start" | "rebuild_restart";
+  readonly action: "build_start" | "rebuild_restart" | "rebuild";
   readonly startedAt: number;
 }
 
@@ -54,7 +54,7 @@ export function readImageIntent(scope: ChatStorageScope): ImageIntent | null {
       return null;
     }
     const action = (parsed as { action?: unknown }).action;
-    if (action !== "build_start" && action !== "rebuild_restart") {
+    if (action !== "build_start" && action !== "rebuild_restart" && action !== "rebuild") {
       return null;
     }
     const startedAt = (parsed as { startedAt?: unknown }).startedAt;

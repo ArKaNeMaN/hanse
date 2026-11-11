@@ -1114,4 +1114,35 @@ CREATE TABLE notification_channel_state (
 );
 `,
   },
+  {
+    version: 27,
+    name: "idle-agent-maintenance",
+    backwardCompatible: true,
+    requiresExclusive: true,
+    // Bounds the apps UPDATE plus the handoffs index build at pre-alpha scale.
+    estimatedMs: 500,
+    sql: `
+-- v27: durable per-app agent activity clock and launch fingerprint
+ALTER TABLE apps ADD COLUMN last_agent_activity_at TEXT
+  CHECK (
+    last_agent_activity_at IS NULL OR last_agent_activity_at GLOB
+      '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'
+  );
+
+-- Created before the UPDATE so the from-side backfill uses the index.
+CREATE INDEX handoffs_from_app_state ON handoffs(from_app_id, state);
+
+UPDATE apps
+SET last_agent_activity_at = MAX(
+  apps.created_at,
+  COALESCE((SELECT i.started_at FROM instances i WHERE i.app_id = apps.id), apps.created_at),
+  COALESCE((SELECT MAX(s.last_activity_at) FROM session_state s WHERE s.app_id = apps.id), apps.created_at),
+  COALESCE((SELECT MAX(r.last_busy_seen_at) FROM session_resume r WHERE r.app_id = apps.id), apps.created_at),
+  COALESCE((SELECT MAX(COALESCE(h.last_message_at, h.updated_at)) FROM handoffs h WHERE h.from_app_id = apps.id), apps.created_at),
+  COALESCE((SELECT MAX(COALESCE(h.last_message_at, h.updated_at)) FROM handoffs h WHERE h.to_app_id = apps.id), apps.created_at)
+);
+
+ALTER TABLE instances ADD COLUMN applied_launch_hash TEXT;
+`,
+  },
 ];

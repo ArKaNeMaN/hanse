@@ -3,6 +3,62 @@ import type { Duplex } from "node:stream";
 import { cookieToken, isHumanCookie } from "./auth.js";
 import type { HttpDeps } from "./handler.js";
 
+/**
+ * In-memory count of attached operator terminal WebSockets with a per-app maintenance gate.
+ *
+ * `beginMaintenance` closes the attach-after-guard window: a terminal either registers while the
+ * guard can still see it, or is refused during maintenance. It is reset on coordinator restart,
+ * which has no live terminal sockets.
+ */
+export class TerminalSessionRegistry {
+  readonly #sessions = new Map<string, number>();
+  readonly #maintenance = new Map<string, number>();
+
+  /** Attach a terminal; returns an idempotent release, or `undefined` during maintenance. */
+  register(appId: string): (() => void) | undefined {
+    if ((this.#maintenance.get(appId) ?? 0) > 0) {
+      return undefined;
+    }
+    this.#sessions.set(appId, (this.#sessions.get(appId) ?? 0) + 1);
+    let released = false;
+    return () => {
+      if (released) {
+        return;
+      }
+      released = true;
+      const count = (this.#sessions.get(appId) ?? 0) - 1;
+      if (count <= 0) {
+        this.#sessions.delete(appId);
+      } else {
+        this.#sessions.set(appId, count);
+      }
+    };
+  }
+
+  /** True while at least one terminal WebSocket is attached to the app. */
+  isActive(appId: string): boolean {
+    return (this.#sessions.get(appId) ?? 0) > 0;
+  }
+
+  /** Hold the per-app maintenance gate; returns an idempotent release. Refcounted. */
+  beginMaintenance(appId: string): () => void {
+    this.#maintenance.set(appId, (this.#maintenance.get(appId) ?? 0) + 1);
+    let released = false;
+    return () => {
+      if (released) {
+        return;
+      }
+      released = true;
+      const count = (this.#maintenance.get(appId) ?? 0) - 1;
+      if (count <= 0) {
+        this.#maintenance.delete(appId);
+      } else {
+        this.#maintenance.set(appId, count);
+      }
+    };
+  }
+}
+
 function safeDecode(value: string): string {
   try {
     return decodeURIComponent(value);
@@ -134,6 +190,27 @@ export async function proxyTerminalUpgrade(
         finish();
         return;
       }
+      const releaseSession = deps.terminalSessions?.register(app.id);
+      if (deps.terminalSessions !== undefined && releaseSession === undefined) {
+        upstreamSocket.destroy();
+        rejectSocket(socket, 409, "agent_maintenance");
+        finish();
+        return;
+      }
+      let sessionReleased = false;
+      const releaseOnce = (): void => {
+        if (sessionReleased) {
+          return;
+        }
+        sessionReleased = true;
+        releaseSession?.();
+      };
+      socket.on("close", releaseOnce);
+      socket.on("error", releaseOnce);
+      socket.on("end", releaseOnce);
+      upstreamSocket.on("close", releaseOnce);
+      upstreamSocket.on("error", releaseOnce);
+      upstreamSocket.on("end", releaseOnce);
       const lines = ["HTTP/1.1 101 Switching Protocols"];
       for (let index = 0; index < response.rawHeaders.length; index += 2) {
         const name = response.rawHeaders[index];

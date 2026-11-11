@@ -174,6 +174,52 @@ export function readProcess(db: SqliteDatabase, appId: string): ProcessCurrent {
   return processFromRow(row);
 }
 
+/** Durable per-app agent-activity clock, or `null` when it has never been written. */
+export function readLastAgentActivityAt(db: SqliteDatabase, appId: string): string | null {
+  const row = db
+    .prepare("SELECT last_agent_activity_at AS lastAgentActivityAt FROM apps WHERE id = ?")
+    .get(appId) as { lastAgentActivityAt: string | null } | undefined;
+  return row?.lastAgentActivityAt ?? null;
+}
+
+/**
+ * Monotonic, best-effort activity-clock write. A stale touch is ignored and a database/CHECK failure
+ * is logged rather than thrown into prompt dispatch, handoffs, or recovery. Returns `true` when the
+ * clock advanced.
+ */
+export function touchAgentActivity(db: SqliteDatabase, appId: string, at: string): boolean {
+  try {
+    const result = db
+      .prepare(
+        `UPDATE apps SET last_agent_activity_at = ?
+         WHERE id = ? AND (last_agent_activity_at IS NULL OR last_agent_activity_at < ?)`,
+      )
+      .run(at, appId, at);
+    return result.changes > 0;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`[store] agent_activity_touch_failed app=${appId}: ${message}`);
+    return false;
+  }
+}
+
+/** Launch fingerprint written by the last destructive start/restart, or `null` for legacy rows. */
+export function readAppliedLaunchHash(db: SqliteDatabase, appId: string): string | null {
+  const row = db
+    .prepare("SELECT applied_launch_hash AS appliedLaunchHash FROM instances WHERE app_id = ?")
+    .get(appId) as { appliedLaunchHash: string | null } | undefined;
+  return row?.appliedLaunchHash ?? null;
+}
+
+/** Persist the launch fingerprint after a successful destructive start/restart. */
+export function writeAppliedLaunchHash(
+  db: SqliteDatabase,
+  appId: string,
+  hash: string | null,
+): void {
+  db.prepare("UPDATE instances SET applied_launch_hash = ? WHERE app_id = ?").run(hash, appId);
+}
+
 /**
  * Current process fields plus the newest event id, read in one statement so the current row and
  * the history cursor cannot diverge.

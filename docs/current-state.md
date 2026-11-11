@@ -152,7 +152,9 @@ a host `opencode` auth file.
   manifests or Dockerfile paths mark the app image `error` without failing the whole project.
 - A human action (`POST /api/apps/:app/build`, the app page Image panel, or `hanse images build`)
   asks the runner to build. The runner tars a contained app context and builds from the resolved base;
-  no build runs at deploy time and nothing auto-builds on file edits. `.dockerignore` at the app root
+  no build runs at deploy time and nothing auto-builds on file edits. Idle maintenance may pull a
+  newer default/base image, but it never builds; a restart onto a newer image stays conditional on
+  the unchanged launch fingerprint (see Idle agent maintenance). `.dockerignore` at the app root
   filters the context with Docker's pattern rules. Top-level `.git`, `.codegraph`, `node_modules`,
   `state`, `agents`, `.cache`, `.mise`, and the generated `.opencode/node_modules` are a hard floor:
   `.dockerignore` can exclude more but cannot re-include them. The Dockerfile and `.dockerignore`
@@ -205,7 +207,8 @@ a host `opencode` auth file.
 - The image panel exposes a human-only **Check for changes** action for apps on the default image. It
   re-reads the live manifest/Dockerfile and persists the merged image metadata
   (missing/stale/error) without a build, so a newly added `.hanse/Dockerfile` appears without a
-  coordinator restart. Builds and restarts remain explicit.
+  coordinator restart. Human builds and restarts remain explicit; the only automatic restart is the
+  conditional idle auto-update, which never builds and never applies pending configuration.
 
 ## App image usage and GC (B2.5b)
 
@@ -224,6 +227,42 @@ The runner exposes two runtime-token endpoints; the coordinator wraps them as hu
   target is not protected. GC removes only `hanse-app-*` tags or images labelled `hanse.app.id`,
   skips images that also carry unrelated tags, and prunes build cache only through the Docker
   build-cache prune API. A Docker error stops the run (fail closed).
+
+## Idle agent maintenance
+
+Migration v27 adds a durable per-app activity clock and the applied launch fingerprint. A
+maintenance scheduler evaluates running, non-master, non-deleting, non-transitioning apps while the
+deployment lock and in-process drain are inactive; it skips on a live operator terminal.
+
+- **Activity clock.** `apps.last_agent_activity_at` is advanced only by real agent work: prompt
+  dispatch, busy/retry status, an answered/rejected question or permission, resume, compaction,
+  handoff dispatch/reply, and a successful start/restart. `GET`/SSE/draft/terminal/preview/IDE/
+  settings reads never touch it. The live check also fails closed: a malformed/unprobeable status or
+  prompt source, a pending interactive prompt, a recent pending send, and dispatching/awaiting
+  handoffs count as active.
+- **Auto-stop.** After `HANSE_AGENT_AUTO_STOP_MS` (default two days) without agent work, a running
+  app is stopped with source `system` and reason `auto_stop`. A stop deletes the container, previews,
+  and the MCP token; sessions, messages, drafts, attachments, handoffs, and images remain. If
+  auto-stop and auto-update are both due, stop wins.
+- **Auto-update.** After `HANSE_AGENT_AUTO_UPDATE_MS` (default three hours) the scheduler restarts a
+  running app only when the image state is `restart_required`, the target image identity is pinned
+  and unchanged, and the launch fingerprint equals `instances.applied_launch_hash`. The runner
+  creates from the pinned image ID and verifies it. Pending settings/skills/model/provider/git/rule/
+  instruction/plugin changes are never applied; a changed fingerprint skips. The history records
+  source `system` and reason `auto_update`; a failure leaves the app `error` with a one-hour cooldown.
+  There is no automatic build or rollback.
+- **Auto-pull.** Every `HANSE_AGENT_AUTO_PULL_MS` (default 15 minutes) the coordinator asks the
+  runner to pull the configured default agent image and the shared base image. The runner exposes an
+  authenticated, exact-allowlisted, streaming, serialized `POST /v1/images/pull` with a fail-closed
+  pre/during disk guard; the coordinator skips digest-pinned references and passes drain state. A
+  moved default image makes apps `restart_required`; a moved base digest makes custom apps
+  `rebuild_required` and still requires an explicit rebuild. `image.auto_pull` audits each attempt.
+- **Terminal veto and previews.** An active operator terminal WebSocket blocks both auto-stop and
+  auto-update, and a terminal that tries to attach during maintenance gets `409 agent_maintenance`.
+  Demo previews remain stoppable.
+- **Rebuild-only chat action.** For `rebuild_required` the chat banner offers **Rebuild only** next
+  to **Rebuild & restart**. It builds without starting or restarting and never restarts after
+  `build_error`.
 
 ## Project and application deletion
 
@@ -635,14 +674,16 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   order; migrations v10 (applied settings/profile state), v11 (deletion markers), v12 (skills),
   v13 (skill bundles), v14 (session-bound handoffs, reply routing, and handoff policy), and v15
   (chat drafts, session state, and pending sends) and v16 (file-only attachments and deliveries)
-  follow. The current schema versions are `[1..25]` (v17 adds handoff message-id lookup indexes;
+  follow. The current schema versions are `[1..27]` (v17 adds handoff message-id lookup indexes;
   v18 adds agent image validity; v19 adds the global custom model provider registry; v20 adds the
   process-rule hash, runtime epoch/exit fields, and the session resume/notice tables; v21 adds
   `agent_media` for agent-published chat images; v22 adds the handoff-thread header fields, ordered
   `handoff_messages` columns, triggers, and indexes; v23 adds the `instances.process_*` current
   fields and the durable `agent_run_events` history; v24 adds arbitrary `skill_files`, external
   skill-source tables, fork provenance, and `instances.applied_skills_hash`; v25 adds the durable
-  `deploy_state` drain row and `restart_claims`).
+  `deploy_state` drain row and `restart_claims`; v26 adds the durable Telegram notification outbox;
+  v27 adds `apps.last_agent_activity_at` and `instances.applied_launch_hash` with the handoff
+  activity backfill and the `handoffs(from_app_id, state)` index).
 - Live on `deployment-host` (`sha-e2d89a2`): a temporary SSH target pinned and authenticated, an approval was
   approved, `echo QA_OK` and a 65 s `sleep` succeeded, upload/download round-tripped, a real
   `opencode` turn called `hanse_ssh_exec` and received the result after 65 s, and audit rows survived
@@ -1149,8 +1190,10 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   `.omo` layer).
 - Settings never auto-restart an agent. Running instances record the effective settings/auth/profile
   hash and `appliedProfile`; the app, chat, and settings surfaces show "Restart required" and a
-  restart action. Chat prompts carry the effective `llm.model`, so existing sessions switch model on
-  the next message; OMO subagents use the profile and change only after a restart.
+  restart action. The idle auto-update restarts only when the launch fingerprint is unchanged, so a
+  settings change is never applied silently. Chat prompts carry the effective `llm.model`, so
+  existing sessions switch model on the next message; OMO subagents use the profile and change only
+  after a restart.
 - CLI: `hanse web-mcp` runs the managed web tools MCP server (internal; spawned by opencode).
 - API: `GET/POST /api/settings`, `POST /api/settings/provider`,
   `GET/POST /api/settings/model-providers`, and
