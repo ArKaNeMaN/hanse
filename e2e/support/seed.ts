@@ -17,14 +17,22 @@ import {
 } from "../../src/master/constants.js";
 import { ModelProviderService } from "../../src/model-providers/index.js";
 import { SettingsService } from "../../src/settings/index.js";
+import { CompositeSkillSource } from "../../src/skill-sources/composite.js";
+import { SkillSourceService } from "../../src/skill-sources/service.js";
 import { SkillService } from "../../src/skills/index.js";
 import { SshService } from "../../src/ssh/service.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../../src/store/index.js";
 import type { FixtureMessage, FixtureSession } from "./opencode-upstream.js";
+import { createFakeSkillHub, type FakeSkillHub } from "./skill-hub.js";
 
 /** Obvious test literal; never a deployment credential. */
 export const E2E_TOKEN = "test-operator-token";
 export const E2E_OPERATOR = "test-operator";
+
+export const E2E_SKILL_HUB_ENDPOINT = "https://skills-hub.e2e.test";
+export const E2E_SKILL_SOURCE_TOKEN = "e2e-skill-source-token-sentinel";
+export const E2E_SKILL_SOURCE_NOW = "2026-11-11T10:00:00.000Z";
+export const E2E_EXTERNAL_SKILL_NAME = "e2e-external-skill";
 
 /** Deterministic chat identities served by the fake opencode upstream. Synthetic only. */
 export const E2E_CHAT_SESSION_ID = "ses_e2ealpha";
@@ -527,6 +535,10 @@ export interface SeedResult {
   settings: SettingsService;
   modelProviders: ModelProviderService;
   skills: SkillService;
+  skillSources: SkillSourceService;
+  effectiveSkills: CompositeSkillSource;
+  skillHub: FakeSkillHub;
+  syncSkillSource: () => Promise<unknown>;
   ssh: SshService;
   handoffId: string;
   replyHandoffId: string;
@@ -938,6 +950,41 @@ export function seed(options: SeedOptions = {}): SeedResult {
     E2E_OPERATOR,
   );
 
+  const skillHub = createFakeSkillHub({
+    skills: [
+      {
+        name: E2E_EXTERNAL_SKILL_NAME,
+        description: "External skill served by the deterministic E2E skills hub.",
+        files: [
+          {
+            path: "SKILL.md",
+            content: `---\nname: ${E2E_EXTERNAL_SKILL_NAME}\ndescription: External skill served by the deterministic E2E skills hub.\n---\n\n# E2E external skill\n\nSynthetic content only.\n`,
+          },
+          { path: "references/guide.md", content: "# External guide\n\nSynthetic content only.\n" },
+          { path: "assets/logo.bin", content: Buffer.from([0, 1, 2, 3, 4]) },
+        ],
+      },
+    ],
+  });
+  const skillSources = new SkillSourceService({
+    db,
+    secretKey: randomBytes(32),
+    stateRoot: path.join(tempRoot, "skill-source-state"),
+    now: () => new Date(E2E_SKILL_SOURCE_NOW),
+    fetchImpl: skillHub.fetchImpl,
+  });
+  const skillSource = skillSources.create(
+    {
+      slug: "e2e-skills",
+      name: "E2E Skills",
+      endpoint: E2E_SKILL_HUB_ENDPOINT,
+      config: { buckets: ["default"], allowInsecureHttp: false },
+      token: E2E_SKILL_SOURCE_TOKEN,
+    },
+    E2E_OPERATOR,
+  );
+  const effectiveSkills = new CompositeSkillSource(skills, skillSources);
+
   const agentsHome = path.join(tempRoot, "agents");
   mkdirSync(agentsHome, { recursive: true });
   const ssh = new SshService({
@@ -1180,6 +1227,10 @@ export function seed(options: SeedOptions = {}): SeedResult {
     settings,
     modelProviders,
     skills,
+    skillSources,
+    effectiveSkills,
+    skillHub,
+    syncSkillSource: () => skillSources.sync(skillSource.id),
     ssh,
     handoffId,
     replyHandoffId,

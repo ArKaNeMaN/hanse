@@ -44,6 +44,7 @@ export interface SkillSourceRow {
 
 export interface SkillSourceView extends SkillSourceRow {
   tokenSet: boolean;
+  tokenUpdatedAt: string | null;
   skillCount: number;
   totalBytes: number;
   stale: boolean;
@@ -122,6 +123,7 @@ export interface ExternalSkillRecord {
   bucket: string;
   snapshotId: string;
   revision: string;
+  publishedAt: string | null;
   name: string;
   description: string;
   version: string | null;

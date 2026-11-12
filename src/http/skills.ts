@@ -6,6 +6,7 @@ import {
   type SkillRow,
   type SkillScope,
   SkillService,
+  type SkillSource,
   type SkillTarget,
   type SkillUpdate,
   SkillValidationError,
@@ -708,6 +709,7 @@ export async function handleSkills(deps: HttpDeps, request: HttpRequest): Promis
   } catch {
     return errorJson(503, { error: "skills are not available", code: "skills_unavailable" });
   }
+  const effective: SkillSource = deps.effectiveSkills ?? skills;
 
   const browser = wantsHtml(request);
   const mutation = request.method === "POST" || request.method === "DELETE";
@@ -736,8 +738,8 @@ export async function handleSkills(deps: HttpDeps, request: HttpRequest): Promis
       if (!targetExists(deps, scope, target)) {
         return notFound(browser);
       }
-      const resolved = skills.resolve(target);
-      const preview = previewFor(deps, skills, scope, target);
+      const resolved = effective.resolve(target);
+      const preview = previewFor(deps, effective, scope, target);
       if (preview === undefined) {
         return json(200, resolved);
       }

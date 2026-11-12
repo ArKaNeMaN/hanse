@@ -9,7 +9,7 @@ import type { HttpDeps, HttpRequest } from "../src/http/handler.js";
 import { createHttpServer } from "../src/http/server.js";
 import { handleSkills, isSkillsRoute } from "../src/http/skills.js";
 import { createPrincipal } from "../src/identity/principals.js";
-import { SkillService } from "../src/skills/index.js";
+import { type ResolvedSkills, SkillService, type SkillSource } from "../src/skills/index.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
 
 const dirs: string[] = [];
@@ -404,6 +404,67 @@ describe("create page", () => {
 });
 
 describe("skills API", () => {
+  it("reads GET /api/skills through effectiveSkills", async () => {
+    const f = fixture();
+    const resolved: ResolvedSkills = {
+      scope: "global",
+      effective: [
+        {
+          id: null,
+          name: "external-only",
+          description: "From the effective source",
+          content: "",
+          license: null,
+          compatibility: null,
+          metadata: {},
+          references: [],
+          source: null,
+          shadows: [],
+          shadowedExternal: false,
+          mode: "external",
+          origin: {
+            sourceId: "source-1",
+            sourceName: "Hub One",
+            bucket: "default",
+            revision: "rev-1",
+            snapshotId: "snapshot-1",
+            publishedAt: "2026-11-11T10:00:00.000Z",
+          },
+          externalKey: "source-1:default:external-only",
+          fileCount: 1,
+          updatedAt: "2026-11-11T10:00:00.000Z",
+          updatedBy: "source:hub",
+        },
+      ],
+      rows: [],
+      disabled: [],
+      warnings: [],
+    };
+    const effective: SkillSource = {
+      capture: () => {
+        throw new Error("capture is not used");
+      },
+      resolve: () => resolved,
+      preview: () => ({ resolved, warnings: [] }),
+      hash: () => undefined,
+      probe: () => {
+        throw new Error("probe is not used");
+      },
+      apply: () => {
+        throw new Error("apply is not used");
+      },
+    };
+    f.deps.effectiveSkills = effective;
+    const response = await handleSkills(f.deps, request({ headers: auth(f.token) }));
+    expect(response.status).toBe(200);
+    const payload = JSON.parse(response.body) as {
+      effective: Array<{ name: string; mode: string }>;
+    };
+    expect(payload.effective).toEqual([
+      expect.objectContaining({ name: "external-only", mode: "external" }),
+    ]);
+  });
+
   it("reads resolution projections and a full SkillDetail", async () => {
     const f = fixture();
     const row = f.skills.create(

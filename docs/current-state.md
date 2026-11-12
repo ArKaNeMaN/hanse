@@ -1292,9 +1292,13 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   guards, per-skill quarantine, pinning, and background sync. External skills resolve below managed
   rows (`app > project > global > source priority`), external `SKILL.md` is materialized verbatim,
   and disabled managed rows are tombstones over external skills. A source hard delete keeps
-  snapshot/index rows and blobs for the 24-hour retention floor. Source management is API-only in
-  this stage (`/api/skill-sources*`, human-only); the Vue source page and external skill drawer are
-  a follow-up, so the existing skills inventory continues to show managed rows.
+  snapshot/index rows and blobs for the 24-hour retention floor. Source management is human-only
+  (`/api/skill-sources*`) and is exposed as the `sources` pane of the global settings console: a
+  status-first ledger,
+  create/edit, write-only token replace/clear, sync/check, pin, disable/enable, typed hard delete,
+  and a source drawer. The Skills inventory shows external rows read-only with a Source badge, an
+  External filter/count, and a preview drawer; external rows never link to `/skills/null`.
+  Fork-to-local and the arbitrary local-file/binary upload UI remain deferred.
 - The effective hash includes `name`, `description`, `content`, and, only when non-empty,
   `license`, `compatibility`, `metadata`, and path-sorted `references`. A legacy single-file skill
   with no new fields keeps its pre-v13 hash and generated `SKILL.md` bytes, so upgrading does not
@@ -1910,10 +1914,10 @@ Settings stage verification:
   repository `.opencode/skill(s)`, plugin, `~/.claude/skills`, `~/.agents/skills`, and cache roots
   are scanned and warned, but Hanse cannot override them, and duplicate winner selection across
   those roots is not a stable opencode contract.
-- Skills support arbitrary local text/binary files and external snapshots. Deferred: external source
-  UI (API-only in this stage), binary upload UI, git-backed sources, project/app-scoped sources,
-  per-app source opt-out, historical revision fetch, and an approval queue. External content is
-  operator-trusted prompt content, not a secret store.
+- Skills support arbitrary local text/binary files and external snapshots. Deferred: fork-to-local,
+  binary upload UI, git-backed sources, project/app-scoped sources, per-app source opt-out,
+  historical revision fetch, and an approval queue. External content is operator-trusted prompt
+  content, not a secret store.
 - Skills are never hot-reloaded; a running agent picks up a changed set only after an explicit
   restart. `pendingRestart` hashes the effective set per query, and first-deploy
   `skills-replaced/` directories are not cleaned up automatically.

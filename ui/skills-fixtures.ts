@@ -167,8 +167,43 @@ export function row(overrides: Partial<SkillsInventoryRowProps> = {}): SkillsInv
     href: "/skills/7?from=%2Fskills",
     effectiveHref: null,
     actionLabel: "Open alpha-skill",
+    mode: "managed",
+    externalKey: null,
+    fileCount: 1,
+    origin: null,
     ...overrides,
   };
+}
+
+export function externalRow(
+  overrides: Partial<SkillsInventoryRowProps> = {},
+): SkillsInventoryRowProps {
+  return row({
+    id: null,
+    primaryId: null,
+    name: "release-checklist",
+    description: "Published by the team skills hub.",
+    scope: null,
+    state: "inherited",
+    stateLabel: "Read-only",
+    enabled: true,
+    originScope: null,
+    originText: "hub-default · default",
+    href: null,
+    actionLabel: "View release-checklist",
+    mode: "external",
+    externalKey: "source-1:default:release-checklist",
+    fileCount: 3,
+    origin: {
+      sourceId: "source-1",
+      sourceName: "Team hub",
+      bucket: "default",
+      revision: "abcdef1234567890",
+      snapshotId: "snap-1",
+      publishedAt: "2026-11-01T09:30:00.000Z",
+    },
+    ...overrides,
+  });
 }
 
 export function inventory(overrides: Partial<SkillsInventoryProps> = {}): SkillsInventoryProps {
@@ -215,7 +250,7 @@ export function inventory(overrides: Partial<SkillsInventoryProps> = {}): Skills
     rows,
     allCount: rows.length,
     matchedCount: rows.length,
-    counts: { enabled: 1, inherited: 1, disabled: 1, invalid: 1 },
+    counts: { enabled: 1, inherited: 1, disabled: 1, invalid: 1, external: 0 },
     filter: "all",
     filters: [
       { value: "all", label: "All", href: currentScope.href, current: true },
@@ -241,6 +276,12 @@ export function inventory(overrides: Partial<SkillsInventoryProps> = {}): Skills
         value: "invalid",
         label: "Invalid",
         href: `${currentScope.href}?filter=invalid`,
+        current: false,
+      },
+      {
+        value: "external",
+        label: "External",
+        href: `${currentScope.href}?filter=external`,
         current: false,
       },
     ],

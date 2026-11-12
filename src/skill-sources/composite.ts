@@ -64,7 +64,9 @@ export class CompositeSkillSource implements SkillSource {
           warnings.push({
             code: "skill_source_conflict",
             name,
-            root: record.sourceName,
+            root: record.sourceId,
+            sourceName: record.sourceName,
+            sourceSlug: record.sourceSlug,
           });
         }
         continue;
@@ -121,8 +123,9 @@ export class CompositeSkillSource implements SkillSource {
       bucket: record.bucket,
       revision: record.revision,
       snapshotId: record.snapshotId,
+      publishedAt: record.publishedAt,
     };
-    const updatedAt = new Date().toISOString();
+    const updatedAt = record.publishedAt ?? new Date().toISOString();
     const base = {
       id: null,
       name: record.name,
@@ -212,6 +215,7 @@ export class CompositeSkillSource implements SkillSource {
       bucket: descriptor.bucket,
       snapshotId: descriptor.snapshotId,
       revision: descriptor.revision,
+      publishedAt: null,
       name: descriptor.name,
       description: descriptor.description,
       version: null,

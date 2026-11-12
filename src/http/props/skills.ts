@@ -25,6 +25,7 @@ import {
   type SkillRow,
   type SkillScope,
   type SkillService,
+  type SkillSource,
   type SkillStoredIssue,
   type SkillSummary,
   type SkillTarget,
@@ -268,7 +269,7 @@ export interface SurfaceModel {
 
 export function previewFor(
   deps: HttpDeps,
-  skills: SkillService,
+  skills: SkillSource,
   scope: SkillScope,
   target: SkillTarget,
 ): SkillPreview | undefined {
@@ -300,7 +301,7 @@ export function previewFor(
 
 export function surfaceModel(
   deps: HttpDeps,
-  skills: SkillService,
+  skills: SkillSource,
   scope: SkillScope,
   target: SkillTarget,
   returnTo: string,
@@ -332,6 +333,22 @@ export function warningText(warning: SkillWarning): string {
   if (warning.code === "skill_collision") {
     return `"${warning.name ?? ""}" also exists at ${warning.root ?? "another skill root"}`;
   }
+  if (warning.code === "skill_source_conflict") {
+    return `"${warning.name ?? ""}" is also provided by ${
+      warning.sourceName ?? "an external source"
+    } but this local skill wins.`;
+  }
+  if (warning.code === "skill_source_quarantined") {
+    return `"${warning.name ?? ""}" from ${
+      warning.sourceName ?? "an external source"
+    } was quarantined and is not available.`;
+  }
+  if (warning.code === "skill_source_stale") {
+    const source = warning.sourceName ?? "an external source";
+    return warning.lastSuccessAt === undefined
+      ? `${source} has not synced recently.`
+      : `${source} has not synced since ${warning.lastSuccessAt}.`;
+  }
   return `"${warning.name ?? ""}" is disabled here but also exists at ${warning.root ?? "another skill root"}`;
 }
 
@@ -339,6 +356,8 @@ export interface SkillWarningProps {
   readonly code: SkillWarning["code"];
   readonly name: string | null;
   readonly root: string | null;
+  readonly sourceName: string | null;
+  readonly sourceSlug: string | null;
   readonly text: string;
 }
 
@@ -347,6 +366,8 @@ export function skillWarningProps(warning: SkillWarning): SkillWarningProps {
     code: warning.code,
     name: warning.name ?? null,
     root: warning.root ?? null,
+    sourceName: warning.sourceName ?? null,
+    sourceSlug: warning.sourceSlug ?? null,
     text: warningText(warning),
   };
 }
@@ -376,6 +397,8 @@ export function issueAnchor(issue: SkillStoredIssue): string | undefined {
       return "#skill-details";
     case "invalid_skill_name":
       return undefined;
+    case "invalid_skill_file":
+      return "#skill-references";
   }
 }
 
@@ -438,7 +461,7 @@ export function pendingApps(
 /* ------------------------------------------------------------------------- */
 
 export type InventoryState = "enabled" | "inherited" | "disabled" | "invalid";
-export type InventoryFilter = "all" | "defined" | "inherited" | "disabled" | "invalid";
+export type InventoryFilter = "all" | "defined" | "inherited" | "external" | "disabled" | "invalid";
 
 export interface SkillsScopeNavProps {
   readonly ariaLabel: string;
@@ -488,6 +511,14 @@ export interface SkillsInventoryRowProps {
   readonly shadows: readonly SkillScope[];
   readonly originScope: SkillScope | null;
   readonly originText: string;
+  readonly origin: {
+    readonly sourceId: string;
+    readonly sourceName: string;
+    readonly bucket: string;
+    readonly revision: string;
+    readonly snapshotId: string;
+    readonly publishedAt: string | null;
+  } | null;
   readonly mode: "managed" | "external";
   readonly externalKey: string | null;
   readonly fileCount: number;
@@ -531,6 +562,7 @@ export interface SkillsEmptyProps {
 export interface SkillsCountsProps {
   readonly enabled: number;
   readonly inherited: number;
+  readonly external: number;
   readonly disabled: number;
   readonly invalid: number;
 }
@@ -582,7 +614,13 @@ export interface SkillsInventoryProps {
 }
 
 export function parseInventoryFilter(value: string | undefined): InventoryFilter {
-  if (value === "defined" || value === "inherited" || value === "disabled" || value === "invalid") {
+  if (
+    value === "defined" ||
+    value === "inherited" ||
+    value === "external" ||
+    value === "disabled" ||
+    value === "invalid"
+  ) {
     return value;
   }
   return "all";
@@ -597,7 +635,10 @@ interface InventoryRow {
   stateLabel: string;
   originScope: SkillScope | null;
   originText: string;
+  origin: SkillsInventoryRowProps["origin"];
   mode: "managed" | "external";
+  sourceName: string | null;
+  bucket: string | null;
   externalKey: string | null;
   fileCount: number;
   references: number;
@@ -631,7 +672,11 @@ function buildInventoryRows(
     if (scoped === undefined && effective === undefined) {
       continue;
     }
-    const collisions = warningsFor(warnings, name, ["skill_collision", "skill_disabled_elsewhere"]);
+    const collisions = warningsFor(warnings, name, [
+      "skill_collision",
+      "skill_disabled_elsewhere",
+      "skill_source_conflict",
+    ]);
     const base = scoped ?? effective;
     if (base === undefined) {
       continue;
@@ -694,9 +739,12 @@ function buildInventoryRows(
         stateLabel,
         originScope,
         originText,
+        origin: null,
         mode: "managed",
+        sourceName: null,
+        bucket: null,
         externalKey: null,
-        fileCount: scoped.references.length,
+        fileCount: effective?.fileCount ?? scoped.references.length,
         references: scoped.references.length,
         updatedAt: scoped.updatedAt,
         issues: scoped.storedIssues,
@@ -721,7 +769,10 @@ function buildInventoryRows(
         stateLabel: "Hub",
         originScope: null,
         originText: `Hub · ${effective.origin?.sourceName ?? "source"}`,
+        origin: effective.origin,
         mode: "external",
+        sourceName: effective.origin?.sourceName ?? null,
+        bucket: effective.origin?.bucket ?? null,
         externalKey: effective.externalKey,
         fileCount: effective.fileCount,
         references: effective.references.length,
@@ -743,7 +794,10 @@ function buildInventoryRows(
       originText: `Inherited from ${
         effective.source === null ? "hub" : scopeLabel(effective.source)
       }`,
+      origin: null,
       mode: "managed",
+      sourceName: null,
+      bucket: null,
       externalKey: null,
       fileCount: effective.fileCount,
       references: effective.references.length,
@@ -763,7 +817,9 @@ function inventoryMatchesFilter(row: InventoryRow, filter: InventoryFilter): boo
     case "defined":
       return row.state !== "inherited";
     case "inherited":
-      return row.state === "inherited";
+      return row.state === "inherited" && row.mode !== "external";
+    case "external":
+      return row.mode === "external";
     case "disabled":
       return row.state === "disabled";
     case "invalid":
@@ -776,7 +832,12 @@ function inventoryMatchesSearch(row: InventoryRow, query: string): boolean {
     return true;
   }
   const needle = query.toLowerCase();
-  return row.name.toLowerCase().includes(needle) || row.description.toLowerCase().includes(needle);
+  return (
+    row.name.toLowerCase().includes(needle) ||
+    row.description.toLowerCase().includes(needle) ||
+    (row.sourceName?.toLowerCase().includes(needle) ?? false) ||
+    (row.bucket?.toLowerCase().includes(needle) ?? false)
+  );
 }
 
 function filterHref(pagePath: string, value: InventoryFilter, search: string): string {
@@ -800,6 +861,7 @@ function filterOptions(
     { value: "all", label: "All" },
     { value: "defined", label: "Defined here" },
     { value: "inherited", label: "Inherited" },
+    { value: "external", label: "External" },
     { value: "disabled", label: "Disabled" },
     { value: "invalid", label: "Invalid" },
   ];
@@ -858,7 +920,7 @@ function emptyProps(options: {
 export interface SkillsInventoryBuildInput {
   readonly deps: HttpDeps;
   readonly site: SiteModel;
-  readonly skills: SkillService;
+  readonly skills: SkillSource;
   readonly scope: SkillScope;
   readonly target: SkillTarget;
   readonly filter: InventoryFilter;
@@ -918,7 +980,8 @@ export function buildSkillsInventoryProps(
   ].filter((entry) => entry.length > 0);
   const counts = {
     enabled: allRows.filter((row) => row.state === "enabled").length,
-    inherited: allRows.filter((row) => row.state === "inherited").length,
+    inherited: allRows.filter((row) => row.state === "inherited" && row.mode !== "external").length,
+    external: allRows.filter((row) => row.mode === "external").length,
     disabled: allRows.filter((row) => row.state === "disabled").length,
     invalid: allRows.filter((row) => row.state === "invalid").length,
   };
@@ -1009,6 +1072,7 @@ export function buildSkillsInventoryProps(
         shadows: row.shadows,
         originScope: row.originScope,
         originText: row.originText,
+        origin: row.origin,
         mode: row.mode,
         externalKey: row.externalKey,
         fileCount: row.fileCount,

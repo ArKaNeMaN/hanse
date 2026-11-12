@@ -180,10 +180,15 @@ describe("skill sources", () => {
       const records = f.service.activeRecords();
       expect(records).toHaveLength(1);
       expect(records[0]).toMatchObject({ name: "alpha", bucket: "default", revision: "rev-1" });
+      expect(records[0]?.publishedAt).toEqual(expect.any(String));
       expect(records[0]?.files.map((file) => file.path).sort()).toEqual([
         "SKILL.md",
         "references/guide.md",
       ]);
+      const capture = f.composite.capture({});
+      const external = capture.resolved.effective.find((entry) => entry.name === "alpha");
+      expect(external?.origin?.publishedAt).toBe(records[0]?.publishedAt);
+      expect(external?.updatedAt).toBe(records[0]?.publishedAt);
       const record = records[0];
       if (record === undefined) throw new Error("missing record");
       const files = f.service.readSkillFiles(record);
@@ -225,6 +230,15 @@ describe("skill sources", () => {
       expect(f.service.activeRecords()).toEqual([]);
       expect(f.service.skills(f.source.id)).toEqual([
         expect.objectContaining({ name: "Bad_Name", state: "quarantined" }),
+      ]);
+      expect(f.service.warnings()).toEqual([
+        expect.objectContaining({
+          code: "skill_source_quarantined",
+          name: "Bad_Name",
+          root: f.source.id,
+          sourceName: "Default hub",
+          sourceSlug: "default",
+        }),
       ]);
     } finally {
       hub.server.close();
@@ -305,6 +319,16 @@ describe("skill sources", () => {
         source: null,
         externalKey: `${f.source.id}:default:beta`,
       });
+      expect(capture.resolved.warnings).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            code: "skill_source_conflict",
+            name: "alpha",
+            sourceName: "Default hub",
+            sourceSlug: "default",
+          }),
+        ]),
+      );
 
       const appRoot = path.join(f.dir, "app");
       const xdg = path.join(appRoot, "config");
@@ -336,6 +360,113 @@ describe("skill sources", () => {
       });
       await f.service.sync(f.source.id, { force: true });
       expect(f.composite.hash(target)).not.toBe(before);
+    } finally {
+      hub.server.close();
+    }
+  });
+
+  it("projects tokenUpdatedAt without exposing the token and rejects duplicate slugs", () => {
+    const f = fixture("http://127.0.0.1:9");
+    const view = f.service.get(f.source.id);
+    expect(view?.tokenSet).toBe(true);
+    expect(view?.tokenUpdatedAt).toEqual(expect.any(String));
+    expect(JSON.stringify(view)).not.toContain(TOKEN);
+    expect(() =>
+      f.service.create(
+        {
+          slug: f.source.slug,
+          name: "Duplicate",
+          endpoint: "http://127.0.0.1:9",
+          config: { buckets: ["default"], allowInsecureHttp: true },
+        },
+        "test",
+      ),
+    ).toThrowError(expect.objectContaining({ code: "slug_taken" }));
+  });
+
+  it("re-enables a disabled pinned source in tracking mode and publishes again", async () => {
+    const state: HubState = {
+      revision: "rev-1",
+      etag: '"m1-one"',
+      skills: [skill("alpha")],
+    };
+    const hub = await startHub(() => state);
+    const f = fixture(hub.url);
+    try {
+      await f.service.sync(f.source.id);
+      f.service.pin(f.source.id, "test");
+      expect(f.service.get(f.source.id)?.mode).toBe("pinned");
+
+      f.service.remove(f.source.id, { hard: false }, "test");
+      expect(f.service.get(f.source.id)).toMatchObject({
+        enabled: false,
+        mode: "track",
+        activeSnapshotId: null,
+        pinnedSnapshotId: null,
+      });
+
+      f.service.enable(f.source.id, "test");
+      await f.service.sync(f.source.id);
+      const enabled = f.service.get(f.source.id);
+      expect(enabled).toMatchObject({ enabled: true, mode: "track", state: "ready" });
+      expect(enabled?.activeSnapshotId).toEqual(expect.any(String));
+      expect(f.composite.resolve({}).effective.map((entry) => entry.name)).toEqual(["alpha"]);
+
+      f.service.update(f.source.id, { enabled: false }, "test");
+      expect(f.service.get(f.source.id)).toMatchObject({ enabled: false, mode: "track" });
+    } finally {
+      hub.server.close();
+    }
+  });
+
+  it("updates only lastCheckedAt on check and leaves lastSuccessAt untouched", async () => {
+    const state: HubState = {
+      revision: "rev-1",
+      etag: '"m1-one"',
+      skills: [skill("alpha")],
+    };
+    const hub = await startHub(() => state);
+    const f = fixture(hub.url);
+    try {
+      await f.service.sync(f.source.id);
+      const oldSuccess = "2020-01-01T00:00:00.000Z";
+      f.db
+        .prepare(
+          "UPDATE skill_sources SET last_success_at = ?, last_checked_at = NULL WHERE id = ?",
+        )
+        .run(oldSuccess, f.source.id);
+      const result = await f.service.check(f.source.id);
+      expect(result.changed).toBe(false);
+      const source = f.service.get(f.source.id);
+      expect(source?.lastSuccessAt).toBe(oldSuccess);
+      expect(source?.lastCheckedAt).toEqual(expect.any(String));
+    } finally {
+      hub.server.close();
+    }
+  });
+
+  it("reports stale sources with source identity and last success time", async () => {
+    const state: HubState = {
+      revision: "rev-1",
+      etag: '"m1-one"',
+      skills: [skill("alpha")],
+    };
+    const hub = await startHub(() => state);
+    const f = fixture(hub.url);
+    try {
+      await f.service.sync(f.source.id);
+      const oldSuccess = "2020-01-01T00:00:00.000Z";
+      f.db
+        .prepare("UPDATE skill_sources SET last_success_at = ?, stale_after_sec = 60 WHERE id = ?")
+        .run(oldSuccess, f.source.id);
+      expect(f.service.warnings()).toEqual([
+        expect.objectContaining({
+          code: "skill_source_stale",
+          sourceName: "Default hub",
+          sourceSlug: "default",
+          lastSuccessAt: oldSuccess,
+        }),
+      ]);
     } finally {
       hub.server.close();
     }

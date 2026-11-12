@@ -7,6 +7,7 @@ import { CoordinatorService } from "../src/coordinator/service.js";
 import { GitService } from "../src/git/service.js";
 import { buildSite } from "../src/http/dashboard.js";
 import type { HttpDeps, HttpRequest } from "../src/http/handler.js";
+import { buildSettingsProps, SETTINGS_SECTION_KEYS } from "../src/http/props/settings.js";
 import {
   buildSkillCreateProps,
   buildSkillDetailProps,
@@ -16,7 +17,14 @@ import { handleUiApi, maybeServeSpa } from "../src/http/spa.js";
 import { createPrincipal } from "../src/identity/principals.js";
 import { mintAgentToken } from "../src/mcp/agent-tokens.js";
 import { SettingsService } from "../src/settings/index.js";
-import { SkillService } from "../src/skills/index.js";
+import {
+  type EffectiveSkill,
+  type ResolvedSkills,
+  SkillService,
+  type SkillSource,
+  type SkillSummary,
+  type SkillWarning,
+} from "../src/skills/index.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
 
 const dirs: string[] = [];
@@ -153,6 +161,115 @@ function boot(markup: string): {
   };
 }
 
+function stubSource(resolved: ResolvedSkills): SkillSource {
+  return {
+    capture: () => {
+      throw new Error("capture is not used");
+    },
+    resolve: () => resolved,
+    preview: () => ({ resolved, warnings: resolved.warnings }),
+    hash: () => undefined,
+    probe: () => {
+      throw new Error("probe is not used");
+    },
+    apply: () => {
+      throw new Error("apply is not used");
+    },
+  };
+}
+
+const EXTERNAL_PUBLISHED_AT = "2026-11-11T10:00:00.000Z";
+
+function externalSkill(overrides: Partial<EffectiveSkill> = {}): EffectiveSkill {
+  return {
+    id: null,
+    name: "external-skill",
+    description: "External description",
+    content: "",
+    license: null,
+    compatibility: null,
+    metadata: {},
+    references: [{ path: "references/guide.md", size: 5 }],
+    source: null,
+    shadows: [],
+    shadowedExternal: false,
+    mode: "external",
+    origin: {
+      sourceId: "source-1",
+      sourceName: "Hub One",
+      bucket: "default",
+      revision: "rev-9",
+      snapshotId: "snapshot-9",
+      publishedAt: EXTERNAL_PUBLISHED_AT,
+    },
+    externalKey: "source-1:default:external-skill",
+    fileCount: 2,
+    updatedAt: EXTERNAL_PUBLISHED_AT,
+    updatedBy: "source:hub",
+    ...overrides,
+  };
+}
+
+function managedEffective(overrides: Partial<EffectiveSkill> = {}): EffectiveSkill {
+  return {
+    id: 1,
+    name: "managed-skill",
+    description: "Managed description",
+    content: "body",
+    license: null,
+    compatibility: null,
+    metadata: {},
+    references: [],
+    source: "global",
+    shadows: [],
+    shadowedExternal: false,
+    mode: "managed",
+    origin: null,
+    externalKey: null,
+    fileCount: 1,
+    updatedAt: "2026-11-01T10:00:00.000Z",
+    updatedBy: "owner",
+    ...overrides,
+  };
+}
+
+function managedSummary(overrides: Partial<SkillSummary> = {}): SkillSummary {
+  return {
+    id: 1,
+    scope: "global",
+    projectId: "",
+    appKey: "",
+    name: "managed-skill",
+    description: "Managed description",
+    content: "body",
+    license: null,
+    compatibility: null,
+    metadata: {},
+    references: [],
+    enabled: true,
+    createdAt: "2026-11-01T09:00:00.000Z",
+    updatedAt: "2026-11-01T10:00:00.000Z",
+    updatedBy: "owner",
+    storedIssues: [],
+    origin: "local",
+    forkedFromSourceId: null,
+    forkedFromName: null,
+    forkedFromRevision: null,
+    ...overrides,
+  };
+}
+
+function resolvedSkills(overrides: Partial<ResolvedSkills> = {}): ResolvedSkills {
+  return {
+    scope: "global",
+    effective: [],
+    rows: [],
+    disabled: [],
+    warnings: [],
+    ...overrides,
+  };
+}
+
 describe("skills props", () => {
   it("characterizes inventory rows, scope hrefs, filters, and counts", () => {
     const f = fixture();
@@ -216,6 +333,7 @@ describe("skills props", () => {
       "all",
       "defined",
       "inherited",
+      "external",
       "disabled",
       "invalid",
     ]);
@@ -225,7 +343,13 @@ describe("skills props", () => {
       current: true,
     });
     expect(props.createHref).toBe("/skills/new?scope=project&project=p1");
-    expect(props.counts).toEqual({ enabled: 2, inherited: 1, disabled: 0, invalid: 0 });
+    expect(props.counts).toEqual({
+      enabled: 2,
+      inherited: 1,
+      external: 0,
+      disabled: 0,
+      invalid: 0,
+    });
     const shared = props.rows.find((row) => row.name === "shared");
     expect(shared).toMatchObject({
       scope: "project",
@@ -551,6 +675,152 @@ describe("skills props", () => {
   });
 });
 
+describe("external inventory props", () => {
+  it("projects external rows with a structured origin and excludes them from inherited", () => {
+    const f = fixture();
+    const external = externalSkill();
+    const inherited = managedEffective({ id: 2, name: "managed-inherited" });
+    const resolved = resolvedSkills({ effective: [inherited, external] });
+    const source = stubSource(resolved);
+    const build = (
+      filter: Parameters<typeof buildSkillsInventoryProps>[0]["filter"],
+      search = "",
+    ) =>
+      buildSkillsInventoryProps({
+        deps: f.deps,
+        site: buildSite(f.deps),
+        skills: source,
+        scope: "global",
+        target: {},
+        filter,
+        search,
+      });
+
+    const all = build("all");
+    expect(all?.counts).toEqual({ enabled: 0, inherited: 1, external: 1, disabled: 0, invalid: 0 });
+    const row = all?.rows.find((entry) => entry.name === "external-skill");
+    expect(row).toMatchObject({
+      id: null,
+      primaryId: null,
+      href: null,
+      mode: "external",
+      externalKey: "source-1:default:external-skill",
+      state: "inherited",
+      fileCount: 2,
+      origin: {
+        sourceId: "source-1",
+        sourceName: "Hub One",
+        bucket: "default",
+        revision: "rev-9",
+        snapshotId: "snapshot-9",
+        publishedAt: EXTERNAL_PUBLISHED_AT,
+      },
+    });
+    expect(row?.originText).toBe("Hub · Hub One");
+
+    expect(build("external")?.rows.map((entry) => entry.name)).toEqual(["external-skill"]);
+    expect(build("inherited")?.rows.map((entry) => entry.name)).toEqual(["managed-inherited"]);
+    expect(build("all", "hub one")?.rows.map((entry) => entry.name)).toEqual(["external-skill"]);
+    expect(build("all", "default")?.rows.map((entry) => entry.name)).toEqual(["external-skill"]);
+    expect(build("all", "no-match")?.rows).toEqual([]);
+  });
+
+  it("uses the effective file count for managed rows", () => {
+    const f = fixture();
+    const effective = managedEffective({ id: 5, name: "files", fileCount: 3 });
+    const summary = managedSummary({
+      id: 5,
+      name: "files",
+      references: [{ path: "references/a.md", size: 1 }],
+    });
+    const props = buildSkillsInventoryProps({
+      deps: f.deps,
+      site: buildSite(f.deps),
+      skills: stubSource(resolvedSkills({ effective: [effective], rows: [summary] })),
+      scope: "global",
+      target: {},
+      filter: "all",
+      search: "",
+    });
+    const row = props?.rows.find((entry) => entry.name === "files");
+    expect(row).toMatchObject({ mode: "managed", fileCount: 3, references: 1, origin: null });
+  });
+
+  it("carries source names in warnings and in the managed collision list", () => {
+    const f = fixture();
+    const winner = managedEffective({ id: 7, name: "shadow", description: "local" });
+    const summary = managedSummary({ id: 7, name: "shadow", description: "local" });
+    const warnings: SkillWarning[] = [
+      {
+        code: "skill_source_conflict",
+        name: "shadow",
+        sourceName: "Hub One",
+        sourceSlug: "hub",
+      },
+      {
+        code: "skill_source_stale",
+        sourceName: "Hub One",
+        sourceSlug: "hub",
+        lastSuccessAt: "2026-11-10T00:00:00.000Z",
+      },
+      {
+        code: "skill_source_quarantined",
+        name: "bad",
+        root: "source-1",
+        sourceName: "Hub One",
+        sourceSlug: "hub",
+      },
+    ];
+    const props = buildSkillsInventoryProps({
+      deps: f.deps,
+      site: buildSite(f.deps),
+      skills: stubSource(resolvedSkills({ effective: [winner], rows: [summary], warnings })),
+      scope: "global",
+      target: {},
+      filter: "all",
+      search: "",
+    });
+    const row = props?.rows.find((entry) => entry.name === "shadow");
+    expect(row?.collisions).toEqual([
+      expect.objectContaining({
+        code: "skill_source_conflict",
+        sourceName: "Hub One",
+        sourceSlug: "hub",
+        text: '"shadow" is also provided by Hub One but this local skill wins.',
+      }),
+    ]);
+    expect(props?.warnings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "skill_source_conflict",
+          text: '"shadow" is also provided by Hub One but this local skill wins.',
+        }),
+        expect.objectContaining({
+          code: "skill_source_stale",
+          text: "Hub One has not synced since 2026-11-10T00:00:00.000Z.",
+        }),
+        expect.objectContaining({
+          code: "skill_source_quarantined",
+          text: '"bad" from Hub One was quarantined and is not available.',
+        }),
+      ]),
+    );
+  });
+
+  it("provides the Skill sources settings section label", () => {
+    const f = fixture();
+    expect(SETTINGS_SECTION_KEYS).toContain("sources");
+    const props = buildSettingsProps({
+      deps: f.deps,
+      site: buildSite(f.deps),
+      scope: "global",
+      target: {},
+    });
+    expect(props?.labels.sections.sources).toBe("Skill sources");
+    expect(props?.labels.nav.sections.sources).toBe("Skill sources");
+  });
+});
+
 describe("/api/ui/skills endpoints", () => {
   it("applies the cookie-only auth envelope to inventory and detail", () => {
     const f = fixture();
@@ -596,6 +866,28 @@ describe("/api/ui/skills endpoints", () => {
     }
   });
 
+  it("reads the inventory through effectiveSkills but keeps managed detail", () => {
+    const f = fixture();
+    const row = f.skills.create(
+      "global",
+      {},
+      { name: "managed-one", description: "Managed", content: "body" },
+      "owner",
+    );
+    f.deps.effectiveSkills = stubSource(
+      resolvedSkills({ effective: [externalSkill()], warnings: [] }),
+    );
+    const inventory = handleUiApi(f.deps, request("/api/ui/skills", cookie(f.humanToken)));
+    expect(inventory?.status).toBe(200);
+    expect(json<{ rows: Array<{ name: string; mode: string }> }>(inventory).rows).toEqual([
+      expect.objectContaining({ name: "external-skill", mode: "external" }),
+    ]);
+
+    const detail = handleUiApi(f.deps, request(`/api/ui/skills/${row.id}`, cookie(f.humanToken)));
+    expect(detail?.status).toBe(200);
+    expect(json<Record<string, unknown>>(detail).name).toBe("managed-one");
+  });
+
   it("returns inventory props plus chrome and validates the requested scope", () => {
     const f = fixture();
     f.skills.create(
@@ -614,7 +906,13 @@ describe("/api/ui/skills endpoints", () => {
       chrome: Record<string, unknown>;
     }>(global);
     expect(payload.rows).toEqual([expect.objectContaining({ name: "alpha", state: "enabled" })]);
-    expect(payload.counts).toEqual({ enabled: 1, inherited: 0, disabled: 0, invalid: 0 });
+    expect(payload.counts).toEqual({
+      enabled: 1,
+      inherited: 0,
+      external: 0,
+      disabled: 0,
+      invalid: 0,
+    });
     expect(payload.scope).toMatchObject({ scope: "global", href: "/skills" });
     expect(payload.chrome).toMatchObject({ title: "Skills", active: "skills" });
 

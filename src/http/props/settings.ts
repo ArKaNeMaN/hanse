@@ -43,6 +43,7 @@ export const SETTINGS_SECTION_KEYS = [
   "git",
   "restart",
   "warnings",
+  "sources",
 ] as const;
 export type SettingsSectionKey = (typeof SETTINGS_SECTION_KEYS)[number];
 
@@ -387,6 +388,7 @@ export interface SettingsLabelsProps {
       readonly notifications: string;
       readonly git: string;
       readonly restart: string;
+      readonly sources: string;
     };
   };
   readonly sections: {
@@ -396,6 +398,7 @@ export interface SettingsLabelsProps {
     readonly notifications: string;
     readonly git: string;
     readonly restart: string;
+    readonly sources: string;
   };
   readonly actions: {
     readonly save: string;
@@ -1189,6 +1192,7 @@ const LABELS: SettingsLabelsProps = {
       notifications: "Notifications",
       git: "Git",
       restart: "Restart",
+      sources: "Skill sources",
     },
   },
   sections: {
@@ -1198,6 +1202,7 @@ const LABELS: SettingsLabelsProps = {
     notifications: "Notifications",
     git: "Git",
     restart: "Restart & pending",
+    sources: "Skill sources",
   },
   actions: {
     save: "Save override",

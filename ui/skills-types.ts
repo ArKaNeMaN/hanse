@@ -11,7 +11,8 @@ import type { ChromeData } from "./boot.js";
 
 export type SkillScope = "global" | "project" | "app";
 export type InventoryState = "enabled" | "inherited" | "disabled" | "invalid";
-export type InventoryFilter = "all" | "defined" | "inherited" | "disabled" | "invalid";
+export type InventoryFilter = "all" | "defined" | "inherited" | "disabled" | "invalid" | "external";
+export type SkillInventoryMode = "managed" | "external";
 export type WorkspaceStateName =
   | "editable"
   | "tombstone"
@@ -29,10 +30,17 @@ export interface SkillTarget {
 }
 
 export interface SkillWarningProps {
-  readonly code: "skill_collision" | "skill_disabled_elsewhere";
+  readonly code:
+    | "skill_collision"
+    | "skill_disabled_elsewhere"
+    | "skill_source_conflict"
+    | "skill_source_quarantined"
+    | "skill_source_stale";
   readonly name: string | null;
   readonly root: string | null;
   readonly text: string;
+  readonly sourceName?: string | null;
+  readonly sourceSlug?: string | null;
 }
 
 export interface SkillIssueProps {
@@ -40,9 +48,19 @@ export interface SkillIssueProps {
     | "invalid_skill_name"
     | "invalid_skill_metadata"
     | "invalid_skill_reference"
-    | "invalid_skill_bundle";
+    | "invalid_skill_bundle"
+    | "invalid_skill_file";
   readonly message: string;
   readonly anchor: string | null;
+}
+
+export interface ExternalSkillOrigin {
+  readonly sourceId: string;
+  readonly sourceName: string;
+  readonly bucket: string;
+  readonly revision: string;
+  readonly snapshotId: string;
+  readonly publishedAt: string | null;
 }
 
 export interface SkillPendingAppProps {
@@ -88,18 +106,18 @@ export interface SkillsScopeProps {
 }
 
 export interface SkillsInventoryRowProps {
-  readonly id: number;
-  readonly primaryId: number;
+  readonly id: number | null;
+  readonly primaryId: number | null;
   readonly name: string;
   readonly description: string;
-  readonly scope: SkillScope;
+  readonly scope: SkillScope | null;
   readonly state: InventoryState;
   readonly stateLabel: string;
   readonly enabled: boolean;
   readonly overridden: boolean;
   readonly shadowed: boolean;
   readonly shadows: readonly SkillScope[];
-  readonly originScope: SkillScope;
+  readonly originScope: SkillScope | null;
   readonly originText: string;
   readonly references: number;
   readonly updatedAt: string;
@@ -108,9 +126,13 @@ export interface SkillsInventoryRowProps {
   readonly repairId: number | null;
   readonly effectiveId: number | null;
   readonly effectiveScope: SkillScope | null;
-  readonly href: string;
+  readonly href: string | null;
   readonly effectiveHref: string | null;
   readonly actionLabel: string;
+  readonly mode: SkillInventoryMode;
+  readonly externalKey: string | null;
+  readonly fileCount: number;
+  readonly origin: ExternalSkillOrigin | null;
 }
 
 export interface SkillsFilterProps {
@@ -143,6 +165,7 @@ export interface SkillsCountsProps {
   readonly inherited: number;
   readonly disabled: number;
   readonly invalid: number;
+  readonly external: number;
 }
 
 export interface SkillsLabelsProps {

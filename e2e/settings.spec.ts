@@ -48,7 +48,7 @@ test("renders the global, project, and application settings scopes", async ({ pa
     expect(response?.status()).toBe(200);
     await expect(page.locator("#settings-agent")).toBeVisible();
     await expect(page.locator("#setting-llm-model")).toBeVisible();
-    await expect(page.locator(".settings-console__rail-item")).toHaveCount(6);
+    await expect(page.locator(".settings-console__rail-item")).toHaveCount(7);
     await selectSection(page, "git");
     await expect(page.locator("#settings-git")).toBeVisible();
     if (isSpa(info.project.name)) {

@@ -79,6 +79,11 @@ interface CredentialRow {
   nonce: string | null;
 }
 
+interface CredentialStatusRow {
+  cipher: string | null;
+  updated_at: string;
+}
+
 export interface SkillSourceServiceOptions {
   db: SqliteDatabase;
   secretKey: Buffer;
@@ -230,6 +235,12 @@ export class SkillSourceService {
     ) {
       throw new SkillValidationError("slug, name, endpoint, and config are required");
     }
+    const duplicate = this.#db
+      .prepare("SELECT id FROM skill_sources WHERE slug = ?")
+      .get(normalized.slug) as { id: string } | undefined;
+    if (duplicate !== undefined) {
+      throw new SkillSourceError("slug_taken", `slug ${normalized.slug} is already in use`);
+    }
     const id = randomUUID();
     const timestamp = this.#timestamp();
     this.#db
@@ -275,7 +286,15 @@ export class SkillSourceService {
       updates.push(`${column} = @${key}`);
       params[key] = value;
     };
-    if (normalized.slug !== undefined) set("slug", "slug", normalized.slug);
+    if (normalized.slug !== undefined) {
+      const duplicate = this.#db
+        .prepare("SELECT id FROM skill_sources WHERE slug = ? AND id <> ?")
+        .get(normalized.slug, id) as { id: string } | undefined;
+      if (duplicate !== undefined) {
+        throw new SkillSourceError("slug_taken", `slug ${normalized.slug} is already in use`);
+      }
+      set("slug", "slug", normalized.slug);
+    }
     if (normalized.name !== undefined) set("name", "name", normalized.name);
     if (normalized.endpoint !== undefined) {
       set("endpoint", "endpoint", normalized.endpoint);
@@ -300,6 +319,8 @@ export class SkillSourceService {
     if (normalized.enabled === false && existing.enabled) {
       set("active_snapshot_id", "active_snapshot_id", null);
       set("pinned_snapshot_id", "pinned_snapshot_id", null);
+      set("etag", "etag", null);
+      set("mode", "mode", "track");
       set("disabled_at", "disabled_at", this.#timestamp());
       set("state", "state", "disabled");
     }
@@ -396,8 +417,8 @@ export class SkillSourceService {
     this.#db
       .prepare(
         `UPDATE skill_sources SET enabled = 0, active_snapshot_id = NULL,
-           pinned_snapshot_id = NULL, disabled_at = ?, state = 'disabled',
-           updated_at = ?, updated_by = ? WHERE id = ?`,
+           pinned_snapshot_id = NULL, etag = NULL, mode = 'track', disabled_at = ?,
+           state = 'disabled', updated_at = ?, updated_by = ? WHERE id = ?`,
       )
       .run(timestamp, timestamp, actor, id);
   }
@@ -834,10 +855,12 @@ export class SkillSourceService {
       .prepare(
         `SELECT s.id AS sourceId, s.slug AS sourceSlug, s.name AS sourceName, s.priority,
                 s.config_json, s.active_snapshot_id AS snapshotId, s.revision,
+                snap.published_at AS publishedAt,
                 k.bucket, k.name, k.description, k.version, k.content_hash,
                 k.skill_md_sha256, k.files_json
          FROM skill_sources s
          JOIN skill_source_skills k ON k.snapshot_id = s.active_snapshot_id
+         JOIN skill_source_snapshots snap ON snap.id = s.active_snapshot_id
          WHERE s.enabled = 1 AND k.state = 'ok'
          ORDER BY s.priority, s.slug, k.name`,
       )
@@ -849,6 +872,7 @@ export class SkillSourceService {
       config_json: string;
       snapshotId: string;
       revision: string | null;
+      publishedAt: string | null;
       bucket: string;
       name: string;
       description: string;
@@ -879,6 +903,7 @@ export class SkillSourceService {
           bucket: row.bucket,
           snapshotId: row.snapshotId,
           revision: row.revision ?? "",
+          publishedAt: row.publishedAt,
           name: row.name,
           description: row.description,
           version: row.version,
@@ -916,25 +941,42 @@ export class SkillSourceService {
     const warnings: SkillWarning[] = [];
     const stale = this.#db
       .prepare(
-        `SELECT name, last_success_at, stale_after_sec FROM skill_sources
+        `SELECT name, slug, last_success_at, stale_after_sec FROM skill_sources
          WHERE enabled = 1 AND last_success_at IS NOT NULL`,
       )
-      .all() as Array<{ name: string; last_success_at: string; stale_after_sec: number }>;
+      .all() as Array<{
+      name: string;
+      slug: string;
+      last_success_at: string;
+      stale_after_sec: number;
+    }>;
     const now = this.#now().getTime();
     for (const row of stale) {
       if (now - Date.parse(row.last_success_at) > row.stale_after_sec * 1000) {
-        warnings.push({ code: "skill_source_stale", name: row.name });
+        warnings.push({
+          code: "skill_source_stale",
+          sourceName: row.name,
+          sourceSlug: row.slug,
+          lastSuccessAt: row.last_success_at,
+        });
       }
     }
     const quarantined = this.#db
       .prepare(
-        `SELECT s.id AS sourceId, k.name FROM skill_sources s
+        `SELECT s.id AS sourceId, s.name AS sourceName, s.slug AS sourceSlug, k.name
+         FROM skill_sources s
          JOIN skill_source_skills k ON k.snapshot_id = s.active_snapshot_id
          WHERE s.enabled = 1 AND k.state = 'quarantined'`,
       )
-      .all() as Array<{ sourceId: string; name: string }>;
+      .all() as Array<{ sourceId: string; sourceName: string; sourceSlug: string; name: string }>;
     for (const row of quarantined) {
-      warnings.push({ code: "skill_source_quarantined", name: row.name, root: row.sourceId });
+      warnings.push({
+        code: "skill_source_quarantined",
+        name: row.name,
+        root: row.sourceId,
+        sourceName: row.sourceName,
+        sourceSlug: row.sourceSlug,
+      });
     }
     return warnings;
   }
@@ -978,12 +1020,13 @@ export class SkillSourceService {
          FROM skill_source_skills WHERE snapshot_id = ? AND state = 'ok'`,
       )
       .get(row.activeSnapshotId ?? "") as { count: number; bytes: number };
-    const token = this.#db
-      .prepare("SELECT 1 FROM skill_source_credentials WHERE source_id = ? AND cipher IS NOT NULL")
-      .get(row.id);
+    const credential = this.#db
+      .prepare("SELECT cipher, updated_at FROM skill_source_credentials WHERE source_id = ?")
+      .get(row.id) as CredentialStatusRow | undefined;
     return {
       ...row,
-      tokenSet: token !== undefined,
+      tokenSet: credential?.cipher !== null && credential?.cipher !== undefined,
+      tokenUpdatedAt: credential?.updated_at ?? null,
       skillCount: stats.count,
       totalBytes: stats.bytes,
       stale:
@@ -1023,8 +1066,8 @@ export class SkillSourceService {
 
   #touchChecked(id: string): void {
     this.#db
-      .prepare("UPDATE skill_sources SET last_checked_at = ?, last_success_at = ? WHERE id = ?")
-      .run(this.#timestamp(), this.#timestamp(), id);
+      .prepare("UPDATE skill_sources SET last_checked_at = ? WHERE id = ?")
+      .run(this.#timestamp(), id);
   }
 
   #markSuccess(id: string, revision: string | null, etag: string | null): void {

@@ -44,6 +44,7 @@ const LABELS: SettingsLabelsProps = {
       context: "Context",
       notifications: "Notifications",
       git: "Git",
+      sources: "Skill sources",
       restart: "Restart",
     },
   },
@@ -53,6 +54,7 @@ const LABELS: SettingsLabelsProps = {
     context: "Context",
     notifications: "Notifications",
     git: "Git",
+    sources: "Skill sources",
     restart: "Restart & pending",
   },
   actions: {
@@ -963,7 +965,7 @@ describe("SettingsPage", () => {
     const wrapper = await mountPage(boot(props("global")));
     const items = wrapper.findAll(".settings-console__rail-item");
 
-    expect(items).toHaveLength(6);
+    expect(items).toHaveLength(7);
     expect(items[0]?.attributes("aria-current")).toBe("page");
     expect(items[0]?.text()).toContain("Agent");
     expect(wrapper.get("#settings-agent").attributes("hidden")).toBeUndefined();
@@ -991,6 +993,64 @@ describe("SettingsPage", () => {
     expect(wrapper.get("#settings-notifications").text()).toContain("Bot token");
     expect(wrapper.get("#settings-notifications").text()).toContain("Send test message");
     expect(wrapper.find("style").exists()).toBe(false);
+  });
+
+  it("renders the global skill sources pane from the console rail", async () => {
+    mocks.apiQuery.mockResolvedValue({ sources: [] });
+    const wrapper = await mountPage(boot(props("global")));
+    const sourcesItem = wrapper
+      .findAll(".settings-console__rail-item")
+      .find((item) => item.attributes("data-section") === "sources");
+
+    expect(sourcesItem?.text()).toContain("Skill sources");
+    await sourcesItem?.trigger("click");
+    await flushPromises();
+
+    expect(wrapper.get("#settings-sources").attributes("hidden")).toBeUndefined();
+    expect(wrapper.get("#settings-sources").text()).toContain("No skill sources");
+    expect(mocks.apiQuery).toHaveBeenCalledWith("/api/skill-sources");
+  });
+
+  it("shows the global guard in the sources pane at project scope", async () => {
+    const wrapper = await mountPage(
+      boot(props("project"), "settings-project", { id: "p" }),
+      "/projects/p/settings",
+    );
+    const sourcesItem = wrapper
+      .findAll(".settings-console__rail-item")
+      .find((item) => item.attributes("data-section") === "sources");
+
+    await sourcesItem?.trigger("click");
+    await flushPromises();
+
+    expect(wrapper.get("#settings-sources").text()).toContain("Skill sources are global");
+    expect(wrapper.get("#settings-sources a").attributes("href")).toBe(
+      "/settings#settings-sources",
+    );
+    expect(mocks.apiQuery).not.toHaveBeenCalledWith("/api/skill-sources");
+  });
+
+  it("opens the sources pane from the canonical and legacy hashes", async () => {
+    mocks.apiQuery.mockResolvedValue({ sources: [] });
+    const wrapper = await mountPage(boot(props("global")), "/settings#settings-sources");
+    await flushPromises();
+
+    expect(
+      wrapper
+        .findAll(".settings-console__rail-item")
+        .find((item) => item.attributes("data-section") === "sources")
+        ?.attributes("aria-current"),
+    ).toBe("page");
+    expect(wrapper.get("#settings-sources").attributes("hidden")).toBeUndefined();
+
+    const legacy = await mountPage(boot(props("global")), "/settings#settings-skill-sources");
+    await flushPromises();
+    expect(
+      legacy
+        .findAll(".settings-console__rail-item")
+        .find((item) => item.attributes("data-section") === "sources")
+        ?.attributes("aria-current"),
+    ).toBe("page");
   });
 
   it("saves a notification row and refreshes the page", async () => {

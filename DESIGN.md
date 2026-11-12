@@ -1020,6 +1020,40 @@ color, type, space, radius, shadow, or motion token.
   are labelled; the dirty dot always carries visually hidden text. Motion is limited to existing
   color/opacity transitions.
 
+### 5.23 External skill sources
+
+The global skill-source manager, its drawers, and the external inventory rows compose the existing
+card, table, table--stack, status, badge, field, input, dialog, disclosure, empty/error, and button
+primitives. They add only structural `.skill-source-*` / `.source-drawer*` classes and introduce no
+new color, type, space, radius, shadow, or motion token.
+
+- **Source ledger:** `.skill-sources` is the section stack; `.skill-sources__toolbar` holds the
+  intro and Add source action. `.skill-source-table` reuses the ledger geometry at >=1024 and turns
+  each row into a labelled stack at <1024 (the existing `.table--stack` rules still own <768).
+  `.skill-source-status` and `.skill-source-actions` are wrapping clusters; `.skill-source-host`
+  truncates the endpoint host while the drawer shows the full endpoint.
+- **Row menu:** `.skill-source-menu` is a native `<details>`; `.skill-source-menu__panel` is an
+  overlay at desktop and an inline stack in the narrow ledger. `.skill-source-menu__item` is a
+  full-width menu row with a danger variant and a separating rule. No hover-only affordance.
+- **Inline check result:** `.skill-source-check` holds the "Update available / Up to date" line and
+  its Sync action in the source cell.
+- **Source drawer:** `.source-drawer` is modal at min(720px, 92vw); `.external-skill-drawer` is
+  min(620px, 92vw); both become full width below 768. `.source-drawer__head`, `__identity`,
+  `__status`, `__body`, `__section`, `__subtitle`, `__credential`, and `__banner` carry the drawer
+  anatomy. `.skill-source-summary` is a key/value grid; `.skill-source-file-list` and
+  `.skill-source-preview` hold expandable file buttons and the bounded text `pre` (binary files show
+  metadata only). `.skill-source-preview__text` caps at 24rem and scrolls inside the drawer.
+- **Dialogs and forms:** `.skill-source-form__grid` is one column and becomes two at >=768.
+  `.skill-source-consequences` lists the delete consequences; `.skill-source-dialog__advanced`
+  spaces the advanced disclosure. Delete confirmation requires the typed slug; every dialog uses a
+  unique `aria-labelledby` id and native focus trapping.
+- **Inventory:** external rows keep the managed table but replace the link with a `.link-button`
+  name, show a `Source` badge plus `sourceName · bucket`, a `Read-only` lock badge, and a Files
+  column from `fileCount`. `.link-button` is a text button with a focus-visible ring and a 44px
+  touch target below 768.
+- **Responsive behavior:** the ledger stacks below 1024; the source/skill drawers are full width
+  below 768; summaries collapse to one column at phone width; no horizontal page scroll.
+
 ---
 
 ## 6. Motion & Interaction

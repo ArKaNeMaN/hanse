@@ -5,7 +5,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createMemoryHistory, createRouter, type Router } from "vue-router";
 import { ApiError } from "../api.js";
 import type { BootPayload } from "../boot.js";
-import { boot, inventory, scope, workspace } from "../skills-fixtures.js";
+import type { SkillSourceView } from "../skill-sources-types.js";
+import { boot, externalRow, inventory, scope, workspace } from "../skills-fixtures.js";
 import { useToastStore } from "../stores/toasts.js";
 import SkillsPage from "./SkillsPage.vue";
 
@@ -139,6 +140,42 @@ beforeEach(() => {
   mocks.apiQuery.mockResolvedValue(inventory());
 });
 
+function externalSource(): SkillSourceView {
+  return {
+    id: "source-1",
+    slug: "team-hub",
+    name: "Team hub",
+    kind: "skills-hub",
+    endpoint: "https://hub.example.test",
+    config: { buckets: ["default"], allowInsecureHttp: false },
+    priority: 100,
+    enabled: true,
+    mode: "track",
+    syncIntervalSec: 900,
+    staleAfterSec: 86400,
+    requestTimeoutMs: 15000,
+    activeSnapshotId: "snap-1",
+    pinnedSnapshotId: null,
+    disabledAt: null,
+    lastAttemptAt: "2026-11-01T09:30:00.000Z",
+    lastSuccessAt: "2026-11-01T09:30:00.000Z",
+    lastCheckedAt: null,
+    lastErrorCode: null,
+    lastErrorMessage: null,
+    etag: null,
+    revision: "abcdef1234567890",
+    state: "ready",
+    createdAt: "2026-10-01T09:00:00.000Z",
+    updatedAt: "2026-11-01T09:30:00.000Z",
+    updatedBy: "operator",
+    tokenSet: true,
+    tokenUpdatedAt: "2026-10-01T09:00:00.000Z",
+    skillCount: 1,
+    totalBytes: 2048,
+    stale: false,
+  };
+}
+
 describe("SkillsPage inventory", () => {
   it("renders the boot inventory with rows, counts, filters, and SPA links", async () => {
     const data = inventory();
@@ -218,6 +255,61 @@ describe("SkillsPage inventory", () => {
     await flushPromises();
     expect(missing.text()).toContain("Skills scope not found");
     expect(missing.text()).not.toContain("Retry");
+  });
+
+  it("renders external rows read-only with a source badge, files, and a drawer", async () => {
+    const first = externalRow();
+    const second = externalRow({
+      name: "second-external",
+      externalKey: "source-1:default:second-external",
+    });
+    const data = inventory({
+      rows: [first, second],
+      allCount: 2,
+      matchedCount: 2,
+      counts: { enabled: 0, inherited: 0, disabled: 0, invalid: 0, external: 2 },
+    });
+    mocks.apiQuery.mockResolvedValue({
+      source: externalSource(),
+      skills: [
+        {
+          bucket: "default",
+          name: "release-checklist",
+          description: "Published by the team skills hub.",
+          version: "1.0.0",
+          contentHash: "hash",
+          skillMdSha256: "sha",
+          files: [{ path: "SKILL.md", sha256: "a".repeat(64), size: 128 }],
+          state: "ok",
+          errorCode: null,
+          errorMessage: null,
+        },
+      ],
+    });
+    const wrapper = await mountPage(boot(data));
+
+    expect(wrapper.findAll("[data-skill-inventory] tbody tr")).toHaveLength(2);
+    expect(wrapper.findAll('[data-skill-mode="external"]')).toHaveLength(2);
+    expect(wrapper.get('[data-skill-name="release-checklist"]').text()).toContain("Source");
+    expect(wrapper.get('[data-skill-name="release-checklist"]').text()).toContain(
+      "Team hub · default",
+    );
+    expect(wrapper.get('[data-skill-name="release-checklist"]').text()).toContain("Read-only");
+    expect(wrapper.get('[data-skill-name="release-checklist"]').text()).toContain("3");
+    expect(wrapper.find('[data-skill-name="release-checklist"] a.mono').exists()).toBe(false);
+    expect(wrapper.html()).not.toContain("/skills/null");
+    expect(wrapper.find('a[href="/skills?filter=external"]').exists()).toBe(true);
+
+    const view = wrapper
+      .get('[data-skill-name="release-checklist"]')
+      .findAll("button")
+      .find((entry) => entry.text().includes("View"));
+    await view?.trigger("click");
+    await flushPromises();
+
+    expect(mocks.apiQuery).toHaveBeenCalledWith("/api/skill-sources/source-1/skills");
+    expect(wrapper.text()).toContain("This skill is provided by Team hub");
+    expect(wrapper.text()).toContain("Manage source");
   });
 
   it("renders the empty state with its create action", async () => {

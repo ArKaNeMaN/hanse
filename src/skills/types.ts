@@ -85,6 +85,7 @@ export interface ExternalOrigin {
   bucket: string;
   revision: string;
   snapshotId: string;
+  publishedAt: string | null;
 }
 
 export interface EffectiveSkill {
@@ -221,6 +222,9 @@ export interface SkillWarning {
   code: SkillWarningCode;
   name?: string;
   root?: string;
+  sourceName?: string;
+  sourceSlug?: string;
+  lastSuccessAt?: string;
 }
 
 export interface ResolvedSkills {

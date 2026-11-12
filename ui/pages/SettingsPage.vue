@@ -11,6 +11,7 @@ import SettingsModelProviderSection from "../components/SettingsModelProviderSec
 import SettingsProviderSection from "../components/SettingsProviderSection.vue";
 import SettingsRestartSection from "../components/SettingsRestartSection.vue";
 import SettingsRow from "../components/SettingsRow.vue";
+import SettingsSkillSourcesSection from "../components/SettingsSkillSourcesSection.vue";
 import SettingsTelegramSection from "../components/SettingsTelegramSection.vue";
 import SmartLink from "../components/SmartLink.vue";
 import { usePageChrome } from "../composables/usePageChrome.js";
@@ -149,6 +150,9 @@ const attentionTarget = computed<SettingsSectionId>(() =>
 );
 
 function hashSection(): SettingsSectionId {
+  if (route.hash.length > 0) {
+    return sectionForHash(route.hash) ?? "agent";
+  }
   const hash = typeof window === "undefined" ? "" : window.location.hash;
   return sectionForHash(hash) ?? "agent";
 }
@@ -351,6 +355,13 @@ function navigateScope(scope: SettingsScope): void {
     void router.push(href);
   }
 }
+
+watch(
+  () => route.hash,
+  () => {
+    activeSection.value = hashSection();
+  },
+);
 
 watch(
   () => view.value?.scope.href,
@@ -758,6 +769,42 @@ watch(
                 @dirty="markDirty"
               />
               <SettingsGitSection :settings="view" @changed="onSectionChanged" />
+            </div>
+          </section>
+
+          <section
+            class="settings-pane"
+            id="settings-sources"
+            :hidden="activeSection !== 'sources'"
+            aria-labelledby="settings-sources-title"
+          >
+            <header class="settings-pane__head">
+              <div class="settings-pane__title-row">
+                <h2 class="settings-pane__title" id="settings-sources-title">
+                  {{ sectionLabel("sources") }}
+                </h2>
+                <span class="badge">{{ paneSummary("sources") }}</span>
+              </div>
+              <p class="settings-pane__desc">{{ sectionDescription("sources") }}</p>
+            </header>
+            <div class="settings-pane__body">
+              <SettingsSkillSourcesSection
+                v-if="view.scope.scope === 'global' && activeSection === 'sources'"
+                :show-intro="false"
+              />
+              <section
+                v-else-if="view.scope.scope !== 'global'"
+                class="settings-warning settings-warning--console"
+                aria-labelledby="settings-sources-global-title"
+              >
+                <p class="settings-warning__title" id="settings-sources-global-title">
+                  <AppIcon name="external" />Skill sources are global
+                </p>
+                <p class="hint">Manage the source registry in Global settings.</p>
+                <SmartLink class="btn btn-secondary btn-sm" to="/settings#settings-sources">
+                  Manage in Global settings
+                </SmartLink>
+              </section>
             </div>
           </section>
 

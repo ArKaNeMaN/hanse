@@ -572,6 +572,8 @@ describe("sectionForHash", () => {
     expect(sectionForHash("#telegram-bot_token")).toBe("notifications");
     expect(sectionForHash("#restart-pending")).toBe("restart");
     expect(sectionForHash("#providers")).toBe("agent");
+    expect(sectionForHash("#settings-sources")).toBe("sources");
+    expect(sectionForHash("#settings-skill-sources")).toBe("sources");
     expect(sectionForHash("#unknown")).toBeUndefined();
     expect(sectionForHash("")).toBeUndefined();
   });

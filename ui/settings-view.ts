@@ -13,7 +13,14 @@ import type {
   SettingsScopeState,
 } from "./settings-types.js";
 
-export type SettingsSectionId = "agent" | "web" | "context" | "notifications" | "git" | "restart";
+export type SettingsSectionId =
+  | "agent"
+  | "web"
+  | "context"
+  | "notifications"
+  | "git"
+  | "sources"
+  | "restart";
 
 export interface SettingsSectionEntry {
   readonly id: SettingsSectionId;
@@ -57,9 +64,15 @@ export const SETTINGS_SECTIONS: readonly SettingsSectionEntry[] = [
     description: "Commit identity and credentials for remotes.",
   },
   {
+    id: "sources",
+    icon: "external",
+    order: 5,
+    description: "Connect skills-hubs and review the external skills they provide.",
+  },
+  {
     id: "restart",
     icon: "refresh",
-    order: 5,
+    order: 6,
     description: "Settings apply on the next start; restart a waiting agent here.",
   },
 ] as const;
@@ -363,6 +376,7 @@ export function sectionSummaries(props: SettingsProps): Record<SettingsSectionId
       gitOverrides > 0 || gitMissing > 0
         ? `${plural(gitOverrides, "override", "overrides")}${gitMissing > 0 ? ` · ${gitMissing} missing` : ""}`
         : "No overrides",
+    sources: props.scope.scope === "global" ? "Global source registry" : "Global only",
     restart: pending > 0 ? `${plural(pending, "agent", "agents")} waiting` : "Nothing pending",
   };
 }
@@ -445,6 +459,13 @@ export function sectionForHash(hash: string): SettingsSectionId | undefined {
     value === "settings-git-credentials"
   ) {
     return "git";
+  }
+  if (
+    value === "settings-skill-sources" ||
+    value.startsWith("skill-source-") ||
+    value.startsWith("settings-sources")
+  ) {
+    return "sources";
   }
   if (
     value.startsWith("restart-") ||

@@ -436,6 +436,7 @@ export interface SettingsLabelsProps {
       readonly notifications: string;
       readonly git: string;
       readonly restart: string;
+      readonly sources?: string;
     };
   };
   readonly sections: {
@@ -445,6 +446,7 @@ export interface SettingsLabelsProps {
     readonly notifications: string;
     readonly git: string;
     readonly restart: string;
+    readonly sources?: string;
   };
   readonly actions: {
     readonly save: string;

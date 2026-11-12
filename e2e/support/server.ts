@@ -36,6 +36,7 @@ const fixture = seed({
   ...(process.env.HANSE_E2E_TOKEN === undefined ? {} : { token: process.env.HANSE_E2E_TOKEN }),
   remotePath: fixtureRemotePath,
 });
+await fixture.syncSkillSource();
 const services = new Map(
   fixture.projects.map((project) => [project.id, new CoordinatorService(fixture.db, project.id)]),
 );
@@ -678,6 +679,8 @@ const deps: HttpDeps = {
   modelProviders: fixture.modelProviders,
   ssh,
   skills: fixture.skills,
+  effectiveSkills: fixture.effectiveSkills,
+  skillSources: fixture.skillSources,
   images,
   dispatcher,
   deletion,

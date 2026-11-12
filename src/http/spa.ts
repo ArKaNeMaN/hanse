@@ -14,7 +14,7 @@ import {
   routeById,
   routeKey,
 } from "../shared/routes.js";
-import { SkillService, type SkillTarget } from "../skills/index.js";
+import { SkillService, type SkillSource, type SkillTarget } from "../skills/index.js";
 import { findApp } from "./apps.js";
 import { humanFromCookie } from "./auth.js";
 import { buildSite, operatorProjects, type SiteModel } from "./dashboard.js";
@@ -681,6 +681,13 @@ function skillsServiceFor(deps: HttpDeps): SkillService | undefined {
   }
 }
 
+function effectiveSkillsFor(deps: HttpDeps): SkillSource | undefined {
+  if (deps.effectiveSkills !== undefined) {
+    return deps.effectiveSkills;
+  }
+  return skillsServiceFor(deps);
+}
+
 function skillsTargetForMatch(
   match: PageMatch,
 ): { scope: "global" | "project" | "app"; target: SkillTarget } | undefined {
@@ -718,7 +725,7 @@ function skillsInventoryPropsForMatch(
   request: HttpRequest,
 ): ReturnType<typeof buildSkillsInventoryProps> {
   const scopeTarget = skillsTargetForMatch(match);
-  const skills = skillsServiceFor(deps);
+  const skills = effectiveSkillsFor(deps);
   if (scopeTarget === undefined || skills === undefined) {
     return undefined;
   }
@@ -1408,7 +1415,7 @@ export function handleUiApi(deps: HttpDeps, request: HttpRequest): HttpResponse 
   }
 
   if (request.path === "/api/ui/skills") {
-    const skills = skillsServiceFor(deps);
+    const skills = effectiveSkillsFor(deps);
     if (skills === undefined) {
       return jsonResponse(
         503,

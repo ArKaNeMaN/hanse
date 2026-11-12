@@ -5,6 +5,7 @@ import { RouterLink, useRoute, useRouter } from "vue-router";
 import { ApiError, apiMutation, apiQuery } from "../api.js";
 import type { BootPayload } from "../boot.js";
 import AppIcon from "../components/AppIcon.vue";
+import ExternalSkillDrawer from "../components/ExternalSkillDrawer.vue";
 import SkillBundleEditor from "../components/SkillBundleEditor.vue";
 import SkillsScopeNav from "../components/SkillsScopeNav.vue";
 import SmartLink from "../components/SmartLink.vue";
@@ -16,6 +17,7 @@ import type {
   SkillDraft,
   SkillScope,
   SkillsInventoryProps,
+  SkillsInventoryRowProps,
   SkillsResponse,
   SkillsScopeProps,
   SkillWorkspaceProps,
@@ -25,7 +27,14 @@ import { useToastStore } from "../stores/toasts.js";
 type InventoryRouteId = "skills-global" | "skills-project" | "skills-app";
 type SkillsRouteId = InventoryRouteId | "skills-new";
 
-const FILTERS: readonly InventoryFilter[] = ["all", "defined", "inherited", "disabled", "invalid"];
+const FILTERS: readonly InventoryFilter[] = [
+  "all",
+  "defined",
+  "inherited",
+  "disabled",
+  "invalid",
+  "external",
+];
 
 const props = defineProps<{ boot: BootPayload }>();
 const route = useRoute();
@@ -211,9 +220,19 @@ const createFailed = computed(() => inventoryQuery.isError.value);
 const rows = computed(() =>
   (view.value?.rows ?? []).map((row) => ({
     ...row,
-    updatedLabel: absoluteTime(row.updatedAt),
+    updatedLabel: absoluteTime(
+      row.mode === "external" && row.origin?.publishedAt != null
+        ? row.origin.publishedAt
+        : row.updatedAt,
+    ),
   })),
 );
+
+const externalRow = ref<SkillsInventoryRowProps | null>(null);
+
+function openExternalSkill(row: SkillsInventoryRowProps): void {
+  externalRow.value = row;
+}
 
 function stateTone(state: string): string {
   if (state === "enabled") {
@@ -630,7 +649,7 @@ function discardCreate(): void {
                     <th scope="col">Skill</th>
                     <th scope="col">Origin</th>
                     <th scope="col">State</th>
-                    <th scope="col">References</th>
+                    <th scope="col">Files</th>
                     <th scope="col">Updated</th>
                     <th scope="col"><span class="sr-only">Open</span></th>
                   </tr>
@@ -638,13 +657,25 @@ function discardCreate(): void {
                 <tbody>
                   <tr
                     v-for="row in rows"
-                    :key="`${row.id}-${row.state}`"
+                    :key="row.externalKey ?? String(row.id)"
                     :data-skill-name="row.name"
                     :data-skill-state="row.state"
                     :data-skill-state-label="row.stateLabel"
+                    :data-skill-mode="row.mode"
                   >
                     <td class="table__primary" data-label="Skill">
-                      <SmartLink class="mono" :to="row.href">{{ row.name }}</SmartLink>
+                      <button
+                        v-if="row.mode === 'external'"
+                        class="link-button mono"
+                        type="button"
+                        @click="openExternalSkill(row)"
+                      >
+                        {{ row.name }}
+                      </button>
+                      <SmartLink v-else-if="row.href !== null" class="mono" :to="row.href">
+                        {{ row.name }}
+                      </SmartLink>
+                      <span v-else class="mono">{{ row.name }}</span>
                       <p class="small">{{ row.description }}</p>
                       <SmartLink
                         v-if="row.effectiveHref !== null"
@@ -656,7 +687,14 @@ function discardCreate(): void {
                       </SmartLink>
                     </td>
                     <td data-label="Origin">
-                      <span class="cluster">
+                      <span v-if="row.mode === 'external' && row.origin !== null" class="cluster">
+                        <span class="badge"><AppIcon name="external" />Source</span>
+                        <span class="small"
+                          >{{ row.origin.sourceName }}
+                          · {{ row.origin.bucket }}</span
+                        >
+                      </span>
+                      <span v-else class="cluster">
                         <span class="badge">{{
                           row.originScope === "app"
                             ? "Application"
@@ -668,7 +706,10 @@ function discardCreate(): void {
                       </span>
                     </td>
                     <td data-label="State">
-                      <span class="cluster">
+                      <span v-if="row.mode === 'external'" class="badge">
+                        <AppIcon name="lock" />Read-only
+                      </span>
+                      <span v-else class="cluster">
                         <span class="badge" :class="stateTone(row.state)">{{
                           row.stateLabel
                         }}</span>
@@ -692,15 +733,25 @@ function discardCreate(): void {
                         </span>
                       </span>
                     </td>
-                    <td data-label="References">
-                      <span v-if="row.references === 0" class="hint mono">0</span>
-                      <span v-else class="mono">{{ row.references }}</span>
+                    <td data-label="Files">
+                      <span v-if="row.fileCount === 0" class="hint mono">0</span>
+                      <span v-else class="mono">{{ row.fileCount }}</span>
                     </td>
                     <td data-label="Updated">
                       <span class="mono" :title="row.updatedAt">{{ row.updatedLabel }}</span>
                     </td>
                     <td class="table__actions">
+                      <button
+                        v-if="row.mode === 'external'"
+                        class="btn btn-ghost btn-sm"
+                        type="button"
+                        :aria-label="row.actionLabel"
+                        @click="openExternalSkill(row)"
+                      >
+                        <AppIcon name="eye" />View
+                      </button>
                       <SmartLink
+                        v-else-if="row.href !== null"
                         class="btn btn-ghost btn-icon"
                         :to="row.href"
                         :aria-label="row.actionLabel"
@@ -763,6 +814,7 @@ function discardCreate(): void {
                 <p class="mono">
                   {{ view.counts.disabled }} disabled · {{ view.counts.invalid }} invalid
                 </p>
+                <p class="mono">{{ view.counts.external }} external · not counted as inherited</p>
                 <p class="hint">
                   Counts are Hanse-effective at this scope, not every skill on disk.
                 </p>
@@ -788,6 +840,12 @@ function discardCreate(): void {
             </section>
           </aside>
         </div>
+
+        <ExternalSkillDrawer
+          :open="externalRow !== null"
+          :row="externalRow"
+          @close="externalRow = null"
+        />
       </template>
     </template>
   </div>

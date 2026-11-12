@@ -62,7 +62,7 @@ test("global target selector is hidden and the rail selects sections", async ({ 
   await expect(page.locator(".settings-scope__node.is-current")).toContainText("Global");
 
   const rail = page.locator(".settings-console__rail-item");
-  await expect(rail).toHaveCount(6);
+  await expect(rail).toHaveCount(7);
   await expect(page.locator('.settings-console__rail-item[aria-current="page"]')).toContainText(
     "Agent",
   );
@@ -73,6 +73,13 @@ test("global target selector is hidden and the rail selects sections", async ({ 
   );
   await expect(page.locator("#settings-git")).toBeVisible();
   await expect(page.locator("#settings-agent")).toBeHidden();
+
+  await page.locator('.settings-console__rail-item[data-section="sources"]').click();
+  await expect(page.locator('.settings-console__rail-item[aria-current="page"]')).toContainText(
+    "Skill sources",
+  );
+  await expect(page.locator("#settings-sources")).toBeVisible();
+  await expect(page.locator("#settings-git")).toBeHidden();
 
   await page.goto("/settings#settings-restart");
   await expect(page.locator("#settings-restart")).toBeVisible();

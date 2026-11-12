@@ -51,6 +51,7 @@ export default defineConfig({
         "**/spa-settings.spec.ts",
         "**/skills.spec.ts",
         "**/spa-skills.spec.ts",
+        "**/spa-skill-sources.spec.ts",
         "**/app.spec.ts",
         "**/spa-app.spec.ts",
         "**/terminal.spec.ts",
