@@ -1045,6 +1045,16 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   automatically, and the deprecated legacy session SSE route only strips nested data URLs. Chat
   images (operator and agent) render large in a single column and open in a native-dialog
   lightbox; the `show_image` tool card is a compact action card.
+- Inline prompt media (plan 0046): a user-turn `file` part whose declared MIME is PNG/JPEG/GIF/WebP
+  and whose URL is a strict base64 data URL of 1 byte..20 MiB is projected in history and live to a
+  same-origin inline route, so a tool-created subagent prompt image renders as an attachment card
+  instead of `No output`. The human-only `GET|HEAD
+  /api/apps/:app/sessions/:session/messages/:message/parts/:part/inline?project=<project>` route
+  reads one persisted message (48 MiB cap, history read budget), sniffs the decoded bytes, serves
+  only the four inline-safe image types with `nosniff` and `private, max-age=3600`, refuses
+  delivery-owned parts, and never starts a stopped app. Nothing is copied into `app_attachments` or
+  `agent_media`; non-image, oversized, malformed, or id-less parts keep the honest `Inline content
+  is not available.`/`No preview` fallback.
 - Deletion is human-only (`403` for agent principals), proxies opencode `DELETE /session/:id`, and
   the UI selects the next session or returns to the draft when the active one is removed.
 - The chat workspace renders interactive opencode prompts above the composer:

@@ -581,6 +581,13 @@ describe("projected history", () => {
         parts: [
           { type: "file", id: "prt_att_att_img_del_1", url: "data:image/png;base64,AAAA" },
           { type: "file", id: "prt_other", url: `data:application/pdf;base64,${"A".repeat(100)}` },
+          {
+            type: "file",
+            id: "prt_inline",
+            mime: "image/png",
+            filename: "shot.png",
+            url: `data:image/png;base64,${Buffer.from("hello").toString("base64")}`,
+          },
         ],
       },
     ];
@@ -613,6 +620,11 @@ describe("projected history", () => {
       attachment: { id: "att_img" },
     });
     expect(message.parts[1]).toMatchObject({ url: "", truncated: true });
+    expect(message.parts[2]).toMatchObject({
+      filename: "shot.png",
+      url: "/api/apps/storefront/sessions/ses_1/messages/msg_1/parts/prt_inline/inline?project=p1",
+      attachment: { id: "prt_inline", size: 5, mode: "inline", kind: "image", inline: true },
+    });
     expect(message.info.hanse?.attachments).toHaveLength(1);
   });
 

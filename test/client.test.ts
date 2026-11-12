@@ -5,6 +5,7 @@ import {
   abortSession,
   deleteSavedPermission,
   deleteSession,
+  getMessage,
   isOpenCodeReady,
   listMessagePage,
   listMessages,
@@ -531,6 +532,47 @@ describe("bounded messages client", () => {
     const error = await listMessages(server.endpoint, "ses_1", { timeoutMs: 50 }).catch(
       (caught: unknown) => caught,
     );
+    expect(error).toBeInstanceOf(OpencodeHttpError);
+    expect((error as OpencodeHttpError).status).toBe(0);
+    expect((error as OpencodeHttpError).code).toBeUndefined();
+    expect((error as OpencodeHttpError).bodyExcerpt).toContain("timed out");
+  });
+});
+
+describe("bounded single-message client", () => {
+  it("carries messages_too_large on a capped read when overflowCode is passed", async () => {
+    const server = await upstream((_request, response) => {
+      json(response, { info: { id: "msg_1", role: "user" }, parts: [] });
+    });
+    const error = await getMessage(server.endpoint, "ses_1", "msg_1", {
+      maxBytes: 16,
+      overflowCode: "messages_too_large",
+    }).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(OpencodeHttpError);
+    expect((error as OpencodeHttpError).status).toBe(0);
+    expect((error as OpencodeHttpError).code).toBe("messages_too_large");
+    expect((error as OpencodeHttpError).bodyExcerpt).toContain("exceeded");
+  });
+
+  it("leaves the overflow code undefined when overflowCode is not passed", async () => {
+    const server = await upstream((_request, response) => {
+      json(response, { info: { id: "msg_1", role: "user" }, parts: [] });
+    });
+    const error = await getMessage(server.endpoint, "ses_1", "msg_1", { maxBytes: 16 }).catch(
+      (caught: unknown) => caught,
+    );
+    expect(error).toBeInstanceOf(OpencodeHttpError);
+    expect((error as OpencodeHttpError).status).toBe(0);
+    expect((error as OpencodeHttpError).code).toBeUndefined();
+    expect((error as OpencodeHttpError).bodyExcerpt).toContain("exceeded");
+  });
+
+  it("does not report a timeout as messages_too_large", async () => {
+    const server = await upstream(() => undefined);
+    const error = await getMessage(server.endpoint, "ses_1", "msg_1", {
+      timeoutMs: 50,
+      overflowCode: "messages_too_large",
+    }).catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(OpencodeHttpError);
     expect((error as OpencodeHttpError).status).toBe(0);
     expect((error as OpencodeHttpError).code).toBeUndefined();

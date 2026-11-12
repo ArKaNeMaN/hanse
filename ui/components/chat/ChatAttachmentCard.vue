@@ -93,6 +93,9 @@ const caption = computed(() => props.attachment.caption?.trim() ?? "");
           >
             Sending…
           </span>
+          <span v-else-if="failed" class="attachment-card__unavailable" data-attachment-unavailable>
+            Unavailable
+          </span>
           <span v-else-if="downloadURL === null" class="attachment-card__unavailable">
             Unavailable
           </span>

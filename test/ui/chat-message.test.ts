@@ -171,6 +171,34 @@ describe("ChatMessage part surfaces", () => {
     wrapper.unmount();
   });
 
+  it("labels a truncated file part as unavailable inline content", async () => {
+    const wrapper = render([
+      part({
+        id: "file-truncated",
+        type: "file",
+        data: { filename: "shot.png", truncated: true },
+      }),
+    ]);
+    await nextTick();
+    const detail = wrapper.find('[data-part-type="file"]');
+    expect(detail.find("pre").text()).toBe("Inline content is not available.");
+    expect(detail.text()).not.toContain("No output");
+    wrapper.unmount();
+  });
+
+  it("labels a non-truncated file part as no preview", async () => {
+    const wrapper = render([
+      part({
+        id: "file-preview",
+        type: "file",
+        data: { filename: "notes.txt" },
+      }),
+    ]);
+    await nextTick();
+    expect(wrapper.find('[data-part-type="file"] pre').text()).toBe("No preview");
+    wrapper.unmount();
+  });
+
   it("keeps step/retry/compaction/snapshot/agent parts hidden and shows unknown types as text", async () => {
     const wrapper = render([
       part({ id: "step", type: "step-start" }),

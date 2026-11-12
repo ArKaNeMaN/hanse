@@ -34,6 +34,7 @@ import { handleGit } from "./git.js";
 import { type HttpDeps, type HttpRequest, type HttpResponse, handleRequest } from "./handler.js";
 import { handleHandoffHttp } from "./handoff.js";
 import { handleImages } from "./images.js";
+import { handleInlineMediaDownload } from "./inline-media.js";
 import { handleInternalMcp } from "./internal-mcp.js";
 import { isHtmlPageRequest } from "./page-request.js";
 import {
@@ -393,6 +394,32 @@ export function createHttpServer(deps: HttpDeps): Server {
         if (!response.headersSent) {
           response.writeHead(500, { "content-type": "application/json; charset=utf-8" });
           response.end(JSON.stringify({ error: "agent media request failed" }));
+        } else {
+          response.end();
+        }
+      });
+      return;
+    }
+    const isInlineMediaPath =
+      /^\/api\/apps\/[^/]+\/sessions\/[^/]+\/messages\/[^/]+\/parts\/[^/]+\/inline$/.test(
+        url.pathname,
+      );
+    if (isInlineMediaPath && request.method !== "GET" && request.method !== "HEAD") {
+      response.writeHead(405, {
+        "content-type": "application/json; charset=utf-8",
+        "cache-control": "no-store",
+      });
+      response.end(JSON.stringify({ error: "method not allowed" }));
+      return;
+    }
+    if (isInlineMediaPath) {
+      void handleInlineMediaDownload(deps, request, response, url).catch(() => {
+        if (!response.headersSent) {
+          response.writeHead(500, {
+            "content-type": "application/json; charset=utf-8",
+            "cache-control": "no-store",
+          });
+          response.end(JSON.stringify({ error: "inline media request failed" }));
         } else {
           response.end();
         }

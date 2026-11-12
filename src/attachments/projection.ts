@@ -7,6 +7,7 @@ import {
 } from "../agent-media/projection.js";
 import type { AgentMediaAttachResult } from "../agent-media/types.js";
 import type { SqliteDatabase } from "../store/index.js";
+import { inlineImagePart } from "./inline-media.js";
 import { readAttachment, readDeliveriesForMessages, readDeliveryByPartId } from "./store.js";
 import type { AttachmentRow, AttachmentView, DeliveryRow } from "./types.js";
 import { attachmentView, attachmentViewsForMessages, downloadUrl } from "./views.js";
@@ -41,11 +42,18 @@ export interface ProjectionTarget {
   appId: string;
   appKey: string;
   projectId: string;
+  /** Explicit session for history inline media; never read from `message.info.sessionID`. */
+  sessionID?: string;
   agentMedia?: AgentMediaProjector;
 }
 
 function isDataUrl(value: unknown): value is string {
   return typeof value === "string" && value.startsWith("data:");
+}
+
+/** A URL that must never reach the client: inline data or a host filesystem path. */
+function isStrippedUrl(value: unknown): value is string {
+  return typeof value === "string" && (value.startsWith("data:") || value.startsWith("file:"));
 }
 
 function partId(part: ProjectablePart): string | undefined {
@@ -121,9 +129,25 @@ export function createMessageProjector(target: ProjectionTarget): MessageProject
           const row = delivery === undefined ? undefined : rows.get(delivery.attachmentId);
           if (row !== undefined) {
             projected = projectedFilePart(part, row, target);
-          } else if (isDataUrl(part.url)) {
-            part.url = "";
-            part.truncated = true;
+          } else {
+            const inline =
+              target.sessionID === undefined
+                ? null
+                : inlineImagePart(
+                    part as Record<string, unknown>,
+                    {
+                      sessionID: target.sessionID,
+                      messageID: message.info.id,
+                      partID: id ?? "",
+                    },
+                    target,
+                  );
+            if (inline !== null) {
+              projected = inline as ProjectablePart;
+            } else if (isStrippedUrl(part.url)) {
+              part.url = "";
+              part.truncated = true;
+            }
           }
         }
         projectedParts.push(projected);
@@ -183,7 +207,11 @@ export const defaultMessageProjector: MessageProjector = stripDataUrlParts;
 
 export interface EventAttachmentResolver {
   /** Project one raw `message.part.updated` file part before bounding. */
-  projectFilePart(part: Record<string, unknown>): Record<string, unknown>;
+  projectFilePart(
+    part: Record<string, unknown>,
+    sessionID?: string,
+    messageID?: string,
+  ): Record<string, unknown>;
   /** Top-level attachment metadata for a typed `message.updated`. */
   attachmentsForMessage(messageId: string): AttachmentView[] | undefined;
 }
@@ -192,7 +220,6 @@ const RESOLVER_CACHE_LIMIT = 1_000;
 
 /** DB-backed resolver used by the typed and legacy SSE projectors (sync, snapshot-cached). */
 export function createEventAttachmentResolver(target: ProjectionTarget): EventAttachmentResolver {
-  const parts = new Map<string, Record<string, unknown>>();
   const messages = new Map<string, AttachmentView[]>();
   const remember = <K, V>(map: Map<K, V>, key: K, value: V): V => {
     map.set(key, value);
@@ -203,12 +230,8 @@ export function createEventAttachmentResolver(target: ProjectionTarget): EventAt
     return value;
   };
   return {
-    projectFilePart(part) {
+    projectFilePart(part, sessionID, messageID) {
       const id = typeof part.id === "string" && part.id.length > 0 ? part.id : undefined;
-      if (id !== undefined) {
-        const cached = parts.get(id);
-        if (cached !== undefined) return { ...cached };
-      }
       let projected: Record<string, unknown> | undefined;
       if (id !== undefined) {
         const delivery = readDeliveryByPartId(target.db, target.appId, id);
@@ -223,14 +246,17 @@ export function createEventAttachmentResolver(target: ProjectionTarget): EventAt
           >;
         }
       }
+      if (projected === undefined && sessionID !== undefined && messageID !== undefined) {
+        const inline = inlineImagePart(part, { sessionID, messageID, partID: id ?? "" }, target);
+        if (inline !== null) projected = inline;
+      }
       if (projected === undefined) {
         projected = { ...part };
-        if (isDataUrl(projected.url)) {
+        if (isStrippedUrl(projected.url)) {
           projected.url = "";
           projected.truncated = true;
         }
       }
-      if (id !== undefined) remember(parts, id, projected);
       return { ...projected };
     },
     attachmentsForMessage(messageId) {

@@ -178,6 +178,8 @@ export interface OpencodeRequestOptions {
   timeoutMs?: number;
   /** Response body cap in bytes. */
   maxBytes?: number;
+  /** Error code attached to a capped-read overflow so callers can map it precisely. */
+  overflowCode?: string;
 }
 
 export interface OpencodeMessageReadOptions extends OpencodeRequestOptions {
@@ -575,6 +577,7 @@ export async function getMessage(
   const requestOptions: OpencodeRequestOptions = {
     maxBytes: options?.maxBytes ?? MESSAGES_RESPONSE_MAX_BYTES,
     timeoutMs: options?.timeoutMs ?? OPENCODE_READ_TIMEOUT_MS,
+    overflowCode: options?.overflowCode,
   };
   const response = await requestResponse(
     endpoint,
@@ -905,7 +908,14 @@ async function readJson<T>(
 ): Promise<T> {
   const maxBytes = options?.maxBytes ?? OPENCODE_MAX_BODY_BYTES;
   const { text, tooLarge } = await readCapped(response, maxBytes);
-  if (tooLarge) throw new OpencodeHttpError(path, 0, `response body exceeded ${maxBytes} bytes`);
+  if (tooLarge) {
+    throw new OpencodeHttpError(
+      path,
+      0,
+      `response body exceeded ${maxBytes} bytes`,
+      options?.overflowCode,
+    );
+  }
   return JSON.parse(text) as T;
 }
 

@@ -63,6 +63,24 @@ describe("ChatAttachmentCard image rendering", () => {
     wrapper.unmount();
   });
 
+  it("flips a failed image to unavailable and removes the download link", async () => {
+    const wrapper = mount(ChatAttachmentCard, {
+      props: { attachment: { ...base } },
+    });
+    expect(wrapper.find("[data-attachment-download]").exists()).toBe(true);
+    await wrapper.find(".attachment-card__image").trigger("error");
+    expect(wrapper.find(".attachment-card__image").exists()).toBe(false);
+    expect(wrapper.find(".attachment-card__unavailable-image").text()).toContain(
+      "Image unavailable",
+    );
+    expect(wrapper.find("[data-attachment-download]").exists()).toBe(false);
+    const unavailable = wrapper.find("[data-attachment-unavailable]");
+    expect(unavailable.exists()).toBe(true);
+    expect(unavailable.classes()).toContain("attachment-card__unavailable");
+    expect(unavailable.text()).toBe("Unavailable");
+    wrapper.unmount();
+  });
+
   it("shows the missing placeholder without an image", () => {
     const wrapper = mount(ChatAttachmentCard, {
       props: { attachment: { ...base, state: "missing" } },

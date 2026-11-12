@@ -1250,6 +1250,7 @@ async function dispatchTextSend(
       appId: found.app.id,
       appKey: found.app.appKey,
       projectId: found.project.id,
+      sessionID: sessionId,
       ...(agentMediaServiceFor(deps, found) === undefined
         ? {}
         : { agentMedia: agentMediaServiceFor(deps, found) }),
@@ -1954,6 +1955,7 @@ async function readMessagesResponse(
         appId: found.app.id,
         appKey: found.app.appKey,
         projectId: found.project.id,
+        sessionID: sessionId,
         ...(agentMediaServiceFor(deps, found) === undefined
           ? {}
           : { agentMedia: agentMediaServiceFor(deps, found) }),
@@ -2075,6 +2077,7 @@ async function computeTurnSnapshot(
     appId: found.app.id,
     appKey: found.app.appKey,
     projectId: found.project.id,
+    sessionID: sessionId,
     ...(agentMediaServiceFor(deps, found) === undefined
       ? {}
       : { agentMedia: agentMediaServiceFor(deps, found) }),

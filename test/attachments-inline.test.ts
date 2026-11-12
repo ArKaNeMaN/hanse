@@ -357,6 +357,58 @@ describe("history projection", () => {
     });
   });
 
+  it("projects a qualifying inline image part to the same-origin route", () => {
+    const db = dbFixture();
+    const payload = Buffer.from("png!");
+    const messages: ProjectableMessage[] = [
+      {
+        info: { id: "msg_1" },
+        parts: [
+          {
+            type: "file",
+            id: "prt_inline",
+            mime: "image/png",
+            filename: "../../shot.png",
+            url: `data:image/png;base64,${payload.toString("base64")}`,
+          },
+          { type: "file", id: "prt_nomime", url: "data:image/png;base64,AAAA" },
+          {
+            type: "file",
+            id: "prt_malformed",
+            mime: "image/png",
+            url: "data:image/png;base64,AAA",
+          },
+          { type: "file", id: "prt_empty", mime: "image/jpeg", url: "data:image/jpeg;base64," },
+          { type: "file", id: "prt_fileurl", mime: "image/webp", url: "file:///tmp/shot.webp" },
+        ],
+      },
+    ];
+    createMessageProjector({
+      db,
+      appId: "p1:storefront",
+      appKey: "storefront",
+      projectId: "p1",
+      sessionID: "ses_1",
+    })(messages);
+    const [eligible, ...fallbacks] = messages[0]?.parts ?? [];
+    expect(eligible).toMatchObject({
+      filename: "shot.png",
+      url: "/api/apps/storefront/sessions/ses_1/messages/msg_1/parts/prt_inline/inline?project=p1",
+      attachment: {
+        id: "prt_inline",
+        size: payload.length,
+        mode: "inline",
+        kind: "image",
+        inline: true,
+      },
+    });
+    expect(JSON.stringify(eligible)).not.toContain("data:");
+    for (const fallback of fallbacks) {
+      expect(fallback).toMatchObject({ url: "", truncated: true });
+    }
+    expect(JSON.stringify(fallbacks)).not.toContain("data:");
+  });
+
   it("projects typed message attachments and file parts for the app stream", () => {
     const db = dbFixture();
     insertAttachment(db, "att_1");

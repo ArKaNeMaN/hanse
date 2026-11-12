@@ -115,6 +115,9 @@ function detailsPreview(part: ChatMessagePartView): string {
 function detailsBody(part: ChatMessagePartView): string {
   const data = dataOf(part);
   if (part.type === "reasoning") return stringField(part, "text") || "Reasoning";
+  if (part.type === "file" && fileAttachment(part) === null) {
+    return data.truncated === true ? "Inline content is not available." : "No preview";
+  }
   for (const key of ["output", "error", "text", "content", "patch"]) {
     const value = data[key];
     if (typeof value === "string" && value.length > 0) return value;

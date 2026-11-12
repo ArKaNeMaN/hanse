@@ -457,7 +457,9 @@ connection count.
     `{type:"file", mime, filename, url: "<download-route>", attachment: {id, size, mode, kind}}`,
     dropping the data URL;
   - replaces **every** other file part with a `data:` URL (any length) with an empty URL and a
-    truncated marker, so no base64 prefix reaches the client;
+    truncated marker, so no base64 prefix reaches the client, except a user-turn image file part
+    that qualifies for inline prompt media: that part is rewritten to a same-origin inline route
+    with image metadata instead (see [`inline-prompt-media.md`](./inline-prompt-media.md));
   - adds `info.hanse.attachments` for the message (all deliveries with this `message_id`), so
     file-only attachments have a card/download even though they have no file part.
 - Raw-read strategy:
@@ -495,7 +497,9 @@ connection count.
 
 - The app SSE projector accepts an attachment resolver before its string bounding (`boundPart`) and
   rewrites known file parts to the short download URL. For **every** unknown file part with a
-  `data:` URL, it replaces the URL with an empty string and a truncated marker before bounding; the
+  `data:` URL, it replaces the URL with an empty string and a truncated marker before bounding,
+  except a qualifying user-turn image part, which gets the inline route described in
+  [`inline-prompt-media.md`](./inline-prompt-media.md); the
   existing 8 KiB bound is not allowed to leave a `data:` prefix in the payload.
 - **Frame-cap alignment:** the owner chose to raise `APP_STREAM_MAX_FRAME_BYTES` to **32 MiB**,
   and the inline budgets are set so a valid part's base64 fits under it: images and PDF/video are
@@ -727,7 +731,8 @@ Message feed:
 - the synthetic `attachment-manifest` text part and opencode's extra synthetic `Called the Read
   tool...` text (added for `file:` inline parts) are hidden from the feed (marker-aware rule, not
   only the current `partIgnored` check);
-- unknown/legacy file parts fall back to the existing collapsed `file` detail rendering;
+- unknown/legacy file parts fall back to the existing collapsed `file` detail rendering (or the
+  inline prompt-media card when they qualify, per [`inline-prompt-media.md`](./inline-prompt-media.md));
 - no data URL is ever placed in the DOM or in message history payloads.
 
 Draft/rail:
@@ -1337,7 +1342,8 @@ Resolved in revision 4:
 - **M-D (manifest title leak).** Hanse sets the title from operator text/neutral; the manifest is
   not a UI or title value.
 - **M-E (unknown data URL).** Every unknown file `data:` URL is replaced with an empty URL and a
-  marker before history/SSE bounding.
+  marker before history/SSE bounding, except a qualifying user-turn image part, which gets the
+  on-demand inline route from [`inline-prompt-media.md`](./inline-prompt-media.md).
 - **M-F (blocking response base64).** The blocking response is projected or reduced to
   `{messageID, info}`.
 - **M-G (definitive absence/retry).** Retry uses a new `messageID`; unknown sends are not retried

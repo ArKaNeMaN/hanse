@@ -33,7 +33,7 @@ supporting image input, because the default model may be text-only.
 | ID | Requirement |
 | --- | --- |
 | R1 | An app agent can explicitly publish one image from its app workspace, app runtime temp, or app attachment root through a coordinator MCP tool. |
-| R2 | Only an explicit `show_image` call publishes an image. Other tool attachments are never mirrored automatically. |
+| R2 | Only an explicit `show_image` call is an agent-initiated publication. Other tool attachments are never mirrored automatically. Amended by [`inline-prompt-media.md`](./inline-prompt-media.md): a user-turn image `file` part may render its own card and be served on demand from the persisted message part; nothing is copied into a Hanse store or attached to a different message, and nested tool attachments remain invisible. |
 | R3 | The published image is durable per session and survives a coordinator restart, an app restart, and an app image change. |
 | R4 | The image is attached to the assistant message that produced the tool call, in both live SSE and history reads, and is idempotent across reconnects and re-reads. |
 | R5 | The model never needs to receive the image bytes; the tool returns only a small metadata envelope. |
@@ -41,7 +41,7 @@ supporting image input, because the default model may be text-only.
 | R7 | The lightbox is keyboard accessible: native dialog focus trap, Escape, focus return, and a visible close control. |
 | R8 | Files outside the allowed roots, symlinks, non-regular files, non-image MIME, and oversized files are rejected. Credential paths are never readable through this tool. |
 | R9 | A per-app quota bounds agent media; attached files and rows are cleaned with the session/app, a daily pass marks attached rows whose file is missing as `missing`, and it removes staged rows whose file is missing plus unreferenced files. A staged row has no session association; it is durable until attached, until the app is deleted, or until a future explicit maintenance action. |
-| R10 | No host path is forwarded to the browser in the synthetic image part or the `show_image` tool part; the browser gets a same-origin download URL and metadata only. Nested tool-attachment `data:` URLs are stripped from live and history payloads as part of this stage. Other nested `data:` fields outside tool attachments remain a pre-existing, out-of-scope risk. |
+| R10 | No host path is forwarded to the browser in the synthetic image part or the `show_image` tool part; the browser gets a same-origin download URL and metadata only. Nested tool-attachment `data:` URLs are stripped from live and history payloads as part of this stage. Other nested `data:` fields outside tool attachments remain a pre-existing, out-of-scope risk. [`inline-prompt-media.md`](./inline-prompt-media.md) adds a human-only on-demand route for a qualifying user-turn image `file` part; its response is bytes only and its projected part URL is same-origin. |
 | R11 | Existing operator attachments keep their behavior; only their visual presentation changes. |
 | R12 | Markdown images remain unsupported; the safe Markdown subset is unchanged. |
 | R13 | The live and history projections normalize the `show_image` tool result through one shared envelope parser; a non-JSON, wrapped, or double-encoded result never crashes projection or publishes an image. |

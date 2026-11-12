@@ -68,6 +68,11 @@
   file-part projection, a human-only download route, large inline image cards, and a native
   `<dialog>` lightbox. Status: approved (`oracle` round 6 PASS after five revision rounds);
   implemented and verified (journal 0040); one pre-existing jsdom suite failure remains.
+- [Inline prompt media pass-through](./inline-prompt-media.md) - unknown image `file` parts from
+  tool-created user turns (subagent prompts) stay visible as attachment cards, served on demand
+  from the persisted message part through a human-only same-origin route, with no store copy, quota,
+  or async projection. Status: design review PASS WITH FIXES (Oracle rounds 1-2, findings folded);
+  implemented and verified (journal 0055).
 - [Handoff threads](./handoff-threads.md) - stage-1 agent-originated multi-turn handoffs: one
   `handoffs` header plus an ordered `handoff_messages` log, start-only approval, exact observed
   binding, a per-thread/per-destination queue with no retry, idle TTL/message cap/operator cancel,

@@ -1814,19 +1814,23 @@ export class EventProjector {
     if (part === undefined) return this.activity(properties, "unknown");
     const partID = asString(part.id);
     const rawPartType = asString(part.type);
+    if (partID === undefined || rawPartType === undefined) {
+      return this.activity(properties, "unknown");
+    }
     const propertySessionID = asString(properties.sessionID);
     const partSessionID = asString(part.sessionID);
     const propertyMessageID = asString(properties.messageID);
     const partMessageID = asString(part.messageID);
-    const sessionID = partSessionID;
-    const messageID = partMessageID;
-    if (partID === undefined || rawPartType === undefined) {
-      return this.activity(properties, "unknown");
-    }
+    const sessionID = partSessionID ?? propertySessionID;
+    const messageID = partMessageID ?? propertyMessageID;
     if (sessionID === undefined || messageID === undefined) {
       return this.activity(properties, "unknown");
     }
-    if (propertySessionID !== undefined && propertySessionID !== partSessionID) {
+    if (
+      propertySessionID !== undefined &&
+      partSessionID !== undefined &&
+      propertySessionID !== partSessionID
+    ) {
       return this.activity(properties, "unknown");
     }
     if (
@@ -1858,7 +1862,7 @@ export class EventProjector {
 
     const sourcePart =
       rawPartType === "file" && this.attachments !== undefined
-        ? this.attachments.projectFilePart(part)
+        ? this.attachments.projectFilePart(part, sessionID, messageID)
         : part;
     const bounded = boundPart(sourcePart, rawPartType);
     const buildEvent = (): HanseEvent => {
@@ -2207,7 +2211,14 @@ export function projectRawEnvelope(
   }
   return {
     ...event,
-    properties: { ...properties, part: attachments.projectFilePart(part) },
+    properties: {
+      ...properties,
+      part: attachments.projectFilePart(
+        part,
+        asString(properties.sessionID) ?? asString(part.sessionID),
+        asString(properties.messageID) ?? asString(part.messageID),
+      ),
+    },
   };
 }
 
