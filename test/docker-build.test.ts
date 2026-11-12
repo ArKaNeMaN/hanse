@@ -60,6 +60,7 @@ function buildOptions(tar = Buffer.from("tar-body")) {
     baseImage: "agent-default:test",
     buildArgs: { EXTRA: "curl", HANSE_BASE: "evil:latest" },
     labels: { "hanse.app.id": "project:app", "hanse.image.version": "v1" },
+    networkMode: "hanse-build",
     memoryBytes: 1024,
     nanoCpus: 2_000_000_000,
     pidsLimit: 256,
@@ -104,6 +105,7 @@ describe("DockerClient.buildImage", () => {
     expect(query.get("cpuperiod")).toBe("100000");
     expect(query.get("cpuquota")).toBe("200000");
     expect(query.get("pidslimit")).toBe("256");
+    expect(query.get("networkmode")).toBe("hanse-build");
     expect(JSON.parse(query.get("labels") ?? "{}")).toEqual({
       "hanse.app.id": "project:app",
       "hanse.image.version": "v1",
@@ -112,6 +114,19 @@ describe("DockerClient.buildImage", () => {
       EXTRA: "curl",
       HANSE_BASE: "agent-default:test",
     });
+  });
+
+  it("maps a none build network to networkmode=none, never default", async () => {
+    const transport = new FakeTransport();
+    const client = new DockerClient(transport);
+
+    await client.buildImage({ ...buildOptions(), networkMode: "none" });
+
+    const build = transport.builds[0];
+    if (build === undefined) throw new Error("missing build");
+    const query = queryOf(build);
+    expect(query.get("networkmode")).toBe("none");
+    expect(query.get("networkmode")).not.toBe("default");
   });
 
   it("falls back to the classic builder when the Engine API predates BuildKit", async () => {

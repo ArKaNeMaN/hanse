@@ -1,6 +1,8 @@
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   renameSync,
   rmSync,
   statSync,
@@ -19,7 +21,11 @@ import {
   safeOriginalName,
   storedNameFor,
 } from "../src/attachments/names.js";
-import { attachmentsHostRoot, attachmentVisibleRoot } from "../src/attachments/paths.js";
+import {
+  attachmentAppRoot,
+  attachmentsHostRoot,
+  attachmentVisibleRoot,
+} from "../src/attachments/paths.js";
 import { quotaView, uploadCoordinator } from "../src/attachments/quota.js";
 import {
   listAppAttachmentRoots,
@@ -32,6 +38,10 @@ import { readAttachment } from "../src/attachments/store.js";
 import { attachmentTitle } from "../src/attachments/title.js";
 import type { AttachmentKind } from "../src/attachments/types.js";
 import { attachmentView, deriveAttachmentState } from "../src/attachments/views.js";
+import {
+  RunnerLayoutMigrationError,
+  runRunnerLayoutMigration,
+} from "../src/coordinator/runner-layout-migration.js";
 import {
   ATTACHMENTS_POLICY_VERSION,
   buildPermissionPolicy,
@@ -68,7 +78,7 @@ function fixture(): { db: SqliteDatabase; agentsHome: string; appRoot: string } 
     "INSERT INTO apps (id,project_id,app_key,path,contract,created_at) VALUES ('p:a','p','a','apps/a','AGENTS.md',?)",
   ).run(now);
   const agentsHome = path.join(dir, "agents");
-  const appRoot = path.dirname(attachmentsHostRoot(agentsHome, "p", "a"));
+  const appRoot = attachmentAppRoot({ agentsHome, projectId: "p", appKey: "a" });
   mkdirSync(path.join(appRoot, "attachments", "ses_1", ".tmp"), { recursive: true });
   return { db, agentsHome, appRoot };
 }
@@ -150,9 +160,21 @@ describe("attachment names and MIME", () => {
   });
 
   it("resolves host and runner-visible attachment roots", () => {
-    expect(attachmentsHostRoot("/agents", "My Project", "My App")).toBe(
-      "/agents/My-Project/My-App/attachments",
-    );
+    expect(
+      attachmentsHostRoot({
+        agentsHome: "/agents",
+        projectId: "My Project",
+        appKey: "My App",
+      }),
+    ).toBe("/agents/My-Project/My-App/attachments");
+    expect(
+      attachmentsHostRoot({
+        agentsHome: "/agents",
+        mountsHome: "/mounts",
+        projectId: "My Project",
+        appKey: "My App",
+      }),
+    ).toBe("/mounts/My-Project/My-App/attachments");
     expect(
       attachmentVisibleRoot({
         agentsHome: "/agents",
@@ -399,5 +421,164 @@ describe("container safety and retry validation", () => {
     const rows = attachmentsForRefs(db, "p:a", "ses_1", [{ id: "att_2" }], appRoot);
     expect(rows).toEqual([]);
     expect(readAttachment(db, "p:a", "att_2")?.state).toBe("missing");
+  });
+});
+
+describe("attachment storage on the mounts root", () => {
+  it("reads, opens, and reconciles files from the mounts app root", () => {
+    const { db, agentsHome } = fixture();
+    const base = mkdtempSync(path.join(tmpdir(), "hanse-attachments-mounts-"));
+    dirs.push(base);
+    const mountsHome = path.join(base, "mounts");
+    const mountsAppRoot = path.join(mountsHome, "p", "a");
+    const file = path.join(mountsAppRoot, "attachments", "ses_1", "att_9-x.txt");
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, "hello");
+
+    insertRow(db, {
+      id: "att_9",
+      state: "available",
+      relPath: "attachments/ses_1/att_9-x.txt",
+      storedName: "att_9-x.txt",
+      size: 5,
+      kind: "file",
+      mime: "text/plain",
+    });
+    const roots = listAppAttachmentRoots(db, agentsHome, mountsHome);
+    expect(roots[0]?.appRoot).toBe(mountsAppRoot);
+    const row = readAttachment(db, "p:a", "att_9");
+    if (row === undefined) throw new Error("attachment row missing");
+    expect(openAttachmentFile(mountsAppRoot, row)).toBeDefined();
+
+    rmSync(file);
+    expect(markMissingFiles(db, roots)).toBe(1);
+  });
+});
+
+describe("runner mount layout migration", () => {
+  function migrationFixture(): {
+    base: string;
+    agents: string;
+    mounts: string;
+    markerPath: string;
+    oldAppRoot: string;
+  } {
+    const base = mkdtempSync(path.join(tmpdir(), "hanse-mount-migration-"));
+    dirs.push(base);
+    const agents = path.join(base, "agents");
+    const mounts = path.join(base, "mounts");
+    const markerPath = path.join(base, "state", "runner-layout.json");
+    const oldAppRoot = path.join(agents, "p", "a");
+    mkdirSync(path.join(oldAppRoot, "attachments", "ses_1"), { recursive: true });
+    writeFileSync(path.join(oldAppRoot, "attachments", "ses_1", "file.txt"), "attachment-body");
+    const oldGit = path.join(oldAppRoot, "home", ".config", "hanse", "git");
+    mkdirSync(oldGit, { recursive: true });
+    writeFileSync(path.join(oldGit, "config"), "config-body");
+    writeFileSync(path.join(oldGit, "id"), "private-key", { mode: 0o600 });
+    return { base, agents, mounts, markerPath, oldAppRoot };
+  }
+
+  it("copies both legacy trees, verifies them, writes a marker, and is idempotent", async () => {
+    const f = migrationFixture();
+    const options = {
+      agentsHome: f.agents,
+      mountsRoot: f.mounts,
+      apps: [{ projectId: "p", appKey: "a" }],
+      markerPath: f.markerPath,
+    };
+
+    const first = await runRunnerLayoutMigration(options);
+    expect(first.migrated).toBe(1);
+    expect(
+      readFileSync(path.join(f.mounts, "p", "a", "attachments", "ses_1", "file.txt"), "utf8"),
+    ).toBe("attachment-body");
+    expect(readFileSync(path.join(f.mounts, "p", "a", "git", "id"), "utf8")).toBe("private-key");
+    expect(existsSync(path.join(f.oldAppRoot, "attachments", "ses_1", "file.txt"))).toBe(true);
+
+    const marker = JSON.parse(readFileSync(f.markerPath, "utf8")) as {
+      version: number;
+      mountsRoot: string;
+      apps: Array<{ projectId: string; appKey: string }>;
+    };
+    expect(marker.version).toBe(1);
+    expect(marker.mountsRoot).toBe(path.resolve(f.mounts));
+    expect(marker.apps[0]).toMatchObject({ projectId: "p", appKey: "a" });
+
+    const second = await runRunnerLayoutMigration(options);
+    expect(second.migrated).toBe(0);
+    expect(second.skipped).toBe(1);
+    expect(second.alreadyDone).toBe(true);
+  });
+
+  it("re-copies a missing mounts leaf from the preserved legacy backup", async () => {
+    const f = migrationFixture();
+    const options = {
+      agentsHome: f.agents,
+      mountsRoot: f.mounts,
+      apps: [{ projectId: "p", appKey: "a" }],
+      markerPath: f.markerPath,
+    };
+    await runRunnerLayoutMigration(options);
+    rmSync(path.join(f.mounts, "p", "a", "attachments"), { recursive: true, force: true });
+
+    await expect(runRunnerLayoutMigration(options)).resolves.toMatchObject({ migrated: 1 });
+    expect(
+      readFileSync(path.join(f.mounts, "p", "a", "attachments", "ses_1", "file.txt"), "utf8"),
+    ).toBe("attachment-body");
+  });
+
+  it("fails closed when old and new trees exist with different content", async () => {
+    const f = migrationFixture();
+    const newAttachments = path.join(f.mounts, "p", "a", "attachments", "ses_1");
+    mkdirSync(newAttachments, { recursive: true });
+    writeFileSync(path.join(newAttachments, "file.txt"), "different-body");
+
+    await expect(
+      runRunnerLayoutMigration({
+        agentsHome: f.agents,
+        mountsRoot: f.mounts,
+        apps: [{ projectId: "p", appKey: "a" }],
+        markerPath: f.markerPath,
+      }),
+    ).rejects.toMatchObject({ code: "runner_layout_conflict" });
+    expect(readFileSync(path.join(f.oldAppRoot, "attachments", "ses_1", "file.txt"), "utf8")).toBe(
+      "attachment-body",
+    );
+    expect(readFileSync(path.join(newAttachments, "file.txt"), "utf8")).toBe("different-body");
+    expect(existsSync(f.markerPath)).toBe(false);
+  });
+
+  it("accepts an identical destination without a marker and records it on rerun", async () => {
+    const f = migrationFixture();
+    const destination = path.join(f.mounts, "p", "a", "attachments", "ses_1");
+    mkdirSync(destination, { recursive: true });
+    writeFileSync(path.join(destination, "file.txt"), "attachment-body");
+    const options = {
+      agentsHome: f.agents,
+      mountsRoot: f.mounts,
+      apps: [{ projectId: "p", appKey: "a" }],
+      markerPath: f.markerPath,
+    };
+
+    await expect(runRunnerLayoutMigration(options)).resolves.toMatchObject({ migrated: 1 });
+    expect(existsSync(f.markerPath)).toBe(true);
+    await expect(runRunnerLayoutMigration(options)).resolves.toMatchObject({ migrated: 0 });
+  });
+
+  it("rejects a symlinked legacy source without publishing a marker", async () => {
+    const f = migrationFixture();
+    const outside = path.join(f.base, "outside");
+    mkdirSync(outside, { recursive: true });
+    symlinkSync(outside, path.join(f.oldAppRoot, "attachments", "ses_1", "link"));
+
+    await expect(
+      runRunnerLayoutMigration({
+        agentsHome: f.agents,
+        mountsRoot: f.mounts,
+        apps: [{ projectId: "p", appKey: "a" }],
+        markerPath: f.markerPath,
+      }),
+    ).rejects.toBeInstanceOf(RunnerLayoutMigrationError);
+    expect(existsSync(f.markerPath)).toBe(false);
   });
 });

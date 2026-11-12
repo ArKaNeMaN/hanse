@@ -24,9 +24,11 @@ interface Fixture {
   base: string;
   hostWorkspace: string;
   hostAgents: string;
+  hostMounts: string;
   appDir: string;
   agentsRoot: string;
   stateDir: string;
+  mountsAppDir: string;
 }
 
 function fixture(): Fixture {
@@ -34,13 +36,24 @@ function fixture(): Fixture {
   dirs.push(base);
   const hostWorkspace = path.join(base, "workspace");
   const hostAgents = path.join(base, "agents");
+  const hostMounts = path.join(base, "mounts");
   const appDir = path.join(hostWorkspace, "project", "app");
   const agentsRoot = path.join(hostAgents, "project", "app");
   const stateDir = path.join(agentsRoot, "state");
-  for (const dir of [appDir, stateDir, path.join(agentsRoot, "home")]) {
+  const mountsAppDir = path.join(hostMounts, "project", "app");
+  for (const dir of [appDir, stateDir, path.join(agentsRoot, "home"), mountsAppDir]) {
     mkdirSync(dir, { recursive: true });
   }
-  return { base, hostWorkspace, hostAgents, appDir, agentsRoot, stateDir };
+  return {
+    base,
+    hostWorkspace,
+    hostAgents,
+    hostMounts,
+    appDir,
+    agentsRoot,
+    stateDir,
+    mountsAppDir,
+  };
 }
 
 function config(f: Fixture) {
@@ -48,6 +61,7 @@ function config(f: Fixture) {
     token: "runtime-token",
     hostWorkspace: f.hostWorkspace,
     hostAgents: f.hostAgents,
+    hostMounts: f.hostMounts,
     allowedImages: new Set(["agent-default:test"]),
     coordinatorContainer: "hanse",
     dockerSocket: "/var/run/docker.sock",
@@ -116,12 +130,23 @@ describe("runner spec validation", () => {
   it("includes the read-only attachments bind marker in the spec hash", () => {
     const f = fixture();
     const base = validateRunnerSpec(raw(f), config(f));
-    const marked = validateRunnerSpec(raw(f, { attachmentsReadOnly: true }), config(f));
+    const marked = validateRunnerSpec(
+      raw(f, { attachmentsReadOnly: true, hostMountsAppDir: f.mountsAppDir }),
+      config(f),
+    );
     expect(marked.attachmentsReadOnly).toBe(true);
+    expect(marked.hostMountsAppDir).toBe(f.mountsAppDir);
     expect(marked.specHash).not.toBe(base.specHash);
     expect(
       computeSpecHash({ ...base, specHash: undefined as never, attachmentsReadOnly: true }),
     ).toBe(marked.specHash);
+    expect(
+      computeSpecHash({
+        ...base,
+        specHash: undefined as never,
+        hostMountsAppDir: f.mountsAppDir,
+      }),
+    ).toBe(base.specHash);
   });
 
   it("requires host paths and an image allowlist in the runner env", () => {

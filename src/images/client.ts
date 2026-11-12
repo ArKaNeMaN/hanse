@@ -15,7 +15,13 @@ import type {
 } from "../runner/image-gc.js";
 import type { BaseImageKind } from "../runtime/base-image.js";
 
-export type RunnerImageStatus = "missing" | "building" | "ready" | "error";
+export type RunnerImageStatus =
+  | "missing"
+  | "building"
+  | "ready"
+  | "error"
+  | "interrupted"
+  | "cancelled";
 
 export interface ImageBuildInput {
   appId: string;
@@ -96,7 +102,14 @@ const GC_TIMEOUT_MS = 120_000;
 const PULL_TIMEOUT_MS = 12 * 60 * 1000;
 const ERROR_EXCERPT_CHARS = 300;
 const MAX_REPORT_ENTRIES = 100;
-const STATUSES: ReadonlySet<string> = new Set(["missing", "building", "ready", "error"]);
+const STATUSES: ReadonlySet<string> = new Set([
+  "missing",
+  "building",
+  "ready",
+  "error",
+  "interrupted",
+  "cancelled",
+]);
 const LEVELS: ReadonlySet<string> = new Set(["ok", "warning", "critical"]);
 const BASE_KINDS: ReadonlySet<string> = new Set(["default", "base", "explicit", "unknown"]);
 const DIGEST = /^sha256:[a-f0-9]{64}$/;

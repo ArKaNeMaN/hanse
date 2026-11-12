@@ -23,6 +23,7 @@ import {
   ImageGcService,
   usageLevel,
 } from "../src/runner/image-gc.js";
+import { ImageGate } from "../src/runner/image-mutation.js";
 import { appContainerName } from "../src/runner/names.js";
 import { RunnerService } from "../src/runner/server.js";
 import type { RunnerConfig } from "../src/runner/validate.js";
@@ -190,6 +191,54 @@ describe("image usage", () => {
     expect(report.errors).toEqual([]);
   });
 
+  it("never falls back to the workspace when the Docker data root is unset", async () => {
+    const docker = new FakeDocker();
+    let statfsCalls = 0;
+    const service = new ImageGcService({
+      docker,
+      statfs: async () => {
+        statfsCalls += 1;
+        return { blocks: 1000, bfree: 500, bavail: 500, bsize: 1000 };
+      },
+    });
+
+    const report = await service.usage();
+
+    expect(statfsCalls).toBe(0);
+    expect(report.disk).toBeNull();
+    expect(report.level).toBe("ok");
+    expect(report.errors).toContain("image data root is not configured");
+  });
+
+  it("stats the configured Docker data root and reports a failed statfs as disk null", async () => {
+    const docker = new FakeDocker();
+    const paths: string[] = [];
+    const configured = new ImageGcService({
+      docker,
+      diskPath: "/var/lib/docker",
+      statfs: async (path) => {
+        paths.push(path);
+        return { blocks: 1000, bfree: 500, bavail: 500, bsize: 1000 };
+      },
+    });
+    const configuredReport = await configured.usage();
+    expect(paths).toEqual(["/var/lib/docker"]);
+    expect(configuredReport.disk?.usedPercent).toBe(50);
+
+    const unavailable = new ImageGcService({
+      docker,
+      diskPath: "/var/lib/docker",
+      statfs: async () => {
+        throw new Error("statfs unavailable");
+      },
+    });
+    const unavailableReport = await unavailable.usage();
+    expect(unavailableReport.disk).toBeNull();
+    expect(unavailableReport.errors).toContainEqual(
+      expect.stringMatching(/^image data root filesystem usage unavailable: statfs unavailable/),
+    );
+  });
+
   it("keeps disk usage and a safe error when the Docker daemon is unavailable", async () => {
     const docker = new FakeDocker();
     docker.systemDfFailure = new Error(
@@ -267,6 +316,57 @@ describe("image gc", () => {
     );
   });
 
+  it("removes pre-v2 image names by label while keeping refs and running images", async () => {
+    const docker = new FakeDocker();
+    const keepTag = "hanse-app-project-web:keep";
+    const usedTag = "hanse-app-project-web:used";
+    const staleTag = "hanse-app-project-web:stale";
+    const currentTag = `${appContainerName("project:web")}:current`;
+    docker.images = [
+      image("sha256:keep", keepTag, 100, 1),
+      image("sha256:used", usedTag, 200, 2),
+      image("sha256:stale", staleTag, 300, 3),
+      image("sha256:current", currentTag, 400, 4),
+    ];
+    docker.containers = [
+      {
+        Id: "container-1",
+        Names: ["/hanse-app-project-web"],
+        Image: usedTag,
+        ImageID: "sha256:used",
+        State: "running",
+        Status: "Up",
+      },
+    ];
+
+    const report = await gcService(docker).gc({ protectedRefs: [keepTag] });
+
+    expect(docker.removed.sort()).toEqual([currentTag, staleTag].sort());
+    expect(report.skipped).toEqual(
+      expect.arrayContaining([
+        { ref: keepTag, reason: "protected" },
+        { ref: usedTag, reason: "protected" },
+      ]),
+    );
+  });
+
+  it("skips a Docker 409 for an in-use image during gc instead of aborting", async () => {
+    const docker = new FakeDocker();
+    const blockedTag = "hanse-app-project-web:blocked";
+    const staleTag = "hanse-app-project-web:stale";
+    docker.images = [
+      image("sha256:blocked", blockedTag, 100, 1),
+      image("sha256:stale", staleTag, 200, 2),
+    ];
+    docker.removeFailures.set(blockedTag, new DockerError(409, "image is being used"));
+
+    const report = await gcService(docker).gc({});
+
+    expect(docker.removed).toEqual([staleTag]);
+    expect(report.skipped).toContainEqual({ ref: blockedTag, reason: "protected" });
+    expect(report.removedImageCount).toBe(1);
+  });
+
   it("never removes an image shared with an unrelated tag or an unlabelled image", async () => {
     const docker = new FakeDocker();
     docker.images = [
@@ -315,6 +415,25 @@ describe("image gc", () => {
     expect(report.removedImageCount).toBe(1);
   });
 
+  it("refuses GC and purge while a shared image lease is held", async () => {
+    const docker = new FakeDocker();
+    const gate = new ImageGate();
+    const service = new ImageGcService({ docker, diskPath: "/var/lib/docker", gate });
+    const lease = gate.tryShared("create");
+
+    await expect(service.gc({})).rejects.toMatchObject({
+      status: 409,
+      code: "image_mutation_in_progress",
+    });
+    await expect(service.purgeApp("project:web")).rejects.toMatchObject({
+      status: 409,
+      code: "image_mutation_in_progress",
+    });
+
+    lease.release();
+    await expect(service.gc({})).resolves.toMatchObject({ ok: true });
+  });
+
   it("stops after the first Docker removal error instead of deleting more images", async () => {
     const docker = new FakeDocker();
     docker.images = [
@@ -350,16 +469,11 @@ describe("image purge", () => {
 
   it("removes only exact app-labelled images with only this app's tags", async () => {
     const docker = new FakeDocker();
-    const collision = "p:web:api";
-    const collisionSibling = "p:web-api";
-    expect(appContainerName(collision)).toBe(appContainerName(collisionSibling));
     const tag = `${tagPrefix}one`;
-    const collisionTag = `${appContainerName(collision)}:target`;
-    const siblingTag = `${appContainerName(collisionSibling)}:sibling`;
+    const siblingTag = `${appContainerName("p:web-api")}:sibling`;
     docker.images = [
       image("sha256:target", tag, 100, 1),
-      image("sha256:sibling", siblingTag, 200, 2, { "hanse.app.id": collisionSibling }),
-      image("sha256:collision", collisionTag, 300, 3, { "hanse.app.id": collision }),
+      image("sha256:sibling", siblingTag, 200, 2, { "hanse.app.id": "p:web-api" }),
       image("sha256:unlabelled", `${tagPrefix}unlabelled`, 400, 4, null),
       {
         Id: "sha256:shared",
@@ -379,10 +493,37 @@ describe("image purge", () => {
       ref: `${tagPrefix}shared`,
       reason: "shared_tag",
     });
-
-    const collisionReport = await gcService(docker).purgeApp(collision);
-    expect(collisionReport.removedRefs).toEqual([collisionTag]);
     expect(docker.removed).not.toContain(siblingTag);
+  });
+
+  it("purges pre-v2 image names by label instead of the current name prefix", async () => {
+    const docker = new FakeDocker();
+    const oldTag = "hanse-app-project-web:old-build";
+    const currentTag = `${tagPrefix}current`;
+    docker.images = [
+      image("sha256:old", oldTag, 100, 1),
+      image("sha256:current", currentTag, 200, 2),
+      image("sha256:sibling", "hanse-app-project-web-api:old-build", 300, 3, {
+        "hanse.app.id": "project:web-api",
+      }),
+      {
+        Id: "sha256:shared",
+        RepoTags: ["hanse-app-project-web:shared", "other:latest"],
+        Size: 400,
+        Created: 4,
+        Labels: { "hanse.app.id": appId },
+      },
+    ];
+
+    const report = await gcService(docker).purgeApp(appId);
+
+    expect(docker.removed.sort()).toEqual([currentTag, oldTag].sort());
+    expect(report.removedImageCount).toBe(2);
+    expect(docker.removed).not.toContain("hanse-app-project-web-api:old-build");
+    expect(report.skipped).toContainEqual({
+      ref: "hanse-app-project-web:shared",
+      reason: "shared_tag",
+    });
   });
 
   it("protects images used by any container and removes tagless images by id", async () => {
@@ -487,6 +628,44 @@ describe("runner image usage/gc HTTP", () => {
     if (address === null || typeof address === "string") throw new Error("no address");
     return `http://127.0.0.1:${address.port}`;
   }
+
+  it("stats the configured Docker data root and reports disk null when it is unset", async () => {
+    const base = mkdtempSync(path.join(tmpdir(), "hanse-image-gc-root-"));
+    dirs.push(base);
+    const workspace = path.join(base, "workspace");
+    mkdirSync(workspace, { recursive: true });
+    const docker = new FakeDocker();
+    const config: RunnerConfig = {
+      token: "runtime-token",
+      hostWorkspace: workspace,
+      hostAgents: path.join(base, "agents"),
+      allowedImages: new Set(["agent-default:test"]),
+      defaultImage: "agent-default:test",
+      coordinatorContainer: "hanse",
+      dockerSocket: "/var/run/docker.sock",
+      dockerApiVersion: "v1.41",
+      dockerDataRoot: workspace,
+    };
+    const configured = await listen(new RunnerService({ config, docker }));
+    const configuredUsage = await fetch(`${configured}/v1/images/usage`, {
+      headers: { authorization: "Bearer runtime-token" },
+    });
+    expect(configuredUsage.status).toBe(200);
+    expect(await configuredUsage.json()).toMatchObject({
+      disk: { usedPercent: expect.any(Number) },
+    });
+
+    const unset = await listen(
+      new RunnerService({ config: { ...config, dockerDataRoot: undefined }, docker }),
+    );
+    const unsetUsage = await fetch(`${unset}/v1/images/usage`, {
+      headers: { authorization: "Bearer runtime-token" },
+    });
+    expect(unsetUsage.status).toBe(200);
+    const unsetBody = (await unsetUsage.json()) as { disk: unknown; errors: string[] };
+    expect(unsetBody.disk).toBeNull();
+    expect(unsetBody.errors).toContain("image data root is not configured");
+  });
 
   it("requires the runtime token and serves usage and gc", async () => {
     const f = fixture();

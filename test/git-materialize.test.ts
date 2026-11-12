@@ -75,6 +75,8 @@ function materialize(
     chown?: GitCredentialChown;
     appRoot?: string;
     home?: string;
+    mountsRoot?: string;
+    visibleDir?: string;
   } = {},
 ): Record<string, string> {
   return materializeGitCredentials({
@@ -83,6 +85,8 @@ function materialize(
     home: options.home ?? f.home,
     projectId: "project",
     appKey: "app",
+    ...(options.mountsRoot === undefined ? {} : { mountsRoot: options.mountsRoot }),
+    ...(options.visibleDir === undefined ? {} : { visibleDir: options.visibleDir }),
     identity: options.identity ?? { name: null, email: null },
     auth: options.auth ?? {},
     ownership: options.ownership === undefined ? null : options.ownership,
@@ -131,6 +135,28 @@ describe("git credential materialization", () => {
     expect(readFileSync(path.join(f.managed, "token"), "utf8")).toBe(HTTPS.token);
     expect(readFileSync(path.join(f.managed, "https_hosts"), "utf8")).toBe(
       "github.com\ngitlab.example\n",
+    );
+  });
+
+  it("writes credentials under the mounts root with a stable visible path", () => {
+    const f = fixture();
+    const mountsRoot = path.join(f.base, "mounts");
+    const visibleDir = "/data/agents/project/app/home/.config/hanse/git";
+    const env = materialize(f, {
+      mountsRoot,
+      visibleDir,
+      auth: { ssh: SSH, https: HTTPS },
+    });
+
+    const written = path.join(mountsRoot, "project", "app", "git");
+    expect(readdirSync(written).sort()).toEqual(
+      ["askpass", "config", "https_hosts", "id", "known_hosts", "ssh", "token", "username"].sort(),
+    );
+    expect(existsSync(f.managed)).toBe(false);
+    expect(env.GIT_CONFIG_GLOBAL).toBe(path.join(visibleDir, "config"));
+    expect(env.HANSE_CREDENTIALS_DIR).toBe(visibleDir);
+    expect(readFileSync(path.join(written, "config"), "utf8")).toContain(
+      `sshCommand = '${path.join(visibleDir, "ssh")}'`,
     );
   });
 

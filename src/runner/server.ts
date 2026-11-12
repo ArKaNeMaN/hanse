@@ -14,7 +14,6 @@ import {
   type RuntimeAppState,
   type RuntimeAppStatus,
   type RuntimeErrorBody,
-  type RuntimeHealth,
   type RuntimeLogs,
   stoppedStatus,
 } from "../agent/protocol.js";
@@ -42,11 +41,13 @@ import {
 } from "../git/request.js";
 import { readRegularFileNoFollow } from "../opencode/password.js";
 import { isInside, resolveWithinRoot } from "../runtime/app-path.js";
-import { RUNNER_API_MAX, RUNNER_API_MIN, RUNNER_API_VERSION } from "../shared/runner-api.js";
+import { MOUNTS_ATTACHMENTS_DIR, MOUNTS_GIT_DIR, mountsGitDir } from "../shared/mounts.js";
 import { VERSION } from "../version.js";
+import { ensureBuildNetwork } from "./build-network.js";
 import {
   type DockerBuildRuntime,
   type DockerContainerInspect,
+  type DockerContainerSummary,
   DockerError,
   type DockerExecRuntime,
   type DockerExecSize,
@@ -55,13 +56,21 @@ import {
   type DockerRuntime,
 } from "./docker.js";
 import { ImageGcError, ImageGcService } from "./image-gc.js";
-import { ImageMutationMutex } from "./image-mutation.js";
+import {
+  ImageGate,
+  ImageMutationConflictError,
+  type ImageMutationLease,
+  ImageMutationMutex,
+} from "./image-mutation.js";
 import { ImagePullError, ImagePullService } from "./image-pull.js";
 import type { ImageValidationRuntime } from "./image-validation.js";
 import { ImageBuildError, ImageBuildService, resolveImageDigest } from "./images.js";
-import { appContainerName, appNetworkName } from "./names.js";
+import { GIT_LABEL, NAME_VERSION_LABEL, VALIDATION_LABEL } from "./labels.js";
+import { appContainerName, appNetworkName, legacyAppNetworkName } from "./names.js";
 import {
+  DEFAULT_BUILD_NETWORK,
   hostPathForSpecEnv,
+  MountSourceUnsafeError,
   normalizeImageReference,
   RUNNER_APP_PORT,
   RUNNER_CONTAINER_WORKSPACE_ROOT,
@@ -69,6 +78,7 @@ import {
   type RunnerSpec,
   validateRunnerSpec,
 } from "./validate.js";
+import * as versions from "./versions.js";
 import { acceptWebSocket, websocketHandshakeError } from "./ws.js";
 
 const MAX_BODY_BYTES = 64 * 1024;
@@ -77,6 +87,7 @@ const MAX_RECONCILE_APPS = 1000;
 const MAX_INSPECT_DIGESTS = 16;
 const MAX_INSPECT_DIGEST_LENGTH = 255;
 const MAX_INSPECT_BODY_BYTES = 8 * 1024;
+const BUILD_ID = /^[A-Za-z0-9-]{1,64}$/;
 const DEFAULT_LOG_TAIL = 500;
 const RUNNER_ENTRYPOINT = "/usr/local/bin/hanse-agent-entrypoint";
 const CONTAINER_CREATE_TIMEOUT_MS = 20_000;
@@ -98,6 +109,9 @@ const GIT_TIMEOUTS: Record<GitOperation, number> = {
   commit: 45_000,
   push: 195_000,
 };
+/** Running one-shots older than this are orphans: it exceeds every one-shot operation timeout. */
+const ONE_SHOT_MAX_AGE_MS = 10 * 60 * 1000;
+const ONE_SHOT_SWEEP_INTERVAL_MS = 10 * 60 * 1000;
 
 class RunnerError extends Error {
   readonly status: number;
@@ -250,6 +264,9 @@ async function readOptionalJson(request: IncomingMessage): Promise<unknown> {
 }
 
 function errorBody(error: unknown): RuntimeErrorBody {
+  if (error instanceof MountSourceUnsafeError) {
+    return { error: error.message, code: error.code };
+  }
   if (error instanceof ConfigError) {
     return { error: error.message, code: error.code };
   }
@@ -276,6 +293,7 @@ function errorBody(error: unknown): RuntimeErrorBody {
 }
 
 function statusFor(error: unknown): number {
+  if (error instanceof MountSourceUnsafeError) return 409;
   if (error instanceof RunnerGitError) return error.status;
   if (error instanceof ImageBuildError) return error.status;
   if (error instanceof ImageGcError) return error.status;
@@ -287,6 +305,36 @@ function statusFor(error: unknown): number {
 
 function appIdFromContainer(summary: { Labels?: Record<string, string> }): string | undefined {
   return summary.Labels?.["hanse.app.id"];
+}
+
+function stripContainerSlash(name: string | undefined): string | undefined {
+  if (name === undefined || name.length === 0) return undefined;
+  return name.startsWith("/") ? name.slice(1) : name;
+}
+
+function summaryContainerName(summary: DockerContainerSummary): string | undefined {
+  return stripContainerSlash(
+    summary.Names?.find((name) => typeof name === "string" && name.length > 0),
+  );
+}
+
+function inspectContainerName(inspect: DockerContainerInspect): string | undefined {
+  return stripContainerSlash(inspect.Name);
+}
+
+/** Only an exited/dead container is safe to replace automatically; anything else fails closed. */
+function isStoppedLegacyState(state: string | undefined): boolean {
+  return state === "exited" || state === "dead";
+}
+
+function isLiveOneShotState(state: string | undefined): boolean {
+  return state === "running" || state === "paused" || state === "restarting";
+}
+
+function logOneShotSweep(removed: readonly string[]): void {
+  if (removed.length > 0) {
+    console.log(`[runner] swept ${removed.length} stale one-shot container(s)`);
+  }
 }
 
 function containerState(inspect: DockerContainerInspect): RuntimeAppState {
@@ -448,15 +496,46 @@ function restartRequired(message: string): RunnerError {
   return new RunnerError(409, message, "restart_required");
 }
 
+function mountSourceUnsafe(message: string): RunnerError {
+  return new RunnerError(409, message, "mount_source_unsafe");
+}
+
 function realDirectory(directory: string): boolean {
   const info = lstatSync(directory, { throwIfNoEntry: false });
   return info !== undefined && !info.isSymbolicLink() && info.isDirectory();
+}
+
+function requiredMountLeaf(hostMountsAppDir: string | undefined, leaf: string): string {
+  if (hostMountsAppDir === undefined) {
+    throw mountSourceUnsafe("application mount-source directory is not configured");
+  }
+  const source = path.join(hostMountsAppDir, leaf);
+  if (!realDirectory(source)) {
+    throw mountSourceUnsafe(`mount source is missing or unsafe: ${leaf}`);
+  }
+  return source;
+}
+
+function mountsGitBind(spec: RunnerSpec): string[] {
+  if (spec.hostMountsAppDir === undefined) return [];
+  const source = requiredMountLeaf(spec.hostMountsAppDir, MOUNTS_GIT_DIR);
+  const target = path.posix.join(
+    spec.containerAgentsRoot,
+    "home",
+    ".config",
+    "hanse",
+    MOUNTS_GIT_DIR,
+  );
+  return [`${source}:${target}:ro`];
 }
 
 function managedGitDirectory(
   inspect: DockerContainerInspect,
   config: RunnerConfig,
 ): ManagedGitDirectory {
+  if (config.hostMounts === undefined) {
+    throw mountSourceUnsafe("HANSE_HOST_MOUNTS is not configured");
+  }
   const label = inspect.Config?.Labels?.["hanse.agents.root"];
   if (label === undefined || label.trim().length === 0) {
     throw restartRequired("Restart the agent to materialize git credentials.");
@@ -472,40 +551,33 @@ function managedGitDirectory(
     throw restartRequired("Restart the agent to materialize git credentials.");
   }
   const relative = path.relative(config.hostAgents, hostAgentsRoot);
-  if (relative.length === 0 || relative.split(path.sep).length !== 2) {
+  const segments = relative.split(path.sep);
+  if (relative.length === 0 || segments.length !== 2) {
     throw restartRequired("Restart the agent to materialize git credentials.");
   }
-
-  const home = path.join(hostAgentsRoot, "home");
-  let realAgentsRoot: string;
-  let realHome: string;
+  const projectSegment = segments[0] as string;
+  const appSegment = segments[1] as string;
+  const credentialDir = mountsGitDir(config.hostMounts, projectSegment, appSegment);
+  let realCredentialDir: string;
   try {
-    realAgentsRoot = realpathSync(hostAgentsRoot);
-    realHome = realpathSync(home);
-  } catch {
-    throw restartRequired("Restart the agent to materialize git credentials.");
-  }
-  if (realHome !== path.join(realAgentsRoot, "home")) {
-    throw restartRequired(
-      "The application home is not a real directory; repair it and restart the agent.",
-    );
-  }
-  let current = home;
-  for (const segment of [".config", "hanse", "git"]) {
-    current = path.join(current, segment);
-    if (!realDirectory(current)) {
-      throw restartRequired(
-        "The application home is not a real directory; repair it and restart the agent.",
-      );
+    const realMountsRoot = realpathSync(config.hostMounts);
+    realCredentialDir = realpathSync(credentialDir);
+    const expected = path.join(realMountsRoot, projectSegment, appSegment, MOUNTS_GIT_DIR);
+    if (realCredentialDir !== expected || !isInside(realMountsRoot, realCredentialDir)) {
+      throw new Error("unsafe");
     }
+  } catch {
+    throw mountSourceUnsafe("the application git mount source is missing or unsafe");
   }
-  const credentialDirHost = current;
+  if (!realDirectory(credentialDir)) {
+    throw mountSourceUnsafe("the application git mount source is not a real directory");
+  }
   for (const file of ["config", "ssh", "askpass"]) {
-    if (!existsSync(path.join(credentialDirHost, file))) {
+    if (!existsSync(path.join(credentialDir, file))) {
       throw restartRequired("Restart the agent to materialize git credentials.");
     }
   }
-  return { hostAgentsRoot, credentialDirHost };
+  return { hostAgentsRoot, credentialDirHost: credentialDir };
 }
 
 function managedGitEnv(operation?: GitRequest, test?: GitTestRequest): Record<string, string> {
@@ -649,6 +721,7 @@ export interface RunnerServiceOptions {
   validation?: ImageValidationRuntime;
   imageGc?: ImageGcService;
   mutex?: ImageMutationMutex;
+  gate?: ImageGate;
 }
 
 /** Per-app container runtime behind the same API shape as the B0 supervisor. */
@@ -659,6 +732,7 @@ export class RunnerService {
   readonly #images: ImageBuildService;
   readonly #imageGc: ImageGcService;
   readonly #imagePull: ImagePullService;
+  readonly #gate: ImageGate;
 
   constructor(options: RunnerServiceOptions) {
     this.#config = options.config;
@@ -666,9 +740,13 @@ export class RunnerService {
     this.#exec = options.exec;
     const inspectImage = options.docker.inspectImage?.bind(options.docker);
     const mutex = options.mutex ?? new ImageMutationMutex();
+    const gate = options.gate ?? new ImageGate();
+    this.#gate = gate;
     this.#images = new ImageBuildService({
       config: options.config,
       mutex,
+      gate,
+      network: options.docker,
       ...(options.build === undefined ? {} : { build: options.build }),
       ...(options.validation === undefined ? {} : { validation: options.validation }),
       ...(inspectImage === undefined ? {} : { inspectImage }),
@@ -677,8 +755,11 @@ export class RunnerService {
       options.imageGc ??
       new ImageGcService({
         docker: options.docker,
-        diskPath: process.env.HANSE_IMAGE_DISK_PATH?.trim() || options.config.hostWorkspace,
+        ...(options.config.dockerDataRoot === undefined
+          ? {}
+          : { diskPath: options.config.dockerDataRoot }),
         mutex,
+        gate,
         protectedRefs: () => this.#images.protectedBuildTags(),
       });
     this.#imagePull = new ImagePullService({
@@ -686,19 +767,33 @@ export class RunnerService {
       docker: options.docker,
       imageGc: this.#imageGc,
       mutex,
+      gate,
     });
   }
 
-  async health(): Promise<RuntimeHealth> {
-    const containers = await this.#docker.listContainers("hanse.managed=true");
-    return {
-      ok: true,
-      hanseVersion: VERSION,
-      apps: containers.length,
-      apiVersion: RUNNER_API_VERSION,
-      minApiVersion: RUNNER_API_MIN,
-      maxApiVersion: RUNNER_API_MAX,
-    };
+  #enforceResourceLimits(spec: RunnerSpec): void {
+    const { appMemoryMaxMb, appCpusMax, appPidsMax } = this.#config;
+    if (appMemoryMaxMb !== undefined && spec.resources.memoryBytes > appMemoryMaxMb * 1024 * 1024) {
+      throw new RunnerError(
+        400,
+        `resources.memoryBytes exceeds the runner maximum of ${appMemoryMaxMb} MiB`,
+        "resource_limit",
+      );
+    }
+    if (appCpusMax !== undefined && spec.resources.nanoCpus > appCpusMax * 1_000_000_000) {
+      throw new RunnerError(
+        400,
+        `resources.nanoCpus exceeds the runner maximum of ${appCpusMax} CPUs`,
+        "resource_limit",
+      );
+    }
+    if (appPidsMax !== undefined && spec.resources.pidsLimit > appPidsMax) {
+      throw new RunnerError(
+        400,
+        `resources.pidsLimit exceeds the runner maximum of ${appPidsMax}`,
+        "resource_limit",
+      );
+    }
   }
 
   async #isBuiltAppImage(appId: string, image: string): Promise<boolean> {
@@ -814,30 +909,69 @@ export class RunnerService {
 
   async ensure(raw: unknown, expectedAppId?: string): Promise<RuntimeAppStatus> {
     const spec = validateRunnerSpec(raw, this.#config, await this.#extraAllowedImages(raw));
+    this.#enforceResourceLimits(spec);
     if (expectedAppId !== undefined && spec.appId !== expectedAppId) {
       throw new RunnerError(400, "appId in the path does not match the spec");
     }
     if (spec.attachmentsReadOnly === true) {
-      const source = path.join(spec.hostAgentsRoot, "attachments");
-      const stat = lstatSync(source, { throwIfNoEntry: false });
-      if (stat === undefined || stat.isSymbolicLink() || !stat.isDirectory()) {
-        throw new RunnerError(
-          409,
-          "attachments bind source is missing or unsafe; repair the application state directory",
-          "attachments_root_missing",
-        );
+      requiredMountLeaf(spec.hostMountsAppDir, MOUNTS_ATTACHMENTS_DIR);
+    }
+    const managed = await this.#managedContainers(spec.appId);
+    if (managed.length > 1) {
+      throw new RunnerError(
+        409,
+        "multiple managed containers exist for this application",
+        "ambiguous_container",
+      );
+    }
+    let found = managed[0];
+    if (found !== undefined) {
+      const foundName = summaryContainerName(found);
+      if (foundName !== spec.containerName) {
+        if (!isStoppedLegacyState(found.State)) {
+          throw new RunnerError(
+            409,
+            "application container uses the pre-v2 name; stop it before starting",
+            "migration_required",
+          );
+        }
+        const legacy = await this.#docker.inspectContainer(found.Id);
+        if (legacy !== undefined) {
+          if (!this.#isManagedForApp(legacy, spec.appId)) {
+            throw new RunnerError(
+              409,
+              "managed container labels changed before migration",
+              "label_mismatch",
+            );
+          }
+          await this.#docker.removeContainer(legacy.Id, true);
+        }
+        found = undefined;
       }
     }
+
     const pinnedImageId = await this.#resolvePinnedImageId(spec);
     await this.#docker.ensureNetwork({
       name: spec.networkName,
       labels: {
         "hanse.managed": "true",
         "hanse.app.id": spec.appId,
+        [NAME_VERSION_LABEL]: String(versions.NAME_VERSION),
       },
     });
 
-    const existing = await this.#docker.inspectContainer(spec.containerName);
+    const existing =
+      found === undefined ? undefined : await this.#docker.inspectContainer(found.Id);
+    if (found !== undefined && existing === undefined) {
+      throw new RunnerError(409, "managed container disappeared before adoption", "label_mismatch");
+    }
+    if (existing !== undefined && !this.#isManagedForApp(existing, spec.appId)) {
+      throw new RunnerError(
+        409,
+        "managed container labels changed before adoption",
+        "label_mismatch",
+      );
+    }
     if (existing !== undefined && existing.Config?.Labels?.["hanse.spec.hash"] === spec.specHash) {
       const running = existing.State?.Running === true;
       if (!running) {
@@ -852,7 +986,7 @@ export class RunnerService {
         if (existing.Image === targetImageId) {
           await this.#docker.startContainer(existing.Id);
           await this.#connectCoordinator(spec.networkName);
-          const inspected = await this.#docker.inspectContainer(spec.containerName);
+          const inspected = await this.#docker.inspectContainer(existing.Id);
           if (inspected === undefined) {
             throw new RunnerError(502, "container disappeared after start");
           }
@@ -872,7 +1006,21 @@ export class RunnerService {
       await this.#docker.removeContainer(existing.Id, true);
     }
 
-    const id = await this.#createOrAdoptContainer(spec, pinnedImageId ?? spec.image);
+    let createLease: ImageMutationLease;
+    try {
+      createLease = this.#gate.tryShared("create");
+    } catch (error) {
+      if (error instanceof ImageMutationConflictError) {
+        throw new RunnerError(409, error.message, "image_mutation_in_progress");
+      }
+      throw error;
+    }
+    let id: string;
+    try {
+      id = await this.#createOrAdoptContainer(spec, pinnedImageId ?? spec.image);
+    } finally {
+      createLease.release();
+    }
     if (pinnedImageId !== null) {
       const created = await this.#docker.inspectContainer(id);
       if (created === undefined || created.Image !== pinnedImageId) {
@@ -887,7 +1035,7 @@ export class RunnerService {
       await this.#docker.removeContainer(id, true).catch(() => undefined);
       throw error;
     }
-    const inspected = await this.#docker.inspectContainer(spec.containerName);
+    const inspected = await this.#docker.inspectContainer(id);
     if (inspected === undefined) {
       throw new RunnerError(502, "container disappeared after create");
     }
@@ -913,6 +1061,14 @@ export class RunnerService {
    * `created` forever with no start attempted. A container belonging to another spec is left alone.
    */
   async #createOrAdoptContainer(spec: RunnerSpec, image: string): Promise<string> {
+    const conflict = await this.#docker.inspectContainer(spec.containerName);
+    if (conflict !== undefined && !this.#isManagedForApp(conflict, spec.appId)) {
+      throw new RunnerError(
+        409,
+        "container name is already in use by a container not managed for this application",
+        "name_conflict",
+      );
+    }
     try {
       return await this.#docker.createContainer(
         {
@@ -931,6 +1087,7 @@ export class RunnerService {
             ...spec.labels,
             "hanse.managed": "true",
             "hanse.app.id": spec.appId,
+            [NAME_VERSION_LABEL]: String(versions.NAME_VERSION),
             "hanse.image": spec.image,
             "hanse.spec.hash": spec.specHash,
             "hanse.network.name": spec.networkName,
@@ -941,9 +1098,10 @@ export class RunnerService {
             `${spec.hostAgentsRoot}:${spec.containerAgentsRoot}:rw`,
             ...(spec.attachmentsReadOnly === true
               ? [
-                  `${path.join(spec.hostAgentsRoot, "attachments")}:${path.posix.join(spec.containerAgentsRoot, "attachments")}:ro`,
+                  `${requiredMountLeaf(spec.hostMountsAppDir, MOUNTS_ATTACHMENTS_DIR)}:${path.posix.join(spec.containerAgentsRoot, MOUNTS_ATTACHMENTS_DIR)}:ro`,
                 ]
               : []),
+            ...mountsGitBind(spec),
           ],
           tmpfs: {
             "/tmp": "rw,exec,nosuid,size=1g",
@@ -973,13 +1131,16 @@ export class RunnerService {
     } catch {
       return undefined;
     }
-    const labels = existing?.Config?.Labels;
-    if (
-      existing === undefined ||
-      labels?.["hanse.managed"] !== "true" ||
-      labels["hanse.app.id"] !== spec.appId ||
-      labels["hanse.spec.hash"] !== spec.specHash
-    ) {
+    if (existing === undefined) return undefined;
+    const labels = existing.Config?.Labels;
+    if (labels?.["hanse.managed"] !== "true" || labels["hanse.app.id"] !== spec.appId) {
+      throw new RunnerError(
+        409,
+        "container name is already in use by a container not managed for this application",
+        "name_conflict",
+      );
+    }
+    if (labels["hanse.spec.hash"] !== spec.specHash) {
       return undefined;
     }
     if (spec.expectedImageId !== undefined && existing.Image !== spec.expectedImageId) {
@@ -990,20 +1151,23 @@ export class RunnerService {
   }
 
   async delete(appId: string): Promise<RuntimeAppStatus> {
-    const summary = await this.#findContainer(appId);
-    if (summary === undefined) {
-      await this.#removeManagedAppNetwork(appNetworkName(appId), appId);
-      return stoppedStatus(appId);
+    const containers = await this.#managedContainers(appId);
+    const networks = new Set<string>([appNetworkName(appId), legacyAppNetworkName(appId)]);
+    let specHash: string | null = null;
+    for (const summary of containers) {
+      const inspect = await this.#docker.inspectContainer(summary.Id);
+      if (inspect === undefined) continue;
+      if (!this.#isManagedForApp(inspect, appId)) continue;
+      specHash = inspect.Config?.Labels?.["hanse.spec.hash"] ?? specHash;
+      const network = inspect.Config?.Labels?.["hanse.network.name"];
+      if (network !== undefined && network.length > 0) networks.add(network);
+      await this.#docker.stopContainer(summary.Id);
+      await this.#docker.removeContainer(summary.Id, true);
     }
-    const inspect = await this.#docker.inspectContainer(summary.Id);
-    const network = inspect?.Config?.Labels?.["hanse.network.name"] ?? appNetworkName(appId);
-    await this.#docker.stopContainer(summary.Id);
-    await this.#docker.removeContainer(summary.Id, true);
-    await this.#removeManagedAppNetwork(network, appId);
-    return {
-      ...stoppedStatus(appId),
-      specHash: inspect?.Config?.Labels?.["hanse.spec.hash"] ?? null,
-    };
+    for (const network of networks) {
+      await this.#removeManagedAppNetwork(network, appId);
+    }
+    return { ...stoppedStatus(appId), specHash };
   }
 
   async #inspectNetwork(name: string) {
@@ -1024,6 +1188,12 @@ export class RunnerService {
     await this.#docker
       .disconnectNetwork(network, this.#config.coordinatorContainer)
       .catch(() => undefined);
+    const remaining = await this.#inspectNetwork(network);
+    const attached = Object.keys(remaining?.Containers ?? {}).length;
+    if (attached > 0) {
+      console.warn(`[runner] leaving app network ${network}: ${attached} container(s) attached`);
+      return;
+    }
     try {
       await this.#docker.removeNetwork(network);
     } catch (error) {
@@ -1032,13 +1202,45 @@ export class RunnerService {
     }
   }
 
+  async #managedContainers(appId: string): Promise<DockerContainerSummary[]> {
+    const containers = await this.#docker.listContainers("hanse.managed=true");
+    return containers.filter(
+      (container) =>
+        container.Labels?.["hanse.managed"] === "true" &&
+        container.Labels?.["hanse.app.id"] === appId,
+    );
+  }
+
+  #isManagedForApp(inspect: DockerContainerInspect, appId: string): boolean {
+    const labels = inspect.Config?.Labels;
+    return labels?.["hanse.managed"] === "true" && labels?.["hanse.app.id"] === appId;
+  }
+
+  async #findManagedContainer(appId: string): Promise<DockerContainerSummary | undefined> {
+    const containers = await this.#managedContainers(appId);
+    if (containers.length > 1) {
+      throw new RunnerError(
+        409,
+        "multiple managed containers exist for this application",
+        "ambiguous_container",
+      );
+    }
+    return containers[0];
+  }
+
   async status(appId: string): Promise<RuntimeAppStatus | undefined> {
     if (!isValidAppId(appId)) {
       throw new RunnerError(400, "invalid app id");
     }
-    const containerName = appContainerName(appId);
-    const inspect = await this.#docker.inspectContainer(containerName);
+    const summary = await this.#findManagedContainer(appId);
+    if (summary === undefined) return undefined;
+    const inspect = await this.#docker.inspectContainer(summary.Id);
     if (inspect === undefined) return undefined;
+    if (!this.#isManagedForApp(inspect, appId)) {
+      throw new RunnerError(409, "managed container labels changed", "label_mismatch");
+    }
+    const containerName =
+      inspectContainerName(inspect) ?? summaryContainerName(summary) ?? appContainerName(appId);
     if (inspect.State?.Running === true) {
       const network = inspect.Config?.Labels?.["hanse.network.name"];
       if (network !== undefined) {
@@ -1052,9 +1254,10 @@ export class RunnerService {
     if (!isValidAppId(appId)) {
       throw new RunnerError(400, "invalid app id");
     }
-    const containerName = appContainerName(appId);
-    const inspect = await this.#docker.inspectContainer(containerName);
-    if (inspect === undefined) return undefined;
+    const summary = await this.#findManagedContainer(appId);
+    if (summary === undefined) return undefined;
+    const inspect = await this.#docker.inspectContainer(summary.Id);
+    if (inspect === undefined || !this.#isManagedForApp(inspect, appId)) return undefined;
     const logs = await this.#docker.logs(inspect.Id, DEFAULT_LOG_TAIL);
     return { appId, logs: logs.logs, truncated: logs.truncated };
   }
@@ -1087,6 +1290,53 @@ export class RunnerService {
     return this.reconcile([]);
   }
 
+  /** Remove stopped pre-v2 containers only; a running app container is never touched. */
+  async sweepStoppedLegacyContainers(): Promise<string[]> {
+    const containers = await this.#docker.listContainers("hanse.managed=true");
+    const removed: string[] = [];
+    for (const summary of containers) {
+      const appId = appIdFromContainer(summary);
+      if (appId === undefined) continue;
+      if (summaryContainerName(summary) === appContainerName(appId)) continue;
+      if (!isStoppedLegacyState(summary.State)) continue;
+      const inspect = await this.#docker.inspectContainer(summary.Id);
+      if (inspect === undefined || !this.#isManagedForApp(inspect, appId)) continue;
+      const name = inspectContainerName(inspect) ?? summaryContainerName(summary);
+      if (name === appContainerName(appId)) continue;
+      await this.#docker.removeContainer(summary.Id, true);
+      removed.push(appId);
+    }
+    return removed;
+  }
+
+  /**
+   * Remove orphaned one-shot git/validation containers. A stopped one-shot is always removed; a
+   * live one is removed only when Docker reports its creation time and it exceeds the one-shot
+   * operation timeout, so an in-flight git/validation job is never killed. Managed app containers
+   * and containers without the one-shot labels are never touched. Best-effort: removal errors leave
+   * the container for a later sweep.
+   */
+  async sweepOneShotContainers(now = Date.now()): Promise<string[]> {
+    const containers = await this.#docker.listContainers();
+    const removed: string[] = [];
+    for (const summary of containers) {
+      const labels = summary.Labels;
+      if (labels?.["hanse.managed"] === "true") continue;
+      if (labels?.[GIT_LABEL] !== "true" && labels?.[VALIDATION_LABEL] !== "true") continue;
+      if (isLiveOneShotState(summary.State)) {
+        if (summary.Created === undefined || !Number.isFinite(summary.Created)) continue;
+        if (now - summary.Created * 1000 < ONE_SHOT_MAX_AGE_MS) continue;
+      }
+      try {
+        await this.#docker.removeContainer(summary.Id, true);
+        removed.push(summary.Id);
+      } catch {
+        // Best-effort; a stale container is retried by the next sweep.
+      }
+    }
+    return removed;
+  }
+
   async #gitTarget(appId: string): Promise<{
     inspect: DockerContainerInspect;
     image: string;
@@ -1096,13 +1346,12 @@ export class RunnerService {
     if (!isValidAppId(appId)) {
       throw new RunnerError(400, "invalid app id");
     }
-    const inspect = await this.#docker.inspectContainer(appContainerName(appId));
-    const labels = inspect?.Config?.Labels;
-    if (
-      inspect === undefined ||
-      labels?.["hanse.managed"] !== "true" ||
-      labels?.["hanse.app.id"] !== appId
-    ) {
+    const summary = await this.#findManagedContainer(appId);
+    if (summary === undefined) {
+      throw new RunnerError(404, "unknown app");
+    }
+    const inspect = await this.#docker.inspectContainer(summary.Id);
+    if (inspect === undefined || !this.#isManagedForApp(inspect, appId)) {
       throw new RunnerError(404, "unknown app");
     }
     if (inspect.State?.Running !== true) {
@@ -1122,9 +1371,10 @@ export class RunnerService {
 
   async git(appId: string, raw: unknown): Promise<GitOpPayload> {
     const request = validateGitRequest(raw);
-    const { image, mounts, managed } = await this.#gitTarget(appId);
+    const { inspect, image, mounts, managed } = await this.#gitTarget(appId);
 
-    const network = !GIT_NETWORK_OPERATIONS.has(request.operation) ? "none" : appNetworkName(appId);
+    const appNetwork = inspect.Config?.Labels?.["hanse.network.name"] ?? appNetworkName(appId);
+    const network = !GIT_NETWORK_OPERATIONS.has(request.operation) ? "none" : appNetwork;
     const timeout = GIT_TIMEOUTS[request.operation];
     const containerName = `hanse-git-${appId.replace(/[^A-Za-z0-9_.-]+/g, "-").slice(0, 40)}-${randomUUID().slice(0, 8)}`;
     const credentialsMaterialized =
@@ -1198,7 +1448,7 @@ export class RunnerService {
       }
       throw error;
     }
-    const { image, mounts } = await this.#gitTarget(appId);
+    const { inspect, image, mounts } = await this.#gitTarget(appId);
 
     mkdirSync(this.#config.hostRunnerTmp, { recursive: true, mode: 0o700 });
     const tempRoot = path.join(this.#config.hostRunnerTmp, `git-test-${randomUUID()}`);
@@ -1221,7 +1471,7 @@ export class RunnerService {
     }
 
     const containerName = `hanse-git-test-${appId.replace(/[^A-Za-z0-9_.-]+/g, "-").slice(0, 40)}-${randomUUID().slice(0, 8)}`;
-    const network = appNetworkName(appId);
+    const network = inspect.Config?.Labels?.["hanse.network.name"] ?? appNetworkName(appId);
 
     let id: string | undefined;
     try {
@@ -1323,19 +1573,50 @@ export class RunnerService {
         writeJson(response, 405, { error: "method not allowed" }, { Allow: "GET" });
         return;
       }
-      try {
-        writeJson(response, 200, await this.health());
-      } catch (error) {
-        writeJson(response, 503, {
-          error: `docker unavailable: ${error instanceof Error ? error.message : String(error)}`,
-        });
-      }
+      writeJson(response, 200, { status: "ok" });
       return;
     }
 
     const provided = bearerToken(request);
     if (provided === undefined || !tokenMatches(provided, this.#config.token)) {
       writeJson(response, 401, { error: "unauthorized" }, { "www-authenticate": "Bearer" });
+      return;
+    }
+
+    if (url.pathname === "/readyz") {
+      if (method !== "GET") {
+        writeJson(response, 405, { error: "method not allowed" }, { Allow: "GET" });
+        return;
+      }
+      try {
+        if (this.#docker.ping !== undefined) {
+          await this.#docker.ping();
+        } else {
+          await this.#docker.version();
+        }
+      } catch (error) {
+        throw new RunnerError(
+          503,
+          `docker unavailable: ${error instanceof Error ? error.message : String(error)}`,
+          "docker_unavailable",
+        );
+      }
+      writeJson(response, 200, { status: "ok" });
+      return;
+    }
+
+    if (url.pathname === "/v1/meta") {
+      if (method !== "GET") {
+        writeJson(response, 405, { error: "method not allowed" }, { Allow: "GET" });
+        return;
+      }
+      writeJson(response, 200, {
+        apiVersion: versions.RUNNER_API_VERSION,
+        minApiVersion: versions.MIN_RUNNER_API_VERSION,
+        nameVersion: versions.NAME_VERSION,
+        recordVersion: versions.RECORD_VERSION,
+        runnerVersion: VERSION,
+      });
       return;
     }
 
@@ -1405,6 +1686,26 @@ export class RunnerService {
         response.off("close", onResponseClose);
         request.socket.off("close", onSocketClose);
       }
+      return;
+    }
+
+    const buildCancelMatch = /^\/v1\/images\/builds\/([^/]+)\/cancel$/.exec(url.pathname);
+    if (buildCancelMatch !== null) {
+      if (method !== "POST") {
+        writeJson(response, 405, { error: "method not allowed" }, { Allow: "POST" });
+        return;
+      }
+      let buildId: string;
+      try {
+        buildId = decodeURIComponent(buildCancelMatch[1] ?? "");
+      } catch {
+        throw new RunnerError(400, "invalid build id");
+      }
+      if (!BUILD_ID.test(buildId)) {
+        throw new RunnerError(400, "invalid build id");
+      }
+      const record = this.#images.cancel(buildId);
+      writeJson(response, 202, { buildId: record.buildId ?? buildId, status: "cancelled" });
       return;
     }
 
@@ -1610,13 +1911,10 @@ export class RunnerService {
       return;
     }
 
-    const inspect = await this.#docker.inspectContainer(appContainerName(appId));
-    const labels = inspect?.Config?.Labels;
-    if (
-      inspect === undefined ||
-      labels?.["hanse.managed"] !== "true" ||
-      labels?.["hanse.app.id"] !== appId
-    ) {
+    const summary = await this.#findManagedContainer(appId);
+    const inspect =
+      summary === undefined ? undefined : await this.#docker.inspectContainer(summary.Id);
+    if (inspect === undefined || !this.#isManagedForApp(inspect, appId)) {
       writeSocketResponse(socket, 404, { error: "unknown app" });
       return;
     }
@@ -1676,11 +1974,6 @@ export class RunnerService {
   async #connectCoordinator(network: string): Promise<void> {
     await this.#docker.connectNetwork(network, this.#config.coordinatorContainer, ["hanse"]);
   }
-
-  async #findContainer(appId: string) {
-    const containers = await this.#docker.listContainers("hanse.managed=true");
-    return containers.find((container) => appIdFromContainer(container) === appId);
-  }
 }
 
 export interface RunRunnerOptions {
@@ -1722,6 +2015,14 @@ export function sweepStaleGitTestDirs(root: string, now = Date.now()): void {
 /** Start the runner HTTP server and close it on SIGTERM/SIGINT. */
 export async function runRunner(options: RunRunnerOptions): Promise<number> {
   sweepStaleGitTestDirs(options.config.hostRunnerTmp);
+  await ensureBuildNetwork(
+    options.config.buildNetwork ?? DEFAULT_BUILD_NETWORK,
+    options.docker,
+  ).catch((error) => {
+    console.warn(
+      `[runner] build network unavailable; builds will fail closed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  });
   const service = new RunnerService({
     config: options.config,
     docker: options.docker,
@@ -1729,6 +2030,18 @@ export async function runRunner(options: RunRunnerOptions): Promise<number> {
     ...(options.build === undefined ? {} : { build: options.build }),
     ...(options.validation === undefined ? {} : { validation: options.validation }),
   });
+  await service.sweepStoppedLegacyContainers().catch(() => undefined);
+  await service
+    .sweepOneShotContainers()
+    .then(logOneShotSweep)
+    .catch(() => undefined);
+  const sweepTimer = setInterval(() => {
+    void service
+      .sweepOneShotContainers()
+      .then(logOneShotSweep)
+      .catch(() => undefined);
+  }, ONE_SHOT_SWEEP_INTERVAL_MS);
+  sweepTimer.unref();
   const server = service.createServer();
   await new Promise<void>((resolve, reject) => {
     const onError = (error: Error): void => {
@@ -1755,6 +2068,7 @@ export async function runRunner(options: RunRunnerOptions): Promise<number> {
     const stop = (): void => {
       if (stopping) return;
       stopping = true;
+      clearInterval(sweepTimer);
       server.closeAllConnections();
       server.close(() => resolve(0));
     };

@@ -155,24 +155,32 @@ export class HttpAgentRuntimeClient implements AgentRuntimeClient {
     })) as ReconcileResponse;
   }
 
+  /**
+   * Read the runner protocol window from the authenticated `/v1/meta` endpoint.
+   *
+   * A transport failure is `undefined` (the runner may still be starting); a reachable runner that
+   * does not serve a usable `/v1/meta` degrades to the incompatible zero version so callers refuse
+   * it instead of silently using a legacy handshake.
+   */
   async handshake(): Promise<RunnerHandshake | undefined> {
     let response: Response;
     try {
-      response = await this.#fetch(`${this.#baseUrl}/healthz`, {
+      response = await this.#fetch(`${this.#baseUrl}/v1/meta`, {
+        headers: { authorization: `Bearer ${this.#token}` },
         signal: AbortSignal.timeout(this.#timeoutMs),
       });
     } catch {
       return undefined;
     }
     if (!response.ok) {
-      return undefined;
+      return { apiVersion: 0, minApiVersion: 0, maxApiVersion: 0 };
     }
     const parsed: unknown = await response.json().catch(() => undefined);
     if (!isRecord(parsed)) {
-      return undefined;
+      return { apiVersion: 0, minApiVersion: 0, maxApiVersion: 0 };
     }
     const hanseVersion =
-      typeof parsed.hanseVersion === "string" ? { hanseVersion: parsed.hanseVersion } : {};
+      typeof parsed.runnerVersion === "string" ? { hanseVersion: parsed.runnerVersion } : {};
     const apiVersion = Number(parsed.apiVersion);
     if (!Number.isInteger(apiVersion)) {
       return { apiVersion: 0, minApiVersion: 0, maxApiVersion: 0, ...hanseVersion };

@@ -64,6 +64,8 @@ export interface HttpDeps {
   /** Present only when the coordinator is wired to the runner; preview tools 503/unavailable otherwise. */
   previews?: PreviewService;
   agentsHome?: string;
+  /** Coordinator-owned bind-source root for attachment storage, when configured. */
+  mountsHome?: string;
   baselinePlugins?: string[];
   runner?: { url: string; token: string };
   /** Present when the coordinator is wired to the runner; image routes 503 otherwise. */

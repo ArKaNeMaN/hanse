@@ -358,8 +358,8 @@ LABEL org.opencontainers.image.title="hanse-runner" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${REVISION}" \
       org.opencontainers.image.licenses="NOASSERTION" \
-      org.hanse.api.min="1" \
-      org.hanse.api.max="1" \
+      org.hanse.api.min="3" \
+      org.hanse.api.max="3" \
       org.hanse.schema.min="0" \
       org.hanse.schema.max="0"
 

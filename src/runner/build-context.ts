@@ -1,5 +1,5 @@
 import { Buffer } from "node:buffer";
-import { constants } from "node:fs";
+import { type BigIntStats, constants, type Dirent, type Stats } from "node:fs";
 import { type FileHandle, lstat, open, readdir, realpath, stat } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
@@ -7,7 +7,7 @@ import type { Ignore } from "@balena/dockerignore";
 import {
   DOCKERIGNORE_FILENAME,
   DockerignoreFileError,
-  readDockerignoreFile,
+  MAX_DOCKERIGNORE_BYTES,
 } from "../runtime/dockerignore.js";
 
 type DockerignoreFactory = (options?: { ignorecase?: boolean }) => Ignore;
@@ -26,6 +26,15 @@ export const DEFAULT_MAX_ENTRIES = 20_000;
 const TAR_BLOCK = 512;
 const TAR_NAME_MAX = 100;
 const TAR_PREFIX_MAX = 155;
+const DEFAULT_PROC_FD_ROOT = "/proc/self/fd";
+/**
+ * Node/libuv already opens descriptors close-on-exec, but `fs.constants` does not expose
+ * `O_CLOEXEC` on every supported Node version. Use it when present, otherwise use the Linux ABI
+ * value (the runner target) and rely on the libuv default elsewhere.
+ */
+const O_CLOEXEC =
+  (constants as { readonly O_CLOEXEC?: number }).O_CLOEXEC ??
+  (process.platform === "linux" ? 0o2000000 : 0);
 
 /**
  * Top-level application entries that never belong in a build context.
@@ -70,7 +79,9 @@ export type BuildContextErrorCode =
   | "TOO_LARGE"
   | "TOO_MANY_ENTRIES"
   | "PATH_TOO_LONG"
-  | "READ_FAILED";
+  | "READ_FAILED"
+  | "PROC_UNAVAILABLE"
+  | "ROOT_CHANGED";
 
 /** Typed error thrown while assembling a build context. There is no silent fallback. */
 export class BuildContextError extends Error {
@@ -89,6 +100,22 @@ export class BuildContextError extends Error {
   }
 }
 
+/** Device/inode identity captured at the last path-validation point for the app root. */
+export interface RootIdentity {
+  readonly dev: bigint;
+  readonly ino: bigint;
+}
+
+/**
+ * Internal test seams used to exercise filesystem races. Production callers must not set them.
+ */
+export interface BuildContextHooks {
+  /** Runs after a directory's entries are read and before any child is opened. */
+  readonly afterReaddir?: (relativeDirectory: string) => void | Promise<void>;
+  /** Runs immediately before an accepted (non-ignored) entry is opened. */
+  readonly beforeOpen?: (relative: string) => void | Promise<void>;
+}
+
 export interface BuildContextOptions {
   /** Dockerfile path relative to the application directory. Defaults to `.hanse/Dockerfile`. */
   readonly dockerfile?: string;
@@ -96,6 +123,12 @@ export interface BuildContextOptions {
   readonly maxBytes?: number;
   /** Maximum number of tar entries. Defaults to 20,000. */
   readonly maxEntries?: number;
+  /** Root identity captured at the last validation point; a mismatch fails the build. */
+  readonly rootIdentity?: RootIdentity;
+  /** Test-only override for the procfs directory used to anchor opens. */
+  readonly procFdRoot?: string;
+  /** Test-only filesystem race hooks. */
+  readonly hooks?: BuildContextHooks;
 }
 
 export interface BuildContext {
@@ -105,16 +138,20 @@ export interface BuildContext {
   readonly files: readonly string[];
   /** Context-relative Dockerfile path, suitable for Docker's `-f`. */
   readonly dockerfile: string;
+  /** Exact Dockerfile bytes that entered {@link tar}, so callers need not re-read by path. */
+  readonly dockerfileContent: Buffer;
   /** Size of {@link tar} in bytes. */
   readonly bytes: number;
 }
 
-interface ContextEntry {
-  readonly relative: string;
-  readonly absolute: string;
-  readonly kind: "file" | "directory";
-  readonly size: number;
-}
+type ContextEntry =
+  | { readonly relative: string; readonly kind: "directory"; readonly size: 0 }
+  | {
+      readonly relative: string;
+      readonly kind: "file";
+      readonly size: number;
+      readonly data: Buffer;
+    };
 
 interface Limits {
   readonly maxBytes: number;
@@ -127,52 +164,83 @@ interface DockerIgnoreRules {
   readonly content: Buffer | null;
 }
 
+type DirentKind = "file" | "directory" | "symlink" | "other" | "unknown";
+
 /**
  * Build a deterministic, no-follow tar context for one application directory.
  *
  * Security properties:
- * - `appDir` and the Dockerfile are resolved with `realpath`; the app directory itself, the
- *   Dockerfile, and every path component used to reach it must not be a symlink.
- * - The directory walk never follows symlinks: a symlink or special file (socket, fifo, device) is
- *   rejected only when it survives the ignore rules.
+ * - The application root is opened with `O_NOFOLLOW` and its `dev`/`ino` are compared with the
+ *   identity captured at the last validation point.
+ * - The walk is anchored to directory file descriptors: entries are enumerated through
+ *   `/proc/self/fd/<fd>` and opened through `/proc/self/fd/<parent-fd>/<name>` with `O_NOFOLLOW`.
+ *   The final path component is never followed, so a directory or file swapped for a symlink
+ *   between `readdir` and the open fails the build instead of leaking outside bytes.
+ * - Regular file bytes are read while the parent directory fd is open and stored on the entry;
+ *   nothing is re-opened by path afterwards.
+ * - FIFOs and other special files are opened with `O_NONBLOCK` so a swapped FIFO cannot block, and
+ *   are rejected after `fstat`.
+ * - A symlink or special file (socket, fifo, device) is rejected only when it survives the ignore
+ *   rules; ignored entries are skipped without being opened.
  * - Top-level `.git`, `.codegraph`, `node_modules`, `state`, `agents`, `.cache`, `.mise`, and the
  *   generated `.opencode/node_modules` dependency tree are a hard floor. `.dockerignore` can exclude
  *   more, but cannot re-include them; nested directories with those names are kept as source.
  * - `.dockerignore` follows Docker's pattern rules. The Dockerfile and `.dockerignore` are always
- *   included, even when a rule matches them.
+ *   included, even when a rule matches them, and are read through the same anchored API.
  * - Limits are enforced before data is copied, so an oversized context fails closed.
+ * - If `/proc/self/fd` is unavailable the build is refused; there is no path-walk fallback.
  */
 export async function createBuildContext(
   appDir: string,
   options: BuildContextOptions = {},
 ): Promise<BuildContext> {
   const limits = resolveLimits(options);
-  const root = await resolveAppRoot(appDir);
-  const dockerfile = await resolveDockerfile(root, options.dockerfile ?? DEFAULT_DOCKERFILE);
-  const ignoreRules = await loadDockerignore(root);
-  const forcedFiles = new Set<string>([dockerfile]);
-  if (ignoreRules.content !== null) forcedFiles.add(DOCKERIGNORE_FILENAME);
-  const forcedDirectories = ancestorDirectories(forcedFiles);
-  const entries = await collectEntries(root, limits, ignoreRules, forcedFiles, forcedDirectories);
+  const procRoot = options.procFdRoot ?? DEFAULT_PROC_FD_ROOT;
+  await assertProcAvailable(procRoot);
 
-  const dockerfileEntry = entries.find(
-    (entry) => entry.relative === dockerfile && entry.kind === "file",
-  );
-  if (dockerfileEntry === undefined) {
-    throw new BuildContextError(
-      "INVALID_DOCKERFILE",
-      `Dockerfile is not part of the build context: ${dockerfile}`,
-      { path: dockerfile },
+  const rootPath = await resolveAppRoot(appDir);
+  const root = await openRoot(rootPath, appDir);
+  try {
+    await verifyRootIdentity(root, rootPath, options.rootIdentity);
+    const dockerfile = await resolveDockerfile(
+      root.fd,
+      procRoot,
+      options.dockerfile ?? DEFAULT_DOCKERFILE,
     );
-  }
+    const ignoreRules = await loadDockerignore(root, procRoot);
+    const forcedFiles = new Set<string>([dockerfile]);
+    if (ignoreRules.content !== null) forcedFiles.add(DOCKERIGNORE_FILENAME);
+    const forcedDirectories = ancestorDirectories(forcedFiles);
+    const entries = await collectEntries(
+      root.fd,
+      procRoot,
+      limits,
+      ignoreRules,
+      forcedFiles,
+      forcedDirectories,
+      options.hooks,
+    );
 
-  const tar = await buildTar(entries);
-  return {
-    tar,
-    files: entries.filter((entry) => entry.kind === "file").map((entry) => entry.relative),
-    dockerfile,
-    bytes: tar.length,
-  };
+    const dockerfileEntry = entries.find((entry) => entry.relative === dockerfile);
+    if (dockerfileEntry === undefined || dockerfileEntry.kind !== "file") {
+      throw new BuildContextError(
+        "INVALID_DOCKERFILE",
+        `Dockerfile is not part of the build context: ${dockerfile}`,
+        { path: dockerfile },
+      );
+    }
+
+    const tar = buildTar(entries);
+    return {
+      tar,
+      files: entries.filter((entry) => entry.kind === "file").map((entry) => entry.relative),
+      dockerfile,
+      dockerfileContent: dockerfileEntry.data,
+      bytes: tar.length,
+    };
+  } finally {
+    await root.close();
+  }
 }
 
 function resolveLimits(options: BuildContextOptions): Limits {
@@ -193,10 +261,76 @@ function resolveLimits(options: BuildContextOptions): Limits {
   return { maxBytes, maxEntries };
 }
 
-async function loadDockerignore(root: string): Promise<DockerIgnoreRules> {
+async function assertProcAvailable(procRoot: string): Promise<void> {
+  let stats: Stats;
+  try {
+    stats = await stat(procRoot);
+  } catch (error) {
+    throw new BuildContextError(
+      "PROC_UNAVAILABLE",
+      `anchored build context requires a readable ${procRoot}`,
+      { path: procRoot, cause: error },
+    );
+  }
+  if (!stats.isDirectory()) {
+    throw new BuildContextError(
+      "PROC_UNAVAILABLE",
+      `anchored build context requires a directory at ${procRoot}`,
+      { path: procRoot },
+    );
+  }
+}
+
+async function openRoot(rootPath: string, appDir: string): Promise<FileHandle> {
+  try {
+    return await open(
+      rootPath,
+      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | O_CLOEXEC,
+    );
+  } catch (error) {
+    if (errnoCode(error) === "ELOOP") {
+      throw new BuildContextError("SYMLINK_REJECTED", `appDir must not be a symlink: ${appDir}`, {
+        path: appDir,
+        cause: error,
+      });
+    }
+    throw new BuildContextError("INVALID_APP_DIR", `cannot open appDir: ${appDir}`, {
+      path: appDir,
+      cause: error,
+    });
+  }
+}
+
+async function verifyRootIdentity(
+  root: FileHandle,
+  rootPath: string,
+  expected: RootIdentity | undefined,
+): Promise<void> {
+  let stats: BigIntStats;
+  try {
+    stats = await root.stat({ bigint: true });
+  } catch (error) {
+    throw new BuildContextError("INVALID_APP_DIR", `cannot stat appDir: ${rootPath}`, {
+      path: rootPath,
+      cause: error,
+    });
+  }
+  if (!stats.isDirectory()) {
+    throw new BuildContextError("INVALID_APP_DIR", `appDir is not a directory: ${rootPath}`, {
+      path: rootPath,
+    });
+  }
+  if (expected !== undefined && (stats.dev !== expected.dev || stats.ino !== expected.ino)) {
+    throw new BuildContextError("ROOT_CHANGED", `appDir changed since validation: ${rootPath}`, {
+      path: rootPath,
+    });
+  }
+}
+
+async function loadDockerignore(root: FileHandle, procRoot: string): Promise<DockerIgnoreRules> {
   let content: Buffer | null;
   try {
-    content = readDockerignoreFile(root);
+    content = await readAnchoredDockerignore(root, procRoot);
   } catch (error) {
     throw dockerignoreContextError(error);
   }
@@ -216,6 +350,82 @@ async function loadDockerignore(root: string): Promise<DockerIgnoreRules> {
     );
   }
   return { matcher, hasNegations: text.includes("!"), content };
+}
+
+async function readAnchoredDockerignore(
+  root: FileHandle,
+  procRoot: string,
+): Promise<Buffer | null> {
+  let handle: FileHandle;
+  try {
+    handle = await openChildHandle(procRoot, root.fd, DOCKERIGNORE_FILENAME, false);
+  } catch (error) {
+    if (isMissingError(error)) return null;
+    if (errnoCode(error) === "ELOOP") {
+      throw new DockerignoreFileError(
+        "symlink",
+        `${DOCKERIGNORE_FILENAME} must not be a symlink`,
+        DOCKERIGNORE_FILENAME,
+        { cause: error },
+      );
+    }
+    throw new DockerignoreFileError(
+      "read_failed",
+      `cannot inspect ${DOCKERIGNORE_FILENAME}: ${errorMessage(error)}`,
+      DOCKERIGNORE_FILENAME,
+      { cause: error },
+    );
+  }
+
+  try {
+    let stats: Stats;
+    try {
+      stats = await handle.stat();
+    } catch (error) {
+      throw new DockerignoreFileError(
+        "read_failed",
+        `cannot inspect ${DOCKERIGNORE_FILENAME}: ${errorMessage(error)}`,
+        DOCKERIGNORE_FILENAME,
+        { cause: error },
+      );
+    }
+    if (!stats.isFile()) {
+      throw new DockerignoreFileError(
+        "not_file",
+        `${DOCKERIGNORE_FILENAME} is not a regular file`,
+        DOCKERIGNORE_FILENAME,
+      );
+    }
+    if (stats.size > MAX_DOCKERIGNORE_BYTES) {
+      throw new DockerignoreFileError(
+        "too_large",
+        `${DOCKERIGNORE_FILENAME} exceeds ${MAX_DOCKERIGNORE_BYTES} bytes`,
+        DOCKERIGNORE_FILENAME,
+      );
+    }
+
+    let data: Buffer;
+    try {
+      data = await handle.readFile();
+    } catch (error) {
+      throw new DockerignoreFileError(
+        "read_failed",
+        `cannot read ${DOCKERIGNORE_FILENAME}: ${errorMessage(error)}`,
+        DOCKERIGNORE_FILENAME,
+        { cause: error },
+      );
+    }
+    if (data.length !== stats.size) {
+      throw new DockerignoreFileError(
+        "read_failed",
+        `short read while reading ${DOCKERIGNORE_FILENAME}`,
+        DOCKERIGNORE_FILENAME,
+      );
+    }
+    return data;
+  } finally {
+    await handle.close();
+  }
 }
 
 function dockerignoreContextError(error: unknown): BuildContextError {
@@ -247,6 +457,11 @@ function ancestorDirectories(files: ReadonlySet<string>): ReadonlySet<string> {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function isMissingError(error: unknown): boolean {
+  const code = errnoCode(error);
+  return code === "ENOENT" || code === "ENOTDIR";
 }
 
 async function resolveAppRoot(appDir: string): Promise<string> {
@@ -284,7 +499,7 @@ async function resolveAppRoot(appDir: string): Promise<string> {
     });
   }
 
-  let resolvedStats: Awaited<ReturnType<typeof stat>>;
+  let resolvedStats: Stats;
   try {
     resolvedStats = await stat(resolved);
   } catch (error) {
@@ -302,10 +517,10 @@ async function resolveAppRoot(appDir: string): Promise<string> {
 }
 
 /**
- * Resolve the Dockerfile inside `root` without following any symlink, and return its canonical
- * context-relative POSIX path.
+ * Resolve the Dockerfile inside the root fd without following any symlink, and return its
+ * canonical context-relative POSIX path.
  */
-async function resolveDockerfile(root: string, value: string): Promise<string> {
+async function resolveDockerfile(rootFd: number, procRoot: string, value: string): Promise<string> {
   const segments = dockerfileSegments(value);
   const relative = segments.join("/");
 
@@ -324,57 +539,101 @@ async function resolveDockerfile(root: string, value: string): Promise<string> {
     );
   }
 
-  let current = root;
-  for (const [index, segment] of segments.entries()) {
-    current = path.join(current, segment);
-    const relativeSoFar = segments.slice(0, index + 1).join("/");
-    const last = index === segments.length - 1;
+  const opened: FileHandle[] = [];
+  let parentFd = rootFd;
+  try {
+    for (const [index, segment] of segments.entries()) {
+      const last = index === segments.length - 1;
+      const relativeSoFar = segments.slice(0, index + 1).join("/");
 
-    let stats: Awaited<ReturnType<typeof lstat>>;
-    try {
-      stats = await lstat(current);
-    } catch (error) {
-      throw new BuildContextError("INVALID_DOCKERFILE", `Dockerfile does not exist: ${value}`, {
-        path: value,
-        cause: error,
-      });
-    }
+      let handle: FileHandle;
+      try {
+        handle = await openChildHandle(procRoot, parentFd, segment, !last);
+      } catch (error) {
+        const code = errnoCode(error);
+        const symlink =
+          code === "ELOOP" ||
+          (!last && code === "ENOTDIR" && (await isAnchoredSymlink(procRoot, parentFd, segment)));
+        throw dockerfileOpenError(error, value, relativeSoFar, last, symlink);
+      }
 
-    if (stats.isSymbolicLink()) {
-      throw new BuildContextError(
-        "SYMLINK_REJECTED",
-        `Dockerfile path must not contain a symlink: ${relativeSoFar}`,
-        { path: relativeSoFar },
-      );
+      let stats: Stats;
+      try {
+        stats = await handle.stat();
+      } catch (error) {
+        await handle.close();
+        throw new BuildContextError("INVALID_DOCKERFILE", `cannot inspect Dockerfile: ${value}`, {
+          path: value,
+          cause: error,
+        });
+      }
+
+      if (last) {
+        await handle.close();
+        if (!stats.isFile()) {
+          throw new BuildContextError(
+            "INVALID_DOCKERFILE",
+            `Dockerfile is not a regular file: ${value}`,
+            { path: value },
+          );
+        }
+        return relative;
+      }
+
+      if (!stats.isDirectory()) {
+        await handle.close();
+        throw new BuildContextError(
+          "INVALID_DOCKERFILE",
+          `Dockerfile path component is not a directory: ${relativeSoFar}`,
+          { path: relativeSoFar },
+        );
+      }
+
+      opened.push(handle);
+      parentFd = handle.fd;
     }
-    if (!last && !stats.isDirectory()) {
-      throw new BuildContextError(
-        "INVALID_DOCKERFILE",
-        `Dockerfile path component is not a directory: ${relativeSoFar}`,
-        { path: relativeSoFar },
-      );
-    }
-    if (last && !stats.isFile()) {
-      throw new BuildContextError(
-        "INVALID_DOCKERFILE",
-        `Dockerfile is not a regular file: ${value}`,
-        { path: value },
-      );
-    }
+  } finally {
+    await Promise.all(opened.map((handle) => handle.close()));
   }
 
-  const realDockerfile = await realpath(current);
-  if (!isInside(root, realDockerfile)) {
-    throw new BuildContextError(
-      "PATH_ESCAPE",
-      `Dockerfile escapes the application directory: ${value}`,
-      {
-        path: value,
-        cause: new Error(`${realDockerfile} is outside ${root}`),
-      },
+  // `dockerfileSegments` always returns at least one segment, so the loop returns above.
+  throw new BuildContextError("INVALID_DOCKERFILE", `Dockerfile does not exist: ${value}`, {
+    path: value,
+  });
+}
+
+function dockerfileOpenError(
+  error: unknown,
+  value: string,
+  relativeSoFar: string,
+  last: boolean,
+  symlink: boolean,
+): BuildContextError {
+  const code = errnoCode(error);
+  if (symlink) {
+    return new BuildContextError(
+      "SYMLINK_REJECTED",
+      `Dockerfile path must not contain a symlink: ${relativeSoFar}`,
+      { path: relativeSoFar, cause: error },
     );
   }
-  return relative;
+  if (!last && code === "ENOTDIR") {
+    return new BuildContextError(
+      "INVALID_DOCKERFILE",
+      `Dockerfile path component is not a directory: ${relativeSoFar}`,
+      { path: relativeSoFar, cause: error },
+    );
+  }
+  if (code === "ENOENT") {
+    return new BuildContextError("INVALID_DOCKERFILE", `Dockerfile does not exist: ${value}`, {
+      path: value,
+      cause: error,
+    });
+  }
+  return new BuildContextError("INVALID_DOCKERFILE", `cannot open Dockerfile: ${value}`, {
+    path: value,
+    cause: error,
+  });
 }
 
 function dockerfileSegments(value: string): string[] {
@@ -406,11 +665,13 @@ function dockerfileSegments(value: string): string[] {
 }
 
 async function collectEntries(
-  root: string,
+  rootFd: number,
+  procRoot: string,
   limits: Limits,
   ignoreRules: DockerIgnoreRules,
   forcedFiles: ReadonlySet<string>,
   forcedDirectories: ReadonlySet<string>,
+  hooks: BuildContextHooks | undefined,
 ): Promise<ContextEntry[]> {
   const entries: ContextEntry[] = [];
   let totalBytes = 0;
@@ -438,10 +699,10 @@ async function collectEntries(
     }
   };
 
-  const visit = async (directory: string, relativeDirectory: string): Promise<void> => {
-    let names: string[];
+  const visit = async (directoryFd: number, relativeDirectory: string): Promise<void> => {
+    let dirents: Dirent[];
     try {
-      names = await readdir(directory);
+      dirents = await readdir(anchoredPath(procRoot, directoryFd), { withFileTypes: true });
     } catch (error) {
       throw new BuildContextError(
         "READ_FAILED",
@@ -449,9 +710,13 @@ async function collectEntries(
         { path: relativeDirectory, cause: error },
       );
     }
-    names.sort(compareStrings);
+    dirents.sort((left, right) => compareStrings(left.name, right.name));
+    if (hooks?.afterReaddir !== undefined) {
+      await hooks.afterReaddir(relativeDirectory);
+    }
 
-    for (const name of names) {
+    for (const dirent of dirents) {
+      const name = dirent.name;
       const relative = relativeDirectory === "" ? name : `${relativeDirectory}/${name}`;
       assertSafeMember(relative);
 
@@ -466,51 +731,104 @@ async function collectEntries(
 
       const forced = forcedFiles.has(relative) || forcedDirectories.has(relative);
       const ignored = isIgnored(relative, forced);
-      const absolute = path.join(directory, name);
-
-      let stats: Awaited<ReturnType<typeof lstat>>;
-      try {
-        stats = await lstat(absolute);
-      } catch (error) {
-        throw new BuildContextError(
-          "READ_FAILED",
-          `cannot stat entry in build context: ${relative}`,
-          {
-            path: relative,
-            cause: error,
-          },
-        );
-      }
+      const kind = direntKind(dirent);
 
       if (ignored) {
-        if (!stats.isDirectory()) continue;
+        // `d_type` is usually present on the Linux runner. When it is not, classify with an
+        // anchored `lstat` (which never follows the final component) so negated descendants are
+        // still reachable; ignored entries are never opened for inspection.
+        const ignoredKind =
+          kind === "unknown" ? await anchoredEntryKind(procRoot, directoryFd, name) : kind;
+        if (ignoredKind !== "directory") continue;
         // A negated rule can re-include a descendant even when its parent matches. Walk ignored
         // directories only when the file contains an exception, and keep the parent entry when a
-        // descendant survives.
+        // descendant survives. Ignored symlinks and special files are never opened.
         if (!ignoreRules.hasNegations) continue;
         const before = entries.length;
-        await visit(absolute, relative);
+        let handle: FileHandle | undefined;
+        try {
+          handle = await openChildHandle(procRoot, directoryFd, name, true);
+        } catch (error) {
+          const code = errnoCode(error);
+          if (code === "ELOOP" || code === "ENOTDIR" || code === "ENOENT") continue;
+          throw new BuildContextError(
+            "READ_FAILED",
+            `cannot open ignored directory in build context: ${relative}`,
+            { path: relative, cause: error },
+          );
+        }
+        try {
+          await visit(handle.fd, relative);
+        } finally {
+          await handle.close();
+        }
         if (entries.length > before) {
-          push({ relative, absolute, kind: "directory", size: 0 });
+          push({ relative, kind: "directory", size: 0 });
         }
         continue;
       }
 
-      if (stats.isSymbolicLink()) {
+      if (kind === "symlink") {
         throw new BuildContextError(
           "SYMLINK_REJECTED",
           `refusing symlink in build context: ${relative}`,
           { path: relative },
         );
       }
+      if (kind === "other") {
+        throw new BuildContextError(
+          "SPECIAL_FILE",
+          `refusing special file in build context: ${relative}`,
+          { path: relative },
+        );
+      }
 
-      if (stats.isDirectory()) {
-        push({ relative, absolute, kind: "directory", size: 0 });
-        await visit(absolute, relative);
+      if (hooks?.beforeOpen !== undefined) {
+        await hooks.beforeOpen(relative);
+      }
+
+      if (kind === "directory") {
+        const handle = await openWalkEntry(procRoot, directoryFd, name, true, relative);
+        try {
+          const stats = await handle.stat();
+          if (!stats.isDirectory()) {
+            throw new BuildContextError(
+              "READ_FAILED",
+              `entry changed while building context: ${relative}`,
+              { path: relative },
+            );
+          }
+          push({ relative, kind: "directory", size: 0 });
+          await visit(handle.fd, relative);
+        } finally {
+          await handle.close();
+        }
         continue;
       }
 
-      if (stats.isFile()) {
+      // A regular file, or an entry whose dirent type is unavailable on this filesystem.
+      const handle = await openWalkEntry(procRoot, directoryFd, name, false, relative);
+      try {
+        const stats = await handle.stat();
+        if (stats.isDirectory()) {
+          if (kind === "file") {
+            throw new BuildContextError(
+              "READ_FAILED",
+              `entry changed while building context: ${relative}`,
+              { path: relative },
+            );
+          }
+          push({ relative, kind: "directory", size: 0 });
+          await visit(handle.fd, relative);
+          continue;
+        }
+        if (!stats.isFile()) {
+          throw new BuildContextError(
+            "SPECIAL_FILE",
+            `refusing special file in build context: ${relative}`,
+            { path: relative },
+          );
+        }
         if (!Number.isSafeInteger(stats.size) || stats.size < 0) {
           throw new BuildContextError("READ_FAILED", `invalid file size: ${relative}`, {
             path: relative,
@@ -524,21 +842,116 @@ async function collectEntries(
           );
         }
         totalBytes += stats.size;
-        push({ relative, absolute, kind: "file", size: stats.size });
-        continue;
+        const data = await handle.readFile();
+        if (data.length !== stats.size) {
+          throw new BuildContextError(
+            "READ_FAILED",
+            `short read while building context: ${relative}`,
+            { path: relative },
+          );
+        }
+        push({ relative, kind: "file", size: stats.size, data });
+      } finally {
+        await handle.close();
       }
-
-      throw new BuildContextError(
-        "SPECIAL_FILE",
-        `refusing special file in build context: ${relative}`,
-        { path: relative },
-      );
     }
   };
 
-  await visit(root, "");
+  await visit(rootFd, "");
   entries.sort((left, right) => compareStrings(left.relative, right.relative));
   return entries;
+}
+
+async function anchoredEntryKind(
+  procRoot: string,
+  parentFd: number,
+  name: string,
+): Promise<DirentKind> {
+  try {
+    const stats = await lstat(anchoredPath(procRoot, parentFd, name));
+    if (stats.isDirectory()) return "directory";
+    if (stats.isFile()) return "file";
+    if (stats.isSymbolicLink()) return "symlink";
+    return "other";
+  } catch {
+    return "unknown";
+  }
+}
+
+function direntKind(dirent: Dirent): DirentKind {
+  if (dirent.isDirectory()) return "directory";
+  if (dirent.isFile()) return "file";
+  if (dirent.isSymbolicLink()) return "symlink";
+  if (
+    dirent.isFIFO() ||
+    dirent.isSocket() ||
+    dirent.isBlockDevice() ||
+    dirent.isCharacterDevice()
+  ) {
+    return "other";
+  }
+  return "unknown";
+}
+
+function anchoredPath(procRoot: string, fd: number, name?: string): string {
+  const base = `${procRoot}/${fd}`;
+  return name === undefined ? base : `${base}/${name}`;
+}
+
+async function openChildHandle(
+  procRoot: string,
+  parentFd: number,
+  name: string,
+  directory: boolean,
+): Promise<FileHandle> {
+  const flags =
+    constants.O_RDONLY |
+    constants.O_NOFOLLOW |
+    constants.O_NONBLOCK |
+    O_CLOEXEC |
+    (directory ? constants.O_DIRECTORY : 0);
+  return open(anchoredPath(procRoot, parentFd, name), flags);
+}
+
+async function openWalkEntry(
+  procRoot: string,
+  parentFd: number,
+  name: string,
+  directory: boolean,
+  relative: string,
+): Promise<FileHandle> {
+  try {
+    return await openChildHandle(procRoot, parentFd, name, directory);
+  } catch (error) {
+    const code = errnoCode(error);
+    const symlink =
+      code === "ELOOP" ||
+      (directory && code === "ENOTDIR" && (await isAnchoredSymlink(procRoot, parentFd, name)));
+    if (symlink) {
+      throw new BuildContextError(
+        "SYMLINK_REJECTED",
+        `refusing symlink in build context: ${relative}`,
+        { path: relative, cause: error },
+      );
+    }
+    throw new BuildContextError(
+      "READ_FAILED",
+      `cannot open ${directory ? "directory" : "file"} in build context: ${relative}`,
+      { path: relative, cause: error },
+    );
+  }
+}
+
+async function isAnchoredSymlink(
+  procRoot: string,
+  parentFd: number,
+  name: string,
+): Promise<boolean> {
+  try {
+    return (await lstat(anchoredPath(procRoot, parentFd, name))).isSymbolicLink();
+  } catch {
+    return false;
+  }
 }
 
 function assertSafeMember(relative: string): void {
@@ -555,59 +968,7 @@ function assertSafeMember(relative: string): void {
   }
 }
 
-async function readRegularFile(entry: ContextEntry): Promise<Buffer> {
-  let handle: FileHandle;
-  try {
-    handle = await open(entry.absolute, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
-  } catch (error) {
-    if (errnoCode(error) === "ELOOP") {
-      throw new BuildContextError(
-        "SYMLINK_REJECTED",
-        `refusing symlink in build context: ${entry.relative}`,
-        { path: entry.relative, cause: error },
-      );
-    }
-    throw new BuildContextError(
-      "READ_FAILED",
-      `cannot open file in build context: ${entry.relative}`,
-      {
-        path: entry.relative,
-        cause: error,
-      },
-    );
-  }
-
-  try {
-    const stats = await handle.stat();
-    if (!stats.isFile()) {
-      throw new BuildContextError(
-        "SPECIAL_FILE",
-        `refusing special file in build context: ${entry.relative}`,
-        { path: entry.relative },
-      );
-    }
-    if (stats.size !== entry.size) {
-      throw new BuildContextError(
-        "READ_FAILED",
-        `file changed while building context: ${entry.relative}`,
-        { path: entry.relative },
-      );
-    }
-    const data = await handle.readFile();
-    if (data.length !== stats.size) {
-      throw new BuildContextError(
-        "READ_FAILED",
-        `short read while building context: ${entry.relative}`,
-        { path: entry.relative },
-      );
-    }
-    return data;
-  } finally {
-    await handle.close();
-  }
-}
-
-async function buildTar(entries: readonly ContextEntry[]): Promise<Buffer> {
+function buildTar(entries: readonly ContextEntry[]): Buffer {
   const chunks: Buffer[] = [];
   let length = 0;
 
@@ -622,7 +983,7 @@ async function buildTar(entries: readonly ContextEntry[]): Promise<Buffer> {
       continue;
     }
 
-    const data = await readRegularFile(entry);
+    const data = entry.data;
     push(createHeader(entry.relative, "0", 0o644, data.length));
     push(data);
     const padding = (TAR_BLOCK - (data.length % TAR_BLOCK)) % TAR_BLOCK;
@@ -727,14 +1088,6 @@ function compareStrings(left: string, right: string): number {
   if (left < right) return -1;
   if (left > right) return 1;
   return 0;
-}
-
-function isInside(root: string, target: string): boolean {
-  const relative = path.relative(root, target);
-  return (
-    relative === "" ||
-    (!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(`..${path.sep}`))
-  );
 }
 
 function errnoCode(error: unknown): string | undefined {

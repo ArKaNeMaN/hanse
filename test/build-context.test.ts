@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer";
 import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -146,6 +147,7 @@ describe("createBuildContext", () => {
     const context = await createBuildContext(app);
 
     expect(context.dockerfile).toBe(".hanse/Dockerfile");
+    expect(context.dockerfileContent.toString("utf8")).toBe("FROM scratch\n");
     expect(context.files).toEqual([
       ".hanse/Dockerfile",
       ".hanse/app.yaml",
@@ -584,5 +586,149 @@ describe("createBuildContext", () => {
       await expectCode(createBuildContext(app, { maxEntries: 0 }), "INVALID_OPTIONS");
       await expectCode(createBuildContext(app, { maxEntries: -5 }), "INVALID_OPTIONS");
     });
+  });
+});
+
+describe("fd-anchored build context", () => {
+  it("rejects a directory swapped to a symlink after readdir", async () => {
+    const { base, app } = await makeApp({
+      ".hanse/Dockerfile": "FROM scratch\n",
+      "sub/keep.txt": "inside",
+    });
+    const outside = path.join(base, "outside");
+    await mkdir(outside, { recursive: true });
+    await writeFile(path.join(outside, "sentinel.txt"), "OUTSIDE_SENTINEL");
+
+    await expectCode(
+      createBuildContext(app, {
+        hooks: {
+          afterReaddir: async (relative) => {
+            if (relative !== "") return;
+            await rename(path.join(app, "sub"), path.join(app, "sub.bak"));
+            await symlink(outside, path.join(app, "sub"));
+          },
+        },
+      }),
+      "SYMLINK_REJECTED",
+    );
+  });
+
+  it("rejects a regular file swapped to a symlink between readdir and the read", async () => {
+    const { base, app } = await makeApp({
+      ".hanse/Dockerfile": "FROM scratch\n",
+      "leak.txt": "inside",
+    });
+    const outside = path.join(base, "sentinel.txt");
+    await writeFile(outside, "OUTSIDE_SENTINEL");
+
+    await expectCode(
+      createBuildContext(app, {
+        hooks: {
+          beforeOpen: async (relative) => {
+            if (relative !== "leak.txt") return;
+            await rename(path.join(app, "leak.txt"), path.join(app, "leak.bak"));
+            await symlink(outside, path.join(app, "leak.txt"));
+          },
+        },
+      }),
+      "SYMLINK_REJECTED",
+    );
+  });
+
+  it("does not block on a regular file swapped to a fifo and rejects it", async (context) => {
+    const { app } = await makeApp({
+      ".hanse/Dockerfile": "FROM scratch\n",
+      "pipe.txt": "regular",
+    });
+    const fifo = path.join(app, "pipe.txt");
+    let createdFifo = false;
+    let thrown: unknown;
+    try {
+      await createBuildContext(app, {
+        hooks: {
+          beforeOpen: async (relative) => {
+            if (relative !== "pipe.txt" || createdFifo) return;
+            await rename(fifo, `${fifo}.bak`);
+            createdFifo = spawnSync("mkfifo", [fifo], { encoding: "utf8" }).status === 0;
+            if (!createdFifo) await rename(`${fifo}.bak`, fifo);
+          },
+        },
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    if (!createdFifo) {
+      context.skip();
+      return;
+    }
+    expect(thrown).toBeInstanceOf(BuildContextError);
+    expect((thrown as BuildContextError).code).toBe("SPECIAL_FILE");
+  });
+
+  it("skips an ignored symlink without opening its target", async () => {
+    const { base, app } = await makeApp({
+      ".hanse/Dockerfile": "FROM scratch\n",
+      ".dockerignore": "secret-link\n",
+    });
+    const outside = path.join(base, "secret.txt");
+    await writeFile(outside, "OUTSIDE_SENTINEL");
+    await symlink(outside, path.join(app, "secret-link"));
+
+    const result = await createBuildContext(app);
+    const paths = readTar(result.tar).map((entry) => entry.path);
+    expect(paths).not.toContain("secret-link");
+  });
+
+  it("produces byte-identical output for a normal fixture", async () => {
+    const { app } = await makeApp({
+      ".hanse/Dockerfile": "FROM scratch\n",
+      ".hanse/app.yaml": "id: demo\n",
+      "README.md": "# demo\n",
+      "src/index.ts": "export const x = 1;\n",
+      "src/lib/util.ts": "export const y = 2;\n",
+      "empty/.keep": "",
+    });
+
+    const result = await createBuildContext(app);
+
+    expect(result.bytes).toBe(8704);
+    expect(createHash("sha256").update(result.tar).digest("hex")).toBe(
+      "213d6c7ae751b7fbc066efb1ed3cc5d95fc7b0850f77c56c3854719204d1befb",
+    );
+    expect(result.files).toEqual([
+      ".hanse/Dockerfile",
+      ".hanse/app.yaml",
+      "README.md",
+      "empty/.keep",
+      "src/index.ts",
+      "src/lib/util.ts",
+    ]);
+  });
+
+  it("accepts the validated root identity and rejects a changed root", async () => {
+    const { app } = await makeApp({ ".hanse/Dockerfile": "FROM scratch\n" });
+    const identity = await stat(app, { bigint: true });
+
+    const result = await createBuildContext(app, {
+      rootIdentity: { dev: identity.dev, ino: identity.ino },
+    });
+    expect(result.files).toContain(".hanse/Dockerfile");
+
+    await expectCode(
+      createBuildContext(app, {
+        rootIdentity: { dev: identity.dev, ino: identity.ino + 1n },
+      }),
+      "ROOT_CHANGED",
+    );
+  });
+
+  it("refuses to build when procfs is unavailable", async () => {
+    const { base, app } = await makeApp({ ".hanse/Dockerfile": "FROM scratch\n" });
+
+    await expectCode(
+      createBuildContext(app, { procFdRoot: path.join(base, "no-proc") }),
+      "PROC_UNAVAILABLE",
+    );
   });
 });

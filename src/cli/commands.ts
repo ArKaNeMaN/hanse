@@ -17,6 +17,7 @@ import { DeploymentLock, deploymentLockPath } from "../coordinator/deployment-lo
 import { HandoffDispatcher } from "../coordinator/dispatcher.js";
 import { DrainController } from "../coordinator/drain.js";
 import { LifecycleActivity } from "../coordinator/lifecycle-activity.js";
+import { runRunnerLayoutMigration } from "../coordinator/runner-layout-migration.js";
 import { CoordinatorService } from "../coordinator/service.js";
 import { runGracefulShutdown, shutdownGraceMs, startDrainedFlag } from "../coordinator/shutdown.js";
 import {
@@ -64,7 +65,7 @@ import { PreviewService } from "../preview/service.js";
 import { discoverProject, registerProject } from "../registry/index.js";
 import { DockerClient } from "../runner/docker.js";
 import { runRunner } from "../runner/server.js";
-import { loadRunnerConfig } from "../runner/validate.js";
+import { loadHostMountsRoot, loadRunnerConfig } from "../runner/validate.js";
 import { resolveAppPath } from "../runtime/app-path.js";
 import { defaultImageReference } from "../runtime/build-spec.js";
 import {
@@ -76,7 +77,7 @@ import {
 } from "../runtime/index.js";
 import { loadOrCreateKey } from "../secrets/index.js";
 import { SettingsService } from "../settings/index.js";
-import { isRunnerCompatible } from "../shared/runner-api.js";
+import { isRunnerCompatible, RUNNER_API_VERSION } from "../shared/runner-api.js";
 import { CompositeSkillSource, SkillSourceService } from "../skill-sources/index.js";
 import { SkillService } from "../skills/index.js";
 import { SshService } from "../ssh/service.js";
@@ -790,14 +791,27 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
   const runnerUrl = process.env.HANSE_RUNNER_URL?.trim();
   const hostWorkspace = process.env.HANSE_HOST_WORKSPACE?.trim() || undefined;
   const hostAgents = process.env.HANSE_HOST_AGENTS?.trim() || undefined;
-  if (runnerUrl !== undefined && runnerUrl.length > 0) {
-    if (hostWorkspace === undefined || hostAgents === undefined) {
+  let hostMounts: string | undefined;
+  try {
+    hostMounts = loadHostMountsRoot(process.env, {
+      workspace: hostWorkspace ?? workspace,
+      agents: hostAgents ?? path.resolve(agentsHome()),
+    });
+  } catch (error) {
+    ctx.io.stderr(`serve: ${error instanceof Error ? error.message : String(error)}`);
+    return 1;
+  }
+  const runnerMode = runnerUrl !== undefined && runnerUrl.length > 0;
+  if (runnerMode) {
+    if (hostWorkspace === undefined || hostAgents === undefined || hostMounts === undefined) {
       ctx.io.stderr(
-        "serve: HANSE_HOST_WORKSPACE and HANSE_HOST_AGENTS are required with HANSE_RUNNER_URL",
+        "serve: HANSE_HOST_WORKSPACE, HANSE_HOST_AGENTS, and HANSE_HOST_MOUNTS are required with HANSE_RUNNER_URL",
       );
       return 1;
     }
   }
+  // The supervisor shares the host filesystem and keeps the legacy agents-root attachment layout.
+  const mountsRoot = runnerMode ? hostMounts : undefined;
   const runtime = new HttpAgentRuntimeClient({
     baseUrl:
       runnerUrl && runnerUrl.length > 0
@@ -805,6 +819,16 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
         : process.env.HANSE_AGENT_SUPERVISOR_URL?.trim() || "http://127.0.0.1:8789",
     token: runtimeToken,
   });
+  if (runnerUrl !== undefined && runnerUrl.length > 0) {
+    const runnerHandshake = await runtime.handshake();
+    if (runnerHandshake !== undefined && !isRunnerCompatible(runnerHandshake)) {
+      ctx.io.stderr(
+        `serve: runner ${runnerUrl} reports an incompatible API (${runnerHandshake.apiVersion}); ` +
+          `this coordinator requires ${RUNNER_API_VERSION}`,
+      );
+      return 1;
+    }
+  }
   let deploymentLock: DeploymentLock;
   try {
     deploymentLock = new DeploymentLock(deploymentLockPath(ctx.stateHome));
@@ -833,15 +857,6 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
     startedAt: new Date().toISOString(),
   });
   drain.initialize({ startDrained: startDrainedFlag() });
-  const runnerHandshake = await runtime.handshake?.();
-  if (runnerHandshake !== undefined && !isRunnerCompatible(runnerHandshake)) {
-    logger.warn("runner_api_incompatible", {
-      runnerApi: runnerHandshake.apiVersion,
-      minApiVersion: runnerHandshake.minApiVersion,
-      maxApiVersion: runnerHandshake.maxApiVersion,
-      hanseVersion: runnerHandshake.hanseVersion,
-    });
-  }
   const modelProviders = new ModelProviderService({ db });
   const settings = new SettingsService({
     db,
@@ -876,6 +891,29 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
     );
     db.close();
     return 1;
+  }
+
+  if (mountsRoot !== undefined) {
+    try {
+      const apps = db
+        .prepare("SELECT project_id AS projectId, app_key AS appKey FROM apps")
+        .all() as Array<{ projectId: string; appKey: string }>;
+      const migration = await runRunnerLayoutMigration({
+        agentsHome: path.resolve(agentsHome()),
+        mountsRoot,
+        apps,
+        markerPath: path.join(coordinatorStateDir(ctx.stateHome), "runner-layout.json"),
+      });
+      if (migration.migrated > 0) {
+        ctx.io.stdout(`serve: migrated runner mount layout for ${migration.migrated} app(s)`);
+      }
+    } catch (error) {
+      ctx.io.stderr(
+        `serve: runner mount layout migration failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      db.close();
+      return 1;
+    }
   }
 
   const skills = new SkillService({ db });
@@ -947,6 +985,7 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
     workspaceRoot: workspace,
     ...(hostWorkspace === undefined ? {} : { hostWorkspace }),
     ...(hostAgents === undefined ? {} : { hostAgents }),
+    ...(mountsRoot === undefined ? {} : { hostMounts: mountsRoot }),
     deploymentLock,
     lifecycleActivity,
     onEvent: (app, event) => {
@@ -1010,6 +1049,7 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
           db,
           workspaceRoot: workspace,
           agentsHome: path.resolve(agentsHome()),
+          ...(mountsRoot === undefined ? {} : { mountsHome: mountsRoot }),
           coordinatorStateDir: path.resolve(coordinatorStateDir(ctx.stateHome)),
           manager,
           images,
@@ -1060,6 +1100,7 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
     dispatcher: handoffDispatcher,
     ...(previews === undefined ? {} : { previews }),
     agentsHome: path.resolve(agentsHome()),
+    ...(mountsRoot === undefined ? {} : { mountsHome: mountsRoot }),
     baselinePlugins: resolveBaselinePlugins(),
     ...(runnerUrl === undefined || runnerUrl.length === 0
       ? {}

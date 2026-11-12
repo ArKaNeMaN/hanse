@@ -124,12 +124,13 @@ Coordinator state lives under `$XDG_STATE_HOME/hanse/` (`coordinator.db`, `secre
 coordinator's own records). It is never mounted into agents.
 
 Per-app agent state lives outside the coordinator state, under `HANSE_AGENTS_HOME` (default
-`~/.local/state/hanse-agents`; Compose uses `/data/agents`):
+`~/.local/state/hanse-agents`; Compose uses `/data/agents`). Bind sources (attachments and managed
+git credentials) live under `HANSE_HOST_MOUNTS`, not in the app-writable agents tree; the app sees
+them only as read-only leaves at the unchanged container paths.
 
 ```text
 <projectId>/<appKey>/
-├── home/                  HOME, .omo profile, tool config
-│   └── .config/hanse/git/ coordinator-materialized git identity and credentials
+├── home/                  HOME, .omo profile, tool config (git credentials are a read-only mount)
 ├── data/ state/ cache/    XDG data/state/cache and opencode DB
 ├── config/                XDG_CONFIG_HOME
 │   └── opencode/
@@ -147,9 +148,11 @@ The `config/opencode/{skill,skills}` roots are Hanse-owned per-instance state, n
 workspaces. Every agent start rebuilds the effective set after the old container is gone, and
 materialization recreates an effective `<name>/` subtree rather than trusting existing files.
 
-`home/.config/hanse/git/` is written by the coordinator from the Git settings (`config`, `ssh`,
-`askpass`, and optional `id`, `known_hosts`, `token`, `username`, `https_hosts`). The app can read
-it; the runner mounts it read-only for one-shot git.
+The coordinator writes the Git settings (`config`, `ssh`, `askpass`, and optional `id`,
+`known_hosts`, `token`, `username`, `https_hosts`) to
+`<HANSE_HOST_MOUNTS>/<projectId>/<appKey>/git/` and binds it read-only at the app-visible
+`home/.config/hanse/git/`. The runner mounts the same leaf read-only for one-shot git; the mounts
+root is never app-writable.
 
 The app directory remains under the workspace; only its runtime state lives under the agents root.
 In B1, the runner mounts the app directory at `/data/workspace/<project>/<app>` and only that app's

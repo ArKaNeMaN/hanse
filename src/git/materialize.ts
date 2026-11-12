@@ -5,6 +5,7 @@ import {
   chownSync,
   closeSync,
   constants,
+  existsSync,
   fchmodSync,
   fchownSync,
   fsyncSync,
@@ -19,6 +20,7 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { sanitizeAppKey } from "../opencode/instance.js";
+import { mountsGitDir } from "../shared/mounts.js";
 import type { GitHttpsCredential, GitSshCredential } from "./credentials.js";
 
 /** Ownership applied to managed directories and credential files. */
@@ -57,6 +59,16 @@ export interface MaterializeGitCredentialsInput {
   home: string;
   projectId: string;
   appKey: string;
+  /**
+   * When set, credentials are written under `<mounts>/<project>/<app>/git` instead of the app HOME.
+   * The coordinator owns this root; the runner mounts it read-only.
+   */
+  mountsRoot?: string;
+  /**
+   * Consumer-visible credential directory written into the spec env. Defaults to the app HOME
+   * managed directory so the layout migration never changes `specHash`.
+   */
+  visibleDir?: string;
   identity: GitIdentity;
   auth: GitCredentialAuth;
   ownership?: GitCredentialOwnership | null;
@@ -238,6 +250,38 @@ function prepareManagedDirectory(home: string, context: WriteContext): string {
       unlinkSync(current);
     }
     ensureDirectory(current, context);
+  }
+  return current;
+}
+
+function prepareMountsGitDirectory(
+  mountsRoot: string,
+  projectId: string,
+  appKey: string,
+  context: WriteContext,
+): string {
+  const literalRoot = path.resolve(mountsRoot);
+  if (!existsSync(literalRoot)) {
+    mkdirSync(literalRoot, { recursive: true, mode: 0o700 });
+  }
+  const root = requireRealDirectory(literalRoot, "mounts root");
+  const expectedGit = mountsGitDir(root, projectId, appKey);
+  let current = root;
+  for (const segment of path.relative(root, expectedGit).split(path.sep)) {
+    current = path.join(current, segment);
+    const existing = lstatSync(current, { throwIfNoEntry: false });
+    if (existing?.isSymbolicLink()) {
+      throw new GitCredentialsMaterializeError(`managed mount directory is a symlink: ${current}`);
+    }
+    if (existing === undefined) {
+      mkdirSync(current, { recursive: true, mode: 0o700 });
+    }
+    ensureDirectory(current, context);
+    if (realpathSync(current) !== current) {
+      throw new GitCredentialsMaterializeError(
+        `managed mount directory escapes the mounts root: ${current}`,
+      );
+    }
   }
   return current;
 }
@@ -453,6 +497,30 @@ export function materializeGitCredentials(input: MaterializeGitCredentialsInput)
       );
     }
   }
+
+  if (input.mountsRoot !== undefined) {
+    if (!path.isAbsolute(input.mountsRoot)) {
+      throw new GitCredentialsMaterializeError("mounts root must be an absolute path");
+    }
+    const visibleDir = input.visibleDir ?? path.join(expectedHome, ".config", "hanse", "git");
+    if (!path.isAbsolute(visibleDir)) {
+      throw new GitCredentialsMaterializeError("visible credential directory must be absolute");
+    }
+    const writeDir = prepareMountsGitDirectory(
+      input.mountsRoot,
+      input.projectId,
+      input.appKey,
+      context,
+    );
+    return writeGitCredentialFiles(writeDir, {
+      identity: input.identity,
+      auth: input.auth,
+      visibleDir,
+      ownership: context.ownership,
+      chown: context.chown,
+    });
+  }
+
   const managedDir = prepareManagedDirectory(home, context);
   const realManaged = realpathSync(managedDir);
   const expectedManaged = path.join(expectedHome, ".config", "hanse", "git");
@@ -473,7 +541,7 @@ export function materializeGitCredentials(input: MaterializeGitCredentialsInput)
   return writeGitCredentialFiles(managedDir, {
     identity: input.identity,
     auth: input.auth,
-    visibleDir: managedDir,
+    visibleDir: input.visibleDir ?? managedDir,
     ownership: context.ownership,
     chown: context.chown,
   });

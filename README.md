@@ -100,7 +100,8 @@ default (`HANSE_APP_MEMORY_MB`, `HANSE_APP_CPUS`); raise the host budget by the 
 raise the cap. Apps often idle below the cap, but plan for it when several are active. For 1-3 apps
 at the default cap, use 4 cores / 8 GB / 40 GB free. For 5+ apps or frequent builds, use 8 cores /
 16 GB / 80 GB free. The five images take roughly 7-8 GB, and
-the `agents` volume grows by roughly 1-2 GB per app as toolchains and caches are installed; custom
+the `agents` volume grows by roughly 1-2 GB per app as toolchains and caches are installed (the
+small `mounts` volume holds attachments and managed git credentials); custom
 images and the Docker build cache add more. Keep well below the thresholds: Hanse warns at 75% used
 and reports critical at 85%, so target at least 30% free.
 
@@ -113,8 +114,8 @@ or Windows/WSL2 works, including for evaluation; Linux `amd64` is the production
 required for the default setup: model inference runs at the configured provider.
 
 Rootless Docker is not supported by the default stack: the runner needs the Docker socket from a
-rootful daemon. Bind mounts run as uid/gid 1000, so `workspace`, `state`, and `agents` must be
-writable by that uid (`sudo chown -R 1000:1000 workspace state agents`).
+rootful daemon. Bind mounts run as uid/gid 1000, so `workspace`, `state`, `agents`, and `mounts`
+must be writable by that uid (`sudo chown -R 1000:1000 workspace state agents mounts`).
 
 Only the coordinator publishes a port (`127.0.0.1:8787` by default). The IDE, previews, and app
 terminals are proxied through it. Set `HANSE_BIND=0.0.0.0` only on a trusted LAN; terminate TLS in a
@@ -141,10 +142,10 @@ TOKEN=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')
 RUNTIME_TOKEN=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')
 sed -i.bak "s|^HANSE_OPERATOR_TOKEN=.*|HANSE_OPERATOR_TOKEN=$TOKEN|; s|^HANSE_RUNTIME_TOKEN=.*|HANSE_RUNTIME_TOKEN=$RUNTIME_TOKEN|" .env && rm -f .env.bak
 echo "operator token: $TOKEN"
-mkdir -p workspace state agents
+mkdir -p workspace state agents mounts
 ROOT=$(pwd)
-sed -i.bak "s|^# HANSE_HOST_WORKSPACE=.*|HANSE_HOST_WORKSPACE=$ROOT/workspace|; s|^# HANSE_HOST_AGENTS=.*|HANSE_HOST_AGENTS=$ROOT/agents|" .env && rm -f .env.bak
-sudo chown -R 1000:1000 workspace state agents
+sed -i.bak "s|^# HANSE_HOST_WORKSPACE=.*|HANSE_HOST_WORKSPACE=$ROOT/workspace|; s|^# HANSE_HOST_AGENTS=.*|HANSE_HOST_AGENTS=$ROOT/agents|; s|^# HANSE_HOST_MOUNTS=.*|HANSE_HOST_MOUNTS=$ROOT/mounts|" .env && rm -f .env.bak
+sudo chown -R 1000:1000 workspace state agents mounts
 docker compose pull
 set -a; . ./.env; set +a
 docker pull "${HANSE_AGENT_IMAGE:-ghcr.io/arkaneman/hanse-agent-default}:${HANSE_AGENT_TAG:-${HANSE_TAG:-latest}}"

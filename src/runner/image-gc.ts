@@ -7,11 +7,11 @@ import {
   type DockerSystemDf,
 } from "./docker.js";
 import {
+  ImageGate,
   ImageMutationConflictError,
   type ImageMutationLease,
   ImageMutationMutex,
 } from "./image-mutation.js";
-import { appContainerName } from "./names.js";
 
 export const DISK_WARNING_PERCENT = 75;
 export const DISK_CRITICAL_PERCENT = 85;
@@ -94,12 +94,14 @@ export interface DiskStat {
 
 export interface ImageGcServiceOptions {
   docker: DockerRuntime;
-  diskPath: string;
+  /** Docker data root mounted read-only at the same path; unset reports `disk: null`. */
+  diskPath?: string;
   statfs?: (path: string) => Promise<DiskStat>;
   timeoutMs?: number;
   now?: () => number;
   protectedRefs?: () => readonly string[];
   mutex?: ImageMutationMutex;
+  gate?: ImageGate;
 }
 
 export function usageLevel(usedPercent: number): DiskUsageLevel {
@@ -110,12 +112,13 @@ export function usageLevel(usedPercent: number): DiskUsageLevel {
 
 export class ImageGcService {
   readonly #docker: DockerRuntime;
-  readonly #diskPath: string;
+  readonly #diskPath: string | undefined;
   readonly #statfs: (path: string) => Promise<DiskStat>;
   readonly #timeoutMs: number;
   readonly #now: () => number;
   readonly #protectedRefs: (() => readonly string[]) | undefined;
   readonly #mutex: ImageMutationMutex;
+  readonly #gate: ImageGate;
   #running = false;
 
   constructor(options: ImageGcServiceOptions) {
@@ -126,15 +129,20 @@ export class ImageGcService {
     this.#now = options.now ?? (() => Date.now());
     this.#protectedRefs = options.protectedRefs;
     this.#mutex = options.mutex ?? new ImageMutationMutex();
+    this.#gate = options.gate ?? new ImageGate();
   }
 
   async usage(): Promise<ImageUsageReport> {
     const errors: string[] = [];
     let disk: DiskUsage | null = null;
-    try {
-      disk = diskUsage(await this.#statfs(this.#diskPath));
-    } catch (error) {
-      errors.push(`workspace filesystem usage unavailable: ${safeErrorMessage(error)}`);
+    if (this.#diskPath === undefined) {
+      errors.push("image data root is not configured");
+    } else {
+      try {
+        disk = diskUsage(await this.#statfs(this.#diskPath));
+      } catch (error) {
+        errors.push(`image data root filesystem usage unavailable: ${safeErrorMessage(error)}`);
+      }
     }
 
     let docker: DockerUsage | null = null;
@@ -276,6 +284,10 @@ export class ImageGcService {
           await removeImage(target);
         }
       } catch (error) {
+        if (error instanceof DockerError && error.status === 409) {
+          addSkipped(report, reference, "protected");
+          continue;
+        }
         throw new ImageGcError(
           502,
           `docker image removal failed for ${reference}: ${safeErrorMessage(error)}`,
@@ -330,9 +342,25 @@ export class ImageGcService {
   }
 
   #acquire(kind: "gc" | "purge"): ImageMutationLease {
+    let gateLease: ImageMutationLease;
     try {
-      return this.#mutex.tryAcquire(kind);
+      gateLease = this.#gate.tryExclusive(kind);
     } catch (error) {
+      if (error instanceof ImageMutationConflictError) {
+        throw new ImageGcError(error.status, error.message, error.code);
+      }
+      throw error;
+    }
+    try {
+      const mutexLease = this.#mutex.tryAcquire(kind);
+      return {
+        release: () => {
+          mutexLease.release();
+          gateLease.release();
+        },
+      };
+    } catch (error) {
+      gateLease.release();
       if (error instanceof ImageMutationConflictError) {
         throw new ImageGcError(error.status, error.message, error.code);
       }
@@ -383,7 +411,6 @@ export class ImageGcService {
       }
     }
 
-    const tagPrefix = `${appContainerName(appId)}:`;
     const candidates = (df.Images ?? [])
       .filter((image) => image.Labels?.[MANAGED_IMAGE_LABEL] === appId)
       .sort(
@@ -424,7 +451,7 @@ export class ImageGcService {
         addSkipped(report, reference, "protected");
         continue;
       }
-      if (tags.some((tag) => !tag.startsWith(tagPrefix))) {
+      if (tags.some((tag) => !tag.startsWith(MANAGED_IMAGE_PREFIX))) {
         addSkipped(report, reference, "shared_tag");
         continue;
       }

@@ -1234,6 +1234,32 @@ describe("durable adoption and lost builds", () => {
     });
   });
 
+  it.each(["interrupted", "cancelled"] as const)(
+    "treats a %s runner record as a terminal error while preserving the old image",
+    async (status) => {
+      const f = await fixture();
+      await readyBuild(f, "hanse-app-p:web:old", "sha256:old", "2026-01-01T00:00:00.000Z");
+      const { buildId } = await adoptableBuild(f, "hanse-app-p:web:target");
+      f.runner.set(f.appId, {
+        status,
+        error: `build ${status}`,
+        buildId,
+      });
+
+      const view = await f.service.imageState(f.appId, { refresh: true });
+      expect(view.status).toBe("error");
+      expect(view.imageRef).toBe("hanse-app-p:web:old");
+      expect(buildRow(f)).toMatchObject({
+        image_ref: "hanse-app-p:web:old",
+        image_status: "error",
+        image_build_id: null,
+        image_build_ref: null,
+        image_build_started_at: null,
+      });
+      expect(buildRow(f).image_error).toContain(`build ${status}`);
+    },
+  );
+
   it("protects the in-flight target in the GC keep set until adoption resolves it", async () => {
     const f = await fixture();
     await adoptableBuild(f, "hanse-app-p:web:target");

@@ -2,9 +2,11 @@
 import { describe, expect, it } from "vitest";
 import {
   BaseImageConfigError,
+  DockerfileBuildError,
   isDigest,
   resolveBaseImage,
   resolveManifestDigest,
+  validateDockerfileFrom,
 } from "../src/runtime/base-image.js";
 
 const DIGEST_A = `sha256:${"a".repeat(64)}`;
@@ -180,5 +182,285 @@ describe("resolveManifestDigest", () => {
     expect(resolveManifestDigest("ghcr.io/x/base@sha256:abc", [])).toBeNull();
     expect(isDigest("sha256:abc")).toBe(false);
     expect(isDigest(DIGEST_A)).toBe(true);
+  });
+});
+
+const ALLOWED_FROM = new Set([
+  "ghcr.io/example/hanse-agent-default:1",
+  "ghcr.io/example/hanse-agent-base:1",
+  "node:20",
+  "node:20-bookworm",
+]);
+
+function validateFrom(
+  dockerfile: string,
+  overrides: Partial<Parameters<typeof validateDockerfileFrom>[0]> = {},
+): void {
+  validateDockerfileFrom({
+    dockerfile,
+    allowedImages: ALLOWED_FROM,
+    args: {},
+    baseImage: "ghcr.io/example/hanse-agent-default:1",
+    ...overrides,
+  });
+}
+
+function expectFromError(run: () => void, code: DockerfileBuildError["code"]): void {
+  try {
+    run();
+  } catch (error) {
+    expect(error).toBeInstanceOf(DockerfileBuildError);
+    expect((error as DockerfileBuildError).code).toBe(code);
+    return;
+  }
+  throw new Error(`expected DockerfileBuildError ${code}`);
+}
+
+describe("validateDockerfileFrom", () => {
+  it("allows an allowlisted multi-stage build and prior aliases", () => {
+    const dockerfile = [
+      "ARG HANSE_BASE",
+      "FROM ${HANSE_BASE} AS root",
+      "RUN echo one",
+      "FROM node:20 AS middle",
+      "FROM middle",
+      "",
+    ].join("\n");
+    expect(() => validateFrom(dockerfile)).not.toThrow();
+  });
+
+  it("rejects a disallowed intermediate stage", () => {
+    const dockerfile = ["FROM node:20 AS build", "FROM evil:1 AS mid", "FROM build", ""].join("\n");
+    expectFromError(() => validateFrom(dockerfile), "invalid_from");
+  });
+
+  it("does not implicitly allow a literal final FROM", () => {
+    expectFromError(() => validateFrom("FROM node:99\n"), "invalid_from");
+    expectFromError(
+      () => validateFrom("FROM node:20\n", { allowedImages: new Set<string>() }),
+      "invalid_from",
+    );
+  });
+
+  it("expands ARG defaults and runner build args", () => {
+    const dockerfile = ["ARG BASE=node:20", "FROM ${BASE}", ""].join("\n");
+    expect(() => validateFrom(dockerfile)).not.toThrow();
+    expectFromError(
+      () => validateFrom("ARG BASE\nFROM ${BASE}\n", { args: { BASE: "evil:1" } }),
+      "invalid_from",
+    );
+  });
+
+  it("expands the runner-injected HANSE_BASE", () => {
+    expect(() => validateFrom("ARG HANSE_BASE\nFROM ${HANSE_BASE}\n")).not.toThrow();
+    expectFromError(
+      () =>
+        validateFrom("ARG HANSE_BASE\nFROM ${HANSE_BASE}\n", {
+          allowedImages: new Set(["node:20"]),
+        }),
+      "invalid_from",
+    );
+  });
+
+  it("rejects unknown variables and malformed references", () => {
+    expectFromError(() => validateFrom("FROM ${MISSING}\n"), "invalid_from");
+    expectFromError(() => validateFrom("FROM node:20:bad ref\n"), "invalid_from");
+    expectFromError(() => validateFrom("FROM\n"), "invalid_dockerfile");
+  });
+
+  it("tracks prior aliases case-insensitively but not forward aliases", () => {
+    expect(() => validateFrom("FROM node:20 AS Build\nFROM bUiLd\n")).not.toThrow();
+    expectFromError(() => validateFrom("FROM Later\nFROM node:20 AS Later\n"), "invalid_from");
+  });
+
+  it("allows scratch and prior stage indices", () => {
+    expect(() => validateFrom("FROM scratch\n")).not.toThrow();
+    expect(() => validateFrom("FROM node:20 AS first\nFROM 0\n")).not.toThrow();
+    expectFromError(() => validateFrom("FROM 1\nFROM node:20 AS later\n"), "invalid_from");
+  });
+
+  it("ignores --platform values, including variables", () => {
+    expect(() =>
+      validateFrom("FROM --platform=$BUILDPLATFORM node:20 AS build\nFROM build\n"),
+    ).not.toThrow();
+    expect(() => validateFrom("FROM --platform linux/amd64 node:20\n")).not.toThrow();
+    expectFromError(() => validateFrom("FROM --platform=$BUILDPLATFORM evil:1\n"), "invalid_from");
+  });
+
+  it("handles comments and line continuations", () => {
+    const dockerfile = [
+      "# comment",
+      "ARG BASE=node:20",
+      "FROM \\",
+      "# comment in continuation",
+      "  ${BASE} AS build",
+      "FROM build",
+      "",
+    ].join("\n");
+    expect(() => validateFrom(dockerfile)).not.toThrow();
+  });
+
+  it("skips heredoc bodies instead of parsing them as instructions", () => {
+    const dockerfile = [
+      "ARG HANSE_BASE",
+      "FROM ${HANSE_BASE} AS build",
+      "RUN <<EOF",
+      "FROM evil:1",
+      "RUN --network=host true",
+      "EOF",
+      "FROM build",
+      "",
+    ].join("\n");
+    expect(() => validateFrom(dockerfile)).not.toThrow();
+    expectFromError(() => validateFrom("RUN <<EOF\nFROM evil:1\n"), "invalid_dockerfile");
+  });
+
+  it("rejects a non-backslash escape directive", () => {
+    const dockerfile = ["# escape=`", "FROM node:20", ""].join("\n");
+    expectFromError(() => validateFrom(dockerfile), "invalid_dockerfile");
+  });
+
+  it("accepts digest-pinned references only when allowlisted", () => {
+    const digestRef = `node@${DIGEST_A}`;
+    const allowed = new Set([...ALLOWED_FROM, digestRef]);
+    expect(() => validateFrom(`FROM ${digestRef}\n`, { allowedImages: allowed })).not.toThrow();
+    expectFromError(() => validateFrom(`FROM ${digestRef}\n`), "invalid_from");
+  });
+
+  it("rejects RUN --network=host and container networks", () => {
+    expectFromError(
+      () => validateFrom("FROM node:20\nRUN --network=host true\n"),
+      "invalid_run_network",
+    );
+    expectFromError(
+      () => validateFrom("FROM node:20\nRUN --network=container:abc true\n"),
+      "invalid_run_network",
+    );
+  });
+
+  it("allows RUN --network=default, none, and named networks", () => {
+    for (const network of ["default", "none", "hanse-build"]) {
+      expect(() => validateFrom(`FROM node:20\nRUN --network=${network} true\n`)).not.toThrow();
+    }
+  });
+
+  it("validates COPY --from aliases, indices, and external images", () => {
+    expect(() =>
+      validateFrom("FROM node:20 AS builder\nFROM node:20\nCOPY --from=builder /x /y\n"),
+    ).not.toThrow();
+    expect(() => validateFrom("FROM node:20\nFROM node:20\nCOPY --from=0 /x /y\n")).not.toThrow();
+    expect(() => validateFrom("FROM node:20\nCOPY --from=node:20 /x /y\n")).not.toThrow();
+    expectFromError(
+      () => validateFrom("FROM node:20\nCOPY --from=evil:latest /x /y\n"),
+      "invalid_from",
+    );
+    expectFromError(() => validateFrom("FROM node:20\nCOPY --from=0 /x /y\n"), "invalid_from");
+  });
+
+  it("expands COPY --from variables and fails closed on unknown values", () => {
+    expect(() =>
+      validateFrom("FROM node:20\nARG IMG=node:20\nCOPY --from=${IMG} /x /y\n"),
+    ).not.toThrow();
+    expectFromError(
+      () => validateFrom("FROM node:20\nARG IMG=evil:1\nCOPY --from=${IMG} /x /y\n"),
+      "invalid_from",
+    );
+    expectFromError(
+      () => validateFrom("FROM node:20\nCOPY --from=${MISSING} /x /y\n"),
+      "invalid_from",
+    );
+  });
+
+  it("validates RUN --mount from= images, aliases, and context", () => {
+    expect(() =>
+      validateFrom(
+        "FROM node:20 AS builder\nFROM node:20\nRUN --mount=type=bind,from=builder,target=/x true\n",
+      ),
+    ).not.toThrow();
+    expect(() =>
+      validateFrom("FROM node:20\nRUN --mount=type=bind,from=node:20,target=/x true\n"),
+    ).not.toThrow();
+    expect(() =>
+      validateFrom("FROM node:20\nRUN --mount=from=context,target=/x true\n"),
+    ).not.toThrow();
+    expectFromError(
+      () =>
+        validateFrom(
+          'FROM node:20\nRUN --mount=type=bind,source="/tmp/a b",from=evil:1,target=/x true\n',
+        ),
+      "invalid_from",
+    );
+    expectFromError(
+      () => validateFrom("FROM node:20\nRUN --mount=from,target=/x true\n"),
+      "invalid_from",
+    );
+  });
+});
+
+describe("validateDockerfileFrom COPY and RUN mount sources", () => {
+  it("validates COPY --from against prior stages, indices, and the allowlist", () => {
+    const builderStage = "FROM node:20 AS builder\nFROM ${HANSE_BASE}\n";
+    expect(() => validateFrom(`${builderStage}COPY --from=builder /x /y\n`)).not.toThrow();
+    expect(() => validateFrom(`${builderStage}COPY --from builder /x /y\n`)).not.toThrow();
+    expect(() => validateFrom(`${builderStage}COPY --from=BuIlDeR /x /y\n`)).not.toThrow();
+    expect(() =>
+      validateFrom(`FROM node:20 AS first\nFROM \${HANSE_BASE}\nCOPY --from=0 /x /y\n`),
+    ).not.toThrow();
+    expect(() => validateFrom(`FROM \${HANSE_BASE}\nCOPY --from=node:20 /x /y\n`)).not.toThrow();
+
+    expectFromError(
+      () => validateFrom(`${builderStage}COPY --from=evil:latest /x /y\n`),
+      "invalid_from",
+    );
+    expectFromError(
+      () => validateFrom(`FROM \${HANSE_BASE}\nCOPY --from=0 /x /y\n`),
+      "invalid_from",
+    );
+    expectFromError(() => validateFrom(`FROM \${HANSE_BASE}\nCOPY --from /x /y\n`), "invalid_from");
+  });
+
+  it("validates RUN --mount from sources", () => {
+    expect(() =>
+      validateFrom(
+        "FROM node:20 AS builder\nFROM ${HANSE_BASE}\nRUN --mount=type=bind,from=builder,target=/src true\n",
+      ),
+    ).not.toThrow();
+    expect(() =>
+      validateFrom("FROM ${HANSE_BASE}\nRUN --mount=type=bind,from=context,target=/src true\n"),
+    ).not.toThrow();
+    expect(() =>
+      validateFrom("FROM ${HANSE_BASE}\nRUN --mount=type=bind,from=node:20,target=/src true\n"),
+    ).not.toThrow();
+
+    expectFromError(
+      () =>
+        validateFrom(
+          "FROM ${HANSE_BASE}\nRUN --mount=type=bind,from=evil:latest,target=/src true\n",
+        ),
+      "invalid_from",
+    );
+    expectFromError(
+      () => validateFrom("FROM ${HANSE_BASE}\nRUN --mount=type=bind,,from=builder true\n"),
+      "invalid_from",
+    );
+    expectFromError(
+      () => validateFrom("FROM ${HANSE_BASE}\nRUN --mount=type=bind,from= true\n"),
+      "invalid_from",
+    );
+    expectFromError(() => validateFrom("FROM ${HANSE_BASE}\nRUN --mount true\n"), "invalid_from");
+    expect(() => validateFrom("FROM ${HANSE_BASE}\nRUN --mount=target=/src true\n")).not.toThrow();
+  });
+
+  it("still accepts a normal multi-stage build with COPY --from=builder", () => {
+    const dockerfile = [
+      "ARG HANSE_BASE",
+      "FROM node:20 AS builder",
+      "RUN npm run build",
+      "FROM ${HANSE_BASE}",
+      "COPY --from=builder /app/dist /app/dist",
+      "RUN --mount=type=cache,target=/root/.cache npm ci",
+      "",
+    ].join("\n");
+    expect(() => validateFrom(dockerfile)).not.toThrow();
   });
 });

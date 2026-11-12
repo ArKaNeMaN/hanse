@@ -44,6 +44,7 @@ export interface PendingRecoveryOptions {
   endpointFor: (appId: string) => string | undefined;
   monitorState?: (appId: string) => MonitorState;
   agentsHome?: string;
+  mountsHome?: string;
   backoffMs?: readonly number[];
   routeDeadlineMs?: number;
   now?: () => string;
@@ -73,6 +74,7 @@ export class PendingRecovery {
   readonly #endpointFor: (appId: string) => string | undefined;
   readonly #monitorState: (appId: string) => MonitorState;
   readonly #agentsHome: string | undefined;
+  readonly #mountsHome: string | undefined;
   readonly #backoffMs: readonly number[];
   readonly #routeDeadlineMs: number;
   readonly #now: () => string;
@@ -88,6 +90,7 @@ export class PendingRecovery {
     this.#endpointFor = options.endpointFor;
     this.#monitorState = options.monitorState ?? (() => "disabled");
     this.#agentsHome = options.agentsHome;
+    this.#mountsHome = options.mountsHome;
     this.#backoffMs = options.backoffMs ?? PENDING_BACKOFF_MS;
     this.#routeDeadlineMs = options.routeDeadlineMs ?? PENDING_ROUTE_DEADLINE_MS;
     this.#now = options.now ?? nowIso;
@@ -360,7 +363,13 @@ export class PendingRecovery {
       deleteSessionChatRows(this.#db, appId, row.sessionId);
       if (identity !== undefined) {
         removeSessionFolder(
-          sessionFolder(this.#agentsHome, identity.projectId, identity.appKey, row.sessionId),
+          sessionFolder(
+            this.#agentsHome,
+            identity.projectId,
+            identity.appKey,
+            row.sessionId,
+            this.#mountsHome,
+          ),
         );
         if (this.#agentsHome !== undefined) {
           deleteSessionAgentMedia(

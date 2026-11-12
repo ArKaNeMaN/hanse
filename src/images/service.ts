@@ -954,7 +954,7 @@ export class ImageService {
     return {
       appId,
       buildId: record.buildId,
-      status: record.status,
+      status: terminalStatusAsError(record.status),
       logs: sanitizeLogs(record.logs, [this.#hostWorkspace, this.#workspaceRoot]),
       runnerAvailable: true,
     };
@@ -1145,7 +1145,11 @@ export class ImageService {
       this.#adoptReady(app, record);
       return this.#findApp(app.id) ?? null;
     }
-    if (record.status === "error") {
+    if (
+      record.status === "error" ||
+      record.status === "interrupted" ||
+      record.status === "cancelled"
+    ) {
       this.#applyTerminalError(app, record);
       return this.#findApp(app.id) ?? null;
     }
@@ -1851,6 +1855,10 @@ function checkNotice(
     return { notice: "The image is up to date.", tone: "success" };
   }
   return { notice: "Image build configuration detected; build the image.", tone: "success" };
+}
+
+function terminalStatusAsError(status: RunnerImageRecord["status"]): AppImageStatus {
+  return status === "interrupted" || status === "cancelled" ? "error" : status;
 }
 
 /** Keep the tail of a build log, strip control bytes, and redact known host paths/tokens. */

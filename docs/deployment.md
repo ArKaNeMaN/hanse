@@ -61,10 +61,10 @@ RUNTIME_TOKEN=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')
 sed -i.bak "s|^HANSE_OPERATOR_TOKEN=.*|HANSE_OPERATOR_TOKEN=$TOKEN|; s|^HANSE_RUNTIME_TOKEN=.*|HANSE_RUNTIME_TOKEN=$RUNTIME_TOKEN|" .env && rm -f .env.bak
 echo "operator token: $TOKEN"
 
-mkdir -p workspace state agents
+mkdir -p workspace state agents mounts
 ROOT=$(pwd)
-sed -i.bak "s|^# HANSE_HOST_WORKSPACE=.*|HANSE_HOST_WORKSPACE=$ROOT/workspace|; s|^# HANSE_HOST_AGENTS=.*|HANSE_HOST_AGENTS=$ROOT/agents|" .env && rm -f .env.bak
-sudo chown -R 1000:1000 workspace state agents
+sed -i.bak "s|^# HANSE_HOST_WORKSPACE=.*|HANSE_HOST_WORKSPACE=$ROOT/workspace|; s|^# HANSE_HOST_AGENTS=.*|HANSE_HOST_AGENTS=$ROOT/agents|; s|^# HANSE_HOST_MOUNTS=.*|HANSE_HOST_MOUNTS=$ROOT/mounts|" .env && rm -f .env.bak
+sudo chown -R 1000:1000 workspace state agents mounts
 docker compose pull
 
 # The per-app agent and shared base images are not Compose services. Source .env so the explicit
@@ -85,7 +85,7 @@ The containers run as uid/gid `1000`. If your user is not uid 1000 on the host, 
 writable by that uid:
 
 ```bash
-sudo chown -R 1000:1000 workspace state agents
+sudo chown -R 1000:1000 workspace state agents mounts
 ```
 
 If the GHCR package is private in your fork, authenticate first:
@@ -162,7 +162,24 @@ current/rollback/running images, the in-flight build target while a build is rec
 runner's own non-terminal build tags, and only removes Hanse app images. `GET /api/images/usage`
 reports filesystem/Docker usage and warns at 75% used / critical at 85%; crossing the threshold never
 deletes anything automatically. The runner mounts the host workspace read-only for build contexts and
-validation, and never receives `/data/state`.
+validation, mounts the mounts root read-only for attachment/git bind sources, and never receives
+`/data/state`.
+
+### Build records and cancellation
+
+The runner persists one bounded record per build under `HANSE_BUILD_RECORDS_DIR` (default
+`/var/lib/hanse/builds`): version, ids, status, target, hash, timestamps, error, and at most the last
+128 KiB of build log. Files are written atomically (temp + rename) with mode `0600` in a `0700`
+directory. Records are capped at 200 files and seven days; older and excess records are pruned on
+load and save. On startup a record still marked `building` becomes `interrupted` because the process
+that owned it is gone, and its log tail is kept. Records with an unknown or newer record version are
+not adopted and are skipped. Use a durable host path for this directory, not the ephemeral
+`HANSE_HOST_RUNNER_TMP`.
+
+`POST /v1/images/builds/:id/cancel` aborts the runner's build request and marks the record
+`cancelled` with its logs kept. Cancellation is best-effort: Docker may keep building the image in
+the background, and the build-id-unique tag means a later build cannot adopt that result. The
+coordinator and runner are upgraded together as API 3 for these records and cancellation semantics.
 
 ### Idle agent maintenance
 
@@ -180,11 +197,14 @@ The pull pass asks the runner to pull the configured default agent and shared ba
 `HANSE_AGENT_AUTO_PULL_MS` (default 15 minutes). The runner validates the reference against its exact
 allowlist, serializes pulls with builds/GC, streams the Docker pull, and enforces a fail-closed disk
 guard before and during the pull: `warning`/`critical` (75%/85%) or an unavailable statfs rejects
-with `507`; a pull that reaches `critical` is aborted. `HANSE_IMAGE_DISK_PATH` is the runner path
-statfs'd for this guard and defaults to `HANSE_HOST_WORKSPACE`; point it at the filesystem that backs
-Docker images (mount it read-only if it differs) or disable auto-pull. If Docker's data root is on a
-different filesystem, the guard can under-report. Pulls are skipped while drained or deployment-locked
-and for digest-pinned references; the explicit image GC remains the cleanup path.
+with `507`; a pull that reaches `critical` is aborted. The guard statfs'es `HANSE_DOCKER_DATA_ROOT`
+(the host Docker data root, bind-mounted read-only into the runner at the same path; default
+`/var/lib/docker`). When that path is not configured or its usage cannot be read, the guard reports
+`disk: null` and pulls fail closed; disable auto-pull if the data root cannot be mounted. After a
+successful pull the image is inspected: an image above `HANSE_PULL_MAX_BYTES`, or one whose size
+cannot be determined while a budget is configured, is removed with `507`. Pulls are skipped while
+drained or deployment-locked and for digest-pinned references; the explicit image GC remains the
+cleanup path.
 
 **Supply chain.** Auto-pull with mutable tags can introduce an image that no human reviewed. A
 digest-pinned reference (`@sha256:...`) does not move, so auto-pull is a no-op there; set
@@ -263,12 +283,15 @@ Compose reads `.env` in the directory containing `compose.yaml`.
 | `HANSE_AGENTS` | `./agents` | Host path for per-app HOME, XDG, mise, opencode auth/password, and MCP tokens. |
 | `HANSE_HOST_WORKSPACE` | **required** | Absolute host path corresponding to `/data/workspace`. |
 | `HANSE_HOST_AGENTS` | **required** | Absolute host path corresponding to `/data/agents`. |
+| `HANSE_HOST_MOUNTS` | **required** | Absolute host path of the coordinator-owned bind-source root. The coordinator mounts it read-write and the runner read-only; it holds `<project>/<app>/{attachments,git}` and must not overlap the workspace or agents roots. |
 | `HANSE_HOST_RUNNER_TMP` | `/var/lib/hanse/tmp` | Absolute writable host path for ephemeral Test-connection credential dirs. Mounted into the runner at the same absolute path; must not overlap the workspace or agents roots. Do not place it on a shared or backed-up volume. |
+| `HANSE_BUILD_RECORDS_DIR` | `/var/lib/hanse/builds` | Absolute durable host path for bounded image build records. Mounted writable into the runner at the same absolute path and preserved across restarts. Do not use the ephemeral `HANSE_HOST_RUNNER_TMP`; records are written atomically with mode `0600`. |
 | `HANSE_AGENT_AUTO_STOP_MS` | `172800000` | Idle auto-stop threshold in milliseconds (2 days); `0` disables auto-stop. |
 | `HANSE_AGENT_AUTO_UPDATE_MS` | `10800000` | Idle auto-update threshold in milliseconds (3 hours); `0` disables auto-update. |
 | `HANSE_AGENT_MAINTENANCE_INTERVAL_MS` | `300000` | Idle scheduler tick (5 minutes), clamped to at least 30 seconds. |
 | `HANSE_AGENT_AUTO_PULL_MS` | `900000` | Default/base image pull interval (15 minutes); `0` disables auto-pull. |
-| `HANSE_IMAGE_DISK_PATH` | `HANSE_HOST_WORKSPACE` | Runner path statfs'd for the pull disk guard. Point it at the filesystem that backs Docker images (mount it read-only if they differ) or disable auto-pull. |
+| `HANSE_DOCKER_DATA_ROOT` | `/var/lib/docker` | Absolute host path of the Docker data root. Bind-mounted read-only into the runner at the same path and statfs'd by the pull disk guard; unset or unreadable means `disk: null` and pulls fail closed. |
+| `HANSE_PULL_MAX_BYTES` | unset | Maximum bytes for one pulled image. Above the budget, or when the pulled image size is unavailable, the image is removed and the pull returns `507`. |
 | `HANSE_BUILD_IMAGE` | `hanse:dev` | Local coordinator tag used by the source-build overlay. |
 | `HANSE_IDE_BUILD_IMAGE` | `hanse-agent-ide:dev` | Local IDE tag used by the source-build overlay. |
 | `HANSE_RUNNER_BUILD_IMAGE` | `hanse-runner:dev` | Local runner tag used by the source-build overlay. |
@@ -316,11 +339,16 @@ deleted. Rollback is image-only with a UI-build check.
   directory as a bind mount.
 - `./state` -> `/data/state`: the coordinator database (`coordinator.db` with WAL/SHM) and the secret
   key. Mounted into the coordinator only, never into the IDE, runner, or app containers.
-- `./agents` -> `/data/agents`: per-app agent HOME/XDG state, mise data, opencode auth/password, MCP
-  tokens, and the materialized git identity/credential files under
-  `home/.config/hanse/git/`. Mounted read-write into the coordinator and read-only into the runner;
-  each app container gets only its own `/data/agents/<project>/<app>` root. **Back it up and keep it
-  private** because it contains model and git credentials.
+- `./agents` -> `/data/agents`: per-app agent HOME/XDG state, mise data, opencode auth/password, and
+  MCP tokens. Mounted read-write into the coordinator and read-only into the runner; each app
+  container gets only its own `/data/agents/<project>/<app>` root. **Back it up and keep it private**
+  because it contains model credentials and MCP tokens.
+- `HANSE_HOST_MOUNTS` -> the same absolute path in the coordinator and runner: coordinator-owned
+  bind sources at `<mounts>/<project>/<app>/{attachments,git}`. The coordinator mounts it read-write
+  and the runner mounts it read-only; app containers receive only read-only leaves at the unchanged
+  paths `/data/agents/<project>/<app>/attachments` and
+  `/data/agents/<project>/<app>/home/.config/hanse/git`. The mounts root is never app-writable.
+  **Back it up and keep it private** because `git` contains credentials.
 - `HANSE_HOST_RUNNER_TMP` -> the same absolute path in the runner: writable host space for ephemeral
   Test-connection credential directories. The runner creates a `0700` `git-test-<uuid>` directory,
   mounts it read-only into the one-shot container, and deletes it in `finally`; a startup sweep
@@ -332,7 +360,22 @@ variables were removed. Remove them from an existing `.env`; Compose no longer p
 is no fallback.
 
 The containers run as uid/gid 1000. Files created by another uid (for example by `sudo`) break
-writes. Repair with `sudo chown -R 1000:1000 workspace state agents`.
+writes. Repair with `sudo chown -R 1000:1000 workspace state agents mounts`.
+
+### Runner mount layout migration
+
+The coordinator copies the legacy per-app `attachments` tree and
+`home/.config/hanse/git` credentials from `agents/` into `HANSE_HOST_MOUNTS` during startup, before
+serving requests, and records completion in `state/hanse/runner-layout.json` (mode `0600`). The copy
+is verified (file count, size, and SHA-256), idempotent, and never deletes or overwrites the legacy
+tree. A mounts leaf that is missing while the legacy backup still exists is re-copied on the next
+start. If the old and new copies both exist with different content it fails startup instead of
+choosing one. Stop app containers before upgrading so the legacy trees are quiescent.
+
+The copy is a backup, not a lossless rollback: after the cutover every write goes only to the mounts
+root. To roll back, stop the coordinator, restore the pre-upgrade `agents/` and `state/` backup (or
+copy the mounts leaves back into `agents/`), and run the older image. Deleting an app now removes its
+`<mounts>/<project>/<app>` directory as well as its agents state.
 
 ## Network exposure and security
 
@@ -391,8 +434,9 @@ up a new base/agent image. The target sequence keeps the coordinator serving thr
 live file copy, and stops only the small coordinator process for the switch:
 
 1. Pull images while the old coordinator keeps serving.
-2. Take a hot SQLite backup and copy live workspace/agents files while it serves. There is deliberately
-   no HTTP backup or archive endpoint; use an approved SQLite hot-backup tool or filesystem snapshot.
+2. Take a hot SQLite backup and copy live workspace/agents/mounts files while it serves. There is
+   deliberately no HTTP backup or archive endpoint; use an approved SQLite hot-backup tool or
+   filesystem snapshot.
 3. Drain: `POST /api/deploy/drain` (operator auth) and wait for `drained: true`. New mutations answer
    `503` with `Retry-After`; reads stay available; SSE streams end with a `deploy` event and
    WebSockets close with code `1012` so clients reconnect.
@@ -452,23 +496,26 @@ old image. A custom app that declares `build.base: base` fails its next build if
 
 ### Split updates and N-1 compatibility
 
-The coordinator must work with the previous IDE and runner for one release. Images carry
+The coordinator must work with the previous IDE for one release. Images carry
 `org.hanse.api.min` / `org.hanse.api.max` and `org.hanse.schema.min` / `org.hanse.schema.max` labels.
-The coordinator image currently declares API `1..1` and schema `1..27`; the IDE, runner, and agent
-images declare API `1..1` and schema `0..0` (they do not read the coordinator database).
+The coordinator image currently declares API `1..1` and schema `1..27`; the IDE and agent
+images declare API `1..1` and schema `0..0` (they do not read the coordinator database). The runner
+declares API `3..3` and schema `0..0`; the runner API bump is the isolation boundary, so the
+coordinator and runner are upgraded as a unit rather than N-1. API 3 adds durable build records and
+best-effort build cancellation.
 
-The coordinator reads the runner's unauthenticated `/healthz` handshake (`apiVersion`,
-`minApiVersion`, `maxApiVersion`) at startup. A legacy runner without those fields is logged as
-`runner_api_incompatible` and keeps working with the previous transport; version-specific requests
-return their normal bounded errors instead of crashing the coordinator. Update the coordinator first
-with `docker compose up -d --no-deps hanse`, then update the IDE and runner separately; never run a
+The coordinator reads the runner's authenticated `GET /v1/meta` endpoint (`apiVersion`,
+`minApiVersion`, `runnerVersion`) at startup when `HANSE_RUNNER_URL` is set. A runner that does not
+serve a compatible response is refused: `serve` exits `1` with an `incompatible API` message. A
+transport failure is tolerated; the runner's bounded endpoints then report their normal errors. A
+legacy runner that only serves `/healthz` is refused, so upgrade the coordinator and runner together.
+Update both with `docker compose up -d hanse runner`; the IDE can follow separately. Never run a
 runner more than one release ahead of the coordinator.
 
 Idle maintenance adds one stricter requirement: upgrade the coordinator and runner together. Auto-pull,
-the pull disk guard, and pinned-image `ensure` all need the new runner; with an old runner the
-coordinator treats the missing pull route as an unsupported skip, so auto-pull pauses while stop and
-update still work. Recreate both with `docker compose up -d hanse runner` after the migration and
-verify the runner handshake in the coordinator logs; the IDE can follow separately.
+the pull disk guard, and pinned-image `ensure` all need the new runner; a pre-v3 runner is refused at
+startup. Recreate both with `docker compose up -d hanse runner` after the migration and confirm
+`GET /v1/meta` succeeds; the IDE can follow separately.
 
 Async restart claims are persisted in SQLite before the `202` is returned. If the coordinator exits
 mid-restart, the next startup finds the claim and completes the start; a stopped app left by an
@@ -764,7 +811,7 @@ Stop app containers first, then back up all three volumes and the deployment fil
 ```bash
 docker compose exec -T runner node -e 'fetch("http://127.0.0.1:8790/v1/stop-all",{method:"POST",headers:{authorization:"Bearer "+process.env.HANSE_RUNTIME_TOKEN}}).then(async r=>{if(!r.ok)process.exit(1)})' || true
 docker compose stop
-files=(workspace state agents .env compose.yaml)
+files=(workspace state agents mounts .env compose.yaml)
 [ -f compose.override.yaml ] && files+=(compose.override.yaml)
 tar czf "hanse-$(date +%F).tgz" "${files[@]}"
 docker compose start
@@ -778,10 +825,13 @@ containers. The backup contains:
 - `state/` - the coordinator DB and `secret.key`. **Keep it private.** Losing `secret.key` makes
   encrypted provider keys and git credentials undecryptable; restoring an older DB can restore
   revoked keys.
-- `agents/` - per-app HOME/XDG/mise state, opencode auth/password, MCP tokens, and materialized git
-  credential files. **Keep it private**; it contains model and git credentials. The runner reads this
-  volume read-only for each app's password and git credential directory; app containers see only
-  their own app root.
+- `agents/` - per-app HOME/XDG/mise state, opencode auth/password, and MCP tokens. **Keep it
+  private**; it contains model credentials and MCP tokens. The runner reads this volume read-only for
+  each app's password; app containers see only their own app root.
+- `mounts/` - coordinator-owned attachment and managed git-credential bind sources at
+  `<project>/<app>/{attachments,git}`. **Keep it private**; `git` contains credentials. The runner
+  reads it read-only and app containers receive only read-only leaves; the root is never
+  app-writable.
 - `.env` and any Compose override files.
 
 Restore:
@@ -791,8 +841,9 @@ docker compose down
 mv state state.broken
 mv workspace workspace.broken
 mv agents agents.broken
+mv mounts mounts.broken
 tar xzf hanse-<date>.tgz
-sudo chown -R 1000:1000 workspace state agents
+sudo chown -R 1000:1000 workspace state agents mounts
 docker compose up -d
 ```
 
@@ -829,9 +880,11 @@ application scope; the design and threat model are in
   images built from `ARG HANSE_BASE` on the current base include them; a custom image that does not
   inherit the base must install `openssh-client`. The coordinator/runtime image also needs
   `ssh-keygen` for save validation.
-- **Materialized files**: each app gets `<agents>/<project>/<app>/home/.config/hanse/git/` (`config`,
-  `ssh`, `askpass`, plus optional `id`, `known_hosts`, `token`, `username`, `https_hosts`). The agent
-  can read its own credentials by design; scope keys and tokens accordingly.
+- **Materialized files**: the coordinator writes each app's managed credential set under
+  `<mounts>/<project>/<app>/git/` (`config`, `ssh`, `askpass`, plus optional `id`, `known_hosts`,
+  `token`, `username`, `https_hosts`) and binds it read-only at the unchanged app-visible path
+  `/data/agents/<project>/<app>/home/.config/hanse/git/`. The agent can read its own credentials by
+  design; scope keys and tokens accordingly.
 - **Add-app clone**: when an application is added from a remote, the coordinator clones it with
   the target project's effective `global` + `project` git credential (never `app` scope, which does
   not exist yet). SSH remotes require an SSH credential and fail with a clear "no SSH git credential
@@ -879,8 +932,9 @@ never mounted into app containers, and the `hanse mcp` shim only forwards tool c
 
 ## Troubleshooting
 
-- **Permission denied under `/data/state`, `/data/workspace`, or `/data/agents`**: the bind mounts
-  are not writable by uid 1000. Run `sudo chown -R 1000:1000 workspace state agents`.
+- **Permission denied under `/data/state`, `/data/workspace`, `/data/agents`, or the mounts root**:
+  the bind mounts are not writable by uid 1000. Run
+  `sudo chown -R 1000:1000 workspace state agents mounts`.
 - **Port already allocated**: change `HANSE_PORT`, or stop the process using 8787.
 - **`pull access denied` for GHCR**: the package is private or you are not signed in. Run
   `docker login ghcr.io`, or make the package public in its GitHub package settings.

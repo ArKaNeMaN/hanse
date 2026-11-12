@@ -23,6 +23,7 @@ export interface DockerUpgradedConnection {
 
 export interface DockerRequestOptions {
   timeoutMs?: number;
+  signal?: AbortSignal;
 }
 
 /** Options for a streaming Docker response (the pull endpoint). */
@@ -36,6 +37,8 @@ export interface DockerStreamOptions {
 /** Options for `DockerClient.pullImage`. */
 export interface DockerPullOptions {
   signal?: AbortSignal;
+  /** Abort the stream once the summed per-layer download progress exceeds this many bytes. */
+  maxBytes?: number;
 }
 
 /** The identity a pull resolved; the caller inspects for the repo digest. */
@@ -51,11 +54,15 @@ export interface DockerBuildOptions {
   baseImage: string;
   buildArgs: Record<string, string>;
   labels: Record<string, string>;
+  /** Docker `/build` network mode; never silently `default`. */
+  networkMode: string;
   memoryBytes: number;
   nanoCpus: number;
   pidsLimit: number;
   buildkit?: boolean;
   timeoutMs?: number;
+  /** Abort the HTTP request; the Docker daemon may still finish the build. */
+  signal?: AbortSignal;
 }
 
 export interface DockerBuildResult {
@@ -273,6 +280,11 @@ export class UnixDockerTransport implements DockerTransport {
     const path = requestPath.startsWith("/v") ? requestPath : `/${this.#apiVersion}${requestPath}`;
 
     return new Promise((resolve, reject) => {
+      const signal = options?.signal;
+      if (signal?.aborted === true) {
+        reject(new DockerError(0, "docker request aborted"));
+        return;
+      }
       const request = http.request(
         {
           socketPath: this.#socketPath,
@@ -300,18 +312,30 @@ export class UnixDockerTransport implements DockerTransport {
             chunks.push(chunk);
           });
           response.on("end", () => {
+            cleanup();
             resolve({
               status: response.statusCode ?? 0,
               body: Buffer.concat(chunks),
             });
           });
-          response.on("error", reject);
+          response.on("error", (error) => {
+            cleanup();
+            reject(error);
+          });
         },
       );
+      const onAbort = (): void => {
+        request.destroy(new DockerError(0, "docker request aborted"));
+      };
+      const cleanup = (): void => {
+        signal?.removeEventListener("abort", onAbort);
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
       request.setTimeout(options?.timeoutMs ?? this.#timeoutMs, () => {
         request.destroy(new DockerError(0, "docker request timed out"));
       });
       request.on("error", (error) => {
+        cleanup();
         reject(
           error instanceof DockerError
             ? error
@@ -436,6 +460,8 @@ export interface DockerContainerSummary {
   Names: string[];
   Image: string;
   ImageID?: string;
+  /** Container creation time as epoch seconds, as returned by Docker. */
+  Created?: number;
   State: string;
   Status: string;
   Labels?: Record<string, string>;
@@ -487,6 +513,7 @@ export interface DockerContainerInspect {
  */
 export interface DockerImageInspect {
   Id?: string;
+  Size?: number;
   RepoTags?: string[];
   RepoDigests?: string[];
   Config?: {
@@ -835,6 +862,13 @@ export class DockerClient {
     return body.ApiVersion ?? body.Version ?? "unknown";
   }
 
+  async ping(): Promise<void> {
+    const response = await this.#transport.request("GET", "/_ping", undefined, {
+      timeoutMs: 5_000,
+    });
+    this.#check(response, "docker ping");
+  }
+
   async inspectImage(reference: string): Promise<DockerImageInspect | undefined> {
     const response = await this.#transport.request(
       "GET",
@@ -904,6 +938,7 @@ export class DockerClient {
       dockerfile: options.dockerfile,
       buildargs: JSON.stringify(buildArgs),
       labels: JSON.stringify(options.labels),
+      networkmode: options.networkMode,
       memory: String(options.memoryBytes),
       memswap: String(options.memoryBytes),
       cpuperiod: String(cpuPeriod),
@@ -917,7 +952,9 @@ export class DockerClient {
     const response = await this.#transport.build(
       `/build?${query.toString()}`,
       options.tar,
-      options.timeoutMs === undefined ? undefined : { timeoutMs: options.timeoutMs },
+      options.timeoutMs === undefined && options.signal === undefined
+        ? undefined
+        : { timeoutMs: options.timeoutMs, signal: options.signal },
     );
     const parsed = parseBuildOutput(response.body);
     const logs = parsed.logs;
@@ -968,6 +1005,7 @@ export class DockerClient {
     let imageId: string | null = null;
     let digest: string | null = null;
     let error: string | null = null;
+    const layerBytes = new Map<string, number>();
     for await (const line of stream("POST", `/images/create?${query.toString()}`, undefined, {
       signal: options.signal,
       timeoutMs: DEFAULT_PULL_TIMEOUT_MS,
@@ -979,7 +1017,28 @@ export class DockerClient {
         continue;
       }
       if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) continue;
-      const event = parsed as { error?: unknown; errorDetail?: unknown; aux?: unknown };
+      const event = parsed as {
+        error?: unknown;
+        errorDetail?: unknown;
+        aux?: unknown;
+        id?: unknown;
+        progressDetail?: unknown;
+      };
+      if (options.maxBytes !== undefined && typeof event.id === "string" && event.id.length > 0) {
+        const detail = event.progressDetail;
+        if (typeof detail === "object" && detail !== null && !Array.isArray(detail)) {
+          const current = (detail as { current?: unknown }).current;
+          if (typeof current === "number" && Number.isFinite(current) && current >= 0) {
+            const previous = layerBytes.get(event.id) ?? 0;
+            if (current > previous) layerBytes.set(event.id, current);
+            let total = 0;
+            for (const bytes of layerBytes.values()) total += bytes;
+            if (total > options.maxBytes) {
+              throw new DockerError(507, "image pull exceeded the configured byte budget");
+            }
+          }
+        }
+      }
       if (typeof event.errorDetail === "object" && event.errorDetail !== null) {
         const detail = event.errorDetail as { message?: unknown };
         if (typeof detail.message === "string" && detail.message.length > 0) {
@@ -1088,6 +1147,12 @@ export class DockerClient {
           Init: options.init ?? true,
           Tmpfs: options.tmpfs,
           Memory: options.memoryBytes,
+          MemorySwap: options.memoryBytes,
+          OomScoreAdj: 500,
+          Ulimits: [
+            { Name: "nofile", Soft: 4096, Hard: 8192 },
+            { Name: "core", Soft: 0, Hard: 0 },
+          ],
           NanoCpus: options.nanoCpus,
           PidsLimit: options.pidsLimit,
           RestartPolicy: {
@@ -1250,6 +1315,7 @@ export class DockerClient {
 /** Narrow runtime interface used by the runner server; tests inject a fake. */
 export interface DockerRuntime {
   version(): Promise<string>;
+  ping?(): Promise<void>;
   ensureNetwork(spec: DockerNetworkSpec): Promise<void>;
   removeNetwork(name: string): Promise<void>;
   inspectNetwork?(name: string): Promise<DockerNetworkInspect | undefined>;

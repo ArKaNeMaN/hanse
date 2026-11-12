@@ -151,6 +151,7 @@ interface Fixture {
   workspace: string;
   projectRoot: string;
   agents: string;
+  mounts: string;
   coordinator: string;
   db: SqliteDatabase;
   projectId: string;
@@ -197,6 +198,7 @@ function fixture(options: FixtureOptions = {}): Fixture {
     options.agentsUnderWorkspace === true
       ? path.join(workspace, "agents")
       : path.join(base, "agents");
+  const mounts = path.join(base, "mounts");
   const coordinator = path.join(base, "state", "hanse");
   const appKeys = options.apps ?? ["web", "api"];
   const projectId = options.projectId ?? PROJECT_ID;
@@ -204,6 +206,7 @@ function fixture(options: FixtureOptions = {}): Fixture {
 
   mkdirSync(path.join(projectRoot, ".hanse"), { recursive: true });
   mkdirSync(agents, { recursive: true });
+  mkdirSync(mounts, { recursive: true });
   mkdirSync(coordinator, { recursive: true });
   for (const appKey of appKeys) {
     mkdirSync(path.join(projectRoot, "apps", appKey), { recursive: true });
@@ -234,6 +237,9 @@ function fixture(options: FixtureOptions = {}): Fixture {
     const state = path.join(agents, sanitizeAppKey(projectId), sanitizeAppKey(appKey));
     mkdirSync(state, { recursive: true });
     writeFileSync(path.join(state, "marker"), appKey, "utf8");
+    const mountsApp = path.join(mounts, sanitizeAppKey(projectId), sanitizeAppKey(appKey));
+    mkdirSync(mountsApp, { recursive: true });
+    writeFileSync(path.join(mountsApp, "marker"), appKey, "utf8");
   }
 
   const manager = new FakeManager(db);
@@ -242,6 +248,7 @@ function fixture(options: FixtureOptions = {}): Fixture {
     db,
     workspaceRoot: workspace,
     agentsHome: agents,
+    mountsHome: mounts,
     coordinatorStateDir: coordinator,
     manager,
     images,
@@ -255,6 +262,7 @@ function fixture(options: FixtureOptions = {}): Fixture {
     workspace,
     projectRoot,
     agents,
+    mounts,
     coordinator,
     db,
     projectId,
@@ -273,6 +281,10 @@ function appId(projectId: string, appKey: string): string {
 
 function stateDir(f: Fixture, projectId: string, appKey: string): string {
   return path.join(f.agents, sanitizeAppKey(projectId), sanitizeAppKey(appKey));
+}
+
+function mountsDir(f: Fixture, projectId: string, appKey: string): string {
+  return path.join(f.mounts, sanitizeAppKey(projectId), sanitizeAppKey(appKey));
 }
 
 function manifestApps(f: Fixture): Array<Record<string, unknown>> {
@@ -488,6 +500,8 @@ describe("DeletionService application deletion", () => {
 
     expect(existsSync(stateDir(f, f.projectId, "web"))).toBe(false);
     expect(existsSync(stateDir(f, f.projectId, "api"))).toBe(true);
+    expect(existsSync(mountsDir(f, f.projectId, "web"))).toBe(false);
+    expect(existsSync(mountsDir(f, f.projectId, "api"))).toBe(true);
     expect(existsSync(path.join(f.projectRoot, "apps", "web"))).toBe(true);
     expect(manifestApps(f)).toEqual([{ path: "apps/api", kind: "web" }]);
     const manifest = parseYaml(readFileSync(f.manifestPath, "utf8")) as {
@@ -657,6 +671,7 @@ describe("DeletionService project deletion", () => {
 
     expect(existsSync(path.join(f.agents, sanitizeAppKey(f.projectId)))).toBe(false);
     expect(existsSync(stateDir(f, other.id, other.key))).toBe(true);
+    expect(existsSync(path.join(f.mounts, sanitizeAppKey(f.projectId)))).toBe(false);
     expect(existsSync(f.manifestPath)).toBe(false);
     expect(existsSync(f.projectRoot)).toBe(true);
     expect(existsSync(other.root)).toBe(true);

@@ -1,7 +1,16 @@
-import type { DockerImageInspect, DockerPullOptions, DockerPullResult } from "./docker.js";
+import {
+  DockerError,
+  type DockerImageInspect,
+  type DockerPullOptions,
+  type DockerPullResult,
+} from "./docker.js";
 import type { ImageUsageReport } from "./image-gc.js";
 import type { ImageMutationMutex } from "./image-mutation.js";
-import { ImageMutationConflictError, type ImageMutationLease } from "./image-mutation.js";
+import {
+  ImageGate,
+  ImageMutationConflictError,
+  type ImageMutationLease,
+} from "./image-mutation.js";
 import { resolveImageDigest } from "./images.js";
 import type { RunnerConfig } from "./validate.js";
 
@@ -31,6 +40,7 @@ export class ImagePullError extends Error {
 export interface ImagePullRuntime {
   inspectImage?(reference: string): Promise<DockerImageInspect | undefined>;
   pullImage?(reference: string, options?: DockerPullOptions): Promise<DockerPullResult>;
+  removeImage?(reference: string): Promise<void>;
 }
 
 export interface ImagePullServiceOptions {
@@ -38,6 +48,7 @@ export interface ImagePullServiceOptions {
   docker: ImagePullRuntime;
   imageGc: { usage(): Promise<ImageUsageReport> };
   mutex: ImageMutationMutex;
+  gate?: ImageGate;
   diskPollMs?: number;
 }
 
@@ -183,6 +194,7 @@ export class ImagePullService {
   readonly #docker: ImagePullRuntime;
   readonly #imageGc: { usage(): Promise<ImageUsageReport> };
   readonly #mutex: ImageMutationMutex;
+  readonly #gate: ImageGate;
   readonly #diskPollMs: number;
 
   constructor(options: ImagePullServiceOptions) {
@@ -190,16 +202,27 @@ export class ImagePullService {
     this.#docker = options.docker;
     this.#imageGc = options.imageGc;
     this.#mutex = options.mutex;
+    this.#gate = options.gate ?? new ImageGate();
     this.#diskPollMs = options.diskPollMs ?? DEFAULT_DISK_POLL_MS;
   }
 
   async pull(raw: unknown, options: { signal?: AbortSignal } = {}): Promise<ImagePullResult> {
     const reference = validatePullReference(raw, this.#config);
 
+    let gateLease: ImageMutationLease;
+    try {
+      gateLease = this.#gate.tryShared("pull");
+    } catch (error) {
+      if (error instanceof ImageMutationConflictError) {
+        throw new ImagePullError(error.status, error.message, error.code);
+      }
+      throw error;
+    }
     let lease: ImageMutationLease;
     try {
       lease = this.#mutex.tryAcquire("pull");
     } catch (error) {
+      gateLease.release();
       if (error instanceof ImageMutationConflictError) {
         throw new ImagePullError(error.status, error.message, error.code);
       }
@@ -252,9 +275,22 @@ export class ImagePullService {
 
       let pulled: DockerPullResult;
       try {
-        pulled = await pullImage(reference, { signal });
+        pulled = await pullImage(reference, {
+          signal,
+          ...(this.#config.pullMaxBytes === undefined
+            ? {}
+            : { maxBytes: this.#config.pullMaxBytes }),
+        });
       } catch (error) {
         if (guardFailure !== null) throw guardFailure;
+        if (error instanceof DockerError && error.status === 507) {
+          await this.#removeAfterPull(reference);
+          throw new ImagePullError(
+            507,
+            "image pull exceeded the configured pull budget",
+            "pull_over_budget",
+          );
+        }
         if (options.signal?.aborted === true) {
           throw new ImagePullError(502, "image pull was aborted", "pull_failed");
         }
@@ -265,19 +301,44 @@ export class ImagePullService {
 
       let imageId = pulled.imageId;
       let digest = pulled.digest;
-      if (imageId === null || digest === null) {
-        const inspected =
-          inspectImage === undefined
-            ? undefined
-            : await inspectImage(reference).catch(() => undefined);
-        if (imageId === null) {
-          imageId =
-            typeof inspected?.Id === "string" && inspected.Id.length > 0 ? inspected.Id : null;
-        }
-        if (digest === null) digest = resolveImageDigest(reference, inspected?.RepoDigests);
+      const needsInspect =
+        imageId === null || digest === null || this.#config.pullMaxBytes !== undefined;
+      const inspected =
+        !needsInspect || inspectImage === undefined
+          ? undefined
+          : await inspectImage(reference).catch(() => undefined);
+      if (imageId === null) {
+        imageId =
+          typeof inspected?.Id === "string" && inspected.Id.length > 0 ? inspected.Id : null;
       }
+      if (digest === null) digest = resolveImageDigest(reference, inspected?.RepoDigests);
       if (imageId === null) {
         throw new ImagePullError(502, "image pull completed without an image id", "pull_failed");
+      }
+
+      const pullMaxBytes = this.#config.pullMaxBytes;
+      if (pullMaxBytes !== undefined) {
+        const size = inspected?.Size;
+        if (typeof size !== "number" || !Number.isFinite(size) || size < 0) {
+          await this.#removeAfterPull(reference);
+          throw new ImagePullError(507, "pulled image size is unavailable", "pull_size_unknown");
+        }
+        if (size > pullMaxBytes) {
+          await this.#removeAfterPull(reference);
+          throw new ImagePullError(
+            507,
+            "pulled image exceeds the runner pull budget",
+            "pull_over_budget",
+          );
+        }
+      }
+
+      const diskFailure = await this.#diskGuard(true);
+      if (diskFailure !== null) {
+        if (diskFailure.code === "disk_critical") {
+          await this.#removeAfterPull(reference);
+        }
+        throw diskFailure;
       }
       return {
         reference,
@@ -288,6 +349,17 @@ export class ImagePullService {
       };
     } finally {
       lease.release();
+      gateLease.release();
+    }
+  }
+
+  async #removeAfterPull(reference: string): Promise<void> {
+    const removeImage = this.#docker.removeImage?.bind(this.#docker);
+    if (removeImage === undefined) return;
+    try {
+      await removeImage(reference);
+    } catch {
+      // Best effort: the pull still fails with the typed 507 and never echoes the Docker body.
     }
   }
 

@@ -1,9 +1,24 @@
 import { Buffer } from "node:buffer";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import type { Server } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import {
+  BuildRecordStore,
+  MAX_BUILD_RECORD_LOG_BYTES,
+  MAX_BUILD_RECORDS,
+} from "../src/runner/build-records.js";
 import type {
   DockerBuildOptions,
   DockerBuildResult,
@@ -26,6 +41,7 @@ import {
 import { appContainerName, appNetworkName } from "../src/runner/names.js";
 import { RunnerService } from "../src/runner/server.js";
 import { RUNNER_APP_PORT, type RunnerConfig } from "../src/runner/validate.js";
+import { RECORD_VERSION } from "../src/runner/versions.js";
 import { BUILD_SPEC_HASH_VERSION } from "../src/runtime/build-spec.js";
 
 const dirs: string[] = [];
@@ -280,6 +296,31 @@ async function waitForRecord(
   throw new Error("timed out waiting for image record");
 }
 
+function storedRecord(overrides: Partial<RunnerImageRecord> = {}): RunnerImageRecord {
+  return {
+    appId: "project:app",
+    status: "ready",
+    imageRef: null,
+    imageId: null,
+    buildId: "build-1",
+    logs: "",
+    error: null,
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    targetRef: null,
+    specHash: null,
+    specHashVersion: null,
+    hashVersion: null,
+    baseKind: null,
+    baseRef: null,
+    baseDigest: null,
+    ...overrides,
+  };
+}
+
+function recordsDir(f: Fixture, name = "records"): string {
+  return path.join(f.base, name);
+}
+
 describe("ImageBuildService reservations", () => {
   it("reserves the raw app id before any await and reports building", async () => {
     const f = fixture();
@@ -446,7 +487,7 @@ describe("runner image build API", () => {
     expect(accepted.appId).toBe("project:app");
     expect(accepted.status).toBe("building");
     expect(accepted.buildId).toMatch(/^[0-9a-f-]{36}$/);
-    expect(accepted.targetRef).toBe(`hanse-app-project-app:${accepted.buildId}`);
+    expect(accepted.targetRef).toBe(`${appContainerName("project:app")}:${accepted.buildId}`);
 
     const building = await waitForImage(
       base,
@@ -461,7 +502,7 @@ describe("runner image build API", () => {
     if (call === undefined) throw new Error("missing build call");
     expect(call.dockerfile).toBe(".hanse/Dockerfile");
     expect(call.baseImage).toBe("agent-default:test");
-    expect(call.tag).toBe(`hanse-app-project-app:${accepted.buildId}`);
+    expect(call.tag).toBe(`${appContainerName("project:app")}:${accepted.buildId}`);
     expect(call.buildArgs).toEqual({
       EXTRA_PACKAGES: "curl jq",
       HANSE_BASE: "agent-default:test",
@@ -679,7 +720,7 @@ describe("runner image identity", () => {
     );
     expect(response.status).toBe(202);
     const accepted = (await response.json()) as { buildId: string; targetRef: string };
-    expect(accepted.targetRef).toBe(`hanse-app-project-app:${accepted.buildId}`);
+    expect(accepted.targetRef).toBe(`${appContainerName("project:app")}:${accepted.buildId}`);
 
     await waitForCalls(build, 1);
     const call = build.calls[0];
@@ -936,7 +977,29 @@ describe("runner pinned image ensure", () => {
     override async inspectContainer(idOrName: string): Promise<DockerContainerInspect | undefined> {
       const direct = this.containers.get(idOrName);
       if (direct !== undefined) return direct;
-      return [...this.containers.values()].find((container) => container.Name === `/${idOrName}`);
+      return [...this.containers.values()].find(
+        (container) => container.Name === `/${idOrName}` || container.Id === idOrName,
+      );
+    }
+
+    override async listContainers(label?: string): Promise<DockerContainerSummary[]> {
+      const [labelKey, labelValue] = label?.split("=", 2) ?? [];
+      return [...this.containers.values()]
+        .filter(
+          (container) =>
+            label === undefined ||
+            (labelKey !== undefined &&
+              labelValue !== undefined &&
+              container.Config?.Labels?.[labelKey] === labelValue),
+        )
+        .map((container) => ({
+          Id: container.Id,
+          Names: [container.Name],
+          Image: container.Config?.Image ?? "",
+          State: container.State?.Status ?? "unknown",
+          Status: container.State?.Status ?? "unknown",
+          Labels: container.Config?.Labels,
+        }));
     }
   }
 
@@ -1107,5 +1170,361 @@ describe("runner image gc build protection", () => {
       removedRefs: [accepted.targetRef],
     });
     expect(docker.removed).toEqual([accepted.targetRef]);
+  });
+});
+
+describe("durable build record store", () => {
+  it("writes a 0600 record atomically under a 0700 directory", () => {
+    const f = fixture();
+    const dir = recordsDir(f);
+    const store = new BuildRecordStore({ dir });
+
+    store.save(storedRecord({ buildId: "build-atomic", status: "ready" }));
+
+    const file = path.join(dir, "build-atomic.json");
+    expect(statSync(dir).mode & 0o777).toBe(0o700);
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+    expect(readdirSync(dir).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+    const raw = JSON.parse(readFileSync(file, "utf8")) as { version: number; status: string };
+    expect(raw.version).toBe(RECORD_VERSION);
+    expect(raw.status).toBe("ready");
+  });
+
+  it("bounds the persisted log tail to 128 KiB", () => {
+    const f = fixture();
+    const dir = recordsDir(f);
+    const store = new BuildRecordStore({ dir });
+    const tail = "LAST-LINES";
+    store.save(
+      storedRecord({
+        buildId: "build-logs",
+        updatedAt: new Date().toISOString(),
+        logs: `${"A".repeat(MAX_BUILD_RECORD_LOG_BYTES + 4096)}${tail}`,
+      }),
+    );
+
+    const loaded = new BuildRecordStore({ dir }).load();
+    expect(loaded).toHaveLength(1);
+    const logs = loaded[0]?.logs ?? "";
+    expect(Buffer.byteLength(logs)).toBeLessThanOrEqual(MAX_BUILD_RECORD_LOG_BYTES + 32);
+    expect(logs.endsWith(tail)).toBe(true);
+    expect(logs.startsWith("[logs truncated]")).toBe(true);
+  });
+
+  it("prunes records beyond the count cap", () => {
+    const f = fixture();
+    const dir = recordsDir(f);
+    mkdirSync(dir, { recursive: true });
+    const now = Date.parse("2026-11-12T00:00:00.000Z");
+
+    for (let index = 0; index < MAX_BUILD_RECORDS + 5; index += 1) {
+      const record = storedRecord({
+        buildId: `build-${index}`,
+        updatedAt: new Date(now - (MAX_BUILD_RECORDS + 5 - index) * 1000).toISOString(),
+      });
+      writeFileSync(
+        path.join(dir, `build-${index}.json`),
+        JSON.stringify({ version: RECORD_VERSION, ...record }),
+      );
+    }
+
+    const loaded = new BuildRecordStore({ dir, now: () => now }).load();
+    const files = readdirSync(dir).filter((name) => name.endsWith(".json"));
+    expect(loaded).toHaveLength(MAX_BUILD_RECORDS);
+    expect(files).toHaveLength(MAX_BUILD_RECORDS);
+    expect(files).toContain("build-204.json");
+    expect(files).not.toContain("build-0.json");
+  });
+
+  it("prunes records older than seven days on load", () => {
+    const f = fixture();
+    const dir = recordsDir(f);
+    mkdirSync(dir, { recursive: true });
+    const now = Date.parse("2026-01-10T00:00:00.000Z");
+    const day = 24 * 60 * 60 * 1000;
+    const old = storedRecord({
+      buildId: "build-old",
+      updatedAt: new Date(now - 8 * day).toISOString(),
+    });
+    const recent = storedRecord({
+      buildId: "build-recent",
+      updatedAt: new Date(now - day).toISOString(),
+    });
+    writeFileSync(
+      path.join(dir, "build-old.json"),
+      JSON.stringify({ version: RECORD_VERSION, ...old }),
+    );
+    writeFileSync(
+      path.join(dir, "build-recent.json"),
+      JSON.stringify({ version: RECORD_VERSION, ...recent }),
+    );
+    const oldSeconds = (now - 8 * day) / 1000;
+    utimesSync(path.join(dir, "build-old.json"), oldSeconds, oldSeconds);
+
+    const loaded = new BuildRecordStore({ dir, now: () => now }).load();
+    expect(loaded.map((record) => record.buildId)).toEqual(["build-recent"]);
+    expect(readdirSync(dir)).not.toContain("build-old.json");
+  });
+
+  it("skips unknown, older, and invalid persisted versions", () => {
+    const f = fixture();
+    const dir = recordsDir(f);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      path.join(dir, "build-newer.json"),
+      JSON.stringify({ version: RECORD_VERSION + 1, ...storedRecord({ buildId: "build-newer" }) }),
+    );
+    writeFileSync(
+      path.join(dir, "build-older.json"),
+      JSON.stringify({ version: 0, ...storedRecord({ buildId: "build-older" }) }),
+    );
+    writeFileSync(path.join(dir, "build-invalid.json"), "{not json");
+
+    expect(new BuildRecordStore({ dir }).load()).toEqual([]);
+  });
+
+  it("turns a persisted building record into interrupted and preserves its logs", () => {
+    const f = fixture();
+    const dir = recordsDir(f);
+    const now = Date.parse("2026-01-10T00:00:00.000Z");
+    new BuildRecordStore({ dir, now: () => now }).save(
+      storedRecord({
+        buildId: "build-restart",
+        status: "building",
+        logs: "partial build output\n",
+        updatedAt: new Date(now - 60_000).toISOString(),
+      }),
+    );
+
+    const loaded = new BuildRecordStore({ dir, now: () => now }).load();
+    expect(loaded[0]).toMatchObject({
+      buildId: "build-restart",
+      status: "interrupted",
+      error: "runner restarted during image build",
+      logs: "partial build output\n",
+    });
+    const persisted = JSON.parse(readFileSync(path.join(dir, "build-restart.json"), "utf8")) as {
+      status: string;
+    };
+    expect(persisted.status).toBe("interrupted");
+  });
+
+  it("keeps running when the records path cannot be read or written", () => {
+    const f = fixture();
+    const filePath = path.join(f.base, "not-a-directory");
+    writeFileSync(filePath, "x");
+    const warnings: string[] = [];
+    const store = new BuildRecordStore({
+      dir: filePath,
+      warn: (message) => warnings.push(message),
+    });
+
+    expect(store.load()).toEqual([]);
+    expect(() => store.save(storedRecord())).not.toThrow();
+    expect(warnings.length).toBeGreaterThan(0);
+  });
+});
+
+describe("ImageBuildService durable records", () => {
+  it("persists building and then ready", async () => {
+    const f = fixture();
+    const dir = recordsDir(f);
+    const build = new FakeBuildRuntime();
+    const service = new ImageBuildService({
+      config: { ...config(f), buildRecordsDir: dir },
+      build,
+    });
+
+    const started = await service.start(bodyFor(f));
+    await waitForCalls(build, 1);
+    const building = JSON.parse(
+      readFileSync(path.join(dir, `${started.buildId}.json`), "utf8"),
+    ) as { status: string; version: number };
+    expect(building.status).toBe("building");
+    expect(building.version).toBe(RECORD_VERSION);
+
+    build.succeed("sha256:ready", "done\n");
+    await waitForRecord(service, "project:app", (record) => record.status === "ready");
+    const loaded = new BuildRecordStore({ dir }).load();
+    expect(loaded).toHaveLength(1);
+    expect(loaded[0]).toMatchObject({
+      buildId: started.buildId,
+      status: "ready",
+      imageId: "sha256:ready",
+    });
+  });
+
+  it("persists a failed build", async () => {
+    const f = fixture();
+    const dir = recordsDir(f);
+    const build = new FakeBuildRuntime();
+    const service = new ImageBuildService({
+      config: { ...config(f), buildRecordsDir: dir },
+      build,
+    });
+
+    const started = await service.start(bodyFor(f));
+    await waitForCalls(build, 1);
+    build.fail("cannot install package");
+    await waitForRecord(service, "project:app", (record) => record.status === "error");
+
+    const loaded = new BuildRecordStore({ dir }).load();
+    expect(loaded[0]).toMatchObject({ buildId: started.buildId, status: "error" });
+    expect(loaded[0]?.error).toContain("cannot install package");
+  });
+
+  it("cancels the active build, persists cancelled, and keeps leases until it settles", async () => {
+    const f = fixture();
+    const dir = recordsDir(f);
+    const build = new FakeBuildRuntime();
+    const service = new ImageBuildService({
+      config: { ...config(f), buildRecordsDir: dir },
+      build,
+    });
+
+    const started = await service.start(bodyFor(f));
+    await waitForCalls(build, 1);
+    const cancelled = service.cancel(started.buildId);
+
+    expect(cancelled).toMatchObject({
+      buildId: started.buildId,
+      status: "cancelled",
+      error: "image build cancelled",
+    });
+    expect(build.calls[0]?.signal?.aborted).toBe(true);
+    await expect(service.start(bodyFor(f))).rejects.toMatchObject({
+      status: 409,
+      code: "build_in_progress",
+    });
+    expect(service.getBuild(started.buildId)?.status).toBe("cancelled");
+    expect(new BuildRecordStore({ dir }).load()[0]).toMatchObject({
+      buildId: started.buildId,
+      status: "cancelled",
+    });
+
+    build.rejectWith(new Error("docker request aborted"));
+    await waitForRecord(service, "project:app", (record) => record.status === "cancelled");
+    await expect(service.start(bodyFor(f))).resolves.toMatchObject({ status: "building" });
+    await waitForCalls(build, 2);
+    build.succeed();
+    await waitForRecord(service, "project:app", (record) => record.status === "ready");
+  });
+
+  it("rejects cancelling an unknown or already terminal build", async () => {
+    const f = fixture();
+    const build = new FakeBuildRuntime();
+    const service = new ImageBuildService({ config: config(f), build });
+
+    try {
+      service.cancel("missing-build");
+      throw new Error("expected cancel to fail");
+    } catch (error) {
+      expect(error).toMatchObject({ status: 404, code: "build_not_found" });
+    }
+
+    const started = await service.start(bodyFor(f));
+    await waitForCalls(build, 1);
+    build.succeed();
+    await waitForRecord(service, "project:app", (record) => record.status === "ready");
+    try {
+      service.cancel(started.buildId);
+      throw new Error("expected cancel to fail");
+    } catch (error) {
+      expect(error).toMatchObject({ status: 409, code: "build_not_running" });
+    }
+  });
+
+  it("hydrates interrupted records into getBuild and get on restart", () => {
+    const f = fixture();
+    const dir = recordsDir(f);
+    new BuildRecordStore({ dir }).save(
+      storedRecord({
+        buildId: "build-restart",
+        status: "building",
+        logs: "partial build output\n",
+        targetRef: "hanse-app-project-app:build-restart",
+        updatedAt: new Date().toISOString(),
+      }),
+    );
+
+    const service = new ImageBuildService({
+      config: { ...config(f), buildRecordsDir: dir },
+      build: new FakeBuildRuntime(),
+    });
+
+    expect(service.getBuild("build-restart")).toMatchObject({
+      buildId: "build-restart",
+      status: "interrupted",
+      error: "runner restarted during image build",
+      logs: "partial build output\n",
+    });
+    expect(service.get("project:app")).toMatchObject({
+      buildId: "build-restart",
+      status: "interrupted",
+    });
+  });
+
+  it("forgets persisted records for an app", async () => {
+    const f = fixture();
+    const dir = recordsDir(f);
+    const build = new FakeBuildRuntime();
+    const service = new ImageBuildService({
+      config: { ...config(f), buildRecordsDir: dir },
+      build,
+    });
+
+    await service.start(bodyFor(f));
+    await waitForCalls(build, 1);
+    build.succeed();
+    await waitForRecord(service, "project:app", (record) => record.status === "ready");
+
+    service.forget("project:app");
+    expect(new BuildRecordStore({ dir }).load()).toEqual([]);
+  });
+});
+
+describe("runner image build cancel API", () => {
+  it("requires the runtime bearer token and rejects an invalid build id", async () => {
+    const { f, base, build } = await harness();
+    const accepted = (await (await postBuild(base, bodyFor(f))).json()) as { buildId: string };
+    await waitForCalls(build, 1);
+
+    const unauthorized = await fetch(`${base}/v1/images/builds/${accepted.buildId}/cancel`, {
+      method: "POST",
+    });
+    expect(unauthorized.status).toBe(401);
+
+    const invalid = await fetch(`${base}/v1/images/builds/bad_id/cancel`, {
+      method: "POST",
+      headers: authHeaders(),
+    });
+    expect(invalid.status).toBe(400);
+
+    const cancelled = await fetch(`${base}/v1/images/builds/${accepted.buildId}/cancel`, {
+      method: "POST",
+      headers: authHeaders(),
+    });
+    expect(cancelled.status).toBe(202);
+    expect(await cancelled.json()).toEqual({
+      buildId: accepted.buildId,
+      status: "cancelled",
+    });
+    expect(build.calls[0]?.signal?.aborted).toBe(true);
+
+    const again = await fetch(`${base}/v1/images/builds/${accepted.buildId}/cancel`, {
+      method: "POST",
+      headers: authHeaders(),
+    });
+    expect(again.status).toBe(409);
+    expect(await again.json()).toMatchObject({ code: "build_not_running" });
+
+    const unknown = await fetch(`${base}/v1/images/builds/missing-build/cancel`, {
+      method: "POST",
+      headers: authHeaders(),
+    });
+    expect(unknown.status).toBe(404);
+    expect(await unknown.json()).toMatchObject({ code: "build_not_found" });
+
+    build.rejectWith(new Error("docker request aborted"));
   });
 });

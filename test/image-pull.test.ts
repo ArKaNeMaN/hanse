@@ -84,8 +84,10 @@ function tempDir(prefix: string): string {
 class FakePullDocker implements DockerRuntime {
   readonly inspected = new Map<string, DockerImageInspect>();
   readonly pulls: { reference: string; options?: DockerPullOptions }[] = [];
+  readonly removed: string[] = [];
   pullImpl: (reference: string, options?: DockerPullOptions) => Promise<DockerPullResult> =
     async () => ({ imageId: "sha256:new", digest: null });
+  removeImpl: ((reference: string) => Promise<void>) | undefined;
   systemDfResult: DockerSystemDf = { Images: [], BuildCache: [], LayersSize: 0 };
 
   async version(): Promise<string> {
@@ -111,6 +113,11 @@ class FakePullDocker implements DockerRuntime {
   async pullImage(reference: string, options?: DockerPullOptions): Promise<DockerPullResult> {
     this.pulls.push({ reference, options });
     return this.pullImpl(reference, options);
+  }
+
+  async removeImage(reference: string): Promise<void> {
+    this.removed.push(reference);
+    if (this.removeImpl !== undefined) await this.removeImpl(reference);
   }
 
   async createContainer(_options: DockerContainerCreateOptions): Promise<string> {
@@ -198,7 +205,11 @@ function runnerConfig(workspace: string, agents: string): RunnerConfig {
 }
 
 async function runnerFixture(
-  options: { imageGc?: ImageGcService; config?: Partial<RunnerConfig> } = {},
+  options: {
+    imageGc?: ImageGcService;
+    imageGcFactory?: (docker: FakePullDocker, mutex: ImageMutationMutex) => ImageGcService;
+    config?: Partial<RunnerConfig>;
+  } = {},
 ): Promise<RunnerFixture> {
   const dir = tempDir("hanse-image-pull-");
   const workspace = path.join(dir, "workspace");
@@ -211,6 +222,7 @@ async function runnerFixture(
   const mutex = new ImageMutationMutex();
   const imageGc =
     options.imageGc ??
+    options.imageGcFactory?.(docker, mutex) ??
     new ImageGcService({
       docker,
       diskPath: workspace,
@@ -582,6 +594,132 @@ describe("runner image pull disk guard", () => {
   });
 });
 
+describe("runner image pull budget", () => {
+  it("removes an image over pullMaxBytes and returns 507 pull_over_budget", async () => {
+    const f = await runnerFixture({ config: { pullMaxBytes: 100 } });
+    f.docker.inspected.set("agent-default:test", { Id: "sha256:new", Size: 101 });
+
+    const response = await postPull(f.base, { reference: "agent-default:test" });
+
+    expect(response.status).toBe(507);
+    expect(await response.json()).toMatchObject({ code: "pull_over_budget" });
+    expect(f.docker.removed).toEqual(["agent-default:test"]);
+  });
+
+  it("maps a streaming budget 507 to pull_over_budget and removes the reference", async () => {
+    const f = await runnerFixture({ config: { pullMaxBytes: 100 } });
+    f.docker.pullImpl = async () => {
+      throw new DockerError(507, "image pull exceeded the configured byte budget");
+    };
+
+    const response = await postPull(f.base, { reference: "agent-default:test" });
+
+    expect(response.status).toBe(507);
+    const body = (await response.json()) as { error: string; code: string };
+    expect(body.code).toBe("pull_over_budget");
+    expect(body.error).toBe("image pull exceeded the configured pull budget");
+    expect(body.error).not.toContain("byte budget");
+    expect(f.docker.removed).toEqual(["agent-default:test"]);
+    expect(f.docker.pulls[0]?.options?.maxBytes).toBe(100);
+  });
+
+  it("still returns the typed 507 when best-effort removal fails, without leaking Docker", async () => {
+    const f = await runnerFixture({ config: { pullMaxBytes: 100 } });
+    f.docker.inspected.set("agent-default:test", { Id: "sha256:new", Size: 101 });
+    f.docker.removeImpl = async () => {
+      throw new DockerError(500, "registry token=secret-value");
+    };
+
+    const response = await postPull(f.base, { reference: "agent-default:test" });
+
+    expect(response.status).toBe(507);
+    const body = (await response.json()) as { error: string; code: string };
+    expect(body.code).toBe("pull_over_budget");
+    expect(body.error).not.toContain("secret-value");
+    expect(f.docker.removed).toEqual(["agent-default:test"]);
+  });
+
+  it("fails closed with pull_size_unknown when a max is set and Size is unavailable", async () => {
+    const f = await runnerFixture({ config: { pullMaxBytes: 100 } });
+    f.docker.pullImpl = async () => ({
+      imageId: "sha256:new",
+      digest: `sha256:${"a".repeat(64)}`,
+    });
+
+    const response = await postPull(f.base, { reference: "agent-default:test" });
+
+    expect(response.status).toBe(507);
+    expect(await response.json()).toMatchObject({ code: "pull_size_unknown" });
+    expect(f.docker.removed).toEqual(["agent-default:test"]);
+  });
+
+  it("allows an oversized image when no max is configured", async () => {
+    const f = await runnerFixture();
+    f.docker.inspected.set("agent-default:test", { Id: "sha256:new", Size: 10 ** 12 });
+
+    const response = await postPull(f.base, { reference: "agent-default:test" });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ imageId: "sha256:new" });
+    expect(f.docker.removed).toEqual([]);
+  });
+
+  it("still fails closed when the Docker data root is not configured", async () => {
+    const f = await runnerFixture({
+      imageGcFactory: (docker, mutex) => new ImageGcService({ docker, mutex }),
+    });
+
+    const response = await postPull(f.base, { reference: "agent-default:test" });
+
+    expect(response.status).toBe(507);
+    expect(await response.json()).toMatchObject({ code: "disk_guard_unavailable" });
+    expect(f.docker.pulls).toHaveLength(0);
+  });
+
+  it("removes the pulled image and returns 507 when the data root is critical after the pull", async () => {
+    let calls = 0;
+    const docker: {
+      pullImage?: (reference: string, options?: DockerPullOptions) => Promise<DockerPullResult>;
+      inspectImage?: (reference: string) => Promise<DockerImageInspect | undefined>;
+      removeImage?: (reference: string) => Promise<void>;
+      removed: string[];
+    } = {
+      removed: [],
+      pullImage: async () => ({ imageId: "sha256:new", digest: `sha256:${"b".repeat(64)}` }),
+      removeImage: async (reference) => {
+        docker.removed.push(reference);
+      },
+    };
+    const imageGc = {
+      async usage() {
+        calls += 1;
+        return calls === 1
+          ? {
+              level: "ok" as const,
+              disk: { ...diskUsage(80), level: "ok" as const },
+              docker: null,
+              errors: [],
+              generatedAt: "2026-01-01T00:00:00.000Z",
+            }
+          : usageReport("critical");
+      },
+    };
+    const service = new ImagePullService({
+      config: runnerConfig("/tmp", "/tmp"),
+      docker,
+      imageGc,
+      mutex: new ImageMutationMutex(),
+      diskPollMs: 60_000,
+    });
+
+    await expect(service.pull({ reference: "agent-default:test" })).rejects.toMatchObject({
+      status: 507,
+      code: "disk_critical",
+    });
+    expect(docker.removed).toEqual(["agent-default:test"]);
+  });
+});
+
 function jsonResponse(status: number, body: unknown): DockerResponse {
   return { status, body: Buffer.from(JSON.stringify(body), "utf8") };
 }
@@ -641,6 +779,40 @@ describe("DockerClient.pullImage", () => {
     const query = new URLSearchParams(requestPath.split("?")[1] ?? "");
     expect(query.get("fromImage")).toBe("agent-default");
     expect(query.get("tag")).toBe(digest);
+  });
+
+  it("aborts when summed per-layer progress exceeds maxBytes", async () => {
+    const transport = new FakeStreamTransport();
+    transport.lines = [
+      JSON.stringify({ status: "Pulling from library/agent-base" }),
+      JSON.stringify({ id: "layer-a", progressDetail: { current: 60, total: 200 } }),
+      JSON.stringify({ id: "layer-b", progressDetail: { current: 30, total: 200 } }),
+      JSON.stringify({ id: "layer-b", progressDetail: { current: 41, total: 200 } }),
+    ];
+    const client = new DockerClient(transport);
+
+    await expect(client.pullImage("agent-base:test", { maxBytes: 100 })).rejects.toMatchObject({
+      status: 507,
+      message: "image pull exceeded the configured byte budget",
+    });
+  });
+
+  it("ignores malformed progress fields while enforcing maxBytes", async () => {
+    const transport = new FakeStreamTransport();
+    transport.lines = [
+      JSON.stringify({ id: "layer-a", progressDetail: { current: "50" } }),
+      JSON.stringify({ id: "layer-b", progressDetail: null }),
+      JSON.stringify({ id: 42, progressDetail: { current: 100 } }),
+      JSON.stringify({ progressDetail: { current: 100 } }),
+      JSON.stringify({ id: "layer-c", progressDetail: { current: -1 } }),
+      JSON.stringify({ aux: { ID: "sha256:within-budget" } }),
+    ];
+    const client = new DockerClient(transport);
+
+    await expect(client.pullImage("agent-base:test", { maxBytes: 1 })).resolves.toEqual({
+      imageId: "sha256:within-budget",
+      digest: null,
+    });
   });
 
   it("surfaces a streamed error and errorDetail message", async () => {

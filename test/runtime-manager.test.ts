@@ -1,10 +1,11 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AgentRuntimeClient } from "../src/agent/client.js";
 import type { AppRuntimeSpec } from "../src/agent/spec.js";
 import { InstanceManager, type ManagedApp } from "../src/opencode/manager.js";
+import { appContainerName, appNetworkName } from "../src/runner/names.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
 
 const dirs: string[] = [];
@@ -28,6 +29,7 @@ interface Fixture {
   hostWorkspace: string;
   containerAgents: string;
   hostAgents: string;
+  hostMounts: string;
   appDir: string;
 }
 
@@ -38,9 +40,17 @@ function fixture(): Fixture {
   const hostWorkspace = path.join(base, "host-workspace");
   const containerAgents = path.join(base, "container-agents");
   const hostAgents = path.join(base, "host-agents");
+  const hostMounts = path.join(base, "host-mounts");
   const appDir = path.join(containerWorkspace, "p", "a");
   mkdirSync(appDir, { recursive: true });
-  return { containerWorkspace, hostWorkspace, containerAgents, hostAgents, appDir };
+  return {
+    containerWorkspace,
+    hostWorkspace,
+    containerAgents,
+    hostAgents,
+    hostMounts,
+    appDir,
+  };
 }
 
 function database(): SqliteDatabase {
@@ -64,17 +74,18 @@ describe("InstanceManager B1 runner spec", () => {
     const f = fixture();
     const db = database();
     let observed: AppRuntimeSpec | undefined;
+    let statusOverride: Awaited<ReturnType<AgentRuntimeClient["status"]>>;
     const runtime: AgentRuntimeClient = {
       async ensure(spec) {
         observed = spec;
         return {
           appId: spec.appId,
-          endpoint: "http://hanse-app-p-a:4100",
+          endpoint: `http://${appContainerName("p:a")}:4100`,
           state: "running",
           specHash: spec.specHash,
           version: null,
           containerId: "docker-id",
-          containerName: "hanse-app-p-a",
+          containerName: appContainerName("p:a"),
           imageId: "sha256:runner",
         };
       },
@@ -88,7 +99,7 @@ describe("InstanceManager B1 runner spec", () => {
         };
       },
       async status() {
-        return undefined;
+        return statusOverride;
       },
       async logs() {
         return undefined;
@@ -110,19 +121,23 @@ describe("InstanceManager B1 runner spec", () => {
       agentsRoot: f.containerAgents,
       hostWorkspace: f.hostWorkspace,
       hostAgents: f.hostAgents,
+      hostMounts: f.hostMounts,
       verify: async () => [],
       waitForReady: async (appId, endpoint) => {
         ready.push({ appId, endpoint });
       },
     });
 
-    await expect(manager.ensure(app)).resolves.toBe("http://hanse-app-p-a:4100");
-    expect(ready).toEqual([{ appId: "p:a", endpoint: "http://hanse-app-p-a:4100" }]);
+    const containerName = appContainerName("p:a");
+    await expect(manager.ensure(app)).resolves.toBe(`http://${containerName}:4100`);
+    expect(ready).toEqual([{ appId: "p:a", endpoint: `http://${containerName}:4100` }]);
     expect(observed?.pathMode).toBe("host");
-    expect(observed?.networkName).toBe("hanse-app-p-a");
+    expect(observed?.networkName).toBe(appNetworkName("p:a"));
     expect(observed?.port).toBe(4100);
     expect(observed?.appDir).toBe(path.join(f.hostWorkspace, "p", "a"));
     expect(observed?.stateDir).toBe(path.join(f.hostAgents, "p", "a", "state"));
+    expect(observed?.hostMountsAppDir).toBe(path.join(f.hostMounts, "p", "a"));
+    expect(existsSync(path.join(f.hostMounts, "p", "a", "attachments"))).toBe(true);
     expect(observed?.env.HOME).toBe(path.join(f.containerAgents, "p", "a", "home"));
 
     const row = db
@@ -140,9 +155,26 @@ describe("InstanceManager B1 runner spec", () => {
       state: "running",
       runtimeState: "running",
       containerId: "docker-id",
-      containerName: "hanse-app-p-a",
+      containerName,
       appliedImageId: "sha256:runner",
     });
+
+    db.prepare("UPDATE instances SET container_name = 'hanse-app-p-a' WHERE app_id = 'p:a'").run();
+    statusOverride = {
+      appId: "p:a",
+      endpoint: `http://${containerName}:4100`,
+      state: "running",
+      specHash: null,
+      version: null,
+      containerId: "docker-id",
+      containerName,
+      imageId: "sha256:runner",
+    };
+    await manager.reconcileStatuses();
+    const reconciled = db
+      .prepare("SELECT container_name AS containerName FROM instances WHERE app_id = 'p:a'")
+      .get() as { containerName: string };
+    expect(reconciled.containerName).toBe(containerName);
 
     await expect(manager.stopApp("p:a")).resolves.toBe(true);
     const stopped = db

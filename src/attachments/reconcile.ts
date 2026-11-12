@@ -11,7 +11,7 @@ import {
   finalPathFor,
   tempPathFor,
 } from "./commit.js";
-import { attachmentsHostRoot } from "./paths.js";
+import { attachmentAppRoot } from "./paths.js";
 import { moveIntoPlace } from "./storage.js";
 import {
   deleteAttachmentRowById,
@@ -36,13 +36,19 @@ export interface AppAttachmentRoot {
 export function listAppAttachmentRoots(
   db: SqliteDatabase,
   agentsHome: string,
+  mountsHome?: string,
 ): AppAttachmentRoot[] {
   const rows = db
     .prepare("SELECT id AS appId, project_id AS projectId, app_key AS appKey FROM apps")
     .all() as Array<{ appId: string; projectId: string; appKey: string }>;
   return rows.map((row) => ({
     ...row,
-    appRoot: path.dirname(attachmentsHostRoot(agentsHome, row.projectId, row.appKey)),
+    appRoot: attachmentAppRoot({
+      agentsHome,
+      ...(mountsHome === undefined ? {} : { mountsHome }),
+      projectId: row.projectId,
+      appKey: row.appKey,
+    }),
   }));
 }
 
@@ -225,7 +231,12 @@ export interface AttachmentMaintenanceResult {
 export function runAttachmentMaintenance(
   db: SqliteDatabase,
   agentsHome: string | undefined,
-  options: { now?: number; activeIds?: ReadonlySet<string>; startup?: boolean } = {},
+  options: {
+    now?: number;
+    activeIds?: ReadonlySet<string>;
+    startup?: boolean;
+    mountsHome?: string;
+  } = {},
 ): AttachmentMaintenanceResult {
   if (agentsHome === undefined) return { reconciled: 0, missing: 0, orphans: 0 };
   const agentActiveIds = new Set([...(options.activeIds ?? []), ...activeAgentMediaIds]);
@@ -236,7 +247,7 @@ export function runAttachmentMaintenance(
     activeIds: agentActiveIds,
     ...(options.now === undefined ? {} : { now: options.now }),
   });
-  const roots = listAppAttachmentRoots(db, agentsHome);
+  const roots = listAppAttachmentRoots(db, agentsHome, options.mountsHome);
   const rootById = new Map(roots.map((root) => [root.appId, root.appRoot]));
   const reconciled = reconcileUploading(
     db,

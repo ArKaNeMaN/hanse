@@ -27,6 +27,7 @@ export const SWEEP_EMPTY_CHECK_TIMEOUT_MS = 5_000;
 export interface ChatSweepOptions {
   db: SqliteDatabase;
   agentsHome?: string;
+  mountsHome?: string;
   endpointFor: (appId: string) => string | undefined;
   intervalMs?: number;
   maxAgeMs?: number;
@@ -44,6 +45,7 @@ export interface ChatSweepOptions {
 export class ChatSweep {
   readonly #db: SqliteDatabase;
   readonly #agentsHome: string | undefined;
+  readonly #mountsHome: string | undefined;
   readonly #endpointFor: (appId: string) => string | undefined;
   readonly #intervalMs: number;
   readonly #maxAgeMs: number;
@@ -55,6 +57,7 @@ export class ChatSweep {
   constructor(options: ChatSweepOptions) {
     this.#db = options.db;
     this.#agentsHome = options.agentsHome;
+    this.#mountsHome = options.mountsHome;
     this.#endpointFor = options.endpointFor;
     this.#intervalMs = options.intervalMs ?? SWEEP_INTERVAL_MS;
     this.#maxAgeMs = options.maxAgeMs ?? SWEEP_MAX_AGE_MS;
@@ -90,6 +93,7 @@ export class ChatSweep {
       runAttachmentMaintenance(this.#db, this.#agentsHome, {
         now: this.#now(),
         activeIds: activeUploadIds,
+        ...(this.#mountsHome === undefined ? {} : { mountsHome: this.#mountsHome }),
       });
     } catch (error) {
       this.#log(
@@ -194,7 +198,13 @@ export class ChatSweep {
       new SessionNoticeStore(this.#db).deleteSessionRows(candidate.appId, candidate.sessionId);
       new SessionResumeStore(this.#db).deleteSessionRows(candidate.appId, candidate.sessionId);
       removeSessionFolder(
-        sessionFolder(this.#agentsHome, candidate.projectId, candidate.appKey, candidate.sessionId),
+        sessionFolder(
+          this.#agentsHome,
+          candidate.projectId,
+          candidate.appKey,
+          candidate.sessionId,
+          this.#mountsHome,
+        ),
       );
       this.#deleteAgentMedia(candidate);
     });
@@ -247,7 +257,13 @@ export class ChatSweep {
       }
       deleteSessionChatRows(this.#db, candidate.appId, candidate.sessionId);
       removeSessionFolder(
-        sessionFolder(this.#agentsHome, candidate.projectId, candidate.appKey, candidate.sessionId),
+        sessionFolder(
+          this.#agentsHome,
+          candidate.projectId,
+          candidate.appKey,
+          candidate.sessionId,
+          this.#mountsHome,
+        ),
       );
       this.#deleteAgentMedia(candidate);
     });

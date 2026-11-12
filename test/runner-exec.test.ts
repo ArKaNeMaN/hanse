@@ -78,11 +78,31 @@ class FakeDocker implements DockerRuntime {
   }
 
   async inspectContainer(idOrName: string): Promise<DockerContainerInspect | undefined> {
-    return this.containers.get(idOrName);
+    const direct = this.containers.get(idOrName);
+    if (direct !== undefined) return direct;
+    return [...this.containers.values()].find(
+      (container) => container.Name === `/${idOrName}` || container.Id === idOrName,
+    );
   }
 
-  async listContainers(_label?: string): Promise<DockerContainerSummary[]> {
-    return [];
+  async listContainers(label?: string): Promise<DockerContainerSummary[]> {
+    const [labelKey, labelValue] = label?.split("=", 2) ?? [];
+    return [...this.containers.values()]
+      .filter(
+        (container) =>
+          label === undefined ||
+          (labelKey !== undefined &&
+            labelValue !== undefined &&
+            container.Config?.Labels?.[labelKey] === labelValue),
+      )
+      .map((container) => ({
+        Id: container.Id,
+        Names: [container.Name],
+        Image: container.Config?.Image ?? "",
+        State: container.State?.Status ?? "unknown",
+        Status: container.State?.Status ?? "unknown",
+        Labels: container.Config?.Labels,
+      }));
   }
 
   async logs(_id: string, _tail?: number): Promise<DockerLogs> {

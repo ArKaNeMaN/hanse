@@ -64,6 +64,7 @@ interface Fixture {
   base: string;
   workspace: string;
   agents: string;
+  mounts: string;
   runnerTmp: string;
   appDir: string;
   agentsRoot: string;
@@ -75,10 +76,11 @@ function fixture(options: { credentials?: boolean } = {}): Fixture {
   dirs.push(base);
   const workspace = path.join(base, "workspace");
   const agents = path.join(base, "agents");
+  const mounts = path.join(base, "mounts");
   const runnerTmp = path.join(base, "runner-tmp");
   const appDir = path.join(workspace, "project", "a");
   const agentsRoot = path.join(agents, "project", "a");
-  const credentialDir = path.join(agentsRoot, "home", ".config", "hanse", "git");
+  const credentialDir = path.join(mounts, "project", "a", "git");
   for (const dir of [appDir, path.join(agentsRoot, "state"), credentialDir, runnerTmp]) {
     mkdirSync(dir, { recursive: true });
   }
@@ -89,7 +91,7 @@ function fixture(options: { credentials?: boolean } = {}): Fixture {
     writeFileSync(path.join(credentialDir, "id"), "private-key\n", { mode: 0o600 });
     writeFileSync(path.join(credentialDir, "token"), "token\n", { mode: 0o600 });
   }
-  return { base, workspace, agents, runnerTmp, appDir, agentsRoot, credentialDir };
+  return { base, workspace, agents, mounts, runnerTmp, appDir, agentsRoot, credentialDir };
 }
 
 function config(f: Fixture, overrides: Partial<RunnerConfig> = {}): RunnerConfig {
@@ -97,6 +99,7 @@ function config(f: Fixture, overrides: Partial<RunnerConfig> = {}): RunnerConfig
     token: "runtime-token",
     hostWorkspace: f.workspace,
     hostAgents: f.agents,
+    hostMounts: f.mounts,
     allowedImages: new Set(["agent-default:test"]),
     coordinatorContainer: "hanse",
     dockerSocket: "/var/run/docker.sock",
@@ -187,11 +190,29 @@ class FakeDocker implements DockerRuntime {
   async inspectContainer(idOrName: string): Promise<DockerContainerInspect | undefined> {
     const direct = this.containers.get(idOrName);
     if (direct !== undefined) return direct;
-    return [...this.containers.values()].find((container) => container.Name === `/${idOrName}`);
+    return [...this.containers.values()].find(
+      (container) => container.Name === `/${idOrName}` || container.Id === idOrName,
+    );
   }
 
-  async listContainers(_label?: string): Promise<DockerContainerSummary[]> {
-    return [];
+  async listContainers(label?: string): Promise<DockerContainerSummary[]> {
+    const [labelKey, labelValue] = label?.split("=", 2) ?? [];
+    return [...this.containers.values()]
+      .filter(
+        (container) =>
+          label === undefined ||
+          (labelKey !== undefined &&
+            labelValue !== undefined &&
+            container.Config?.Labels?.[labelKey] === labelValue),
+      )
+      .map((container) => ({
+        Id: container.Id,
+        Names: [container.Name],
+        Image: container.Config?.Image ?? "",
+        State: container.State?.Status ?? "unknown",
+        Status: container.State?.Status ?? "unknown",
+        Labels: container.Config?.Labels,
+      }));
   }
 
   async logs(_id: string): Promise<DockerLogs> {
@@ -441,39 +462,48 @@ describe("RunnerService managed git credentials", () => {
     });
   });
 
-  it("rejects a missing credential directory as restart_required", async () => {
+  it("rejects a missing credential directory as an unsafe mount source", async () => {
     const f = fixture();
     const { service } = harness(f);
     rmSync(f.credentialDir, { recursive: true, force: true });
+    await expect(service.git("project:a", { operation: "status" })).rejects.toMatchObject({
+      status: 409,
+      code: "mount_source_unsafe",
+    });
+  });
+
+  it("rejects a credential directory without managed files as restart_required", async () => {
+    const f = fixture();
+    rmSync(path.join(f.credentialDir, "config"));
+    const { service } = harness(f);
     await expect(service.git("project:a", { operation: "status" })).rejects.toMatchObject({
       status: 409,
       code: "restart_required",
     });
   });
 
-  it("rejects a symlinked home or managed component", async () => {
+  it("rejects a symlinked mounts app or git component as an unsafe mount source", async () => {
     const f = fixture();
-    const home = path.join(f.agentsRoot, "home");
     const elsewhere = path.join(f.base, "elsewhere");
     mkdirSync(elsewhere, { recursive: true });
-    rmSync(home, { recursive: true, force: true });
-    symlinkSync(elsewhere, home);
+    rmSync(f.credentialDir, { recursive: true, force: true });
+    symlinkSync(elsewhere, f.credentialDir);
     const { service } = harness(f);
     await expect(service.git("project:a", { operation: "status" })).rejects.toMatchObject({
       status: 409,
-      code: "restart_required",
+      code: "mount_source_unsafe",
     });
 
     const second = fixture();
-    const configDir = path.join(second.agentsRoot, "home", ".config");
-    const realConfig = path.join(second.base, "real-config");
-    mkdirSync(realConfig, { recursive: true });
-    rmSync(configDir, { recursive: true, force: true });
-    symlinkSync(realConfig, configDir);
+    const projectDir = path.join(second.mounts, "project");
+    const realProject = path.join(second.base, "real-project");
+    mkdirSync(realProject, { recursive: true });
+    rmSync(projectDir, { recursive: true, force: true });
+    symlinkSync(realProject, projectDir);
     const secondHarness = harness(second);
     await expect(
       secondHarness.service.git("project:a", { operation: "status" }),
-    ).rejects.toMatchObject({ status: 409, code: "restart_required" });
+    ).rejects.toMatchObject({ status: 409, code: "mount_source_unsafe" });
   });
 
   it("runs Test connection from an ephemeral draft dir and never touches the managed dir", async () => {

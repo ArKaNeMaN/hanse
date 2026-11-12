@@ -31,6 +31,7 @@ import {
   ImageBuildService,
   type RunnerImageRecord,
 } from "../src/runner/images.js";
+import { appContainerName } from "../src/runner/names.js";
 import type { RunnerConfig } from "../src/runner/validate.js";
 
 const dirs: string[] = [];
@@ -398,7 +399,7 @@ describe("ImageBuildService validation gate", () => {
     const first = (await service.start(body)) as ImageBuildResult;
     const ready = await waitForImage(service, "project:app", (record) => record.status === "ready");
     expect(ready.buildId).toBe(first.buildId);
-    expect(ready.imageRef).toBe(`hanse-app-project-app:${first.buildId}`);
+    expect(ready.imageRef).toBe(`${appContainerName("project:app")}:${first.buildId}`);
     expect(ready.imageId).toBe("sha256:build-1");
     expect(ready.logs).toContain("hanse image validation passed");
     expect(runtime.creates).toHaveLength(1);

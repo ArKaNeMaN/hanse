@@ -1,9 +1,20 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import type { Server } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
+import { parse as parseYaml } from "yaml";
 import {
+  DockerClient,
   type DockerContainerCreateOptions,
   type DockerContainerInspect,
   type DockerContainerSummary,
@@ -12,9 +23,13 @@ import {
   type DockerLogs,
   type DockerNetworkInspect,
   type DockerNetworkSpec,
+  type DockerResponse,
   type DockerRuntime,
+  type DockerTransport,
 } from "../src/runner/docker.js";
-import { appContainerName, appNetworkName } from "../src/runner/names.js";
+import { ImageGcService } from "../src/runner/image-gc.js";
+import { ImageGate } from "../src/runner/image-mutation.js";
+import { appContainerName, appNetworkName, legacyAppContainerName } from "../src/runner/names.js";
 import { RunnerService } from "../src/runner/server.js";
 import { RUNNER_APP_PORT, type RunnerConfig } from "../src/runner/validate.js";
 
@@ -40,6 +55,7 @@ interface Fixture {
   base: string;
   workspace: string;
   agents: string;
+  mounts: string;
 }
 
 function fixture(): Fixture {
@@ -47,7 +63,8 @@ function fixture(): Fixture {
   dirs.push(base);
   const workspace = path.join(base, "workspace");
   const agents = path.join(base, "agents");
-  return { base, workspace, agents };
+  const mounts = path.join(base, "mounts");
+  return { base, workspace, agents, mounts };
 }
 
 function config(f: Fixture): RunnerConfig {
@@ -55,6 +72,7 @@ function config(f: Fixture): RunnerConfig {
     token: "runtime-token",
     hostWorkspace: f.workspace,
     hostAgents: f.agents,
+    hostMounts: f.mounts,
     allowedImages: new Set(["agent-default:test"]),
     coordinatorContainer: "hanse",
     dockerSocket: "/var/run/docker.sock",
@@ -107,6 +125,8 @@ class FakeDocker implements DockerRuntime {
   networkRemoveError: Error | undefined;
   createErrorAfterContainer: Error | undefined;
   startError: Error | undefined;
+  readonly removedImages: string[] = [];
+  readonly created = new Map<string, number>();
   #next = 1;
 
   async version(): Promise<string> {
@@ -209,6 +229,14 @@ class FakeDocker implements DockerRuntime {
     return this.images.get(reference);
   }
 
+  async systemDf(): Promise<{ Images: never[]; BuildCache: never[]; LayersSize: number }> {
+    return { Images: [], BuildCache: [], LayersSize: 0 };
+  }
+
+  async removeImage(reference: string): Promise<void> {
+    this.removedImages.push(reference);
+  }
+
   async listContainers(label?: string): Promise<DockerContainerSummary[]> {
     const [labelKey, labelValue] = label?.split("=", 2) ?? [];
     return [...this.containers.values()]
@@ -223,6 +251,7 @@ class FakeDocker implements DockerRuntime {
         Id: container.Id,
         Names: [container.Name],
         Image: container.Config?.Image ?? "",
+        Created: this.created.get(container.Id),
         State: container.State?.Status ?? "unknown",
         Status: container.State?.Status ?? "unknown",
         Labels: container.Config?.Labels,
@@ -244,10 +273,12 @@ class FakeDocker implements DockerRuntime {
   }
 }
 
-async function harness(): Promise<{ f: Fixture; docker: FakeDocker; service: RunnerService }> {
+async function harness(
+  overrides: Partial<RunnerConfig> = {},
+): Promise<{ f: Fixture; docker: FakeDocker; service: RunnerService }> {
   const f = fixture();
   const docker = new FakeDocker();
-  const service = new RunnerService({ config: config(f), docker });
+  const service = new RunnerService({ config: { ...config(f), ...overrides }, docker });
   return { f, docker, service };
 }
 
@@ -279,19 +310,265 @@ describe("RunnerService per-app containers", () => {
     expect(docker.creates[0]?.env.HANSE_OPENCODE_PASSWORD_FILE).toBeUndefined();
   });
 
-  it("adds a nested read-only attachments bind and fails when its source is missing", async () => {
+  it("accepts resources within the configured runner maxima", async () => {
+    const { f, docker, service } = await harness({
+      appMemoryMaxMb: 2,
+      appCpusMax: 2,
+      appPidsMax: 256,
+    });
+
+    await expect(
+      service.ensure(
+        rawSpec(f, "a", {
+          resources: { memoryBytes: 2 * 1024 * 1024, nanoCpus: 2_000_000_000, pidsLimit: 256 },
+        }),
+      ),
+    ).resolves.toMatchObject({ state: "running" });
+    expect(docker.creates).toHaveLength(1);
+  });
+
+  it("rejects resources above the configured runner maxima with resource_limit", async () => {
+    const cases: Array<{
+      limits: Partial<RunnerConfig>;
+      resources: { memoryBytes: number; nanoCpus: number; pidsLimit: number };
+    }> = [
+      {
+        limits: { appMemoryMaxMb: 1 },
+        resources: { memoryBytes: 2 * 1024 * 1024, nanoCpus: 1, pidsLimit: 128 },
+      },
+      {
+        limits: { appCpusMax: 1 },
+        resources: { memoryBytes: 1024, nanoCpus: 2_000_000_000, pidsLimit: 128 },
+      },
+      {
+        limits: { appPidsMax: 128 },
+        resources: { memoryBytes: 1024, nanoCpus: 1, pidsLimit: 129 },
+      },
+    ];
+
+    for (const testCase of cases) {
+      const { f, docker, service } = await harness(testCase.limits);
+      await expect(
+        service.ensure(rawSpec(f, "a", { resources: testCase.resources })),
+      ).rejects.toMatchObject({ status: 400, code: "resource_limit" });
+      expect(docker.creates).toHaveLength(0);
+    }
+  });
+
+  it("leaves app resources unlimited when a maximum is unset", async () => {
     const { f, docker, service } = await harness();
-    mkdirSync(path.join(f.agents, "project", "a", "attachments"), { recursive: true });
-    await service.ensure(rawSpec(f, "a", { attachmentsReadOnly: true }), "project:a");
+    await expect(
+      service.ensure(
+        rawSpec(f, "a", {
+          resources: {
+            memoryBytes: 1024 * 1024 * 1024 * 1024,
+            nanoCpus: 1024 * 1_000_000_000,
+            pidsLimit: 1_000_000,
+          },
+        }),
+      ),
+    ).resolves.toMatchObject({ state: "running" });
+    expect(docker.creates).toHaveLength(1);
+  });
+
+  it("derives case-distinct names and networks and deletes only the exact app", async () => {
+    const { f, docker, service } = await harness();
+    const lowerName = appContainerName("project:web");
+    const upperName = appContainerName("project:Web");
+    expect(lowerName).not.toBe(upperName);
+    expect(appNetworkName("project:web")).not.toBe(appNetworkName("project:Web"));
+
+    await service.ensure(rawSpec(f, "web"));
+    await service.ensure(rawSpec(f, "Web"));
+    expect([...docker.containers.values()].map((container) => container.Name).sort()).toEqual(
+      [`/${lowerName}`, `/${upperName}`].sort(),
+    );
+
+    await service.delete("project:web");
+
+    const remaining = [...docker.containers.values()];
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0]?.Name).toBe(`/${upperName}`);
+    expect(remaining[0]?.State?.Running).toBe(true);
+    expect(await service.status("project:Web")).toMatchObject({ state: "running" });
+    expect(await service.status("project:web")).toBeUndefined();
+  });
+
+  it("does not duplicate a running pre-v2 container and migrates it once stopped", async () => {
+    const { f, docker, service } = await harness();
+    const appId = "project:a";
+    const legacyName = legacyAppContainerName(appId);
+    docker.containers.set("legacy", {
+      Id: "legacy",
+      Name: `/${legacyName}`,
+      Config: {
+        Image: "agent-default:test",
+        Labels: {
+          "hanse.managed": "true",
+          "hanse.app.id": appId,
+          "hanse.network.name": legacyName,
+        },
+      },
+      State: { Status: "running", Running: true, ExitCode: 0 },
+    });
+
+    await expect(service.ensure(rawSpec(f, "a"))).rejects.toMatchObject({
+      status: 409,
+      code: "migration_required",
+    });
+    expect(docker.creates).toHaveLength(0);
+    expect(docker.containers.size).toBe(1);
+    expect(await service.status(appId)).toMatchObject({
+      state: "running",
+      containerName: legacyName,
+    });
+
+    const legacy = docker.containers.get("legacy");
+    if (legacy === undefined) throw new Error("missing legacy container");
+    legacy.State = { Status: "exited", Running: false, ExitCode: 0 };
+
+    const status = await service.ensure(rawSpec(f, "a"));
+    expect(status.containerName).toBe(appContainerName(appId));
+    expect(docker.containers.size).toBe(1);
+    expect([...docker.containers.values()][0]?.State?.Running).toBe(true);
+    expect(await service.status(appId)).toMatchObject({
+      state: "running",
+      containerName: appContainerName(appId),
+    });
+  });
+
+  it("never adopts or deletes a foreign container at the expected name", async () => {
+    const { f, docker, service } = await harness();
+    const expected = appContainerName("project:a");
+    docker.containers.set("foreign", {
+      Id: "foreign",
+      Name: `/${expected}`,
+      Config: { Labels: { "hanse.app.id": "project:a" } },
+      State: { Status: "running", Running: true, ExitCode: 0 },
+    });
+
+    await expect(service.ensure(rawSpec(f, "a"))).rejects.toMatchObject({
+      status: 409,
+      code: "name_conflict",
+    });
+    expect(docker.creates).toHaveLength(0);
+    expect(await service.status("project:a")).toBeUndefined();
+
+    await service.delete("project:a");
+    expect(docker.containers.get("foreign")?.State?.Running).toBe(true);
+  });
+
+  it("sweeps stopped pre-v2 managed containers only", async () => {
+    const { docker, service } = await harness();
+    const add = (id: string, name: string, appId: string, state: "running" | "exited") => {
+      docker.containers.set(id, {
+        Id: id,
+        Name: `/${name}`,
+        Config: { Labels: { "hanse.managed": "true", "hanse.app.id": appId } },
+        State: { Status: state, Running: state === "running", ExitCode: 0 },
+      });
+    };
+    add("running-legacy", legacyAppContainerName("project:run"), "project:run", "running");
+    add("stopped-legacy", legacyAppContainerName("project:stop"), "project:stop", "exited");
+    add("v2", appContainerName("project:v2"), "project:v2", "exited");
+    docker.containers.set("foreign", {
+      Id: "foreign",
+      Name: `/${legacyAppContainerName("project:foreign")}`,
+      Config: { Labels: { "hanse.app.id": "project:foreign" } },
+      State: { Status: "exited", Running: false, ExitCode: 0 },
+    });
+
+    const removed = await service.sweepStoppedLegacyContainers();
+
+    expect(removed).toEqual(["project:stop"]);
+    expect(docker.containers.has("running-legacy")).toBe(true);
+    expect(docker.containers.has("stopped-legacy")).toBe(false);
+    expect(docker.containers.has("v2")).toBe(true);
+    expect(docker.containers.has("foreign")).toBe(true);
+  });
+
+  it("sweeps one-shot containers by label and age without touching managed or unrelated ones", async () => {
+    const { docker, service } = await harness();
+    const now = 1_800_000_000_000;
+    const second = 1000;
+    const add = (
+      id: string,
+      labels: Record<string, string>,
+      state: "running" | "exited",
+      createdSeconds?: number,
+    ) => {
+      docker.containers.set(id, {
+        Id: id,
+        Name: `/${id}`,
+        Config: { Labels: labels },
+        State: { Status: state, Running: state === "running", ExitCode: 0 },
+      });
+      if (createdSeconds !== undefined) docker.created.set(id, createdSeconds);
+    };
+
+    add("git-stopped", { "hanse.git": "true" }, "exited");
+    add("git-young", { "hanse.git": "true" }, "running", now / second - 60);
+    add("validation-old", { "hanse.validation": "true" }, "running", now / second - 11 * 60);
+    add(
+      "managed-old",
+      { "hanse.managed": "true", "hanse.git": "true" },
+      "running",
+      now / second - 60 * 60,
+    );
+    add("unrelated", { "hanse.app.id": "project:x" }, "running", now / second - 60 * 60);
+    add("git-unknown-running", { "hanse.git": "true" }, "running");
+
+    const removed = await service.sweepOneShotContainers(now);
+
+    expect(removed.sort()).toEqual(["git-stopped", "validation-old"]);
+    expect(docker.containers.has("git-young")).toBe(true);
+    expect(docker.containers.has("managed-old")).toBe(true);
+    expect(docker.containers.has("unrelated")).toBe(true);
+    expect(docker.containers.has("git-unknown-running")).toBe(true);
+  });
+
+  it("adds nested read-only mounts binds and fails when a source is missing", async () => {
+    const { f, docker, service } = await harness();
+    const mountsAppDir = path.join(f.mounts, "project", "a");
+    mkdirSync(path.join(mountsAppDir, "attachments"), { recursive: true });
+    mkdirSync(path.join(mountsAppDir, "git"), { recursive: true });
+    await service.ensure(
+      rawSpec(f, "a", { attachmentsReadOnly: true, hostMountsAppDir: mountsAppDir }),
+      "project:a",
+    );
     expect(docker.creates[0]?.binds).toEqual([
       `${path.join(f.workspace, "project", "a")}:/data/workspace/project/a:rw`,
       `${path.join(f.agents, "project", "a")}:/data/agents/project/a:rw`,
-      `${path.join(f.agents, "project", "a", "attachments")}:/data/agents/project/a/attachments:ro`,
+      `${path.join(mountsAppDir, "attachments")}:/data/agents/project/a/attachments:ro`,
+      `${path.join(mountsAppDir, "git")}:/data/agents/project/a/home/.config/hanse/git:ro`,
     ]);
 
     await expect(
-      service.ensure(rawSpec(f, "b", { attachmentsReadOnly: true }), "project:b"),
-    ).rejects.toMatchObject({ status: 409, code: "attachments_root_missing" });
+      service.ensure(
+        rawSpec(f, "b", {
+          attachmentsReadOnly: true,
+          hostMountsAppDir: path.join(f.mounts, "project", "b"),
+        }),
+        "project:b",
+      ),
+    ).rejects.toMatchObject({ status: 409, code: "mount_source_unsafe" });
+  });
+
+  it("rejects a symlinked mounts app source as mount_source_unsafe", async () => {
+    const { f, service } = await harness();
+    const outside = path.join(f.base, "outside-mounts");
+    mkdirSync(outside, { recursive: true });
+    mkdirSync(path.join(f.mounts, "project"), { recursive: true });
+    symlinkSync(outside, path.join(f.mounts, "project", "a"));
+    await expect(
+      service.ensure(
+        rawSpec(f, "a", {
+          attachmentsReadOnly: true,
+          hostMountsAppDir: path.join(f.mounts, "project", "a"),
+        }),
+        "project:a",
+      ),
+    ).rejects.toMatchObject({ status: 409, code: "mount_source_unsafe" });
   });
 
   it("allows only a validated per-app image carrying this app's build label", async () => {
@@ -446,7 +723,7 @@ describe("RunnerService per-app containers", () => {
     expect(docker.containers.size).toBe(0);
   });
 
-  it("exposes health and enforces the runtime token", async () => {
+  it("exposes constant health, authenticated readiness, and enforces the runtime token", async () => {
     const { f, service } = await harness();
     await service.ensure(rawSpec(f, "a"));
     const server = service.createServer();
@@ -458,7 +735,16 @@ describe("RunnerService per-app containers", () => {
 
     const health = await fetch(`${base}/healthz`);
     expect(health.status).toBe(200);
-    expect(await health.json()).toMatchObject({ ok: true, apps: 1 });
+    expect(await health.json()).toEqual({ status: "ok" });
+
+    const readyUnauthorized = await fetch(`${base}/readyz`);
+    expect(readyUnauthorized.status).toBe(401);
+
+    const ready = await fetch(`${base}/readyz`, {
+      headers: { authorization: "Bearer runtime-token" },
+    });
+    expect(ready.status).toBe(200);
+    expect(await ready.json()).toEqual({ status: "ok" });
 
     const unauthorized = await fetch(`${base}/v1/apps/project%3Aa`, {
       method: "DELETE",
@@ -470,6 +756,30 @@ describe("RunnerService per-app containers", () => {
       headers: { authorization: "Bearer runtime-token" },
     });
     expect(authorized.status).toBe(200);
+  });
+
+  it("keeps /healthz live and returns a typed 503 from /readyz when Docker is down", async () => {
+    class DownDocker extends FakeDocker {
+      async ping(): Promise<void> {
+        throw new DockerError(500, "docker is unavailable");
+      }
+    }
+    const f = fixture();
+    const service = new RunnerService({ config: config(f), docker: new DownDocker() });
+    const server = service.createServer();
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (address === null || typeof address === "string") throw new Error("no address");
+    const base = `http://127.0.0.1:${address.port}`;
+
+    expect((await fetch(`${base}/healthz`)).status).toBe(200);
+
+    const ready = await fetch(`${base}/readyz`, {
+      headers: { authorization: "Bearer runtime-token" },
+    });
+    expect(ready.status).toBe(503);
+    expect(await ready.json()).toMatchObject({ code: "docker_unavailable" });
   });
 });
 
@@ -587,5 +897,143 @@ describe("runner launch identity", () => {
       startedAt: null,
       finishedAt: null,
     });
+  });
+});
+
+describe("runner container cgroup details", () => {
+  const options: DockerContainerCreateOptions = {
+    name: "hanse-app-project-app",
+    image: "agent-default:test",
+    hostname: "hanse-app-project-app",
+    user: "1000:1000",
+    entrypoint: ["/usr/local/bin/hanse"],
+    cmd: [],
+    workingDir: "/data/workspace/project/app",
+    env: { HOME: "/data/agents/project/app/home" },
+    labels: { "hanse.managed": "true" },
+    binds: [],
+    tmpfs: { "/tmp": "rw,nosuid,size=16m" },
+    memoryBytes: 256 * 1024 * 1024,
+    nanoCpus: 1,
+    pidsLimit: 128,
+    networkName: "none",
+    networkMode: "none",
+    networkAliases: [],
+    restartPolicy: "no",
+  };
+
+  it("sets swap off, the OOM score, and ulimits for app and one-shot creates", async () => {
+    const records: unknown[] = [];
+    const transport: DockerTransport = {
+      async request(_method, _path, body) {
+        records.push(body);
+        const response: DockerResponse = {
+          status: 201,
+          body: Buffer.from(JSON.stringify({ Id: "container-id" }), "utf8"),
+        };
+        return response;
+      },
+    };
+    const client = new DockerClient(transport);
+
+    await client.createContainer(options);
+    await client.createContainer({
+      ...options,
+      name: "hanse-git-app",
+      labels: { "hanse.git": "true" },
+    });
+
+    expect(records).toHaveLength(2);
+    for (const body of records as Array<{ HostConfig: Record<string, unknown> }>) {
+      expect(body.HostConfig.MemorySwap).toBe(options.memoryBytes);
+      expect(body.HostConfig.OomScoreAdj).toBe(500);
+      expect(body.HostConfig.Ulimits).toEqual([
+        { Name: "nofile", Soft: 4096, Hard: 8192 },
+        { Name: "core", Soft: 0, Hard: 0 },
+      ]);
+    }
+  });
+});
+
+describe("compose runner hardening", () => {
+  it("runs the runner read-only with dropped capabilities, tmpfs, and limits", () => {
+    const compose = parseYaml(
+      readFileSync(fileURLToPath(new URL("../compose.yaml", import.meta.url)), "utf8"),
+    ) as { services?: Record<string, Record<string, unknown>> };
+    const runner = compose.services?.runner;
+    if (runner === undefined) throw new Error("missing runner service");
+
+    expect(runner.read_only).toBe(true);
+    expect(runner.user).toBe("0:0");
+    expect(runner.cap_drop).toEqual(["ALL"]);
+    expect(runner.cap_add).toEqual(["CHOWN", "DAC_OVERRIDE"]);
+    expect(runner.security_opt).toContain("no-new-privileges:true");
+    expect(runner.tmpfs).toEqual(["/tmp:rw,noexec,nosuid,size=64m"]);
+    expect(runner.mem_limit).toBe("1g");
+    expect(runner.memswap_limit).toBe("1g");
+    expect(runner.pids_limit).toBe(512);
+    expect(runner.cpus).toBe(2);
+    const buildRecordsPath = `\${HANSE_BUILD_RECORDS_DIR:-/var/lib/hanse/builds}`;
+    expect(runner.environment).toMatchObject({
+      HANSE_BUILD_RECORDS_DIR: buildRecordsPath,
+    });
+    expect(runner.volumes).toContain(`${buildRecordsPath}:${buildRecordsPath}`);
+  });
+});
+
+describe("RunnerService image gate", () => {
+  it("allows a create while a shared build lease is held", async () => {
+    const f = fixture();
+    const docker = new FakeDocker();
+    const gate = new ImageGate();
+    const service = new RunnerService({ config: config(f), docker, gate });
+    const lease = gate.tryShared("build");
+    try {
+      const status = await service.ensure(rawSpec(f, "a"), "project:a");
+      expect(status.state).toBe("running");
+      expect(docker.creates).toHaveLength(1);
+    } finally {
+      lease.release();
+    }
+  });
+
+  it("refuses GC and purge while a create, build, or pull lease is held", async () => {
+    for (const kind of ["create", "build", "pull"] as const) {
+      const f = fixture();
+      const docker = new FakeDocker();
+      const gate = new ImageGate();
+      const imageGc = new ImageGcService({ docker, diskPath: "/var/lib/docker", gate });
+      new RunnerService({ config: config(f), docker, imageGc, gate });
+      const lease = gate.tryShared(kind);
+      try {
+        await expect(imageGc.gc({})).rejects.toMatchObject({
+          status: 409,
+          code: "image_mutation_in_progress",
+        });
+        await expect(imageGc.purgeApp("project:a")).rejects.toMatchObject({
+          status: 409,
+          code: "image_mutation_in_progress",
+        });
+      } finally {
+        lease.release();
+      }
+    }
+  });
+
+  it("maps an exclusive GC lease conflict on create to 409 image_mutation_in_progress", async () => {
+    const f = fixture();
+    const docker = new FakeDocker();
+    const gate = new ImageGate();
+    const service = new RunnerService({ config: config(f), docker, gate });
+    const lease = gate.tryExclusive("gc");
+    try {
+      await expect(service.ensure(rawSpec(f, "a"), "project:a")).rejects.toMatchObject({
+        status: 409,
+        code: "image_mutation_in_progress",
+      });
+      expect(docker.creates).toHaveLength(0);
+    } finally {
+      lease.release();
+    }
   });
 });

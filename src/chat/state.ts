@@ -2,6 +2,7 @@ import { rmSync } from "node:fs";
 import path from "node:path";
 import { sanitizeAppKey } from "../opencode/instance.js";
 import { resolveWithinRoot } from "../runtime/app-path.js";
+import { mountsAppRoot } from "../shared/mounts.js";
 import type { SqliteDatabase } from "../store/index.js";
 
 /** Server-side draft text cap (design §D8 and §6.5). */
@@ -586,11 +587,20 @@ export function sessionFolder(
   projectId: string,
   appKey: string,
   sessionId: string,
+  mountsHome?: string,
 ): string | undefined {
-  if (agentsHome === undefined || !isSessionId(sessionId)) {
+  if (!isSessionId(sessionId)) {
     return undefined;
   }
-  const appRoot = path.join(agentsHome, sanitizeAppKey(projectId), sanitizeAppKey(appKey));
+  const appRoot =
+    mountsHome === undefined
+      ? agentsHome === undefined
+        ? undefined
+        : path.join(agentsHome, sanitizeAppKey(projectId), sanitizeAppKey(appKey))
+      : mountsAppRoot(mountsHome, projectId, appKey);
+  if (appRoot === undefined) {
+    return undefined;
+  }
   try {
     return resolveWithinRoot({
       target: path.join(appRoot, "attachments", sessionId),

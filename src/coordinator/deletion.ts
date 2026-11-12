@@ -19,6 +19,7 @@ import type { ImageGcReport } from "../runner/image-gc.js";
 import { isInside, resolveAppPath, resolveWithinRoot } from "../runtime/app-path.js";
 import { boundedErrorMessage } from "../runtime/build-spec.js";
 import { projectSchema } from "../schema/index.js";
+import { mountsAppRoot } from "../shared/mounts.js";
 import type { SqliteDatabase } from "../store/index.js";
 import type { DeploymentLock } from "./deployment-lock.js";
 import { DeploymentInProgressError } from "./deployment-lock.js";
@@ -49,6 +50,8 @@ export interface DeletionServiceOptions {
   db: SqliteDatabase;
   workspaceRoot: string;
   agentsHome: string;
+  /** Coordinator-owned bind-source root; when set, its per-app directory is removed too. */
+  mountsHome?: string;
   coordinatorStateDir: string;
   manager: DeletionManager;
   images: DeletionImages;
@@ -156,6 +159,7 @@ export class DeletionService {
   readonly #db: SqliteDatabase;
   readonly #workspaceRoot: string;
   readonly #agentsHome: string;
+  readonly #mountsHome: string | undefined;
   readonly #coordinatorStateDir: string;
   readonly #manager: DeletionManager;
   readonly #images: DeletionImages;
@@ -171,6 +175,7 @@ export class DeletionService {
     this.#db = options.db;
     this.#workspaceRoot = options.workspaceRoot;
     this.#agentsHome = options.agentsHome;
+    this.#mountsHome = options.mountsHome;
     this.#coordinatorStateDir = options.coordinatorStateDir;
     this.#manager = options.manager;
     this.#images = options.images;
@@ -300,6 +305,7 @@ export class DeletionService {
       this.#assertNoSiblingStateCollision(app);
       this.#removeAppManifestEntry(app.root_path, directory.resolved, roots.workspace, app.app_key);
       this.#removeAppStateDir(app, state, roots.agents);
+      this.#removeMountsAppDir(app);
       this.#deleteAppRows(app);
 
       try {
@@ -444,6 +450,7 @@ export class DeletionService {
         this.#removeProjectManifest(project.root_path);
       }
       this.#removeStateDirectory(state, roots.agents, "project state directory");
+      this.#removeMountsProjectDir(project.id);
       this.#deleteProjectRows(project, apps);
 
       for (const app of apps) {
@@ -857,6 +864,41 @@ export class DeletionService {
     }
     if (!samePath(current, target.resolved)) {
       throw new DeletionError(409, "unsafe_state_path", `${label} changed during deletion`);
+    }
+    rmSync(current, { recursive: true, force: true });
+  }
+
+  #removeMountsAppDir(app: AppRow): void {
+    const mountsHome = this.#mountsHome;
+    if (mountsHome === undefined) return;
+    const root = canonicalizePath(mountsHome);
+    this.#removeMountsDirectory(
+      mountsAppRoot(root, app.project_id, app.app_key),
+      root,
+      "application mount-source directory",
+    );
+  }
+
+  #removeMountsProjectDir(projectId: string): void {
+    const mountsHome = this.#mountsHome;
+    if (mountsHome === undefined) return;
+    const root = canonicalizePath(mountsHome);
+    const segment = sanitizeAppKey(projectId);
+    assertSafeSegment(segment, "project mount-source segment");
+    this.#removeMountsDirectory(path.join(root, segment), root, "project mount-source directory");
+  }
+
+  #removeMountsDirectory(literal: string, root: string, label: string): void {
+    const stat = lstatIfExists(literal);
+    if (stat === undefined) return;
+    if (stat.isSymbolicLink() || !stat.isDirectory()) {
+      throw new DeletionError(409, "unsafe_mount_path", `${label} must be a real directory`);
+    }
+    let current: string;
+    try {
+      current = resolveWithinRoot({ target: literal, root, label });
+    } catch (error) {
+      throw new DeletionError(409, "unsafe_mount_path", errorMessage(error));
     }
     rmSync(current, { recursive: true, force: true });
   }

@@ -1,11 +1,26 @@
 import { randomUUID } from "node:crypto";
+import type { BigIntStats } from "node:fs";
+import { stat } from "node:fs/promises";
 import path from "node:path";
 import { isValidAppId } from "../agent/spec.js";
 import { resolveWithinRoot } from "../runtime/app-path.js";
+import { DockerfileBuildError, validateDockerfileFrom } from "../runtime/base-image.js";
 import { BUILD_SPEC_HASH_VERSION, boundedErrorMessage } from "../runtime/build-spec.js";
-import { BuildContextError, createBuildContext, DEFAULT_DOCKERFILE } from "./build-context.js";
+import {
+  BuildContextError,
+  createBuildContext,
+  DEFAULT_DOCKERFILE,
+  type RootIdentity,
+} from "./build-context.js";
+import {
+  BuildNetworkError,
+  type BuildNetworkRuntime,
+  ensureBuildNetwork,
+} from "./build-network.js";
+import { BuildRecordStore } from "./build-records.js";
 import type { DockerBuildRuntime, DockerImageInspect } from "./docker.js";
 import {
+  ImageGate,
   ImageMutationConflictError,
   type ImageMutationLease,
   ImageMutationMutex,
@@ -16,7 +31,7 @@ import {
   ImageValidationService,
 } from "./image-validation.js";
 import { appContainerName } from "./names.js";
-import { normalizeImageReference, type RunnerConfig } from "./validate.js";
+import { DEFAULT_BUILD_NETWORK, normalizeImageReference, type RunnerConfig } from "./validate.js";
 
 export const MAX_BUILD_LOG_BYTES = 256 * 1024;
 export const BUILD_MEMORY_BYTES = 2 * 1024 * 1024 * 1024;
@@ -42,7 +57,13 @@ const BUILD_ARG_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const SPEC_HASH = /^[a-f0-9]{64}$/;
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
 
-export type RunnerImageStatus = "missing" | "building" | "ready" | "error";
+export type RunnerImageStatus =
+  | "missing"
+  | "building"
+  | "ready"
+  | "error"
+  | "interrupted"
+  | "cancelled";
 export type RunnerBaseKind = "default" | "base" | "explicit" | "unknown";
 
 export const RUNNER_BASE_KINDS: ReadonlySet<string> = new Set([
@@ -126,6 +147,7 @@ export class ImageBuildError extends Error {
 interface ValidatedBuildRequest {
   readonly appId: string;
   readonly appDir: string;
+  readonly rootIdentity: RootIdentity;
   readonly dockerfile: string;
   readonly baseImage: string;
   readonly baseKind: RunnerBaseKind | null;
@@ -147,6 +169,10 @@ export interface ImageBuildServiceOptions {
   readonly validation?: ImageValidationRuntime;
   readonly inspectImage?: (reference: string) => Promise<DockerImageInspect | undefined>;
   readonly mutex?: ImageMutationMutex;
+  readonly gate?: ImageGate;
+  readonly network?: BuildNetworkRuntime;
+  /** Test seam; defaults to a store under `config.buildRecordsDir` when configured. */
+  readonly records?: BuildRecordStore;
 }
 
 export class ImageBuildService {
@@ -157,10 +183,14 @@ export class ImageBuildService {
     | ((reference: string) => Promise<DockerImageInspect | undefined>)
     | undefined;
   readonly #mutex: ImageMutationMutex;
+  readonly #gate: ImageGate;
+  readonly #network: BuildNetworkRuntime | undefined;
+  readonly #store: BuildRecordStore | undefined;
   readonly #byApp = new Map<string, RunnerImageRecord>();
   readonly #byBuild = new Map<string, RunnerImageRecord>();
   readonly #starting = new Map<string, string>();
   readonly #deleting = new Set<string>();
+  readonly #controllers = new Map<string, AbortController>();
   #active: string | undefined;
 
   constructor(options: ImageBuildServiceOptions) {
@@ -169,6 +199,40 @@ export class ImageBuildService {
     this.#validation = options.validation;
     this.#inspectImage = options.inspectImage;
     this.#mutex = options.mutex ?? new ImageMutationMutex();
+    this.#gate = options.gate ?? new ImageGate();
+    this.#network = options.network;
+    this.#store =
+      options.records ??
+      (this.#config.buildRecordsDir === undefined
+        ? undefined
+        : new BuildRecordStore({ dir: this.#config.buildRecordsDir }));
+    if (options.records === undefined && this.#config.buildRecordsDir === undefined) {
+      warnMissingRecordsDir();
+    }
+    if (this.#store !== undefined) {
+      this.#hydrate(this.#store.load());
+    }
+  }
+
+  #hydrate(records: readonly RunnerImageRecord[]): void {
+    const latest = new Map<string, { record: RunnerImageRecord; at: number }>();
+    for (const record of records) {
+      if (record.buildId === null) continue;
+      this.#byBuild.set(record.buildId, { ...record });
+      const parsed = record.updatedAt === null ? Number.NaN : Date.parse(record.updatedAt);
+      const at = Number.isFinite(parsed) ? parsed : 0;
+      const current = latest.get(record.appId);
+      if (current === undefined || at >= current.at) {
+        latest.set(record.appId, { record, at });
+      }
+    }
+    for (const [appId, entry] of latest) {
+      this.#byApp.set(appId, { ...entry.record });
+    }
+  }
+
+  #persist(record: RunnerImageRecord): void {
+    this.#store?.save(record);
   }
 
   async start(raw: unknown): Promise<ImageBuildResult> {
@@ -180,10 +244,20 @@ export class ImageBuildService {
     if (rawAppId !== undefined) {
       this.#assertStartAllowed(rawAppId);
     }
+    let gateLease: ImageMutationLease;
+    try {
+      gateLease = this.#gate.tryShared("build");
+    } catch (error) {
+      if (error instanceof ImageMutationConflictError) {
+        throw new ImageBuildError(error.status, error.message, error.code);
+      }
+      throw error;
+    }
     let lease: ImageMutationLease;
     try {
       lease = this.#mutex.tryAcquire("build");
     } catch (error) {
+      gateLease.release();
       if (error instanceof ImageMutationConflictError) {
         throw new ImageBuildError(error.status, error.message, error.code);
       }
@@ -202,10 +276,19 @@ export class ImageBuildService {
       }
       const request = await validateBuildRequest(raw, this.#config);
       this.#assertStartAllowed(request.appId, buildId);
+      await this.#ensureBuildNetwork();
       const context = await createBuildContext(request.appDir, {
         dockerfile: request.dockerfile,
+        rootIdentity: request.rootIdentity,
       });
       this.#assertStartAllowed(request.appId, buildId);
+      validateDockerfileFrom({
+        dockerfile: context.dockerfileContent,
+        allowedImages: this.#buildImageAllowlist(),
+        args: request.buildArgs,
+        baseImage: request.baseImage,
+        normalize: normalizeImageReference,
+      });
       const tag = `${appContainerName(request.appId)}:${buildId}`;
       const baseKind = request.baseKind ?? inferBaseKind(request.baseImage, this.#config);
       const baseDigest =
@@ -232,19 +315,25 @@ export class ImageBuildService {
       };
       this.#byApp.set(request.appId, record);
       this.#byBuild.set(buildId, record);
+      this.#persist(record);
 
+      const controller = new AbortController();
+      this.#controllers.set(buildId, controller);
       const job: BuildJob = {
         tag,
         labels: buildLabels(request, baseKind, baseDigest, buildId, this.#config),
         request,
         tar: context.tar,
       };
-      void this.#execute(record, job, lease).catch(() => undefined);
+      void this.#execute(record, job, controller, lease, gateLease).catch(() => undefined);
       handedOff = true;
       return { buildId, appId: request.appId, status: "building", targetRef: tag };
     } catch (error) {
       if (this.#active === buildId) {
         this.#active = undefined;
+      }
+      if (buildId !== undefined) {
+        this.#controllers.delete(buildId);
       }
       if (
         rawAppId !== undefined &&
@@ -255,8 +344,24 @@ export class ImageBuildService {
       }
       throw mapBuildError(error);
     } finally {
-      if (!handedOff) lease.release();
+      if (!handedOff) {
+        lease.release();
+        gateLease.release();
+      }
     }
+  }
+
+  #buildImageAllowlist(): ReadonlySet<string> {
+    const allowed = new Set(this.#config.allowedImages);
+    for (const image of this.#config.buildAllowedImages ?? []) allowed.add(image);
+    if (this.#config.defaultImage !== undefined) allowed.add(this.#config.defaultImage);
+    if (this.#config.baseImage !== undefined) allowed.add(this.#config.baseImage);
+    return allowed;
+  }
+
+  async #ensureBuildNetwork(): Promise<void> {
+    if (this.#network === undefined) return;
+    await ensureBuildNetwork(this.#config.buildNetwork ?? DEFAULT_BUILD_NETWORK, this.#network);
   }
 
   get(appId: string): RunnerImageRecord {
@@ -291,11 +396,32 @@ export class ImageBuildService {
     return appId === undefined ? undefined : this.get(appId);
   }
 
+  /**
+   * Best-effort cancel: abort the Docker request, mark the record terminal, and leave leases to
+   * `#execute`. Docker may keep building after the HTTP request is aborted.
+   */
+  cancel(buildId: string): RunnerImageRecord {
+    const record = this.#byBuild.get(buildId);
+    if (record === undefined) {
+      throw new ImageBuildError(404, "unknown image build", "build_not_found");
+    }
+    if (record.status !== "building") {
+      throw new ImageBuildError(409, "image build is not running", "build_not_running");
+    }
+    record.status = "cancelled";
+    record.error = "image build cancelled";
+    record.updatedAt = new Date().toISOString();
+    this.#persist(record);
+    this.#controllers.get(buildId)?.abort();
+    return { ...record };
+  }
+
   /** Tags of builds that are still running; the image GC unions these into its protected set. */
   protectedBuildTags(): string[] {
     const tags = new Set<string>();
     for (const record of [...this.#byApp.values(), ...this.#byBuild.values()]) {
-      if (record.status === "building" && record.targetRef !== null) {
+      if (record.status !== "building" && !this.#controllers.has(record.buildId ?? "")) continue;
+      if (record.targetRef !== null) {
         tags.add(record.targetRef);
       }
     }
@@ -336,6 +462,7 @@ export class ImageBuildService {
     if (buildId !== undefined && this.#active === buildId) {
       this.#active = undefined;
     }
+    this.#store?.removeApp(appId);
   }
 
   #isBuilding(appId: string): boolean {
@@ -368,11 +495,15 @@ export class ImageBuildService {
   async #execute(
     record: RunnerImageRecord,
     job: BuildJob,
+    controller: AbortController,
     lease: ImageMutationLease,
+    gateLease: ImageMutationLease,
   ): Promise<void> {
     const build = this.#build;
     if (build === undefined) {
+      this.#controllers.delete(record.buildId ?? "");
       lease.release();
+      gateLease.release();
       return;
     }
     try {
@@ -383,12 +514,18 @@ export class ImageBuildService {
         baseImage: job.request.baseImage,
         buildArgs: { ...job.request.buildArgs, HANSE_BASE: job.request.baseImage },
         labels: job.labels,
+        networkMode: this.#config.buildNetwork ?? DEFAULT_BUILD_NETWORK,
         memoryBytes: BUILD_MEMORY_BYTES,
         nanoCpus: BUILD_NANO_CPUS,
         pidsLimit: BUILD_PIDS_LIMIT,
         timeoutMs: BUILD_TIMEOUT_MS,
+        signal: controller.signal,
       });
       record.logs = boundedLogs(result.logs);
+      if (this.#wasCancelled(record, controller)) {
+        this.#markCancelled(record);
+        return;
+      }
       if (result.error !== null || result.imageId === null) {
         record.status = "error";
         record.error = boundedErrorMessage(
@@ -396,6 +533,10 @@ export class ImageBuildService {
         );
       } else {
         const validation = await this.#validateImage(job.tag, job.request.appId);
+        if (this.#wasCancelled(record, controller)) {
+          this.#markCancelled(record);
+          return;
+        }
         if (validation !== undefined) {
           record.logs = boundedLogs(
             `${record.logs}${record.logs.endsWith("\n") || record.logs.length === 0 ? "" : "\n"}${
@@ -416,8 +557,12 @@ export class ImageBuildService {
         }
       }
     } catch (error) {
-      record.status = "error";
-      record.error = boundedErrorMessage(error);
+      if (this.#wasCancelled(record, controller)) {
+        this.#markCancelled(record);
+      } else {
+        record.status = "error";
+        record.error = boundedErrorMessage(error);
+      }
     } finally {
       record.updatedAt = new Date().toISOString();
       if (this.#active === record.buildId) {
@@ -426,8 +571,21 @@ export class ImageBuildService {
       if (this.#starting.get(record.appId) === record.buildId) {
         this.#starting.delete(record.appId);
       }
+      this.#controllers.delete(record.buildId ?? "");
+      this.#persist(record);
       lease.release();
+      gateLease.release();
     }
+  }
+
+  #wasCancelled(record: RunnerImageRecord, controller: AbortController): boolean {
+    return controller.signal.aborted || record.status === "cancelled";
+  }
+
+  #markCancelled(record: RunnerImageRecord): void {
+    record.status = "cancelled";
+    record.error = "image build cancelled";
+    record.updatedAt = new Date().toISOString();
   }
 
   async #validateImage(
@@ -456,6 +614,16 @@ function appIdFromRaw(raw: unknown): string | undefined {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined;
   const appId = (raw as Record<string, unknown>).appId;
   return isValidAppId(appId) ? appId : undefined;
+}
+
+let warnedMissingRecordsDir = false;
+
+function warnMissingRecordsDir(): void {
+  if (warnedMissingRecordsDir) return;
+  warnedMissingRecordsDir = true;
+  process.stderr.write(
+    "hanse runner: HANSE_BUILD_RECORDS_DIR is unset; image build records are in memory only\n",
+  );
 }
 
 function missingRecord(appId: string): RunnerImageRecord {
@@ -541,6 +709,21 @@ async function validateBuildRequest(
     label: "appDir",
   });
 
+  let rootStats: BigIntStats;
+  try {
+    rootStats = await stat(appDir, { bigint: true });
+  } catch (error) {
+    throw new ImageBuildError(
+      400,
+      `appDir is not accessible: ${boundedErrorMessage(error)}`,
+      "INVALID_APP_DIR",
+    );
+  }
+  if (!rootStats.isDirectory()) {
+    throw new ImageBuildError(400, "appDir must be a directory", "INVALID_APP_DIR");
+  }
+  const rootIdentity: RootIdentity = { dev: rootStats.dev, ino: rootStats.ino };
+
   const dockerfile = value.dockerfile ?? DEFAULT_DOCKERFILE;
   if (typeof dockerfile !== "string" || !isSafeDockerfile(dockerfile)) {
     throw new ImageBuildError(400, "dockerfile must be a safe relative path inside the app");
@@ -571,7 +754,17 @@ async function validateBuildRequest(
 
   const hashVersion = parseHashVersion(value.hashVersion);
 
-  return { appId, appDir, dockerfile, baseImage, baseKind, buildArgs, specHash, hashVersion };
+  return {
+    appId,
+    appDir,
+    rootIdentity,
+    dockerfile,
+    baseImage,
+    baseKind,
+    buildArgs,
+    specHash,
+    hashVersion,
+  };
 }
 
 function parseBaseKind(value: unknown): RunnerBaseKind | null {
@@ -651,8 +844,14 @@ function stripControlCharacters(text: string): string {
 
 function mapBuildError(error: unknown): Error {
   if (error instanceof ImageBuildError) return error;
+  if (error instanceof DockerfileBuildError) {
+    return new ImageBuildError(400, boundedErrorMessage(error), error.code);
+  }
   if (error instanceof BuildContextError) {
     return new ImageBuildError(400, boundedErrorMessage(error), error.code);
+  }
+  if (error instanceof BuildNetworkError) {
+    return new ImageBuildError(503, boundedErrorMessage(error), error.code);
   }
   return error instanceof Error ? error : new Error(String(error));
 }

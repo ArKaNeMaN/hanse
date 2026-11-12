@@ -34,6 +34,13 @@ export interface AppRuntimeSpec {
    * mode only). Part of the spec hash so the container is recreated on the next explicit restart.
    */
   attachmentsReadOnly?: boolean;
+  /**
+   * Host path of the coordinator-owned mount-source directory (`<mounts>/<project>/<app>`).
+   *
+   * It is validated by the runner but deliberately excluded from `specHash`: the app-visible
+   * container paths and the hash must stay stable across the mount-source layout migration.
+   */
+  hostMountsAppDir?: string;
   stateDir: string;
   networkName: string;
   port?: number;

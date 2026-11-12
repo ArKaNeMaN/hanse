@@ -3,15 +3,31 @@ import { DEFAULT_AGENT_AGENTS_ROOT } from "../agent/spec.js";
 import { isSessionId } from "../chat/state.js";
 import { sanitizeAppKey } from "../opencode/instance.js";
 import { isInside, resolveWithinRoot } from "../runtime/app-path.js";
+import { mountsAppRoot } from "../shared/mounts.js";
 
 /** Host-side app root under the agents volume. */
 export function appStateRoot(agentsHome: string, projectId: string, appKey: string): string {
   return path.join(agentsHome, sanitizeAppKey(projectId), sanitizeAppKey(appKey));
 }
 
-/** Host attachments root: `<appRoot>/attachments`. */
-export function attachmentsHostRoot(agentsHome: string, projectId: string, appKey: string): string {
-  return path.join(appStateRoot(agentsHome, projectId, appKey), "attachments");
+export interface AttachmentRootInput {
+  agentsHome: string;
+  /** Coordinator-owned bind-source root. When set, attachment files live here instead of agents. */
+  mountsHome?: string;
+  projectId: string;
+  appKey: string;
+}
+
+/** Physical app root that holds attachment files. */
+export function attachmentAppRoot(input: AttachmentRootInput): string {
+  return input.mountsHome === undefined
+    ? appStateRoot(input.agentsHome, input.projectId, input.appKey)
+    : mountsAppRoot(input.mountsHome, input.projectId, input.appKey);
+}
+
+/** Physical attachments root: `<appRoot>/attachments`. */
+export function attachmentsHostRoot(input: AttachmentRootInput): string {
+  return path.join(attachmentAppRoot(input), "attachments");
 }
 
 export type AttachmentPathMode = "host" | "container";

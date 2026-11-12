@@ -22,6 +22,7 @@ services:
       HANSE_RUNNER_URL: http://runner:8790
       HANSE_HOST_WORKSPACE: ${HANSE_HOST_WORKSPACE:?set HANSE_HOST_WORKSPACE to the absolute host workspace path}
       HANSE_HOST_AGENTS: ${HANSE_HOST_AGENTS:?set HANSE_HOST_AGENTS to the absolute host agents path}
+      HANSE_HOST_MOUNTS: ${HANSE_HOST_MOUNTS:?set HANSE_HOST_MOUNTS to the absolute host mounts path}
       HANSE_AGENT_API_BASE: http://hanse:8787
       HANSE_DEPLOY_LOCK_FILE: ${HANSE_DEPLOY_LOCK_FILE:-/data/state/hanse/deploy.lock}
       HANSE_AGENT_IMAGE: ${HANSE_AGENT_IMAGE:-ghcr.io/arkaneman/hanse-agent-default}:${HANSE_AGENT_TAG:-${HANSE_TAG:-latest}}
@@ -40,6 +41,7 @@ services:
       - ${HANSE_WORKSPACE:-./workspace}:/data/workspace
       - ${HANSE_STATE:-./state}:/data/state
       - ${HANSE_AGENTS:-./agents}:/data/agents
+      - ${HANSE_HOST_MOUNTS:?set HANSE_HOST_MOUNTS to the absolute host mounts path}:${HANSE_HOST_MOUNTS:?set HANSE_HOST_MOUNTS to the absolute host mounts path}
     networks:
       - front
       - control
@@ -101,23 +103,47 @@ services:
     container_name: hanse-runner
     restart: unless-stopped
     user: "0:0"
+    read_only: true
+    cap_drop:
+      - ALL
+    # CHOWN is needed by git Test connection credential writes. DAC_OVERRIDE is needed because the
+    # runner runs as root and must read per-app 0600 uid-1000 state (opencode password, credentials)
+    # from read-only binds; without it those reads fail. No other capability is granted.
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
     security_opt:
       - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    mem_limit: 1g
+    memswap_limit: 1g
+    pids_limit: 512
+    cpus: 2.0
     environment:
       HANSE_RUNTIME_TOKEN: ${HANSE_RUNTIME_TOKEN:?set HANSE_RUNTIME_TOKEN in .env}
       HANSE_HOST_WORKSPACE: ${HANSE_HOST_WORKSPACE:?set HANSE_HOST_WORKSPACE to the absolute host workspace path}
       HANSE_HOST_AGENTS: ${HANSE_HOST_AGENTS:?set HANSE_HOST_AGENTS to the absolute host agents path}
+      HANSE_HOST_MOUNTS: ${HANSE_HOST_MOUNTS:?set HANSE_HOST_MOUNTS to the absolute host mounts path}
       HANSE_AGENT_IMAGE: ${HANSE_AGENT_IMAGE:-ghcr.io/arkaneman/hanse-agent-default}:${HANSE_AGENT_TAG:-${HANSE_TAG:-latest}}
       HANSE_AGENT_BASE_IMAGE: ${HANSE_AGENT_BASE_IMAGE:-ghcr.io/arkaneman/hanse-agent-base:${HANSE_AGENT_TAG:-${HANSE_TAG:-latest}}}
-      HANSE_IMAGE_DISK_PATH: ${HANSE_IMAGE_DISK_PATH:-${HANSE_HOST_WORKSPACE}}
+      HANSE_DOCKER_DATA_ROOT: ${HANSE_DOCKER_DATA_ROOT:-/var/lib/docker}
+      HANSE_PULL_MAX_BYTES: ${HANSE_PULL_MAX_BYTES:-}
       HANSE_COORDINATOR_CONTAINER: hanse
       HANSE_DOCKER_SOCKET: /var/run/docker.sock
       HANSE_HOST_RUNNER_TMP: ${HANSE_HOST_RUNNER_TMP:-/var/lib/hanse/tmp}
+      HANSE_BUILD_RECORDS_DIR: ${HANSE_BUILD_RECORDS_DIR:-/var/lib/hanse/builds}
+      HANSE_APP_MEMORY_MAX_MB: ${HANSE_APP_MEMORY_MAX_MB:-}
+      HANSE_APP_CPUS_MAX: ${HANSE_APP_CPUS_MAX:-}
+      HANSE_APP_PIDS_MAX: ${HANSE_APP_PIDS_MAX:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${HANSE_HOST_WORKSPACE:?set HANSE_HOST_WORKSPACE to the absolute host workspace path}:${HANSE_HOST_WORKSPACE:?set HANSE_HOST_WORKSPACE to the absolute host workspace path}:ro
       - ${HANSE_HOST_AGENTS:?set HANSE_HOST_AGENTS to the absolute host agents path}:${HANSE_HOST_AGENTS:?set HANSE_HOST_AGENTS to the absolute host agents path}:ro
+      - ${HANSE_HOST_MOUNTS:?set HANSE_HOST_MOUNTS to the absolute host mounts path}:${HANSE_HOST_MOUNTS:?set HANSE_HOST_MOUNTS to the absolute host mounts path}:ro
       - ${HANSE_HOST_RUNNER_TMP:-/var/lib/hanse/tmp}:${HANSE_HOST_RUNNER_TMP:-/var/lib/hanse/tmp}
+      - ${HANSE_BUILD_RECORDS_DIR:-/var/lib/hanse/builds}:${HANSE_BUILD_RECORDS_DIR:-/var/lib/hanse/builds}
+      - ${HANSE_DOCKER_DATA_ROOT:-/var/lib/docker}:${HANSE_DOCKER_DATA_ROOT:-/var/lib/docker}:ro
     networks:
       - control
     healthcheck:

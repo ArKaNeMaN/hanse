@@ -37,12 +37,15 @@ a host `opencode` auth file.
   **only** `./workspace:/data/workspace` (no `state` or `agents`). Serves on `8080`, reachable only on
   the `front` network.
 - **`hanse-runner`**: the only Docker socket holder. It runs on the internal `control` network, has
-  no `/data/state`, and mounts the host workspace and agents volumes read-only (workspace for
-  build-context tar/validation, agents for per-app passwords). It validates runtime specs, builds
-  app images, and creates one app container per application.
+  no `/data/state`, and mounts the host workspace, agents, and mounts roots read-only (workspace for
+  build-context tar/validation, agents for per-app passwords, mounts for attachment and git bind
+  sources). It validates runtime specs, builds app images, and creates one app container per
+  application.
 - **`hanse-app-<project>-<app>`** (dynamic): one `agent-default` container per app, on its own
-  `hanse-app-*` bridge network. It mounts only the app directory and `/data/agents/<project>/<app>`;
-  uid 1000, read-only root, `cap_drop: ALL`, no state, no Docker socket, no operator/runtime token.
+  `hanse-app-*` bridge network. It mounts only the app directory and `/data/agents/<project>/<app>`,
+  plus read-only leaves from `HANSE_HOST_MOUNTS` at `/data/agents/<project>/<app>/attachments` and
+  `/data/agents/<project>/<app>/home/.config/hanse/git`; uid 1000, read-only root, `cap_drop: ALL`,
+  no state, no Docker socket, no operator/runtime token.
   The runner sets Docker `HostConfig.Init`, so a small init process is PID 1 and `opencode serve` is
   its child; orphaned shell/tool/MCP/terminal children are reaped instead of accumulating as zombies.
   Memory, CPU, and PID limits stay enforced. `opencode serve` listens on `0.0.0.0:4100` inside the
@@ -279,9 +282,9 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
 `Origin` is rejected; `hanse_token` remains `SameSite=Strict`.
 
 - The flow stops the managed container, removes its app network (only when the managed labels match),
-  purges the app's `hanse.app.id`-labelled images, and removes the per-app agents directory
-  (opencode DB/sessions, auth, password, MCP token, OMO profile, materialized git credentials,
-  cache/tmp/mise). A project deletes all its apps, the project rows, project/app-scoped settings,
+  purges the app's `hanse.app.id`-labelled images, removes the per-app agents directory
+  (opencode DB/sessions, auth, password, MCP token, OMO profile, cache/tmp/mise), and removes the
+  per-app directory under `HANSE_HOST_MOUNTS` (attachments and git credentials). A project deletes all its apps, the project rows, project/app-scoped settings,
   provider keys, git credentials, and handoffs; handoff approvals/messages cascade and app-scoped
   policy rules are removed. Each deletion writes an `events` row (`app.deleted`/`project.deleted`).
 - Source files are kept by default; `Delete files too` explicitly removes the app/project directory
@@ -504,9 +507,9 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
 - The application directory must be the repository root and inside the workspace. In B1 the
   coordinator delegates every operation to the runner (`POST /v1/apps/:appId/git`); the runner
   validates the fixed operation set and executes it in a one-shot container from the app image
-  (uid 1000, the app directory rw, and the application's managed credential directory
-  `<app>/home/.config/hanse/git` read-only at `/run/hanse/git/app`; `--network none` for local
-  operations and the app network for fetch/update/push/test). Repository hooks, fsmonitor, SSH
+  (uid 1000, the app directory rw, and the application's managed credential directory from the
+  mounts root read-only at `/run/hanse/git/app`; `--network none` for local operations and the app
+  network for fetch/update/push/test). Repository hooks, fsmonitor, SSH
   commands, ext protocols, and credential helpers therefore never run in the coordinator.
 - Git identity (`git.user.name`/`git.user.email`) and per-scope SSH/HTTPS credentials are configured
   in Settings -> Git and materialized into the application HOME; see
@@ -999,7 +1002,8 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   A client `session.error` marks only the local unsent acceptance row failed, not server-backed
   queued/active rows.
 - File-only attachments (Stage B of plan 0026) live under
-  `<agentsHome>/<sanitize(project)>/<sanitize(appKey)>/attachments/<session>/<id>-<safeName>` and are
+  `<HANSE_HOST_MOUNTS>/<sanitize(project)>/<sanitize(appKey)>/attachments/<session>/<id>-<safeName>`
+  in runner mode (the legacy `agents` path is used only when no mounts root is configured) and are
   streamed through `POST /api/apps/:app/attachments` (raw body, `Content-Disposition` filename,
   100 MiB/file, 25 MiB image, 5 GiB/app, 2 concurrent, 256 MiB global in-flight). Files are
   sniffed, name-sanitized, committed to `app_attachments`, downloaded with `O_NOFOLLOW` + size
@@ -1195,8 +1199,9 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   /api/settings` and the settings pages expose the same status-only view. `cleared` is a tombstone
   that stops inheritance. The legacy `secrets` table and its unused helper were dropped.
 - On instance start the coordinator materializes the effective identity and credentials into
-  `<app>/home/.config/hanse/git/` (`config`, `ssh`, `askpass`, and, when configured, `id`,
-  `known_hosts`, `token`, `username`, `https_hosts`; dirs 0700, secrets 0600, wrappers 0700). The app
+  `<HANSE_HOST_MOUNTS>/<project>/<app>/git/` (`config`, `ssh`, `askpass`, and, when configured, `id`,
+  `known_hosts`, `token`, `username`, `https_hosts`; dirs 0700, secrets 0600, wrappers 0700) and binds
+  it read-only at the unchanged app-visible `<app>/home/.config/hanse/git/`. The app
   env contains paths only (`GIT_CONFIG_GLOBAL`, `GIT_SSH_COMMAND`, `GIT_ASKPASS`,
   `GIT_ASKPASS_REQUIRE=force`, `HANSE_CREDENTIALS_DIR`). A settings change is applied on an explicit
   agent restart; the existing `pendingRestart` marker covers secret-only changes because
@@ -1617,17 +1622,28 @@ Host `./agents` is mounted at `/data/agents` read-write in `hanse` and read-only
   skills, rebuilt at each agent start. `config/opencode/skill/` (legacy alias),
   `config/opencode/.hanse-skills-initialized`, and `config/opencode/skills-replaced/` are also
   Hanse-owned per-instance state.
-- `<projectId>/<appKey>/home/.config/hanse/git/` - coordinator-materialized git identity and
-  credential files (`config`, `ssh`, `askpass`, and optional `id`, `known_hosts`, `token`, `username`,
-  `https_hosts`). The app container can read this directory by design; the runner mounts it read-only
-  into one-shot git containers.
+- `<projectId>/<appKey>/home/.config/hanse/git/` is the app-visible mount point only; the files live
+  under `HANSE_HOST_MOUNTS` (see below).
+- `<projectId>/<appKey>/attachments/` is the app-visible mount point only; files live under
+  `HANSE_HOST_MOUNTS` (see below).
 - The reconciled opencode `auth.json`, opencode Basic-auth password, and per-app MCP token live under
   that app's state (`0600`).
 - `<workspace>/.hanse-master/AGENTS.md` - the coordinator-owned master instructions. The directory is
   the master application's mount and is read-only inside that agent container; the coordinator
   rewrites the file on every start.
 - The coordinator-generated OMO profile is `<app-home>/.omo/omo.jsonc`; OMO state is per app.
-- Each app container sees only its own `/data/agents/<project>/<app>` root.
+- Each app container sees only its own `/data/agents/<project>/<app>` root, plus read-only
+  attachment and git leaves from `HANSE_HOST_MOUNTS`.
+
+Host `HANSE_HOST_MOUNTS` is mounted at the same absolute path read-write in `hanse` and read-only in
+`hanse-runner`:
+
+- `<projectId>/<appKey>/attachments/` - attachment files (`<session>/<id>-<safeName>`), app-immutable.
+- `<projectId>/<appKey>/git/` - managed git identity and credential files, app-immutable.
+- `state/hanse/runner-layout.json` records the verified one-time copy from the legacy `agents` layout
+  (mode `0600`). The copy is verified and idempotent; conflicting old/new content fails startup. A
+  rollback requires restoring the pre-upgrade `agents`/`state` backup (or a reverse copy); the old
+  copy is a backup, not a lossless rollback.
 - The IDE never sees this volume.
 
 ## CLI

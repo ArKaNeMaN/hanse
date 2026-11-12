@@ -55,6 +55,7 @@ import type {
   LaunchSettingsSnapshot,
   SettingsTarget,
 } from "../settings/types.js";
+import { mountsAppRoot, mountsAttachmentsDir, mountsGitDir } from "../shared/mounts.js";
 import type {
   SkillApplyOptions,
   SkillCapture,
@@ -531,6 +532,8 @@ export interface InstanceManagerOptions {
   hostWorkspace?: string;
   /** Absolute host agents path for the B1 runner. Enables host-path specs. */
   hostAgents?: string;
+  /** Absolute host root for app mount sources; when set, attachments and git credentials live there. */
+  hostMounts?: string;
   /** Injectable monitor factory; production constructs a `ContextMonitor`. */
   monitorFactory?: (options: ContextMonitorOptions) => ContextMonitorLike;
   /** Set false to disable background context monitors regardless of settings support. */
@@ -758,10 +761,12 @@ export class InstanceManager {
       endpointFor: (appId) => this.endpointFor(appId),
       monitorState: (appId) => this.monitorState(appId),
       agentsHome: runtimeRoot,
+      ...(options.hostMounts === undefined ? {} : { mountsHome: options.hostMounts }),
     });
     this.#sweep = new ChatSweep({
       db,
       agentsHome: runtimeRoot,
+      ...(options.hostMounts === undefined ? {} : { mountsHome: options.hostMounts }),
       endpointFor: (appId) => this.endpointFor(appId),
     });
     this.#recovery = new ProcessRecovery({
@@ -838,6 +843,7 @@ export class InstanceManager {
       runAttachmentMaintenance(this.#db, this.#runtimeRoot, {
         startup: true,
         activeIds: activeUploadIds,
+        ...(this.#options.hostMounts === undefined ? {} : { mountsHome: this.#options.hostMounts }),
       });
     } catch {
       // A missing/unmigrated table must never block coordinator startup.
@@ -1091,7 +1097,7 @@ export class InstanceManager {
       const isolated = resolveInstanceEnv(this.#runtimeRoot, identity);
       mkdirSync(path.dirname(isolated.HOME), { recursive: true, mode: 0o700 });
       mkdirSync(isolated.HOME, { recursive: true, mode: 0o700 });
-      this.#ensureAttachmentsRoot(isolated.HOME);
+      this.#ensureMountsAppDirs(isolated.HOME, app.projectId, app.appKey);
       writeAppliedRule(isolated, PROCESS_RULE_TEXT);
       writeProcessRule(isolated, PROCESS_RULE_TEXT);
       const passwordFile = opencodePasswordPath(isolated.XDG_STATE_HOME);
@@ -1179,6 +1185,9 @@ export class InstanceManager {
               home: isolated.HOME,
               projectId: app.projectId,
               appKey: app.appKey,
+              ...(this.#options.hostMounts === undefined
+                ? {}
+                : { mountsRoot: this.#options.hostMounts }),
               identity: {
                 name: snapshot.resolved.effective.git.user.name.value,
                 email: snapshot.resolved.effective.git.user.email.value,
@@ -1295,6 +1304,10 @@ export class InstanceManager {
         : isolated.XDG_STATE_HOME;
       const specNetworkName = hostPaths ? appNetworkName(app.id) : "agents";
       const specPort = hostPaths ? RUNNER_APP_PORT : undefined;
+      const specHostMountsAppDir =
+        hostPaths && this.#options.hostMounts !== undefined
+          ? mountsAppRoot(this.#options.hostMounts, app.projectId, app.appKey)
+          : undefined;
       const hashInput: SpecHashInput = {
         appId: app.id,
         image,
@@ -1313,13 +1326,17 @@ export class InstanceManager {
           ...(hostPaths ? { "hanse.agents.root": path.dirname(specStateDir) } : {}),
         },
       };
-      const spec: AppRuntimeSpec = validateAppRuntimeSpec(
+      const validatedSpec = validateAppRuntimeSpec(
         { ...hashInput, specHash: computeSpecHash(hashInput) },
         {
           workspaceRoot: hostPaths ? hostWorkspace : workspaceRoot,
           agentsRoot: hostPaths ? hostAgents : agentsRoot,
         },
       );
+      const spec: AppRuntimeSpec =
+        specHostMountsAppDir === undefined
+          ? validatedSpec
+          : { ...validatedSpec, hostMountsAppDir: specHostMountsAppDir };
 
       this.#transitionProcess(app.id, {
         attemptId: attempt.attemptId,
@@ -1439,20 +1456,32 @@ export class InstanceManager {
   }
 
   /**
-   * Pre-create the attachments root next to the existing app-root/HOME directories. The runner's
-   * host-agents mount is read-only, so the coordinator owns creation; uid 1000 matches the agent
-   * container user where the coordinator has the privilege to set it.
+   * Pre-create the app mount-source leaves before the runner validates them.
+   *
+   * In runner mode both leaves live under the coordinator-owned mounts root; the git leaf must
+   * exist even when no credentials are configured so the read-only bind always shadows the legacy
+   * agents-root path. Otherwise it stays next to the app HOME.
    */
-  #ensureAttachmentsRoot(home: string): void {
-    const root = path.join(path.dirname(home), "attachments");
+  #ensureMountsAppDirs(home: string, projectId: string, appKey: string): void {
+    const roots =
+      this.#options.hostMounts === undefined
+        ? [path.join(path.dirname(home), "attachments")]
+        : [
+            mountsAttachmentsDir(this.#options.hostMounts, projectId, appKey),
+            mountsGitDir(this.#options.hostMounts, projectId, appKey),
+          ];
+    for (const root of roots) this.#ensureSafeMountDir(root);
+  }
+
+  #ensureSafeMountDir(root: string): void {
     const existing = lstatSync(root, { throwIfNoEntry: false });
     if (existing !== undefined && (existing.isSymbolicLink() || !existing.isDirectory())) {
-      throw new Error("attachment root is not a safe directory");
+      throw new Error("mount source is not a safe directory");
     }
     mkdirSync(root, { recursive: true, mode: 0o700 });
     const created = lstatSync(root, { throwIfNoEntry: false });
     if (created === undefined || created.isSymbolicLink() || !created.isDirectory()) {
-      throw new Error("attachment root is not a safe directory");
+      throw new Error("mount source is not a safe directory");
     }
     try {
       chmodSync(root, 0o700);
@@ -1464,7 +1493,7 @@ export class InstanceManager {
         chownSync(root, 1000, 1000);
       }
     } catch {
-      // Non-root coordinators rely on the pre-existing agents-volume ownership.
+      // Non-root coordinators rely on the pre-existing volumes' ownership.
     }
   }
 
@@ -2878,7 +2907,11 @@ export class InstanceManager {
           status.imageId !== undefined &&
           status.imageId !== row?.appliedImageId;
         const identityChanged = this.#runtimeIdentityChanged(previous, status);
-        if (identityChanged || imageChanged) {
+        const containerNameChanged =
+          status.containerName !== undefined &&
+          status.containerName !== null &&
+          status.containerName !== (row?.containerName ?? null);
+        if (identityChanged || imageChanged || containerNameChanged) {
           this.#transitionProcess(appId, {
             attemptId: this.#runtimeObservationAttemptId(appId, status),
             state: status.state === "starting" ? "starting" : "running",

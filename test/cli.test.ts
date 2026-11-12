@@ -209,18 +209,21 @@ describe("serve startup order", () => {
     const stateHome = tempDir("hanse-cli-state-");
     const hostWorkspace = tempDir("hanse-cli-host-workspace-");
     const hostAgents = tempDir("hanse-cli-host-agents-");
+    const hostMounts = tempDir("hanse-cli-host-mounts-");
     const { lines, io } = collector();
     const variables = {
       HANSE_RUNNER_URL: process.env.HANSE_RUNNER_URL,
       HANSE_RUNTIME_TOKEN: process.env.HANSE_RUNTIME_TOKEN,
       HANSE_HOST_WORKSPACE: process.env.HANSE_HOST_WORKSPACE,
       HANSE_HOST_AGENTS: process.env.HANSE_HOST_AGENTS,
+      HANSE_HOST_MOUNTS: process.env.HANSE_HOST_MOUNTS,
       HANSE_IDE: process.env.HANSE_IDE,
     };
     process.env.HANSE_RUNNER_URL = "http://127.0.0.1:9";
     process.env.HANSE_RUNTIME_TOKEN = "test-runtime-token";
     process.env.HANSE_HOST_WORKSPACE = hostWorkspace;
     process.env.HANSE_HOST_AGENTS = hostAgents;
+    process.env.HANSE_HOST_MOUNTS = hostMounts;
     process.env.HANSE_IDE = "0";
     const priorListeners = process.listeners("SIGTERM");
     try {
@@ -266,6 +269,7 @@ describe("serve startup order", () => {
     const stateHome = tempDir("hanse-cli-state-");
     const hostWorkspace = tempDir("hanse-cli-host-workspace-");
     const hostAgents = tempDir("hanse-cli-host-agents-");
+    const hostMounts = tempDir("hanse-cli-host-mounts-");
     const seeded = openCoordinatorDatabase(stateHome);
     try {
       const now = new Date().toISOString();
@@ -289,12 +293,14 @@ describe("serve startup order", () => {
       HANSE_RUNTIME_TOKEN: process.env.HANSE_RUNTIME_TOKEN,
       HANSE_HOST_WORKSPACE: process.env.HANSE_HOST_WORKSPACE,
       HANSE_HOST_AGENTS: process.env.HANSE_HOST_AGENTS,
+      HANSE_HOST_MOUNTS: process.env.HANSE_HOST_MOUNTS,
       HANSE_IDE: process.env.HANSE_IDE,
     };
     process.env.HANSE_RUNNER_URL = "http://127.0.0.1:9";
     process.env.HANSE_RUNTIME_TOKEN = "test-runtime-token";
     process.env.HANSE_HOST_WORKSPACE = hostWorkspace;
     process.env.HANSE_HOST_AGENTS = hostAgents;
+    process.env.HANSE_HOST_MOUNTS = hostMounts;
     process.env.HANSE_IDE = "0";
     const priorListeners = process.listeners("SIGTERM");
     try {

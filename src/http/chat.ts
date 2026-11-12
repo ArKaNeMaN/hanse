@@ -38,8 +38,8 @@ import {
 import {
   type AttachmentPathMode,
   appStateRoot,
+  attachmentAppRoot,
   attachmentRelPath,
-  attachmentsHostRoot,
   attachmentTempRelPath,
 } from "../attachments/paths.js";
 import {
@@ -493,7 +493,12 @@ function _attachmentVisibleRootFor(deps: HttpDeps, found: FoundApp): string {
 function appAttachmentRoot(deps: HttpDeps, found: FoundApp): string | undefined {
   return deps.agentsHome === undefined
     ? undefined
-    : path.dirname(attachmentsHostRoot(deps.agentsHome, found.project.id, found.app.appKey));
+    : attachmentAppRoot({
+        agentsHome: deps.agentsHome,
+        ...(deps.mountsHome === undefined ? {} : { mountsHome: deps.mountsHome }),
+        projectId: found.project.id,
+        appKey: found.app.appKey,
+      });
 }
 
 function quotaPercent(deps: HttpDeps, appId: string): number {
@@ -521,7 +526,7 @@ function _writeJson(_headers: Record<string, string>, body: unknown): string {
 function removeLocalSessionRows(deps: HttpDeps, found: FoundApp, sessionId: string): void {
   deleteSessionChatRows(deps.db, found.app.id, sessionId);
   removeSessionFolder(
-    sessionFolder(deps.agentsHome, found.project.id, found.app.appKey, sessionId),
+    sessionFolder(deps.agentsHome, found.project.id, found.app.appKey, sessionId, deps.mountsHome),
   );
   if (deps.agentsHome !== undefined) {
     deleteSessionAgentMedia(

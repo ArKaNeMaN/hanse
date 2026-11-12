@@ -1,6 +1,6 @@
-export const RUNNER_API_VERSION = 1;
-export const RUNNER_API_MIN = 1;
-export const RUNNER_API_MAX = 1;
+export const RUNNER_API_VERSION = 3;
+export const RUNNER_API_MIN = 3;
+export const RUNNER_API_MAX = 3;
 
 export interface RunnerHandshake {
   apiVersion: number;
