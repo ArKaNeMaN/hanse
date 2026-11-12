@@ -929,7 +929,15 @@ export class DockerClient {
     if (this.#transport.build === undefined) {
       throw new DockerError(0, "docker transport does not support image builds");
     }
-    const buildkit = options.buildkit ?? (await this.#supportsBuildKit());
+    // BuildKit rejects custom network names through the Engine API; the dedicated
+    // `hanse-build` bridge therefore uses the classic builder. Never fall back to `default`:
+    // that would undo the build-network isolation.
+    const buildkit =
+      options.networkMode === "default" ||
+      options.networkMode === "none" ||
+      options.networkMode === "host"
+        ? (options.buildkit ?? (await this.#supportsBuildKit()))
+        : false;
     const buildArgs = { ...options.buildArgs, HANSE_BASE: options.baseImage };
     const cpuPeriod = 100_000;
     const cpuQuota = Math.max(1, Math.round((options.nanoCpus / 1_000_000_000) * cpuPeriod));

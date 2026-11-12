@@ -80,7 +80,7 @@ function jsonLines(response: unknown[]): DockerResponse {
 }
 
 describe("DockerClient.buildImage", () => {
-  it("sends a raw tar build with BuildKit, labels, args, and resource limits", async () => {
+  it("uses the classic builder for the dedicated build network", async () => {
     const transport = new FakeTransport();
     transport.buildResponse = () =>
       jsonLines([{ stream: "Step 1/1\n" }, { aux: { ID: "sha256:result" } }]);
@@ -99,7 +99,7 @@ describe("DockerClient.buildImage", () => {
     const query = queryOf(build);
     expect(query.get("t")).toBe("hanse-app-project-app:build-1");
     expect(query.get("dockerfile")).toBe(".hanse/Dockerfile");
-    expect(query.get("version")).toBe("2");
+    expect(query.has("version")).toBe(false);
     expect(query.get("memory")).toBe("1024");
     expect(query.get("memswap")).toBe("1024");
     expect(query.get("cpuperiod")).toBe("100000");
@@ -116,7 +116,7 @@ describe("DockerClient.buildImage", () => {
     });
   });
 
-  it("maps a none build network to networkmode=none, never default", async () => {
+  it("uses BuildKit for a standard network", async () => {
     const transport = new FakeTransport();
     const client = new DockerClient(transport);
 
@@ -126,7 +126,7 @@ describe("DockerClient.buildImage", () => {
     if (build === undefined) throw new Error("missing build");
     const query = queryOf(build);
     expect(query.get("networkmode")).toBe("none");
-    expect(query.get("networkmode")).not.toBe("default");
+    expect(query.get("version")).toBe("2");
   });
 
   it("falls back to the classic builder when the Engine API predates BuildKit", async () => {
