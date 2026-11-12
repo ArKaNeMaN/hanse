@@ -1200,9 +1200,9 @@ const LABELS: SettingsLabelsProps = {
     restart: "Restart & pending",
   },
   actions: {
-    save: "Save",
-    inherit: "Inherit",
-    clear: "Clear",
+    save: "Save override",
+    inherit: "Use inherited",
+    clear: "Clear at this scope",
     clearTitle: "Clear setting at this scope?",
     clearBody:
       "Wider scopes will no longer apply. The setting stays disabled until you set it again.",

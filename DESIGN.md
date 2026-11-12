@@ -903,17 +903,24 @@ These map exactly to Section 3. No other font sizes are allowed in product CSS.
 - **Disclosure:** `.disclosure` is a native `<details>` with a `--space-8` summary row and a
   `.disclosure__chevron` that rotates when open. Used for Image details, Build logs, provider keys,
   and scope details. No custom ARIA menu/tab roles.
-- **Settings nav and rows:** `.settings-nav` is sticky under the top bar with
-  `.settings-nav__scopes`, `.settings-nav__sections`, `.settings-nav__link`, and
-  `aria-current="page"` on the current scope. `.settings-section` uses the card shell.
-  `.setting-row` is a native `<details>` separated by hairlines; `.setting-row__summary` is a
-  `minmax(0,1fr) auto` grid (title, effective value + source, optional status, chevron), and
-  `.setting-row__body`, `.setting-row__form`, `.setting-row__actions`, `.setting-row__reason` hold
-  the open editor. `.scope-details`/`.scope-list` replace per-setting tables with a compact
-  definition list (`Set`/`Cleared`/`Inherited`). Disabled Inherit/Clear controls always carry a
-  visible reason. Saves are live: the client swaps the affected section HTML from the server
-  (provider/model/web changes also refresh warnings and restart state), preserving open rows,
-  other-row drafts, focus, scroll, and the URL hash; it does not navigate.
+- **Settings console:** the settings route is the only fixed-height page. `.page--settings-console`
+  is an `auto / minmax(0, 1fr)` page grid; `.page__body--settings-console` owns the summary strip and
+  the `.settings-console` rail-plus-pane grid. `.settings-console__rail` is the sticky section list
+  (`.settings-console__rail-item`, `...-name`, `...-summary`, `...-mark`); the active pane is
+  `.settings-pane` with a fixed `.settings-pane__head` and the only scrolling
+  `.settings-pane__body`. The header scope chain uses `.settings-scope`, `.settings-scope__picker`,
+  `...-ladder`, `...-node`, `...-name`, and `...-count`; the summary uses `.settings-summary` plus
+  `.settings-summary__review`. `.setting-row` remains a native `<details>` separated by hairlines;
+  `.setting-row--console` is the compact editor with `.setting-row__main`, `.row-meta`, `.row-prov`,
+  `.row-trace`, `.trace-step` (`.is-set`, `.is-cleared`, `.is-win`), and `.row-pending`. Actions are
+  `Save override` (primary), `Use inherited` (secondary, shown only for a local set value), and
+  `Clear at this scope` (ghost). `.setting-row__body`, `.setting-row__form`,
+  `.setting-row__actions`, and `.setting-row__reason` hold the open editor; disabled controls keep a
+  visible reason. The per-row G/P/A trace replaces the scope-history block, so a row no longer
+  renders `.scope-details`/`.scope-list`. Below 900px the page scrolls, the rail becomes a
+  horizontal sticky tab strip, the summary is 2x2, and rows/editors/actions stack. Saves are live:
+  the client refreshes the props and chrome from the server without navigating, preserving the open
+  row, other-row drafts, the active section, focus, and the URL hash.
 - **Terminal:** `.page--terminal`, `.page__body--terminal`, `.terminal-shell`,
   `.terminal-toolbar`, `.terminal-toolbar__title`, `.terminal-toolbar__meta`,
   `.terminal-toolbar__status`, `.terminal-toolbar__actions`, `.terminal-banner`, `.terminal-host`,

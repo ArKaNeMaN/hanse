@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useQuery } from "@tanstack/vue-query";
-import { computed, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { RouterLink, useRoute, useRouter } from "vue-router";
 import { ApiError, apiMutation, apiQuery } from "../api.js";
 import type { BootPayload } from "../boot.js";
@@ -14,13 +14,22 @@ import SettingsRow from "../components/SettingsRow.vue";
 import SettingsTelegramSection from "../components/SettingsTelegramSection.vue";
 import SmartLink from "../components/SmartLink.vue";
 import { usePageChrome } from "../composables/usePageChrome.js";
-import { useSectionNav } from "../composables/useSectionNav.js";
+import { useWorkspaceShell } from "../composables/useWorkspaceShell.js";
 import type {
   SettingsProps,
   SettingsResponse,
   SettingsRowProps,
   SettingsScope,
 } from "../settings-types.js";
+import {
+  attentionSection,
+  pageSummary,
+  SETTINGS_SECTIONS,
+  type SettingsSectionId,
+  scopeCounts,
+  sectionForHash,
+  sectionSummaries,
+} from "../settings-view.js";
 import { useToastStore } from "../stores/toasts.js";
 
 type SettingsRouteId = "settings-global" | "settings-project" | "settings-app";
@@ -29,6 +38,8 @@ const props = defineProps<{ boot: BootPayload }>();
 const route = useRoute();
 const router = useRouter();
 const toasts = useToastStore();
+
+useWorkspaceShell("page--settings-console");
 
 function queryString(value: unknown): string {
   const raw = Array.isArray(value) ? value[0] : value;
@@ -128,15 +139,104 @@ const pendingClear = ref<SettingsRowProps | null>(null);
 
 const targetValue = computed(() => view.value?.scope.href ?? "");
 
-const SETTINGS_SECTION_IDS = [
-  "settings-agent",
-  "settings-web",
-  "settings-context",
-  "settings-notifications",
-  "settings-git",
-  "settings-restart",
-] as const;
-const { activeId: activeSection, activate: activateSection } = useSectionNav(SETTINGS_SECTION_IDS);
+const summary = computed(() => (view.value === undefined ? undefined : pageSummary(view.value)));
+const counts = computed(() => (view.value === undefined ? undefined : scopeCounts(view.value)));
+const summaries = computed(() =>
+  view.value === undefined ? undefined : sectionSummaries(view.value),
+);
+const attentionTarget = computed<SettingsSectionId>(() =>
+  view.value === undefined ? "restart" : attentionSection(view.value),
+);
+
+function hashSection(): SettingsSectionId {
+  const hash = typeof window === "undefined" ? "" : window.location.hash;
+  return sectionForHash(hash) ?? "agent";
+}
+
+const activeSection = ref<SettingsSectionId>(hashSection());
+
+const scopeChain = computed(() => {
+  const current = view.value?.scope.scope;
+  if (view.value === undefined || current === undefined) {
+    return [];
+  }
+  const scopes: readonly SettingsScope[] =
+    current === "global"
+      ? ["global"]
+      : current === "project"
+        ? ["global", "project"]
+        : ["global", "project", "app"];
+  return scopes.map((scope) => ({
+    scope,
+    label: view.value?.labels.nav.scopes[scope] ?? scope,
+    count: counts.value?.[scope] ?? null,
+    current: scope === current,
+  }));
+});
+
+function sectionLabel(id: SettingsSectionId): string {
+  return view.value?.labels.sections[id] ?? id;
+}
+
+function sectionDescription(id: SettingsSectionId): string {
+  return SETTINGS_SECTIONS.find((entry) => entry.id === id)?.description ?? "";
+}
+
+function paneSummary(id: SettingsSectionId): string {
+  return summaries.value?.[id] ?? "";
+}
+
+function countLabel(count: number): string {
+  return count === 1 ? "value" : "values";
+}
+
+function scrollActiveRail(): void {
+  const item = document.querySelector<HTMLElement>(
+    ".settings-console__rail-item[aria-current='page']",
+  );
+  const nav = item?.parentElement;
+  if (item === null || item === undefined || nav === null || nav === undefined) {
+    return;
+  }
+  if (typeof nav.scrollTo !== "function" || nav.scrollWidth <= nav.clientWidth) {
+    return;
+  }
+  nav.scrollTo({
+    left: item.offsetLeft - nav.clientWidth / 2 + item.clientWidth / 2,
+    behavior: "smooth",
+  });
+}
+
+function selectSection(id: SettingsSectionId): void {
+  activeSection.value = id;
+  if (typeof window === "undefined") {
+    return;
+  }
+  const hash = `#settings-${id}`;
+  if (window.location.hash !== hash) {
+    window.history.replaceState(null, "", hash);
+  }
+  void nextTick(scrollActiveRail);
+}
+
+function onHashChange(): void {
+  activeSection.value = hashSection();
+}
+
+onMounted(() => {
+  if (typeof window !== "undefined") {
+    window.addEventListener("hashchange", onHashChange);
+    window.addEventListener("resize", scrollActiveRail);
+    void nextTick(scrollActiveRail);
+  }
+});
+
+onBeforeUnmount(() => {
+  if (typeof window !== "undefined") {
+    window.removeEventListener("hashchange", onHashChange);
+    window.removeEventListener("resize", scrollActiveRail);
+  }
+});
 
 async function refreshChromeAndProps(): Promise<void> {
   await settingsQuery.refetch();
@@ -256,6 +356,7 @@ watch(
   () => view.value?.scope.href,
   () => {
     dirtyRows.value = new Set();
+    activeSection.value = hashSection();
   },
 );
 </script>
@@ -266,13 +367,14 @@ watch(
       <p class="overline">Settings</p>
       <h1 class="page-title">{{ view?.scope.title ?? "Settings" }}</h1>
       <p class="page-description">{{ view?.scope.description ?? "Coordinator settings." }}</p>
-      <div v-if="view !== undefined" class="page-meta">
-        <span class="mono">{{ view.scope.scopeLabel }}</span>
-        <span v-if="view.scope.projectName !== null" class="mono">
-          {{ view.scope.projectName }}
-        </span>
-        <span v-if="view.scope.appKey !== null" class="mono">{{ view.scope.appKey }}</span>
+      <div
+        v-if="view !== undefined && (dirtyRows.size > 0 || (loading && !visibilityRefreshing))"
+        class="page-meta"
+      >
         <span v-if="dirtyRows.size > 0" class="mono" role="status">Unsaved changes</span>
+        <span v-if="loading && !visibilityRefreshing" class="mono" role="status" aria-live="polite">
+          Updating settings…
+        </span>
       </div>
     </div>
     <div class="page-header__actions">
@@ -283,18 +385,85 @@ watch(
         Skills
       </SmartLink>
     </div>
+
+    <div v-if="view !== undefined" class="settings-scope">
+      <div class="settings-scope__picker">
+        <span class="overline">Scope</span>
+        <span v-if="view.scope.scope === 'global'" class="settings-scope__global">
+          All projects and applications
+        </span>
+        <form v-else class="settings-scope__target" @submit.prevent>
+          <label class="sr-only" for="settings-target">Scope target</label>
+          <div class="select-wrap">
+            <select
+              id="settings-target"
+              class="select select-sm"
+              :value="targetValue"
+              name="target"
+              @change="navigateTarget"
+            >
+              <option value="">Choose a project or application…</option>
+              <optgroup
+                v-for="project in view.scope.projects"
+                :key="project.projectId"
+                :label="project.label"
+              >
+                <option :value="project.href">{{ project.label }} (project)</option>
+                <option v-for="app in project.apps" :key="app.value" :value="app.href">
+                  {{ app.label }}
+                </option>
+              </optgroup>
+            </select>
+            <AppIcon name="chevron-down" />
+          </div>
+        </form>
+      </div>
+
+      <nav
+        class="settings-scope__ladder"
+        :class="{ 'is-single': scopeChain.length === 1 }"
+        :aria-label="view.labels.nav.scopeLabel"
+      >
+        <template v-for="(node, index) in scopeChain" :key="node.scope">
+          <span v-if="index > 0" class="settings-scope__link" aria-hidden="true">
+            <span class="settings-scope__line"></span>
+            <AppIcon name="chevron-right" />
+          </span>
+          <span
+            v-if="node.current"
+            class="settings-scope__node is-current"
+            aria-current="page"
+            :data-scope="node.scope"
+          >
+            <span class="settings-scope__row">
+              <span class="settings-scope__name">{{ node.label }}</span>
+              <span v-if="node.count !== null" class="settings-scope__count">
+                <span class="mono">{{ node.count }}</span>
+                {{ countLabel(node.count) }}
+              </span>
+            </span>
+          </span>
+          <button
+            v-else
+            class="settings-scope__node"
+            type="button"
+            :data-scope="node.scope"
+            @click="navigateScope(node.scope)"
+          >
+            <span class="settings-scope__row">
+              <span class="settings-scope__name">{{ node.label }}</span>
+              <span v-if="node.count !== null" class="settings-scope__count">
+                <span class="mono">{{ node.count }}</span>
+                {{ countLabel(node.count) }}
+              </span>
+            </span>
+          </button>
+        </template>
+      </nav>
+    </div>
   </header>
 
-  <div class="page__body">
-    <p
-      v-if="loading && view !== undefined && !visibilityRefreshing"
-      class="hint"
-      role="status"
-      aria-live="polite"
-    >
-      Updating settings…
-    </p>
-
+  <div class="page__body page__body--settings-console">
     <section
       v-if="failed && view === undefined"
       class="card"
@@ -328,310 +497,310 @@ watch(
     </p>
 
     <template v-else>
-      <nav class="settings-nav" :aria-label="view.labels.nav.ariaLabel" data-section-nav>
-        <section
-          v-if="view.scope.scope !== 'global'"
-          class="settings-nav__scopes"
-          :aria-label="view.labels.nav.scopeLabel"
-        >
-          <SmartLink class="settings-nav__link" :to="view.scope.nav.globalHref">
-            {{ view.labels.nav.scopes.global }}
-          </SmartLink>
-          <button
-            v-if="view.scope.nav.projectHref !== null"
-            class="settings-nav__link"
-            type="button"
-            :aria-current="view.scope.nav.projectCurrent ? 'page' : undefined"
-            @click="navigateScope('project')"
-          >
-            {{ view.labels.nav.scopes.project }}
-          </button>
-          <span v-else class="settings-nav__link" aria-current="page">
-            <AppIcon name="check" />{{ view.labels.nav.scopes.project }}
+      <section
+        v-if="summary !== undefined"
+        class="watch-strip watch-strip--4 settings-summary"
+        aria-label="Resolved at this scope"
+      >
+        <div class="watch">
+          <span class="watch__value">{{ summary.setHere }}</span>
+          <span class="watch__label">set here</span>
+        </div>
+        <div class="watch">
+          <span class="watch__value">{{ summary.inherited }}</span>
+          <span class="watch__label">inherited</span>
+        </div>
+        <div class="watch">
+          <span class="watch__value">{{ summary.attention }}</span>
+          <span v-if="summary.attention > 0" class="settings-summary__flag" aria-hidden="true">
+            <AppIcon name="alert-triangle" />
           </span>
+          <span class="watch__label">needs attention</span>
           <button
-            v-if="view.scope.nav.appHref !== null"
-            class="settings-nav__link"
+            v-if="summary.attention > 0"
+            class="settings-summary__review"
             type="button"
-            :aria-current="view.scope.nav.appCurrent ? 'page' : undefined"
-            @click="navigateScope('app')"
+            @click="selectSection(attentionTarget)"
           >
-            {{ view.labels.nav.scopes.app }}
+            Review
           </button>
-          <span
-            v-else-if="view.scope.scope === 'app'"
-            class="settings-nav__link"
-            aria-current="page"
+        </div>
+        <div class="watch">
+          <span class="watch__value">{{ summary.restartPending }}</span>
+          <span class="watch__label">restart pending</span>
+          <button
+            v-if="summary.restartPending > 0"
+            class="settings-summary__review"
+            type="button"
+            @click="selectSection('restart')"
           >
-            <AppIcon name="check" />{{ view.labels.nav.scopes.app }}
-          </span>
-        </section>
+            Review
+          </button>
+        </div>
+      </section>
 
-        <form
-          v-if="view.scope.scope !== 'global'"
-          class="settings-nav__scopes"
-          :aria-label="view.labels.nav.scopeLabel"
-        >
-          <label class="label" for="settings-target">Scope target</label>
-          <div class="select-wrap">
-            <select
-              id="settings-target"
-              class="select"
-              :value="targetValue"
-              name="target"
-              @change="navigateTarget"
+      <div class="settings-console">
+        <aside class="settings-console__rail" aria-label="Settings sections">
+          <nav class="settings-console__rail-nav" :aria-label="view.labels.nav.sectionsLabel">
+            <p class="nav-label">Sections</p>
+            <button
+              v-for="entry in SETTINGS_SECTIONS"
+              :key="entry.id"
+              class="settings-console__rail-item"
+              :class="{ 'is-current': activeSection === entry.id }"
+              type="button"
+              :aria-current="activeSection === entry.id ? 'page' : undefined"
+              :data-section="entry.id"
+              @click="selectSection(entry.id)"
             >
-              <option value="">Choose a project or application…</option>
-              <optgroup
-                v-for="project in view.scope.projects"
-                :key="project.projectId"
-                :label="project.label"
+              <AppIcon :name="entry.icon" />
+              <span class="settings-console__rail-text">
+                <span class="settings-console__rail-name">{{ sectionLabel(entry.id) }}</span>
+                <span class="settings-console__rail-summary">{{ paneSummary(entry.id) }}</span>
+              </span>
+              <AppIcon name="check" class-name="settings-console__rail-mark" />
+            </button>
+          </nav>
+          <section class="settings-console__legend" aria-label="Scope trace legend">
+            <p class="settings-console__legend-title">Scope trace</p>
+            <p class="settings-console__legend-keys">G Global · P Project · A Application</p>
+            <ul class="settings-console__legend-list">
+              <li><span class="trace-step is-set" aria-hidden="true">G</span> set</li>
+              <li><span class="trace-step" aria-hidden="true">G</span> not set</li>
+              <li><span class="trace-step is-win" aria-hidden="true">A</span> winning scope</li>
+              <li><span class="trace-step is-cleared" aria-hidden="true">P</span> cleared</li>
+            </ul>
+          </section>
+        </aside>
+
+        <div class="settings-console__panes">
+          <section
+            class="settings-pane"
+            id="settings-agent"
+            :hidden="activeSection !== 'agent'"
+            aria-labelledby="settings-agent-title"
+          >
+            <header class="settings-pane__head">
+              <div class="settings-pane__title-row">
+                <h2 class="settings-pane__title" id="settings-agent-title">
+                  {{ sectionLabel("agent") }}
+                </h2>
+                <span class="badge">{{ paneSummary("agent") }}</span>
+              </div>
+              <p class="settings-pane__desc">{{ sectionDescription("agent") }}</p>
+            </header>
+            <div class="settings-pane__body">
+              <SettingsRow
+                :row="view.rows.model"
+                :settings="view"
+                :busy="busyRow === view.rows.model.key"
+                :save-label="view.labels.actions.save"
+                :inherit-label="view.labels.actions.inherit"
+                :clear-label="view.labels.actions.clear"
+                @set="(row, value) => mutateRow(row, 'set', value)"
+                @inherit="mutateRow($event, 'inherit')"
+                @clear="pendingClear = $event"
+                @dirty="markDirty"
+              />
+              <SettingsProviderSection :settings="view" @changed="onSectionChanged" />
+              <SettingsModelProviderSection :settings="view" @changed="onSectionChanged" />
+            </div>
+          </section>
+
+          <section
+            class="settings-pane"
+            id="settings-web"
+            :hidden="activeSection !== 'web'"
+            aria-labelledby="settings-web-title"
+          >
+            <header class="settings-pane__head">
+              <div class="settings-pane__title-row">
+                <h2 class="settings-pane__title" id="settings-web-title">
+                  {{ sectionLabel("web") }}
+                </h2>
+                <span class="badge">{{ paneSummary("web") }}</span>
+              </div>
+              <p class="settings-pane__desc">{{ sectionDescription("web") }}</p>
+            </header>
+            <div class="settings-pane__body">
+              <SettingsRow
+                :row="view.rows.webSearch"
+                :settings="view"
+                :busy="busyRow === view.rows.webSearch.key"
+                :save-label="view.labels.actions.save"
+                :inherit-label="view.labels.actions.inherit"
+                :clear-label="view.labels.actions.clear"
+                @set="(row, value) => mutateRow(row, 'set', value)"
+                @inherit="mutateRow($event, 'inherit')"
+                @clear="pendingClear = $event"
+                @dirty="markDirty"
+              />
+              <SettingsRow
+                :row="view.rows.webFetch"
+                :settings="view"
+                :busy="busyRow === view.rows.webFetch.key"
+                :save-label="view.labels.actions.save"
+                :inherit-label="view.labels.actions.inherit"
+                :clear-label="view.labels.actions.clear"
+                @set="(row, value) => mutateRow(row, 'set', value)"
+                @inherit="mutateRow($event, 'inherit')"
+                @clear="pendingClear = $event"
+                @dirty="markDirty"
+              />
+            </div>
+          </section>
+
+          <section
+            class="settings-pane"
+            id="settings-context"
+            :hidden="activeSection !== 'context'"
+            aria-labelledby="settings-context-title"
+          >
+            <header class="settings-pane__head">
+              <div class="settings-pane__title-row">
+                <h2 class="settings-pane__title" id="settings-context-title">
+                  {{ sectionLabel("context") }}
+                </h2>
+                <span class="badge">{{ paneSummary("context") }}</span>
+              </div>
+              <p class="settings-pane__desc">{{ sectionDescription("context") }}</p>
+            </header>
+            <div class="settings-pane__body">
+              <SettingsRow
+                :row="view.rows.contextEnabled"
+                :settings="view"
+                :busy="busyRow === view.rows.contextEnabled.key"
+                :save-label="view.labels.actions.save"
+                :inherit-label="view.labels.actions.inherit"
+                :clear-label="view.labels.actions.clear"
+                @set="(row, value) => mutateRow(row, 'set', value)"
+                @inherit="mutateRow($event, 'inherit')"
+                @clear="pendingClear = $event"
+                @dirty="markDirty"
+              />
+              <SettingsRow
+                :row="view.rows.contextPercent"
+                :settings="view"
+                :busy="busyRow === view.rows.contextPercent.key"
+                :save-label="view.labels.actions.save"
+                :inherit-label="view.labels.actions.inherit"
+                :clear-label="view.labels.actions.clear"
+                @set="(row, value) => mutateRow(row, 'set', value)"
+                @inherit="mutateRow($event, 'inherit')"
+                @clear="pendingClear = $event"
+                @dirty="markDirty"
+              />
+            </div>
+          </section>
+
+          <section
+            class="settings-pane"
+            id="settings-notifications"
+            :hidden="activeSection !== 'notifications'"
+            aria-labelledby="settings-notifications-title"
+          >
+            <header class="settings-pane__head">
+              <div class="settings-pane__title-row">
+                <h2 class="settings-pane__title" id="settings-notifications-title">
+                  {{ sectionLabel("notifications") }}
+                </h2>
+                <span class="badge">{{ paneSummary("notifications") }}</span>
+              </div>
+              <p class="settings-pane__desc">{{ sectionDescription("notifications") }}</p>
+            </header>
+            <div class="settings-pane__body">
+              <SettingsTelegramSection
+                :settings="view"
+                @changed="onSectionChanged"
+                @dirty="markDirty"
+              />
+            </div>
+          </section>
+
+          <section
+            class="settings-pane"
+            id="settings-git"
+            :hidden="activeSection !== 'git'"
+            aria-labelledby="settings-git-title"
+          >
+            <header class="settings-pane__head">
+              <div class="settings-pane__title-row">
+                <h2 class="settings-pane__title" id="settings-git-title">
+                  {{ sectionLabel("git") }}
+                </h2>
+                <span class="badge">{{ paneSummary("git") }}</span>
+              </div>
+              <p class="settings-pane__desc">{{ sectionDescription("git") }}</p>
+            </header>
+            <div class="settings-pane__body">
+              <SettingsRow
+                :row="view.rows.gitName"
+                :settings="view"
+                :busy="busyRow === view.rows.gitName.key"
+                :save-label="view.labels.actions.save"
+                :inherit-label="view.labels.actions.inherit"
+                :clear-label="view.labels.actions.clear"
+                @set="(row, value) => mutateRow(row, 'set', value)"
+                @inherit="mutateRow($event, 'inherit')"
+                @clear="pendingClear = $event"
+                @dirty="markDirty"
+              />
+              <SettingsRow
+                :row="view.rows.gitEmail"
+                :settings="view"
+                :busy="busyRow === view.rows.gitEmail.key"
+                :save-label="view.labels.actions.save"
+                :inherit-label="view.labels.actions.inherit"
+                :clear-label="view.labels.actions.clear"
+                @set="(row, value) => mutateRow(row, 'set', value)"
+                @inherit="mutateRow($event, 'inherit')"
+                @clear="pendingClear = $event"
+                @dirty="markDirty"
+              />
+              <SettingsGitSection :settings="view" @changed="onSectionChanged" />
+            </div>
+          </section>
+
+          <section
+            class="settings-pane"
+            id="settings-restart"
+            :hidden="activeSection !== 'restart'"
+            aria-labelledby="settings-restart-title"
+          >
+            <header class="settings-pane__head">
+              <div class="settings-pane__title-row">
+                <h2 class="settings-pane__title" id="settings-restart-title">
+                  {{ sectionLabel("restart") }}
+                </h2>
+                <span class="badge">{{ paneSummary("restart") }}</span>
+              </div>
+              <p class="settings-pane__desc">{{ sectionDescription("restart") }}</p>
+            </header>
+            <div class="settings-pane__body">
+              <section
+                v-if="view.warnings.length > 0"
+                class="settings-warning settings-warning--console"
+                id="settings-warnings"
+                aria-labelledby="settings-warnings-title"
               >
-                <option :value="project.href">{{ project.label }} (project)</option>
-                <option v-for="app in project.apps" :key="app.value" :value="app.href">
-                  {{ app.label }}
-                </option>
-              </optgroup>
-            </select>
-            <AppIcon name="chevron-down" />
-          </div>
-        </form>
-
-        <div class="settings-nav__sections" :aria-label="view.labels.nav.sectionsLabel">
-          <a
-            class="settings-nav__link"
-            href="#settings-agent"
-            :aria-current="activeSection === 'settings-agent' ? 'page' : undefined"
-            @click.prevent="activateSection('settings-agent')"
-          >
-            {{ view.labels.sections.agent }}
-          </a>
-          <a
-            class="settings-nav__link"
-            href="#settings-web"
-            :aria-current="activeSection === 'settings-web' ? 'page' : undefined"
-            @click.prevent="activateSection('settings-web')"
-          >
-            {{ view.labels.sections.web }}
-          </a>
-          <a
-            class="settings-nav__link"
-            href="#settings-context"
-            :aria-current="activeSection === 'settings-context' ? 'page' : undefined"
-            @click.prevent="activateSection('settings-context')"
-          >
-            {{ view.labels.sections.context }}
-          </a>
-          <a
-            class="settings-nav__link"
-            href="#settings-notifications"
-            :aria-current="activeSection === 'settings-notifications' ? 'page' : undefined"
-            @click.prevent="activateSection('settings-notifications')"
-          >
-            {{ view.labels.sections.notifications }}
-          </a>
-          <a
-            class="settings-nav__link"
-            href="#settings-git"
-            :aria-current="activeSection === 'settings-git' ? 'page' : undefined"
-            @click.prevent="activateSection('settings-git')"
-          >
-            {{ view.labels.sections.git }}
-          </a>
-          <a
-            class="settings-nav__link"
-            href="#settings-restart"
-            :aria-current="activeSection === 'settings-restart' ? 'page' : undefined"
-            @click.prevent="activateSection('settings-restart')"
-          >
-            {{ view.labels.sections.restart }}
-          </a>
+                <p class="settings-warning__title" id="settings-warnings-title">
+                  <AppIcon name="alert-triangle" />{{ view.labels.warnings }}
+                </p>
+                <div class="stack--tight">
+                  <p
+                    v-for="warning in view.warnings"
+                    :key="warning"
+                    class="field-error"
+                    role="alert"
+                  >
+                    <AppIcon name="alert-triangle" />{{ warning }}
+                  </p>
+                </div>
+              </section>
+              <SettingsRestartSection :settings="view" @changed="onSectionChanged" />
+            </div>
+          </section>
         </div>
-      </nav>
-
-      <section
-        v-if="view.restartRequired"
-        class="settings-warning"
-        aria-labelledby="settings-restart-banner-title"
-      >
-        <p class="settings-warning__title" id="settings-restart-banner-title">
-          <AppIcon name="alert-triangle" />Restart required
-        </p>
-        <div class="stack--tight">
-          <p class="hint">{{ view.labels.restart.hint }}</p>
-          <a class="btn btn-secondary btn-sm" href="#settings-restart">Review restart</a>
-        </div>
-      </section>
-
-      <section
-        v-if="view.warnings.length > 0"
-        class="settings-warning"
-        aria-labelledby="settings-warnings-title"
-      >
-        <p class="settings-warning__title" id="settings-warnings-title">
-          <AppIcon name="alert-triangle" />{{ view.labels.warnings }}
-        </p>
-        <div class="stack--tight">
-          <p v-for="warning in view.warnings" :key="warning" class="field-error" role="alert">
-            <AppIcon name="alert-triangle" />{{ warning }}
-          </p>
-        </div>
-      </section>
-
-      <div class="settings-sections">
-        <section
-          class="card settings-section"
-          id="settings-agent"
-          aria-labelledby="settings-agent-title"
-        >
-          <div class="card__head">
-            <h2 class="card__title" id="settings-agent-title">
-              {{ view.labels.sections.agent }}
-            </h2>
-            <span class="badge">Model and providers</span>
-          </div>
-          <div class="card__body card__body--flush">
-            <SettingsRow
-              :row="view.rows.model"
-              :busy="busyRow === view.rows.model.key"
-              :save-label="view.labels.actions.save"
-              :inherit-label="view.labels.actions.inherit"
-              :clear-label="view.labels.actions.clear"
-              @set="(row, value) => mutateRow(row, 'set', value)"
-              @inherit="mutateRow($event, 'inherit')"
-              @clear="pendingClear = $event"
-              @dirty="markDirty"
-            />
-            <SettingsProviderSection :settings="view" @changed="onSectionChanged" />
-            <SettingsModelProviderSection :settings="view" @changed="onSectionChanged" />
-          </div>
-        </section>
-
-        <section
-          class="card settings-section"
-          id="settings-web"
-          aria-labelledby="settings-web-title"
-        >
-          <div class="card__head">
-            <h2 class="card__title" id="settings-web-title">{{ view.labels.sections.web }}</h2>
-            <span class="badge">Search and fetch</span>
-          </div>
-          <div class="card__body card__body--flush">
-            <SettingsRow
-              :row="view.rows.webSearch"
-              :busy="busyRow === view.rows.webSearch.key"
-              :save-label="view.labels.actions.save"
-              :inherit-label="view.labels.actions.inherit"
-              :clear-label="view.labels.actions.clear"
-              @set="(row, value) => mutateRow(row, 'set', value)"
-              @inherit="mutateRow($event, 'inherit')"
-              @clear="pendingClear = $event"
-              @dirty="markDirty"
-            />
-            <SettingsRow
-              :row="view.rows.webFetch"
-              :busy="busyRow === view.rows.webFetch.key"
-              :save-label="view.labels.actions.save"
-              :inherit-label="view.labels.actions.inherit"
-              :clear-label="view.labels.actions.clear"
-              @set="(row, value) => mutateRow(row, 'set', value)"
-              @inherit="mutateRow($event, 'inherit')"
-              @clear="pendingClear = $event"
-              @dirty="markDirty"
-            />
-          </div>
-        </section>
-
-        <section
-          class="card settings-section"
-          id="settings-context"
-          aria-labelledby="settings-context-title"
-        >
-          <div class="card__head">
-            <h2 class="card__title" id="settings-context-title">
-              {{ view.labels.sections.context }}
-            </h2>
-            <span class="badge">Auto-compaction</span>
-          </div>
-          <div class="card__body card__body--flush">
-            <SettingsRow
-              :row="view.rows.contextEnabled"
-              :busy="busyRow === view.rows.contextEnabled.key"
-              :save-label="view.labels.actions.save"
-              :inherit-label="view.labels.actions.inherit"
-              :clear-label="view.labels.actions.clear"
-              @set="(row, value) => mutateRow(row, 'set', value)"
-              @inherit="mutateRow($event, 'inherit')"
-              @clear="pendingClear = $event"
-              @dirty="markDirty"
-            />
-            <SettingsRow
-              :row="view.rows.contextPercent"
-              :busy="busyRow === view.rows.contextPercent.key"
-              :save-label="view.labels.actions.save"
-              :inherit-label="view.labels.actions.inherit"
-              :clear-label="view.labels.actions.clear"
-              @set="(row, value) => mutateRow(row, 'set', value)"
-              @inherit="mutateRow($event, 'inherit')"
-              @clear="pendingClear = $event"
-              @dirty="markDirty"
-            />
-          </div>
-        </section>
-
-        <section
-          class="card settings-section"
-          id="settings-notifications"
-          aria-labelledby="settings-notifications-title"
-        >
-          <div class="card__head">
-            <h2 class="card__title" id="settings-notifications-title">
-              {{ view.labels.sections.notifications }}
-            </h2>
-            <span class="badge">Telegram</span>
-          </div>
-          <div class="card__body card__body--flush">
-            <SettingsTelegramSection
-              :settings="view"
-              @changed="onSectionChanged"
-              @dirty="markDirty"
-            />
-          </div>
-        </section>
-
-        <section class="card settings-section" id="settings-git" aria-labelledby="git-title">
-          <div class="card__head">
-            <h2 class="card__title" id="git-title">{{ view.labels.sections.git }}</h2>
-            <span class="badge">{{ view.labels.git.badge }}</span>
-          </div>
-          <div class="card__body card__body--flush" id="git">
-            <SettingsRow
-              :row="view.rows.gitName"
-              :busy="busyRow === view.rows.gitName.key"
-              :save-label="view.labels.actions.save"
-              :inherit-label="view.labels.actions.inherit"
-              :clear-label="view.labels.actions.clear"
-              @set="(row, value) => mutateRow(row, 'set', value)"
-              @inherit="mutateRow($event, 'inherit')"
-              @clear="pendingClear = $event"
-              @dirty="markDirty"
-            />
-            <SettingsRow
-              :row="view.rows.gitEmail"
-              :busy="busyRow === view.rows.gitEmail.key"
-              :save-label="view.labels.actions.save"
-              :inherit-label="view.labels.actions.inherit"
-              :clear-label="view.labels.actions.clear"
-              @set="(row, value) => mutateRow(row, 'set', value)"
-              @inherit="mutateRow($event, 'inherit')"
-              @clear="pendingClear = $event"
-              @dirty="markDirty"
-            />
-            <SettingsGitSection :settings="view" @changed="onSectionChanged" />
-          </div>
-        </section>
-
-        <SettingsRestartSection :settings="view" @changed="onSectionChanged" />
       </div>
     </template>
 

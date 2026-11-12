@@ -50,9 +50,9 @@ const LABELS: SettingsLabelsProps = {
     restart: "Restart & pending",
   },
   actions: {
-    save: "Save",
-    inherit: "Inherit",
-    clear: "Clear",
+    save: "Save override",
+    inherit: "Use inherited",
+    clear: "Clear at this scope",
     clearTitle: "Clear setting at this scope?",
     clearBody: "Wider scopes will no longer apply.",
     clearConfirm: "Clear setting",
@@ -216,9 +216,9 @@ function row(options: {
     warnings: [],
     scopeDetails: [],
     actions: {
-      save: action("Save"),
-      inherit: options.scope === "global" ? null : action("Inherit"),
-      clear: action("Clear", { confirmLabel: options.title }),
+      save: action("Save override"),
+      inherit: options.scope === "global" ? null : action("Use inherited"),
+      clear: action("Clear at this scope", { confirmLabel: options.title }),
     },
     form: formFor(options.scope, scopeProps(options.scope).href),
     text: options.text ?? null,
@@ -284,9 +284,9 @@ function telegramSecret(
     effectiveText: "Set at Global",
     sourceLine: "from Global",
     actions: {
-      save: action("Save"),
-      inherit: scope === "global" ? null : action("Inherit"),
-      clear: action("Clear", { confirmLabel: label }),
+      save: action("Save override"),
+      inherit: scope === "global" ? null : action("Use inherited"),
+      clear: action("Clear at this scope", { confirmLabel: label }),
     },
     form: {
       ...formFor(scope, scopeProps(scope).href),
@@ -665,7 +665,7 @@ describe("SettingsTelegramSection", () => {
     await wrapper
       .get("#telegram-proxy_url")
       .findAll("button")
-      .find((button) => button.text() === "Inherit")
+      .find((button) => button.text() === "Use inherited")
       ?.trigger("click");
     await flushPromises();
 
@@ -686,7 +686,7 @@ describe("SettingsTelegramSection", () => {
     await wrapper
       .get("#telegram-bot_token")
       .findAll("button")
-      .find((button) => button.text() === "Clear")
+      .find((button) => button.text() === "Clear at this scope")
       ?.trigger("click");
     await flushPromises();
     await openDialog(wrapper).get("form").trigger("submit");

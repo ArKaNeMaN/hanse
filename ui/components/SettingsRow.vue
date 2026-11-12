@@ -1,14 +1,12 @@
 <script setup lang="ts">
-import { reactive, ref, watch } from "vue";
-import type {
-  SettingsRowActionProps,
-  SettingsRowProps,
-  SettingsScopeDetailProps,
-} from "../settings-types.js";
+import { computed, reactive, ref, watch } from "vue";
+import type { SettingsProps, SettingsRowActionProps, SettingsRowProps } from "../settings-types.js";
+import { rowTrace as buildRowTrace, showsRestartMarker } from "../settings-view.js";
 import AppIcon from "./AppIcon.vue";
 
 const props = defineProps<{
   row: SettingsRowProps;
+  settings: SettingsProps;
   busy: boolean;
   saveLabel: string;
   inheritLabel: string;
@@ -29,6 +27,9 @@ const driverValue = ref("");
 const driverValues = reactive<Record<string, string>>({});
 const driverChecks = reactive<Record<string, boolean>>({});
 const error = ref<string | null>(null);
+
+const trace = computed(() => buildRowTrace(props.row, props.settings.scope.scope));
+const restartMarker = computed(() => showsRestartMarker(props.settings, props.row));
 
 function selectedOption(row: SettingsRowProps): string {
   const driver = row.driver;
@@ -70,16 +71,6 @@ watch(
   resync,
   { immediate: true },
 );
-
-function ownStateLabel(row: SettingsRowProps): string {
-  if (row.own.state === "absent") {
-    return row.effective.source === "default" ? "Default" : "Inherited";
-  }
-  if (row.own.state === "cleared") {
-    return "Cleared";
-  }
-  return "Set";
-}
 
 function actionHint(action: SettingsRowActionProps | null): string | null {
   if (action === null) {
@@ -165,32 +156,50 @@ function submitSet(): void {
   }
 }
 
-function scopeDetails(
-  details: readonly SettingsScopeDetailProps[],
-): readonly SettingsScopeDetailProps[] {
-  return details;
-}
+const showInherit = computed(
+  () => props.row.actions.inherit !== null && props.row.own.state === "set",
+);
 </script>
 
 <template>
-  <details class="setting-row" :id="row.id">
+  <details class="setting-row setting-row--console" :id="row.id">
     <summary class="setting-row__summary">
-      <span class="setting-row__title">
-        {{ row.title }}
-        <span v-if="row.kind === 'model'" class="setting-row__affordance">Change</span>
-        <span v-else-if="row.kind === 'web'" class="setting-row__affordance">Change</span>
+      <span class="setting-row__main">
+        <span class="setting-row__title">{{ row.title }}</span>
+        <span v-if="row.hint !== null" class="hint setting-row__hint">{{ row.hint }}</span>
       </span>
-      <span class="setting-row__effective">
+      <span class="setting-row__effective setting-row__effective--stack">
         <span class="mono">{{ row.effectiveText }}</span>
-        <span class="setting-row__source">{{ row.sourceLine }}</span>
-      </span>
-      <span class="setting-row__state">
-        <span class="badge">{{ ownStateLabel(row) }}</span>
+        <span class="row-meta">
+          <span class="row-prov">{{ row.sourceLine }}</span>
+          <span class="row-trace" aria-hidden="true">
+            <span
+              v-for="step in trace.steps"
+              :key="step.scope"
+              class="trace-step"
+              :class="{
+                'is-set': step.state === 'filled',
+                'is-cleared': step.state === 'cleared',
+                'is-win': step.winning,
+              }"
+            >
+              {{ step.letter }}
+            </span>
+          </span>
+          <span
+            v-if="restartMarker"
+            class="row-pending"
+            title="Restart required to apply this setting."
+          >
+            <AppIcon name="refresh" />
+            <span class="sr-only">Restart required to apply this setting.</span>
+          </span>
+          <span class="sr-only">{{ trace.text }}</span>
+        </span>
       </span>
       <span class="setting-row__chevron"><AppIcon name="chevron-down" /></span>
     </summary>
     <div class="setting-row__body">
-      <p v-if="row.hint !== null" class="hint">{{ row.hint }}</p>
       <p v-for="warning in row.warnings" :key="warning" class="field-error" role="alert">
         <AppIcon name="alert-triangle" />{{ warning }}
       </p>
@@ -339,54 +348,43 @@ function scopeDetails(
         <p v-if="error !== null" class="field-error" role="alert">{{ error }}</p>
 
         <div class="setting-row__actions">
-          <button class="btn btn-primary btn-sm" type="submit" :disabled="busy">
-            {{ saveLabel }}
-          </button>
           <button
-            v-if="row.actions.inherit !== null"
+            v-if="showInherit && row.actions.inherit !== null"
             class="btn btn-secondary btn-sm"
             type="button"
             :disabled="busy || !row.actions.inherit.enabled"
+            :title="row.actions.inherit.reason ?? 'Remove this scope\'s value and resolve from the nearest parent scope.'"
             @click="emit('inherit', row)"
           >
             {{ inheritLabel }}
           </button>
           <button
             v-if="row.actions.clear !== null"
-            class="btn btn-danger btn-sm"
+            class="btn btn-ghost btn-sm"
             type="button"
             :disabled="busy || !row.actions.clear.enabled"
+            :title="
+              row.actions.clear.reason ??
+              'Suppress wider scopes at this scope; the setting stays unset until you set it again.'
+            "
             @click="emit('clear', row)"
           >
             {{ clearLabel }}
           </button>
+          <button class="btn btn-primary btn-sm" type="submit" :disabled="busy">
+            {{ saveLabel }}
+          </button>
         </div>
-        <p v-if="actionHint(row.actions.inherit) !== null" class="hint setting-row__reason">
+        <p
+          v-if="showInherit && actionHint(row.actions.inherit) !== null"
+          class="hint setting-row__reason"
+        >
           {{ actionHint(row.actions.inherit) }}
         </p>
         <p v-if="actionHint(row.actions.clear) !== null" class="hint setting-row__reason">
           {{ actionHint(row.actions.clear) }}
         </p>
       </form>
-
-      <details v-if="row.scopeDetails.length > 0" class="disclosure scope-details">
-        <summary>
-          Scope details<AppIcon name="chevron-down" class-name="disclosure__chevron" />
-        </summary>
-        <dl class="scope-list">
-          <div
-            v-for="detail in scopeDetails(row.scopeDetails)"
-            :key="detail.scope"
-            class="scope-list__row"
-          >
-            <dt>{{ detail.label }}</dt>
-            <dd>
-              <span v-if="detail.valueText !== null" class="mono">{{ detail.valueText }}</span>
-              <span class="scope-list__state">{{ detail.stateLabel }}</span>
-            </dd>
-          </div>
-        </dl>
-      </details>
     </div>
   </details>
 </template>

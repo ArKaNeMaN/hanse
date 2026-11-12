@@ -56,9 +56,9 @@ const LABELS: SettingsLabelsProps = {
     restart: "Restart & pending",
   },
   actions: {
-    save: "Save",
-    inherit: "Inherit",
-    clear: "Clear",
+    save: "Save override",
+    inherit: "Use inherited",
+    clear: "Clear at this scope",
     clearTitle: "Clear setting at this scope?",
     clearBody: "Wider scopes will no longer apply.",
     clearConfirm: "Clear setting",
@@ -258,15 +258,18 @@ function row(
               : []),
           ],
     actions: {
-      save: action("Save"),
+      save: action("Save override"),
       inherit:
         options.scope === "global"
           ? null
           : action(
-              "Inherit",
+              "Use inherited",
               own.state === "absent" ? { enabled: false, reason: "Already inherited." } : {},
             ),
-      clear: options.clearable === false ? null : action("Clear", { confirmLabel: options.title }),
+      clear:
+        options.clearable === false
+          ? null
+          : action("Clear at this scope", { confirmLabel: options.title }),
     },
     form: formFor(options.scope, options.scope === "global" ? "/settings" : "/projects/p/settings"),
     text: options.text ?? null,
@@ -560,9 +563,9 @@ function telegramSecret(
     effectiveText: "Set at Global",
     sourceLine: "from Global",
     actions: {
-      save: action("Save"),
-      inherit: scope === "global" ? null : action("Inherit"),
-      clear: action("Clear", { confirmLabel: label }),
+      save: action("Save override"),
+      inherit: scope === "global" ? null : action("Use inherited"),
+      clear: action("Clear at this scope", { confirmLabel: label }),
     },
     form: {
       ...formFor(scope, scopeProps(scope).href),
@@ -723,9 +726,9 @@ function props(scope: SettingsScope = "global"): SettingsProps {
         rowId: "provider-deepseek",
         errorSlotId: "provider-error-0",
         actions: {
-          save: action("Save"),
-          inherit: scope === "global" ? null : action("Inherit", { enabled: false }),
-          clear: action("Clear", { confirmLabel: "deepseek key" }),
+          save: action("Save override"),
+          inherit: scope === "global" ? null : action("Use inherited", { enabled: false }),
+          clear: action("Clear at this scope", { confirmLabel: "deepseek key" }),
         },
         form: formFor(scope, "/settings#providers"),
       },
@@ -916,6 +919,7 @@ describe("SettingsPage", () => {
   beforeEach(() => {
     mocks.apiQuery.mockReset();
     mocks.apiMutation.mockReset();
+    window.history.replaceState(null, "", window.location.pathname);
   });
 
   it("renders the global boot payload without fetching and without secrets", async () => {
@@ -955,29 +959,34 @@ describe("SettingsPage", () => {
     expect(select.selectedOptions[0]?.textContent).toContain("Alpha / a");
   });
 
-  it("marks the first section current and follows a section-link click", async () => {
+  it("marks the first section current and switches sections from the rail", async () => {
     const wrapper = await mountPage(boot(props("global")));
-    const links = wrapper.findAll(".settings-nav__sections a");
+    const items = wrapper.findAll(".settings-console__rail-item");
 
-    expect(links).toHaveLength(6);
-    expect(links[0]?.attributes("aria-current")).toBe("page");
-    expect(links[0]?.text()).toBe("Agent");
+    expect(items).toHaveLength(6);
+    expect(items[0]?.attributes("aria-current")).toBe("page");
+    expect(items[0]?.text()).toContain("Agent");
+    expect(wrapper.get("#settings-agent").attributes("hidden")).toBeUndefined();
+    expect(wrapper.get("#settings-git").attributes("hidden")).toBeDefined();
 
-    await links[4]?.trigger("click");
+    await items[4]?.trigger("click");
 
-    expect(links[0]?.attributes("aria-current")).toBeUndefined();
-    expect(links[4]?.attributes("aria-current")).toBe("page");
-    expect(links[4]?.text()).toBe("Git");
+    expect(items[0]?.attributes("aria-current")).toBeUndefined();
+    expect(items[4]?.attributes("aria-current")).toBe("page");
+    expect(items[4]?.text()).toContain("Git");
+    expect(wrapper.get("#settings-git").attributes("hidden")).toBeUndefined();
+    expect(window.location.hash).toBe("#settings-git");
   });
 
-  it("renders the notifications nav item and section", async () => {
+  it("renders the notifications rail item and section", async () => {
     const wrapper = await mountPage(boot(props("global")));
-    const links = wrapper.findAll(".settings-nav__sections a");
-    const notifications = links.find(
-      (link) => link.attributes("href") === "#settings-notifications",
-    );
+    const notifications = wrapper
+      .findAll(".settings-console__rail-item")
+      .find((item) => item.attributes("data-section") === "notifications");
 
-    expect(notifications?.text()).toBe("Notifications");
+    expect(notifications?.text()).toContain("Notifications");
+    await notifications?.trigger("click");
+    expect(wrapper.get("#settings-notifications").attributes("hidden")).toBeUndefined();
     expect(wrapper.get("#settings-notifications").text()).toContain("Notification mode");
     expect(wrapper.get("#settings-notifications").text()).toContain("Bot token");
     expect(wrapper.get("#settings-notifications").text()).toContain("Send test message");
@@ -1008,7 +1017,7 @@ describe("SettingsPage", () => {
     );
   });
 
-  it("renders inherited project rows and scope details", async () => {
+  it("renders inherited project rows with a scope trace", async () => {
     const wrapper = await mountPage(
       boot(props("project"), "settings-project", { id: "p" }),
       "/projects/p/settings",
@@ -1016,9 +1025,10 @@ describe("SettingsPage", () => {
 
     expect(wrapper.get("h1").text()).toBe("Alpha settings");
     expect(wrapper.find("#settings-target").exists()).toBe(true);
-    expect(wrapper.get("#setting-web-search").text()).toContain("Inherited");
-    expect(wrapper.get("#setting-web-search").text()).toContain("Scope details");
-    expect(wrapper.text()).toContain("Global settings");
+    expect(wrapper.get("#setting-web-search").text()).toContain("Scope trace");
+    expect(wrapper.get("#setting-web-search").text()).toContain("Global");
+    expect(wrapper.get(".settings-scope__node.is-current").text()).toContain("Project");
+    expect(wrapper.find(".settings-nav").exists()).toBe(false);
     expect(mocks.apiQuery).not.toHaveBeenCalled();
   });
 
@@ -1142,7 +1152,9 @@ describe("SettingsPage", () => {
     mocks.apiQuery.mockResolvedValue({ ...props("project") });
 
     await wrapper.get("#setting-context-auto-compact-percent > summary").trigger("click");
-    await button(wrapper, "#setting-context-auto-compact-percent", "Inherit")?.trigger("click");
+    await button(wrapper, "#setting-context-auto-compact-percent", "Use inherited")?.trigger(
+      "click",
+    );
     await flushPromises();
     expect(mocks.apiMutation).toHaveBeenCalledWith("/api/settings", {
       json: expect.objectContaining({
@@ -1152,7 +1164,9 @@ describe("SettingsPage", () => {
       }),
     });
 
-    await button(wrapper, "#setting-context-auto-compact-percent", "Clear")?.trigger("click");
+    await button(wrapper, "#setting-context-auto-compact-percent", "Clear at this scope")?.trigger(
+      "click",
+    );
     await flushPromises();
     const dialog = openDialog(wrapper);
     await dialog.get("form").trigger("submit");
@@ -1292,7 +1306,7 @@ describe("SettingsPage", () => {
     expect(wrapper.get("#setting-git-https").text()).toContain("git.example.test");
     expect(wrapper.html()).not.toContain("draft-token");
 
-    await button(wrapper, "#setting-git-https", "Clear")?.trigger("click");
+    await button(wrapper, "#setting-git-https", "Clear at this scope")?.trigger("click");
     await flushPromises();
     await openDialog(wrapper).get("form").trigger("submit");
     await flushPromises();

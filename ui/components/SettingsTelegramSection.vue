@@ -239,6 +239,7 @@ const dialogBody = computed<string>(() => {
       v-for="row in rows()"
       :key="row.key"
       :row="row"
+      :settings="settings"
       :busy="busy !== null"
       :save-label="settings.labels.actions.save"
       :inherit-label="settings.labels.actions.inherit"

@@ -12,6 +12,7 @@
       "!src/http/styles.css",
       "!extensions",
       "!docs/design/showcase.html",
+      "!docs/design/settings-redesign",
       "!docs/design/artifacts"
     ]
   },

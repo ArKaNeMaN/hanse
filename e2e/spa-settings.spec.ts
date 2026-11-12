@@ -32,7 +32,7 @@ test("deep links, refreshes, and scope navigation stay in the SPA document", asy
   await page.goto("/settings");
   await expect(page.getByRole("heading", { name: "Settings", exact: true })).toBeVisible();
   await expect(page.locator("#settings-target")).toHaveCount(0);
-  await expect(page.locator(".page-header .page-meta")).toContainText("Global");
+  await expect(page.locator(".settings-scope__node.is-current")).toContainText("Global");
 
   await page.goto(PROJECT_SETTINGS);
   await expect(page.getByRole("heading", { name: "E2E Project One settings" })).toBeVisible();
@@ -54,24 +54,31 @@ test("deep links, refreshes, and scope navigation stay in the SPA document", asy
   expectNoPageErrors(errors);
 });
 
-test("global target selector is hidden and the section nav tracks scroll", async ({ page }) => {
+test("global target selector is hidden and the rail selects sections", async ({ page }) => {
   const errors = collectPageErrors(page);
   await signIn(page, "/settings");
 
   await expect(page.locator("#settings-target")).toHaveCount(0);
-  await expect(page.locator(".page-header .page-meta")).toContainText("Global");
+  await expect(page.locator(".settings-scope__node.is-current")).toContainText("Global");
 
-  const sections = page.locator(".settings-nav__sections");
-  await expect(sections.locator('a[aria-current="page"]')).toHaveText("Agent");
+  const rail = page.locator(".settings-console__rail-item");
+  await expect(rail).toHaveCount(6);
+  await expect(page.locator('.settings-console__rail-item[aria-current="page"]')).toContainText(
+    "Agent",
+  );
 
-  await sections.getByRole("link", { name: "Git", exact: true }).click();
-  await expect(sections.locator('a[aria-current="page"]')).toHaveText("Git");
-  await expect(page.locator("#settings-git")).toBeInViewport();
+  await page.locator('.settings-console__rail-item[data-section="git"]').click();
+  await expect(page.locator('.settings-console__rail-item[aria-current="page"]')).toContainText(
+    "Git",
+  );
+  await expect(page.locator("#settings-git")).toBeVisible();
+  await expect(page.locator("#settings-agent")).toBeHidden();
 
-  await page.locator("#main").evaluate((element) => {
-    element.scrollTop = element.scrollHeight;
-  });
-  await expect(sections.locator('a[aria-current="page"]')).toHaveText(/^Restart/);
+  await page.goto("/settings#settings-restart");
+  await expect(page.locator("#settings-restart")).toBeVisible();
+  await expect(page.locator('.settings-console__rail-item[aria-current="page"]')).toContainText(
+    "Restart",
+  );
 
   for (const viewport of [
     { width: 1440, height: 900 },

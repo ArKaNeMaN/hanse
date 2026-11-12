@@ -1158,12 +1158,14 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   and are clearable. `context.auto_compact.enabled` (default `false`) and
   `context.auto_compact.percent` (default `80`, integer 1..99) are non-clearable live settings.
   `git.user.name`/`git.user.email` are clearable strings (default `null`).
-  The Vue settings page renders the sticky scope/section nav, six section cards (Agent, Web tools,
-  Context, Notifications, Git, Restart & pending), and one collapsed setting row per setting. Rows show the effective
-  value and source at rest; the editor, scope history (`Scope details`), warnings, and actions are
-  disclosed on demand. Saves use the JSON settings endpoints and refresh the affected props; there is
-  no fragment contract and no server-rendered settings page. Context settings are excluded from the
-  launch settings hash, so changing them never marks a running agent restart-required.
+  The Vue settings page is a two-pane console: a scope ladder, a four-cell summary strip (set here,
+  inherited, needs attention, restart pending), a sticky six-section rail (Agent, Web tools, Context,
+  Notifications, Git, Restart & pending), and one active pane. Rows show the effective value, source,
+  and a G/P/A scope trace at rest; the editor, warnings, and actions are disclosed on demand. Below
+  900px the rail becomes a horizontal tab strip and the page scrolls as one document. Saves use the
+  JSON settings endpoints and refresh the affected props; there is no fragment contract and no
+  server-rendered settings page. Context settings are excluded from the launch settings hash, so
+  changing them never marks a running agent restart-required.
 - `settings` and `provider_keys` live in `coordinator.db` (migration v3). Provider API keys are
   entered in the settings UI, AES-256-GCM encrypted, and never returned. At instance start the
   coordinator reconciles the host `auth.json` with effective provider keys into the per-instance

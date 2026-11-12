@@ -23,6 +23,10 @@ function isSpa(projectName: string): boolean {
   return projectName === "spa";
 }
 
+async function selectSection(page: Page, section: string): Promise<void> {
+  await page.locator(`.settings-console__rail-item[data-section="${section}"]`).click();
+}
+
 async function openRow(page: Page, id: string): Promise<void> {
   const row = page.locator(`#${id}`);
   const open = await row.evaluate((element) => (element as HTMLDetailsElement).open);
@@ -44,6 +48,8 @@ test("renders the global, project, and application settings scopes", async ({ pa
     expect(response?.status()).toBe(200);
     await expect(page.locator("#settings-agent")).toBeVisible();
     await expect(page.locator("#setting-llm-model")).toBeVisible();
+    await expect(page.locator(".settings-console__rail-item")).toHaveCount(6);
+    await selectSection(page, "git");
     await expect(page.locator("#settings-git")).toBeVisible();
     if (isSpa(info.project.name)) {
       await expect(page.locator("#hanse-boot")).toHaveCount(1);
@@ -62,37 +68,47 @@ test("saves, inherits, and clears a scoped setting", async ({ page }) => {
   const path = `/projects/${PROJECT_ONE}/settings`;
 
   await page.goto(path);
+  await selectSection(page, "git");
   await openRow(page, "setting-git-user-name");
   await page.locator("#setting-git-user-name form input[name='value']").fill("E2E Project Git");
-  await page.locator("#setting-git-user-name form").getByRole("button", { name: "Save" }).click();
-  await expectToast(page, "Settings saved.");
-
-  await page.goto(path);
-  await openRow(page, "setting-git-user-name");
-  await expect(page.locator("#setting-git-user-name form input[name='value']")).toHaveValue(
-    "E2E Project Git",
-  );
-  await expect(page.locator("#setting-git-user-name")).toContainText("Set");
-
   await page
     .locator("#setting-git-user-name form")
-    .getByRole("button", { name: "Inherit" })
+    .getByRole("button", { name: "Save override" })
     .click();
   await expectToast(page, "Settings saved.");
 
   await page.goto(path);
+  await selectSection(page, "git");
+  await openRow(page, "setting-git-user-name");
+  await expect(page.locator("#setting-git-user-name form input[name='value']")).toHaveValue(
+    "E2E Project Git",
+  );
+  await expect(page.locator("#setting-git-user-name")).toContainText("Project set and wins");
+
+  await page
+    .locator("#setting-git-user-name form")
+    .getByRole("button", { name: "Use inherited" })
+    .click();
+  await expectToast(page, "Settings saved.");
+
+  await page.goto(path);
+  await selectSection(page, "git");
   await openRow(page, "setting-git-user-name");
   await expect(page.locator("#setting-git-user-name")).toContainText(/default/i);
 
-  await page.locator("#setting-git-user-name form").getByRole("button", { name: "Clear" }).click();
+  await page
+    .locator("#setting-git-user-name form")
+    .getByRole("button", { name: "Clear at this scope" })
+    .click();
   const dialog = page.locator("dialog[open]");
   await expect(dialog).toBeVisible();
   await dialog.getByRole("button", { name: "Clear setting" }).click();
   await expectToast(page, "Setting cleared.");
 
   await page.goto(path);
+  await selectSection(page, "git");
   await openRow(page, "setting-git-user-name");
-  await expect(page.locator("#setting-git-user-name")).toContainText("Cleared");
+  await expect(page.locator("#setting-git-user-name")).toContainText(/cleared/i);
 
   await settle(page);
   expectNoPageErrors(errors);
@@ -119,7 +135,7 @@ test("renders providers and custom model providers masked", async ({ page }, inf
   await page.locator("#provider-new-key").fill("e2e-extra-provider-key");
   await page
     .locator("#providers details.provider-add form")
-    .getByRole("button", { name: "Save" })
+    .getByRole("button", { name: "Save override" })
     .click();
   await expectToast(page, "Provider key updated.");
   await expect(page.locator("#provider-e2e-extra-provider")).toBeVisible();
@@ -134,7 +150,7 @@ test("renders providers and custom model providers masked", async ({ page }, inf
   await page.locator("#custom-provider-model-new-0-output").fill("100");
   await page
     .locator("#custom-providers details.provider-add form")
-    .getByRole("button", { name: "Save" })
+    .getByRole("button", { name: "Save override" })
     .click();
   await expectToast(page, "Provider saved.");
   await expect(page.locator("#custom-provider-e2e-added")).toBeVisible();
@@ -160,6 +176,7 @@ test("renders providers and custom model providers masked", async ({ page }, inf
 test("keeps git credential secrets write-only and tests the remote", async ({ page }) => {
   const errors = collectPageErrors(page);
   await signIn(page, `/projects/${PROJECT_ONE}/apps/alpha/settings`);
+  await selectSection(page, "git");
 
   await expect(page.locator("#git-ssh-public-key")).toContainText("ssh-ed25519");
   await expect(page.locator("#git-ssh-fingerprint")).toContainText("SHA256:");
@@ -182,7 +199,10 @@ test("keeps git credential secrets write-only and tests the remote", async ({ pa
   await expect(page.locator("#setting-git-https")).toContainText("git.example.test");
   expect(await page.content()).not.toContain("e2e-draft-token");
 
-  await page.locator("#setting-git-https form").getByRole("button", { name: "Save" }).click();
+  await page
+    .locator("#setting-git-https form")
+    .getByRole("button", { name: "Save override" })
+    .click();
   await expectToast(page, "Git credential saved.");
   expect(await page.content()).not.toContain("e2e-draft-token");
 
@@ -193,6 +213,7 @@ test("keeps git credential secrets write-only and tests the remote", async ({ pa
 test("shows the restart prompt and restarts the pending agent", async ({ page }) => {
   const errors = collectPageErrors(page);
   await signIn(page, "/settings");
+  await selectSection(page, "restart");
 
   await expect(page.locator("#settings-restart")).toContainText("Restart required");
   await page

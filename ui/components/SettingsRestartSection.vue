@@ -38,45 +38,34 @@ async function restart(entry: SettingsPendingRowProps): Promise<void> {
 </script>
 
 <template>
-  <section
-    class="card settings-section"
-    id="settings-restart"
-    aria-labelledby="restart-pending-title"
-  >
-    <div class="card__head">
-      <h2 class="card__title" id="restart-pending-title">
-        {{ settings.labels.sections.restart }}
-      </h2>
-      <span class="badge">{{ settings.restart.pending.length }}</span>
-    </div>
-    <div class="card__body" id="restart-pending">
-      <p class="hint">{{ settings.labels.restart.hint }}</p>
-      <p v-if="settings.restart.pending.length === 0" class="hint">
-        {{ settings.labels.restart.empty }}
-      </p>
-      <div v-else class="stack--tight">
-        <div
-          v-for="entry in settings.restart.pending"
-          :key="entry.appId"
-          class="cluster"
-          :id="`pending-${entry.appId}`"
+  <div class="settings-restart" id="restart-pending">
+    <p class="hint">{{ settings.labels.restart.hint }}</p>
+    <p v-if="settings.restart.pending.length === 0" class="hint">
+      {{ settings.labels.restart.empty }}
+    </p>
+    <div v-else class="stack--tight">
+      <div
+        v-for="entry in settings.restart.pending"
+        :key="entry.appId"
+        class="settings-restart__row"
+        :id="`pending-${entry.appId}`"
+      >
+        <span class="status" data-state="awaiting_approval">
+          <AppIcon name="stamp" />Restart required
+        </span>
+        <SmartLink class="small" :to="entry.href">{{ entry.appKey }}</SmartLink>
+        <span class="small">{{ entry.reasonLabels.join(", ") }}</span>
+        <button
+          class="btn btn-primary btn-sm"
+          type="button"
+          :disabled="busy !== null"
+          @click="restart(entry)"
         >
-          <span class="status" data-state="awaiting_approval">
-            <AppIcon name="stamp" />Restart required
-          </span>
-          <SmartLink class="small" :to="entry.href">{{ entry.appKey }}</SmartLink>
-          <span class="small">{{ entry.reasonLabels.join(", ") }}</span>
-          <button
-            class="btn btn-primary btn-sm"
-            type="button"
-            :disabled="busy !== null"
-            @click="restart(entry)"
-          >
-            <AppIcon name="refresh" />{{ settings.labels.actions.restartAgent }}
-          </button>
-        </div>
+          <AppIcon name="refresh" />{{ settings.labels.actions.restartAgent }}
+        </button>
       </div>
     </div>
+
     <section
       v-if="settings.restart.profileWarnings.length > 0"
       class="settings-warning settings-warning--profile"
@@ -96,5 +85,5 @@ async function restart(entry: SettingsPendingRowProps): Promise<void> {
         </p>
       </div>
     </section>
-  </section>
+  </div>
 </template>
