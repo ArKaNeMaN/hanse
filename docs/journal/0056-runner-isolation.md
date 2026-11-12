@@ -79,9 +79,9 @@ and the launch spec hash stable.
 - `npm run build` and `npm run check:ui`: passed (86 SFCs, sentinel present).
 - Focused Stage 04 suites: 383 passed + 1 skipped for mounts; 174 passed for the lifecycle/gate
   suites; 142/145 passed across the image guard/pull suites; all typecheck/biome checks clean.
-- `npm run test:e2e`: not completed because a concurrent operator E2E run already holds
-  `http://127.0.0.1:4310/healthz`. The failure was Playwright's server-reuse guard, not a test
-  failure; the run was not forced onto the operator's live fixture.
+- `npm run test:e2e`: 137 passed, 1 skipped (7.5 min). The earlier attempt was blocked only by a
+  concurrent operator E2E run on `http://127.0.0.1:4310/healthz`; after it finished, the full
+  Playwright matrix passed.
 
 ## Residual risks and gaps
 
