@@ -3,7 +3,7 @@
 > Stage: settings console redesign. Design:
 > [`docs/design/settings-console.md`](../design/settings-console.md).
 > No separate plan artifact: the owner iterated the design in-session and directed implementation.
-> Status: implemented; owner review pending; no commit.
+> Status: implemented and committed in 2dc9604; owner review pending.
 
 ## Context
 
@@ -92,5 +92,6 @@ Evidence: [`docs/design/artifacts/settings-console/`](../design/artifacts/settin
   rows use the new action vocabulary.
 - The local design-exploration mockups under `docs/design/settings-redesign/` are untracked; the
   evidence screenshots in `docs/design/artifacts/settings-console/` are the tracked record.
-- No commit or deployment has been made. The working tree also contains unrelated
-  runner/mounts changes from concurrent work; they were not touched or staged.
+- The settings stage is committed as 2dc9604; no deployment has been made. The concurrent runner
+  stage landed later as 5cc5341 and does not include the settings code, design doc, or journal 0057;
+  the local design-exploration mockups remain untracked.

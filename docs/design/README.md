@@ -30,7 +30,7 @@
   compact hierarchical settings, the xterm operator terminal, and truthful runtime/chat state.
 - [Settings console](./settings-console.md) - the two-pane settings console: scope ladder, four-cell
   summary, G/P/A trace, compact editors, fixed-height pane scroll, and the mobile tab/stacked
-  layout. Status: implemented; owner review pending; no commit.
+  layout. Status: implemented and committed (2dc9604); owner review pending.
 - [SSH host access](./ssh-host-access.md) - global operator-defined SSH hosts, per-app grants,
   coordinator-side exec/SFTP through a keyless MCP bridge, idle-based approvals in chat, and
   automatic host-key pinning.

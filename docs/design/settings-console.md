@@ -1,6 +1,6 @@
 # Settings console
 
-Status: implemented; owner review pending; no commit.
+Status: implemented and committed in 2dc9604; owner review pending.
 Implementation: `ui/pages/SettingsPage.vue`, `ui/settings-view.ts`,
 `ui/components/SettingsRow.vue`, `src/http/styles.css`.
 
@@ -116,4 +116,4 @@ Measured on the fixture:
   Restart & pending pane remains the authoritative list.
 - Provider, git, and Telegram secret forms keep their existing labels and layouts; only the generic
   setting rows use the compact action vocabulary.
-- No commit or deployment has been made.
+- Committed as 2dc9604; no deployment has been made.
