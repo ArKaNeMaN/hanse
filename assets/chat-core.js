@@ -3000,6 +3000,33 @@ export function canSendDraft(input) {
 }
 
 /**
+ * The coordinator's UTF-8 cap for both a saved draft and one prompt. Keep this equal to
+ * `MAX_DRAFT_BYTES` in `src/chat/state.ts`; `test/chat-limits.test.ts` guards the pair.
+ */
+export const MAX_CHAT_TEXT_BYTES = 32 * 1024;
+
+/**
+ * UTF-8 byte length, matching the server's `Buffer.byteLength(text, "utf8")` check.
+ *
+ * @param {unknown} text
+ * @returns {number}
+ */
+export function textByteLength(text) {
+  if (typeof text !== "string" || text.length === 0) return 0;
+  return new TextEncoder().encode(text).length;
+}
+
+/**
+ * True when the text cannot be saved as a draft or sent as a message.
+ *
+ * @param {unknown} text
+ * @returns {boolean}
+ */
+export function chatTextTooLarge(text) {
+  return textByteLength(text) > MAX_CHAT_TEXT_BYTES;
+}
+
+/**
  * Rail/composer badge for the sessions-list augmentation.
  * `emptyDraft` means session_state.has_messages=0 and a draft exists.
  *

@@ -13,11 +13,13 @@ import {
   attachmentModeValue,
   attachmentSendPayload,
   canSendDraft,
+  chatTextTooLarge,
   composerAction,
   draftAutoDeleteEligible,
   draftIsEmpty,
   draftTextForSave,
   isSlashCommandOnly,
+  MAX_CHAT_TEXT_BYTES,
   normalizeAttachment,
   normalizeAttachments,
   normalizePendingSends,
@@ -141,6 +143,8 @@ export function useChatComposer(options: UseChatComposerOptions) {
   let disposed = false;
   let activeUploads = 0;
   let preserveAttachmentsOnSwitch = false;
+  let preserveDraftForSession: string | null = null;
+  let preserveDraftOnNextSwitch = false;
   const xhrByKey = new Map<string, XMLHttpRequest>();
   const cancelledUploads = new Set<string>();
   const suppressAbortUntil = new Map<string, number>();
@@ -261,6 +265,9 @@ export function useChatComposer(options: UseChatComposerOptions) {
     settings: { readonly keepalive?: boolean; readonly force?: boolean } = {},
   ): Promise<void> {
     const body = draftTextForSave(text);
+    if (chatTextTooLarge(body)) {
+      return;
+    }
     const last = store.lastSavedFor(session);
     if (settings.force !== true && last === body) {
       return;
@@ -720,18 +727,33 @@ export function useChatComposer(options: UseChatComposerOptions) {
     }, 2_000);
   }
 
-  function resetTransientState(): void {
-    store.setError(null);
-    store.clearAcceptance();
+  function resetTransientState(preserveSendState = false): void {
+    if (!preserveSendState) {
+      store.setError(null);
+      store.clearAcceptance();
+    }
     store.setPending([]);
     store.setAbortPending(false);
   }
 
   async function handleSessionChange(previous: string | null, next: string | null): Promise<void> {
-    actionSeq += 1;
+    const preserveAttachments = preserveAttachmentsOnSwitch;
+    preserveAttachmentsOnSwitch = false;
+    const preserveDraft =
+      preserveDraftOnNextSwitch ||
+      (preserveDraftForSession !== null && preserveDraftForSession === next);
+    if (preserveDraftOnNextSwitch) {
+      preserveDraftOnNextSwitch = false;
+    }
+    if (preserveDraftForSession !== null && preserveDraftForSession === next) {
+      preserveDraftForSession = null;
+    }
+    if (!preserveDraft) {
+      actionSeq += 1;
+      cancelUnknownGrace();
+      cancelSendTimeout();
+    }
     cancelDraftTimer();
-    cancelUnknownGrace();
-    cancelSendTimeout();
     cancelDeleteEmpty();
     cancelPendingPoll();
     stopAbortSettle();
@@ -740,21 +762,24 @@ export function useChatComposer(options: UseChatComposerOptions) {
       flushForSwitch(previous);
     }
     store.setSession(next);
-    resetTransientState();
+    resetTransientState(preserveDraft);
     editSeq += 1;
-    store.setDraft("");
+    if (!preserveDraft) {
+      store.setDraft("");
+    }
     if (next === null) {
       store.setAttachments([]);
       store.setAttachmentQuota(null);
       return;
     }
-    const preserve = preserveAttachmentsOnSwitch;
-    preserveAttachmentsOnSwitch = false;
-    if (!preserve) {
+    if (!preserveAttachments) {
       store.setAttachments([]);
       store.setAttachmentQuota(null);
     }
-    await loadDraft(next, preserve ? { preserveAttachments: true } : {});
+    await loadDraft(next, {
+      ...(preserveDraft ? { applyText: false } : {}),
+      ...(preserveAttachments ? { preserveAttachments: true } : {}),
+    });
   }
 
   function scheduleUnknownGrace(session: string): void {
@@ -787,7 +812,11 @@ export function useChatComposer(options: UseChatComposerOptions) {
   }
 
   async function createSession(
-    settings: { readonly title?: string; readonly preserveAttachments?: boolean } = {},
+    settings: {
+      readonly title?: string;
+      readonly preserveAttachments?: boolean;
+      readonly preserveDraft?: boolean;
+    } = {},
   ): Promise<string | null> {
     try {
       const body =
@@ -804,6 +833,7 @@ export function useChatComposer(options: UseChatComposerOptions) {
         return null;
       }
       preserveAttachmentsOnSwitch = settings.preserveAttachments === true;
+      preserveDraftForSession = settings.preserveDraft === true ? id : null;
       options.selectSession(id);
       await waitForSession(id);
       return id;
@@ -833,6 +863,10 @@ export function useChatComposer(options: UseChatComposerOptions) {
     if (!canSendDraft({ text, attachmentCount: sentChips.length })) {
       return false;
     }
+    if (chatTextTooLarge(text)) {
+      store.setError(`This message is too large (maximum ${MAX_CHAT_TEXT_BYTES / 1024} KiB).`);
+      return false;
+    }
     if (attachmentsBusy.value) {
       store.setError("Wait for the attachments to finish uploading.");
       return false;
@@ -858,7 +892,7 @@ export function useChatComposer(options: UseChatComposerOptions) {
     let tempID: string | null = null;
     try {
       if (session === null) {
-        session = await createSession();
+        session = await createSession({ preserveAttachments: true, preserveDraft: true });
         if (session === null || seq !== actionSeq) {
           store.clearAcceptance();
           if (store.draft.length === 0) {
@@ -936,6 +970,7 @@ export function useChatComposer(options: UseChatComposerOptions) {
           feed.removeMessage(tempID);
         }
         store.clearAcceptance();
+        preserveDraftOnNextSwitch = true;
         options.onSessionGone(session ?? "");
         return false;
       }

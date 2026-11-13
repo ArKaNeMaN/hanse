@@ -250,6 +250,93 @@ describe("chat send and delivery", () => {
     wrapper.unmount();
   });
 
+  it("creates a session, sends the first message, and clears the draft on acceptance", async () => {
+    const { wrapper, pinia, fetchState } = await mountChat("/chat?app=alpha&project=p", {
+      sessions: [],
+      messages: [],
+    });
+    await sendText(wrapper, "First message");
+
+    expect(useChatComposerStore(pinia).sessionID).toBe("s_new");
+    expect(
+      fetchState.requests.filter(
+        (request) => request.method === "POST" && request.url.includes("/messages"),
+      ),
+    ).toHaveLength(1);
+    expect(wrapper.find('[data-message-id="msg_sent_1"]').exists()).toBe(true);
+    expect(composerValue(wrapper)).toBe("");
+    wrapper.unmount();
+  });
+
+  it("keeps a new-session draft and the error when the send is rejected", async () => {
+    const { wrapper, pinia, fetchState } = await mountChat("/chat?app=alpha&project=p", {
+      sessions: [],
+      messages: [],
+      custom: ({ method, url }) =>
+        method === "POST" && url.includes("/messages")
+          ? {
+              status: 400,
+              body: { error: "message too large", code: "message_too_large" },
+            }
+          : undefined,
+    });
+    await sendText(wrapper, "New session draft");
+
+    expect(composerValue(wrapper)).toBe("New session draft");
+    expect(wrapper.find("[data-chat-send-error]").text()).toContain("too large");
+    expect(useChatComposerStore(pinia).sessionID).toBe("s_new");
+    expect(
+      fetchState.requests.some(
+        (request) =>
+          request.method === "PUT" &&
+          request.url.includes("/draft") &&
+          request.body?.includes("New session draft") === true,
+      ),
+    ).toBe(true);
+    wrapper.unmount();
+  });
+
+  it("rejects an oversized message before creating a session", async () => {
+    const { wrapper, pinia, fetchState } = await mountChat("/chat?app=alpha&project=p", {
+      sessions: [],
+      messages: [],
+    });
+    const long = "x".repeat(32 * 1024 + 1);
+    await sendText(wrapper, long);
+
+    expect(composerValue(wrapper)).toBe(long);
+    expect(wrapper.find("[data-chat-send-error]").text()).toContain("32 KiB");
+    expect(useChatComposerStore(pinia).delivery).toBe("idle");
+    expect(
+      fetchState.requests.filter(
+        (request) =>
+          request.method === "POST" &&
+          (request.url.includes("/sessions") || request.url.includes("/messages")),
+      ),
+    ).toHaveLength(0);
+    wrapper.unmount();
+  });
+
+  it("keeps the draft when the session disappears during a send", async () => {
+    const { wrapper, router } = await mountChat("/chat?app=alpha&project=p&session=s1", {
+      sessions: [
+        { id: "s2", title: "Other session" },
+        { id: "s1", title: "Session one" },
+      ],
+      messages: [],
+      custom: ({ method, url }) =>
+        method === "POST" && url.includes("/messages")
+          ? { status: 404, body: { error: "session not found", code: "session_not_found" } }
+          : undefined,
+    });
+    await sendText(wrapper, "Gone session draft");
+    await flushPromises();
+
+    expect(router.currentRoute.value.query.session).toBe("s2");
+    expect(composerValue(wrapper)).toBe("Gone session draft");
+    wrapper.unmount();
+  });
+
   it("keeps a newer draft typed while the send is in flight", async () => {
     const gate = deferred();
     const { wrapper } = await mountChat("/chat?app=alpha&project=p&session=s1", {

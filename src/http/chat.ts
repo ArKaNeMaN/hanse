@@ -2518,7 +2518,7 @@ export async function handleChat(deps: HttpDeps, request: HttpRequest): Promise<
       if (text.trim().length === 0 && (requested === undefined || requested.length === 0)) {
         return json(400, { error: "empty message", code: "empty_message" });
       }
-      if (Buffer.byteLength(text, "utf8") > 32 * 1024) {
+      if (Buffer.byteLength(text, "utf8") > MAX_DRAFT_BYTES) {
         return json(400, { error: "message too large", code: "message_too_large" });
       }
       const streamID =

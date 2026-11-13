@@ -126,6 +126,9 @@ export function isSlashCommandOnly(text: unknown): boolean;
 export function draftTextForSave(text: unknown): string;
 export function draftIsEmpty(input?: { text?: unknown; attachmentCount?: unknown }): boolean;
 export function canSendDraft(input?: { text?: unknown; attachmentCount?: unknown }): boolean;
+export const MAX_CHAT_TEXT_BYTES: number;
+export function textByteLength(text?: unknown): number;
+export function chatTextTooLarge(text?: unknown): boolean;
 
 export interface PendingSendView {
   id: string;
