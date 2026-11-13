@@ -1,7 +1,6 @@
 import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import {
-  chmodSync,
   closeSync,
   fsyncSync,
   mkdirSync,
@@ -184,7 +183,12 @@ export class BuildRecordStore {
     let handle: number | undefined;
     try {
       mkdirSync(this.#dir, { recursive: true, mode: 0o700 });
-      chmodSync(this.#dir, 0o700);
+      const directory = statSync(this.#dir);
+      if ((directory.mode & 0o077) !== 0) {
+        // The runner has no CAP_FOWNER and cannot chmod a directory owned by the host user;
+        // records are still 0600, but the directory should be tightened by the operator.
+        this.#warn("build records directory permissions are broader than 0700");
+      }
       const payload = {
         version: RECORD_VERSION,
         ...record,

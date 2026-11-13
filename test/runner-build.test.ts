@@ -1,5 +1,6 @@
 import { Buffer } from "node:buffer";
 import {
+  chmodSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -1188,6 +1189,21 @@ describe("durable build record store", () => {
     const raw = JSON.parse(readFileSync(file, "utf8")) as { version: number; status: string };
     expect(raw.version).toBe(RECORD_VERSION);
     expect(raw.status).toBe("ready");
+  });
+
+  it("does not chmod an existing directory owned by the host user", () => {
+    const f = fixture();
+    const dir = recordsDir(f);
+    mkdirSync(dir, { recursive: true, mode: 0o755 });
+    chmodSync(dir, 0o755);
+    const warnings: string[] = [];
+    const store = new BuildRecordStore({ dir, warn: (message) => warnings.push(message) });
+
+    store.save(storedRecord({ buildId: "build-existing", status: "ready" }));
+
+    expect(statSync(dir).mode & 0o777).toBe(0o755);
+    expect(warnings.some((message) => message.includes("permissions are broader"))).toBe(true);
+    expect(statSync(path.join(dir, "build-existing.json")).mode & 0o777).toBe(0o600);
   });
 
   it("bounds the persisted log tail to 128 KiB", () => {

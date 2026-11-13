@@ -174,7 +174,8 @@ directory. Records are capped at 200 files and seven days; older and excess reco
 load and save. On startup a record still marked `building` becomes `interrupted` because the process
 that owned it is gone, and its log tail is kept. Records with an unknown or newer record version are
 not adopted and are skipped. Use a durable host path for this directory, not the ephemeral
-`HANSE_HOST_RUNNER_TMP`.
+`HANSE_HOST_RUNNER_TMP`. Create the host directory `0700`, owned by the host uid used by the
+deployment; the runner does not chmod an existing host-owned directory (it has no `CAP_FOWNER`).
 
 `POST /v1/images/builds/:id/cancel` aborts the runner's build request and marks the record
 `cancelled` with its logs kept. Cancellation is best-effort: Docker may keep building the image in
