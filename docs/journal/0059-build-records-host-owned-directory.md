@@ -31,5 +31,6 @@ could not show `interrupted`.
 - `npx vitest run test/runner-build.test.ts`: 44 passed.
 - `npm run typecheck`, `npx biome check` on changed files: clean.
 - `npm run build`: clean.
-- Host reproduction confirmed the `EPERM chmod` against the deployed `0700` host-owned directory;
-  fix-forward publish and a durable-record smoke are pending.
+- CI run 43340859825 and publish run 43340859769 succeeded. The runner-only 3b12e35 deployment
+  persisted a real build record (`0600`, host-owned `0700` directory), loaded it as `ready` after a
+  runner restart, and logged no `EPERM`/build-record warning.

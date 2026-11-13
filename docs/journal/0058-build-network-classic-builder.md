@@ -41,4 +41,4 @@ previous image and reported `build_error`.
 - `npx vitest run test/docker-build.test.ts test/runner-build.test.ts test/image-pull.test.ts test/runner-containers.test.ts`: 118 passed.
 - `npm run typecheck`, `npx biome check` on changed files: clean.
 - `npm run build`: clean.
-- Fix-forward publish and host image-build smoke are pending.
+- Publish run 43330846286 succeeded; the runner-only d3006ac deployment completed a real build with `image_status=ready` and non-empty logs.
