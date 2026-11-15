@@ -165,6 +165,40 @@ describe("SshService", () => {
     expect(f.service.listAudit(f.agent.appId).some((entry) => entry.action === "exec")).toBe(true);
   });
 
+  it("caps operations per app and host at 120 per hour", async () => {
+    const f = fixture();
+    const first = f.service.createHost(
+      {
+        name: "h1",
+        address: "127.0.0.1",
+        username: "deploy",
+        privateKey: f.privateKey,
+        requireApproval: false,
+      },
+      "op",
+    );
+    const second = f.service.createHost(
+      {
+        name: "h2",
+        address: "127.0.0.2",
+        username: "deploy",
+        privateKey: f.privateKey,
+        requireApproval: false,
+      },
+      "op",
+    );
+    f.service.replaceAppHosts(f.agent.appId, [first.id, second.id], "op");
+    for (let index = 0; index < 120; index += 1) {
+      const result = await f.service.exec(f.agent, { hostId: first.id, command: `echo ${index}` });
+      expect(result).toMatchObject({ ok: true });
+    }
+    await expect(
+      f.service.exec(f.agent, { hostId: first.id, command: "echo over-limit" }),
+    ).rejects.toMatchObject({ code: "ssh_rate_limited" });
+    const other = await f.service.exec(f.agent, { hostId: second.id, command: "echo other" });
+    expect(other).toMatchObject({ ok: true });
+  });
+
   it("does not pin on failed authentication and rejects a non-allowlisted host", async () => {
     const f = fixture();
     const failing = new SshService({

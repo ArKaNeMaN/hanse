@@ -922,6 +922,8 @@ never mounted into app containers, and the `hanse mcp` shim only forwards tool c
 - The agent gets `ssh_list_hosts`, `ssh_exec`, `ssh_upload`, and `ssh_download`. Commands are
   non-interactive and arbitrary as the SSH user; use a least-privilege deploy user. Upload/download
   are capped at 50 MiB, use SFTP, and are confined to the app directory and the host's remote root.
+  Each allowed pair is capped at 120 operations per hour; over the cap the tool returns
+  `ssh_rate_limited`, so batch related commands and files into one call.
 - **Do not target the coordinator host** or any host that can read `/data/state` or the Docker socket
   with a key that the agent can use: an SSH shell there is equivalent to coordinator/host access.
 - Every operation, host change, test, re-pin, grant revoke, and approval decision is in the SSH audit

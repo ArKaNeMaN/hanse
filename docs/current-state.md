@@ -657,6 +657,11 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   Commands are arbitrary and non-interactive; upload/download use SFTP with a 50 MiB cap, a 300 s
   transfer deadline, local dirfd-relative path confinement, remote `remote_root`/`realpath`
   checks, and atomic writes.
+- Limits per `(app, host)`: 120 operations (`exec`/`upload`/`download`) per rolling hour, counted
+  from `ssh_audit`; one in-flight operation per host and four globally (`ssh_busy` after a 5 s
+  wait). Approval waits do not consume an operation slot. The tool descriptions state the hourly
+  cap and tell the agent to batch related commands/files into one call instead of many small ones;
+  going over the cap returns `ssh_rate_limited`.
 - `require_approval` hosts need an idle-based `(app, host)` grant (30 min idle, 8 h absolute). The
   first request appears as an app-scoped card in the chat workspace, which polls the approval API
   every 5 s; the operator can approve or reject there or on `/ssh`. Pending approvals expire after

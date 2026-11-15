@@ -574,7 +574,7 @@ The service never re-opens an app-controlled path by string:
   acquired only after an active grant exists; at most 2 callers may wait on the same pending
   approval. Once a slot is held, additional calls wait up to 5 seconds, then `ssh_busy`.
 - Global: at most 4 in-flight SSH operations in the coordinator; beyond that, `ssh_busy`.
-- Per `(app, host)`: at most 60 operations per hour. Counted from `ssh_audit` in the DB (survives a
+- Per `(app, host)`: at most 120 operations per hour. Counted from `ssh_audit` in the DB (survives a
   coordinator restart). Per app: at most 10 unexpired pending approvals; at most 10 approval requests
   per hour. After a rejection, a cooldown of 60 seconds per `(app, host)` applies before a new card
   can be created.
@@ -591,7 +591,9 @@ in-app bridge forwards `tools/list` and `tools/call` unchanged. The coordinator 
 `timeout` on the `hanse` MCP entry in `OPENCODE_CONFIG_CONTENT` (600,000 ms) so the worst case
 (30 s approval + 15 s connect + 300 s exec + transfer) fits inside opencode's client timeout; see
 §13.4. The agent **requires a restart** (not an image rebuild) to refresh its cached tool list and
-pick up the timeout.
+pick up the timeout. The `ssh_exec`, `ssh_upload`, and `ssh_download` descriptions state the hourly
+operation cap and recommend one batched call over many small ones; the cap itself is enforced in the
+coordinator, not by the prompt text.
 
 ### 11.1 `ssh_list_hosts`
 
@@ -1084,7 +1086,7 @@ operator-trusted but its output is untrusted input to the agent.
 None owner-level. The decided constants are: idle grant 30 minutes (5–120 per host), absolute cap
 8 hours, pending approval 5 minutes, tool wait 30 seconds, connect timeout 15 seconds, command
 default 60 seconds/max 300 seconds, transfer deadline 300 seconds, stdout/stderr 64 KiB each
-(128 KiB total), file 50 MiB, per-host concurrency 1, global concurrency 4, 60 operations/hour per
+(128 KiB total), file 50 MiB, per-host concurrency 1, global concurrency 4, 120 operations/hour per
 `(app, host)`, 10 pending
 approvals per app, 10 approval requests/hour per app, 60-second rejection cooldown,
 600,000 ms MCP tool-call timeout, 10-minute pending host-key observation. The owner may override

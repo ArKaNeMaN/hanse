@@ -39,7 +39,7 @@ export const SSH_TOOLS = [
   {
     name: "ssh_exec",
     description:
-      "Run a command over SSH on an allowed host. Hosts come from ssh_list_hosts; never invent an address. May require operator approval; if the result is ssh_approval_pending, wait for the operator and retry the same call.",
+      "Run a command over SSH on an allowed host. Hosts come from ssh_list_hosts; never invent an address. May require operator approval; if the result is ssh_approval_pending, wait for the operator and retry the same call. Each call is one audited operation, and a host allows 120 operations per hour per application. Prefer one call that runs several commands (a small script, or cmd1 && cmd2) over many tiny calls, so the budget is not spent on round-trip overhead.",
     inputSchema: {
       type: "object",
       properties: {
@@ -53,7 +53,7 @@ export const SSH_TOOLS = [
   {
     name: "ssh_upload",
     description:
-      "Upload a regular file from the application directory over SFTP. Paths are confined; approval may be required.",
+      "Upload a regular file from the application directory over SFTP. Paths are confined; approval may be required. Counts as one operation toward the same 120-per-hour per-host limit, so prefer one archive plus a remote unpack over many small transfers.",
     inputSchema: {
       type: "object",
       properties: {
@@ -67,7 +67,7 @@ export const SSH_TOOLS = [
   {
     name: "ssh_download",
     description:
-      "Download a regular remote file over SFTP into the application directory. Paths are confined; approval may be required.",
+      "Download a regular remote file over SFTP into the application directory. Paths are confined; approval may be required. Counts as one operation toward the same 120-per-hour per-host limit, so prefer one archive over many small transfers.",
     inputSchema: {
       type: "object",
       properties: {

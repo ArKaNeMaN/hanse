@@ -66,12 +66,20 @@ describe("SSH MCP tools", () => {
       method: "tools/list",
     });
     if (list === undefined) throw new Error("tools/list returned no response");
-    const tools = (list.result as { tools: { name: string }[] }).tools.map((tool) => tool.name);
-    expect(tools).toContain("ssh_list_hosts");
-    expect(tools).toContain("ssh_exec");
-    expect(tools).toContain("ssh_upload");
-    expect(tools).toContain("ssh_download");
-    expect(tools).toContain("list_apps");
+    const tools = (list.result as { tools: { name: string; description?: string }[] }).tools;
+    const names = tools.map((tool) => tool.name);
+    expect(names).toContain("ssh_list_hosts");
+    expect(names).toContain("ssh_exec");
+    expect(names).toContain("ssh_upload");
+    expect(names).toContain("ssh_download");
+    expect(names).toContain("list_apps");
+
+    const execTool = tools.find((tool) => tool.name === "ssh_exec");
+    expect(execTool?.description).toContain("120 operations per hour");
+    expect(execTool?.description).toContain("cmd1 && cmd2");
+    for (const name of ["ssh_upload", "ssh_download"]) {
+      expect(tools.find((tool) => tool.name === name)?.description).toContain("120-per-hour");
+    }
 
     const listed = await handleRpcAsync(f.service, ssh, f.agent, {
       jsonrpc: "2.0",
