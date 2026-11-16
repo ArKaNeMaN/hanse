@@ -33,6 +33,7 @@
     "check:ui": "node scripts/check-ui.mjs",
     "check:chat-worker": "node scripts/check-chat-worker.mjs",
     "check:ui-dev": "node scripts/check-ui-dev.mjs",
+    "deploy:request": "node scripts/deploy-request.mjs",
     "format": "biome format --write .",
     "start": "node dist/index.js"
   },

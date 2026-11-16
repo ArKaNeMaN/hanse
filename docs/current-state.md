@@ -1,6 +1,6 @@
 # Hanse - Current State (read this first)
 
-> Last updated: 2026-11-08. This is the canonical description of what is **implemented right now**.
+> Last updated: 2026-11-16. This is the canonical description of what is **implemented right now**.
 > If this document and the code disagree, the code wins - update this document.
 > History and rationale: `docs/design/overview.md`, `docs/plans/0001-core.md`,
 > `docs/journal/0001-core.md`. Deployment: `docs/deployment.md`.
@@ -127,6 +127,13 @@ a host `opencode` auth file.
   checks all five full-SHA manifests after the matrix, records digests, and uploads the
   `image-digests` artifact. Tags are mutable; the orchestrator pins digests. IDE, runner, and agent
   tags are independently overridable with backward-compatible fallbacks.
+- **Startup migration and deploy contract.** The one-time runner mount-layout migration runs before
+  the HTTP server listens and may take several minutes on the first start; the Compose healthcheck
+  uses `start_period: 300s`. Completion is recorded per app, a completed app is skipped even if its
+  legacy tree still differs, and each conflict is logged with the project id and app key while the
+  run still fails closed. `deploy-contract.json` (also at `/app/deploy-contract.json` in the image)
+  is the stable machine-readable route/asset/HTTP contract; see
+  [`docs/deployment.md`](deployment.md#deploy-verification-contract).
 
 ## Per-app images (B2)
 
@@ -379,8 +386,10 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   `public: true`, is served without a session, and is JS-required; there is no server-rendered form
   or no-JS fallback. A missing or invalid UI build returns a self-contained static `503` and logs
   `ui.manifest_invalid`. Unknown paths and known missing resources return the Vue 404 when the UI is
-  available; 500 page failures return a self-contained static page. The page dispatcher is the only
-  place that chooses a response.
+  available; 500 page failures return a self-contained static page. Anonymous page routes redirect
+  with `302` to `/login?next=...` (not `303`). The page dispatcher is the only place that chooses a
+  response. `deploy-contract.json` (also at `/app/deploy-contract.json` in the image) publishes the
+  route ids/paths, required assets, and HTTP semantics as the stable deploy verification contract.
 
 - The Vue 3 + Vue Router + Pinia + Vue Query client lives in `ui/`, builds into `assets/ui/`
   (`npm run build:ui`), and mounts into the static shell's `<main id="main">` (no second wrapper).
@@ -1649,10 +1658,12 @@ Host `HANSE_HOST_MOUNTS` is mounted at the same absolute path read-write in `han
 
 - `<projectId>/<appKey>/attachments/` - attachment files (`<session>/<id>-<safeName>`), app-immutable.
 - `<projectId>/<appKey>/git/` - managed git identity and credential files, app-immutable.
-- `state/hanse/runner-layout.json` records the verified one-time copy from the legacy `agents` layout
-  (mode `0600`). The copy is verified and idempotent; conflicting old/new content fails startup. A
-  rollback requires restoring the pre-upgrade `agents`/`state` backup (or a reverse copy); the old
-  copy is a backup, not a lossless rollback.
+- `state/hanse/runner-layout.json` records the verified copy from the legacy `agents` layout (mode
+  `0600`). Completion is written per app; a completed app is skipped even if its legacy tree still
+  differs, and a missing/damaged mounts leaf is re-copied. An unrecorded app with conflicting old/new
+  content fails startup closed and logs its project id and app key. A rollback requires restoring
+  the pre-upgrade `agents`/`state` backup (or a reverse copy); the old copy is a backup, not a
+  lossless rollback.
 - The IDE never sees this volume.
 
 ## CLI

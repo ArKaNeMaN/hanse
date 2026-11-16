@@ -548,6 +548,66 @@ describe("runner mount layout migration", () => {
     expect(existsSync(f.markerPath)).toBe(false);
   });
 
+  it("skips a completed app even after its legacy tree changes", async () => {
+    const f = migrationFixture();
+    const options = {
+      agentsHome: f.agents,
+      mountsRoot: f.mounts,
+      apps: [{ projectId: "p", appKey: "a" }],
+      markerPath: f.markerPath,
+    };
+    await runRunnerLayoutMigration(options);
+    writeFileSync(path.join(f.oldAppRoot, "attachments", "ses_1", "file.txt"), "changed-legacy");
+
+    await expect(runRunnerLayoutMigration(options)).resolves.toMatchObject({
+      migrated: 0,
+      skipped: 1,
+    });
+    expect(
+      readFileSync(path.join(f.mounts, "p", "a", "attachments", "ses_1", "file.txt"), "utf8"),
+    ).toBe("attachment-body");
+  });
+
+  it("records completed apps before a later conflict and reports the app id", async () => {
+    const f = migrationFixture();
+    const oldB = path.join(f.agents, "p", "b");
+    mkdirSync(path.join(oldB, "attachments"), { recursive: true });
+    writeFileSync(path.join(oldB, "attachments", "file.txt"), "b-legacy");
+    const newB = path.join(f.mounts, "p", "b", "attachments");
+    mkdirSync(newB, { recursive: true });
+    writeFileSync(path.join(newB, "file.txt"), "b-new");
+    const conflicts: Array<{ projectId: string; appKey: string; message: string }> = [];
+    const options = {
+      agentsHome: f.agents,
+      mountsRoot: f.mounts,
+      apps: [
+        { projectId: "p", appKey: "a" },
+        { projectId: "p", appKey: "b" },
+      ],
+      markerPath: f.markerPath,
+      onConflict: (conflict: { projectId: string; appKey: string; message: string }) => {
+        conflicts.push(conflict);
+      },
+    };
+
+    await expect(runRunnerLayoutMigration(options)).rejects.toMatchObject({
+      code: "runner_layout_conflict",
+    });
+    expect(conflicts).toHaveLength(1);
+    expect(conflicts[0]).toMatchObject({ projectId: "p", appKey: "b" });
+    expect(conflicts[0]?.message).toContain("exists in both");
+    const marker = JSON.parse(readFileSync(f.markerPath, "utf8")) as {
+      apps: Array<{ appKey: string }>;
+    };
+    expect(marker.apps.map((entry) => entry.appKey)).toEqual(["a"]);
+
+    rmSync(newB, { recursive: true, force: true });
+    await expect(runRunnerLayoutMigration(options)).resolves.toMatchObject({
+      migrated: 1,
+      skipped: 1,
+    });
+  });
+
   it("accepts an identical destination without a marker and records it on rerun", async () => {
     const f = migrationFixture();
     const destination = path.join(f.mounts, "p", "a", "attachments", "ses_1");

@@ -42,12 +42,21 @@ export interface RunnerLayoutMigrationApp {
   appKey: string;
 }
 
+export interface RunnerLayoutMigrationConflict {
+  projectId: string;
+  appKey: string;
+  code: "runner_layout_conflict";
+  message: string;
+}
+
 export interface RunnerLayoutMigrationOptions {
   agentsHome: string;
   mountsRoot: string;
   apps: readonly RunnerLayoutMigrationApp[];
   markerPath: string;
   now?: () => Date;
+  /** Called once for each conflicting app. The run still fails closed after visiting every app. */
+  onConflict?: (conflict: RunnerLayoutMigrationConflict) => void;
 }
 
 export interface TreeSummary {
@@ -546,8 +555,21 @@ export async function runRunnerLayoutMigration(
   const marker = readMarker(options.markerPath, mountsRoot);
   const completed = new Set((marker?.apps ?? []).map(markerKey));
   const markerApps: MarkerApp[] = marker === undefined ? [] : [...marker.apps];
+  const conflicts: string[] = [];
   let migrated = 0;
   let skipped = 0;
+  let wroteMarker = false;
+
+  const persistMarker = (): void => {
+    const now = options.now?.() ?? new Date();
+    writeMarker(options.markerPath, {
+      version: MARKER_VERSION,
+      mountsRoot,
+      completedAt: now.toISOString(),
+      apps: markerApps,
+    });
+    wroteMarker = true;
+  };
 
   for (const app of options.apps) {
     const key = markerKey(app);
@@ -566,29 +588,45 @@ export async function runRunnerLayoutMigration(
       continue;
     }
     cleanupStaleTemps(mountsAppDir);
-    const attachments = migrateLeaf(
-      oldAttachments,
-      newAttachments,
-      mountsAppDir,
-      MOUNTS_ATTACHMENTS_DIR,
-    );
-    const git = migrateLeaf(oldGit, newGit, mountsAppDir, MOUNTS_GIT_DIR);
-    const entry: MarkerApp = { projectId: app.projectId, appKey: app.appKey, attachments, git };
-    const existingIndex = markerApps.findIndex((item) => markerKey(item) === key);
-    if (existingIndex === -1) markerApps.push(entry);
-    else markerApps[existingIndex] = entry;
-    completed.add(key);
-    migrated += 1;
+    try {
+      const attachments = migrateLeaf(
+        oldAttachments,
+        newAttachments,
+        mountsAppDir,
+        MOUNTS_ATTACHMENTS_DIR,
+      );
+      const git = migrateLeaf(oldGit, newGit, mountsAppDir, MOUNTS_GIT_DIR);
+      const entry: MarkerApp = { projectId: app.projectId, appKey: app.appKey, attachments, git };
+      const existingIndex = markerApps.findIndex((item) => markerKey(item) === key);
+      if (existingIndex === -1) markerApps.push(entry);
+      else markerApps[existingIndex] = entry;
+      completed.add(key);
+      migrated += 1;
+      persistMarker();
+    } catch (error) {
+      if (error instanceof RunnerLayoutMigrationError && error.code === "runner_layout_conflict") {
+        conflicts.push(`app ${app.projectId}/${app.appKey}: ${error.message}`);
+        options.onConflict?.({
+          projectId: app.projectId,
+          appKey: app.appKey,
+          code: "runner_layout_conflict",
+          message: error.message,
+        });
+        continue;
+      }
+      throw error;
+    }
   }
 
-  if (marker === undefined || migrated > 0) {
-    const now = options.now?.() ?? new Date();
-    writeMarker(options.markerPath, {
-      version: MARKER_VERSION,
-      mountsRoot,
-      completedAt: now.toISOString(),
-      apps: markerApps,
-    });
+  if (conflicts.length > 0) {
+    throw new RunnerLayoutMigrationError(
+      "runner_layout_conflict",
+      `runner mount layout conflicts: ${conflicts.join("; ")}`,
+    );
+  }
+
+  if (!wroteMarker && (marker === undefined || migrated > 0)) {
+    persistMarker();
   }
 
   return { migrated, skipped, alreadyDone: migrated === 0 && marker !== undefined };

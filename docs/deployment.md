@@ -369,9 +369,18 @@ The coordinator copies the legacy per-app `attachments` tree and
 `home/.config/hanse/git` credentials from `agents/` into `HANSE_HOST_MOUNTS` during startup, before
 serving requests, and records completion in `state/hanse/runner-layout.json` (mode `0600`). The copy
 is verified (file count, size, and SHA-256), idempotent, and never deletes or overwrites the legacy
-tree. A mounts leaf that is missing while the legacy backup still exists is re-copied on the next
-start. If the old and new copies both exist with different content it fails startup instead of
-choosing one. Stop app containers before upgrading so the legacy trees are quiescent.
+tree. Completion is recorded per app as soon as that app verifies, so a later conflict does not
+discard apps that already succeeded. A completed app is skipped even if its legacy tree still
+differs; only a missing or damaged mounts leaf is re-copied. Each conflict is logged with the
+project id and app key, and the run still fails closed after visiting every app. If the old and new
+copies both exist with different content for an app that is not recorded complete, startup fails
+instead of choosing one. Stop app containers before upgrading so the legacy trees are quiescent.
+
+The first start after this migration may take several minutes on a large workspace because it reads
+and hashes every legacy tree before listening. The Compose healthcheck uses `start_period: 300s` so a
+normal migration is not marked unhealthy; allow up to five minutes before treating a first start as
+stuck. Subsequent starts skip completed apps and are fast. After verifying the mounts leaves and
+taking a backup, the legacy `agents` trees may be retired; the coordinator never deletes them.
 
 The copy is a backup, not a lossless rollback: after the cutover every write goes only to the mounts
 root. To roll back, stop the coordinator, restore the pre-upgrade `agents/` and `state/` backup (or
@@ -779,7 +788,7 @@ line-oriented console in the managed app container, not a second IDE terminal:
 docker compose ps
 curl -fsS http://127.0.0.1:8787/healthz   # {"status":"ok"}
 curl -fsS http://127.0.0.1:8787/readyz    # version, revision, schema, deploy state
-curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8787/          # 303 to /login
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8787/          # 302 to /login
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8787/assets/app.css  # 200
 docker compose logs -f --tail=100 hanse
 docker compose logs -f --tail=100 ide
@@ -792,6 +801,12 @@ All three static services define health checks. `hanse` is healthy when `/health
 coordinator. Check per-app containers with
 `docker ps --filter label=hanse.managed=true`.
 
+The coordinator healthcheck uses `start_period: 300s`. The one-time runner mount-layout migration
+runs before the HTTP server listens and can take several minutes on a large workspace; during the
+start period failed probes do not mark the container unhealthy. After that, three failed 30-second
+probes mark it unhealthy. The worst case is a first start with large legacy attachment and git
+trees; allow five minutes before investigating. Later starts skip completed apps.
+
 `GET /healthz` remains exactly `{"status":"ok"}`. The separate unauthenticated `GET /readyz` keeps its
 existing `status`, `version`, `revision`, `schemaVersion`, `deploying`, and `inFlightLifecycle` fields
 and additively reports `draining`, `dbReady`, `migrationPending`, `inFlightHttp`, `startedAt`,
@@ -800,6 +815,40 @@ query failure still returns `503 {"status":"error","error":"database_unavailable
 `dbReady: false`). Once SIGTERM starts it returns `503 {"status":"shutting_down", ...}`. Because it uses
 the synchronous database handle with `busy_timeout=5000`, a concurrent restore can delay it up to five
 seconds; the 50 ms p99 is a target, not a gate.
+
+### Deploy verification contract
+
+`deploy-contract.json` is the stable, machine-readable deploy contract. It is tracked at the
+repository root and copied into the coordinator image at `/app/deploy-contract.json`. It lists every
+page route id and path, the required and removed assets, the health endpoints, and the expected
+anonymous/authenticated HTTP semantics, with a `contractVersion`. Read it from the deployed image:
+
+```bash
+docker compose exec -T hanse cat /app/deploy-contract.json
+```
+
+Private deploy checks should assert against this file and the route/semantics listed there instead of
+pinning prose. The current invariants are:
+
+- `GET /healthz` is exactly `200 {"status":"ok"}`. `GET /readyz` is `200` with `status: ok` and the
+  full `revision` when ready; `503` while shutting down or when the database is unavailable.
+- Anonymous page routes redirect with `302` to `/login?next=...`; `303` is not used for page
+  redirects.
+- Every known page route, including `/login`, is an SPA document. An authenticated request returns
+  `200` with `id="hanse-boot"`; an authenticated unknown page returns the SPA `not-found` shell with
+  `404`, not a static "Nothing is moored here" page.
+- A known page with no UI build returns the static `503` "Interface unavailable". The static `404`
+  "Nothing is moored here" copy is only used when the UI build is missing.
+- `/assets/app.css`, `/assets/favicon.svg`, and `/assets/ui/.vite/manifest.json` are required. Follow
+  the manifest entry and its CSS for the hashed UI assets. `/assets/app.js`,
+  `/assets/app-content.js`, `/assets/chat.js`, and `/assets/terminal.js` are removed and return
+  `404`.
+- `POST /login` returns `405`; `POST /api/session` is the only login mutation.
+
+Changing a route id/path, a required or removed asset, a status/redirect, a health field, or the
+Compose healthcheck is a contract change: bump `contractVersion` and call it out in the release notes
+(see [`docs/releases/README.md`](releases/README.md)). The deploy-request generator includes the
+contract version and the deploy-visible diff flags.
 
 ## Backup and restore
 

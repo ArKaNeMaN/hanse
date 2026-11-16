@@ -101,6 +101,7 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/assets ./assets
 COPY package.json LICENSE THIRD_PARTY_NOTICES.md ./
+COPY deploy-contract.json ./deploy-contract.json
 COPY extensions ./extensions
 COPY shell/hanse-shell /usr/local/bin/hanse-shell
 COPY omo/omo.jsonc /home/coder/.omo/omo.jsonc

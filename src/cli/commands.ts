@@ -903,6 +903,9 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
         mountsRoot,
         apps,
         markerPath: path.join(coordinatorStateDir(ctx.stateHome), "runner-layout.json"),
+        onConflict: ({ projectId, appKey, message }) => {
+          logger.warn("runner_layout_conflict", { projectId, appKey, detail: message });
+        },
       });
       if (migration.migrated > 0) {
         ctx.io.stdout(`serve: migrated runner mount layout for ${migration.migrated} app(s)`);

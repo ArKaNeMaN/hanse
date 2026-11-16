@@ -109,3 +109,10 @@ screenshot can leak the same data without matching text.
 Multi-phase work follows the `feature-delivery` pipeline: design -> design review -> owner questions
 -> plan -> plan review -> execute -> record -> commit. Bindings live in
 [`docs/process.md`](docs/process.md). Do not start implementation before the gate is cleared.
+
+Deploy handoffs use the complete request spec in [`docs/deploy-request.md`](docs/deploy-request.md):
+generate it with `npm run deploy:request -- --deployed <full-sha> --publish-run-id <id>`. Always send
+the full 40-character SHA, the successful `Publish container` run id, and the cumulative diff from the
+currently deployed revision; flag migrations and deploy-visible route/asset/health changes. Never ask
+the deploy agent to build from source or deploy a branch name. Verify against
+[`deploy-contract.json`](deploy-contract.json).

@@ -59,7 +59,9 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 30s
+      # The first start after a runner mount-layout upgrade hashes every legacy attachment/git
+      # tree before listening. 300s keeps a normal migration from marking the container unhealthy.
+      start_period: 300s
 
   ide:
     image: ${HANSE_IDE_IMAGE:-ghcr.io/arkaneman/hanse-agent-ide}:${HANSE_IDE_TAG:-${HANSE_AGENT_TAG:-${HANSE_TAG:-latest}}}

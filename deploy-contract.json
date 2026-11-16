@@ -1,0 +1,164 @@
+{
+  "contractVersion": 1,
+  "description": "Stable deploy-visible HTTP and asset contract for the hanse coordinator image. Deploy checks should assert these invariants instead of pinning prose. The same file is copied into the image at /app/deploy-contract.json.",
+  "image": {
+    "repository": "ghcr.io/arkaneman/hanse",
+    "contractPath": "/app/deploy-contract.json",
+    "revisionEnv": "HANSE_REVISION",
+    "revisionLabel": "org.opencontainers.image.revision"
+  },
+  "requiredAssets": ["/assets/app.css", "/assets/favicon.svg", "/assets/ui/.vite/manifest.json"],
+  "uiManifest": {
+    "path": "/assets/ui/.vite/manifest.json",
+    "entrySelector": "the entry with isEntry=true whose src ends in main.ts",
+    "urlPrefix": "/assets/ui/",
+    "follow": ["entry.file", "entry.css", "entry.imports", "entry.dynamicImports"]
+  },
+  "removedAssets": [
+    "/assets/app.js",
+    "/assets/app-content.js",
+    "/assets/chat.js",
+    "/assets/terminal.js"
+  ],
+  "routes": [
+    { "id": "projects", "path": "/projects", "public": false, "synthetic": false },
+    { "id": "overview", "path": "/", "public": false, "synthetic": false },
+    { "id": "handoffs", "path": "/handoffs", "public": false, "synthetic": false },
+    { "id": "ssh", "path": "/ssh", "public": false, "synthetic": false },
+    { "id": "settings-global", "path": "/settings", "public": false, "synthetic": false },
+    { "id": "skills-global", "path": "/skills", "public": false, "synthetic": false },
+    { "id": "skills-new", "path": "/skills/new", "public": false, "synthetic": false },
+    { "id": "skills-detail", "path": "/skills/:id", "public": false, "synthetic": false },
+    {
+      "id": "settings-project",
+      "path": "/projects/:id/settings",
+      "public": false,
+      "synthetic": false
+    },
+    {
+      "id": "settings-app",
+      "path": "/projects/:id/apps/:app/settings",
+      "public": false,
+      "synthetic": false
+    },
+    { "id": "skills-project", "path": "/projects/:id/skills", "public": false, "synthetic": false },
+    {
+      "id": "skills-app",
+      "path": "/projects/:id/apps/:app/skills",
+      "public": false,
+      "synthetic": false
+    },
+    { "id": "app", "path": "/projects/:id/apps/:app", "public": false, "synthetic": false },
+    { "id": "project", "path": "/projects/:id", "public": false, "synthetic": false },
+    { "id": "terminal", "path": "/terminal", "public": false, "synthetic": false },
+    { "id": "chat", "path": "/chat", "public": false, "synthetic": false },
+    { "id": "login", "path": "/login", "public": true, "synthetic": false },
+    { "id": "not-found", "path": "*", "public": false, "synthetic": true }
+  ],
+  "http": {
+    "health": {
+      "GET /healthz": {
+        "status": 200,
+        "contentType": "application/json",
+        "body": { "status": "ok" }
+      },
+      "GET /readyz": {
+        "status": 200,
+        "contentType": "application/json",
+        "requiredFields": [
+          "status",
+          "version",
+          "revision",
+          "schemaVersion",
+          "deploying",
+          "inFlightLifecycle",
+          "draining",
+          "dbReady",
+          "migrationPending",
+          "inFlightHttp",
+          "startedAt",
+          "shutdownAt",
+          "uptime"
+        ],
+        "ready": { "status": "ok", "dbReady": true, "revision": "<full-40-character-sha>" },
+        "shutdown": { "status": 503, "body": { "status": "shutting_down" } },
+        "databaseUnavailable": {
+          "status": 503,
+          "body": { "status": "error", "error": "database_unavailable", "dbReady": false }
+        }
+      }
+    },
+    "anonymous": {
+      "GET /": { "status": 302, "location": "/login?next=%2F" },
+      "GET /projects": { "status": 302, "location": "/login?next=%2Fprojects" },
+      "GET /login": {
+        "status": 200,
+        "contentType": "text/html; charset=utf-8",
+        "document": "spa-login",
+        "markers": [
+          "id=\"hanse-boot\"",
+          "\"route\":{\"id\":\"login\"",
+          "Sign-in requires JavaScript."
+        ]
+      }
+    },
+    "authenticated": {
+      "GET /": {
+        "status": 200,
+        "contentType": "text/html; charset=utf-8",
+        "document": "spa",
+        "markers": ["id=\"hanse-boot\""]
+      },
+      "GET /projects": {
+        "status": 200,
+        "contentType": "text/html; charset=utf-8",
+        "document": "spa",
+        "markers": ["id=\"hanse-boot\""]
+      },
+      "GET /unknown": {
+        "status": 404,
+        "accept": "text/html",
+        "contentType": "text/html; charset=utf-8",
+        "document": "spa-not-found",
+        "markers": ["id=\"hanse-boot\"", "\"route\":{\"id\":\"not-found\""]
+      }
+    },
+    "login": {
+      "POST /login": { "status": 405, "allow": "GET, HEAD" },
+      "POST /api/session": {
+        "statuses": [200, 400, 401, 403],
+        "contentType": "application/json"
+      }
+    },
+    "assets": {
+      "GET /assets/app.css": { "status": 200, "contentType": "text/css; charset=utf-8" },
+      "GET /assets/ui/<hashed>": {
+        "status": 200,
+        "cacheControl": "public, max-age=31536000, immutable"
+      },
+      "GET /assets/unknown": { "status": 404, "contentType": "application/json" }
+    },
+    "missingUiBuild": {
+      "knownPage": {
+        "status": 503,
+        "contentType": "text/html; charset=utf-8",
+        "title": "Interface unavailable",
+        "markers": ["Interface unavailable"]
+      },
+      "unknownPage": {
+        "status": 404,
+        "contentType": "text/html; charset=utf-8",
+        "title": "Page not found",
+        "markers": ["Nothing is moored here."]
+      }
+    }
+  },
+  "notes": [
+    "Anonymous page routes redirect with 302, not 303.",
+    "Known page routes are page requests regardless of Accept. Unknown paths are only page requests with Accept: text/html; a non-HTML request uses the JSON/redirect path instead.",
+    "The /unknown case above assumes a valid UI build and Accept: text/html. With no UI build, an unknown page returns the static 404 and a known page returns the static 503.",
+    "Authenticated unknown pages return the SPA not-found document when the UI build is present; the static 'Nothing is moored here.' copy is only used when the UI build is missing.",
+    "The coordinator may take several minutes to become healthy on the first start after a runner mount-layout upgrade; the Compose healthcheck uses start_period: 300s.",
+    "Changing any route id/path, required asset, HTTP status/redirect, or health field is a contract change: bump contractVersion and record it in the release notes."
+  ]
+}
