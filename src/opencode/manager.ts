@@ -10,7 +10,7 @@ import {
 } from "node:fs";
 import path from "node:path";
 import type { AgentRuntimeClient } from "../agent/client.js";
-import { stoppedStatus } from "../agent/protocol.js";
+import { type RuntimeOomEvent, stoppedStatus } from "../agent/protocol.js";
 import {
   type AppRuntimeSpec,
   computeSpecHash,
@@ -30,6 +30,12 @@ import {
   PendingRecovery,
 } from "../chat/pending.js";
 import { ChatSweep } from "../chat/sweep.js";
+import {
+  DEFAULT_APP_CPUS,
+  DEFAULT_APP_PIDS,
+  defaultAppMemoryMb,
+  positiveNumber,
+} from "../config/app-resources.js";
 import { DeploymentInProgressError, type DeploymentLock } from "../coordinator/deployment-lock.js";
 import type { LifecycleActivity } from "../coordinator/lifecycle-activity.js";
 import { materializeGitCredentials } from "../git/materialize.js";
@@ -68,6 +74,7 @@ import {
   type SqliteDatabase,
 } from "../store/index.js";
 import {
+  type ProcessCurrent,
   type ProcessEvent,
   type ProcessPhase,
   type ProcessSource,
@@ -362,6 +369,20 @@ interface ProcessTransitionInput {
   secrets?: Iterable<string | null | undefined>;
 }
 
+/** One history-only process event; it never updates `instances` and never emits on the bus. */
+interface AppendProcessEventInput {
+  attemptId: string;
+  state: ProcessState;
+  phase: ProcessPhase | null;
+  source: ProcessSource;
+  reason?: string | null;
+  errorCode?: string | null;
+  message?: string | null;
+  createdAt: string;
+  /** Explicit sequence for the bounded synthetic `oom:<at>` attempt. */
+  seq?: number;
+}
+
 interface InstanceProcessRow {
   endpoint: string | null;
   pid: number | null;
@@ -391,6 +412,11 @@ interface InstanceProcessRow {
 }
 
 const PROCESS_STALE_MS = 90_000;
+const OOM_DEDUPE_WINDOW_MS = 60_000;
+const OOM_RATE_LIMIT_MS = 60_000;
+const OOM_KILLED_MESSAGE = "The agent was killed after exceeding its memory limit.";
+const OOM_HISTORY_MESSAGE =
+  "A process in the container exceeded the memory limit; the container is still running.";
 
 function newAttemptId(): string {
   return randomUUID();
@@ -565,10 +591,6 @@ interface MonitorEntry {
 
 export const DEFAULT_MODEL = "deepseek/deepseek-flash";
 const DEFAULT_AGENT_API_BASE = "http://127.0.0.1:8787";
-const DEFAULT_MEMORY_MB = 2048;
-const DEFAULT_CPUS = 2;
-const DEFAULT_PIDS = 512;
-
 function disableWebsearch(web: EffectiveSettings["web"]): boolean {
   return web.search.value === null || web.search.value.driver === "deepseek";
 }
@@ -671,22 +693,26 @@ function realParentDir(appDir: string): string {
   }
 }
 
-function positiveNumber(raw: string | undefined, fallback: number): number {
-  const value = Number(raw);
-  return Number.isFinite(value) && value > 0 ? value : fallback;
-}
-
-/** Build supervisor resources from the documented environment defaults. */
-export function resolveRuntimeResources(env: NodeJS.ProcessEnv = process.env): {
+/**
+ * Build supervisor resources from the documented environment defaults.
+ *
+ * The optional `memoryMb` override carries the effective `runtime.memory_mb` setting; when it is
+ * undefined the normalized `HANSE_APP_MEMORY_MB` default applies. CPU and PID limits stay
+ * environment-only.
+ */
+export function resolveRuntimeResources(
+  env: NodeJS.ProcessEnv = process.env,
+  memoryMb?: number,
+): {
   memoryBytes: number;
   nanoCpus: number;
   pidsLimit: number;
 } {
-  const memoryMb = positiveNumber(env.HANSE_APP_MEMORY_MB, DEFAULT_MEMORY_MB);
-  const cpus = positiveNumber(env.HANSE_APP_CPUS, DEFAULT_CPUS);
-  const pids = Math.floor(positiveNumber(env.HANSE_APP_PIDS, DEFAULT_PIDS));
+  const resolvedMemoryMb = memoryMb ?? defaultAppMemoryMb(env);
+  const cpus = positiveNumber(env.HANSE_APP_CPUS, DEFAULT_APP_CPUS);
+  const pids = Math.floor(positiveNumber(env.HANSE_APP_PIDS, DEFAULT_APP_PIDS));
   return {
-    memoryBytes: Math.round(memoryMb * 1024 * 1024),
+    memoryBytes: Math.round(resolvedMemoryMb * 1024 * 1024),
     nanoCpus: Math.round(cpus * 1_000_000_000),
     pidsLimit: pids,
   };
@@ -739,6 +765,8 @@ export class InstanceManager {
   readonly #launches = new Map<string, Promise<string>>();
   readonly #launchKinds = new Map<string, "ensure" | "restart">();
   readonly #preparedRestarts = new Map<string, string>();
+  readonly #lastOomAt = new Map<string, string>();
+  readonly #lastOomRowAt = new Map<string, number>();
   readonly #pending: PendingRecovery;
   readonly #sweep: ChatSweep;
   readonly #recovery: ProcessRecovery;
@@ -1678,7 +1706,10 @@ export class InstanceManager {
           passwordFile,
         }),
       },
-      resources: resolveRuntimeResources(),
+      resources: resolveRuntimeResources(
+        process.env,
+        effective?.runtime.memoryMb.value ?? undefined,
+      ),
       agentApiBase: agentApiBase !== undefined && agentApiBase.length > 0 ? agentApiBase : null,
     };
     return {
@@ -2865,13 +2896,26 @@ export class InstanceManager {
     if (this.#launches.has(appId)) return;
     let status: RuntimeStatus | undefined;
     try {
-      status = await this.#options.runtime.status(appId);
+      status = await this.#options.runtime.status(appId, {
+        since: this.#lastOomAt.get(appId),
+      });
     } catch {
       return;
     }
     const persisted = readProcess(this.#db, appId);
     const previous = this.#readRuntimeRow(appId);
     const attemptId = persisted.attemptId ?? this.#syntheticAttemptId(appId);
+    const events = status?.oomEvents ?? [];
+    let nextOomAt: string | undefined;
+    for (const event of events) {
+      if (nextOomAt === undefined || event.at > nextOomAt) nextOomAt = event.at;
+    }
+    let oomAdvanced = false;
+    const advanceOom = (at: string | undefined): void => {
+      if (at === undefined) return;
+      this.#lastOomAt.set(appId, at);
+      oomAdvanced = true;
+    };
 
     if (status === undefined) {
       if (persisted.state === "starting") {
@@ -2900,6 +2944,7 @@ export class InstanceManager {
 
     const live = status.state === "running" || status.state === "starting";
     if (live) {
+      advanceOom(this.#recordOomEvents(appId, status, events));
       if (persisted.state === "running") {
         const row = this.#readInstanceProcessRow(appId);
         const imageChanged =
@@ -2973,38 +3018,42 @@ export class InstanceManager {
       this.#forgetRunning(appId);
       const crashed =
         status.state === "error" || status.oomKilled === true || (status.exitCode ?? 0) !== 0;
+      const oomKilled = status.oomKilled === true;
       this.#transitionProcess(appId, {
         attemptId,
         state: crashed ? "error" : "stopped",
         phase: crashed ? "failed" : "stopped",
         source: "reconciler",
-        reason: crashed
-          ? status.oomKilled === true
-            ? "oom_killed"
-            : "crashed"
-          : "out_of_band_stop",
+        reason: crashed ? (oomKilled ? "oom_killed" : "crashed") : "out_of_band_stop",
         ...(crashed
           ? {
-              errorCode: "runtime_unavailable",
-              message: status.error ?? "The agent process exited unexpectedly.",
+              errorCode: oomKilled ? "oom_killed" : "runtime_unavailable",
+              message: oomKilled
+                ? OOM_KILLED_MESSAGE
+                : (status.error ?? "The agent process exited unexpectedly."),
             }
           : { clearError: true }),
         status,
       });
+      advanceOom(nextOomAt);
       return;
     }
     if (persisted.state === "starting") {
+      const startupOom = this.#startupOomKilled(persisted, status, events);
       this.#transitionProcess(appId, {
         attemptId,
         state: "error",
-        phase: "interrupted",
+        phase: startupOom ? "failed" : "interrupted",
         source: "reconciler",
-        reason: "stale_start",
-        errorCode: "interrupted",
-        message: "",
+        reason: startupOom ? "oom_killed" : "stale_start",
+        errorCode: startupOom ? "oom_killed" : "interrupted",
+        message: startupOom ? OOM_KILLED_MESSAGE : "",
         status,
       });
+      advanceOom(nextOomAt);
+      return;
     }
+    if (!oomAdvanced) advanceOom(nextOomAt);
   }
 
   #runtimeIdentityChanged(
@@ -3167,6 +3216,156 @@ export class InstanceManager {
            FROM instances WHERE app_id = ?`,
       )
       .get(appId) as InstanceProcessRow | undefined;
+  }
+
+  #startupOomKilled(
+    persisted: ProcessCurrent,
+    status: RuntimeStatus,
+    events: readonly RuntimeOomEvent[],
+  ): boolean {
+    if (status.oomKilled === true) return true;
+    const startMs = persisted.startedAt === null ? undefined : Date.parse(persisted.startedAt);
+    const now = Date.now();
+    return events.some((event) => {
+      const atMs = Date.parse(event.at);
+      if (!Number.isFinite(atMs)) return false;
+      if (startMs !== undefined && Number.isFinite(startMs)) {
+        return atMs >= startMs && atMs <= now;
+      }
+      return Math.abs(atMs - now) <= OOM_DEDUPE_WINDOW_MS;
+    });
+  }
+
+  #recordOomEvents(
+    appId: string,
+    status: RuntimeStatus,
+    events: readonly RuntimeOomEvent[],
+  ): string | undefined {
+    if (events.length === 0) return undefined;
+    if (status.state !== "running" && status.state !== "starting") return undefined;
+    const persisted = readProcess(this.#db, appId);
+    if (persisted.state !== "running" && persisted.state !== "starting") return undefined;
+    if (!validPhaseStatePair(persisted.state, persisted.phase)) return undefined;
+
+    const ordered = [...events].sort((left, right) => left.at.localeCompare(right.at));
+    const attemptId = persisted.attemptId ?? this.#syntheticAttemptId(appId);
+    const startMs = persisted.startedAt === null ? undefined : Date.parse(persisted.startedAt);
+    const existing = this.#db
+      .prepare(
+        `SELECT created_at AS createdAt FROM agent_run_events
+         WHERE app_id = ? AND reason = 'oom_killed'`,
+      )
+      .all(appId) as { createdAt: string }[];
+    let highest: string | undefined;
+
+    for (const event of ordered) {
+      try {
+        const atMs = Date.parse(event.at);
+        if (!Number.isFinite(atMs)) {
+          highest = event.at;
+          continue;
+        }
+        const duplicate = existing.some((row) => {
+          const rowMs = Date.parse(row.createdAt);
+          return Number.isFinite(rowMs) && Math.abs(rowMs - atMs) < OOM_DEDUPE_WINDOW_MS;
+        });
+        if (duplicate) {
+          highest = event.at;
+          continue;
+        }
+        const lastRowAt = this.#lastOomRowAt.get(appId);
+        if (lastRowAt !== undefined && atMs - lastRowAt < OOM_RATE_LIMIT_MS) {
+          highest = event.at;
+          continue;
+        }
+        const synthetic = startMs !== undefined && Number.isFinite(startMs) && atMs < startMs;
+        const historyAttemptId = synthetic ? `oom:${event.at}`.slice(0, 128) : attemptId;
+        this.#appendProcessEvent(appId, {
+          attemptId: historyAttemptId,
+          ...(synthetic ? { seq: 1 } : {}),
+          state: persisted.state,
+          phase: persisted.phase,
+          source: "runtime",
+          reason: "oom_killed",
+          errorCode: "oom_killed",
+          message: OOM_HISTORY_MESSAGE,
+          createdAt: event.at,
+        });
+        existing.push({ createdAt: event.at });
+        this.#lastOomRowAt.set(appId, atMs);
+        highest = event.at;
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        this.#options.logger?.warn("oom_event_append_failed", {
+          appId,
+          error: detail.slice(0, 300),
+        });
+        break;
+      }
+    }
+    return highest;
+  }
+
+  #appendProcessEvent(appId: string, input: AppendProcessEventInput): ProcessEvent {
+    const state = normalizeProcessState(input.state);
+    const phase = input.phase;
+    if (!validPhaseStatePair(state, phase)) {
+      throw new Error(`invalid process event ${state}/${phase ?? "null"} for ${appId}`);
+    }
+    if (input.attemptId.length === 0 || input.attemptId.length > 128) {
+      throw new Error(`invalid process attempt id for ${appId}`);
+    }
+    const reason =
+      input.reason === undefined || input.reason === null ? null : input.reason.slice(0, 200);
+    const errorCode =
+      input.errorCode === undefined || input.errorCode === null
+        ? null
+        : input.errorCode.slice(0, 200);
+    const message = input.message ?? null;
+
+    return this.#db.transaction((): ProcessEvent => {
+      let seq = input.seq;
+      if (seq === undefined) {
+        const seqRow = this.#db
+          .prepare(
+            `SELECT COALESCE(MAX(seq), 0) + 1 AS seq
+             FROM agent_run_events WHERE app_id = ? AND attempt_id = ?`,
+          )
+          .get(appId, input.attemptId) as { seq: number };
+        seq = seqRow.seq;
+      }
+      const result = this.#db
+        .prepare(
+          `INSERT INTO agent_run_events
+             (app_id, attempt_id, seq, state, phase, source, reason, error_code, message, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          appId,
+          input.attemptId,
+          seq,
+          state,
+          phase,
+          input.source,
+          reason,
+          errorCode,
+          message,
+          input.createdAt,
+        );
+      pruneProcessEvents(this.#db, appId);
+      return {
+        id: Number(result.lastInsertRowid),
+        attemptId: input.attemptId,
+        seq,
+        state,
+        phase,
+        source: input.source,
+        reason,
+        errorCode,
+        message,
+        createdAt: input.createdAt,
+      };
+    })();
   }
 
   #transitionProcess(appId: string, input: ProcessTransitionInput): ProcessEvent | null {

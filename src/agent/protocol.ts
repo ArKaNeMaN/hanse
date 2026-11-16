@@ -10,6 +10,27 @@ export interface RuntimeVersion {
   specHash: string;
 }
 
+/** One application's container memory sample. */
+export interface RuntimeAppMemoryStat {
+  appId: string;
+  usageBytes: number;
+  workingSetBytes: number;
+  limitBytes: number;
+  anonBytes: number | null;
+  fileBytes: number | null;
+}
+
+/** One Docker OOM event attributed to an application. */
+export interface RuntimeOomEvent {
+  appId: string;
+  at: string;
+}
+
+/** Response body for `GET /v1/app-stats`. */
+export interface RuntimeAppStats {
+  apps: RuntimeAppMemoryStat[];
+}
+
 /** Effective status of one application, returned by every mutating runtime endpoint. */
 export interface RuntimeAppStatus {
   appId: string;
@@ -31,6 +52,8 @@ export interface RuntimeAppStatus {
   oomKilled?: boolean;
   /** Runtime epoch finish; `null` when the process has not finished or is unknown. */
   finishedAt?: string | null;
+  /** Recent Docker OOM events for this application. */
+  oomEvents?: RuntimeOomEvent[];
   error?: string;
 }
 

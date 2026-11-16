@@ -613,6 +613,18 @@ watch(
                 @clear="pendingClear = $event"
                 @dirty="markDirty"
               />
+              <SettingsRow
+                :row="view.rows.runtimeMemory"
+                :settings="view"
+                :busy="busyRow === view.rows.runtimeMemory.key"
+                :save-label="view.labels.actions.save"
+                :inherit-label="view.labels.actions.inherit"
+                :clear-label="view.labels.actions.clear"
+                @set="(row, value) => mutateRow(row, 'set', value)"
+                @inherit="mutateRow($event, 'inherit')"
+                @clear="pendingClear = $event"
+                @dirty="markDirty"
+              />
               <SettingsProviderSection :settings="view" @changed="onSectionChanged" />
               <SettingsModelProviderSection :settings="view" @changed="onSectionChanged" />
             </div>

@@ -357,7 +357,7 @@ function contextSettingValue(key: string, raw: unknown): unknown {
     }
     return raw;
   }
-  if (key === "context.auto_compact.percent") {
+  if (key === "context.auto_compact.percent" || key === "runtime.memory_mb") {
     if (raw.trim().length === 0) {
       return raw;
     }
@@ -375,7 +375,11 @@ function settingValue(
   if (json) {
     return payload.value;
   }
-  if (key === "context.auto_compact.enabled" || key === "context.auto_compact.percent") {
+  if (
+    key === "context.auto_compact.enabled" ||
+    key === "context.auto_compact.percent" ||
+    key === "runtime.memory_mb"
+  ) {
     return contextSettingValue(key, payload.value);
   }
   if (key !== "web.search" && key !== "web.fetch") {

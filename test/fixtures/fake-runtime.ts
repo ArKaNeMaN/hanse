@@ -12,6 +12,7 @@ export class FakeAgentRuntime implements AgentRuntimeClient {
   readonly ensured: AppRuntimeSpec[] = [];
   readonly deleted: string[] = [];
   readonly reconcileCalls: string[][] = [];
+  readonly statusRequests: Array<{ appId: string; since?: string }> = [];
   readonly statuses = new Map<string, RuntimeAppStatus>();
   readonly endpoints = new Map<string, string>();
 
@@ -44,7 +45,11 @@ export class FakeAgentRuntime implements AgentRuntimeClient {
       : { ...previous, endpoint: null, state: "stopped" };
   }
 
-  async status(appId: string): Promise<RuntimeAppStatus | undefined> {
+  async status(appId: string, options?: { since?: string }): Promise<RuntimeAppStatus | undefined> {
+    this.statusRequests.push({
+      appId,
+      ...(options?.since === undefined ? {} : { since: options.since }),
+    });
     return this.statuses.get(appId);
   }
 

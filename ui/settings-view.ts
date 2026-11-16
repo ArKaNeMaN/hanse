@@ -84,9 +84,10 @@ export const RESTART_AFFECTING_KEYS: ReadonlySet<string> = new Set([
   "web.fetch",
   "git.user.name",
   "git.user.email",
+  "runtime.memory_mb",
 ]);
 
-/** Registry keys counted by `pageSummary` and `scopeCounts` (13 keys). */
+/** Registry keys counted by `pageSummary` and `scopeCounts` (14 keys). */
 const REGISTRY_KEYS: readonly string[] = [
   "llm.model",
   "web.search",
@@ -101,6 +102,7 @@ const REGISTRY_KEYS: readonly string[] = [
   "notifications.public_base_url",
   "notifications.telegram.api_base_url",
   "notifications.include_answer",
+  "runtime.memory_mb",
 ];
 
 const SCOPE_ORDER: readonly SettingsScope[] = ["global", "project", "app"];
@@ -125,7 +127,7 @@ export function applicableScopes(scope: SettingsScope): readonly SettingsScope[]
       : SCOPE_ORDER;
 }
 
-/** All 13 registry rows in a stable order. Dynamic providers are deliberately excluded. */
+/** All 14 registry rows in a stable order. Dynamic providers are deliberately excluded. */
 export function registryRows(props: SettingsProps): readonly SettingsRowProps[] {
   return [
     props.rows.model,
@@ -133,6 +135,7 @@ export function registryRows(props: SettingsProps): readonly SettingsRowProps[] 
     props.rows.webFetch,
     props.rows.contextEnabled,
     props.rows.contextPercent,
+    props.rows.runtimeMemory,
     props.rows.gitName,
     props.rows.gitEmail,
     props.notifications.rows.mode,
@@ -353,7 +356,7 @@ function plural(count: number, singular: string, pluralForm: string): string {
 /** Short, data-driven rail summary for each section. */
 export function sectionSummaries(props: SettingsProps): Record<SettingsSectionId, string> {
   const model = props.rows.model.effectiveText;
-  const modelOverrides = overridesHere([props.rows.model]);
+  const modelOverrides = overridesHere([props.rows.model, props.rows.runtimeMemory]);
   const web = props.rows.webSearch.effectiveText;
   const webOverrides = overridesHere([props.rows.webSearch, props.rows.webFetch]);
   const contextOn = props.rows.contextEnabled.effectiveText === "On";
@@ -392,6 +395,7 @@ export function attentionSection(props: SettingsProps): SettingsSectionId {
     "web.fetch": "web",
     "context.auto_compact.enabled": "context",
     "context.auto_compact.percent": "context",
+    "runtime.memory_mb": "agent",
     "git.user.name": "git",
     "git.user.email": "git",
     "notifications.mode": "notifications",
@@ -441,7 +445,12 @@ export function sectionForHash(hash: string): SettingsSectionId | undefined {
       return id;
     }
   }
-  if (value === "providers" || value === "custom-providers" || value.startsWith("setting-llm")) {
+  if (
+    value === "providers" ||
+    value === "custom-providers" ||
+    value.startsWith("setting-llm") ||
+    value.startsWith("setting-runtime")
+  ) {
     return "agent";
   }
   if (value.startsWith("setting-web")) {

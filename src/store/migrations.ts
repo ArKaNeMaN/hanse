@@ -1174,4 +1174,27 @@ UPDATE handoffs SET target_project_id = project_id WHERE target_project_id IS NU
 CREATE INDEX handoffs_target_project ON handoffs(target_project_id, state);
 `,
   },
+  {
+    version: 29,
+    name: "app-memory-samples",
+    backwardCompatible: true,
+    requiresExclusive: false,
+    sql: `
+-- v29: bounded per-application container memory samples
+CREATE TABLE app_memory_samples (
+  app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+  sampled_at TEXT NOT NULL CHECK (
+    sampled_at GLOB
+      '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'
+  ),
+  usage_bytes INTEGER NOT NULL CHECK (usage_bytes >= 0),
+  working_set_bytes INTEGER NOT NULL CHECK (working_set_bytes >= 0),
+  limit_bytes INTEGER NOT NULL CHECK (limit_bytes > 0),
+  anon_bytes INTEGER CHECK (anon_bytes IS NULL OR anon_bytes >= 0),
+  file_bytes INTEGER CHECK (file_bytes IS NULL OR file_bytes >= 0),
+  PRIMARY KEY (app_id, sampled_at)
+);
+CREATE INDEX app_memory_samples_sampled_at ON app_memory_samples(sampled_at);
+`,
+  },
 ];

@@ -40,7 +40,7 @@ only server change is the action label strings.
   the current scope). A set/cleared/absent state maps to filled/cleared/hollow; the winning step is
   `row.effective.source`. The global page has no wider scopes, so it synthesizes one current-scope
   step from `row.own.state` instead of inventing Project or Application values.
-- **Summary** (`pageSummary`): counts the 13 registry values, the two git credentials, and the two
+- **Summary** (`pageSummary`): counts the 14 registry values, the two git credentials, and the two
   telegram secrets. `set here` is a current-scope set; `inherited` is an absent current scope
   resolved from a wider scope (defaults are not counted as inherited); `attention` is the
   deduplicated warning/error set; `restart pending` is the pending list, or one when only
@@ -51,8 +51,8 @@ only server change is the action label strings.
   `null`, so the ladder hides the count rather than fabricating one.
 - **Restart marker** (`showsRestartMarker`): `restartRequired` plus a launch-effective key set at the
   current scope. The launch-affecting keys are `llm.model`, `web.search`, `web.fetch`,
-  `git.user.name`, and `git.user.email`; changing a wider scope, or a pending restart caused by
-  another change, does not mark an inherited/default row.
+  `git.user.name`, `git.user.email`, and `runtime.memory_mb`; changing a wider scope, or a pending
+  restart caused by another change, does not mark an inherited/default row.
 
 ## Layout and responsive
 

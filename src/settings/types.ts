@@ -21,7 +21,8 @@ export type SettingsKey =
   | "notifications.telegram.chat_id"
   | "notifications.public_base_url"
   | "notifications.telegram.api_base_url"
-  | "notifications.include_answer";
+  | "notifications.include_answer"
+  | "runtime.memory_mb";
 
 export type NotificationMode = "off" | "attention" | "all";
 
@@ -93,6 +94,9 @@ export interface EffectiveSettings {
       name: EffectiveValue<string>;
       email: EffectiveValue<string>;
     };
+  };
+  runtime: {
+    memoryMb: EffectiveValue<number>;
   };
   notifications: {
     mode: EffectiveValue<NotificationMode>;

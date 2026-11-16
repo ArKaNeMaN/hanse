@@ -2,6 +2,11 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import type {
+  RuntimeAppMemoryStat,
+  RuntimeAppStats,
+  RuntimeOomEvent,
+} from "../src/agent/protocol.js";
 import { type EnsureAppRequest, stoppedStatus } from "../src/agent/protocol.js";
 import {
   computeSpecHash,
@@ -319,5 +324,24 @@ describe("runtime protocol", () => {
     });
     const without = JSON.parse(JSON.stringify(spec)) as Record<string, unknown>;
     expect(without.expectedImageId).toBeUndefined();
+  });
+
+  it("carries additive app stats and optional oom events", () => {
+    const memory: RuntimeAppMemoryStat = {
+      appId: "p:app",
+      usageBytes: 1_000,
+      workingSetBytes: 700,
+      limitBytes: 2_000,
+      anonBytes: 500,
+      fileBytes: 200,
+    };
+    const stats: RuntimeAppStats = { apps: [memory] };
+    const oomEvents: RuntimeOomEvent[] = [{ appId: "p:app", at: "2026-11-16T10:00:00.000Z" }];
+
+    expect(JSON.parse(JSON.stringify(stats))).toEqual(stats);
+    expect(JSON.parse(JSON.stringify({ ...stoppedStatus("p:app"), oomEvents }))).toMatchObject({
+      appId: "p:app",
+      oomEvents,
+    });
   });
 });

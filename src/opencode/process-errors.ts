@@ -8,6 +8,7 @@ export type ProcessErrorCode =
   | "skills_materialize_failed"
   | "readiness_timeout"
   | "runtime_unavailable"
+  | "oom_killed"
   | "interrupted"
   | "launch_changed"
   | "image_changed";
@@ -19,6 +20,7 @@ const KNOWN_CODES: ReadonlySet<string> = new Set<ProcessErrorCode>([
   "skills_materialize_failed",
   "readiness_timeout",
   "runtime_unavailable",
+  "oom_killed",
   "interrupted",
   "launch_changed",
   "image_changed",
@@ -31,6 +33,7 @@ const GENERIC_MESSAGES: Record<ProcessErrorCode, string> = {
   skills_materialize_failed: "Agent skills could not be materialized.",
   readiness_timeout: "The agent did not become ready in time.",
   runtime_unavailable: "The agent runtime is unavailable.",
+  oom_killed: "The agent was killed after exceeding its memory limit.",
   interrupted: "The agent start was interrupted.",
   launch_changed: "The launch configuration changed; the agent was not restarted.",
   image_changed: "The target image changed; the agent was not restarted.",

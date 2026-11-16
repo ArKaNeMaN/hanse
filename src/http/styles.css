@@ -8031,6 +8031,468 @@
     margin-block-start: var(--space-1);
   }
 
+  /* ------------------------------------------------------------------ */
+  /* Application memory card                                            */
+  /* ------------------------------------------------------------------ */
+
+  .memory-panel {
+    --memory-chart-height: 176px;
+    display: flex;
+    flex-direction: column;
+    min-inline-size: 0;
+  }
+
+  .memory-panel__head {
+    flex-wrap: nowrap;
+    align-items: flex-end;
+  }
+
+  .memory-panel__identity {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    min-inline-size: 0;
+  }
+
+  .memory-panel__identity .card__title {
+    margin: 0;
+  }
+
+  .memory-toolbar {
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: var(--space-2);
+    margin-inline-start: auto;
+    min-inline-size: 0;
+  }
+
+  .memory-bucket {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    color: var(--text-2);
+  }
+
+  .memory-bucket .select-wrap {
+    inline-size: 7rem;
+  }
+
+  .memory-bucket .select {
+    inline-size: 100%;
+  }
+
+  .memory-bucket-reason {
+    padding: 0 var(--space-4) var(--space-3);
+  }
+
+  .memory-summary {
+    border-block-start: 0;
+  }
+
+  .memory-panel__body {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    min-inline-size: 0;
+  }
+
+  .memory-error {
+    flex-wrap: wrap;
+    align-items: center;
+  }
+
+  .memory-error .btn {
+    margin-inline-start: auto;
+  }
+
+  .memory-empty {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-3);
+  }
+
+  .memory-empty .hint {
+    margin: 0;
+  }
+
+  .memory-chart {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    min-inline-size: 0;
+  }
+
+  .memory-chart-toggle {
+    align-self: flex-start;
+  }
+
+  .memory-chart__plot {
+    position: relative;
+    block-size: var(--memory-chart-height);
+    overflow: hidden;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: var(--surface-1);
+    isolation: isolate;
+  }
+
+  .memory-chart__ground {
+    position: absolute;
+    inset: 0;
+    opacity: 0.55;
+    pointer-events: none;
+  }
+
+  .memory-chart__svg {
+    position: absolute;
+    inset: 0;
+    display: block;
+    inline-size: 100%;
+    block-size: 100%;
+    overflow: hidden;
+  }
+
+  .memory-chart__band {
+    fill: var(--wash-2);
+    stroke: var(--line);
+    stroke-width: 1px;
+  }
+
+  .memory-chart__line {
+    fill: none;
+    stroke: var(--text-1);
+    stroke-width: 2px;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  .memory-chart__limit {
+    stroke: var(--text-2);
+    stroke-width: 1px;
+    stroke-dasharray: 4 4;
+  }
+
+  .memory-chart__limit-label {
+    position: absolute;
+    inset-inline-end: var(--space-2);
+    transform: translateY(-50%);
+    padding-inline: var(--space-1);
+    background: var(--surface-1);
+    color: var(--text-2);
+    font-family: var(--font-mono);
+    font-size: var(--text-micro);
+    line-height: 1.4;
+    white-space: nowrap;
+  }
+
+  .memory-chart__floor {
+    position: absolute;
+    inset-block-end: var(--space-1);
+    inset-inline-start: var(--space-2);
+    color: var(--text-3);
+    font-family: var(--font-mono);
+    font-size: var(--text-micro);
+    line-height: 1;
+  }
+
+  .memory-oom {
+    position: absolute;
+    inset-block-start: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    inline-size: 44px;
+    block-size: 44px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--danger);
+    cursor: pointer;
+    transform: translateX(-50%);
+  }
+
+  .memory-oom__mark {
+    inline-size: 0;
+    block-size: 0;
+    margin-block-start: var(--space-1);
+    border-inline: 5px solid transparent;
+    border-block-end: 8px solid currentColor;
+  }
+
+  .memory-oom::after {
+    content: "";
+    inline-size: 1px;
+    block-size: 10px;
+    background: currentColor;
+  }
+
+  .memory-oom__count {
+    margin-block-start: 1px;
+    padding: 0 2px;
+    border-radius: var(--radius-pill);
+    background: var(--surface-1);
+    color: var(--danger);
+    font-family: var(--font-mono);
+    font-size: var(--text-micro);
+    line-height: 1;
+  }
+
+  .memory-chart__now {
+    position: absolute;
+    display: grid;
+    place-items: center;
+    inline-size: 44px;
+    block-size: 44px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    cursor: pointer;
+    transform: translate(-50%, -50%);
+  }
+
+  .memory-chart__dot {
+    inline-size: 7px;
+    block-size: 7px;
+    border-radius: var(--radius-pill);
+    background: var(--text-1);
+    box-shadow: 0 0 0 2px var(--surface-1);
+  }
+
+  .memory-chart__now-label {
+    position: absolute;
+    inset-block-start: 50%;
+    inset-inline-start: calc(50% + var(--space-2));
+    transform: translateY(-50%);
+    color: var(--text-3);
+    font-size: var(--text-micro);
+    line-height: 1;
+    white-space: nowrap;
+  }
+
+  .memory-chart__now.is-right .memory-chart__now-label {
+    inset-inline-start: auto;
+    inset-inline-end: calc(50% + var(--space-2));
+  }
+
+  .memory-chart__axis {
+    position: relative;
+    block-size: 1.25rem;
+  }
+
+  .memory-chart__tick {
+    position: absolute;
+    inset-block-start: 0;
+    transform: translateX(-50%);
+    color: var(--text-3);
+    font-family: var(--font-mono);
+    font-size: var(--text-micro);
+    line-height: 1.4;
+    white-space: nowrap;
+  }
+
+  .memory-chart__tick.is-first {
+    transform: none;
+  }
+
+  .memory-chart__tick.is-last {
+    transform: translateX(-100%);
+  }
+
+  .memory-legend {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2) var(--space-4);
+    color: var(--text-3);
+    font-size: var(--text-caption);
+  }
+
+  .memory-legend__item {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .memory-legend__band {
+    inline-size: 0.875rem;
+    block-size: 0.625rem;
+    border: 1px solid var(--line);
+    border-radius: 1px;
+    background: var(--wash-2);
+  }
+
+  .memory-legend__line {
+    inline-size: 1rem;
+    block-size: 2px;
+    background: var(--text-1);
+  }
+
+  .memory-legend__limit {
+    inline-size: 1rem;
+    border-block-start: 1px dashed var(--text-2);
+  }
+
+  .memory-legend__oom {
+    inline-size: 0;
+    block-size: 0;
+    border-inline: 4px solid transparent;
+    border-block-end: 7px solid var(--danger);
+  }
+
+  .memory-readout {
+    margin: 0;
+    min-block-size: 1.4em;
+    color: var(--text-2);
+    font-size: var(--text-caption);
+    line-height: 1.4;
+  }
+
+  .memory-readout:empty {
+    min-block-size: 0;
+  }
+
+  .memory-chart__note {
+    margin: 0;
+  }
+
+  .memory-table caption {
+    margin-block-end: var(--space-2);
+    text-align: start;
+  }
+
+  .memory-table .table-wrap {
+    overflow-x: auto;
+  }
+
+  .memory-table th[scope="row"] {
+    color: var(--text-2);
+  }
+
+  .memory-chart__skeleton {
+    inline-size: 100%;
+    block-size: var(--memory-chart-height);
+  }
+
+  .memory-foot {
+    justify-content: space-between;
+    flex-wrap: wrap;
+  }
+
+  .memory-foot__meta {
+    margin: 0;
+  }
+
+  .memory-foot__actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  @media (max-width: 1023px) {
+    .memory-panel {
+      --memory-chart-height: 150px;
+    }
+
+    .memory-panel__head {
+      flex-wrap: wrap;
+      align-items: flex-start;
+    }
+
+    .memory-toolbar {
+      inline-size: 100%;
+      flex-wrap: wrap;
+      justify-content: flex-start;
+    }
+  }
+
+  @media (max-width: 767px) {
+    .memory-panel {
+      --memory-chart-height: 128px;
+    }
+
+    .memory-panel__head {
+      padding: var(--space-3);
+    }
+
+    .memory-bucket-reason {
+      padding-inline: var(--space-3);
+    }
+
+    .memory-panel__body {
+      padding: var(--space-3);
+    }
+
+    .memory-summary .watch {
+      padding: var(--space-3);
+    }
+
+    .memory-toolbar {
+      gap: var(--space-2);
+    }
+
+    .memory-chart__limit-label {
+      font-size: var(--text-micro);
+    }
+  }
+
+  @media (max-width: 479px) {
+    .memory-bucket {
+      inline-size: 100%;
+    }
+
+    .memory-bucket .select-wrap {
+      flex: 1 1 auto;
+      inline-size: auto;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .memory-chart__line,
+    .memory-chart__band,
+    .memory-chart__limit {
+      transition: none;
+    }
+  }
+
+  @media (forced-colors: active) {
+    .memory-chart__ground {
+      background-image: none;
+    }
+
+    .memory-chart__band {
+      fill: Canvas;
+      stroke: CanvasText;
+    }
+
+    .memory-chart__line,
+    .memory-chart__limit {
+      stroke: CanvasText;
+    }
+
+    .memory-oom__mark,
+    .memory-legend__oom {
+      border-block-end-color: CanvasText;
+    }
+
+    .memory-oom {
+      color: CanvasText;
+    }
+
+    .memory-chart__dot {
+      background: CanvasText;
+      box-shadow: 0 0 0 2px Canvas;
+    }
+
+    .memory-chart__limit-label,
+    .memory-chart__floor {
+      background: Canvas;
+      color: CanvasText;
+    }
+  }
+
   .menu {
     position: relative;
     display: inline-block;

@@ -13,6 +13,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { parse as parseYaml } from "yaml";
+import { ContainerEventTracker } from "../src/runner/container-events.js";
 import {
   DockerClient,
   type DockerContainerCreateOptions,
@@ -280,6 +281,14 @@ async function harness(
   const docker = new FakeDocker();
   const service = new RunnerService({ config: { ...config(f), ...overrides }, docker });
   return { f, docker, service };
+}
+
+async function waitFor(check: () => boolean, timeoutMs = 1_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!check()) {
+    if (Date.now() > deadline) throw new Error("condition not met before timeout");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
 }
 
 describe("RunnerService per-app containers", () => {
@@ -780,6 +789,63 @@ describe("RunnerService per-app containers", () => {
     });
     expect(ready.status).toBe(503);
     expect(await ready.json()).toMatchObject({ code: "docker_unavailable" });
+  });
+
+  it("attaches oomEvents only to the status HTTP handler, not status() or reconcile()", async () => {
+    const f = fixture();
+    const docker = new FakeDocker();
+    const tracker = new ContainerEventTracker({
+      docker: {
+        streamEvents: async function* (_filter, signal) {
+          yield JSON.stringify({
+            Type: "container",
+            Action: "oom",
+            Actor: { Attributes: { "hanse.app.id": "project:a" } },
+            time: Date.now() / 1000,
+          });
+          await new Promise<void>((resolve) => {
+            if (signal.aborted) {
+              resolve();
+              return;
+            }
+            signal.addEventListener("abort", () => resolve(), { once: true });
+          });
+        },
+        inspectContainer: (id) => docker.inspectContainer(id),
+      },
+      initialBackoffMs: 5,
+    });
+    tracker.start();
+    try {
+      const service = new RunnerService({ config: config(f), docker, containerEvents: tracker });
+      await service.ensure(rawSpec(f, "a"));
+      await waitFor(() => tracker.eventsFor("project:a").length === 1);
+
+      expect(await service.status("project:a")).not.toHaveProperty("oomEvents");
+      const reconciled = await service.reconcile(["project:a"]);
+      expect(reconciled.apps[0]).not.toHaveProperty("oomEvents");
+
+      const server = service.createServer();
+      servers.push(server);
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const address = server.address();
+      if (address === null || typeof address === "string") throw new Error("no address");
+      const base = `http://127.0.0.1:${address.port}`;
+      const since = encodeURIComponent(new Date(Date.now() - 60_000).toISOString());
+      const response = await fetch(`${base}/v1/apps/project%3Aa?since=${since}`, {
+        headers: { authorization: "Bearer runtime-token" },
+      });
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as {
+        state: string;
+        oomEvents: { appId: string; at: string }[];
+      };
+      expect(body.state).toBe("running");
+      expect(body.oomEvents).toHaveLength(1);
+      expect(body.oomEvents[0]?.appId).toBe("project:a");
+    } finally {
+      tracker.stop();
+    }
   });
 });
 

@@ -77,19 +77,24 @@ export class MasterToolError extends Error {
   }
 }
 
-const HUMAN_ONLY_SETTING_PREFIXES = ["notifications."] as const;
+const HUMAN_ONLY_SETTING_PREFIXES = ["notifications.", "runtime."] as const;
 
 /**
- * Notification routing settings are human-only even though they are not secrets: they choose where
- * the human-only bot token and notification content are sent.
+ * Notification routing and container-resource settings are human-only: the first chooses where the
+ * human-only bot token and notification content are sent, and the second is a containment control
+ * the master agent must not raise for itself.
  */
 function requireAgentWritableSetting(key: string): void {
-  if (HUMAN_ONLY_SETTING_PREFIXES.some((prefix) => key.startsWith(prefix))) {
-    throw new MasterToolError(
-      "permission_denied",
-      `settings key ${key} is human-only because it controls notification routing`,
-    );
+  const prefix = HUMAN_ONLY_SETTING_PREFIXES.find((candidate) => key.startsWith(candidate));
+  if (prefix === undefined) {
+    return;
   }
+  const because =
+    prefix === "runtime." ? "it controls container resources" : "it controls notification routing";
+  throw new MasterToolError(
+    "permission_denied",
+    `settings key ${key} is human-only because ${because}`,
+  );
 }
 
 export interface MasterToolContext extends SkillToolContext {
@@ -473,6 +478,7 @@ function effectiveValue(effective: EffectiveSettings, key: string): EffectiveVal
     "web.fetch": effective.web.fetch,
     "context.auto_compact.enabled": effective.context.autoCompact.enabled,
     "context.auto_compact.percent": effective.context.autoCompact.percent,
+    "runtime.memory_mb": effective.runtime.memoryMb,
     "git.user.name": effective.git.user.name,
     "git.user.email": effective.git.user.email,
     "notifications.mode": effective.notifications.mode,

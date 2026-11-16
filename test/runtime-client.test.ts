@@ -153,6 +153,53 @@ describe("HttpAgentRuntimeClient", () => {
     await expect(f.client.logs("missing")).resolves.toBeUndefined();
   });
 
+  it("reads app stats and appends an encoded since to status", async () => {
+    const since = "2026-11-16T10:00:00.000Z";
+    const stat = {
+      appId: "p:web",
+      usageBytes: 1_000,
+      workingSetBytes: 700,
+      limitBytes: 2_000,
+      anonBytes: 500,
+      fileBytes: 200,
+    };
+    const f = await fixture((request, response) => {
+      if (request.method === "GET" && request.url === "/v1/app-stats") {
+        json(response, 200, { apps: [stat] });
+        return;
+      }
+      if (
+        request.method === "GET" &&
+        request.url === `/v1/apps/p%3Aweb?since=${encodeURIComponent(since)}`
+      ) {
+        json(response, 200, status);
+        return;
+      }
+      json(response, 404, { error: "not found" });
+    });
+
+    await expect(f.client.appStats?.()).resolves.toEqual({ apps: [stat] });
+    await expect(f.client.status("p:web", { since })).resolves.toEqual(status);
+    expect(f.records.map((record) => record.path)).toEqual(["/v1/app-stats", "/v1/apps/p:web"]);
+    expect(f.calls[1]?.url).toBe(`/v1/apps/p%3Aweb?since=${encodeURIComponent(since)}`);
+  });
+
+  it("treats a 404 or transport failure on app stats as unsupported", async () => {
+    const missing = await fixture((_request, response) => {
+      json(response, 404, { error: "not found" });
+    });
+    await expect(missing.client.appStats?.()).resolves.toBeUndefined();
+
+    const unreachable = new HttpAgentRuntimeClient({
+      baseUrl: "http://127.0.0.1:1",
+      token: TOKEN,
+      fetchImpl: async () => {
+        throw new Error("connection refused");
+      },
+    });
+    await expect(unreachable.appStats?.()).resolves.toBeUndefined();
+  });
+
   it("throws a typed error for a JSON supervisor failure", async () => {
     const f = await fixture((_request, response) => {
       json(response, 401, { error: "unauthorized", code: "unauthorized" });

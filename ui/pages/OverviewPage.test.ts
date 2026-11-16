@@ -68,6 +68,7 @@ function processRow(
   state: "starting" | "stopping" | "error",
   phase: string,
   updatedAt: string,
+  errorCode: string | null = null,
 ) {
   return {
     appId: `${PROJECT_ONE.id}:${appKey}`,
@@ -76,6 +77,7 @@ function processRow(
     projectName: "Project One",
     state,
     phase,
+    errorCode,
     updatedAt,
     chatHref: `/chat?app=${appKey}&project=${PROJECT_ONE.id}`,
     appHref: `/projects/${PROJECT_ONE.id}/apps/${appKey}`,
@@ -264,6 +266,22 @@ describe("OverviewPage", () => {
     const firstApp = firstRow?.findAll("a").find((link) => link.text() === "Application");
     expect(firstChat?.attributes("href")).toBe(`/chat?app=alpha&project=${PROJECT_ONE.id}`);
     expect(firstApp?.attributes("href")).toBe(`/projects/${PROJECT_ONE.id}/apps/alpha`);
+  });
+
+  it("labels an OOM process row as Out of memory", async () => {
+    const wrapper = await mountPage(
+      boot({
+        processes: {
+          starting: 0,
+          stopping: 0,
+          error: 1,
+          apps: [processRow("alpha", "error", "failed", "2026-10-28T05:00:00.000Z", "oom_killed")],
+        },
+      }),
+    );
+
+    const row = wrapper.get("[data-process-app]");
+    expect(row.text()).toContain("Out of memory");
   });
 
   it("renders the empty state with a dialog and no header action", async () => {

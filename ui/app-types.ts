@@ -319,6 +319,7 @@ export interface OverviewProcessRowProps {
   readonly projectName: string;
   readonly state: ProcessState;
   readonly phase: ProcessPhase | null;
+  readonly errorCode: string | null;
   readonly updatedAt: string | null;
   readonly chatHref: string;
   readonly appHref: string;

@@ -204,6 +204,7 @@ export type SettingsRowKind =
   | "web"
   | "context-enabled"
   | "context-percent"
+  | "runtime-memory"
   | "git-identity"
   | "notification-mode"
   | "notification-enabled"
@@ -603,6 +604,7 @@ export interface SettingsProps {
     readonly webFetch: SettingsRowProps;
     readonly contextEnabled: SettingsRowProps;
     readonly contextPercent: SettingsRowProps;
+    readonly runtimeMemory: SettingsRowProps;
     readonly gitName: SettingsRowProps;
     readonly gitEmail: SettingsRowProps;
   };

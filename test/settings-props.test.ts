@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { defaultAppMemoryMb } from "../src/config/app-resources.js";
 import { CoordinatorService } from "../src/coordinator/service.js";
 import type { RunSshKeygen } from "../src/git/credentials.js";
 import { GitService } from "../src/git/service.js";
@@ -192,6 +193,18 @@ describe("settings props", () => {
       { value: "false", label: "Off", selected: false, disabled: false },
     ]);
     expect(props.rows.contextPercent.effectiveText).toBe("80%");
+    expect(props.rows.runtimeMemory.id).toBe("setting-runtime-memory");
+    expect(props.rows.runtimeMemory.kind).toBe("runtime-memory");
+    expect(props.rows.runtimeMemory.effectiveText).toBe(`${defaultAppMemoryMb()} MB`);
+    expect(props.rows.runtimeMemory.number).toMatchObject({
+      value: "",
+      placeholder: `Default: ${defaultAppMemoryMb()} MB`,
+      min: 128,
+      max: 65536,
+      step: 1,
+      required: true,
+    });
+    expect(props.rows.runtimeMemory.actions.clear).toBeNull();
     expect(props.restart.restartRequired).toBe(false);
   });
 
@@ -200,6 +213,7 @@ describe("settings props", () => {
     f.settings.set("global", {}, "llm.model", "global/model", "owner");
     f.settings.set("project", { projectId: "p" }, "llm.model", "project/model", "owner");
     f.settings.set("global", {}, "web.search", { driver: "builtin" }, "owner");
+    f.settings.set("global", {}, "runtime.memory_mb", 1024, "owner");
     f.settings.clear("app", { projectId: "p", appKey: "web" }, "web.search", "owner");
 
     const site = buildSite(f.deps);
@@ -216,6 +230,9 @@ describe("settings props", () => {
     expect(project?.rows.webSearch.inheritedNote).toBe(
       "This scope inherits builtin from Global. Saving creates an override.",
     );
+    expect(project?.rows.runtimeMemory.effectiveText).toBe("1024 MB");
+    expect(project?.rows.runtimeMemory.number?.placeholder).toBe("Inherited: 1024 MB");
+    expect(project?.rows.runtimeMemory.actions.clear).toBeNull();
 
     const app = buildSettingsProps({
       deps: f.deps,
@@ -239,6 +256,7 @@ describe("settings props", () => {
       enabled: false,
       reason: "Already cleared at this scope.",
     });
+    expect(app?.rows.runtimeMemory.number?.placeholder).toBe("Inherited: 1024 MB");
     expect(app?.rows.webSearch.scopeDetails).toEqual([
       {
         scope: "global",

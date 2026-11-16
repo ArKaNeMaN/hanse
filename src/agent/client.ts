@@ -3,6 +3,7 @@ import type {
   EnsureAppOptions,
   EnsureAppRequest,
   ReconcileResponse,
+  RuntimeAppStats,
   RuntimeAppStatus,
   RuntimeErrorBody,
   RuntimeLogs,
@@ -21,7 +22,9 @@ export interface AgentRuntimeClient {
   /** Stop one app host and return its final status. Unknown apps are a no-op. */
   delete(appId: string): Promise<RuntimeAppStatus>;
   /** Current status, or `undefined` when the app has never been started. */
-  status(appId: string): Promise<RuntimeAppStatus | undefined>;
+  status(appId: string, options?: { since?: string }): Promise<RuntimeAppStatus | undefined>;
+  /** Container memory samples; absent on runtimes that do not expose the endpoint. */
+  appStats?(): Promise<RuntimeAppStats | undefined>;
   /** Bounded logs, or `undefined` when the app has never been started. */
   logs(appId: string): Promise<RuntimeLogs | undefined>;
   /** Stop every host whose app id is not in the desired list. */
@@ -131,13 +134,24 @@ export class HttpAgentRuntimeClient implements AgentRuntimeClient {
     )) as RuntimeAppStatus;
   }
 
-  status(appId: string): Promise<RuntimeAppStatus | undefined> {
+  status(appId: string, options?: { since?: string }): Promise<RuntimeAppStatus | undefined> {
+    const since = options?.since;
+    const query = since === undefined ? "" : `?since=${encodeURIComponent(since)}`;
     return this.#request<RuntimeAppStatus>(
       "GET",
-      `/v1/apps/${encodeURIComponent(appId)}`,
+      `/v1/apps/${encodeURIComponent(appId)}${query}`,
       undefined,
       true,
     );
+  }
+
+  async appStats(): Promise<RuntimeAppStats | undefined> {
+    try {
+      return await this.#request<RuntimeAppStats>("GET", "/v1/app-stats", undefined, true);
+    } catch (error) {
+      if (error instanceof RuntimeClientError && error.status === 0) return undefined;
+      throw error;
+    }
   }
 
   logs(appId: string): Promise<RuntimeLogs | undefined> {

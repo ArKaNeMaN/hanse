@@ -20,7 +20,7 @@ import type { ChatStreamStatusKind } from "../../chat/stream.js";
 import type { ChatMessagePartView, ChatThreadItem, InlineQuestionView } from "../../chat/types.js";
 import { absoluteTime, timeAgo } from "../../format.js";
 import type { ProcessError, ProcessPhase, ProcessState } from "../../process/types.js";
-import { processPhasePill, processPill, runtimePill } from "../../status.js";
+import { processPill, runtimePill } from "../../status.js";
 import AppIcon from "../AppIcon.vue";
 import ChatGeneratingRow from "./ChatGeneratingRow.vue";
 import ChatMessage from "./ChatMessage.vue";
@@ -121,11 +121,16 @@ const stoppedPanel = computed(() =>
 );
 const processPillSpec = computed(() => {
   const state = props.processState;
-  if (state === "error") return processPill("error", props.processPhase ?? null);
-  if (state === "running") return processPill("running", props.processPhase ?? null);
+  const errorCode = props.processError?.code ?? null;
+  if (state === "error") return processPill("error", props.processPhase ?? null, errorCode, null);
+  if (state === "running")
+    return processPill("running", props.processPhase ?? null, errorCode, null);
   if (state === "stopped") return runtimePill("stopped");
-  return processPhasePill(props.processPhase ?? null) ?? runtimePill("starting");
+  return processPill("starting", props.processPhase ?? null, errorCode, null);
 });
+const processErrorTitle = computed(() =>
+  props.processError?.code === "oom_killed" ? "Agent ran out of memory" : "Agent failed to start",
+);
 const processErrorText = computed(() => {
   const message = props.processError?.message?.trim();
   return message !== undefined && message.length > 0
@@ -618,7 +623,7 @@ defineExpose({ captureAnchor, restoreAnchor, scrollToBottom, onScroll, unseen })
           >
             <span class="error-state__mark"><AppIcon name="alert-triangle" /></span>
             <div>
-              <h3 class="error-state__title">Agent failed to start</h3>
+              <h3 class="error-state__title">{{ processErrorTitle }}</h3>
               <p class="error-state__body" data-chat-process-error-message>
                 {{ processErrorText }}
               </p>

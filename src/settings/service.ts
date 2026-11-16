@@ -231,6 +231,7 @@ export function launchEffectiveSettings(
     llm: effective.llm,
     web: effective.web,
     git: effective.git,
+    runtime: effective.runtime,
   };
 }
 
@@ -633,6 +634,7 @@ export class SettingsService {
           email: effectiveFor<string>(values, "git.user.email"),
         },
       },
+      runtime: { memoryMb: effectiveFor<number>(values, "runtime.memory_mb") },
       notifications: {
         mode: effectiveFor<NotificationMode>(values, "notifications.mode"),
         telegram: {

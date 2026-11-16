@@ -154,7 +154,8 @@ General semantic aliases: `--danger` = status failed, `--success` = status deliv
 ### 2.4 Color rules
 
 - **One accent.** Brass marks the single most likely action on a screen (primary button fill),
-current nav state, focus, and the handoff seal. Nothing decorative carries brass.
+current nav state, focus, and the handoff seal. Nothing decorative carries brass. The Memory card's
+working-set series is ink (`--text-1`), never brass.
 - Status hues are semantic, not accents. They never appear as large fills or borders on cards.
   Awaiting approval intentionally sits in the brass family because it is the attention state; the
   pill form, uppercase label, and stamp glyph separate it from a primary action.
@@ -395,12 +396,13 @@ follows its normal shell behavior.
 is the reference; hanse's ink/brass does not clash because it shares the same luminance band and
 avoids bright chrome.
 8. **Application page.** Header with `Open chat`, `Terminal`, and a `More actions` disclosure; an
-always-visible two-cell state strip (`Runtime`, `Settings`); below it an accordion of four
-button-controlled group cards in order: `Git`, `Image`, `SSH access`, `Danger zone`. All groups are
-collapsed by default, and each app's open state is persisted per project+app key in `localStorage`.
-An open Git group keeps the workbench as the main column (Repository, Changes) and a 320px rail
-(Remotes, Last commit); Image is its own group. The only page primary is `Commit all`; the Image
-card uses status pills and disclosures, not a full-width block.
+always-visible two-cell state strip (`Runtime`, `Settings`); below it a full-width Memory card
+(`MEMORY` overline, `.watch-strip--4` summary, historical chart, edit link); below that an accordion
+of exactly four button-controlled group cards in order: `Git`, `Image`, `SSH access`, `Danger zone`.
+All groups are collapsed by default, and each app's open state is persisted per project+app key in
+`localStorage`. An open Git group keeps the workbench as the main column (Repository, Changes) and a
+320px rail (Remotes, Last commit); Image is its own group. The only page primary is `Commit all`;
+the Image card uses status pills and disclosures, not a full-width block.
 9. **Settings.** A sticky scope/section nav, four section cards (`Agent`, `Web tools`, `Git`,
 `Restart & pending`), and one collapsed `.setting-row` per setting. Only effective value and source
 are visible at rest; editor, scope history, warnings, and actions are inside the row disclosure.
@@ -576,7 +578,8 @@ Summary sits below. The track is decorative (`aria-hidden`); the `aria-label` ca
 - Surface 1 or 2, 1px `--line`, radius `--radius-md` (6px), no shadow at rest. Header 48px with a
 bottom hairline; body 16px; foot 12px top hairline.
 - Cards are for genuinely bounded objects (a handoff, a runtime panel), never for every metric.
-Metrics use `.watch-strip` with vertical rules.
+Metrics use `.watch-strip` with vertical rules. The Memory card is a bounded resource panel: `.card`
+plus `.memory-panel`, with a `.watch-strip--4` summary and the chart as content, not nested cards.
 - Hover lift is not used. Only clickable cards get `--wash-1` and `cursor: pointer`, plus a
 focus-visible ring.
 
@@ -926,6 +929,27 @@ These map exactly to Section 3. No other font sizes are allowed in product CSS.
   `.terminal-toolbar__status`, `.terminal-toolbar__actions`, `.terminal-banner`, `.terminal-host`,
   `.terminal-empty`. The xterm viewport background is `--inset`; the terminal theme maps ANSI to the
   status tokens and updates with `data-theme`.
+- **Memory card:** `.memory-panel`, `.memory-panel__head`, `.memory-panel__identity`,
+  `.memory-toolbar`, `.memory-bucket`, `.memory-bucket-reason`, `.memory-summary`,
+  `.memory-panel__body`, `.memory-error`, `.memory-empty`, `.memory-chart-toggle`, `.memory-chart`,
+  `.memory-chart__plot`, `.memory-chart__ground`, `.memory-chart__svg`, `.memory-chart__band`
+  (`--wash-2` fill, `--line` edge), `.memory-chart__line` (2px `--text-1`), `.memory-chart__limit`
+  (1px dashed `--text-2`), `.memory-chart__limit-label`, `.memory-chart__floor`,
+  `.memory-chart__axis`, `.memory-chart__tick`, `.memory-legend`, `.memory-legend__item`,
+  `.memory-legend__band`, `.memory-legend__line`, `.memory-legend__limit`, `.memory-legend__oom`,
+  `.memory-oom`, `.memory-oom__mark`, `.memory-oom__count`, `.memory-chart__now`,
+  `.memory-chart__dot`, `.memory-chart__now-label`, `.memory-readout`, `.memory-chart__note`,
+  `.memory-table`, `.memory-chart__skeleton`, `.memory-foot`, `.memory-foot__meta`,
+  `.memory-foot__actions`. Encoding: 2px solid average line, 1px-edged min-max band, dashed limit
+  with a right label, HTML triangle OOM markers with an optional count, and a 3px current dot.
+  Gaps break the line and band (never zeros); HTML axis labels sit outside the SVG; the legend uses
+  shape + text; axis ticks are 4 / 3 / 2 at >=1024 / 768-1023 / <768. Geometry literals: plot height
+  176px / 150px / 128px, limit line 1px, working-set line 2px, current dot 3px, 44px OOM and current
+  hit areas. States: loading skeleton + `aria-busy`, never-sampled empty, no-data-in-range with a
+  wider-range action, stopped (Current `—`, historical chart), error + Retry, stale-data notice, and
+  normal. Below 768 the chart body collapses behind `Show chart` while the summary and OOM badge stay
+  visible; below 480 controls wrap with no page-level horizontal scroll. Forced colors hide the
+  ground and map strokes to system colors; `prefers-reduced-motion` keeps the chart static.
 - **Runtime vocabulary:** `starting` -> `dispatching`/`Starting`; `running` ->
   `in_progress`/`Running`; `stopped` -> `queued`/`Stopped`; `error` (legacy `failed`) ->
   `failed`/`Error`. Every state keeps a glyph and text. Container `Running` is not the same as an
@@ -1133,7 +1157,12 @@ Enter submits the non-destructive default, dialog focus returns to its trigger.
 - Motion respects `prefers-reduced-motion` (Section 6). No flashing, no auto-playing media.
 - Touch targets: all buttons, nav items, segmented items, and fields resolve to 44px at < 768.
   32px is the desktop control height; icon buttons are square at the control height.
-- Charts/figures are out of scope for stage 1; when added, no color-only encoding.
+- Charts use hand-rolled inline SVG only, never a chart library: shape + style + text legend, HTML
+  axis labels outside the scaled SVG, no `<text>` inside it, gaps as gaps (never zeros), and OOM
+  markers as focusable HTML buttons with 44px hit areas. The SVG is `role="img"` with `<title>` /
+  `<desc>` and is not a tab stop; a `<details>` data table is the canonical accessible
+  representation. `prefers-reduced-motion` keeps the chart static; `forced-colors` hides the chart
+  ground, maps strokes to system colors, and keeps a text label for OOM. No color-only encoding.
 - The chart ground is decorative and `pointer-events: none`; under `forced-colors` it is hidden.
 
 ### 8.2 Accepted debt
@@ -1278,6 +1307,16 @@ spacing value.
 `.skill-viewtabs`, `.skill-viewtabs__group`, `.skill-prose`, `.skill-frontmatter`,
 `.skill-frontmatter__summary`, `.skill-frontmatter__body`, `.skill-frontmatter__pre`,
 `.skill-reference-foot`, `.skill-danger`, `.skill-editbar`.
+- Memory: `.memory-panel`, `.memory-panel__head`, `.memory-panel__identity`, `.memory-toolbar`,
+`.memory-bucket`, `.memory-bucket-reason`, `.memory-summary`, `.memory-panel__body`, `.memory-error`,
+`.memory-empty`, `.memory-chart-toggle`, `.memory-chart`, `.memory-chart__plot`,
+`.memory-chart__ground`, `.memory-chart__svg`, `.memory-chart__band`, `.memory-chart__line`,
+`.memory-chart__limit`, `.memory-chart__limit-label`, `.memory-chart__floor`, `.memory-chart__axis`,
+`.memory-chart__tick`, `.memory-legend`, `.memory-legend__item`, `.memory-legend__band`,
+`.memory-legend__line`, `.memory-legend__limit`, `.memory-legend__oom`, `.memory-oom`,
+`.memory-oom__mark`, `.memory-oom__count`, `.memory-chart__now`, `.memory-chart__dot`,
+`.memory-chart__now-label`, `.memory-readout`, `.memory-chart__note`, `.memory-table`,
+`.memory-chart__skeleton`, `.memory-foot`, `.memory-foot__meta`, `.memory-foot__actions`.
 
 No product screen may introduce a new hex, px font size, radius, or spacing value. If a new pattern
 is needed twice, add it here and to `styles.css` first.

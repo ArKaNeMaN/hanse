@@ -47,6 +47,7 @@ import {
   type ManagedApp,
   type OmoProfileSource,
   RestartInProgressError,
+  resolveRuntimeResources,
   type SettingsSource,
   settingsHashFor,
   verifyAgentModels,
@@ -139,6 +140,7 @@ interface FakeSettings extends SettingsSource {
   setSearch(search: WebToolConfig | null): void;
   setGitAuthHash(hash: string): void;
   setContext(enabled: boolean, percent: number): void;
+  setMemoryMb(mb: number): void;
 }
 
 function fakeSettings(
@@ -149,6 +151,7 @@ function fakeSettings(
     gitAuthHash?: string;
     gitIdentity?: { name?: string | null; email?: string | null };
     context?: { enabled?: boolean; percent?: number };
+    memoryMb?: number;
   } = {},
 ): FakeSettings {
   let model = options.model ?? "deepseek/deepseek-flash";
@@ -157,6 +160,7 @@ function fakeSettings(
   let gitAuthHash = options.gitAuthHash ?? "git-auth-hash";
   let contextEnabled = options.context?.enabled ?? false;
   let contextPercent = options.context?.percent ?? 80;
+  let memoryMb = options.memoryMb ?? 2048;
   const settings: FakeSettings = {
     setModel(next) {
       model = next;
@@ -171,6 +175,9 @@ function fakeSettings(
       contextEnabled = nextEnabled;
       contextPercent = nextPercent;
     },
+    setMemoryMb(next) {
+      memoryMb = next;
+    },
     snapshot: (_target): LaunchSettingsSnapshot => {
       const effective: EffectiveSettings = {
         llm: { model: value(model) },
@@ -184,6 +191,7 @@ function fakeSettings(
             email: value(options.gitIdentity?.email ?? null),
           },
         },
+        runtime: { memoryMb: value(memoryMb) },
       };
       return {
         resolved: {
@@ -767,6 +775,64 @@ describe("InstanceManager lifecycle", () => {
     }
   });
 
+  it("prefers the effective runtime memory setting over the environment", async () => {
+    const previous = process.env.HANSE_APP_MEMORY_MB;
+    process.env.HANSE_APP_MEMORY_MB = "8192";
+    try {
+      const runtime = new FakeAgentRuntime();
+      const { manager } = fixture(runtime, fakeSettings({ memoryMb: 512 }), fakeProfiles().source);
+      await manager.ensure(APP);
+      const spec = runtime.ensured[0];
+      if (spec === undefined) throw new Error("missing runtime spec");
+      expect(spec.resources).toEqual({
+        memoryBytes: 512 * 1024 * 1024,
+        nanoCpus: 2_000_000_000,
+        pidsLimit: 512,
+      });
+      const { specHash, ...hashable } = spec;
+      expect(computeSpecHash(hashable)).toBe(specHash);
+    } finally {
+      if (previous === undefined) delete process.env.HANSE_APP_MEMORY_MB;
+      else process.env.HANSE_APP_MEMORY_MB = previous;
+    }
+  });
+
+  it("normalizes the fallback memory default when no setting is available", async () => {
+    const previous = process.env.HANSE_APP_MEMORY_MB;
+    process.env.HANSE_APP_MEMORY_MB = "8192";
+    try {
+      expect(resolveRuntimeResources(process.env).memoryBytes).toBe(8192 * 1024 * 1024);
+      expect(resolveRuntimeResources(process.env, 1024).memoryBytes).toBe(1024 * 1024 * 1024);
+      process.env.HANSE_APP_MEMORY_MB = "127";
+      expect(resolveRuntimeResources(process.env).memoryBytes).toBe(2048 * 1024 * 1024);
+      process.env.HANSE_APP_MEMORY_MB = "1.5";
+      expect(resolveRuntimeResources(process.env).memoryBytes).toBe(2048 * 1024 * 1024);
+    } finally {
+      if (previous === undefined) delete process.env.HANSE_APP_MEMORY_MB;
+      else process.env.HANSE_APP_MEMORY_MB = previous;
+    }
+  });
+
+  it("changes the launch fingerprint and pending restart when memory changes", async () => {
+    const runtime = new FakeAgentRuntime();
+    const settings = fakeSettings({ memoryMb: 512 });
+    const profiles = fakeProfiles();
+    const { manager } = fixture(runtime, settings, profiles.source);
+    const before = manager.launchFingerprint(manager.launchSnapshot(APP));
+    expect(manager.launchSnapshot(APP).resources.memoryBytes).toBe(512 * 1024 * 1024);
+
+    await manager.ensure(APP);
+    expect(manager.pendingRestart(APP.id)).toEqual({ pending: false, reasons: [] });
+
+    settings.setMemoryMb(1024);
+    expect(manager.launchSnapshot(APP).resources.memoryBytes).toBe(1024 * 1024 * 1024);
+    expect(manager.launchFingerprint(manager.launchSnapshot(APP))).not.toBe(before);
+    expect(manager.pendingRestart(APP.id)).toEqual({
+      pending: true,
+      reasons: ["settings_changed"],
+    });
+  });
+
   it("returns an existing running endpoint without re-ensuring", async () => {
     const runtime = new FakeAgentRuntime();
     const settings = fakeSettings();
@@ -964,6 +1030,7 @@ describe("InstanceManager lifecycle", () => {
       git: {
         user: { name: value<string | null>(null), email: value<string | null>(null) },
       },
+      runtime: { memoryMb: value(2048) },
     };
     const expected = hashValue({
       effective: preSkillsEffective,
@@ -2693,6 +2760,7 @@ describe("InstanceManager context monitors", () => {
       git: {
         user: { name: value<string | null>(null), email: value<string | null>(null) },
       },
+      runtime: { memoryMb: value(2048) },
     };
     expect(recorded.appliedSettingsHash).toBe(
       hashValue({
@@ -4827,6 +4895,311 @@ describe("InstanceManager process lifecycle", () => {
       "waiting_ready",
       "ready",
     ]);
+  });
+});
+
+describe("InstanceManager OOM process events", () => {
+  const BASE = "2026-11-07T12:00:00.000Z";
+  const BASE_MS = Date.parse(BASE);
+
+  function at(offsetMs: number): string {
+    return new Date(BASE_MS + offsetMs).toISOString();
+  }
+
+  function insertStartingRow(
+    db: SqliteDatabase,
+    attemptId: string,
+    startedAt: string,
+    updatedAt = startedAt,
+  ): void {
+    db.prepare(
+      `INSERT INTO instances
+         (id, app_id, endpoint, state, runtime_state, updated_at,
+          process_attempt_id, process_phase, process_started_at, process_updated_at,
+          runtime_started_at, runtime_restart_count)
+       VALUES (?, ?, 'http://127.0.0.1:77', 'starting', 'starting', ?, ?, 'waiting_ready', ?, ?, ?, 0)`,
+    ).run(APP.id, APP.id, updatedAt, attemptId, startedAt, updatedAt, startedAt);
+  }
+
+  function oomRows(db: SqliteDatabase): ProcessEvent[] {
+    return readProcessEvents(db, APP.id, { limit: 100 }).events.filter(
+      (event) => event.reason === "oom_killed",
+    );
+  }
+
+  function liveStatus(
+    oomEvents: Array<{ appId: string; at: string }>,
+    overrides: Record<string, unknown> = {},
+  ) {
+    return {
+      appId: APP.id,
+      endpoint: "http://127.0.0.1:1",
+      state: "running" as const,
+      specHash: null,
+      version: null,
+      oomKilled: false,
+      oomEvents,
+      ...overrides,
+    };
+  }
+
+  it("records one history-only row after an auto-restart without emitting or advancing since first", async () => {
+    const runtime = new FakeAgentRuntime();
+    const f = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    await f.manager.ensure(APP);
+    const at = new Date(Date.now() + 1_000).toISOString();
+    runtime.statuses.set(APP.id, liveStatus([{ appId: APP.id, at }]));
+    const before = maxProcessEventId(f.db);
+    const seen: ProcessEvent[] = [];
+    processEvents.reset();
+    const unsubscribe = processEvents.subscribe(APP.id, (event) => seen.push(event));
+    try {
+      await f.manager.reconcileStatuses();
+    } finally {
+      unsubscribe();
+    }
+
+    const added = processEventsAfter(f.db, before);
+    expect(added).toEqual([
+      expect.objectContaining({
+        attemptId: expect.any(String),
+        state: "running",
+        phase: "ready",
+        source: "runtime",
+        reason: "oom_killed",
+        errorCode: "oom_killed",
+        message:
+          "A process in the container exceeded the memory limit; the container is still running.",
+        createdAt: at,
+      }),
+    ]);
+    expect(readProcess(f.db, APP.id)).toMatchObject({ state: "running", error: null });
+    expect(seen).toEqual([]);
+    expect(
+      runtime.statusRequests.some((call) => call.appId === APP.id && call.since === undefined),
+    ).toBe(true);
+
+    const count = processEventCount(f.db);
+    await f.manager.reconcileStatuses();
+    expect(processEventCount(f.db)).toBe(count);
+    expect(runtime.statusRequests.some((call) => call.appId === APP.id && call.since === at)).toBe(
+      true,
+    );
+  });
+
+  it("records a history-only row while the auto-restarted container is still starting", async () => {
+    const runtime = new FakeAgentRuntime();
+    const f = fixture(
+      runtime,
+      fakeSettings(),
+      fakeProfiles().source,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      async () => {
+        throw new AgentStartingError(APP.id);
+      },
+    );
+    const startedAt = at(-5_000);
+    insertStartingRow(f.db, "att-start", startedAt, new Date().toISOString());
+    const eventAt = at(0);
+    runtime.statuses.set(
+      APP.id,
+      liveStatus([{ appId: APP.id, at: eventAt }], { state: "starting" }),
+    );
+
+    await f.manager.reconcileStatuses();
+
+    expect(oomRows(f.db)).toEqual([
+      expect.objectContaining({
+        attemptId: "att-start",
+        state: "starting",
+        phase: "waiting_ready",
+        errorCode: "oom_killed",
+        createdAt: eventAt,
+      }),
+    ]);
+    expect(readProcess(f.db, APP.id)).toMatchObject({ state: "starting", error: null });
+  });
+
+  it("uses a bounded synthetic attempt for an event that predates the current attempt", async () => {
+    const runtime = new FakeAgentRuntime();
+    const f = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    await f.manager.ensure(APP);
+    const startedAt = readProcess(f.db, APP.id).startedAt;
+    if (startedAt === null) throw new Error("fixture has no startedAt");
+    const eventAt = new Date(Date.parse(startedAt) - 10_000).toISOString();
+    runtime.statuses.set(APP.id, liveStatus([{ appId: APP.id, at: eventAt }]));
+
+    await f.manager.reconcileStatuses();
+
+    const rows = oomRows(f.db);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ attemptId: `oom:${eventAt}`, seq: 1, createdAt: eventAt });
+    expect(rows[0]?.attemptId.length).toBeLessThanOrEqual(128);
+  });
+
+  it("writes one terminal oom_killed error when the container does not restart", async () => {
+    const runtime = new FakeAgentRuntime();
+    const f = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    await f.manager.ensure(APP);
+    const eventAt = new Date(Date.now() + 1_000).toISOString();
+    runtime.statuses.set(
+      APP.id,
+      liveStatus([{ appId: APP.id, at: eventAt }], {
+        state: "error",
+        oomKilled: true,
+        error: "container exited",
+      }),
+    );
+
+    await f.manager.reconcileStatuses();
+
+    const rows = oomRows(f.db);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      state: "error",
+      phase: "failed",
+      errorCode: "oom_killed",
+      message: "The agent was killed after exceeding its memory limit.",
+    });
+    expect(readProcess(f.db, APP.id)).toMatchObject({
+      state: "error",
+      phase: "failed",
+      error: { code: "oom_killed" },
+    });
+
+    await f.manager.reconcileStatuses();
+    expect(oomRows(f.db)).toHaveLength(1);
+    expect(
+      runtime.statusRequests.some((call) => call.appId === APP.id && call.since === eventAt),
+    ).toBe(true);
+  });
+
+  it.each([
+    ["oomKilled", true],
+    ["a matching event", false],
+  ])("labels a startup OOM as oom_killed, not interrupted (%s)", async (_label, flag) => {
+    const runtime = new FakeAgentRuntime();
+    const f = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    const startedAt = at(-10_000);
+    insertStartingRow(f.db, "att-startup", startedAt);
+    const eventAt = at(-5_000);
+    runtime.statuses.set(
+      APP.id,
+      liveStatus([{ appId: APP.id, at: eventAt }], {
+        state: "error",
+        oomKilled: flag,
+      }),
+    );
+
+    await f.manager.reconcileStatuses();
+
+    const rows = oomRows(f.db);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      state: "error",
+      phase: "failed",
+      errorCode: "oom_killed",
+      message: "The agent was killed after exceeding its memory limit.",
+    });
+    expect(rows[0]?.reason).not.toBe("stale_start");
+  });
+
+  it("does not duplicate a crash row when the same event is seen again after a restart", async () => {
+    const runtime = new FakeAgentRuntime();
+    const f = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    await f.manager.ensure(APP);
+    const eventAt = new Date(Date.now() + 1_000).toISOString();
+    runtime.statuses.set(
+      APP.id,
+      liveStatus([{ appId: APP.id, at: eventAt }], {
+        state: "error",
+        oomKilled: true,
+      }),
+    );
+    await f.manager.reconcileStatuses();
+    expect(oomRows(f.db)).toHaveLength(1);
+
+    runtime.statuses.set(APP.id, liveStatus([{ appId: APP.id, at: eventAt }]));
+    await f.manager.reconcileStatuses();
+
+    expect(oomRows(f.db)).toHaveLength(1);
+  });
+
+  it("rate-limits bursts, advances the watermark for handled events, and records a later kill", async () => {
+    const runtime = new FakeAgentRuntime();
+    const f = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    await f.manager.ensure(APP);
+    const first = new Date(Date.now() + 1_000).toISOString();
+    const firstMs = Date.parse(first);
+    const second = new Date(firstMs + 30_000).toISOString();
+    const third = new Date(firstMs + 60_000).toISOString();
+    runtime.statuses.set(
+      APP.id,
+      liveStatus([
+        { appId: APP.id, at: second },
+        { appId: APP.id, at: first },
+      ]),
+    );
+
+    await f.manager.reconcileStatuses();
+
+    let rows = oomRows(f.db);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.createdAt).toBe(first);
+
+    runtime.statuses.set(
+      APP.id,
+      liveStatus([
+        { appId: APP.id, at: first },
+        { appId: APP.id, at: second },
+        { appId: APP.id, at: third },
+      ]),
+    );
+    await f.manager.reconcileStatuses();
+
+    rows = oomRows(f.db);
+    expect(rows.map((row) => row.createdAt).sort()).toEqual([first, third]);
+    expect(
+      runtime.statusRequests.some((call) => call.appId === APP.id && call.since === second),
+    ).toBe(true);
+
+    await f.manager.reconcileStatuses();
+    expect(oomRows(f.db)).toHaveLength(2);
+    expect(
+      runtime.statusRequests.some((call) => call.appId === APP.id && call.since === third),
+    ).toBe(true);
+  });
+
+  it("stops at a failed insert, keeps the watermark, and retries the event next tick", async () => {
+    const runtime = new FakeAgentRuntime();
+    const f = fixture(runtime, fakeSettings(), fakeProfiles().source);
+    await f.manager.ensure(APP);
+    const eventAt = new Date(Date.now() + 1_000).toISOString();
+    runtime.statuses.set(APP.id, liveStatus([{ appId: APP.id, at: eventAt }]));
+    f.db.exec(
+      `CREATE TRIGGER fail_oom BEFORE INSERT ON agent_run_events
+       WHEN NEW.reason = 'oom_killed' AND NEW.created_at = '${eventAt}'
+       BEGIN SELECT RAISE(ABORT, 'simulated insert failure'); END;`,
+    );
+
+    await f.manager.reconcileStatuses();
+    expect(oomRows(f.db)).toHaveLength(0);
+    expect(
+      runtime.statusRequests.some((call) => call.appId === APP.id && call.since === undefined),
+    ).toBe(true);
+
+    f.db.exec("DROP TRIGGER fail_oom;");
+    await f.manager.reconcileStatuses();
+
+    expect(oomRows(f.db)).toEqual([expect.objectContaining({ createdAt: eventAt })]);
   });
 });
 

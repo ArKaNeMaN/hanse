@@ -203,6 +203,44 @@ describe("process store", () => {
     db.close();
   });
 
+  it("keeps the current row unchanged when an OOM history event is appended", () => {
+    const db = freshDb();
+    seedApp(db);
+    insertInstance(db, {
+      appId: "a1",
+      state: "running",
+      attemptId: "att-1",
+      phase: "ready",
+      startedAt: "2026-11-07T11:55:00.000Z",
+      updatedAt: "2026-11-07T11:59:00.000Z",
+    });
+    const before = readProcessSnapshot(db, "a1");
+
+    const eventId = insertEvent(db, {
+      appId: "a1",
+      attemptId: "att-1",
+      seq: 2,
+      state: "running",
+      phase: "ready",
+      source: "runtime",
+      reason: "oom_killed",
+      errorCode: "oom_killed",
+      createdAt: "2026-11-07T11:58:00.000Z",
+    });
+
+    expect(readProcessSnapshot(db, "a1")).toEqual({
+      ...before,
+      lastEventId: eventId,
+    });
+    expect(readProcessEvents(db, "a1").events[0]).toMatchObject({
+      id: eventId,
+      reason: "oom_killed",
+      errorCode: "oom_killed",
+      createdAt: "2026-11-07T11:58:00.000Z",
+    });
+    db.close();
+  });
+
   it("paginates newest-first without duplicates or skips across interleaved apps", () => {
     const db = freshDb();
     seedApp(db, "a1");

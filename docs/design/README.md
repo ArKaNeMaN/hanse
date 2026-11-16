@@ -1,5 +1,11 @@
 # Design docs
 
+- [Per-application memory limits and container memory metrics](./app-memory-limits-and-metrics.md) -
+  a hierarchical `runtime.memory_mb` setting (global/project/app, env-derived default), 30-second
+  container memory sampling with 72-hour retention, a 6/24/72-hour min/max/average chart card on the
+  application page, and a distinct `oom_killed` process error. Status: approved (`oracle` PASS,
+  2026-11-16); plan `momus` review 3 OKAY; implemented and verified, final gates/E2E/visual QA
+  passed (journal 0062).
 - [Design system contract](../../DESIGN.md) - The Chart Room: atmosphere, tokens, typography,
   shell grammar, components, motion, accessibility, and accepted debt.
 - [Primitive showcase](./showcase.html) - every primitive and state rendered from the real built

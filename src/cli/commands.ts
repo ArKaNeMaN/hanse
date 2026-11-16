@@ -60,6 +60,7 @@ import {
   InstanceManager,
   resolveBaselinePlugins,
 } from "../opencode/manager.js";
+import { AppMemorySampler } from "../opencode/memory-sampler.js";
 import { OmoProfileStore } from "../opencode/omo-profile.js";
 import { PreviewService } from "../preview/service.js";
 import { discoverProject, registerProject } from "../registry/index.js";
@@ -1060,6 +1061,8 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
           lifecycleActivity,
         });
   manager.startStatusReconciler();
+  const memorySampler = new AppMemorySampler({ db, runtime, logger });
+  memorySampler.start();
   handoffDispatcher = new HandoffDispatcher({
     db,
     manager,
@@ -1189,6 +1192,7 @@ export async function serveCommand(options: ServeOptions, ctx: CommandContext): 
             handoffDispatcher?.stop();
             skillSources.stop();
             manager.stopStatusReconciler();
+            await memorySampler.stop();
           }
         },
         onClose: () => {

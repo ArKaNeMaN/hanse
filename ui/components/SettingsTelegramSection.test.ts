@@ -488,6 +488,13 @@ function settings(scope: SettingsScope = "global", warning: string | null = null
         kind: "context-percent",
         scope,
       }),
+      runtimeMemory: row({
+        id: "setting-runtime-memory",
+        key: "runtime.memory_mb",
+        title: "Memory limit",
+        kind: "runtime-memory",
+        scope,
+      }),
       gitName: row({
         id: "setting-git-user-name",
         key: "git.user.name",

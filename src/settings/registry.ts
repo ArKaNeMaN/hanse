@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { defaultAppMemoryMb } from "../config/app-resources.js";
 import type { WebToolConfig } from "../web/types.js";
 import { apiBaseUrlSchema, chatIdSchema, publicBaseUrlSchema } from "./telegram.js";
 import type { EffectiveValue, MergeStrategy, NotificationMode, SettingsScope } from "./types.js";
@@ -20,8 +21,8 @@ export interface SettingsKeyDefinition<T = unknown> {
   merge: MergeStrategy;
   /** Whether an explicit `null` (clear) row is allowed for this key. */
   clearable: boolean;
-  /** Effective value when no scope contributes. */
-  defaultValue: T;
+  /** Effective value when no scope contributes; a function is evaluated per resolve. */
+  defaultValue: T | (() => T);
 }
 
 export const llmModelSchema = z
@@ -95,6 +96,15 @@ export const contextAutoCompactPercentDefinition: SettingsKeyDefinition<number> 
   merge: "replace",
   clearable: false,
   defaultValue: 80,
+};
+
+/** Container memory cap in MB; the default is environment-derived and dynamic per resolve. */
+export const runtimeMemoryMbDefinition: SettingsKeyDefinition<number> = {
+  key: "runtime.memory_mb",
+  schema: z.number().int().min(128).max(65536),
+  merge: "replace",
+  clearable: false,
+  defaultValue: () => defaultAppMemoryMb(),
 };
 
 function hasControlCharacters(value: string): boolean {
@@ -196,6 +206,7 @@ export const KEY_DEFINITIONS: readonly SettingsKeyDefinition[] = [
   webFetchDefinition,
   contextAutoCompactEnabledDefinition,
   contextAutoCompactPercentDefinition,
+  runtimeMemoryMbDefinition,
   gitUserNameDefinition,
   gitUserEmailDefinition,
   notificationsModeDefinition,
@@ -222,6 +233,12 @@ export function listKeyDefinitions(): readonly SettingsKeyDefinition[] {
 export interface ResolverRow {
   scope: SettingsScope;
   value: unknown;
+}
+
+function resolvedDefault<T>(definition: SettingsKeyDefinition<T>): T {
+  const declared = definition.defaultValue;
+  const value = typeof declared === "function" ? (declared as () => T)() : declared;
+  return structuredClone(value);
 }
 
 function invalidWarning(key: string, scope: SettingsScope): string {
@@ -261,7 +278,7 @@ function resolveReplace<T>(
 
   if (source === undefined) {
     return {
-      value: structuredClone(definition.defaultValue),
+      value: resolvedDefault(definition),
       state: "default",
       source: "default",
       sources: ["default"],
@@ -305,7 +322,7 @@ function resolveAppend<T>(
 
   if (accumulated === undefined) {
     return {
-      value: structuredClone(definition.defaultValue),
+      value: resolvedDefault(definition),
       state: "default",
       source: "default",
       sources: ["default"],
@@ -318,7 +335,7 @@ function resolveAppend<T>(
   const source = contributors[contributors.length - 1];
   if (source === undefined) {
     return {
-      value: structuredClone(definition.defaultValue),
+      value: resolvedDefault(definition),
       state: "default",
       source: "default",
       sources: ["default"],

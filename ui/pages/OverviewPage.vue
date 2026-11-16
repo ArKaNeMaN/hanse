@@ -276,7 +276,7 @@ function projectHref(row: OverviewProjectRow): string {
           </div>
           <ul class="stack--tight" id="agent-process-list">
             <li v-for="row in processApps" :key="row.appId" class="cluster" data-process-app>
-              <StatusPill :pill="processPill(row.state, row.phase)" />
+              <StatusPill :pill="processPill(row.state, row.phase, row.errorCode, null)" />
               <span class="mono">{{ row.appKey }}</span>
               <span class="small">{{ row.projectName }}</span>
               <span class="caption">{{ processPhaseLabel(row.phase) }}</span>

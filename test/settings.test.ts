@@ -2,8 +2,9 @@ import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
+import { DEFAULT_APP_MEMORY_MB, defaultAppMemoryMb } from "../src/config/app-resources.js";
 import type { RunSshKeygen } from "../src/git/credentials.js";
 import { settingsHashFor } from "../src/opencode/manager.js";
 import {
@@ -127,6 +128,12 @@ describe("settings defaults and precedence", () => {
     });
     expect(resolved.effective.context.autoCompact.enabled).toEqual({
       value: false,
+      state: "default",
+      source: "default",
+      sources: ["default"],
+    });
+    expect(resolved.effective.runtime.memoryMb).toEqual({
+      value: defaultAppMemoryMb(),
       state: "default",
       source: "default",
       sources: ["default"],
@@ -370,6 +377,14 @@ describe("context policy and launch projection", () => {
           },
         },
       },
+      runtime: {
+        memoryMb: {
+          value: defaultAppMemoryMb(),
+          state: "default",
+          source: "default",
+          sources: ["default"],
+        },
+      },
     };
 
     const projected = launchEffectiveSettings(service.resolve({}).effective);
@@ -394,6 +409,12 @@ describe("context policy and launch projection", () => {
     service.set("global", {}, "llm.model", "changed/model", "owner");
     expect(hashValue(launchEffectiveSettings(service.resolve(appTarget).effective))).not.toBe(
       hashValue(preChangeEffective),
+    );
+
+    const withModel = hashValue(launchEffectiveSettings(service.resolve(appTarget).effective));
+    service.set("global", {}, "runtime.memory_mb", 4096, "owner");
+    expect(hashValue(launchEffectiveSettings(service.resolve(appTarget).effective))).not.toBe(
+      withModel,
     );
   });
 
@@ -546,6 +567,149 @@ describe("notification settings", () => {
     expect(() =>
       service.setNotificationSecret("global", {}, "proxy_url", "ftp://proxy.example", "owner"),
     ).toThrow(TelegramSecretValidationError);
+  });
+});
+
+describe("runtime memory setting", () => {
+  const originalMemoryEnv = process.env.HANSE_APP_MEMORY_MB;
+
+  afterEach(() => {
+    if (originalMemoryEnv === undefined) {
+      delete process.env.HANSE_APP_MEMORY_MB;
+    } else {
+      process.env.HANSE_APP_MEMORY_MB = originalMemoryEnv;
+    }
+  });
+
+  it("warns once and falls back for an invalid environment default", () => {
+    process.env.HANSE_APP_MEMORY_MB = "not-a-number";
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(defaultAppMemoryMb()).toBe(DEFAULT_APP_MEMORY_MB);
+      expect(defaultAppMemoryMb()).toBe(DEFAULT_APP_MEMORY_MB);
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("normalizes the environment default to an integer within the bounds", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const cases: Array<[string | undefined, number]> = [
+      [undefined, DEFAULT_APP_MEMORY_MB],
+      ["", DEFAULT_APP_MEMORY_MB],
+      ["128", 128],
+      ["1024", 1024],
+      ["65536", 65536],
+      ["127", DEFAULT_APP_MEMORY_MB],
+      ["65537", DEFAULT_APP_MEMORY_MB],
+      ["1.5", DEFAULT_APP_MEMORY_MB],
+      ["abc", DEFAULT_APP_MEMORY_MB],
+    ];
+    try {
+      for (const [raw, expected] of cases) {
+        if (raw === undefined) {
+          delete process.env.HANSE_APP_MEMORY_MB;
+        } else {
+          process.env.HANSE_APP_MEMORY_MB = raw;
+        }
+        expect(defaultAppMemoryMb()).toBe(expected);
+      }
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("re-evaluates the environment default on every resolve", () => {
+    const { service } = fixture();
+    process.env.HANSE_APP_MEMORY_MB = "1024";
+    expect(service.resolve({}).effective.runtime.memoryMb).toEqual({
+      value: 1024,
+      state: "default",
+      source: "default",
+      sources: ["default"],
+    });
+
+    process.env.HANSE_APP_MEMORY_MB = "4096";
+    expect(service.resolve({}).effective.runtime.memoryMb).toEqual({
+      value: 4096,
+      state: "default",
+      source: "default",
+      sources: ["default"],
+    });
+  });
+
+  it("resolves global, project, and app scopes, inherits, and refuses clear", () => {
+    const { service } = fixture();
+    process.env.HANSE_APP_MEMORY_MB = "1536";
+
+    service.set("global", {}, "runtime.memory_mb", 1024, "owner");
+    service.set("project", projectTarget, "runtime.memory_mb", 2048, "owner");
+    service.set("app", appTarget, "runtime.memory_mb", 3072, "owner");
+
+    expect(service.resolve({}).effective.runtime.memoryMb).toMatchObject({
+      value: 1024,
+      state: "set",
+      source: "global",
+    });
+    expect(service.resolve(projectTarget).effective.runtime.memoryMb).toMatchObject({
+      value: 2048,
+      state: "set",
+      source: "project",
+    });
+    expect(service.resolve(appTarget).effective.runtime.memoryMb).toMatchObject({
+      value: 3072,
+      state: "set",
+      source: "app",
+    });
+
+    service.inherit("app", appTarget, "runtime.memory_mb");
+    expect(service.resolve(appTarget).effective.runtime.memoryMb.value).toBe(2048);
+    service.inherit("project", projectTarget, "runtime.memory_mb");
+    expect(service.resolve(projectTarget).effective.runtime.memoryMb.value).toBe(1024);
+    service.inherit("global", {}, "runtime.memory_mb");
+    expect(service.resolve(appTarget).effective.runtime.memoryMb).toEqual({
+      value: 1536,
+      state: "default",
+      source: "default",
+      sources: ["default"],
+    });
+
+    expect(() => service.clear("global", {}, "runtime.memory_mb", "owner")).toThrow(
+      SettingsValidationError,
+    );
+    for (const invalid of [127, 65537, 1.5, "2048", null]) {
+      expect(() => service.set("global", {}, "runtime.memory_mb", invalid, "owner")).toThrow(
+        SettingsValidationError,
+      );
+    }
+  });
+
+  it("evaluates function defaults per resolve for replace and append", () => {
+    let next = 1;
+    const replaceDefinition: SettingsKeyDefinition<number> = {
+      key: "test.dynamic.replace",
+      schema: z.number(),
+      merge: "replace",
+      clearable: false,
+      defaultValue: () => next,
+    };
+    const appendDefinition: SettingsKeyDefinition<number[]> = {
+      key: "test.dynamic.append",
+      schema: z.array(z.number()),
+      merge: "append",
+      clearable: true,
+      defaultValue: () => [next],
+    };
+
+    expect(resolveEffectiveValue(replaceDefinition, []).value).toBe(1);
+    expect(resolveEffectiveValue(appendDefinition, []).value).toEqual([1]);
+    next = 2;
+    expect(resolveEffectiveValue(replaceDefinition, []).value).toBe(2);
+    const appended = resolveEffectiveValue(appendDefinition, []);
+    expect(appended.value).toEqual([2]);
+    appended.value?.push(9);
+    expect(resolveEffectiveValue(appendDefinition, []).value).toEqual([2]);
   });
 });
 

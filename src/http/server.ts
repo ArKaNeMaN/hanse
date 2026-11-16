@@ -36,6 +36,7 @@ import { handleHandoffHttp } from "./handoff.js";
 import { handleImages } from "./images.js";
 import { handleInlineMediaDownload } from "./inline-media.js";
 import { handleInternalMcp } from "./internal-mcp.js";
+import { handleMemory, isMemoryRoute } from "./memory.js";
 import { isHtmlPageRequest } from "./page-request.js";
 import {
   previewNotFoundPage,
@@ -548,10 +549,12 @@ export function createHttpServer(deps: HttpDeps): Server {
         const isRuntime = /^\/api\/apps\/[^/]+\/runtime$/.test(url.pathname);
         const isPreviews = isPreviewsRoute(httpRequest.method, url.pathname);
         const isProcess = isProcessRoute(httpRequest.method, url.pathname);
+        const isMemory = isMemoryRoute(httpRequest.method, url.pathname);
         const isStart = isStartRoute(httpRequest.method, url.pathname);
         const isChat =
           !isRuntime &&
           !isProcess &&
+          !isMemory &&
           (url.pathname === "/chat" || url.pathname.startsWith("/api/apps/"));
         const result = isImages
           ? await handleImages(deps, httpRequest)
@@ -577,11 +580,13 @@ export function createHttpServer(deps: HttpDeps): Server {
                               ? await handlePreviews(deps, httpRequest)
                               : isProcess
                                 ? handleProcess(deps, httpRequest)
-                                : isStart
-                                  ? await handleStart(deps, httpRequest)
-                                  : isChat
-                                    ? await handleChat(deps, httpRequest)
-                                    : handleRequest(deps, httpRequest);
+                                : isMemory
+                                  ? handleMemory(deps, httpRequest)
+                                  : isStart
+                                    ? await handleStart(deps, httpRequest)
+                                    : isChat
+                                      ? await handleChat(deps, httpRequest)
+                                      : handleRequest(deps, httpRequest);
         writeHttpResponse(request, response, result);
       })
       .catch((error: unknown) => {

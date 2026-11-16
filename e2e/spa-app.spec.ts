@@ -28,6 +28,143 @@ async function openGroup(page: Page, group: "git" | "image" | "ssh" | "danger") 
   await expect(page.locator(`#group-${group}-body`)).toBeVisible();
 }
 
+const MEMORY_ROUTE = /\/api\/apps\/alpha\/memory\?/;
+const MIB = 1024 ** 2;
+const GIB = 1024 ** 3;
+const MEMORY_LIMIT = 2 * GIB;
+const MEMORY_PEAK = 1.5 * GIB;
+const MEMORY_CURRENT = 500 * MIB;
+const MEMORY_AVERAGE = 400 * MIB;
+
+type MemoryMode = "normal" | "oom" | "never" | "range" | "error";
+
+interface MemoryMock {
+  mode: MemoryMode;
+  readonly requests: URLSearchParams[];
+}
+
+function memoryWindow(url: string): "6h" | "24h" | "72h" {
+  const value = new URL(url).searchParams.get("window");
+  return value === "6h" || value === "72h" ? value : "24h";
+}
+
+function memoryBucket(url: string): "10m" | "30m" {
+  return new URL(url).searchParams.get("bucket") === "10m" ? "10m" : "30m";
+}
+
+/**
+ * Deterministic memory endpoint stand-in. Timestamps are relative to the request so the card's
+ * "last sample" copy stays truthful, but every byte value, bucket, and event is fixed.
+ */
+function memoryPayload(mode: MemoryMode, window: "6h" | "24h" | "72h", bucket: "10m" | "30m") {
+  const windowSeconds =
+    window === "6h" ? 6 * 60 * 60 : window === "24h" ? 24 * 60 * 60 : 72 * 60 * 60;
+  const bucketSeconds = bucket === "10m" ? 10 * 60 : 30 * 60;
+  const now = Date.now();
+  const span = windowSeconds * 1_000;
+  const fromMs = now - span;
+  const from = new Date(fromMs).toISOString();
+  const to = new Date(now).toISOString();
+
+  if (mode === "never" || mode === "range") {
+    return {
+      appId: "alpha",
+      window: { from, to, bucketSeconds },
+      summary: {
+        currentBytes: null,
+        minBytes: null,
+        peakBytes: null,
+        averageBytes: null,
+        limitBytes: null,
+        samples: 0,
+        lastSampleAt: mode === "range" ? new Date(now - 3 * 60 * 60 * 1_000).toISOString() : null,
+      },
+      buckets: [],
+      events: [],
+    };
+  }
+
+  const bucketMs = bucketSeconds * 1_000;
+  const buckets = Array.from({ length: 6 }, (_, index) => ({
+    start: new Date(fromMs + Math.round((index * span) / 6)).toISOString(),
+    minBytes: 300 * MIB,
+    averageBytes: MEMORY_AVERAGE,
+    maxBytes: index === 3 ? MEMORY_PEAK : 600 * MIB,
+    samples: 8,
+  }));
+  // The two OOM events in this mode sit inside one bucket; the card coalesces them by bucket and
+  // keeps the 60-second coalescing contract for the count.
+  const events =
+    mode === "oom"
+      ? [
+          {
+            at: new Date(fromMs + bucketMs * 5.5).toISOString(),
+            kind: "oom_killed" as const,
+            message: "container exited with code 137",
+          },
+          {
+            at: new Date(fromMs + bucketMs * 5.5 + 120_000).toISOString(),
+            kind: "oom_killed" as const,
+            message: "container exited with code 137",
+          },
+        ]
+      : [
+          {
+            at: new Date(fromMs + bucketMs * 4.5).toISOString(),
+            kind: "oom_killed" as const,
+            message: "container exited with code 137",
+          },
+        ];
+
+  return {
+    appId: "alpha",
+    window: { from, to, bucketSeconds },
+    summary: {
+      currentBytes: MEMORY_CURRENT,
+      minBytes: 300 * MIB,
+      peakBytes: MEMORY_PEAK,
+      averageBytes: MEMORY_AVERAGE,
+      limitBytes: MEMORY_LIMIT,
+      samples: 48,
+      lastSampleAt: new Date(now - 12_000).toISOString(),
+    },
+    buckets,
+    events,
+  };
+}
+
+async function mockMemory(page: Page, initial: MemoryMode): Promise<MemoryMock> {
+  const mock: MemoryMock = { mode: initial, requests: [] };
+  await page.route(MEMORY_ROUTE, async (route) => {
+    const url = route.request().url();
+    mock.requests.push(new URL(url).searchParams);
+    if (mock.mode === "error") {
+      await route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "memory sampling unavailable", code: "memory_failed" }),
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(memoryPayload(mock.mode, memoryWindow(url), memoryBucket(url))),
+    });
+  });
+  return mock;
+}
+
+function memorySummaryValues(page: Page) {
+  return page.locator("#app-memory .memory-summary .watch__value");
+}
+
+async function openMemoryCard(page: Page): Promise<void> {
+  await openApp(page);
+  await expect(page.locator("#app-memory")).toBeVisible();
+  await expect(page.locator("#app-memory .memory-summary")).toBeVisible();
+}
+
 test("deep links, refreshes, and renders the read-only runtime, image, git, and SSH panels", async ({
   page,
 }) => {
@@ -38,7 +175,7 @@ test("deep links, refreshes, and renders the read-only runtime, image, git, and 
   await expect(page.locator("#hanse-boot")).toHaveCount(1);
   await expect(page.locator("#ui-fallback")).toHaveCount(0);
 
-  await expect(page.locator("#runtime-state")).toContainText("Running");
+  await expect(page.locator("#runtime-state")).toContainText("Ready");
   await expect(page.locator("#settings-state")).toBeVisible();
   await expect(page.locator("#app-restart")).toBeVisible();
 
@@ -513,6 +650,245 @@ test("deletes an application only with the exact name", async ({ page }) => {
   expect(body).toContain("return_to=%2Fprojects%2F");
   await expect(toast(page, "Application deleted.")).toBeVisible();
   await expect(page).toHaveURL(new RegExp(`/projects/${PROJECT_ONE}$`));
+
+  await settle(page);
+  expectNoPageErrors(errors);
+});
+
+test("renders the Memory card between the state strip and Git with summary, chart, OOM, and table", async ({
+  page,
+}) => {
+  const errors = collectPageErrors(page);
+  prepareGitState(PROJECT_ONE, "alpha", "clean");
+  const memory = await mockMemory(page, "normal");
+  await openMemoryCard(page);
+
+  const placement = await page.evaluate(() => {
+    const state = document.querySelector("#app-state");
+    const card = document.querySelector("#app-memory");
+    const git = document.querySelector("#group-git-toggle");
+    if (state === null || card === null || git === null) return null;
+    return {
+      afterState: (state.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0,
+      beforeGit: (card.compareDocumentPosition(git) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0,
+    };
+  });
+  expect(placement).toEqual({ afterState: true, beforeGit: true });
+
+  const values = memorySummaryValues(page);
+  await expect(values).toHaveCount(4);
+  await expect(values.nth(0)).toHaveText("500 MiB");
+  await expect(values.nth(1)).toHaveText("1.5 GiB");
+  await expect(values.nth(2)).toHaveText("400 MiB");
+  await expect(values.nth(3)).toHaveText("2 GiB");
+  const labels = page.locator("#app-memory .memory-summary .watch__label");
+  await expect(labels.nth(0)).toHaveText("Current");
+  await expect(labels.nth(1)).toContainText("Peak");
+  await expect(labels.nth(2)).toHaveText("Average");
+  await expect(labels.nth(3)).toHaveText("Limit");
+
+  await expect(page.locator("#app-memory .memory-chart__svg")).toBeVisible();
+  await expect(page.locator("#app-memory .memory-chart__line")).toHaveCount(1);
+  await expect(page.locator("#app-memory .memory-chart__band")).toHaveCount(1);
+  await expect(page.locator("#app-memory .memory-chart__limit")).toHaveCount(1);
+  await expect(page.locator("#app-memory .memory-chart__limit-label")).toContainText("Limit 2 GiB");
+  await expect(page.locator("#app-memory .memory-legend")).toContainText("min–max band");
+  await expect(page.locator("#app-memory .memory-legend")).toContainText("working-set average");
+  await expect(page.locator("#app-memory .memory-legend")).toContainText("limit");
+  await expect(page.locator("#app-memory .memory-legend")).toContainText("OOM");
+
+  await expect(page.locator("#app-memory .memory-oom-badge")).toHaveText(/1\s*OOM/);
+  const marker = page.locator("#app-memory .memory-oom");
+  await expect(marker).toHaveCount(1);
+  await expect(marker).toHaveAttribute("aria-label", /^OOM at \d{2}:\d{2}$/);
+  await expect(page.locator("#app-memory .memory-chart__now")).toHaveCount(1);
+
+  await page.locator("#app-memory details.memory-table > summary").click();
+  const table = page.locator("#app-memory details.memory-table");
+  await expect(table).toHaveAttribute("open", "");
+  await expect(table.locator("thead th")).toHaveText([
+    "Bucket start",
+    "Min",
+    "Average",
+    "Max",
+    "OOM",
+  ]);
+  await expect(table.locator("tbody tr")).toHaveCount(6);
+  await expect(table.locator("tbody tr").first().locator("td")).toHaveCount(4);
+
+  await expect(
+    page.locator('#app-memory a[href$="/settings#setting-runtime-memory"]'),
+  ).toHaveAttribute("href", `/projects/${PROJECT_ONE}/apps/alpha/settings#setting-runtime-memory`);
+  expect(memory.requests.length).toBeGreaterThan(0);
+
+  await settle(page);
+  expectNoPageErrors(errors);
+});
+
+test("persists the memory range and bucket and disables 10-minute buckets at 72h", async ({
+  page,
+}) => {
+  const errors = collectPageErrors(page);
+  prepareGitState(PROJECT_ONE, "alpha", "clean");
+  const memory = await mockMemory(page, "normal");
+  await openMemoryCard(page);
+
+  const range = page.locator("#app-memory .segmented");
+  await expect(range.getByRole("button", { name: "24 h" })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("#memory-bucket")).toHaveValue("auto");
+  expect(
+    memory.requests.some((query) => query.get("window") === "24h" && query.get("bucket") === "30m"),
+  ).toBe(true);
+
+  await range.getByRole("button", { name: "6 h" }).click();
+  await expect(range.getByRole("button", { name: "6 h" })).toHaveAttribute("aria-pressed", "true");
+  await expect.poll(async () => new URL(page.url()).searchParams.get("mem")).toBe("6h:auto");
+  await expect
+    .poll(() =>
+      memory.requests.some(
+        (query) => query.get("window") === "6h" && query.get("bucket") === "10m",
+      ),
+    )
+    .toBe(true);
+
+  await page.locator("#memory-bucket").selectOption("30m");
+  await expect.poll(async () => new URL(page.url()).searchParams.get("mem")).toBe("6h:30m");
+  await expect
+    .poll(() => memory.requests.some((query) => query.get("bucket") === "30m"))
+    .toBe(true);
+
+  await range.getByRole("button", { name: "72 h" }).click();
+  await expect(range.getByRole("button", { name: "72 h" })).toHaveAttribute("aria-pressed", "true");
+  await expect.poll(async () => new URL(page.url()).searchParams.get("mem")).toBe("72h:30m");
+  await expect(page.locator('#memory-bucket option[value="10m"]')).toHaveAttribute("disabled", "");
+  await expect(page.locator("#memory-bucket-reason")).toContainText("the 72-hour range");
+  await expect
+    .poll(() =>
+      memory.requests.some(
+        (query) => query.get("window") === "72h" && query.get("bucket") === "30m",
+      ),
+    )
+    .toBe(true);
+
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "alpha", exact: true })).toBeVisible();
+  await expect(
+    page.locator("#app-memory .segmented").getByRole("button", { name: "72 h" }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("#memory-bucket")).toHaveValue("30m");
+  await expect(page.locator('#memory-bucket option[value="10m"]')).toHaveAttribute("disabled", "");
+  await expect.poll(async () => new URL(page.url()).searchParams.get("mem")).toBe("72h:30m");
+
+  await settle(page);
+  expectNoPageErrors(errors);
+});
+
+test("renders two coalesced OOM markers and the OOM badge", async ({ page }) => {
+  const errors = collectPageErrors(page);
+  prepareGitState(PROJECT_ONE, "alpha", "clean");
+  await mockMemory(page, "oom");
+  await openMemoryCard(page);
+
+  await expect(page.locator("#app-memory .memory-oom-badge")).toHaveText(/2\s*OOM/);
+  const markers = page.locator("#app-memory .memory-oom");
+  await expect(markers).toHaveCount(1);
+  await expect(markers.first()).toHaveAttribute("aria-label", /^2 OOM events near \d{2}:\d{2}$/);
+  await expect(page.locator("#app-memory .memory-chart__note")).toContainText(
+    "coalesced to at most one per minute",
+  );
+
+  await markers.first().click();
+  await expect(page.locator("#app-memory .memory-readout")).toContainText("2 OOM events near");
+  await expect(page.locator("#app-memory .memory-readout")).toContainText(
+    "container exited with code 137",
+  );
+
+  await settle(page);
+  expectNoPageErrors(errors);
+});
+
+test("renders the never-sampled and no-data-in-range memory states", async ({ page }) => {
+  const errors = collectPageErrors(page);
+  prepareGitState(PROJECT_ONE, "alpha", "clean");
+  const memory = await mockMemory(page, "never");
+  await openMemoryCard(page);
+
+  await expect(page.locator("#app-memory .memory-empty")).toHaveText(
+    "No memory samples yet. Samples appear after this agent starts.",
+  );
+  await expect(memorySummaryValues(page).nth(3)).toHaveText("—");
+  await expect(page.locator("#app-memory .memory-chart__svg")).toHaveCount(0);
+  await expect(page.locator("#app-memory .memory-oom-badge")).toHaveCount(0);
+
+  memory.mode = "range";
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "alpha", exact: true })).toBeVisible();
+  await expect(page.locator("#app-memory .memory-empty")).toContainText(
+    "No samples in the last 24 hours.",
+  );
+  await memorySummaryValues(page).nth(3).waitFor();
+  await expect(memorySummaryValues(page).nth(3)).toHaveText("—");
+
+  await page.locator("#app-memory").getByRole("button", { name: "Show 72 hours" }).click();
+  await expect.poll(async () => new URL(page.url()).searchParams.get("mem")).toBe("72h:auto");
+  await expect(page.locator("#app-memory .memory-empty")).toContainText(
+    "No samples in the last 72 hours.",
+  );
+  await expect(
+    page.locator("#app-memory").getByRole("button", { name: /^Show \d+ hours$/ }),
+  ).toHaveCount(0);
+
+  await settle(page);
+  expectNoPageErrors(errors);
+});
+
+test("shows a retryable memory error and recovers", async ({ page }) => {
+  const memory = await mockMemory(page, "error");
+  await openApp(page);
+
+  const alert = page.locator("#app-memory .memory-error[role='alert']");
+  await expect(alert).toBeVisible();
+  await expect(alert).toContainText("memory sampling unavailable");
+  await expect(alert.getByRole("button", { name: "Retry" })).toBeVisible();
+  await expect(page.locator("#app-memory .memory-chart__svg")).toHaveCount(0);
+
+  memory.mode = "normal";
+  await alert.getByRole("button", { name: "Retry" }).click();
+  await expect(alert).toHaveCount(0);
+  await expect(memorySummaryValues(page).nth(0)).toHaveText("500 MiB");
+  await expect(memorySummaryValues(page).nth(3)).toHaveText("2 GiB");
+});
+
+test("collapses the memory chart behind Show chart on a 390px viewport", async ({ page }) => {
+  const errors = collectPageErrors(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+  prepareGitState(PROJECT_ONE, "alpha", "clean");
+  await mockMemory(page, "normal");
+  await openMemoryCard(page);
+
+  const toggle = page.locator("#app-memory .memory-chart-toggle");
+  await expect(toggle).toHaveText("Show chart");
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await expect(page.locator("#memory-chart-body")).toHaveCount(0);
+  await expect(page.locator("#app-memory .memory-summary")).toBeVisible();
+  await expect(page.locator("#app-memory .memory-oom-badge")).toBeVisible();
+  await expect(page.locator('#memory-bucket option[value="10m"]')).toHaveAttribute("disabled", "");
+  await expect(page.locator("#memory-bucket-reason")).toContainText("screens narrower than 768 px");
+
+  await toggle.click();
+  await expect(page.locator("#memory-chart-body")).toBeVisible();
+  await expect(toggle).toHaveText("Hide chart");
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+  await expect(page.locator("#app-memory .memory-legend")).toBeVisible();
+  await expect(page.locator("#app-memory .memory-oom")).toBeVisible();
+  await expect(page.locator("#app-memory .memory-summary")).toBeVisible();
+  await expect(page.locator("#app-memory .memory-oom-badge")).toBeVisible();
+
+  await toggle.click();
+  await expect(page.locator("#memory-chart-body")).toHaveCount(0);
+  await expect(toggle).toHaveText("Show chart");
+  await expect(page.locator("#app-memory .memory-summary")).toBeVisible();
+  await expect(page.locator("#app-memory .memory-oom-badge")).toBeVisible();
 
   await settle(page);
   expectNoPageErrors(errors);

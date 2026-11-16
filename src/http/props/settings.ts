@@ -11,6 +11,7 @@
  * by the legacy page. Masked values are markers such as "Not shown", never the stored secret.
  */
 
+import { DEFAULT_APP_MEMORY_MB } from "../../config/app-resources.js";
 import type { ModelProvider, ModelProviderModel } from "../../model-providers/index.js";
 import { collisionWarnings, providerBaseUrlWarnings } from "../../model-providers/index.js";
 import type { RegisteredApp } from "../../registry/index.js";
@@ -196,6 +197,7 @@ export type SettingsRowKind =
   | "web"
   | "context-enabled"
   | "context-percent"
+  | "runtime-memory"
   | "git-identity"
   | "notification-mode"
   | "notification-enabled"
@@ -547,6 +549,7 @@ export interface SettingsProps {
     readonly webFetch: SettingsRowProps;
     readonly contextEnabled: SettingsRowProps;
     readonly contextPercent: SettingsRowProps;
+    readonly runtimeMemory: SettingsRowProps;
     readonly gitName: SettingsRowProps;
     readonly gitEmail: SettingsRowProps;
   };
@@ -1554,6 +1557,13 @@ export function buildSettingsProps(input: SettingsBuildInput): SettingsProps | u
     effective: percentEffective,
     returnTo,
   });
+  const runtimeMemoryRow = buildRuntimeMemoryRow({
+    scope,
+    target,
+    resolved,
+    effective: resolved.effective.runtime.memoryMb,
+    returnTo,
+  });
   const gitNameRow = buildIdentityRow({
     key: "git.user.name",
     id: "setting-git-user-name",
@@ -1690,6 +1700,7 @@ export function buildSettingsProps(input: SettingsBuildInput): SettingsProps | u
       webFetch: fetchRow,
       contextEnabled: enabledRow,
       contextPercent: percentRow,
+      runtimeMemory: runtimeMemoryRow,
       gitName: gitNameRow,
       gitEmail: gitEmailRow,
     },
@@ -1940,6 +1951,42 @@ function buildPercentRow(options: {
     number: { value, placeholder, min: 1, max: 99, step: 1, required: true },
     returnTo: `${options.returnTo}#setting-context-auto-compact-percent`,
     errorSlotId: "setting-context-auto-compact-percent-error",
+  });
+}
+
+function buildRuntimeMemoryRow(options: {
+  scope: SettingsScope;
+  target: SettingsTarget;
+  resolved: ResolvedSettings;
+  effective: EffectiveValue<number>;
+  returnTo: string;
+}): SettingsRowProps {
+  const own = ownValue(options.resolved, options.scope, "runtime.memory_mb");
+  const value = own.state === "set" && typeof own.value === "number" ? String(own.value) : "";
+  const effectiveMb = options.effective.value ?? DEFAULT_APP_MEMORY_MB;
+  const placeholder =
+    value.length > 0
+      ? ""
+      : `${options.scope === "global" ? "Default" : "Inherited"}: ${effectiveMb} MB`;
+  return buildRow({
+    id: "setting-runtime-memory",
+    key: "runtime.memory_mb",
+    title: "Memory limit",
+    hint: "Container memory cap for this application, in MB (1 MB = 1024 x 1024 bytes). A configured runner maximum is the hard ceiling.",
+    kind: "runtime-memory",
+    scope: options.scope,
+    target: options.target,
+    resolved: options.resolved,
+    effective: options.effective,
+    warnings: [],
+    effectiveText:
+      options.effective.value === null
+        ? effectiveText(options.effective)
+        : `${options.effective.value} MB`,
+    clearable: false,
+    number: { value, placeholder, min: 128, max: 65536, step: 1, required: true },
+    returnTo: `${options.returnTo}#setting-runtime-memory`,
+    errorSlotId: "setting-runtime-memory-error",
   });
 }
 

@@ -467,6 +467,29 @@ export interface DockerContainerSummary {
   Labels?: Record<string, string>;
 }
 
+/** One container's memory sample from `GET /containers/<id>/stats?one-shot=true`. */
+export interface DockerContainerStats {
+  usageBytes: number;
+  workingSetBytes: number;
+  limitBytes: number;
+  anonBytes: number | null;
+  fileBytes: number | null;
+}
+
+/** One event from Docker's `GET /events` stream (newline-delimited JSON). */
+export interface DockerEvent {
+  Type?: string;
+  /** Current API name; older daemons use `status`. */
+  Action?: string;
+  status?: string;
+  Actor?: {
+    ID?: string;
+    Attributes?: Record<string, string>;
+  };
+  time?: number;
+  timeNano?: number;
+}
+
 export interface DockerContainerInspect {
   Id: string;
   Name: string;
@@ -692,6 +715,38 @@ class DockerSocketExecStream implements DockerExecStream {
     this.#ended = true;
     for (const listener of this.#endListeners) listener();
   }
+}
+
+function parseNonNegativeInteger(value: unknown): number | undefined {
+  const parsed = typeof value === "string" ? Number(value) : value;
+  return typeof parsed === "number" && Number.isFinite(parsed) && parsed >= 0
+    ? Math.floor(parsed)
+    : undefined;
+}
+
+function parseContainerStats(body: unknown): DockerContainerStats | undefined {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) return undefined;
+  const memory = (body as { memory_stats?: unknown }).memory_stats;
+  if (typeof memory !== "object" || memory === null || Array.isArray(memory)) return undefined;
+  const usageBytes = parseNonNegativeInteger((memory as { usage?: unknown }).usage);
+  const limitBytes = parseNonNegativeInteger((memory as { limit?: unknown }).limit);
+  if (usageBytes === undefined || limitBytes === undefined) return undefined;
+  const rawStats = (memory as { stats?: unknown }).stats;
+  const stats =
+    typeof rawStats === "object" && rawStats !== null && !Array.isArray(rawStats)
+      ? (rawStats as Record<string, unknown>)
+      : {};
+  const inactive =
+    parseNonNegativeInteger(stats.inactive_file) ??
+    parseNonNegativeInteger(stats.total_inactive_file) ??
+    0;
+  return {
+    usageBytes,
+    workingSetBytes: Math.max(0, usageBytes - inactive),
+    limitBytes,
+    anonBytes: parseNonNegativeInteger(stats.anon) ?? null,
+    fileBytes: parseNonNegativeInteger(stats.file) ?? null,
+  };
 }
 
 function decodeJson<T>(response: DockerResponse, operation: string): T {
@@ -1233,6 +1288,33 @@ export class DockerClient {
     return decodeJson<DockerContainerInspect>(response, `inspect container ${idOrName}`);
   }
 
+  async containerStats(id: string): Promise<DockerContainerStats> {
+    const response = await this.#transport.request(
+      "GET",
+      `/containers/${encodeURIComponent(id)}/stats?stream=false&one-shot=true`,
+      undefined,
+      { timeoutMs: 5_000 },
+    );
+    this.#check(response, `stats for container ${id}`);
+    const stats = parseContainerStats(decodeJson<unknown>(response, `stats for container ${id}`));
+    if (stats === undefined) {
+      throw new DockerError(0, `stats for container ${id} returned an invalid payload`);
+    }
+    return stats;
+  }
+
+  streamEvents(filter: Record<string, string[]>, signal?: AbortSignal): AsyncIterable<string> {
+    if (this.#transport.stream === undefined) {
+      throw new DockerError(0, "docker transport does not support event streams");
+    }
+    const query = encodeURIComponent(JSON.stringify(filter));
+    return this.#transport.stream("GET", `/events?filters=${query}`, undefined, {
+      ...(signal === undefined ? {} : { signal }),
+      // Docker keeps the event connection open until the client closes it; disable the idle timeout.
+      timeoutMs: 0,
+    });
+  }
+
   async listContainers(label?: string): Promise<DockerContainerSummary[]> {
     const filters = label === undefined ? undefined : { label: [label] };
     const query =
@@ -1334,6 +1416,8 @@ export interface DockerRuntime {
   stopContainer(id: string, timeoutSeconds?: number): Promise<void>;
   removeContainer(id: string, force?: boolean): Promise<void>;
   inspectContainer(idOrName: string): Promise<DockerContainerInspect | undefined>;
+  containerStats?(id: string): Promise<DockerContainerStats>;
+  streamEvents?(filter: Record<string, string[]>, signal?: AbortSignal): AsyncIterable<string>;
   inspectImage?(reference: string): Promise<DockerImageInspect | undefined>;
   pullImage?(reference: string, options?: DockerPullOptions): Promise<DockerPullResult>;
   systemDf?(): Promise<DockerSystemDf>;

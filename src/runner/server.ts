@@ -11,7 +11,9 @@ import path from "node:path";
 import type { Duplex } from "node:stream";
 import {
   type ReconcileResponse,
+  type RuntimeAppMemoryStat,
   type RuntimeAppState,
+  type RuntimeAppStats,
   type RuntimeAppStatus,
   type RuntimeErrorBody,
   type RuntimeLogs,
@@ -44,6 +46,7 @@ import { isInside, resolveWithinRoot } from "../runtime/app-path.js";
 import { MOUNTS_ATTACHMENTS_DIR, MOUNTS_GIT_DIR, mountsGitDir } from "../shared/mounts.js";
 import { VERSION } from "../version.js";
 import { ensureBuildNetwork } from "./build-network.js";
+import { ContainerEventTracker } from "./container-events.js";
 import {
   type DockerBuildRuntime,
   type DockerContainerInspect,
@@ -112,6 +115,10 @@ const GIT_TIMEOUTS: Record<GitOperation, number> = {
 /** Running one-shots older than this are orphans: it exceeds every one-shot operation timeout. */
 const ONE_SHOT_MAX_AGE_MS = 10 * 60 * 1000;
 const ONE_SHOT_SWEEP_INTERVAL_MS = 10 * 60 * 1000;
+const APP_STATS_CONCURRENCY = 4;
+const APP_STATS_CALL_TIMEOUT_MS = 5_000;
+const APP_STATS_BATCH_DEADLINE_MS = 15_000;
+const OOM_EVENTS_DEFAULT_WINDOW_MS = 10 * 60 * 1000;
 
 class RunnerError extends Error {
   readonly status: number;
@@ -353,6 +360,29 @@ function containerState(inspect: DockerContainerInspect): RuntimeAppState {
 function restartCount(inspect: DockerContainerInspect): number {
   const value = inspect.RestartCount;
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
+function parseOomSince(raw: string | null): string | undefined {
+  if (raw === null || raw.trim().length === 0) return undefined;
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : undefined;
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("timeout")), ms);
+    timer.unref();
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
 }
 
 function statusFromInspect(
@@ -716,6 +746,7 @@ function mapGitPayloadRoots(payload: GitEnvelope, config: RunnerConfig): GitEnve
 export interface RunnerServiceOptions {
   config: RunnerConfig;
   docker: DockerRuntime;
+  containerEvents?: ContainerEventTracker;
   exec?: DockerExecRuntime;
   build?: DockerBuildRuntime;
   validation?: ImageValidationRuntime;
@@ -728,6 +759,7 @@ export interface RunnerServiceOptions {
 export class RunnerService {
   readonly #config: RunnerConfig;
   readonly #docker: DockerRuntime;
+  readonly #containerEvents: ContainerEventTracker | undefined;
   readonly #exec: DockerExecRuntime | undefined;
   readonly #images: ImageBuildService;
   readonly #imageGc: ImageGcService;
@@ -737,6 +769,7 @@ export class RunnerService {
   constructor(options: RunnerServiceOptions) {
     this.#config = options.config;
     this.#docker = options.docker;
+    this.#containerEvents = options.containerEvents;
     this.#exec = options.exec;
     const inspectImage = options.docker.inspectImage?.bind(options.docker);
     const mutex = options.mutex ?? new ImageMutationMutex();
@@ -1250,6 +1283,52 @@ export class RunnerService {
     return statusFromInspect(appId, containerName, inspect);
   }
 
+  async appStats(): Promise<RuntimeAppStats> {
+    const containers = await this.#docker.listContainers("hanse.managed=true");
+    const newestByApp = new Map<string, DockerContainerSummary>();
+    for (const container of containers) {
+      if (container.State !== "running") continue;
+      const labels = container.Labels;
+      if (labels?.["hanse.managed"] !== "true") continue;
+      const appId = labels["hanse.app.id"];
+      if (appId === undefined || appId.length === 0) continue;
+      const existing = newestByApp.get(appId);
+      if (existing === undefined || (container.Created ?? 0) > (existing.Created ?? 0)) {
+        newestByApp.set(appId, container);
+      }
+    }
+    const collect = this.#docker.containerStats?.bind(this.#docker);
+    if (collect === undefined) return { apps: [] };
+
+    const entries = [...newestByApp.entries()].sort(([left], [right]) => left.localeCompare(right));
+    const deadline = Date.now() + APP_STATS_BATCH_DEADLINE_MS;
+    const apps: RuntimeAppMemoryStat[] = [];
+    let omitted = 0;
+    for (let start = 0; start < entries.length; start += APP_STATS_CONCURRENCY) {
+      if (deadline - Date.now() <= 0) {
+        omitted += entries.length - start;
+        break;
+      }
+      const batch = entries
+        .slice(start, start + APP_STATS_CONCURRENCY)
+        .map(([appId, container]) => {
+          const timeout = Math.min(APP_STATS_CALL_TIMEOUT_MS, deadline - Date.now());
+          if (timeout <= 0) return Promise.reject(new Error("batch deadline exceeded"));
+          return withTimeout(collect(container.Id), timeout).then((stat) => ({ appId, ...stat }));
+        });
+      const settled = await Promise.allSettled(batch);
+      for (const result of settled) {
+        if (result.status === "fulfilled") apps.push(result.value);
+        else omitted += 1;
+      }
+    }
+    if (omitted > 0) {
+      console.warn(`[runner] app-stats omitted ${omitted} container(s)`);
+    }
+    apps.sort((left, right) => left.appId.localeCompare(right.appId));
+    return { apps };
+  }
+
   async logs(appId: string): Promise<RuntimeLogs | undefined> {
     if (!isValidAppId(appId)) {
       throw new RunnerError(400, "invalid app id");
@@ -1620,6 +1699,15 @@ export class RunnerService {
       return;
     }
 
+    if (url.pathname === "/v1/app-stats") {
+      if (method !== "GET") {
+        writeJson(response, 405, { error: "method not allowed" }, { Allow: "GET" });
+        return;
+      }
+      writeJson(response, 200, await this.appStats());
+      return;
+    }
+
     if (url.pathname === "/v1/images/usage") {
       if (method !== "GET") {
         writeJson(response, 405, { error: "method not allowed" }, { Allow: "GET" });
@@ -1872,7 +1960,17 @@ export class RunnerService {
         writeJson(response, 404, { error: "unknown app" });
         return;
       }
-      writeJson(response, 200, status);
+      if (this.#containerEvents === undefined) {
+        writeJson(response, 200, status);
+        return;
+      }
+      const since =
+        parseOomSince(url.searchParams.get("since")) ??
+        new Date(Date.now() - OOM_EVENTS_DEFAULT_WINDOW_MS).toISOString();
+      writeJson(response, 200, {
+        ...status,
+        oomEvents: this.#containerEvents.eventsFor(appId, since),
+      });
       return;
     }
     if (method === "DELETE") {
@@ -2023,9 +2121,21 @@ export async function runRunner(options: RunRunnerOptions): Promise<number> {
       `[runner] build network unavailable; builds will fail closed: ${error instanceof Error ? error.message : String(error)}`,
     );
   });
+  const streamEvents = options.docker.streamEvents?.bind(options.docker);
+  const containerEvents =
+    streamEvents === undefined
+      ? undefined
+      : new ContainerEventTracker({
+          docker: {
+            streamEvents,
+            inspectContainer: options.docker.inspectContainer.bind(options.docker),
+          },
+        });
+  containerEvents?.start();
   const service = new RunnerService({
     config: options.config,
     docker: options.docker,
+    ...(containerEvents === undefined ? {} : { containerEvents }),
     ...(options.exec === undefined ? {} : { exec: options.exec }),
     ...(options.build === undefined ? {} : { build: options.build }),
     ...(options.validation === undefined ? {} : { validation: options.validation }),
@@ -2069,6 +2179,7 @@ export async function runRunner(options: RunRunnerOptions): Promise<number> {
       if (stopping) return;
       stopping = true;
       clearInterval(sweepTimer);
+      containerEvents?.stop();
       server.closeAllConnections();
       server.close(() => resolve(0));
     };

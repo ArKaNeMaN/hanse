@@ -578,6 +578,80 @@ describe("settings mutations", () => {
     }
   });
 
+  it("converts runtime memory form strings and rejects invalid values", async () => {
+    const f = fixture();
+    const set = await handleSettings(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/settings",
+        headers: auth(f.token, { "content-type": "application/x-www-form-urlencoded" }),
+        body: form({ scope: "global", key: "runtime.memory_mb", action: "set", value: "1024" }),
+      }),
+    );
+    expect(set.status).toBe(200);
+    expect(f.settings.resolve({}).effective.runtime.memoryMb).toEqual({
+      value: 1024,
+      state: "set",
+      source: "global",
+      sources: ["global"],
+    });
+
+    const json = await handleSettings(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/settings",
+        headers: auth(f.token, { "content-type": "application/json" }),
+        body: JSON.stringify({
+          scope: "global",
+          key: "runtime.memory_mb",
+          action: "set",
+          value: 2048,
+        }),
+      }),
+    );
+    expect(json.status).toBe(200);
+    expect(f.settings.resolve({}).effective.runtime.memoryMb.value).toBe(2048);
+
+    const inherit = await handleSettings(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/settings",
+        headers: auth(f.token, { "content-type": "application/x-www-form-urlencoded" }),
+        body: form({ scope: "global", key: "runtime.memory_mb", action: "inherit" }),
+      }),
+    );
+    expect(inherit.status).toBe(200);
+    expect(f.settings.resolve({}).effective.runtime.memoryMb.state).toBe("default");
+
+    for (const raw of ["", "abc", "127", "65537", "1.5"]) {
+      const rejected = await handleSettings(
+        f.deps,
+        request({
+          method: "POST",
+          path: "/api/settings",
+          headers: auth(f.token, { "content-type": "application/x-www-form-urlencoded" }),
+          body: form({ scope: "global", key: "runtime.memory_mb", action: "set", value: raw }),
+        }),
+      );
+      expect(rejected.status).toBe(400);
+    }
+
+    const cleared = await handleSettings(
+      f.deps,
+      request({
+        method: "POST",
+        path: "/api/settings",
+        headers: auth(f.token, { "content-type": "application/x-www-form-urlencoded" }),
+        body: form({ scope: "global", key: "runtime.memory_mb", action: "clear" }),
+      }),
+    );
+    expect(cleared.status).toBe(400);
+    expect(JSON.parse(cleared.body).error).toContain("not clearable");
+  });
+
   it("accepts strict JSON values and rejects arrays, prototype keys, and bad numbers", async () => {
     const f = fixture();
     const set = await handleSettings(

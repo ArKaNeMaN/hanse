@@ -11,6 +11,7 @@ import AppGitRemotes from "../components/AppGitRemotes.vue";
 import AppGroup from "../components/AppGroup.vue";
 import AppIcon from "../components/AppIcon.vue";
 import AppImagePanel from "../components/AppImagePanel.vue";
+import AppMemoryPanel from "../components/AppMemoryPanel.vue";
 import AppRestartDialog from "../components/AppRestartDialog.vue";
 import AppSshPanel from "../components/AppSshPanel.vue";
 import AppStateStrip from "../components/AppStateStrip.vue";
@@ -172,7 +173,16 @@ const historyCursor = ref<string | null>(null);
 const historyLoading = ref(false);
 const historyLoaded = ref(false);
 const historyError = ref<string | null>(null);
+const historyMerging = ref(false);
 const historyHasMore = computed(() => historyCursor.value !== null);
+
+const newestHistoryId = computed(() => {
+  let newest = 0;
+  for (const event of historyEvents.value) {
+    if (event.id > newest) newest = event.id;
+  }
+  return newest;
+});
 
 watch([projectId, appKey], () => {
   historyEvents.value = [];
@@ -218,7 +228,53 @@ async function loadProcessHistory(mode: "initial" | "older"): Promise<void> {
   } finally {
     historyLoading.value = false;
   }
+  // A live event that arrived while the first page was loading would otherwise be missed until the
+  // next transition; catch up once now that the list exists.
+  if (
+    mode === "initial" &&
+    historyLoaded.value &&
+    agentProcess.lastEventId.value > newestHistoryId.value
+  ) {
+    void mergeProcessHistory();
+  }
 }
+
+/**
+ * Union the newest history page into the open list without touching the cursor.
+ *
+ * The list is only merged while it has been opened and no load/merge is in flight; a transient
+ * failure keeps the existing rows and any prior `historyError`. At most one retry runs if the
+ * live id advances again during the merge, so a not-yet-persisted event cannot spin.
+ */
+async function mergeProcessHistory(allowRetry = true): Promise<void> {
+  if (!historyLoaded.value || historyLoading.value || historyMerging.value) return;
+  const liveId = agentProcess.lastEventId.value;
+  if (liveId <= newestHistoryId.value) return;
+  historyMerging.value = true;
+  try {
+    const page = await apiQuery<ProcessResponse>(processHistoryPath(null));
+    const known = new Set(historyEvents.value.map((event) => event.id));
+    const merged = [...historyEvents.value, ...page.events.filter((event) => !known.has(event.id))];
+    merged.sort((left, right) => right.id - left.id);
+    historyEvents.value = merged;
+  } catch {
+    // Keep the loaded rows and the existing error state; the next transition retries.
+  } finally {
+    historyMerging.value = false;
+    if (allowRetry && agentProcess.lastEventId.value > liveId) {
+      void mergeProcessHistory(false);
+    }
+  }
+}
+
+watch(
+  () => agentProcess.lastEventId.value,
+  (id) => {
+    if (!historyLoaded.value || historyLoading.value || historyMerging.value) return;
+    if (id <= newestHistoryId.value) return;
+    void mergeProcessHistory();
+  },
+);
 
 const runtimeHref = computed(() => view.value?.image.hrefs.runtime ?? "");
 
@@ -503,6 +559,11 @@ async function restartAgent(): Promise<void> {
         @load-history="loadProcessHistory('initial')"
         @load-older="loadProcessHistory('older')"
       />
+      <AppMemoryPanel
+        :project-id="view.identity.projectId"
+        :app-key="view.identity.appKey"
+        :runtime-state="processState"
+      />
       <section class="card section" id="master-panel" aria-labelledby="master-panel-title">
         <div class="card__head">
           <h2 class="card__title" id="master-panel-title">Master workspace</h2>
@@ -614,6 +675,12 @@ async function restartAgent(): Promise<void> {
         @restart="restartDialog?.open()"
         @load-history="loadProcessHistory('initial')"
         @load-older="loadProcessHistory('older')"
+      />
+
+      <AppMemoryPanel
+        :project-id="view.identity.projectId"
+        :app-key="view.identity.appKey"
+        :runtime-state="processState"
       />
 
       <AppGroup

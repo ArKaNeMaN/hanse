@@ -3,6 +3,7 @@ import { openDatabase, runMigrations, type SqliteDatabase } from "./database.js"
 import { reconcileSkillFiles } from "./reconcile-skill-files.js";
 
 export * from "./database.js";
+export * from "./memory-samples.js";
 export * from "./migrations.js";
 export * from "./process.js";
 export * from "./reconcile-skill-files.js";

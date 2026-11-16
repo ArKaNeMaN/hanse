@@ -10,10 +10,11 @@ import type { HttpDeps } from "../src/http/handler.js";
 import { isProcessEventsRoute, processStreams } from "../src/http/process.js";
 import { createHttpServer } from "../src/http/server.js";
 import { createPrincipal } from "../src/identity/principals.js";
-import type { InstanceManager } from "../src/opencode/manager.js";
+import { InstanceManager } from "../src/opencode/manager.js";
 import { processEvents } from "../src/opencode/process-events.js";
 import { openDatabase, runMigrations, type SqliteDatabase } from "../src/store/index.js";
 import { type ProcessEvent, readProcessEvents } from "../src/store/process.js";
+import { FakeAgentRuntime } from "./fixtures/fake-runtime.js";
 
 const dirs: string[] = [];
 const databases: SqliteDatabase[] = [];
@@ -479,6 +480,78 @@ describe("process event stream", () => {
     });
     expect(deleting.status).toBe(409);
     expect(await deleting.json()).toMatchObject({ code: "deletion_pending" });
+  });
+
+  it("does not emit or reset startedAt for a history-only OOM row", async () => {
+    const f = fixture();
+    const startedAt = "2026-11-07T10:00:00.000Z";
+    const eventAt = "2026-11-07T10:05:00.000Z";
+    f.db
+      .prepare(
+        `INSERT INTO instances
+           (id, app_id, state, runtime_state, endpoint, updated_at,
+            process_attempt_id, process_phase, process_started_at, process_updated_at,
+            runtime_started_at, runtime_restart_count, last_oom_killed)
+         VALUES ('i-p-empty', ?, 'running', 'running', 'http://127.0.0.1:77', ?,
+                 'att-oom', 'ready', ?, ?, ?, 0, 0)`,
+      )
+      .run(EMPTY_ID, now, startedAt, now, startedAt);
+    const runtime = new FakeAgentRuntime();
+    runtime.statuses.set(EMPTY_ID, {
+      appId: EMPTY_ID,
+      endpoint: "http://127.0.0.1:77",
+      state: "running",
+      specHash: null,
+      version: null,
+      startedAt,
+      restartCount: 0,
+      exitCode: null,
+      oomKilled: false,
+      oomEvents: [{ appId: EMPTY_ID, at: eventAt }],
+    });
+    const manager = new InstanceManager(f.db, "/workspace", { runtime });
+    f.base = await listen(f);
+
+    const response = await fetch(`${f.base}/api/apps/empty/process/events?project=p`, {
+      headers: auth(f.humanToken),
+    });
+    const stream = probe(response);
+    try {
+      await stream.waitFor('"type":"process.snapshot"');
+      expect(frameOfType(stream.text(), "process.snapshot")?.current).toMatchObject({
+        state: "running",
+        phase: "ready",
+        startedAt,
+      });
+      await manager.reconcileStatuses();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(transitionIds(stream.text())).toEqual([]);
+    } finally {
+      await stream.close();
+    }
+
+    const oom = readProcessEvents(f.db, EMPTY_ID).events[0];
+    expect(oom).toMatchObject({
+      reason: "oom_killed",
+      errorCode: "oom_killed",
+      createdAt: eventAt,
+    });
+
+    const reopened = await fetch(`${f.base}/api/apps/empty/process/events?project=p`, {
+      headers: auth(f.humanToken),
+    });
+    const reopenedStream = probe(reopened);
+    try {
+      await reopenedStream.waitFor('"type":"process.snapshot"');
+      expect(frameOfType(reopenedStream.text(), "process.snapshot")).toMatchObject({
+        lastEventId: oom?.id,
+      });
+      expect(frameOfType(reopenedStream.text(), "process.snapshot")?.current).toMatchObject({
+        startedAt,
+      });
+    } finally {
+      await reopenedStream.close();
+    }
   });
 
   it("matches only GET requests to the process events path", () => {

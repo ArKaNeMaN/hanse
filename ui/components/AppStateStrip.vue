@@ -3,14 +3,7 @@ import { computed } from "vue";
 import type { AppSettingsProps } from "../app-types.js";
 import { absoluteTime, timeAgo } from "../format.js";
 import type { ProcessError, ProcessEvent, ProcessPhase } from "../process/types.js";
-import {
-  type PillSpec,
-  processPhaseLabel,
-  processPhasePill,
-  processPill,
-  type RuntimeState,
-  runtimePill,
-} from "../status.js";
+import { type PillSpec, processPhaseLabel, processPill, type RuntimeState } from "../status.js";
 import AppIcon from "./AppIcon.vue";
 import StatusPill from "./StatusPill.vue";
 
@@ -41,12 +34,9 @@ const props = withDefaults(
 
 const emit = defineEmits<{ restart: []; "load-history": []; "load-older": [] }>();
 
-const runtime = computed<PillSpec>(() => {
-  if (props.processPhase === "stopping") {
-    return processPhasePill("stopping") ?? runtimePill(props.runtimeState);
-  }
-  return runtimePill(props.runtimeState);
-});
+const runtime = computed<PillSpec>(() =>
+  processPill(props.runtimeState, props.processPhase, props.processError?.code ?? null, null),
+);
 
 const activity = computed<"starting" | "stopping" | null>(() => {
   if (props.processPhase === "stopping") return "stopping";
@@ -78,6 +68,10 @@ const errorMessage = computed<string | null>(() => {
   }
   return null;
 });
+
+const errorTitle = computed<string | null>(() =>
+  props.processError?.code === "oom_killed" ? "Agent ran out of memory" : null,
+);
 
 const errorAt = computed<string | null>(() => {
   if (errorMessage.value === null) return null;
@@ -115,7 +109,7 @@ function onHistoryToggle(event: Event): void {
         >
       </p>
       <p v-if="errorMessage !== null" class="field-error" id="process-error" role="alert">
-        {{ errorMessage }}
+        <strong v-if="errorTitle !== null">{{ errorTitle }} · </strong>{{ errorMessage }}
         <time
           v-if="errorAt !== null"
           class="caption"
@@ -154,7 +148,9 @@ function onHistoryToggle(event: Event): void {
                   timeAgo(event.createdAt)
                 }}</time>
               </span>
-              <StatusPill :pill="processPill(event.state, event.phase)" />
+              <StatusPill
+                :pill="processPill(event.state, event.phase, event.errorCode, event.reason)"
+              />
               <span class="badge badge--mono">{{ event.source }}</span>
               <span v-if="event.reason !== null" class="small">{{ event.reason }}</span>
               <span v-if="event.message !== null" class="small">{{ event.message }}</span>

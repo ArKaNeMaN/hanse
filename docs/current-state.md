@@ -48,8 +48,11 @@ a host `opencode` auth file.
   no state, no Docker socket, no operator/runtime token.
   The runner sets Docker `HostConfig.Init`, so a small init process is PID 1 and `opencode serve` is
   its child; orphaned shell/tool/MCP/terminal children are reaped instead of accumulating as zombies.
-  Memory, CPU, and PID limits stay enforced. `opencode serve` listens on `0.0.0.0:4100` inside the
-  app network.
+  Memory, CPU, and PID limits are enforced. The memory cap comes from the hierarchical
+  `runtime.memory_mb` setting (global, project, or application scope, resolved at launch) and
+  defaults to `HANSE_APP_MEMORY_MB` (2048 MB). CPU and PID limits remain environment-only
+  (`HANSE_APP_CPUS`, `HANSE_APP_PIDS`). `opencode serve` listens on `0.0.0.0:4100` inside the app
+  network.
 - **Networks:** `front` contains the coordinator and IDE; `control` contains the coordinator and
   runner; each app container has its own network. App containers cannot reach the IDE or sibling apps.
 - **Exposed port:** `${HANSE_BIND:-127.0.0.1}:${HANSE_PORT:-8787}` (loopback by default; set
@@ -237,6 +240,24 @@ The runner exposes two runtime-token endpoints; the coordinator wraps them as hu
   target is not protected. GC removes only `hanse-app-*` tags or images labelled `hanse.app.id`,
   skips images that also carry unrelated tags, and prunes build cache only through the Docker
   build-cache prune API. A Docker error stops the run (fail closed).
+
+## Runner API (memory stats and OOM events)
+
+- The runner API stays at version `3`. The memory endpoints are additive: an older runner answers
+  `404` for `GET /v1/app-stats`, and an older runner ignores the optional `since` query and returns
+  the status without `oomEvents`. A new runner still serves an older coordinator, so coordinator-only
+  and runner-only rollback remain possible.
+- `GET /v1/app-stats` returns `{apps: RuntimeAppMemoryStat[]}` for managed containers in the
+  `running` state, one row per app id, with the newest Docker `Created` winning if a recreate briefly
+  leaves two generations. Rows carry `usageBytes`, `workingSetBytes`, `limitBytes`, and optional
+  `anonBytes`/`fileBytes` from a one-shot Docker stats call. Per-call failures are omitted and
+  logged; one bad container never fails the batch. The call is authenticated with the runtime token
+  and accepts no app path.
+- `GET /v1/apps/:appId?since=<ISO>` attaches `oomEvents: RuntimeOomEvent[]` for that app from the
+  runner's bounded Docker `oom` event tracker. An invalid `since` is treated as absent; the default
+  window is the last 10 minutes. The field is added only by the status HTTP handler, so `reconcile`
+  and `ensure` responses do not grow. Events during runner or Docker daemon downtime are best-effort
+  lost.
 
 ## Idle agent maintenance
 
@@ -428,13 +449,14 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   and references render through `SafeMarkdown`. The application page reads boot props only for a matching app route and otherwise
   fetches `/api/ui/apps/:app?project=`, whose response also carries the live git read summary (boot
   props load it as `git.summary.loaded=false`). It renders the application header and links, the
-  always-visible Runtime/Settings state strip, and a default-collapsed accordion of four group cards
-  (Git, Image, SSH access, Danger zone) whose open state is persisted per project+app key in
-  `localStorage`. The Git group holds the Repository/Changes workbench with Remotes/Last commit in
+  always-visible Runtime/Settings state strip, the full-width Memory card, and a default-collapsed
+  accordion of four group cards (Git, Image, SSH access, Danger zone) whose open state is persisted
+  per project+app key in `localStorage`. The Git group holds the Repository/Changes workbench with Remotes/Last commit in
   its rail; the Image group holds build/rollback/check/logs and the full legacy state matrix; the
   SSH group holds the app-scoped allowlist/grant/revoke/approve/reject/audit actions; the Danger
-  zone holds the exact-name delete dialog. The master variant is unchanged. Runtime and image are
-  polled at the existing cadence (runtime 10 s, image 3 s while building). Git status loads from
+  zone holds the exact-name delete dialog. The master variant renders the Memory card after the state
+  strip and before the master panel (it has no group accordion). Runtime, memory, and image are
+  polled at their own cadences (runtime 10 s, memory 60 s, image 3 s while building). Git status loads from
   `/api/projects/:id/apps/:app/git/status` on entry, on demand, and
   after an action only when the action response carries no status; fetch, update, push, commit-all,
   and branch switch reuse the existing git JSON handlers, preserve the
@@ -479,7 +501,18 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   and a `More actions` disclosure (`Open IDE in this folder`, `Application settings`); a two-cell
   state strip (`Runtime`, `Settings`) precedes the body, which is a default-collapsed accordion of
   four group cards: Git, Image, SSH access, and Danger zone. Each app's open state is persisted per
-  project+app key in `localStorage`. An open Git group keeps Repository/Changes in the main column
+  project+app key in `localStorage`. A full-width **Memory** card sits between the state strip and
+  the accordion (and between the state strip and the master panel in the master variant). It shows a
+  four-cell summary (Current, Peak, Average, Limit), a hand-rolled SVG chart with a min-max band, a
+  working-set average line, a dashed actual-container-limit line, current point, and OOM markers,
+  plus a `6 h | 24 h | 72 h` range and an `Auto | 10 min | 30 min` bucket control. The selection is
+  persisted in the URL as `mem=24h:30m`; `Auto` means 10 minutes for 6 hours and 30 minutes for 24/72
+  hours; 10-minute buckets are disabled for 72 hours and below 768 px, where the chart body also
+  collapses behind **Show chart**. Loading, never-sampled, no-data-in-range, stopped, stale/error,
+  and OOM states are explicit; missing buckets are gaps, never zero. The card polls every 60 seconds,
+  keeps the previous data during a refetch, and links to the Agent settings pane at
+  `#setting-runtime-memory`; editing stays in Settings.
+  An open Git group keeps Repository/Changes in the main column
   and Remotes/Last commit in its rail; Image, SSH access, and the exact-name delete card live in
   their own groups. The page's only brass
   action is `Commit all`. It is linked from the project application table, the chat context rail,
@@ -601,11 +634,28 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
 - Current errors clear on a new attempt, a successful reconnect or readiness recovery, and an
   explicit stop; history is append-only. The stable codes are `image_unavailable`,
   `default_image_unavailable`, `token_reconcile_failed`, `skills_materialize_failed`,
-  `readiness_timeout`, `runtime_unavailable`, and `interrupted`; `external_restart` and
-  `out_of_band_stop` are reasons, not codes. `sanitizeProcessError` keeps the first line, strips ANSI
-  and control characters, redacts Bearer/Authorization values, credential-shaped tokens, private-key
+  `readiness_timeout`, `runtime_unavailable`, `interrupted`, and `oom_killed`; `external_restart`
+  and `out_of_band_stop` are reasons, not codes. `sanitizeProcessError` keeps the first line, strips
+  ANSI and control characters, redacts Bearer/Authorization values, credential-shaped tokens, private-key
   blocks, and caller-supplied secrets, caps at 2,000 characters, and substitutes a generic
   code-keyed message for an unknown internal exception. Redaction happens at write, not at read.
+- **OOM detection.** The runner observes Docker `oom` events (not only the 15-second status
+  reconciler), because `unless-stopped` usually auto-restarts an OOM-killed container before the
+  reconciler can see `State.OOMKilled`. The single status reconciler remains the only process
+  writer. In the live (`running`/`starting`) branch it appends a **history-only** event with
+  `state`/`phase` unchanged, `source: "runtime"`, `reason`/`errorCode` `oom_killed`, a neutral
+  message, and `createdAt` equal to the Docker event time. When the container did not restart, the
+  crashed path writes the terminal `error`/`failed` row with `errorCode: "oom_killed"`; a startup
+  OOM writes `error`/`failed`/`oom_killed` instead of `interrupted`. One kill produces one OOM row,
+  though the existing `external_restart` transition may still be recorded separately.
+- History-only OOM rows do not update `instances` and are **not emitted on the process SSE bus**;
+  they reach an open page through its `lastEventId` history poll. They use the current attempt id, or
+  a bounded synthetic `oom:<at>` attempt id when the event predates the current attempt. Dedupe
+  against any `reason='oom_killed'` row within ±60 seconds makes replay and coordinator restarts
+  idempotent. All history-only OOM rows are rate-limited to **one per 60 seconds per app** so a crash
+  loop cannot consume the 1,000-event budget; a crash loop therefore shows at most one history OOM
+  row and one Memory card marker per minute, not every kill. A rate-limited event is a deliberate
+  drop, not a late insert.
 - Retention: an insert prunes the app to its newest 1,000 events, and every reconciler tick prunes
   rows older than 30 days for every app regardless of state, in batches of 500. Pruning is
   idempotent and does not depend on the app being running.
@@ -641,7 +691,12 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   disclosure at `#process-history`, which fetches
   `/api/apps/:app/process?limit=50&project=<id>`, renders newest first, dedupes by event id, and
   supports **Load older** until the cursor is null. The page keeps its 10 s runtime poll as the
-  fallback and subscribes to the process SSE while visible.
+  fallback and subscribes to the process SSE while visible. When `process.lastEventId` increases and
+  history is already loaded, the 10 s poll refetches only the first `/process` page (`limit=50`) and
+  merges it into the loaded history by id (newest first), keeping the existing oldest-id cursor. It
+  skips the merge while an initial or older page is loading, so a history-only OOM row or other
+  transition appears without a reload and **Load older** still works. No extra SSE subscription is
+  used for history-only rows.
 - Overview: the **Agent processes** block shows `starting`, `stopping`, and `error` counts and up to
   five affected applications (starting or error states), ordered by `process_updated_at` descending,
   with chat/application links. It excludes the built-in master and is hidden when empty. The existing
@@ -652,6 +707,28 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   and no cancellation of an in-flight start; a legacy row without an attempt has no attempt id and a
   null phase until its next event, so the UI falls back to the coarse state; the process SSE is
   best-effort and polling remains the correctness fallback.
+
+## Application memory metrics
+
+- The coordinator samples container memory every 30 seconds through `GET /v1/app-stats`, assigns one
+  `sampled_at` timestamp per batch, and inserts every row in one transaction. A replayed batch is
+  idempotent (`ON CONFLICT(app_id, sampled_at) DO NOTHING`); a container for an app deleted between
+  listing and insert is skipped. The sampler is single-flight, runs without a browser open, and
+  never writes process state. A missing or older runner endpoint, transport failure, or `404` means
+  "metrics unavailable"; the sampler logs on transition and backs off from 30 seconds to five
+  minutes, re-enabling on the first success.
+- Samples are retained for 72 hours and pruned hourly in batches of 500, not on every tick. The
+  charted series is the container working set (`max(0, usage - inactive_file)`); raw usage and the
+  optional anon/file breakdown are stored for diagnosis. A stopped or never-started app is a gap,
+  never a zero series.
+- `GET /api/apps/:app/memory?project=<projectId>&window=24h&bucket=30m` is human-only, requires
+  `?project`, returns `cache-control: no-store`, and uses the same `400`/`403`/`404`/`409` semantics
+  as `/process` (agent principal, missing project, unknown app, deleting app). `window` is
+  `6h`/`24h`/`72h` (default `24h`); `bucket` is `10m`/`30m` (default `30m`), and `10m` with `72h` is
+  `400`. The window starts on a bucket boundary and ends at "now", so the current bucket may be
+  partial. Buckets with no samples are omitted. `summary.currentBytes`/`limitBytes` come from the
+  latest sample inside the window, `summary.lastSampleAt` is the latest sample overall, and
+  `events` lists `oom_killed` rows from `agent_run_events` in the window.
 
 ## SSH host access
 
@@ -691,7 +768,7 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   order; migrations v10 (applied settings/profile state), v11 (deletion markers), v12 (skills),
   v13 (skill bundles), v14 (session-bound handoffs, reply routing, and handoff policy), and v15
   (chat drafts, session state, and pending sends) and v16 (file-only attachments and deliveries)
-  follow. The current schema versions are `[1..28]` (v17 adds handoff message-id lookup indexes;
+  follow. The current schema versions are `[1..29]` (v17 adds handoff message-id lookup indexes;
   v18 adds agent image validity; v19 adds the global custom model provider registry; v20 adds the
   process-rule hash, runtime epoch/exit fields, and the session resume/notice tables; v21 adds
   `agent_media` for agent-published chat images; v22 adds the handoff-thread header fields, ordered
@@ -703,7 +780,9 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   `instances.applied_launch_hash` with the handoff activity backfill and the
   `handoffs(from_app_id, state)` index; v28 adds the `handoff_grants` table, the
   `handoffs.target_project_id` and `handoffs.grant_id` snapshot columns, and the target-project
-  indexes).
+  indexes; v29 adds `app_memory_samples` for 30-second container memory samples with 72-hour
+  retention, a composite `(app_id, sampled_at)` primary key, and a `sampled_at` index for the hourly
+  prune).
 - Live on `deployment-host` (`sha-e2d89a2`): a temporary SSH target pinned and authenticated, an approval was
   approved, `echo QA_OK` and a 65 s `sleep` succeeded, upload/download round-tripped, a real
   `opencode` turn called `hanse_ssh_exec` and received the result after 65 s, and audit rows survived
@@ -1175,6 +1254,13 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   with default `deepseek/deepseek-flash`; `web.search` and `web.fetch` default to `{driver:"builtin"}`
   and are clearable. `context.auto_compact.enabled` (default `false`) and
   `context.auto_compact.percent` (default `80`, integer 1..99) are non-clearable live settings.
+  `runtime.memory_mb` is a non-clearable integer in `128..65536` MB available at all three scopes.
+  Its default is environment-derived (`HANSE_APP_MEMORY_MB`, 2048 MB when unset or invalid) and is
+  resolved per read, so a coordinator restart with a different env value changes the default. The
+  narrowest set value wins; **Use inherited** deletes the current-scope row. `runtime.` is
+  human-only, so the master agent can read but not set or inherit the key. The key is part of the
+  launch settings hash: after the upgrade that added `runtime`, every running app reports
+  "restart required" once, even at the default, and nothing restarts silently.
   `git.user.name`/`git.user.email` are clearable strings (default `null`).
   The Vue settings page is a two-pane console: a scope ladder, a four-cell summary strip (set here,
   inherited, needs attention, restart pending), a sticky six-section rail (Agent, Web tools, Context,
@@ -1379,7 +1465,7 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   (`http(s)`, `ssh`, `git`, scp-like; no local/file/userinfo/query/fragment), and clone-failure
   cleanup. `add_app.path` is relative to the project root (not the workspace); omit it to default to
   `apps/<name-slug>`.
-- Settings writes accept only the seven registry keys (no provider keys or git credentials), validate
+- Settings writes accept only the fourteen registry keys (no provider keys or git credentials), validate
   the target scope, and report pending restarts. `start_app` and `restart_app` refuse the master
   itself; a stopped app is not started by `restart_app`.
 - `create_skill` creates an enabled bundle at global, project, or app scope through
@@ -1690,6 +1776,10 @@ Host `HANSE_HOST_MOUNTS` is mounted at the same absolute path read-write in `han
 | `HANSE_STATE_HOME` | serve | coordinator state root (default `~/.local/state`) |
 | `HANSE_AGENTS_HOME` | serve | per-app agent state root (default `~/.local/state/hanse-agents`; Compose sets `/data/agents`) |
 | `HANSE_RUNNER_URL` | serve | runner base URL (Compose: `http://runner:8790`) |
+| `HANSE_APP_MEMORY_MB` | serve | env-derived default for `runtime.memory_mb` (default `2048`, normalized integer `128..65536`; invalid values fall back to `2048` with a one-time warning). The setting overrides it per scope. |
+| `HANSE_APP_CPUS` | serve | container CPU quota for app containers (default `2`); environment-only in this stage |
+| `HANSE_APP_PIDS` | serve | container PID limit for app containers (default `512`); environment-only in this stage |
+| `HANSE_APP_MEMORY_MAX_MB` | runner | optional hard ceiling for a launch request; a value above it is rejected with `400 resource_limit`, never clamped. Unset by default (no ceiling). |
 | `HANSE_HOST_WORKSPACE` / `HANSE_HOST_AGENTS` | serve, runner | absolute host paths used by the runner for app bind mounts |
 | `HANSE_HOST_RUNNER_TMP` | runner | absolute writable host path for ephemeral Test-connection credential dirs, mounted at the same path; must not overlap workspace/agents (default `/var/lib/hanse/tmp`) |
 | `HANSE_AGENT_API_BASE` | serve | coordinator URL passed to agents as the MCP API base (Compose: `http://hanse:8787`) |
@@ -1724,6 +1814,10 @@ remain internal to the git one-shot.
 coordinator; operators do not set them.
 
 ## Verification
+
+The most recent full repository gate run predates the memory-limit stage. That stage has targeted
+implementation-phase evidence in [journal 0062](journal/0062-app-memory-limits-and-metrics.md); its
+final full gates and E2E are pending and are not claimed here.
 
 `npm run lint && npm run typecheck && npm run typecheck:ui && npm test && npm run build &&
 npm run check:ui && npm run check:sensitive && npm run test:e2e` (all green; 3,793 tests in

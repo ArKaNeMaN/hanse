@@ -1,7 +1,7 @@
 import { QueryClient, VueQueryPlugin } from "@tanstack/vue-query";
 import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { nextTick } from "vue";
 import { createMemoryHistory, createRouter, type Router } from "vue-router";
 import { ApiError } from "../api.js";
@@ -15,6 +15,8 @@ import type {
 } from "../app-types.js";
 import type { BootPayload } from "../boot.js";
 import type { GitFile, GitOperation, GitStatus } from "../git-types.js";
+import type { MemoryPayload } from "../memory-chart.js";
+import type { ProcessEvent, ProcessResponse } from "../process/types.js";
 import { useToastStore } from "../stores/toasts.js";
 import AppPage from "./AppPage.vue";
 
@@ -99,6 +101,46 @@ const GIT: AppGitSummaryProps = {
     committedAt: "2026-10-20T10:00:00.000Z",
   },
 };
+
+const MIB = 1024 ** 2;
+const GIB = 1024 ** 3;
+
+function memoryPayload(): MemoryPayload {
+  return {
+    appId: "p:alpha",
+    window: {
+      from: "2026-11-16T06:00:00.000Z",
+      to: "2026-11-16T12:00:00.000Z",
+      bucketSeconds: 1_800,
+    },
+    summary: {
+      currentBytes: 500 * MIB,
+      minBytes: 100 * MIB,
+      peakBytes: 1.5 * GIB,
+      averageBytes: 400 * MIB,
+      limitBytes: 2 * GIB,
+      samples: 12,
+      lastSampleAt: "2026-11-16T11:59:00.000Z",
+    },
+    buckets: [
+      {
+        start: "2026-11-16T11:00:00.000Z",
+        minBytes: 100 * MIB,
+        averageBytes: 200 * MIB,
+        maxBytes: 300 * MIB,
+        samples: 2,
+      },
+      {
+        start: "2026-11-16T11:30:00.000Z",
+        minBytes: 300 * MIB,
+        averageBytes: 500 * MIB,
+        maxBytes: 1.5 * GIB,
+        samples: 2,
+      },
+    ],
+    events: [],
+  };
+}
 
 function fullStatus(overrides: Partial<GitStatus> = {}): GitStatus {
   return {
@@ -445,6 +487,7 @@ function installQueries(
     image?: unknown;
     runtime?: unknown;
     process?: unknown | ((path: string) => unknown);
+    memory?: unknown;
     git?: GitStatus | null;
     gitError?: unknown;
   } = {},
@@ -452,6 +495,9 @@ function installQueries(
   mocks.apiQuery.mockImplementation((path: string) => {
     if (path.startsWith("/api/ui/apps/")) {
       return Promise.resolve({ ...appProps, chrome: CHROME });
+    }
+    if (path.includes("/memory")) {
+      return Promise.resolve(live.memory ?? memoryPayload());
     }
     if (path.includes("/process")) {
       if (typeof live.process === "function") {
@@ -531,11 +577,87 @@ function toasts() {
   return useToastStore().toasts;
 }
 
+function documentOrder(wrapper: VueWrapper, ids: readonly string[]): string[] {
+  return wrapper
+    .findAll(ids.map((id) => `#${id}`).join(", "))
+    .map((node) => node.attributes("id") ?? "");
+}
+
+function processEvent(
+  id: number,
+  state: ProcessEvent["state"],
+  phase: ProcessEvent["phase"],
+  message: string,
+): ProcessEvent {
+  return {
+    id,
+    attemptId: "attempt-running",
+    seq: id,
+    state,
+    phase,
+    source: "runtime",
+    reason: state === "error" ? "oom_killed" : null,
+    errorCode: state === "error" ? "oom_killed" : null,
+    message,
+    createdAt: new Date(Date.UTC(2026, 10, 16, 12, id)).toISOString(),
+  };
+}
+
+class FakeEventSource {
+  static instances: FakeEventSource[] = [];
+  readyState = 0;
+  onopen: ((event: unknown) => void) | null = null;
+  onmessage: ((event: { data: unknown }) => void) | null = null;
+  onerror: ((event: unknown) => void) | null = null;
+  readonly url: string;
+
+  constructor(url: string) {
+    this.url = url;
+    FakeEventSource.instances.push(this);
+  }
+
+  close(): void {
+    this.readyState = 2;
+  }
+
+  emit(frame: unknown): void {
+    this.onmessage?.({ data: JSON.stringify(frame) });
+  }
+}
+
+let restoreEventSource: (() => void) | undefined;
+
+function installFakeEventSource(): void {
+  const original = window.EventSource;
+  FakeEventSource.instances = [];
+  (window as unknown as { EventSource: unknown }).EventSource = FakeEventSource;
+  restoreEventSource = () => {
+    if (original === undefined) {
+      delete (window as unknown as { EventSource?: unknown }).EventSource;
+    } else {
+      (window as unknown as { EventSource: unknown }).EventSource = original;
+    }
+  };
+}
+
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve: (value: T) => void = () => {};
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
 describe("AppPage", () => {
   beforeEach(() => {
     mocks.apiQuery.mockReset();
     mocks.apiMutation.mockReset();
     window.localStorage.clear();
+  });
+
+  afterEach(() => {
+    restoreEventSource?.();
+    restoreEventSource = undefined;
   });
 
   it("renders the header, runtime strip, settings state, links, and restart control", async () => {
@@ -556,7 +678,7 @@ describe("AppPage", () => {
 
     expect(wrapper.get("h1").text()).toBe("alpha");
     expect(wrapper.text()).toContain("Project One");
-    expect(wrapper.get("#runtime-state").text()).toContain("Running");
+    expect(wrapper.get("#runtime-state").text()).toContain("Ready");
     expect(wrapper.get("#settings-state").text()).toContain("Restart required");
     expect(wrapper.find("#app-restart").exists()).toBe(true);
 
@@ -574,9 +696,9 @@ describe("AppPage", () => {
 
   it.each([
     ["starting", "Starting"],
-    ["running", "Running"],
+    ["running", "Ready"],
     ["stopped", "Stopped"],
-    ["error", "Error"],
+    ["error", "Failed"],
   ] as const)("renders runtime state %s", async (state, label) => {
     const appProps = props({
       runtime: {
@@ -736,6 +858,159 @@ describe("AppPage", () => {
       ]),
     );
     expect(wrapper.find("#process-history-load-older").exists()).toBe(false);
+  });
+
+  it("places the memory card between the state strip and the managed accordion", async () => {
+    const appProps = props();
+    installQueries(appProps);
+    const wrapper = await mountPage(boot(appProps));
+
+    expect(documentOrder(wrapper, ["app-state", "app-memory", "git-panel"])).toEqual([
+      "app-state",
+      "app-memory",
+      "git-panel",
+    ]);
+    expect(wrapper.get("#memory-title").text()).toBe("Memory");
+    expect(wrapper.findAll(".app-group")).toHaveLength(4);
+    expect(wrapper.find("#group-git-toggle").exists()).toBe(true);
+    expect(wrapper.find("#group-image-toggle").exists()).toBe(true);
+    expect(wrapper.find("#group-ssh-toggle").exists()).toBe(true);
+    expect(wrapper.find("#group-danger-toggle").exists()).toBe(true);
+    expect(mocks.apiQuery.mock.calls.some(([path]) => path.includes("limit=50"))).toBe(false);
+  });
+
+  it("places the memory card between the state strip and the master panel", async () => {
+    const masterProps = props({
+      master: true,
+      header: {
+        overline: "Application",
+        title: "master",
+        description: "Built-in Hanse assistant.",
+        meta: ["Hanse master", "master", "/workspace/master"],
+        showChatTerminal: true,
+      },
+      identity: { ...props().identity, appKey: "master", master: true },
+    });
+    installQueries(masterProps);
+    const wrapper = await mountPage(boot(masterProps));
+
+    expect(documentOrder(wrapper, ["app-state", "app-memory", "master-panel"])).toEqual([
+      "app-state",
+      "app-memory",
+      "master-panel",
+    ]);
+    expect(wrapper.findAll(".app-group")).toHaveLength(0);
+    expect(wrapper.get("#memory-title").text()).toBe("Memory");
+  });
+
+  it("merges a live OOM history row into an open list without resetting the cursor", async () => {
+    installFakeEventSource();
+    const appProps = props();
+    const middle = processEvent(2, "starting", "preparing", "Preparing credentials");
+    const oldest = processEvent(1, "starting", "requested", "Requested start");
+    const oom = processEvent(3, "error", "failed", "Out of memory");
+    let firstPageCalls = 0;
+    const emptyPage = (): ProcessResponse => ({
+      current: appProps.runtime.process,
+      events: [],
+      nextCursor: null,
+    });
+    installQueries(appProps, {
+      process: (path: string) => {
+        if (!path.includes("limit=50")) return emptyPage();
+        if (path.includes("before=")) {
+          return { current: appProps.runtime.process, events: [oldest], nextCursor: null };
+        }
+        firstPageCalls += 1;
+        if (firstPageCalls === 1) {
+          return { current: appProps.runtime.process, events: [middle, oldest], nextCursor: "2" };
+        }
+        return { current: appProps.runtime.process, events: [oom, middle], nextCursor: "2" };
+      },
+    });
+    const wrapper = await mountPage(boot(appProps));
+
+    const details = wrapper.get("#process-history");
+    (details.element as HTMLDetailsElement).open = true;
+    await details.trigger("toggle");
+    await flushPromises();
+
+    expect(wrapper.findAll("[data-process-event]")).toHaveLength(2);
+    expect(wrapper.text()).not.toContain("Out of memory");
+
+    const source = FakeEventSource.instances[0];
+    if (source === undefined) throw new Error("process stream did not open");
+    source.emit({ type: "process.transition", event: oom });
+    await flushPromises();
+
+    const rows = wrapper.findAll("[data-process-event]").map((row) => row.text());
+    expect(rows).toHaveLength(3);
+    expect(rows[0]).toContain("Out of memory");
+    expect(rows[1]).toContain("Preparing credentials");
+    expect(firstPageCalls).toBe(2);
+    expect(wrapper.find("#process-history-load-older").exists()).toBe(true);
+    expect(mocks.apiQuery).toHaveBeenCalledWith(
+      "/api/apps/alpha/memory?project=p&window=24h&bucket=30m",
+    );
+
+    await wrapper.get("#process-history-load-older").trigger("click");
+    await flushPromises();
+    expect(mocks.apiQuery).toHaveBeenCalledWith(
+      "/api/apps/alpha/process?limit=50&project=p&before=2",
+    );
+  });
+
+  it("runs one catch-up merge when the live id advances during the initial history load", async () => {
+    installFakeEventSource();
+    const appProps = props();
+    const middle = processEvent(2, "starting", "preparing", "Preparing credentials");
+    const oldest = processEvent(1, "starting", "requested", "Requested start");
+    const oom = processEvent(3, "error", "failed", "Out of memory");
+    const firstPage = deferred<ProcessResponse>();
+    let firstPageCalls = 0;
+    installQueries(appProps, {
+      process: (path: string) => {
+        if (!path.includes("limit=50")) {
+          return { current: appProps.runtime.process, events: [], nextCursor: null };
+        }
+        if (path.includes("before=")) {
+          return { current: appProps.runtime.process, events: [oldest], nextCursor: null };
+        }
+        firstPageCalls += 1;
+        if (firstPageCalls === 1) return firstPage.promise;
+        return { current: appProps.runtime.process, events: [oom, middle], nextCursor: "2" };
+      },
+    });
+    const wrapper = await mountPage(boot(appProps));
+
+    const details = wrapper.get("#process-history");
+    (details.element as HTMLDetailsElement).open = true;
+    await details.trigger("toggle");
+    await flushPromises();
+
+    const source = FakeEventSource.instances[0];
+    if (source === undefined) throw new Error("process stream did not open");
+    source.emit({ type: "process.transition", event: oom });
+    await nextTick();
+
+    firstPage.resolve({
+      current: appProps.runtime.process,
+      events: [middle, oldest],
+      nextCursor: "2",
+    });
+    await flushPromises();
+
+    expect(firstPageCalls).toBe(2);
+    const rows = wrapper.findAll("[data-process-event]").map((row) => row.text());
+    expect(rows).toHaveLength(3);
+    expect(rows[0]).toContain("Out of memory");
+    expect(wrapper.find("#process-history-load-older").exists()).toBe(true);
+
+    await wrapper.get("#process-history-load-older").trigger("click");
+    await flushPromises();
+    expect(mocks.apiQuery).toHaveBeenCalledWith(
+      "/api/apps/alpha/process?limit=50&project=p&before=2",
+    );
   });
 
   it("keeps the 10s runtime poll as the fallback", async () => {
@@ -1066,7 +1341,7 @@ describe("AppPage", () => {
     expect(wrapper.find("#git-panel").exists()).toBe(false);
     expect(wrapper.find("#image-panel").exists()).toBe(false);
     expect(wrapper.find("#ssh-panel").exists()).toBe(false);
-    expect(wrapper.get("#runtime-state").text()).toContain("Running");
+    expect(wrapper.get("#runtime-state").text()).toContain("Ready");
     expect(wrapper.text()).toContain("Application settings");
   });
 
@@ -1127,6 +1402,9 @@ describe("AppPage", () => {
       .mockImplementation((path: string) => {
         if (path.startsWith("/api/ui/apps/")) {
           return Promise.resolve({ ...appProps, chrome: CHROME });
+        }
+        if (path.includes("/memory")) {
+          return Promise.resolve(memoryPayload());
         }
         if (path.includes("/image")) {
           return Promise.resolve({ status: "ready", state: "current" });

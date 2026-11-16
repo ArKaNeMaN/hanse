@@ -1,5 +1,22 @@
 # Open questions
 
+> Stage: `0048-app-memory-limits-and-metrics`. Owner decisions were collected on 2026-11-16. There
+> are no open items for this stage.
+
+## Stage `0048-app-memory-limits-and-metrics` - resolved owner decisions
+
+1. **Per-app memory setting** - implement it across global, project, and application scopes; the
+   current environment value (`HANSE_APP_MEMORY_MB`) is the default.
+2. **Metrics** - sampling interval, retention, and aggregation are delegated to the implementer,
+   optimizing for low disk use and fast page open.
+3. **OOM markers** - delegated; OOM-killed must also be a distinct, obvious interruption event
+   because the current cause is unclear.
+4. **UI placement** - a card is acceptable; the owner is not opinionated and asked for an
+   independent design opinion. Accepted: a full-width card between the state strip and the
+   accordion, not a fifth group and not a third strip cell.
+5. **Delivery cycle** - design, design review, owner questions, plan, plan review, implementation,
+   record, and commit.
+
 > Stage: `0044-cross-project-handoffs`. Owner decisions were collected on 2026-11-10. There are no
 > open items for this stage.
 

@@ -1,0 +1,27 @@
+{
+  "tool": "memory-qa",
+  "startedAt": "2026-11-16T15:58:03.525Z",
+  "baseUrl": "http://127.0.0.1:4317",
+  "status": "PASS",
+  "assertions": 92,
+  "screenshots": [
+    "docs/design/artifacts/memory/memory-390-dark-collapsed.png",
+    "docs/design/artifacts/memory/memory-390-dark-open.png",
+    "docs/design/artifacts/memory/memory-390-light-collapsed.png",
+    "docs/design/artifacts/memory/memory-390-light-open.png",
+    "docs/design/artifacts/memory/memory-768-dark.png",
+    "docs/design/artifacts/memory/memory-768-light.png",
+    "docs/design/artifacts/memory/memory-1440-dark.png",
+    "docs/design/artifacts/memory/memory-1440-light.png"
+  ],
+  "metrics": {
+    "memory-390-dark": 872,
+    "memory-390-light": 872,
+    "memory-768-dark": 659,
+    "memory-768-light": 659,
+    "memory-1440-dark": 540,
+    "memory-1440-light": 540
+  },
+  "errors": [],
+  "finishedAt": "2026-11-16T15:58:16.672Z"
+}

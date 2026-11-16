@@ -6,7 +6,7 @@ import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it } from "vitest";
 import { runCli } from "../src/cli/cli.js";
 import { type CommandContext, webMcpCommand } from "../src/cli/commands.js";
-import type { EffectiveSettings, EffectiveValue } from "../src/settings/types.js";
+import type { EffectiveSettings, EffectiveValue, NotificationMode } from "../src/settings/types.js";
 import { buildWebMcpConfig, parseWebMcpConfig } from "../src/web/config.js";
 import { handleWebRpc, runWebMcpServer } from "../src/web/mcp.js";
 import type { DeepSeekOptions, WebMcpConfig, WebToolConfig } from "../src/web/types.js";
@@ -59,6 +59,24 @@ function effectiveSettings(
   return {
     llm: { model: effectiveValue("deepseek/deepseek-flash") },
     web: { search: effectiveValue(search), fetch: effectiveValue(fetch) },
+    context: { autoCompact: { enabled: effectiveValue(false), percent: effectiveValue(80) } },
+    git: {
+      user: {
+        name: effectiveValue<string | null>(null),
+        email: effectiveValue<string | null>(null),
+      },
+    },
+    runtime: { memoryMb: effectiveValue(2048) },
+    notifications: {
+      mode: effectiveValue<NotificationMode>("all"),
+      telegram: {
+        enabled: effectiveValue(false),
+        chatId: effectiveValue<string | null>(null),
+        apiBaseUrl: effectiveValue("https://api.telegram.org"),
+      },
+      publicBaseUrl: effectiveValue<string | null>(null),
+      includeAnswer: effectiveValue(true),
+    },
   };
 }
 

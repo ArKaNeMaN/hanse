@@ -243,6 +243,7 @@ describe("process detail and overview summary", () => {
       projectName: "P",
       state: "starting",
       phase: "stopping",
+      errorCode: null,
       updatedAt: "2026-11-07T00:00:06.000Z",
       chatHref: "/chat?app=b&project=p",
       appHref: "/projects/p/apps/b",

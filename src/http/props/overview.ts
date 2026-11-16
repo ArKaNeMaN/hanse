@@ -76,6 +76,7 @@ export interface OverviewProcessRowProps {
   readonly projectName: string;
   readonly state: ProcessState;
   readonly phase: ProcessPhase | null;
+  readonly errorCode: string | null;
   readonly updatedAt: string | null;
   readonly chatHref: string;
   readonly appHref: string;
@@ -136,6 +137,7 @@ export function buildOverviewProps(site: SiteModel): OverviewProps {
           projectName: project.name,
           state: process.state,
           phase: process.phase,
+          errorCode: process.error?.code ?? null,
           updatedAt: process.updatedAt,
           chatHref: `/chat?app=${encoded(app.appKey)}&project=${encoded(project.id)}`,
           appHref: `/projects/${encoded(project.id)}/apps/${encoded(app.appKey)}`,

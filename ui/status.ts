@@ -137,6 +137,19 @@ export function processPhasePill(phase: ProcessPhase | null | undefined): PillSp
 }
 
 /** Status pill for a process snapshot, preferring the phase over the coarse runtime state. */
-export function processPill(state: RuntimeState, phase?: ProcessPhase | null): PillSpec {
+export function processPill(
+  state: RuntimeState,
+  phase?: ProcessPhase | null,
+  errorCode?: string | null,
+  reason?: string | null,
+): PillSpec {
+  if (errorCode === "oom_killed" || reason === "oom_killed") {
+    return {
+      variant: "status",
+      dataState: "failed",
+      icon: "alert-triangle",
+      label: "Out of memory",
+    };
+  }
   return processPhasePill(phase ?? null) ?? runtimePill(state);
 }

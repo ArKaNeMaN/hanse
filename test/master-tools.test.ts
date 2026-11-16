@@ -268,6 +268,34 @@ describe("master tools", () => {
     );
   });
 
+  it("reads runtime memory but refuses to set or inherit it", async () => {
+    const value = fixture();
+    const settings = (await callMasterTool(value.context, MASTER, "get_settings", {})) as {
+      settings: { effective: { runtime: { memoryMb: { value: number; state: string } } } };
+    };
+    expect(settings.settings.effective.runtime.memoryMb).toMatchObject({
+      value: 2048,
+      state: "default",
+    });
+
+    await expectFailure(
+      () =>
+        callMasterTool(value.context, MASTER, "set_setting", {
+          key: "runtime.memory_mb",
+          value: 4096,
+        }),
+      "permission_denied",
+    );
+    await expectFailure(
+      () =>
+        callMasterTool(value.context, MASTER, "inherit_setting", {
+          key: "runtime.memory_mb",
+          scope: "global",
+        }),
+      "permission_denied",
+    );
+  });
+
   it("creates projects and applications and writes workspace files", async () => {
     const value = fixture();
     const created = (await callMasterTool(value.context, MASTER, "create_project", {

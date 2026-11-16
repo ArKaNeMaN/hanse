@@ -90,4 +90,16 @@ describe("process error sanitizer", () => {
       "The target image changed; the agent was not restarted.",
     );
   });
+
+  it("recognizes oom_killed and uses the strong generic message", () => {
+    expect(processErrorCode(Object.assign(new Error("oom"), { code: "oom_killed" }))).toBe(
+      "oom_killed",
+    );
+    expect(genericProcessErrorMessage("oom_killed")).toBe(
+      "The agent was killed after exceeding its memory limit.",
+    );
+    expect(sanitizeProcessError(new Error("internal detail"), { code: "oom_killed" })).toBe(
+      "The agent was killed after exceeding its memory limit.",
+    );
+  });
 });

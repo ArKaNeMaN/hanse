@@ -28,10 +28,15 @@ no extra published port.
 - 2 CPU cores minimum; 4+ recommended for several apps or image builds.
 - About 2 GB of RAM for an idle coordinator/IDE/runner, plus up to 2 GB per app container (the
   default cap). 4 GB is the minimum for the stack and one app; 8-16 GB is recommended for several.
-  Raise `HANSE_APP_MEMORY_MB`/`HANSE_APP_CPUS` only with matching host capacity (set them in the
-  coordinator environment, for example with a Compose override). Each app container also runs under
-  a Docker init process (`HostConfig.Init`) that reaps orphaned children, and its memory/CPU/PID
-  limits stay enforced. Do not raise `HANSE_APP_MEMORY_MB` as a workaround for a leak: the runtime
+  The per-app memory cap comes from the hierarchical `runtime.memory_mb` setting (global, project, or
+  application scope); unset scopes inherit the environment default `HANSE_APP_MEMORY_MB` (2048 MB).
+  CPU and PID limits remain environment-only (`HANSE_APP_CPUS`, `HANSE_APP_PIDS`); raise them only
+  with matching host capacity (set them in the coordinator environment, for example with a Compose
+  override). `HANSE_APP_MEMORY_MAX_MB` is an optional runner-side hard ceiling for launch requests:
+  unset by default (no ceiling), and a request above it is rejected with `400 resource_limit`, never
+  clamped. Each app container also runs under a Docker init process (`HostConfig.Init`) that reaps
+  orphaned children, and its memory/CPU/PID
+  limits stay enforced. Do not raise the memory limit as a workaround for a leak: the runtime
   bounds its own child-process, MCP, and coordinator state.
 - Absolute host paths for the workspace and agents volumes, because the runner passes them to the
   Docker daemon as bind sources.
@@ -291,6 +296,10 @@ Compose reads `.env` in the directory containing `compose.yaml`.
 | `HANSE_AGENT_AUTO_UPDATE_MS` | `10800000` | Idle auto-update threshold in milliseconds (3 hours); `0` disables auto-update. |
 | `HANSE_AGENT_MAINTENANCE_INTERVAL_MS` | `300000` | Idle scheduler tick (5 minutes), clamped to at least 30 seconds. |
 | `HANSE_AGENT_AUTO_PULL_MS` | `900000` | Default/base image pull interval (15 minutes); `0` disables auto-pull. |
+| `HANSE_APP_MEMORY_MB` | `2048` | Default for the hierarchical `runtime.memory_mb` setting, in MB (integer `128..65536`). The setting overrides it at global/project/app scope; an invalid value falls back to `2048` with a one-time warning. |
+| `HANSE_APP_CPUS` | `2` | Container CPU quota for app containers. Environment-only; not a per-app setting in this stage. |
+| `HANSE_APP_PIDS` | `512` | Container PID limit for app containers. Environment-only; not a per-app setting in this stage. |
+| `HANSE_APP_MEMORY_MAX_MB` | unset | Optional runner-side hard ceiling for a launch memory request. A request above it returns `400 resource_limit`; it is never clamped. Unset means no ceiling. |
 | `HANSE_DOCKER_DATA_ROOT` | `/var/lib/docker` | Absolute host path of the Docker data root. Bind-mounted read-only into the runner at the same path and statfs'd by the pull disk guard; unset or unreadable means `disk: null` and pulls fail closed. |
 | `HANSE_PULL_MAX_BYTES` | unset | Maximum bytes for one pulled image. Above the budget, or when the pulled image size is unavailable, the image is removed and the pull returns `507`. |
 | `HANSE_BUILD_IMAGE` | `hanse:dev` | Local coordinator tag used by the source-build overlay. |
@@ -486,7 +495,7 @@ Drain and resume are idempotent. The drain response is:
   "drained": true,
   "inFlightLifecycle": 0,
   "inFlightHttp": 0,
-  "schemaVersion": 27,
+  "schemaVersion": 29,
   "revision": "<full-commit>",
   "walCheckpoint": { "busy": 0, "log": 0, "checkpointed": 0 }
 }
@@ -508,11 +517,14 @@ old image. A custom app that declares `build.base: base` fails its next build if
 
 The coordinator must work with the previous IDE for one release. Images carry
 `org.hanse.api.min` / `org.hanse.api.max` and `org.hanse.schema.min` / `org.hanse.schema.max` labels.
-The coordinator image currently declares API `1..1` and schema `1..27`; the IDE and agent
+The coordinator image currently declares API `1..1` and schema `1..29`; the IDE and agent
 images declare API `1..1` and schema `0..0` (they do not read the coordinator database). The runner
 declares API `3..3` and schema `0..0`; the runner API bump is the isolation boundary, so the
 coordinator and runner are upgraded as a unit rather than N-1. API 3 adds durable build records and
-best-effort build cancellation.
+best-effort build cancellation. Container memory stats (`GET /v1/app-stats`) and per-app
+`oomEvents`/`since` on the status route are additive within API 3: the runner API version stays `3`,
+an older runner's `404` for the stats route is treated as "metrics unavailable", and an older
+runner's status response simply has no `oomEvents`.
 
 The coordinator reads the runner's authenticated `GET /v1/meta` endpoint (`apiVersion`,
 `minApiVersion`, `runnerVersion`) at startup when `HANSE_RUNNER_URL` is set. A runner that does not
@@ -526,6 +538,18 @@ Idle maintenance adds one stricter requirement: upgrade the coordinator and runn
 the pull disk guard, and pinned-image `ensure` all need the new runner; a pre-v3 runner is refused at
 startup. Recreate both with `docker compose up -d hanse runner` after the migration and confirm
 `GET /v1/meta` succeeds; the IDE can follow separately.
+
+The memory-limit upgrade changes the launch settings hash because `runtime` joined the
+launch-effective settings. After the first start on the new version, every running application
+reports **restart required** once, even at the default 2048 MB. This is expected: there is no
+silent restart and no hash backfill. Restart an app when you want the new memory value applied;
+until then it keeps its current container. Emission of memory samples begins immediately, so the
+Memory card can show history before that restart.
+
+Schema migration v29 (`app_memory_samples`) is additive and forward-only. It stores only container
+memory samples; existing projects, apps, settings, sessions, images, and handoffs are untouched. An
+older coordinator refuses the newer schema, so rollback still requires the pre-upgrade database
+backup and matching state.
 
 Async restart claims are persisted in SQLite before the `202` is returned. If the coordinator exits
 mid-restart, the next startup finds the claim and completes the start; a stopped app left by an

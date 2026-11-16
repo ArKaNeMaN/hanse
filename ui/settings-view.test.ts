@@ -10,6 +10,7 @@ import type {
 import {
   attentionSection,
   pageSummary,
+  registryRows,
   rowTrace,
   scopeCounts,
   sectionForHash,
@@ -112,6 +113,7 @@ const REGISTRY_KEYS = [
   "notifications.public_base_url",
   "notifications.telegram.api_base_url",
   "notifications.include_answer",
+  "runtime.memory_mb",
 ] as const;
 
 function rowsFixture(): SettingsProps["rows"] {
@@ -125,6 +127,7 @@ function rowsFixture(): SettingsProps["rows"] {
     webFetch: rows["web.fetch"] as SettingsRowProps,
     contextEnabled: rows["context.auto_compact.enabled"] as SettingsRowProps,
     contextPercent: rows["context.auto_compact.percent"] as SettingsRowProps,
+    runtimeMemory: rows["runtime.memory_mb"] as SettingsRowProps,
     gitName: rows["git.user.name"] as SettingsRowProps,
     gitEmail: rows["git.user.email"] as SettingsRowProps,
   };
@@ -187,6 +190,7 @@ function makeProps(scope: SettingsScope): SettingsProps {
       webFetch: rows.webFetch,
       contextEnabled: rows.contextEnabled,
       contextPercent: rows.contextPercent,
+      runtimeMemory: rows.runtimeMemory,
       gitName: rows.gitName,
       gitEmail: rows.gitEmail,
     },
@@ -539,13 +543,32 @@ describe("showsRestartMarker", () => {
     const model = rowFixture({ key: "llm.model", own: "set" });
     const inheritedModel = rowFixture({ key: "llm.model", own: "absent" });
     const notifications = rowFixture({ key: "notifications.mode", own: "set" });
+    const memory = rowFixture({ key: "runtime.memory_mb", own: "set" });
 
     expect(showsRestartMarker(props, model)).toBe(true);
     expect(showsRestartMarker(props, inheritedModel)).toBe(false);
     expect(showsRestartMarker(props, notifications)).toBe(false);
+    expect(showsRestartMarker(props, memory)).toBe(true);
 
     writable(props).restartRequired = false;
     expect(showsRestartMarker(props, model)).toBe(false);
+  });
+});
+
+describe("runtime memory row", () => {
+  it("belongs to the registry and the Agent pane and counts as a current-scope override", () => {
+    const props = makeProps("app");
+    const memory = rowFixture({
+      key: "runtime.memory_mb",
+      own: "set",
+      effectiveState: "set",
+      effectiveSource: "app",
+    });
+    writable(props.rows).runtimeMemory = memory;
+
+    expect(registryRows(props).map((row) => row.key)).toContain("runtime.memory_mb");
+    expect(sectionForHash("#setting-runtime-memory")).toBe("agent");
+    expect(pageSummary(props).setHere).toBe(1);
   });
 });
 

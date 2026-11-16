@@ -28,7 +28,7 @@ test("renders the application runtime strip and git/image panels", async ({ page
   expect(response?.status()).toBe(200);
 
   await expect(page.locator("#app-state")).toBeVisible();
-  await expect(page.locator("#runtime-state")).toContainText("Running");
+  await expect(page.locator("#runtime-state")).toContainText("Ready");
   if (spa) {
     for (const group of ["git", "image", "ssh"] as const) {
       await page.locator(`#group-${group}-toggle`).click();

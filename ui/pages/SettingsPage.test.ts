@@ -377,6 +377,22 @@ function rowsFor(scope: SettingsScope): SettingsProps["rows"] {
     effectiveText: "75%",
     number: { value: "", placeholder: "Inherited: 75%", min: 1, max: 99, step: 1, required: true },
   });
+  const runtimeMemory = row({
+    id: "setting-runtime-memory",
+    key: "runtime.memory_mb",
+    title: "Memory limit",
+    kind: "runtime-memory",
+    scope,
+    effectiveText: "2048 MB",
+    number: {
+      value: "",
+      placeholder: scope === "global" ? "Default: 2048 MB" : "Inherited: 2048 MB",
+      min: 128,
+      max: 65536,
+      step: 1,
+      required: true,
+    },
+  });
   const gitName = row({
     id: "setting-git-user-name",
     key: "git.user.name",
@@ -411,7 +427,16 @@ function rowsFor(scope: SettingsScope): SettingsProps["rows"] {
       options: [],
     },
   });
-  return { model, webSearch, webFetch, contextEnabled, contextPercent, gitName, gitEmail };
+  return {
+    model,
+    webSearch,
+    webFetch,
+    contextEnabled,
+    contextPercent,
+    runtimeMemory,
+    gitName,
+    gitEmail,
+  };
 }
 
 function scopeProps(scope: SettingsScope): SettingsScopeProps {
@@ -930,6 +955,9 @@ describe("SettingsPage", () => {
     expect(wrapper.get("h1").text()).toBe("Settings");
     expect(wrapper.get("#settings-agent").text()).toContain("Model");
     expect(wrapper.get("#setting-llm-model").text()).toContain("test-provider/test-model");
+    const memory = wrapper.get("#settings-agent #setting-runtime-memory");
+    expect(memory.text()).toContain("Memory limit");
+    expect(memory.get("input[name='value']").attributes("placeholder")).toBe("Default: 2048 MB");
     expect(wrapper.get("#provider-deepseek").text()).toContain("Not shown");
     expect(wrapper.get("#custom-provider-e2e-llm").text()).toContain("E2E LLM");
     expect(wrapper.get("#settings-git").text()).toContain("SSH credential");
@@ -1199,6 +1227,20 @@ describe("SettingsPage", () => {
         key: "context.auto_compact.percent",
         action: "set",
         value: 55,
+      }),
+    });
+
+    await wrapper.get("#setting-runtime-memory > summary").trigger("click");
+    await wrapper.get("#setting-runtime-memory input[name='value']").setValue("4096");
+    await wrapper.get("#setting-runtime-memory form").trigger("submit");
+    await flushPromises();
+
+    expect(mocks.apiMutation).toHaveBeenLastCalledWith("/api/settings", {
+      json: expect.objectContaining({
+        scope: "project",
+        key: "runtime.memory_mb",
+        action: "set",
+        value: 4096,
       }),
     });
   });
