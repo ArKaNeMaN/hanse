@@ -1651,8 +1651,10 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   is caught up on boot.
 - Attention covers questions, permissions, SSH approvals, handoff approvals, parked/failed/terminal
   handoffs, parked thread messages, agent errors (aborts ignored), and persisted session notices.
-  Thread-target questions are ignored. `mode=attention` suppresses completions; `off` suppresses
-  everything; while disabled the watermarks and notice marker advance without sending.
+  Subagent interruption notices stay in chat and are not sent to Telegram, and repeated stop/resume
+  notices within five minutes collapse into one message. Thread-target questions are ignored.
+  `mode=attention` suppresses completions; `off` suppresses everything; while disabled the watermarks
+  and notice marker advance without sending.
 - The durable outbox stores one row per Telegram chunk (`group_id`, `chunk_index`, `chunk_count`,
   per-chunk dedupe/retry). Completion answers use Telegram rich messages with the full answer
   (30,000 code points / 32,768 UTF-8 bytes per chunk, 20-chunk cap, plain fallback at 4,000), a

@@ -58,7 +58,11 @@ export interface NoticeCandidate {
   reason?: string;
   payload: Record<string, unknown>;
   createdAt: string;
-  /** `notice:<noticeId>`; Phase F appends `:<chunkIndex>` per chunk. */
+  /**
+   * Raw row identity `notice:<noticeId>`. The router instead derives a bucketed base from
+   * app/session/kind/reason (5-minute occurrence bucket) and appends `:<chunkIndex>`, so repeated
+   * restart notices collapse; the raw identity stays available on the candidate.
+   */
   dedupeKey: string;
 }
 

@@ -337,8 +337,9 @@ dead and a restart loses an idle that arrived while the coordinator was down. Th
   sweep also runs when an app first produces an event after a start.
 - On boot, scan `session_notices` from the last 7 days, restricted to the four attention kinds
   (`agent_stopped`, `subagent_interrupted`, `resume_failed`, `resume_unavailable`) and to the
-  reason matrix in section 6; enqueue each unnotified row with `dedupe_key = "notice:<noticeId>"`.
-  The outbox unique key makes the scan idempotent.
+  reason matrix in section 6; enqueue each unnotified row with a dedupe base derived from
+  app/session/kind/reason and a 5-minute occurrence bucket (see section 6). The outbox unique key
+  makes the scan idempotent.
 
 ---
 
@@ -459,9 +460,9 @@ reaches a message.
 | Handoff reply failed | `notificationEvents` when `reply_state` becomes `failed` | `handoff-failed:<handoffId>:<transitionAt>` |
 | Terminal handoff failure | `notificationEvents` when a waiting source handoff becomes `failed`/`rejected`/`expired` | `handoff-terminal:<handoffId>:<state>:<transitionAt>` |
 | Parked thread message | `notificationEvents` when a thread message becomes `waiting_operator` | `thread-waiting:<messageId>:<transitionAt>` |
-| Agent error | `session.error` (ignore `MessageAbortedError`) | `error:<appId>:<sessionId>:<answerMessageId ?? 5mBucket>:<messageHash>` |
-| Agent stop/resume failure | `subscribeNotices` (`agent_stopped`, `subagent_interrupted`, `resume_failed`, `resume_unavailable`) | `notice:<noticeId>` |
-| Unnotified notice on boot | `session_notices` boot scan | `notice:<noticeId>` |
+| Agent error | `session.error` (ignore `MessageAbortedError`) | `agent-error:<appId>:<sessionId>:<5mBucket>:<messageHash>` |
+| Agent stop/resume failure | `subscribeNotices` (`agent_stopped`, `subagent_interrupted`, `resume_failed`, `resume_unavailable`) | `notice:<kind>:<appId>:<reason>:<5mBucket>` for `agent_stopped` (app-wide); `notice:<kind>:<appId>:<sessionId>:<reason>:<5mBucket>` for `resume_failed`/`resume_unavailable` (per session) |
+| Unnotified notice on boot | `session_notices` boot scan | same bucketed keys as the live notice handler |
 
 Every `notificationEvents` signal carries the transition timestamp (`transitionAt`) captured at the
 transition, so a later unrelated `updated_at` change cannot create a duplicate key. Every kind,
@@ -484,6 +485,10 @@ question/permission/notice body has the same per-chunk retry/dedupe behavior as 
 This is a total partition of all 18 values. The boot scan is restricted to the four attention kinds
 and applies the same matrix; it must not replay `resume_started`/`resume_completed`.
 
+`subagent_interrupted` notices and any notice whose row carries a parent session id are
+chat-transcript detail only: they are written to the chat notices but are not sent to Telegram.
+Only a top-level session stop pages the operator.
+
 ### 6.2 Suppressions and emission
 
 - Questions for an active thread target session are ignored (the dispatcher auto-rejects them).
@@ -493,7 +498,9 @@ and applies the same matrix; it must not replay `resume_started`/`resume_complet
   watermark instead of building a backlog, and dead-letters pending rows that no longer match the
   mode.
 - The same attention row is never sent twice; the dedupe keys above include an occurrence identity
-  (`approvalId`/`transitionAt`/`noticeId`/answer id/time bucket).
+  (`approvalId`/`transitionAt`/`noticeId`/answer id/time bucket). Repeated stop/resume notices for
+  the same session (or app, for `agent_stopped`) inside one 5-minute bucket collapse into one
+  message.
 - `notificationEvents` is emitted **after** the outer transaction commits. `requestApproval`
   commits its own transaction, so the caller emits after it returns. `insertThreadApproval` runs
   inside `createThreadInternal`'s `db.transaction` (`src/coordinator/thread.ts:741-839`);

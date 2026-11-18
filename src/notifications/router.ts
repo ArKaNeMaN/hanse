@@ -14,6 +14,7 @@
  * marked switch for the remaining signals, and `#handleNoticeCandidates` is the hook that enqueues
  * the candidates returned by `scanMissedNotices` before the notice scan marker advances.
  */
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { defaultMessageProjector } from "../attachments/projection.js";
 import { collectSessionSubtreeIDs } from "../chat/session-tree.js";
@@ -185,6 +186,15 @@ function toolName(tool: Record<string, unknown> | undefined): string | null {
 function isAbortError(event: { name?: string; message?: string }): boolean {
   if (event.name === "MessageAbortedError") return true;
   return event.message?.toLowerCase().includes("aborted") === true;
+}
+
+function messageHash(message: string): string {
+  return createHash("sha256").update(message).digest("hex").slice(0, 16);
+}
+
+function parseNoticeCreatedAt(value: string, fallback: number): number {
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
 }
 
 function sessionKey(appId: string, sessionId: string): string {
@@ -613,7 +623,7 @@ export class NotificationRouter {
     if (!gate.attention) return;
     this.#enqueueAttention({
       kind: "agent_interrupted",
-      dedupeBase: `agent-error:${event.sessionID}:${new Date(this.#now()).toISOString()}`,
+      dedupeBase: `agent-error:${appId}:${event.sessionID}:${Math.floor(this.#now() / NOTIFY_OCCURRENCE_BUCKET_MS)}:${messageHash(event.message)}`,
       scope: "app",
       projectId: app.projectId,
       projectName: app.projectName,
@@ -1040,14 +1050,26 @@ export class NotificationRouter {
 
   #enqueueNotice(candidate: NoticeCandidate): void {
     if (!noticeReasonNotifies(candidate.kind, candidate.reason)) return;
+    // A subagent interruption is transcript detail, not an operator alert: one runtime restart
+    // writes a notice per busy child (plus a parent mirror), which floods the chat as identical
+    // "agent interrupted" messages. Keep them in the chat notices; do not page the operator.
+    if (candidate.kind === "subagent_interrupted" || candidate.parentSessionId !== undefined)
+      return;
     const app = readApp(this.#db, candidate.appId);
     if (app === undefined) return;
     const gate = this.#readGate(app);
     if (!gate.attention) return;
     const message = candidate.payload.message;
+    const bucket = Math.floor(
+      parseNoticeCreatedAt(candidate.createdAt, this.#now()) / NOTIFY_OCCURRENCE_BUCKET_MS,
+    );
+    const dedupeBase =
+      candidate.kind === "agent_stopped"
+        ? `notice:${candidate.kind}:${candidate.appId}:${candidate.reason ?? "none"}:${bucket}`
+        : `notice:${candidate.kind}:${candidate.appId}:${candidate.sessionId}:${candidate.reason ?? "none"}:${bucket}`;
     this.#enqueueAttention({
       kind: "agent_interrupted",
-      dedupeBase: candidate.dedupeKey,
+      dedupeBase,
       scope: "app",
       projectId: app.projectId,
       projectName: app.projectName,

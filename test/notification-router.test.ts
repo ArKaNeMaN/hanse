@@ -1,8 +1,10 @@
+import { createHash } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import { NOTIFICATION_META_KEYS } from "../src/notifications/catch-up.js";
 import {
+  NOTIFY_OCCURRENCE_BUCKET_MS,
   type NotificationEffectiveSettings,
   NotificationRouter,
   type NotificationSettingsSource,
@@ -88,6 +90,10 @@ function rows(db: SqliteDatabase): ReturnType<typeof listNotificationGroupRows> 
     .prepare("SELECT group_id FROM notification_outbox ORDER BY created_at, group_id, chunk_index")
     .all()
     .flatMap((row) => listNotificationGroupRows(db, (row as { group_id: string }).group_id));
+}
+
+function noticeBucket(iso: string): number {
+  return Math.floor(Date.parse(iso) / NOTIFY_OCCURRENCE_BUCKET_MS);
 }
 
 function insertHandoff(
@@ -383,8 +389,35 @@ describe("router agent attention events", () => {
     const outbox = rows(f.db);
     expect(outbox).toHaveLength(1);
     expect(outbox[0]?.kind).toBe("agent_interrupted");
-    expect(outbox[0]?.dedupeKey).toBe(`agent-error:${SESSION_ID}:2026-11-10T12:00:00.000Z:0`);
+    expect(outbox[0]?.dedupeKey).toBe(
+      `agent-error:a1:${SESSION_ID}:${Math.floor(T_NOW / NOTIFY_OCCURRENCE_BUCKET_MS)}:${createHash("sha256").update("upstream exploded").digest("hex").slice(0, 16)}:0`,
+    );
     expect(JSON.parse(outbox[0]?.payloadJson ?? "{}").text).toContain("upstream exploded");
+  });
+
+  it("dedupes identical session errors but not a different message", () => {
+    const f = fixture();
+    f.router.handleAgentEvent("a1", {
+      type: "session.error",
+      sessionID: SESSION_ID,
+      name: "ProviderError",
+      message: "upstream exploded",
+    });
+    f.router.handleAgentEvent("a1", {
+      type: "session.error",
+      sessionID: SESSION_ID,
+      name: "ProviderError",
+      message: "upstream exploded",
+    });
+    expect(rows(f.db)).toHaveLength(1);
+
+    f.router.handleAgentEvent("a1", {
+      type: "session.error",
+      sessionID: SESSION_ID,
+      name: "ProviderError",
+      message: "downstream exploded",
+    });
+    expect(rows(f.db)).toHaveLength(2);
   });
 });
 
@@ -430,12 +463,93 @@ describe("router attention gating", () => {
     expect(outbox).toHaveLength(1);
     expect(outbox[0]).toMatchObject({
       kind: "agent_interrupted",
-      dedupeKey: "notice:n1:0",
+      dedupeKey: `notice:agent_stopped:a1:process_exit:${noticeBucket("2026-11-10T11:00:00.000Z")}:0`,
       appId: "a1",
       sessionId: SESSION_ID,
     });
     expect(getNotificationMeta(f.db, NOTIFICATION_META_KEYS.noticeScanAt)).toBe(
       "2026-11-10T11:00:00.000Z",
+    );
+  });
+
+  it("mutes subagent-sourced notices but still advances the scan marker", async () => {
+    const f = fixture();
+    writeNotificationMeta(f.db, NOTIFICATION_META_KEYS.firstSweepAt, T0, T0);
+    writeNotificationMeta(f.db, NOTIFICATION_META_KEYS.enabledAt, T0, T0);
+    writeNotificationMeta(f.db, NOTIFICATION_META_KEYS.channelEnabled, "true", T0);
+    const insertNotice = f.db.prepare(
+      `INSERT INTO session_notices
+         (id, app_id, session_id, parent_session_id, dedupe_key, kind, reason, payload_json, created_at)
+       VALUES (?, 'a1', ?, ?, ?, ?, ?, '{}', ?)`,
+    );
+    insertNotice.run(
+      "n1",
+      "ses_parent",
+      null,
+      "dedupe-n1",
+      "subagent_interrupted",
+      "unknown_restart",
+      "2026-11-10T11:00:00.000Z",
+    );
+    insertNotice.run(
+      "n2",
+      "ses_child",
+      "ses_parent",
+      "dedupe-n2",
+      "agent_stopped",
+      "unknown_restart",
+      "2026-11-10T11:01:00.000Z",
+    );
+    insertNotice.run(
+      "n3",
+      "ses_top",
+      null,
+      "dedupe-n3",
+      "agent_stopped",
+      "unknown_restart",
+      "2026-11-10T11:02:00.000Z",
+    );
+
+    await f.router.sweep();
+
+    const outbox = rows(f.db);
+    expect(outbox).toHaveLength(1);
+    expect(outbox[0]).toMatchObject({
+      kind: "agent_interrupted",
+      appId: "a1",
+      sessionId: "ses_top",
+    });
+    expect(getNotificationMeta(f.db, NOTIFICATION_META_KEYS.noticeScanAt)).toBe(
+      "2026-11-10T11:02:00.000Z",
+    );
+  });
+
+  it("collapses repeated stop notices inside one occurrence bucket", async () => {
+    const f = fixture();
+    writeNotificationMeta(f.db, NOTIFICATION_META_KEYS.firstSweepAt, T0, T0);
+    writeNotificationMeta(f.db, NOTIFICATION_META_KEYS.enabledAt, T0, T0);
+    writeNotificationMeta(f.db, NOTIFICATION_META_KEYS.channelEnabled, "true", T0);
+    const insertNotice = f.db.prepare(
+      `INSERT INTO session_notices
+         (id, app_id, session_id, dedupe_key, kind, reason, payload_json, created_at)
+       VALUES (?, 'a1', ?, ?, 'agent_stopped', 'unknown_restart', '{}', ?)`,
+    );
+    insertNotice.run("n1", "ses_a", "dedupe-n1", "2026-11-10T11:01:00.000Z");
+    insertNotice.run("n2", "ses_b", "dedupe-n2", "2026-11-10T11:04:00.000Z");
+    insertNotice.run("n3", "ses_c", "dedupe-n3", "2026-11-10T11:05:00.000Z");
+
+    await f.router.sweep();
+
+    const outbox = rows(f.db);
+    expect(outbox).toHaveLength(2);
+    for (const row of outbox) {
+      expect(JSON.parse(row.payloadJson).text).toContain("unknown_restart");
+    }
+    expect(outbox.map((row) => row.dedupeKey).sort()).toEqual(
+      [
+        `notice:agent_stopped:a1:unknown_restart:${noticeBucket("2026-11-10T11:01:00.000Z")}:0`,
+        `notice:agent_stopped:a1:unknown_restart:${noticeBucket("2026-11-10T11:05:00.000Z")}:0`,
+      ].sort(),
     );
   });
 });
