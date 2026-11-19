@@ -757,6 +757,14 @@ transparent. No bubbles with tails, no avatars on every row.
 - `.tool-call--image`: the static (non-`<details>`) image-action row. It reuses the summary layout
   (flex, 8px gap, 2rem min, 4px/12px padding) so the tool icon, tool name, image name (flex 1,
   ellipsis), and state badge line up as one row, with no disclosure behavior.
+- `.chat-work-group`: a `.tool-call`-based `<details>` that collapses one contiguous cycle of agent
+  reasoning and non-question tool calls. Its 32px summary carries the `activity` glyph, a mono
+  `Working` label, a mono `N tool calls · N thoughts` counter (flex 1, ellipsis, tabular numbers),
+  and a chevron that rotates when open. The body stacks reasoning and tool rows at an 8px gap,
+  capped at `24rem` with its own contained scroll. It is collapsed by default and auto-opens only
+  when a contained tool error is present. Boundaries that end the group are visible assistant
+  messages (text, image/file, subtask, unknown visible part), operator and OMO/handoff messages,
+  inline question tools, and interruption rows.
 - `.tool-diff` / `.tool-code`: inset mono surfaces inside an open `.tool-call`. One
   `.tool-diff__scroll` / `.tool-code__scroll` owns both axes (`max-block-size: 24rem`,
   `overscroll-behavior: contain`, `scrollbar-gutter: stable`, inset focus-visible ring) and is the
@@ -1265,7 +1273,7 @@ spacing value.
 `.chat-context-close`, `.chat-context-toggle`, `.chat-scrim`, `.chat-app-select`, `.chat-runtime`,
 `.chat-action-label`, `.chat-retry`, `.chat-empty`, `.chat-error`, `.chat-pane-head`, `.message`,
 `.message__meta`, `.message__role`, `.message__time`, `.message__body`, `.tool-call`,
-`.tool-call__path`, `.tool-diff`, `.tool-diff__scroll`, `.tool-diff__file`, `.tool-diff__head`,
+`.tool-call__path`, `.chat-work-group`, `.tool-diff`, `.tool-diff__scroll`, `.tool-diff__file`, `.tool-diff__head`,
 `.tool-diff__hunks`, `.tool-diff__hunk`, `.tool-diff__hunk-head`, `.tool-diff__diagnostics`,
 `.tool-diff__file-list`, `.diff-line`, `.diff-line__num`, `.diff-line__sign`, `.diff-line__code`,
 `.tool-code`, `.tool-code__head`, `.tool-code__scroll`, `.code-line`, `.code-line__num`,

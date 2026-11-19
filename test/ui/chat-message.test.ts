@@ -67,6 +67,17 @@ describe("ChatMessage part surfaces", () => {
     wrapper.unmount();
   });
 
+  it("suppresses the meta row when showMeta is false but still renders parts", async () => {
+    const wrapper = render(
+      [part({ id: "meta-off", type: "text", text: "Reply", data: { text: "Reply" } })],
+      { showMeta: false },
+    );
+    await nextTick();
+    expect(wrapper.find("[data-message-meta]").exists()).toBe(false);
+    expect(wrapper.find(".chat-text").text()).toContain("Reply");
+    wrapper.unmount();
+  });
+
   it("labels operator messages and omits a missing time", async () => {
     const wrapper = render(
       [part({ id: "user", type: "text", text: "Hello", data: { text: "Hello" } })],

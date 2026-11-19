@@ -70,6 +70,7 @@ import type {
   QuestionOutcome,
 } from "../chat/types.js";
 import { normalizeChatQuery, useChatRouteState } from "../chat/useChatRouteState.js";
+import { buildWorkTimeline } from "../chat/work-groups.js";
 import AppIcon from "../components/AppIcon.vue";
 import ChatAttachments from "../components/chat/ChatAttachments.vue";
 import ChatCommandPalette from "../components/chat/ChatCommandPalette.vue";
@@ -2004,6 +2005,7 @@ const threadMessages = computed<ChatMessageView[]>(() => {
       role: record.role,
       ...(record.optimistic === undefined ? {} : { optimistic: record.optimistic }),
       ...(record.time === undefined ? {} : { time: record.time }),
+      ...(record.finish === undefined ? {} : { finish: record.finish }),
       omo:
         system === undefined
           ? null
@@ -2049,7 +2051,9 @@ const threadItems = computed<ChatThreadItem[]>(() => {
       }
     }
   }
-  return buildNoticeTimeline(items, { historyComplete: historyCursor.value === null });
+  return buildWorkTimeline(
+    buildNoticeTimeline(items, { historyComplete: historyCursor.value === null }),
+  );
 });
 const messageCountText = computed(() =>
   messageCountLabel(feed.thread.order.length, historyCursor.value === null),

@@ -2586,6 +2586,38 @@
     overflow-wrap: anywhere;
   }
 
+  .chat-work-group__metrics {
+    flex: 1;
+    min-inline-size: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-3);
+    font-family: var(--font-mono);
+    font-size: var(--text-mono-sm);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .chat-work-group__chevron {
+    flex: none;
+    transition: transform var(--dur-micro) var(--ease-out);
+  }
+
+  .chat-work-group[open] .chat-work-group__chevron {
+    transform: rotate(180deg);
+  }
+
+  .chat-work-group__body {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    max-block-size: 24rem;
+    padding: var(--space-2);
+    overflow: auto;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+  }
+
   .tool-call__structured {
     display: flex;
     flex-direction: column;

@@ -26,6 +26,7 @@ import ChatGeneratingRow from "./ChatGeneratingRow.vue";
 import ChatMessage from "./ChatMessage.vue";
 import ChatNoticeGroupRow from "./ChatNoticeGroupRow.vue";
 import ChatNoticeRow from "./ChatNoticeRow.vue";
+import ChatWorkGroup from "./ChatWorkGroup.vue";
 
 const props = defineProps<{
   items: readonly ChatThreadItem[];
@@ -692,7 +693,8 @@ defineExpose({ captureAnchor, restoreAnchor, scrollToBottom, onScroll, unseen })
               @open-image="(attachment) => emit('open-image', attachment)"
             />
             <ChatNoticeRow v-else-if="item.type === 'notice'" :notice="item.notice" />
-            <ChatNoticeGroupRow v-else :group="item.group" />
+            <ChatWorkGroup v-else-if="item.type === 'work-group'" :group="item.group" />
+            <ChatNoticeGroupRow v-else-if="item.type === 'notice-group'" :group="item.group" />
           </template>
         </div>
         <div class="chat-thread__approvals">

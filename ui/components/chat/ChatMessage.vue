@@ -194,7 +194,7 @@ const optimisticLabel = computed(() => {
     <OmoCard v-if="record.omo !== null" :omo="record.omo" />
     <HandoffCard v-else-if="record.handoff != null" :handoff="record.handoff" />
 
-    <div v-if="showParts" class="message__meta" data-message-meta>
+    <div v-if="showParts && record.showMeta !== false" class="message__meta" data-message-meta>
       <span class="avatar avatar--sm" aria-hidden="true">{{ avatarText }}</span>
       <span class="message__role" data-message-role>{{ roleLabel }}</span>
       <span v-if="timeLabel.length > 0" class="message__time" data-message-time>{{

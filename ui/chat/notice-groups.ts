@@ -30,10 +30,14 @@ export function noticeGroupKey(notice: NoticeView): string {
 export function threadItemKey(item: ChatThreadItem): string {
   switch (item.type) {
     case "message":
-      return `message:${item.message.id}`;
+      return item.sliceKey === undefined
+        ? `message:${item.message.id}`
+        : `message:${item.message.id}:${item.sliceKey}`;
     case "notice":
       return `notice:${item.notice.id}`;
     case "notice-group":
+      return item.group.id;
+    case "work-group":
       return item.group.id;
   }
 }

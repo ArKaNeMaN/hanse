@@ -90,6 +90,10 @@ export interface ChatMessageView {
   readonly omo: ChatOmoView | null;
   readonly handoff?: ChatHandoffView | null;
   readonly time?: { readonly created?: number; readonly completed?: number };
+  /** Message completion reason; `"tool-calls"` continues the turn into the next message. */
+  readonly finish?: string;
+  /** When `false`, suppress the sender/time meta row (used by later slices of a split message). */
+  readonly showMeta?: boolean;
   /** File-only attachment strip projected from `info.hanse.attachments`. */
   readonly attachments?: readonly AttachmentView[];
   readonly parts: readonly ChatMessagePartView[];
@@ -112,10 +116,20 @@ export interface ChatNoticeGroupView {
   readonly timeTitle: string;
 }
 
+export interface ChatWorkGroupView {
+  readonly id: string;
+  readonly parts: readonly ChatMessagePartView[];
+  readonly toolCount: number;
+  readonly reasoningCount: number;
+  readonly hasError: boolean;
+  readonly metricsText: string;
+}
+
 export type ChatThreadItem =
-  | { readonly type: "message"; readonly message: ChatMessageView }
+  | { readonly type: "message"; readonly message: ChatMessageView; readonly sliceKey?: string }
   | { readonly type: "notice"; readonly notice: NoticeView }
-  | { readonly type: "notice-group"; readonly group: ChatNoticeGroupView };
+  | { readonly type: "notice-group"; readonly group: ChatNoticeGroupView }
+  | { readonly type: "work-group"; readonly group: ChatWorkGroupView };
 
 export interface ChatPromptsResponse {
   readonly questions?: readonly NormalizedQuestionRequest[];

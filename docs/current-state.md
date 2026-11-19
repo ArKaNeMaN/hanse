@@ -1035,6 +1035,10 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   internal/synthetic messages are classified client-side into system cards (markers and
   `<system-reminder>` tags hidden, long results collapsed) and are excluded from the queue; no
   server OMO field or persistence is added.
+- The transcript collapses each contiguous reasoning/tool cycle into a collapsed `Working` group
+  with tool-call and thought counters. Visible assistant messages (text, image/file parts,
+  subtasks), operator and OMO/handoff messages, inline questions, and interruption rows end the
+  group; groups continue across assistant messages that finish with `tool-calls`.
 - Layout: at `>=1024` the feed and composer share one centered content box sized
   `min(100%, max(60ch, 75%))` with a `96rem` cap (about 75%, floor-driven ~87% at 1440, and 75% at
   1920); below 1024 both are 100%. The feed/composer share horizontal padding, tables/tool bodies use
