@@ -4,6 +4,11 @@
  *
  * Usage:
  *   node docs/design/skills-qa.mjs
+ *   SKILLS_QA_ONLY=inventory node docs/design/skills-qa.mjs
+ *
+ * The optional SKILLS_QA_ONLY filter runs one named scenario. The workspace
+ * scenarios still carry pre-SPA selectors; the inventory/drawer scenarios are
+ * the current B2 gate.
  *
  * The harness is self-contained: it starts a throwaway coordinator fixture
  * (`docs/design/skills-qa-server.mts`) with the repository's local tsx, seeds a
@@ -37,6 +42,7 @@ const OUT = path.join(SCRIPT_DIR, "artifacts", "skills");
 const REPORT = path.join(OUT, "report.json");
 const SERVER = path.join(SCRIPT_DIR, "skills-qa-server.mts");
 const EXPECTED_STATUS = /status of (400|409|422)\b/;
+const ONLY = process.env.SKILLS_QA_ONLY?.trim() ?? "";
 
 process.env.LD_LIBRARY_PATH = [path.join(homedir(), ".local", "lib"), process.env.LD_LIBRARY_PATH]
   .filter(Boolean)
@@ -108,6 +114,10 @@ function check(condition, message) {
 }
 
 async function scenario(name, run) {
+  if (ONLY.length > 0 && name !== ONLY) {
+    report.scenarios.push({ name, status: "SKIP", assertions: 0 });
+    return;
+  }
   const entry = { name, status: "RUNNING", assertions: 0 };
   report.scenarios.push(entry);
   const before = report.assertions.total;
@@ -264,7 +274,7 @@ try {
   }
 
   async function rowState(page, name, state, label, context) {
-    const row = page.locator(`[data-skill-inventory] tr[data-skill-name="${name}"]`);
+    const row = page.locator(`[data-skill-inventory] [data-skill-row][data-skill-name="${name}"]`);
     check((await row.count()) === 1, `${context}: row ${name} is missing`);
     check(
       (await row.getAttribute("data-skill-state")) === state,
@@ -276,6 +286,35 @@ try {
         `${context}: ${name} label is ${await row.getAttribute("data-skill-state-label")}, expected ${label}`,
       );
     }
+  }
+
+  async function shotLocator(locator, name) {
+    const file = path.join(OUT, name);
+    await locator.screenshot({ path: file });
+    check(existsSync(file) && statSync(file).size > 0, `screenshot ${name}: missing or empty`);
+    report.screenshots.push(path.relative(ROOT, file));
+  }
+
+  async function openDrawer(page, name, context) {
+    const row = page.locator(`[data-skill-inventory] [data-skill-row][data-skill-name="${name}"]`);
+    await row.click();
+    const drawer = page.locator("dialog.skill-preview-drawer");
+    await drawer.waitFor({ state: "visible" });
+    check((await drawer.count()) === 1, `${context}: drawer for ${name} is missing`);
+    return drawer;
+  }
+
+  async function closeDrawer(drawer, context) {
+    await drawer.getByRole("button", { name: "Close skill preview" }).click();
+    await drawer.waitFor({ state: "hidden" });
+    check(!(await drawer.isVisible()), `${context}: drawer did not close`);
+  }
+
+  async function openManagedDetail(page, name, context) {
+    const drawer = await openDrawer(page, name, context);
+    await drawer.getByRole("link", { name: "Open full skill" }).click();
+    await page.waitForURL((url) => /^\/skills\/\d+$/.test(url.pathname));
+    await page.waitForLoadState("networkidle");
   }
 
   async function submitJsonUpdate(page, id) {
@@ -447,7 +486,9 @@ try {
     ];
     for (const theme of ["dark", "light"]) {
       for (const viewport of [
-        { name: "1440", width: 1440, height: 900 },
+        { name: "1600", width: 1600, height: 1000 },
+        { name: "1280", width: 1280, height: 900 },
+        { name: "900", width: 900, height: 900 },
         { name: "390", width: 390, height: 844 },
       ]) {
         const context = await newContext({ ...viewport, theme });
@@ -467,28 +508,57 @@ try {
             `${label}: New skill action is missing`,
           );
           check(
-            (await page.locator('.settings-nav__scopes [aria-current="page"]').count()) === 1,
-            `${label}: current scope is not marked`,
+            (await page.locator(".target-trigger").count()) === 1,
+            `${label}: target trigger is missing`,
           );
           for (const row of scope.rows) {
             await rowState(page, row.name, row.state, row.label, label);
           }
-          if (scope.slug === "app") {
-            check(
-              (await page
-                .locator('[data-skill-name="shared-rules"] [data-skill-effective-link]')
-                .count()) === 1,
-              `${label}: Invalid local override does not link the effective source`,
-            );
-            check(
-              (await page
-                .locator('[data-skill-name="app-broken"] [data-skill-effective-link]')
-                .count()) === 0,
-              `${label}: Invalid here should not link an effective source`,
-            );
-          }
           await assertNoOverflow(page, label);
           await shot(page, `inventory-${scope.slug}-${viewport.name}-${theme}.png`);
+          if (scope.slug === "app") {
+            await shotLocator(
+              page.locator(".skills-attention"),
+              `attention-${viewport.name}-${theme}.png`,
+            );
+            const sharedDrawer = await openDrawer(page, "shared-rules", label);
+            await sharedDrawer
+              .getByRole("link", { name: "Open full skill" })
+              .waitFor({ state: "visible" });
+            check(
+              (await sharedDrawer.locator("[data-skill-effective-link]").count()) === 1,
+              `${label}: Invalid local override does not link the effective source`,
+            );
+            await shotLocator(sharedDrawer, `drawer-${viewport.name}-${theme}.png`);
+            await closeDrawer(sharedDrawer, label);
+            const brokenDrawer = await openDrawer(page, "app-broken", label);
+            await brokenDrawer
+              .getByRole("link", { name: "Open full skill" })
+              .waitFor({ state: "visible" });
+            check(
+              (await brokenDrawer.locator("[data-skill-effective-link]").count()) === 0,
+              `${label}: Invalid here should not link an effective source`,
+            );
+            await closeDrawer(brokenDrawer, label);
+
+            await page.locator(".target-trigger").click();
+            const targetDialog = page.getByRole("dialog", { name: "Choose target" });
+            await targetDialog.waitFor({ state: "visible" });
+            await shotLocator(targetDialog, `target-menu-${viewport.name}-${theme}.png`);
+            await page.keyboard.press("Escape");
+            await targetDialog.waitFor({ state: "hidden" });
+
+            await page
+              .locator(".skills-density")
+              .getByRole("button", { name: "List", exact: true })
+              .click();
+            await page.locator(".skill-list-row").first().waitFor({ state: "visible" });
+            await shot(page, `inventory-list-${viewport.name}-${theme}.png`);
+            await page
+              .locator(".skills-density")
+              .getByRole("button", { name: "Cards", exact: true })
+              .click();
+          }
           await assertClean(errors, label);
         }
         await context.close();
@@ -509,8 +579,8 @@ try {
         const context = await newContext({ ...viewport, theme });
         const { page, errors } = await open(context, `/skills/${ids.release}`);
         check(
-          (await page.locator('[data-skill-workspace][data-skill-enhanced="true"]').count()) === 1,
-          `${label}: workspace did not enhance`,
+          (await page.locator("[data-skill-workspace]").count()) === 1,
+          `${label}: workspace root is missing`,
         );
         check(
           (await page.locator("[data-skill-file-list]").count()) === 1,
@@ -971,8 +1041,7 @@ try {
         "enabled",
       "read-only: Override here did not create the editable copy",
     );
-    await page.locator('[data-skill-name="ops-guide"] a[aria-label="Open ops-guide"]').click();
-    await page.waitForLoadState("networkidle");
+    await openManagedDetail(page, "ops-guide", "read-only-context");
     check(
       (await textOf(page, "[data-skill-state]")) === "Enabled here",
       "read-only: overridden workspace is not editable",
@@ -1021,10 +1090,7 @@ try {
         .getAttribute("data-skill-state")) === "disabled",
       "disable: Disable here did not create a tombstone",
     );
-    await deployPage
-      .locator('[data-skill-name="deploy-notes"] a[aria-label="Open deploy-notes"]')
-      .click();
-    await deployPage.waitForLoadState("networkidle");
+    await openManagedDetail(deployPage, "deploy-notes", "read-only-context/disable");
     check(
       (await textOf(deployPage, "[data-skill-state]")) === "Disabled here",
       "disable: tombstone workspace state is wrong",

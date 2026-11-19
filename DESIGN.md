@@ -996,13 +996,28 @@ primitives; no new color, type, spacing, radius, or shadow token is introduced.
 
 ### 5.22 Skill inventory and workspace
 
-The skill inventory and workspace compose the existing card, table, settings-nav, badge, status,
-field, and button primitives. They add only structural `.skill-*` classes and introduce no new
-color, type, space, radius, shadow, or motion token.
+The skill inventory and workspace compose the existing card, toolbar, dialog, badge, status,
+field, and button primitives. They add only structural `.skills-*`, `.skill-*`, `.target-*`, and
+`.skill-preview-drawer*` classes and introduce no new color, type, space, radius, shadow, or motion
+token. Create/detail keep the existing settings-nav scope ladder.
 
-- **Inventory:** `.skill-inventory-table` is the server-rendered table with a two-line description
-  clamp; `.skill-toolbar` spaces the search and filter row. `.skill-state` is a normal badge.
-  `.table--stack` still owns the <768 single-column row layout.
+- **Inventory:** `.skills-layout` is the content + 300px rail grid at >=900; the rail moves below
+  below 900. `.skills-toolbar` holds live search, the six filter chips in the horizontally
+  scrollable `.skills-filters`, the target selector, and the Cards/List `.skills-density` control.
+  `.skills-cards` is one column below 900, two at >=900, and three at >=1280. `.skills-group`
+  groups rows by definition scope with a visible count. `.skill-card` and `.skill-list-row` are
+  each one native button; their children are spans/icons only. `.skills-list__head` is the single
+  column header and is hidden below 768. `.skills-rail` is collapsible; `.skills-attention` is a
+  ruled band using existing status tokens, never a card. `.skills-search__clear` is the optional
+  clear control.
+- **Target selector:** `.target-trigger` is a 32px trigger with glyph, current label, and chevron.
+  `.target-dialog` is a native modal dialog holding `.target-search__input` (role combobox) and
+  `.target-list` (role listbox); `.target-group` headings are presentational and `.target-option`
+  rows are buttons with `aria-selected`. The trigger renders from page props, so a missing/loading
+  catalog never blanks the current target.
+- **Preview drawer:** `.skill-preview-drawer` is a native right sheet with the shared
+  `.source-drawer` frame; it is full-screen below 768. It shows content, metadata, files, and the
+  full-skill/effective links; `data-skill-effective-link` lives only here, never on a row.
 - **Details:** `.skill-details` is a native `<details>` card; `.skill-fieldset` groups the identity,
   classification, discovery, and license fields; `.skill-details-grid` is one column and becomes
   two columns at >=1024. `.skill-metadata-row` is a wrapping key/value row. Every known field carries
@@ -1039,10 +1054,12 @@ color, type, space, radius, shadow, or motion token.
   fixed above the safe area below 1024, with a 44px target floor. `[data-skill-status]` is the
   text status (`All changes saved` / `Unsaved changes`); it is never color-only.
   `.skill-reference-foot` and `.skill-danger` close the workspace. `.skill-state` remains a badge.
-- **Accessibility:** file and view tabs use `role="tablist"`/`tab`, roving tabindex, and
-  `aria-selected`; all icon-only actions carry an accessible name; the source and preview regions
-  are labelled; the dirty dot always carries visually hidden text. Motion is limited to existing
-  color/opacity transitions.
+- **Accessibility:** a managed inventory card/row is one native button with no nested interactive
+  controls; the target selector uses the dialog + combobox/listbox pattern with
+  `aria-activedescendant`, arrow/Home/End/Enter/Escape handling, and focus return; file and view
+  tabs use `role="tablist"`/`tab`, roving tabindex, and `aria-selected`; all icon-only actions
+  carry an accessible name; the source and preview regions are labelled; the dirty dot always
+  carries visually hidden text. Motion is limited to existing color/opacity transitions.
 
 ### 5.23 External skill sources
 

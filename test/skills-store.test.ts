@@ -366,6 +366,54 @@ describe("skills resolution", () => {
     });
   });
 
+  it("reports each row's own bundle file count, including a non-effective scoped row", () => {
+    const f = fixture();
+    const legacy = createBundle(f.service, "global", {}, "legacy-count", {
+      references: [
+        { path: "references/a.md", content: "A" },
+        { path: "references/b.md", content: "B" },
+      ],
+    });
+    const atGlobal = f.service.resolve({});
+    expect(atGlobal.effective.find((skill) => skill.name === "legacy-count")?.fileCount).toBe(2);
+    expect(atGlobal.rows.find((row) => row.name === "legacy-count")?.fileCount).toBe(2);
+
+    const global = f.service.create(
+      "global",
+      {},
+      {
+        name: "shared-files",
+        description: "global",
+        content: "global body",
+        files: [{ path: "scripts/global.sh", text: "global" }],
+      },
+      "owner",
+    );
+    const app = f.service.create(
+      "app",
+      target,
+      {
+        name: "shared-files",
+        description: "app",
+        content: "app body",
+        files: [
+          { path: "scripts/app.sh", text: "app" },
+          { path: "notes.md", text: "notes" },
+        ],
+      },
+      "owner",
+    );
+    withIgnoredChecks(f, () => {
+      f.db.prepare("UPDATE skills SET metadata_json = ? WHERE id = ?").run("{not json", app.id);
+    });
+
+    const resolved = f.service.resolve(target);
+    expect(resolved.effective.find((skill) => skill.name === "shared-files")?.id).toBe(global.id);
+    expect(resolved.effective.find((skill) => skill.name === "shared-files")?.fileCount).toBe(1);
+    expect(resolved.rows.find((row) => row.id === app.id)).toMatchObject({ fileCount: 2 });
+    expect(legacy.id).toBeGreaterThan(0);
+  });
+
   it("rejects a duplicate name at the same scope with skill_exists", () => {
     const f = fixture();
     create(f.service, "global", {}, "review");

@@ -34,6 +34,13 @@ export const E2E_SKILL_SOURCE_TOKEN = "e2e-skill-source-token-sentinel";
 export const E2E_SKILL_SOURCE_NOW = "2026-11-11T10:00:00.000Z";
 export const E2E_EXTERNAL_SKILL_NAME = "e2e-external-skill";
 
+export const E2E_GLOBAL_SKILL_NAME = "e2e-global-skill";
+export const E2E_PROJECT_SKILL_NAME = "e2e-project-skill";
+export const E2E_INVALID_APP_SKILL_NAME = "e2e-invalid-app-skill";
+export const E2E_DISABLED_TOMBSTONE_NAME = "e2e-tombstone-skill";
+export const E2E_SHADOWED_INVALID_LOCAL_NAME = "e2e-shadowed-invalid-skill";
+export const E2E_COLLISION_SKILL_NAME = "e2e-collision-skill";
+
 /** Deterministic chat identities served by the fake opencode upstream. Synthetic only. */
 export const E2E_CHAT_SESSION_ID = "ses_e2ealpha";
 export const E2E_CHAT_CHILD_SESSION_ID = "ses_e2echild";
@@ -661,6 +668,25 @@ function initFixtureRepo(directory: string): void {
   });
 }
 
+function addCollisionFixtureSkill(directory: string): void {
+  const skillDirectory = path.join(directory, ".opencode", "skill", E2E_COLLISION_SKILL_NAME);
+  mkdirSync(skillDirectory, { recursive: true });
+  writeFileSync(
+    path.join(skillDirectory, "SKILL.md"),
+    `---\nname: ${E2E_COLLISION_SKILL_NAME}\ndescription: Synthetic repository skill used to exercise collision warnings.\n---\n\n# Synthetic collision fixture\n`,
+    "utf8",
+  );
+  const env = gitEnv();
+  execFileSync("git", ["add", ".opencode"], { cwd: directory, env, stdio: "ignore" });
+  // Amend the fixture commit so the collision file is part of the same initial commit. The
+  // application E2E asserts the last commit message is "fixture commit".
+  execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-q", "--amend", "--no-edit"], {
+    cwd: directory,
+    env,
+    stdio: "ignore",
+  });
+}
+
 /**
  * Give the alpha application a deterministic local remote and upstream. The bare repository lives
  * inside `.git`, so it never appears in the working tree and needs no network or credentials.
@@ -790,6 +816,7 @@ export function seed(options: SeedOptions = {}): SeedResult {
       const directory = path.join(project.rootPath, appPath);
       initFixtureRepo(directory);
       if (project.id === PROJECT_ONE && appKey === "alpha") {
+        addCollisionFixtureSkill(directory);
         addFixtureOrigin(directory);
       }
       insertApp.run(appId, project.id, appKey, appPath, "service", now);
@@ -933,7 +960,7 @@ export function seed(options: SeedOptions = {}): SeedResult {
     "global",
     {},
     {
-      name: "e2e-global-skill",
+      name: E2E_GLOBAL_SKILL_NAME,
       description: "Global skill bundle used by the deterministic E2E fixture.",
       content: "# E2E global skill\n\nSynthetic content only.\n",
     },
@@ -943,12 +970,82 @@ export function seed(options: SeedOptions = {}): SeedResult {
     "project",
     { projectId: PROJECT_ONE },
     {
-      name: "e2e-project-skill",
+      name: E2E_PROJECT_SKILL_NAME,
       description: "Project skill bundle used by the deterministic E2E fixture.",
       content: "# E2E project skill\n\nSynthetic content only.\n",
     },
     E2E_OPERATOR,
   );
+  skills.create(
+    "global",
+    {},
+    {
+      name: E2E_DISABLED_TOMBSTONE_NAME,
+      description: "Global skill hidden by an application tombstone in the E2E fixture.",
+      content: "# E2E tombstone target\n\nSynthetic content only.\n",
+    },
+    E2E_OPERATOR,
+  );
+  skills.create(
+    "global",
+    {},
+    {
+      name: E2E_SHADOWED_INVALID_LOCAL_NAME,
+      description: "Global skill whose application copy is corrupt in the E2E fixture.",
+      content: "# E2E shadowed-invalid target\n\nSynthetic content only.\n",
+    },
+    E2E_OPERATOR,
+  );
+  skills.create(
+    "global",
+    {},
+    {
+      name: E2E_COLLISION_SKILL_NAME,
+      description: "Global skill colliding with a deterministic repository skill.",
+      content: "# E2E collision target\n\nSynthetic content only.\n",
+    },
+    E2E_OPERATOR,
+  );
+  const invalidAppSkill = skills.create(
+    "app",
+    alphaSettingsTarget,
+    {
+      name: E2E_INVALID_APP_SKILL_NAME,
+      description: "Application skill with corrupt stored metadata.",
+      content: "# E2E invalid application skill\n\nSynthetic content only.\n",
+    },
+    E2E_OPERATOR,
+  );
+  skills.create(
+    "app",
+    alphaSettingsTarget,
+    {
+      name: E2E_DISABLED_TOMBSTONE_NAME,
+      description: "Application tombstone hiding the global skill.",
+      content: "# E2E tombstone\n\nDisabled at the application scope.\n",
+      enabled: false,
+    },
+    E2E_OPERATOR,
+  );
+  const shadowedInvalidLocal = skills.create(
+    "app",
+    alphaSettingsTarget,
+    {
+      name: E2E_SHADOWED_INVALID_LOCAL_NAME,
+      description: "Application copy with corrupt stored metadata.",
+      content: "# E2E shadowed invalid local\n\nSynthetic content only.\n",
+    },
+    E2E_OPERATOR,
+  );
+
+  function corruptStoredMetadata(id: number): void {
+    db.pragma("ignore_check_constraints = ON");
+    db.prepare("UPDATE skills SET metadata_json = ? WHERE id = ?").run('{"author":', id);
+    db.pragma("ignore_check_constraints = OFF");
+  }
+
+  corruptStoredMetadata(invalidAppSkill.id);
+  corruptStoredMetadata(shadowedInvalidLocal.id);
 
   const skillHub = createFakeSkillHub({
     skills: [

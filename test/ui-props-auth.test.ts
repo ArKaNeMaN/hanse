@@ -253,6 +253,7 @@ describe("/api/ui auth and props", () => {
       "/api/ui/projects/p",
       "/api/ui/ssh",
       "/api/ui/skills",
+      "/api/ui/targets",
       "/api/ui/chat",
       "/api/ui/terminal",
     ]) {
@@ -597,24 +598,51 @@ describe("/api/ui auth and props", () => {
 
   it("rejects a missing or different UI version with a reload response", () => {
     const f = fixture();
-    const missing = handleUiApi(f.deps, {
-      method: "GET",
-      path: "/api/ui/projects",
-      headers: cookie(f.humanToken),
-    });
-    expect(missing).toMatchObject({ status: 409 });
-    expect(missing?.headers?.["cache-control"]).toBe("no-store");
-    expect(JSON.parse(missing?.body ?? "{}")).toEqual({
-      error: "UI reload required",
-      code: "ui_reload_required",
-    });
+    for (const pathname of ["/api/ui/projects", "/api/ui/targets"]) {
+      const missing = handleUiApi(f.deps, {
+        method: "GET",
+        path: pathname,
+        headers: cookie(f.humanToken),
+      });
+      expect(missing?.status, pathname).toBe(409);
+      expect(missing?.headers?.["cache-control"], pathname).toBe("no-store");
+      expect(JSON.parse(missing?.body ?? "{}"), pathname).toEqual({
+        error: "UI reload required",
+        code: "ui_reload_required",
+      });
 
-    const stale = handleUiApi(f.deps, {
-      method: "GET",
-      path: "/api/ui/projects",
-      headers: { ...cookie(f.humanToken), "x-hanse-ui-version": "1" },
+      const stale = handleUiApi(f.deps, {
+        method: "GET",
+        path: pathname,
+        headers: { ...cookie(f.humanToken), "x-hanse-ui-version": "1" },
+      });
+      expect(stale?.status, pathname).toBe(409);
+    }
+  });
+
+  it("returns the target catalog for a valid human cookie", () => {
+    const f = fixture();
+    const response = handleUiApi(f.deps, request("/api/ui/targets", cookie(f.humanToken)));
+    expect(response).toMatchObject({ status: 200 });
+    expect(response?.headers?.["cache-control"]).toBe("no-store");
+    expect(JSON.parse(response?.body ?? "{}")).toEqual({
+      projects: [
+        {
+          id: "p",
+          name: "Alpha",
+          apps: [
+            {
+              projectId: "p",
+              projectName: "Alpha",
+              appKey: "web",
+              kind: "app",
+              master: false,
+            },
+          ],
+        },
+      ],
+      master: null,
     });
-    expect(stale).toMatchObject({ status: 409 });
   });
 
   it("never leaks seeded secrets through the props, chrome, or boot", () => {
@@ -648,6 +676,7 @@ describe("/api/ui auth and props", () => {
       "/api/ui/handoffs",
       "/api/ui/projects/p",
       "/api/ui/skills",
+      "/api/ui/targets",
     ]) {
       const props = handleUiApi(f.deps, request(pathname, cookie(f.humanToken)));
       expect(props?.status, pathname).toBe(200);

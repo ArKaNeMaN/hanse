@@ -193,6 +193,8 @@ export interface SkillSummary {
   compatibility: string | null;
   metadata: SkillMetadata;
   references: SkillReferenceView[];
+  /** Number of stored bundle files, excluding a synthesized SKILL.md. */
+  fileCount: number;
   enabled: boolean;
   createdAt: string;
   updatedAt: string;

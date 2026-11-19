@@ -13,6 +13,7 @@ import type {
   SkillWarningProps,
   SkillWorkspaceProps,
 } from "./skills-types.js";
+import type { TargetsProps } from "./target-types.js";
 
 export const LABELS: SkillsLabelsProps = {
   navAriaLabel: "Skills",
@@ -206,6 +207,54 @@ export function externalRow(
   });
 }
 
+export function targets(): TargetsProps {
+  return {
+    master: {
+      projectId: "hanse-master",
+      projectName: "Hanse",
+      appKey: "master",
+      kind: "master",
+      master: true,
+    },
+    projects: [
+      {
+        id: "p1",
+        name: "Alpha",
+        apps: [
+          {
+            projectId: "p1",
+            projectName: "Alpha",
+            appKey: "web",
+            kind: "default",
+            master: false,
+          },
+          {
+            projectId: "p1",
+            projectName: "Alpha",
+            appKey: "api",
+            kind: "default",
+            master: false,
+          },
+        ],
+      },
+      {
+        id: "p2",
+        name: "Beta",
+        apps: [
+          {
+            projectId: "p2",
+            projectName: "Beta",
+            appKey: "web",
+            kind: "default",
+            master: false,
+          },
+        ],
+      },
+      { id: "p3", name: "Empty", apps: [] },
+    ],
+  };
+}
+
 export function inventory(overrides: Partial<SkillsInventoryProps> = {}): SkillsInventoryProps {
   const currentScope = scope(overrides.scope ?? {});
   const rows = overrides.rows ?? [
@@ -214,6 +263,7 @@ export function inventory(overrides: Partial<SkillsInventoryProps> = {}): Skills
       id: 8,
       primaryId: 8,
       name: "inherited-skill",
+      scope: "project",
       state: "inherited",
       stateLabel: "Inherited",
       originScope: "project",
@@ -224,17 +274,23 @@ export function inventory(overrides: Partial<SkillsInventoryProps> = {}): Skills
       id: 9,
       primaryId: 9,
       name: "disabled-skill",
+      scope: "app",
       state: "disabled",
       stateLabel: "Disabled here",
       enabled: false,
+      originScope: "app",
+      originText: "Defined here",
       href: "/skills/9?from=%2Fskills",
     }),
     row({
       id: 10,
       primaryId: 10,
       name: "invalid-skill",
+      scope: "app",
       state: "invalid",
       stateLabel: "Invalid here",
+      originScope: "app",
+      originText: "Defined here",
       issues: [issue()],
       repairId: 10,
       href: "/skills/10?from=%2Fskills",
@@ -285,6 +341,26 @@ export function inventory(overrides: Partial<SkillsInventoryProps> = {}): Skills
         current: false,
       },
     ],
+    attention: {
+      count: 1,
+      items: [
+        {
+          key: "10",
+          name: "invalid-skill",
+          reason: "The stored metadata is not valid JSON: bad",
+          tone: "invalid",
+          scope: "app",
+          mode: "managed",
+          primaryId: 10,
+          externalKey: null,
+        },
+      ],
+      omitted: 0,
+      truncated: null,
+      href: `${currentScope.href}?filter=attention`,
+      clearHref: currentScope.href,
+      active: false,
+    },
     search: {
       action: currentScope.href,
       query: "",
@@ -328,9 +404,12 @@ export function workspace(overrides: Partial<SkillWorkspaceProps> = {}): SkillWo
       compatibility: null,
       metadata: {},
       metadataRaw: null,
+      createdAt: "2026-10-27T10:00:00.000Z",
       updatedAt: "2026-10-28T10:00:00.000Z",
+      updatedBy: "owner",
       storedIssues: [],
     },
+    files: [{ path: "references/notes.md", size: 22 }],
     values: {
       name: "alpha-skill",
       description: "Alpha skill used by the fixture.",
@@ -410,6 +489,16 @@ export function workspace(overrides: Partial<SkillWorkspaceProps> = {}): SkillWo
     labels: LABELS,
   };
   return { ...base, ...overrides };
+}
+
+/** Detail payload used by the preview drawer; includes files and create/update attribution. */
+export function detail(overrides: Partial<SkillWorkspaceProps> = {}): SkillWorkspaceProps {
+  return workspace(overrides);
+}
+
+/** Pre-v24 detail payload with no files table; the drawer falls back to references. */
+export function legacyDetail(overrides: Partial<SkillWorkspaceProps> = {}): SkillWorkspaceProps {
+  return workspace({ files: [], ...overrides });
 }
 
 export function boot(

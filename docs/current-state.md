@@ -1413,16 +1413,39 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   structured `skill_collision`/`skill_disabled_elsewhere` warnings, bounded to 20 with a
   `truncated` count. There is no precedence guarantee against those non-managed roots; the managed
   skill is still written.
-- The inventory is server-rendered with scope navigation, search, `All`/`Defined here`/`Inherited`/
-  `Disabled`/`Invalid` filters, one row per name, collision/issue indicators, and a restart rail.
-  Inline editors and the old fragment contract are gone. The dedicated workspace shows the scope
-  chain, metadata groups, references, and side-by-side source/preview at >=1024; below that it uses
-  Source/Preview tabs and a file selector. Every Details field has a one-line hint and linked error
-  description; a collapsible field guide gives short examples. The bundle form and danger zone use
-  the normal stack gap. Save/discard are explicit, references and metadata are
-  edited in the bundle form, and delete/override/disable/revert remain normal human-only forms.
-  `assets/markdown.js` is the shared safe renderer used by chat and the skill preview. There is no
-  server-rendered skill workspace or legacy skill client.
+- The Vue inventory is the B2 library: cards/list grouped by definition scope (`Global`, `Project`,
+  `Application`, `External`), live search with a 250 ms debounce, the six `All`/`Defined here`/
+  `Inherited`/`Disabled`/`Invalid`/`External` filters, a persisted `Cards`/`List` density
+  (`localStorage["hanse.skills.density"]`), and a collapsible overview rail. A managed row is one
+  native button; the whole row opens the read-only `SkillPreviewDrawer` (content, metadata,
+  content-free files, effective link, and `Open full skill`). External rows keep the source preview
+  drawer. A card/list row never nests a link or button.
+- The inventory header uses the shared `TargetSelector` instead of `SkillsScopeNav`. Stage A exposes
+  `mode="scope"` with the Global root; the trigger renders the current scope from page props and the
+  menu is a searchable dialog/combobox/listbox. Selecting a target navigates to
+  `/skills`, `/projects/:id/skills`, or `/projects/:id/apps/:app/skills` and resets filter/search.
+  `GET /api/ui/targets` is cookie-only and UI-version gated; it returns operator projects
+  (zero-app projects included), non-deleting apps, and the reserved master app separately, with no
+  hrefs, filesystem paths, or secrets. No `UI_VERSION` bump.
+- The server supplies an attention summary from the unscoped all-rows set: invalid rows, managed
+  collisions, and disabled tombstones that hide a wider source. The band is capped at three entries
+  with `omitted`/`truncated` counters, links to `filter=attention` while preserving search, and
+  remains visible when that filter is active with zero results. It is not a seventh filter chip.
+  Collision-derived matches remain bounded by the existing warning cap; the rail still shows the
+  full truncated count. A disabled row with nothing to hide is not attention.
+- `SkillSummary.fileCount` is the row's own bundle count, excluding the synthesized `SKILL.md`;
+  scoped rows use their own count, effective-only rows use the effective count, and external rows
+  keep the external count. The detail workspace adds content-free `files` plus `createdAt`/
+  `updatedBy`; create mode returns `[]`/`null`/`null`. The preview drawer treats `files` as
+  authoritative and appends only missing legacy reference paths, once.
+- The dedicated workspace shows the scope chain, metadata groups, references, and side-by-side
+  source/preview at >=1024; below that it uses Source/Preview tabs and a file selector. Every
+  Details field has a one-line hint and linked error description; a collapsible field guide gives
+  short examples. The bundle form and danger zone use the normal stack gap. Save/discard are
+  explicit, references and metadata are edited in the bundle form, and
+  delete/override/disable/revert remain normal human-only forms. `assets/markdown.js` is the shared
+  safe renderer used by chat and the skill preview. There is no server-rendered skill workspace or
+  legacy skill client.
 - Ordinary application agents can maintain their own app-scope skill bundles through the production
   app MCP surface (`/internal/mcp`, via the remote bridge): `create_skill`, `list_skills`,
   `get_skill`, `update_skill`, `set_skill_enabled`, and `override_skill`. The target is always the

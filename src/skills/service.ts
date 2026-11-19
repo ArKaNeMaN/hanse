@@ -936,6 +936,7 @@ export class SkillService implements SkillSource {
       references: references.map(
         (reference): SkillReferenceView => ({ path: reference.path, size: reference.size }),
       ),
+      fileCount: files.length,
       enabled: row.enabled === 1,
       createdAt: row.created_at,
       updatedAt: row.updated_at,

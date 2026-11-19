@@ -11,7 +11,14 @@ import type { ChromeData } from "./boot.js";
 
 export type SkillScope = "global" | "project" | "app";
 export type InventoryState = "enabled" | "inherited" | "disabled" | "invalid";
-export type InventoryFilter = "all" | "defined" | "inherited" | "disabled" | "invalid" | "external";
+export type InventoryFilter =
+  | "all"
+  | "defined"
+  | "inherited"
+  | "disabled"
+  | "invalid"
+  | "external"
+  | "attention";
 export type SkillInventoryMode = "managed" | "external";
 export type WorkspaceStateName =
   | "editable"
@@ -168,6 +175,29 @@ export interface SkillsCountsProps {
   readonly external: number;
 }
 
+export type SkillsAttentionTone = "invalid" | "collision" | "disabled";
+
+export interface SkillsAttentionItemProps {
+  readonly key: string;
+  readonly name: string;
+  readonly reason: string;
+  readonly tone: SkillsAttentionTone;
+  readonly scope: SkillScope | null;
+  readonly mode: SkillInventoryMode;
+  readonly primaryId: number | null;
+  readonly externalKey: string | null;
+}
+
+export interface SkillsAttentionProps {
+  readonly count: number;
+  readonly items: readonly SkillsAttentionItemProps[];
+  readonly omitted: number;
+  readonly truncated: number | null;
+  readonly href: string;
+  readonly clearHref: string;
+  readonly active: boolean;
+}
+
 export interface SkillsLabelsProps {
   readonly navAriaLabel: string;
   readonly scopeGroupLabel: string;
@@ -202,6 +232,7 @@ export interface SkillsInventoryProps {
   readonly counts: SkillsCountsProps;
   readonly filter: InventoryFilter;
   readonly filters: readonly SkillsFilterProps[];
+  readonly attention: SkillsAttentionProps;
   readonly search: SkillsSearchProps;
   readonly createHref: string;
   readonly createLabel: string;
@@ -333,6 +364,12 @@ export interface SkillRestartProps {
   readonly entries: readonly SkillPendingAppProps[];
 }
 
+export interface SkillWorkspaceFileProps {
+  readonly path: string;
+  readonly size: number;
+  readonly executable?: boolean;
+}
+
 export interface SkillWorkspaceRowProps {
   readonly id: number;
   readonly name: string;
@@ -343,7 +380,9 @@ export interface SkillWorkspaceRowProps {
   readonly compatibility: string | null;
   readonly metadata: SkillMetadata;
   readonly metadataRaw: string | null;
+  readonly createdAt: string | null;
   readonly updatedAt: string;
+  readonly updatedBy: string | null;
   readonly storedIssues: readonly SkillIssueProps[];
 }
 
@@ -360,6 +399,7 @@ export interface SkillWorkspaceProps {
   readonly projectId: string | null;
   readonly scope: SkillsScopeProps;
   readonly row: SkillWorkspaceRowProps;
+  readonly files: readonly SkillWorkspaceFileProps[];
   readonly values: {
     readonly name: string;
     readonly description: string;

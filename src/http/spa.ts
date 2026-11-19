@@ -45,6 +45,7 @@ import {
   targetExists,
 } from "./props/skills.js";
 import { buildSshProps, resolveSshScope } from "./props/ssh.js";
+import { buildTargets } from "./props/targets.js";
 import { buildTerminalProps, type TerminalProps } from "./props/terminal.js";
 import { staticErrorResponse } from "./static-error.js";
 import {
@@ -1179,6 +1180,7 @@ const UI_API_PATHS = new Set([
   "/api/ui/ssh",
   "/api/ui/settings",
   "/api/ui/skills",
+  "/api/ui/targets",
   "/api/ui/chat",
   "/api/ui/terminal",
 ]);
@@ -1269,6 +1271,10 @@ export function handleUiApi(deps: HttpDeps, request: HttpRequest): HttpResponse 
   }
 
   const site = buildSite(deps);
+
+  if (request.path === "/api/ui/targets") {
+    return jsonResponse(200, buildTargets(site), { "cache-control": "no-store" });
+  }
 
   if (request.path === "/api/ui/chat") {
     const projectId = request.query?.project?.trim();

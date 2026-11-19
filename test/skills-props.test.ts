@@ -161,13 +161,17 @@ function boot(markup: string): {
   };
 }
 
-function stubSource(resolved: ResolvedSkills): SkillSource {
+function stubSource(resolved: ResolvedSkills, truncated?: number): SkillSource {
   return {
     capture: () => {
       throw new Error("capture is not used");
     },
     resolve: () => resolved,
-    preview: () => ({ resolved, warnings: resolved.warnings }),
+    preview: () => ({
+      resolved,
+      warnings: resolved.warnings,
+      ...(truncated === undefined ? {} : { truncated }),
+    }),
     hash: () => undefined,
     probe: () => {
       throw new Error("probe is not used");
@@ -246,6 +250,7 @@ function managedSummary(overrides: Partial<SkillSummary> = {}): SkillSummary {
     compatibility: null,
     metadata: {},
     references: [],
+    fileCount: 0,
     enabled: true,
     createdAt: "2026-11-01T09:00:00.000Z",
     updatedAt: "2026-11-01T10:00:00.000Z",
@@ -477,6 +482,8 @@ describe("skills props", () => {
     });
     expect(props.actions.override).toBeNull();
     expect(props.danger).toBeNull();
+    expect(props.files).toEqual([]);
+    expect(props.row).toMatchObject({ createdAt: null, updatedBy: null });
     expect(props.breadcrumb.at(-1)).toEqual({ label: "New skill" });
     expect(props.title).toBe("New skill");
   });
@@ -725,25 +732,133 @@ describe("external inventory props", () => {
     expect(build("all", "no-match")?.rows).toEqual([]);
   });
 
-  it("uses the effective file count for managed rows", () => {
+  it("uses a scoped row's own file count and the effective count only for effective-only rows", () => {
     const f = fixture();
     const effective = managedEffective({ id: 5, name: "files", fileCount: 3 });
     const summary = managedSummary({
       id: 5,
       name: "files",
+      fileCount: 4,
       references: [{ path: "references/a.md", size: 1 }],
     });
+    const effectiveOnly = managedEffective({ id: 6, name: "wider", fileCount: 2 });
     const props = buildSkillsInventoryProps({
       deps: f.deps,
       site: buildSite(f.deps),
-      skills: stubSource(resolvedSkills({ effective: [effective], rows: [summary] })),
+      skills: stubSource(
+        resolvedSkills({ effective: [effective, effectiveOnly], rows: [summary] }),
+      ),
       scope: "global",
       target: {},
       filter: "all",
       search: "",
     });
     const row = props?.rows.find((entry) => entry.name === "files");
-    expect(row).toMatchObject({ mode: "managed", fileCount: 3, references: 1, origin: null });
+    expect(row).toMatchObject({ mode: "managed", fileCount: 4, references: 1, origin: null });
+    const inherited = props?.rows.find((entry) => entry.name === "wider");
+    expect(inherited).toMatchObject({
+      mode: "managed",
+      state: "inherited",
+      fileCount: 2,
+    });
+  });
+
+  it("builds attention from all rows, ordered and capped", () => {
+    const f = fixture();
+    const resolved = resolvedSkills({
+      scope: "app",
+      rows: [
+        managedSummary({
+          id: 1,
+          name: "bad",
+          scope: "app",
+          storedIssues: [{ code: "invalid_skill_metadata", detail: "bad json" }],
+        }),
+        managedSummary({
+          id: 2,
+          name: "bad2",
+          scope: "app",
+          storedIssues: [{ code: "invalid_skill_metadata", detail: "other" }],
+        }),
+        managedSummary({ id: 3, name: "clash", scope: "app" }),
+        managedSummary({ id: 4, name: "tomb", scope: "app", enabled: false }),
+        managedSummary({ id: 5, name: "muted", scope: "app", enabled: false }),
+        managedSummary({ id: 6, name: "fine", scope: "app" }),
+      ],
+      disabled: [
+        { id: 4, name: "tomb", source: "global", disabledBy: "app" },
+        { id: 5, name: "muted", source: null, disabledBy: "app" },
+      ],
+      warnings: [{ code: "skill_collision", name: "clash", root: "/repo" }],
+    });
+    const source = stubSource(resolved, 4);
+    const build = (
+      filter: Parameters<typeof buildSkillsInventoryProps>[0]["filter"],
+      search = "",
+    ) =>
+      buildSkillsInventoryProps({
+        deps: f.deps,
+        site: buildSite(f.deps),
+        skills: source,
+        scope: "app",
+        target: { projectId: "p1", appKey: "web" },
+        filter,
+        search,
+      });
+
+    const all = build("all");
+    expect(all?.attention).toMatchObject({
+      count: 4,
+      omitted: 1,
+      truncated: 4,
+      active: false,
+      href: "/projects/p1/apps/web/skills?filter=attention",
+      clearHref: "/projects/p1/apps/web/skills",
+    });
+    expect(all?.attention.items.map((item) => [item.name, item.tone])).toEqual([
+      ["bad", "invalid"],
+      ["bad2", "invalid"],
+      ["clash", "collision"],
+    ]);
+    expect(all?.attention.items[0]?.reason).toContain("not valid JSON");
+    expect(all?.attention.items[2]?.reason).toContain("also exists at");
+    expect(all?.filters).toHaveLength(6);
+    expect(all?.filters.map((entry) => entry.value)).not.toContain("attention");
+
+    const only = build("attention");
+    expect(only?.rows.map((entry) => entry.name)).toEqual(["bad", "bad2", "clash", "tomb"]);
+    expect(only?.attention).toMatchObject({ count: 4, active: true });
+    expect(only?.allCount).toBe(6);
+    expect(only?.matchedCount).toBe(4);
+
+    const searched = build("attention", "bad");
+    expect(searched?.attention.href).toBe("/projects/p1/apps/web/skills?filter=attention&q=bad");
+    expect(searched?.attention.clearHref).toBe("/projects/p1/apps/web/skills?q=bad");
+    expect(searched?.matchedCount).toBe(2);
+  });
+
+  it("projects content-free files and row timestamps in the workspace props", () => {
+    const f = fixture();
+    const row = f.skills.create(
+      "app",
+      { projectId: "p1", appKey: "web" },
+      {
+        name: "files-skill",
+        description: "Files",
+        content: "body",
+        files: [{ path: "scripts/run.sh", text: "echo hi", executable: true }],
+      },
+      "owner",
+    );
+    const props = buildSkillDetailProps({
+      deps: f.deps,
+      site: buildSite(f.deps),
+      skills: f.skills,
+      row,
+    });
+    expect(props.files).toEqual([{ path: "scripts/run.sh", size: 7, executable: true }]);
+    expect(props.files[0]).not.toHaveProperty("content");
+    expect(props.row).toMatchObject({ createdAt: row.createdAt, updatedBy: "owner" });
   });
 
   it("carries source names in warnings and in the managed collision list", () => {

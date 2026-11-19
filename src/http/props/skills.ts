@@ -461,7 +461,14 @@ export function pendingApps(
 /* ------------------------------------------------------------------------- */
 
 export type InventoryState = "enabled" | "inherited" | "disabled" | "invalid";
-export type InventoryFilter = "all" | "defined" | "inherited" | "external" | "disabled" | "invalid";
+export type InventoryFilter =
+  | "all"
+  | "defined"
+  | "inherited"
+  | "external"
+  | "disabled"
+  | "invalid"
+  | "attention";
 
 export interface SkillsScopeNavProps {
   readonly ariaLabel: string;
@@ -567,6 +574,29 @@ export interface SkillsCountsProps {
   readonly invalid: number;
 }
 
+export type SkillsAttentionTone = "invalid" | "collision" | "disabled";
+
+export interface SkillsAttentionItemProps {
+  readonly key: string;
+  readonly name: string;
+  readonly reason: string;
+  readonly tone: SkillsAttentionTone;
+  readonly scope: SkillScope | null;
+  readonly mode: "managed" | "external";
+  readonly primaryId: number | null;
+  readonly externalKey: string | null;
+}
+
+export interface SkillsAttentionProps {
+  readonly count: number;
+  readonly items: readonly SkillsAttentionItemProps[];
+  readonly omitted: number;
+  readonly truncated: number | null;
+  readonly href: string;
+  readonly clearHref: string;
+  readonly active: boolean;
+}
+
 export interface SkillsLabelsProps {
   readonly navAriaLabel: string;
   readonly scopeGroupLabel: string;
@@ -601,6 +631,7 @@ export interface SkillsInventoryProps {
   readonly counts: SkillsCountsProps;
   readonly filter: InventoryFilter;
   readonly filters: readonly SkillsFilterProps[];
+  readonly attention: SkillsAttentionProps;
   readonly search: SkillsSearchProps;
   readonly createHref: string;
   readonly createLabel: string;
@@ -619,7 +650,8 @@ export function parseInventoryFilter(value: string | undefined): InventoryFilter
     value === "inherited" ||
     value === "external" ||
     value === "disabled" ||
-    value === "invalid"
+    value === "invalid" ||
+    value === "attention"
   ) {
     return value;
   }
@@ -744,7 +776,7 @@ function buildInventoryRows(
         sourceName: null,
         bucket: null,
         externalKey: null,
-        fileCount: effective?.fileCount ?? scoped.references.length,
+        fileCount: scoped.fileCount,
         references: scoped.references.length,
         updatedAt: scoped.updatedAt,
         issues: scoped.storedIssues,
@@ -824,7 +856,83 @@ function inventoryMatchesFilter(row: InventoryRow, filter: InventoryFilter): boo
       return row.state === "disabled";
     case "invalid":
       return row.state === "invalid";
+    case "attention":
+      return attentionTone(row) !== null;
   }
+}
+
+function attentionTone(row: InventoryRow): SkillsAttentionTone | null {
+  if (row.state === "invalid") {
+    return "invalid";
+  }
+  if (row.collisions.length > 0) {
+    return "collision";
+  }
+  if (row.state === "disabled" && row.shadows.length > 0) {
+    return "disabled";
+  }
+  return null;
+}
+
+const ATTENTION_RANK: Record<SkillsAttentionTone, number> = {
+  invalid: 0,
+  collision: 1,
+  disabled: 2,
+};
+
+function attentionItem(row: InventoryRow, tone: SkillsAttentionTone): SkillsAttentionItemProps {
+  const primaryId = row.repairId ?? row.effectiveId ?? row.id;
+  const reason =
+    tone === "invalid"
+      ? row.issues[0] === undefined
+        ? "Invalid skill"
+        : issueText(row.issues[0])
+      : tone === "collision"
+        ? row.collisions[0] === undefined
+          ? "Collides with another skill root"
+          : skillWarningProps(row.collisions[0]).text
+        : `Hides ${row.shadows.map(scopeLabel).join(", ")}`;
+  return {
+    key: row.externalKey ?? String(primaryId ?? row.name),
+    name: row.name,
+    reason,
+    tone,
+    scope: row.scope,
+    mode: row.mode,
+    primaryId: primaryId ?? null,
+    externalKey: row.externalKey,
+  };
+}
+
+function buildAttention(
+  rows: readonly InventoryRow[],
+  pagePath: string,
+  filter: InventoryFilter,
+  search: string,
+  truncated: number | null,
+): SkillsAttentionProps {
+  const candidates: Array<{ row: InventoryRow; tone: SkillsAttentionTone }> = [];
+  for (const row of rows) {
+    const tone = attentionTone(row);
+    if (tone !== null) {
+      candidates.push({ row, tone });
+    }
+  }
+  candidates.sort(
+    (left, right) =>
+      ATTENTION_RANK[left.tone] - ATTENTION_RANK[right.tone] ||
+      (left.row.name < right.row.name ? -1 : left.row.name > right.row.name ? 1 : 0),
+  );
+  const items = candidates.slice(0, 3).map((entry) => attentionItem(entry.row, entry.tone));
+  return {
+    count: candidates.length,
+    items,
+    omitted: candidates.length - items.length,
+    truncated,
+    href: filterHref(pagePath, "attention", search),
+    clearHref: filterHref(pagePath, "all", search),
+    active: filter === "attention",
+  };
 }
 
 function inventoryMatchesSearch(row: InventoryRow, query: string): boolean {
@@ -840,7 +948,7 @@ function inventoryMatchesSearch(row: InventoryRow, query: string): boolean {
   );
 }
 
-function filterHref(pagePath: string, value: InventoryFilter, search: string): string {
+export function filterHref(pagePath: string, value: InventoryFilter, search: string): string {
   const params = new URLSearchParams();
   if (value !== "all") {
     params.set("filter", value);
@@ -943,6 +1051,7 @@ export function buildSkillsInventoryProps(
   const rows = allRows
     .filter((row) => inventoryMatchesFilter(row, input.filter))
     .filter((row) => inventoryMatchesSearch(row, input.search));
+  const truncated = model.preview?.truncated ?? null;
   const from = encodeURIComponent(pagePath);
   const description =
     input.scope === "global"
@@ -1093,6 +1202,7 @@ export function buildSkillsInventoryProps(
     counts,
     filter: input.filter,
     filters: filterOptions(pagePath, input.filter, input.search),
+    attention: buildAttention(allRows, pagePath, input.filter, input.search, truncated),
     search: {
       action: pagePath,
       query: input.search,
@@ -1121,7 +1231,7 @@ export function buildSkillsInventoryProps(
           : null,
     error: null,
     warnings: warnings.map(skillWarningProps),
-    truncated: model.preview?.truncated ?? null,
+    truncated,
     pending: pendingApps(input.site, input.scope, input.target, pagePath),
     returnTo: pagePath,
     labels: SKILLS_LABELS,
@@ -1518,6 +1628,12 @@ export interface SkillRestartProps {
   readonly entries: readonly SkillPendingAppProps[];
 }
 
+export interface SkillWorkspaceFileProps {
+  readonly path: string;
+  readonly size: number;
+  readonly executable?: boolean;
+}
+
 export interface SkillWorkspaceRowProps {
   readonly id: number;
   readonly name: string;
@@ -1528,7 +1644,9 @@ export interface SkillWorkspaceRowProps {
   readonly compatibility: string | null;
   readonly metadata: SkillMetadata;
   readonly metadataRaw: string | null;
+  readonly createdAt: string | null;
   readonly updatedAt: string;
+  readonly updatedBy: string | null;
   readonly storedIssues: readonly SkillIssueProps[];
 }
 
@@ -1545,6 +1663,7 @@ export interface SkillWorkspaceProps {
   readonly projectId: string | null;
   readonly scope: SkillsScopeProps;
   readonly row: SkillWorkspaceRowProps;
+  readonly files: readonly SkillWorkspaceFileProps[];
   readonly values: {
     readonly name: string;
     readonly description: string;
@@ -1948,6 +2067,13 @@ export function buildSkillWorkspaceProps(input: SkillWorkspaceBuildInput): Skill
   const { row, state, values, site } = input;
   const create = input.create === true;
   const editable = create || state.editable;
+  const files: SkillWorkspaceFileProps[] = create
+    ? []
+    : (row.files ?? []).map((file) => ({
+        path: file.path,
+        size: file.size,
+        ...(file.executable === true ? { executable: true } : {}),
+      }));
   const contextPage = skillsPagePath(state.contextScope, state.contextTarget);
   const projectId = state.contextTarget.projectId ?? null;
   const warnings = create
@@ -2076,9 +2202,12 @@ export function buildSkillWorkspaceProps(input: SkillWorkspaceBuildInput): Skill
       compatibility: row.compatibility,
       metadata: row.metadata,
       metadataRaw: row.metadataRaw,
+      createdAt: create ? null : row.createdAt,
       updatedAt: row.updatedAt,
+      updatedBy: create ? null : row.updatedBy,
       storedIssues: issues,
     },
+    files,
     values: {
       name: values.name ?? "",
       description: values.description,
@@ -2165,6 +2294,7 @@ export function buildSkillDetailProps(input: SkillDetailBuildInput): SkillWorksp
   const values =
     input.values ??
     ({
+      name: input.row.name,
       description: input.row.description,
       content: input.row.content,
       enabled: input.row.enabled,

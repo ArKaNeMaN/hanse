@@ -1,5 +1,28 @@
 # Open questions
 
+> Stage: `0049-skills-inventory-redesign`. Owner decisions were collected on 2026-11-19. There
+> are no open items for this stage. The owner authorized the full cycle without further decisions.
+
+## Stage `0049-skills-inventory-redesign` - resolved owner decisions
+
+1. **Direction** - B2: cards/list grouped by definition scope, a ruled attention band, the shared
+   target selector, Cards/List density, a collapsible rail, and a read-only preview drawer. Create
+   and detail keep the existing workspace.
+2. **Attention** - server-derived from the unscoped all-rows set; invalid, managed collision, and a
+   disabled tombstone that hides a wider source are attention. A disabled row with nothing to hide
+   is not. `Show only` filters the same list through `filter=attention`; there is no seventh chip.
+   The band stays visible when the active filter has zero results.
+3. **Target selector** - introduce the shared `Target`/`TargetSelectorConfig` contract and
+   `GET /api/ui/targets`. Stage A implements only `mode="scope"` + `root="global"`; the remaining
+   modes are typed for the Stage B rollout. App identity always carries `(projectId, appKey)`;
+   Master is the reserved app, not a scope; an app-only UI is a flat presentation, not a
+   projectless identity.
+4. **Density and drawer** - density persists at `localStorage["hanse.skills.density"]`; the managed
+   preview drawer is read-only and mutations stay on the existing workspace. No schema migration
+   and no new npm dependency.
+5. **Delivery** - full cycle authorized: design, design review, plan, plan review, implementation,
+   record, commit, and push. Stage B reuse in Chat/Settings/SSH/handoffs is a separate follow-up.
+
 > Stage: `0048-app-memory-limits-and-metrics`. Owner decisions were collected on 2026-11-16. There
 > are no open items for this stage.
 

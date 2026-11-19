@@ -1,5 +1,10 @@
 # Design docs
 
+- [Skills inventory B2](./skills-inventory-redesign.md) - the card/list library grouped by definition
+  scope, server-derived attention band and `filter=attention`, live search, persisted density,
+  collapsible rail, shared target selector plus `GET /api/ui/targets`, and the read-only managed
+  preview drawer. Status: design `oracle` round 3 PASS WITH FIXES (findings folded); plan `momus`
+  OKAY WITH FIXES (findings folded); implemented and verified (journal 0063).
 - [Per-application memory limits and container memory metrics](./app-memory-limits-and-metrics.md) -
   a hierarchical `runtime.memory_mb` setting (global/project/app, env-derived default), 30-second
   container memory sampling with 72-hour retention, a 6/24/72-hour min/max/average chart card on the
@@ -226,6 +231,9 @@ side-by-side and narrow workspace layouts, save/discard, JSON 400 focus, referen
 editing, invalid-metadata repair, inherited override/disable/revert, create 409/422, the no-JS
 stacked-editor and snapshot round-trip, and the shared safe Markdown renderer. It exits 1 on any
 failed assertion, missing screenshot, unexpected console error, or page error.
+`SKILLS_QA_ONLY=inventory node docs/design/skills-qa.mjs` runs the B2 inventory/drawer surface
+alone. The workspace scenarios still carry pre-SPA selectors; that is existing harness debt
+recorded in the script header, not part of the B2 inventory gate.
 
 All scripts resolve an installed Playwright module and Chromium build; they add no Playwright
 dependency to the product.

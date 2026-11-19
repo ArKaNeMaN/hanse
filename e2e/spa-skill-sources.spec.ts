@@ -55,12 +55,6 @@ function toast(page: Page, text: string | RegExp): Locator {
   return page.locator("#toast-region .toast").filter({ hasText: text });
 }
 
-function firstHrefs(page: Page, selector: string): Promise<string[]> {
-  return page
-    .locator(selector)
-    .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("href") ?? ""));
-}
-
 test("captures the settings and external-skills surfaces at desktop/phone in both themes", async ({
   page,
 }) => {
@@ -116,17 +110,17 @@ test("captures the settings and external-skills surfaces at desktop/phone in bot
         path: path.join(ARTIFACTS, `skills-external-${viewport.name}-${theme}.png`),
       });
 
-      await page.locator(".segmented").getByRole("link", { name: "External", exact: true }).click();
+      await page
+        .locator(".skills-filters")
+        .getByRole("link", { name: "External", exact: true })
+        .click();
       await expect(page).toHaveURL(/filter=external/);
       await expect(page.locator('[data-skill-mode="external"]')).toBeVisible();
       await page.locator("[data-skill-inventory]").screenshot({
         path: path.join(ARTIFACTS, `skills-external-filter-${viewport.name}-${theme}.png`),
       });
 
-      await page
-        .locator('[data-skill-mode="external"]')
-        .getByRole("button", { name: E2E_EXTERNAL_SKILL_NAME, exact: true })
-        .click();
+      await page.locator('[data-skill-mode="external"]').click();
       const externalDrawer = page.locator("dialog.external-skill-drawer");
       await expect(externalDrawer).toBeVisible();
       await expect(
@@ -345,23 +339,24 @@ test("external rows are read-only, filterable, and open a working preview drawer
   await expect(external).toBeVisible();
   await expect(external).toContainText(E2E_EXTERNAL_SKILL_NAME);
   await expect(external).toContainText("Source");
-  await expect(external).toContainText("Read-only");
+  await expect(external).toContainText("Hub");
   await expect(external).toContainText(SOURCE_NAME);
   await expect(external).toContainText("default");
 
-  const hrefs = await firstHrefs(page, "[data-skill-inventory] a[href]");
-  expect(hrefs.some((href) => href.includes("/skills/null"))).toBe(false);
+  expect(await page.locator('[data-skill-inventory] a[href*="/skills/null"]').count()).toBe(0);
+  expect(await page.locator("[data-skill-inventory] [data-skill-row] a[href]").count()).toBe(0);
   expect(await page.content()).not.toContain("/skills/null");
   expect(await page.content()).not.toContain(E2E_SKILL_SOURCE_TOKEN);
 
-  await page.locator(".segmented").getByRole("link", { name: "External", exact: true }).click();
+  await page
+    .locator(".skills-filters")
+    .getByRole("link", { name: "External", exact: true })
+    .click();
   await expect(page).toHaveURL(/\/skills\?filter=external$/);
   await expect(page.locator('[data-skill-mode="external"]')).toHaveCount(1);
   await expect(page.locator('[data-skill-mode="managed"]')).toHaveCount(0);
 
-  await external
-    .getByRole("button", { name: `Open ${E2E_EXTERNAL_SKILL_NAME}`, exact: true })
-    .click();
+  await external.click();
   const drawer = page.locator("dialog.external-skill-drawer");
   await expect(drawer).toBeVisible();
   await expect(drawer).toContainText("Read-only");
