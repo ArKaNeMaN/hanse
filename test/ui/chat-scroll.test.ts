@@ -34,11 +34,15 @@ function props(value: readonly ChatThreadItem[], revision = 0) {
 function scrollMetrics(element: HTMLElement) {
   let scrollTop = 0;
   let scrollHeight = 20_000;
+  let clientHeight = 600;
   Object.defineProperty(element, "scrollHeight", {
     configurable: true,
     get: () => scrollHeight,
   });
-  Object.defineProperty(element, "clientHeight", { configurable: true, value: 600 });
+  Object.defineProperty(element, "clientHeight", {
+    configurable: true,
+    get: () => clientHeight,
+  });
   Object.defineProperty(element, "scrollTop", {
     configurable: true,
     get: () => scrollTop,
@@ -56,7 +60,34 @@ function scrollMetrics(element: HTMLElement) {
     set scrollHeight(value: number) {
       scrollHeight = value;
     },
+    set clientHeight(value: number) {
+      clientHeight = value;
+    },
   };
+}
+
+function stubResizeObserver(): {
+  callbacks: ResizeObserverCallback[];
+  targets: Element[];
+  disconnected: () => boolean;
+} {
+  const callbacks: ResizeObserverCallback[] = [];
+  const targets: Element[] = [];
+  let disconnected = false;
+  class FakeResizeObserver {
+    constructor(callback: ResizeObserverCallback) {
+      callbacks.push(callback);
+    }
+    observe(target: Element): void {
+      targets.push(target);
+    }
+    unobserve(): void {}
+    disconnect(): void {
+      disconnected = true;
+    }
+  }
+  vi.stubGlobal("ResizeObserver", FakeResizeObserver as unknown as typeof ResizeObserver);
+  return { callbacks, targets, disconnected: () => disconnected };
 }
 
 afterEach(() => {
@@ -178,6 +209,83 @@ describe("500-message scroll ownership", () => {
     await flushPromises();
     frames[frames.length - 1]?.(0);
     await nextTick();
+
+    expect(metrics.scrollTop).toBe(20_000);
+    wrapper.unmount();
+  });
+
+  it("keeps the bottom visible when a taller composer shrinks the viewport", async () => {
+    const observer = stubResizeObserver();
+    const wrapper = mount(ChatThread, {
+      props: props(items(5)),
+      attachTo: document.body,
+    });
+    await flushPromises();
+    const scroll = wrapper.find("#chat-scroll").element as HTMLElement;
+    const metrics = scrollMetrics(scroll);
+    wrapper.vm.scrollToBottom();
+    expect(metrics.scrollTop).toBe(20_000);
+
+    expect(observer.targets).toContain(scroll);
+    // The composer grew by 100px, so the scroll box is 100px shorter and the newest row would
+    // otherwise fall below the fold.
+    metrics.clientHeight = 500;
+    for (const callback of observer.callbacks) {
+      callback([], {} as ResizeObserver);
+    }
+
+    expect(metrics.scrollTop).toBe(20_000);
+    wrapper.unmount();
+    expect(observer.disconnected()).toBe(true);
+  });
+
+  it("does not move a reader who scrolled up when the viewport resizes", async () => {
+    const observer = stubResizeObserver();
+    const wrapper = mount(ChatThread, {
+      props: props(items(500)),
+      attachTo: document.body,
+    });
+    await flushPromises();
+    const scroll = wrapper.find("#chat-scroll").element as HTMLElement;
+    const metrics = scrollMetrics(scroll);
+    wrapper.vm.scrollToBottom();
+    metrics.scrollTop = 1_000;
+    scroll.dispatchEvent(new Event("scroll"));
+    await nextTick();
+
+    metrics.clientHeight = 500;
+    for (const callback of observer.callbacks) {
+      callback([], {} as ResizeObserver);
+    }
+
+    expect(metrics.scrollTop).toBe(1_000);
+    wrapper.unmount();
+  });
+
+  it("treats a scroll event from a shrinking viewport as layout, not user intent", async () => {
+    const observer = stubResizeObserver();
+    const wrapper = mount(ChatThread, {
+      props: props(items(5)),
+      attachTo: document.body,
+    });
+    await flushPromises();
+    const scroll = wrapper.find("#chat-scroll").element as HTMLElement;
+    const metrics = scrollMetrics(scroll);
+    wrapper.vm.scrollToBottom();
+
+    // A growing composer first makes the textarea `height: auto` and then sets the final height.
+    // The transient viewport change can clamp scrollTop and dispatch a scroll event before the
+    // ResizeObserver callback, even though the reader never left the bottom.
+    metrics.clientHeight = 500;
+    metrics.scrollTop = 19_300;
+    scroll.dispatchEvent(new Event("scroll"));
+    await nextTick();
+
+    expect(metrics.scrollTop).toBe(20_000);
+
+    for (const callback of observer.callbacks) {
+      callback([], {} as ResizeObserver);
+    }
 
     expect(metrics.scrollTop).toBe(20_000);
     wrapper.unmount();

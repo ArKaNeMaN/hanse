@@ -172,6 +172,8 @@ const topRequested = ref(false);
 let lastCount = props.items.length;
 let restorePending: ChatScrollMemory | null = null;
 let bottomFrame: number | null = null;
+let viewportObserver: ResizeObserver | null = null;
+let lastClientHeight: number | null = null;
 
 interface ScrollAnchor extends ChatScrollMemory {
   readonly messageID?: string;
@@ -222,7 +224,31 @@ function scrollToBottom(): void {
   pinned.value = true;
   unseen.value = 0;
   topRequested.value = false;
+  lastClientHeight = node.clientHeight;
   persist();
+}
+
+/**
+ * The composer, prompt dock, and banners below the thread can change height while the feed is
+ * pinned. Shrinking the scroll viewport raises the bottom edge and would hide the newest rows, so
+ * follow the bottom again whenever the viewport itself is resized. A scrolled-up reader keeps the
+ * position they chose; a resize must not yank them back.
+ */
+function onViewportResize(): void {
+  if (restorePending !== null) {
+    return;
+  }
+  const node = element();
+  if (node === null) {
+    return;
+  }
+  // Record the new box first: a scroll event caused by this resize can arrive before or after
+  // this callback, and onScroll uses the height delta to tell it apart from a real user scroll.
+  lastClientHeight = node.clientHeight;
+  if (!pinned.value) {
+    return;
+  }
+  scrollToBottom();
 }
 
 function cancelScheduledBottom(): void {
@@ -295,6 +321,7 @@ function restoreAnchor(anchor: ScrollAnchor | ChatScrollMemory | null): void {
   pinned.value = nearBottom();
   unseen.value = 0;
   topRequested.value = node.scrollTop > 32;
+  lastClientHeight = node.clientHeight;
   persist();
 }
 
@@ -312,6 +339,19 @@ function onScroll(): void {
   if (node === null) {
     return;
   }
+  if (lastClientHeight !== null && node.clientHeight !== lastClientHeight) {
+    // The scroll box was resized (a taller composer, a window change). The scroll event this
+    // produces moves scrollTop only because the scroll range changed, so it is not user intent:
+    // keep the pinned state and, while following, re-anchor the bottom to the new height.
+    lastClientHeight = node.clientHeight;
+    if (pinned.value) {
+      scrollToBottom();
+    } else {
+      persist();
+    }
+    return;
+  }
+  lastClientHeight = node.clientHeight;
   pinned.value = nearBottom();
   if (pinned.value) {
     unseen.value = 0;
@@ -330,6 +370,15 @@ function onScroll(): void {
 function onNewMessages(): void {
   scrollToBottom();
 }
+
+onMounted(() => {
+  const node = element();
+  if (node === null || typeof ResizeObserver !== "function") {
+    return;
+  }
+  viewportObserver = new ResizeObserver(onViewportResize);
+  viewportObserver.observe(node);
+});
 
 onMounted(async () => {
   await nextTick();
@@ -431,6 +480,8 @@ watch(
 );
 
 onBeforeUnmount(() => {
+  viewportObserver?.disconnect();
+  viewportObserver = null;
   cancelScheduledBottom();
   persist();
 });

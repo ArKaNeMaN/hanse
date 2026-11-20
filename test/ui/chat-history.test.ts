@@ -204,6 +204,7 @@ describe("chat scroll ownership", () => {
         scrollTop = value;
       },
     });
+    wrapper.vm.scrollToBottom();
     await nextTick();
     await wrapper.setProps({ revision: 1 });
 

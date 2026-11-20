@@ -298,6 +298,34 @@ test("SPA history pages on scroll-top, keeps an anchor, and offers new messages"
   expectNoPageErrors(errors);
 });
 
+test("SPA keeps the newest rows visible while the composer grows at the bottom", async ({
+  page,
+}) => {
+  const errors = collectPageErrors(page);
+  await signIn(page, `/chat?app=alpha&project=${PROJECT_ONE}&session=ses_e2ehistory`);
+  await expect(page.locator("#chat-scroll [data-message-id]")).toHaveCount(30);
+  const scroll = page.locator("#chat-scroll");
+  const input = composerInput(page);
+  const distanceFromBottom = () =>
+    scroll.evaluate((node) => node.scrollHeight - node.scrollTop - node.clientHeight);
+
+  await scroll.evaluate((node) => {
+    node.scrollTop = node.scrollHeight;
+  });
+  await expect.poll(distanceFromBottom).toBeLessThanOrEqual(1);
+
+  for (const lines of [4, 10]) {
+    const draft = Array.from({ length: lines }, (_, index) => `line ${index}`).join("\n");
+    await input.fill(draft);
+    await expect.poll(distanceFromBottom).toBeLessThanOrEqual(1);
+  }
+  await input.fill("short again");
+  await expect.poll(distanceFromBottom).toBeLessThanOrEqual(1);
+
+  await page.waitForTimeout(400);
+  expectNoPageErrors(errors);
+});
+
 test("SPA session switching keeps one stream and no duplicate messages", async ({ page }) => {
   test.skip(!isSpa(), "SPA mode only");
   const errors = collectPageErrors(page);
