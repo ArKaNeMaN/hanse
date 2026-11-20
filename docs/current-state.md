@@ -921,6 +921,20 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   `userMessageID`), with projected parts under 8 MiB or `{messageID, userMessageID, info:null,
   truncated:true}` on overflow. Async text is capped at 32 KiB; an older upstream without
   `prompt_async` returns `502 async_unavailable`, and the blocking route remains available.
+- The chat transcript is bounded: every loaded message stays in the store, but the thread renders
+  only a contiguous window with two viewport heights of overscan above and below the visible area.
+  Row heights are measured and cached in memory per session; gap-aware top/bottom spacers reproduce
+  the full scroll height, and a DOM-first key anchor plus a bounded focus keep-alive preserve the
+  scroll position and focus across window shifts and prepends. Windowing activates only above 60
+  items or eight measured viewports, after the initial scroll restore, so ordinary sessions render
+  every row with no spacers. Collapsed work-group, tool, reasoning, and file/subtask bodies are not
+  mounted; opening mounts them, collapsing unmounts them, and open state is remembered per session
+  while a row leaves and re-enters the window and across session switches (in memory; a hard reload
+  starts empty). The loaded message count is exposed as `data-chat-loaded-count`, separate from the
+  item count (`data-chat-item-count`) and the rendered row count. Accepted limitations: browser
+  find-in-page and print see only mounted rows; full keyboard tab traversal does not reach unmounted
+  history; and a focused control stays mounted until focus leaves the bounded keep-alive range,
+  after which focus moves to the scroll container (focus is retained, traversal parity is not).
 - The sessions rail (17rem wide, 25.5rem at >= 1536px viewports) groups `opencode` subagent
   sessions by their authoritative `parentID` under the parent row, built client-side from the
   unchanged flat session list. Children are reached with a disclosure chevron (collapsed by

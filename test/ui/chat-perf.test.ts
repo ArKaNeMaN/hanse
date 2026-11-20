@@ -49,12 +49,52 @@ describe("chat feed performance", () => {
     const elapsed = performance.now() - started;
 
     expect(wrapper.findAll("#chat-scroll [data-message-id]")).toHaveLength(500);
+    expect(wrapper.find("[data-chat-thread]").attributes("data-chat-loaded-count")).toBe("500");
     expect(constructed).toBe(0);
     expect(document.querySelectorAll('script[src*="prism"], script[src*="xterm"]')).toHaveLength(0);
     // Record the measured mount time in the test output; no brittle wall-clock assertion.
     console.info(`chat-perf: 500-message mount ${elapsed.toFixed(1)} ms`);
     wrapper.unmount();
   });
+
+  it("measures the per-token projection with 500 loaded messages", async () => {
+    const messages = Array.from({ length: 500 }, (_, index) => fixtureMessage(index + 1));
+    const { wrapper } = await mountChat("/chat?app=alpha&project=p&session=s1", { messages });
+    await flushPromises();
+    expect(wrapper.find("[data-chat-thread]").attributes("data-chat-loaded-count")).toBe("500");
+
+    const source = FakeEventSource.instances[0];
+    if (source === undefined) throw new Error("missing source");
+    source.open();
+    source.emit({ type: "stream.ready", seq: 0, streamID: "stream-perf" });
+    await flushPromises();
+
+    const started = performance.now();
+    for (let index = 1; index <= 20; index += 1) {
+      source.emit({
+        type: "message.part.delta",
+        seq: index,
+        streamID: "stream-perf",
+        sessionID: "s1",
+        messageID: "msg_perf_500",
+        partID: "prt_perf_delta_500",
+        partType: "text",
+        field: "text",
+        delta: `token-${index} `,
+      });
+      await flushPromises();
+    }
+    const elapsed = performance.now() - started;
+
+    await new Promise((resolve) => setTimeout(resolve, 70));
+    await flushPromises();
+    expect(wrapper.text()).toContain("token-20");
+    console.info(
+      `chat-perf: 500-message 20-delta projection ${elapsed.toFixed(1)} ms total ` +
+        `(${(elapsed / 20).toFixed(2)} ms/delta, jsdom full-render worst case)`,
+    );
+    wrapper.unmount();
+  }, 30_000);
 
   it("streams 20 deltas without replacing existing feed DOM", async () => {
     const { wrapper } = await mountChat();

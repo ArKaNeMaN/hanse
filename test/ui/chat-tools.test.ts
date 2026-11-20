@@ -1,7 +1,9 @@
-import { mount } from "@vue/test-utils";
+import { type DOMWrapper, mount, type VueWrapper } from "@vue/test-utils";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { nextTick } from "vue";
+import { createTranscriptMemory } from "../../ui/chat/transcript-memory.js";
 import ToolPart from "../../ui/components/chat/ToolPart.vue";
+import { detailProvide } from "./chat-detail-scope.js";
 import { part } from "./chat-render-support.js";
 
 afterEach(() => {
@@ -39,6 +41,17 @@ function tool(
   });
 }
 
+async function setOpen(details: DOMWrapper<Element>, open: boolean): Promise<void> {
+  const element = details.element as HTMLDetailsElement;
+  element.open = open;
+  await details.trigger("toggle");
+  await nextTick();
+}
+
+async function openTool(wrapper: VueWrapper): Promise<void> {
+  await setOpen(wrapper.find("details"), true);
+}
+
 describe("ToolPart", () => {
   it("coalesces running output to 100 ms and flushes the final text", async () => {
     vi.useFakeTimers();
@@ -46,6 +59,9 @@ describe("ToolPart", () => {
     const first = tool("t1", "bash", { status: "running", output: "line one" });
     const wrapper = mount(ToolPart, { props: { part: first } });
     await nextTick();
+    expect(wrapper.find("[data-tool-output]").exists()).toBe(false);
+
+    await openTool(wrapper);
     expect(wrapper.find("[data-tool-output]").text()).toBe("line one");
 
     await wrapper.setProps({
@@ -73,10 +89,13 @@ describe("ToolPart", () => {
       },
     });
     await nextTick();
+    expect(wrapper.find("[data-tool-output]").exists()).toBe(false);
+    expect(wrapper.find("summary").text()).toContain("npm test");
+
+    await openTool(wrapper);
     const output = wrapper.find("[data-tool-output]");
     expect(output.element.tagName).toBe("PRE");
     expect(output.text()).toContain("all green");
-    expect(wrapper.find("summary").text()).toContain("npm test");
     wrapper.unmount();
   });
 
@@ -89,6 +108,9 @@ describe("ToolPart", () => {
       },
     });
     await nextTick();
+    expect(wrapper.find(".tool-kv").exists()).toBe(false);
+
+    await openTool(wrapper);
     expect(wrapper.find(".tool-kv").exists()).toBe(true);
     expect(wrapper.find(".tool-kv").text()).toContain("path");
     expect(wrapper.find(".tool-kv").text()).toContain("src");
@@ -106,6 +128,7 @@ describe("ToolPart", () => {
       },
     });
     await nextTick();
+    await openTool(wrapper);
     expect(wrapper.find(".tool-code--json").text()).toContain("<script>x</script>");
     expect(wrapper.find(".tool-code--json").text()).toContain('"count": 2');
     expect(wrapper.findAll("script")).toHaveLength(0);
@@ -126,6 +149,9 @@ describe("ToolPart", () => {
       },
     });
     await nextTick();
+    expect(wrapper.find("[data-tool-todos]").exists()).toBe(false);
+
+    await openTool(wrapper);
     const items = wrapper.findAll("[data-tool-todos] li");
     expect(items).toHaveLength(2);
     expect(items[0]?.attributes("data-status")).toBe("completed");
@@ -143,6 +169,9 @@ describe("ToolPart", () => {
       },
     });
     await nextTick();
+    expect(wrapper.find("[data-tool-error]").exists()).toBe(false);
+
+    await openTool(wrapper);
     expect(wrapper.find("[data-tool-error]").text()).toContain("no_host");
     expect(wrapper.find("[data-tool-error]").text()).toContain("no such host");
 
@@ -154,6 +183,53 @@ describe("ToolPart", () => {
     wrapper.unmount();
     errored.unmount();
   });
+
+  it("opens an error tool even when the memory says closed", async () => {
+    const error = tool("t-error", "bash", {
+      status: "error",
+      output: "",
+      error: "command failed",
+    });
+    const memory = createTranscriptMemory("scope");
+    memory.setOpen(error.id, false);
+
+    const wrapper = mount(ToolPart, {
+      props: { part: error },
+      global: { provide: detailProvide(memory) },
+    });
+    await nextTick();
+
+    expect((wrapper.find("details").element as HTMLDetailsElement).open).toBe(true);
+    expect(wrapper.find("[data-tool-output]").text()).toContain("command failed");
+    wrapper.unmount();
+  });
+
+  it("remembers an open tool across a remount", async () => {
+    const memory = createTranscriptMemory("scope");
+    const options = {
+      props: {
+        part: tool("t1", "bash", {
+          status: "completed",
+          input: { command: "npm test" },
+          output: "all green",
+        }),
+      },
+      global: { provide: detailProvide(memory) },
+    } as const;
+
+    const wrapper = mount(ToolPart, options);
+    await nextTick();
+    await openTool(wrapper);
+    expect(wrapper.find("[data-tool-output]").text()).toContain("all green");
+    wrapper.unmount();
+
+    const remounted = mount(ToolPart, options);
+    await nextTick();
+    expect((remounted.find("details").element as HTMLDetailsElement).open).toBe(true);
+    expect(remounted.find("[data-tool-output]").text()).toContain("all green");
+    remounted.unmount();
+  });
+
   it("renders show_image as a compact action card without raw JSON", async () => {
     const wrapper = mount(ToolPart, {
       props: {

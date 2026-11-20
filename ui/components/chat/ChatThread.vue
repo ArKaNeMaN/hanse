@@ -1,5 +1,14 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import {
+  computed,
+  nextTick,
+  onBeforeUnmount,
+  onMounted,
+  provide,
+  ref,
+  shallowRef,
+  watch,
+} from "vue";
 import type { AttachmentView } from "../../../assets/chat-core.js";
 import {
   contextChipLabel,
@@ -17,6 +26,13 @@ import {
   writeScrollMemory,
 } from "../../chat/scroll-memory.js";
 import type { ChatStreamStatusKind } from "../../chat/stream.js";
+import {
+  createTranscriptMemory,
+  TRANSCRIPT_DETAIL_SCOPE,
+  type TranscriptDetailScope,
+  type TranscriptMemory,
+} from "../../chat/transcript-memory.js";
+import { computeTranscriptWindow, type TranscriptWindow } from "../../chat/transcript-window.js";
 import type { ChatMessagePartView, ChatThreadItem, InlineQuestionView } from "../../chat/types.js";
 import { absoluteTime, timeAgo } from "../../format.js";
 import type { ProcessError, ProcessPhase, ProcessState } from "../../process/types.js";
@@ -27,6 +43,14 @@ import ChatMessage from "./ChatMessage.vue";
 import ChatNoticeGroupRow from "./ChatNoticeGroupRow.vue";
 import ChatNoticeRow from "./ChatNoticeRow.vue";
 import ChatWorkGroup from "./ChatWorkGroup.vue";
+
+const DEFAULT_FALLBACK_HEIGHT = 160;
+const MIN_FALLBACK_HEIGHT = 80;
+const MAX_FALLBACK_HEIGHT = 480;
+const DEFAULT_GAP = 20;
+const ACTIVATION_COUNT = 60;
+const ACTIVATION_VIEWPORTS = 8;
+const OVERSCAN_VIEWPORTS = 2;
 
 const props = defineProps<{
   items: readonly ChatThreadItem[];
@@ -40,6 +64,8 @@ const props = defineProps<{
   empty: boolean;
   stopped: boolean;
   loadEarlierEnabled: boolean;
+  /** Number of loaded messages (`feed.thread.order.length`), not items or rendered rows. */
+  loadedMessageCount?: number;
   messageCount?: string;
   generatingLabel?: string | null;
   queuedCount?: number;
@@ -165,15 +191,57 @@ const contextTitle = computed(() =>
       ? undefined
       : contextDetailText.value,
 );
+const transcriptMemoryKey = computed(() => scrollMemoryKey(props.workspaceKey, props.sessionId));
+const transcriptMemory = shallowRef<TranscriptMemory>(
+  createTranscriptMemory(transcriptMemoryKey.value),
+);
+const detailScope: TranscriptDetailScope = {
+  isOpen: (id) => transcriptMemory.value.isOpen(id),
+  setOpen: (id, open) => {
+    transcriptMemory.value.setOpen(id, open);
+  },
+};
+provide(TRANSCRIPT_DETAIL_SCOPE, detailScope);
+
 const scroll = ref<HTMLElement | null>(null);
 const pinned = ref(true);
 const unseen = ref(0);
 const topRequested = ref(false);
+
+// Reactive scroll inputs. Computeds read these refs only; DOM reads happen in event/layout code.
+const scrollTopValue = ref(0);
+const viewportHeightValue = ref(0);
+const runTopValue = ref(0);
+
+// Windowing state. Off until the initial restore settles and the transcript is genuinely large.
+const windowEnabled = ref(false);
+const measurementReady = ref(false);
+const initialRestorePending = ref(true);
+const revealIndex = ref<number | null>(null);
+const focusedIndex = ref<number | null>(null);
+const transcriptGap = ref(DEFAULT_GAP);
+
+const renderedHeights = shallowRef<number[]>([]);
+const rowElements = new Map<string, HTMLElement>();
+const rowSetters = new Map<string, (value: unknown) => void>();
+const rowKeys = new WeakMap<Element, string>();
+const heightsByKey = new Map<string, number>();
+const indexByKey = new Map<string, number>();
+const pendingMeasurements = new Map<string, number>();
+
+let lastFallbackHeight = DEFAULT_FALLBACK_HEIGHT;
 let lastCount = props.items.length;
+let lastItemKeys: string[] = props.items.map(threadItemKey);
 let restorePending: ChatScrollMemory | null = null;
+let lastAnchor: ScrollAnchor | null = null;
 let bottomFrame: number | null = null;
+let measureFrame: number | null = null;
 let viewportObserver: ResizeObserver | null = null;
+let rowObserver: ResizeObserver | null = null;
 let lastClientHeight: number | null = null;
+let suppressLoadEarlier = false;
+let activating = false;
+let sessionSwitching = false;
 
 interface ScrollAnchor extends ChatScrollMemory {
   readonly messageID?: string;
@@ -188,6 +256,21 @@ function memoryKey(sessionID: string | null = props.sessionId): string | null {
   return scrollMemoryKey(props.workspaceKey, sessionID);
 }
 
+function requestFrame(callback: () => void): number {
+  if (typeof requestAnimationFrame === "function") {
+    return requestAnimationFrame(() => callback());
+  }
+  return setTimeout(callback, 16) as unknown as number;
+}
+
+function cancelFrame(handle: number): void {
+  if (typeof cancelAnimationFrame === "function") {
+    cancelAnimationFrame(handle);
+  } else {
+    clearTimeout(handle);
+  }
+}
+
 function nearBottom(): boolean {
   const node = element();
   if (node === null) {
@@ -196,98 +279,323 @@ function nearBottom(): boolean {
   return node.scrollHeight - node.scrollTop - node.clientHeight < 80;
 }
 
-function persist(sessionID: string | null = props.sessionId): void {
+function setScrollTop(value: number): void {
   const node = element();
   if (node === null) {
     return;
   }
-  writeScrollMemory(memoryKey(sessionID), {
-    scrollTop: node.scrollTop,
-    scrollHeight: node.scrollHeight,
+  node.scrollTop = Math.max(0, value);
+  scrollTopValue.value = node.scrollTop;
+}
+
+function syncViewport(node: HTMLElement): void {
+  viewportHeightValue.value = node.clientHeight;
+  lastClientHeight = node.clientHeight;
+}
+
+function averageFallback(heights: readonly number[]): number {
+  let total = 0;
+  let measured = 0;
+  for (const height of heights) {
+    if (height > 0) {
+      total += height;
+      measured += 1;
+    }
+  }
+  if (measured === 0) return DEFAULT_FALLBACK_HEIGHT;
+  return Math.min(MAX_FALLBACK_HEIGHT, Math.max(MIN_FALLBACK_HEIGHT, total / measured));
+}
+
+const fallbackHeight = computed(() => averageFallback(renderedHeights.value));
+
+function effectiveHeight(height: number | undefined): number {
+  return height !== undefined && height > 0 ? height : fallbackHeight.value;
+}
+
+function itemTop(index: number): number {
+  const heights = renderedHeights.value;
+  const limit = Math.max(0, Math.min(index, heights.length));
+  let total = 0;
+  for (let position = 0; position < limit; position += 1) {
+    total += effectiveHeight(heights[position]);
+  }
+  return total + transcriptGap.value * index;
+}
+
+function itemIndexByKey(key: string): number {
+  const cached = indexByKey.get(key);
+  if (cached !== undefined) return cached;
+  return props.items.findIndex((item) => threadItemKey(item) === key);
+}
+
+const focusWindow = computed<TranscriptWindow>(() => {
+  const viewport = viewportHeightValue.value;
+  return computeTranscriptWindow({
+    heights: renderedHeights.value,
+    fallbackHeight: fallbackHeight.value,
+    gap: transcriptGap.value,
+    localScrollTop: Math.max(0, scrollTopValue.value - runTopValue.value),
+    viewportHeight: viewport,
+    // One extra overscan on each side beyond the base window bounds the focus keep-alive.
+    overscan: viewport * (OVERSCAN_VIEWPORTS * 2),
+    pinned: pinned.value,
+    keepAlive: [],
+    revealIndex: revealIndex.value ?? undefined,
+    enabled: windowEnabled.value,
   });
+});
+
+const keepAliveIndices = computed<readonly number[]>(() => {
+  const index = focusedIndex.value;
+  if (index === null || !windowEnabled.value) return [];
+  const bounds = focusWindow.value;
+  return index >= bounds.start && index < bounds.end ? [index] : [];
+});
+
+const windowRange = computed<TranscriptWindow>(() => {
+  const viewport = viewportHeightValue.value;
+  return computeTranscriptWindow({
+    heights: renderedHeights.value,
+    fallbackHeight: fallbackHeight.value,
+    gap: transcriptGap.value,
+    localScrollTop: Math.max(0, scrollTopValue.value - runTopValue.value),
+    viewportHeight: viewport,
+    overscan: viewport * OVERSCAN_VIEWPORTS,
+    pinned: pinned.value,
+    keepAlive: keepAliveIndices.value,
+    revealIndex: revealIndex.value ?? undefined,
+    enabled: windowEnabled.value,
+  });
+});
+
+const renderedItems = computed<readonly ChatThreadItem[]>(() => {
+  if (!windowEnabled.value) return props.items;
+  const range = windowRange.value;
+  return props.items.slice(range.start, range.end);
+});
+
+const topPad = computed(() => (windowEnabled.value ? windowRange.value.topPad : 0));
+const bottomPad = computed(() => (windowEnabled.value ? windowRange.value.bottomPad : 0));
+const loadedCount = computed(() => {
+  const provided = props.loadedMessageCount;
+  if (typeof provided === "number" && Number.isFinite(provided)) {
+    return Math.max(0, Math.floor(provided));
+  }
+  return props.items.length;
+});
+
+function rebuildRenderedHeights(): void {
+  const next = new Array<number>(props.items.length);
+  indexByKey.clear();
+  let measuredTotal = 0;
+  let measuredCount = 0;
+  for (let index = 0; index < props.items.length; index += 1) {
+    const item = props.items[index];
+    if (item === undefined) {
+      next[index] = 0;
+      continue;
+    }
+    const key = threadItemKey(item);
+    indexByKey.set(key, index);
+    const height = heightsByKey.get(key) ?? 0;
+    next[index] = height;
+    if (height > 0) {
+      measuredTotal += height;
+      measuredCount += 1;
+    }
+  }
+  renderedHeights.value = next;
+  lastFallbackHeight =
+    measuredCount === 0
+      ? DEFAULT_FALLBACK_HEIGHT
+      : Math.min(MAX_FALLBACK_HEIGHT, Math.max(MIN_FALLBACK_HEIGHT, measuredTotal / measuredCount));
+}
+
+function seedHeightsFromMemory(): void {
+  const memory = transcriptMemory.value;
+  for (const item of props.items) {
+    const key = threadItemKey(item);
+    const height = memory.readHeight(key);
+    if (height !== undefined && height > 0) {
+      heightsByKey.set(key, height);
+    }
+  }
+  rebuildRenderedHeights();
+}
+
+function normalizeRowElement(value: unknown): HTMLElement | null {
+  if (value instanceof HTMLElement) return value;
+  if (value !== null && typeof value === "object" && "$el" in value) {
+    const node = (value as { $el?: unknown }).$el;
+    if (node instanceof HTMLElement) return node;
+  }
+  return null;
+}
+
+function registerRow(key: string, node: HTMLElement): void {
+  const existing = rowElements.get(key);
+  if (existing === node) return;
+  if (existing !== undefined) {
+    rowObserver?.unobserve(existing);
+    rowKeys.delete(existing);
+  }
+  rowElements.set(key, node);
+  rowKeys.set(node, key);
+  rowObserver?.observe(node);
+}
+
+function unregisterRow(key: string, node?: HTMLElement): void {
+  const existing = rowElements.get(key);
+  if (existing === undefined) return;
+  if (node !== undefined && existing !== node) return;
+  rowObserver?.unobserve(existing);
+  rowKeys.delete(existing);
+  rowElements.delete(key);
+}
+
+function rowSetter(key: string): (value: unknown) => void {
+  const cached = rowSetters.get(key);
+  if (cached !== undefined) return cached;
+  const setter = (value: unknown): void => {
+    const node = normalizeRowElement(value);
+    if (node === null) {
+      unregisterRow(key);
+    } else {
+      registerRow(key, node);
+    }
+  };
+  rowSetters.set(key, setter);
+  return setter;
+}
+
+function readBorderBoxHeight(entry: ResizeObserverEntry): number {
+  const raw = entry.borderBoxSize as unknown;
+  const box = Array.isArray(raw)
+    ? (raw[0] as ResizeObserverSize | undefined)
+    : (raw as ResizeObserverSize | undefined);
+  if (box !== undefined && typeof box.blockSize === "number" && Number.isFinite(box.blockSize)) {
+    return box.blockSize;
+  }
+  return (entry.target as HTMLElement).offsetHeight;
+}
+
+function onRowsResized(entries: readonly ResizeObserverEntry[]): void {
+  measurementReady.value = true;
+  for (const entry of entries) {
+    const key = rowKeys.get(entry.target);
+    if (key === undefined) continue;
+    const height = readBorderBoxHeight(entry);
+    if (!Number.isFinite(height) || height < 0.5) continue;
+    const cached = heightsByKey.get(key);
+    if (cached !== undefined && Math.abs(cached - height) < 0.5) continue;
+    pendingMeasurements.set(key, height);
+  }
+  scheduleMeasurementFrame();
+  maybeActivate();
+}
+
+function cancelMeasurementFrame(): void {
+  if (measureFrame === null) return;
+  cancelFrame(measureFrame);
+  measureFrame = null;
+}
+
+function scheduleMeasurementFrame(): void {
+  if (pendingMeasurements.size === 0 || measureFrame !== null) return;
+  measureFrame = requestFrame(() => {
+    measureFrame = null;
+    flushMeasurements();
+  });
+}
+
+function flushMeasurements(): void {
+  if (pendingMeasurements.size === 0) return;
+  const node = element();
+  const scrollRect = node?.getBoundingClientRect() ?? null;
+  let correction = 0;
+  let changed = false;
+  for (const [key, height] of pendingMeasurements) {
+    const baseline = heightsByKey.get(key) ?? lastFallbackHeight;
+    heightsByKey.set(key, height);
+    transcriptMemory.value.writeHeight(key, height);
+    changed = true;
+    if (node !== null && scrollRect !== null && !pinned.value) {
+      const row = rowElements.get(key);
+      if (row !== undefined) {
+        const rect = row.getBoundingClientRect();
+        if (rect.height > 0 && rect.bottom <= scrollRect.top) {
+          correction += height - baseline;
+        }
+      }
+    }
+  }
+  pendingMeasurements.clear();
+  if (changed) {
+    rebuildRenderedHeights();
+  }
+  if (pinned.value) {
+    scrollToBottom();
+    maybeActivate();
+    return;
+  }
+  if (correction !== 0) {
+    suppressLoadEarlier = true;
+    setScrollTop(scrollTopValue.value + correction);
+    lastAnchor = captureAnchor() ?? lastAnchor;
+    guardFocus();
+    measureRunTop();
+    persist();
+    requestFrame(() => {
+      suppressLoadEarlier = false;
+    });
+  }
+  maybeActivate();
+}
+
+function renderedRowNodes(): HTMLElement[] {
+  const node = element();
+  if (node === null) return [];
+  return Array.from(node.querySelectorAll<HTMLElement>("[data-thread-key]"));
 }
 
 function messageNodes(): HTMLElement[] {
   const node = element();
-  if (node === null) {
-    return [];
-  }
+  if (node === null) return [];
   return Array.from(node.querySelectorAll<HTMLElement>("[data-message-id]"));
 }
 
-function scrollToBottom(): void {
+function measureRunTop(): void {
   const node = element();
-  if (node === null) {
+  if (node === null) return;
+  const first = renderedRowNodes()[0];
+  if (first === undefined) {
+    runTopValue.value = 0;
     return;
   }
-  node.scrollTop = node.scrollHeight;
-  pinned.value = true;
-  unseen.value = 0;
-  topRequested.value = false;
-  lastClientHeight = node.clientHeight;
-  persist();
-}
-
-/**
- * The composer, prompt dock, and banners below the thread can change height while the feed is
- * pinned. Shrinking the scroll viewport raises the bottom edge and would hide the newest rows, so
- * follow the bottom again whenever the viewport itself is resized. A scrolled-up reader keeps the
- * position they chose; a resize must not yank them back.
- */
-function onViewportResize(): void {
-  if (restorePending !== null) {
-    return;
-  }
-  const node = element();
-  if (node === null) {
-    return;
-  }
-  // Record the new box first: a scroll event caused by this resize can arrive before or after
-  // this callback, and onScroll uses the height delta to tell it apart from a real user scroll.
-  lastClientHeight = node.clientHeight;
-  if (!pinned.value) {
-    return;
-  }
-  scrollToBottom();
-}
-
-function cancelScheduledBottom(): void {
-  if (bottomFrame === null) {
-    return;
-  }
-  if (typeof cancelAnimationFrame === "function") {
-    cancelAnimationFrame(bottomFrame);
-  } else {
-    clearTimeout(bottomFrame);
-  }
-  bottomFrame = null;
-}
-
-function scheduleBottomScroll(): void {
-  if (bottomFrame !== null) {
-    return;
-  }
-  const run = (): void => {
-    bottomFrame = null;
-    if (pinned.value) {
-      scrollToBottom();
-    }
-  };
-  bottomFrame =
-    typeof requestAnimationFrame === "function"
-      ? requestAnimationFrame(run)
-      : (setTimeout(run, 16) as unknown as number);
+  const key = first.dataset.threadKey;
+  const start = key === undefined ? 0 : Math.max(0, itemIndexByKey(key));
+  const scrollRect = node.getBoundingClientRect();
+  const rect = first.getBoundingClientRect();
+  runTopValue.value = rect.top - scrollRect.top + scrollTopValue.value - itemTop(start);
 }
 
 function captureAnchor(): ScrollAnchor | null {
   const node = element();
-  if (node === null) {
-    return null;
-  }
+  if (node === null) return null;
   const anchor: ScrollAnchor = {
     scrollTop: node.scrollTop,
     scrollHeight: node.scrollHeight,
   };
+  const scrollRect = node.getBoundingClientRect();
+  for (const row of renderedRowNodes()) {
+    const rect = row.getBoundingClientRect();
+    if (rect.bottom > scrollRect.top) {
+      const key = row.dataset.threadKey;
+      if (key !== undefined && key.length > 0) {
+        return { ...anchor, key, visualOffset: rect.top - scrollRect.top };
+      }
+    }
+  }
   for (const message of messageNodes()) {
     if (message.offsetHeight > 0 && message.offsetTop + message.offsetHeight > node.scrollTop) {
       return {
@@ -300,46 +608,170 @@ function captureAnchor(): ScrollAnchor | null {
   return anchor;
 }
 
-function restoreAnchor(anchor: ScrollAnchor | ChatScrollMemory | null): void {
+async function restoreAnchor(anchor: ScrollAnchor | ChatScrollMemory | null): Promise<void> {
   const node = element();
-  if (node === null || anchor === null) {
-    return;
-  }
-  const target =
-    "messageID" in anchor && anchor.messageID !== undefined
-      ? messageNodes().find((message) => message.dataset.messageId === anchor.messageID)
-      : undefined;
-  const delta = node.scrollHeight - anchor.scrollHeight + anchor.scrollTop;
-  if (delta > 0) {
-    // Prepend: keep the same content under the viewport by preserving the distance from the top.
-    node.scrollTop = delta;
-  } else if (target !== undefined && "messageOffset" in anchor) {
-    node.scrollTop = target.offsetTop - (anchor.messageOffset ?? 0);
+  if (node === null || anchor === null) return;
+  const key = anchor.key;
+  const visualOffset = anchor.visualOffset;
+  if (key !== undefined && key.length > 0 && visualOffset !== undefined) {
+    const mounted = rowElements.get(key);
+    if (mounted !== undefined) {
+      const scrollRect = node.getBoundingClientRect();
+      const rect = mounted.getBoundingClientRect();
+      setScrollTop(node.scrollTop + (rect.top - scrollRect.top) - visualOffset);
+    } else {
+      const index = itemIndexByKey(key);
+      if (index >= 0) {
+        revealIndex.value = index;
+        setScrollTop(runTopValue.value + itemTop(index) - visualOffset);
+        await nextTick();
+        const settled = rowElements.get(key);
+        if (settled !== undefined) {
+          const scrollRect = node.getBoundingClientRect();
+          const rect = settled.getBoundingClientRect();
+          setScrollTop(node.scrollTop + (rect.top - scrollRect.top) - visualOffset);
+        }
+        revealIndex.value = null;
+      } else {
+        setScrollTop(node.scrollHeight - anchor.scrollHeight + anchor.scrollTop);
+      }
+    }
+  } else if ("messageID" in anchor && anchor.messageID !== undefined) {
+    const target = messageNodes().find((message) => message.dataset.messageId === anchor.messageID);
+    if (target !== undefined && "messageOffset" in anchor) {
+      setScrollTop(target.offsetTop - (anchor.messageOffset ?? 0));
+    } else {
+      setScrollTop(node.scrollHeight - anchor.scrollHeight + anchor.scrollTop);
+    }
   } else {
-    node.scrollTop = delta;
+    setScrollTop(node.scrollHeight - anchor.scrollHeight + anchor.scrollTop);
   }
   pinned.value = nearBottom();
   unseen.value = 0;
   topRequested.value = node.scrollTop > 32;
-  lastClientHeight = node.clientHeight;
+  syncViewport(node);
+  lastAnchor = captureAnchor() ?? lastAnchor;
+  guardFocus();
+  measureRunTop();
   persist();
 }
 
-function applyRestore(): void {
+async function applyRestore(): Promise<void> {
   const memory = restorePending;
-  if (memory === null) {
+  if (memory === null) return;
+  restorePending = null;
+  await restoreAnchor(memory);
+}
+
+function persist(sessionID: string | null = props.sessionId): void {
+  const node = element();
+  if (node === null) return;
+  const value: { scrollTop: number; scrollHeight: number; key?: string; visualOffset?: number } = {
+    scrollTop: node.scrollTop,
+    scrollHeight: node.scrollHeight,
+  };
+  const anchor = lastAnchor;
+  if (windowEnabled.value && anchor !== null) {
+    if (anchor.key !== undefined && anchor.key.length > 0) value.key = anchor.key;
+    if (anchor.visualOffset !== undefined) value.visualOffset = anchor.visualOffset;
+  }
+  writeScrollMemory(memoryKey(sessionID), value);
+}
+
+function cancelScheduledBottom(): void {
+  if (bottomFrame === null) return;
+  cancelFrame(bottomFrame);
+  bottomFrame = null;
+}
+
+function scheduleBottomScroll(): void {
+  if (bottomFrame !== null) return;
+  bottomFrame = requestFrame(() => {
+    bottomFrame = null;
+    if (pinned.value) {
+      scrollToBottom();
+    }
+  });
+}
+
+function scrollToBottom(): void {
+  const node = element();
+  if (node === null) return;
+  node.scrollTop = node.scrollHeight;
+  scrollTopValue.value = node.scrollTop;
+  pinned.value = true;
+  unseen.value = 0;
+  topRequested.value = false;
+  syncViewport(node);
+  lastAnchor = captureAnchor();
+  persist();
+}
+
+function guardFocus(): void {
+  const index = focusedIndex.value;
+  if (index === null || !windowEnabled.value) return;
+  const bounds = focusWindow.value;
+  if (index >= bounds.start && index < bounds.end) return;
+  focusedIndex.value = null;
+  const node = element();
+  node?.focus({ preventScroll: true });
+}
+
+function keyFromEventTarget(target: EventTarget | null): string | null {
+  if (!(target instanceof Element)) return null;
+  const row = target.closest("[data-thread-key]");
+  return row instanceof HTMLElement ? (row.dataset.threadKey ?? null) : null;
+}
+
+function onFocusIn(event: FocusEvent): void {
+  const key = keyFromEventTarget(event.target);
+  if (key === null) {
+    focusedIndex.value = null;
     return;
   }
-  restorePending = null;
-  restoreAnchor(memory);
+  const index = itemIndexByKey(key);
+  focusedIndex.value = index >= 0 ? index : null;
+}
+
+function onFocusOut(event: FocusEvent): void {
+  const next = event.relatedTarget;
+  const node = element();
+  if (next instanceof Node && node !== null && node.contains(next)) {
+    return;
+  }
+  focusedIndex.value = null;
+}
+
+/**
+ * The composer, prompt dock, and banners below the thread can change height while the feed is
+ * pinned. Shrinking the scroll viewport raises the bottom edge and would hide the newest rows, so
+ * follow the bottom again whenever the viewport itself is resized. A scrolled-up reader keeps the
+ * position they chose; a resize must not yank them back.
+ */
+function onViewportResize(): void {
+  const node = element();
+  if (node === null) return;
+  syncViewport(node);
+  if (restorePending !== null) return;
+  if (!pinned.value) {
+    if (windowEnabled.value && lastAnchor !== null) {
+      void restoreAnchor(lastAnchor);
+    } else {
+      measureRunTop();
+    }
+    return;
+  }
+  measureRunTop();
+  scrollToBottom();
 }
 
 function onScroll(): void {
   const node = element();
-  if (node === null) {
-    return;
-  }
-  if (lastClientHeight !== null && node.clientHeight !== lastClientHeight) {
+  if (node === null) return;
+  const heightChanged = lastClientHeight !== null && node.clientHeight !== lastClientHeight;
+  scrollTopValue.value = node.scrollTop;
+  viewportHeightValue.value = node.clientHeight;
+  if (heightChanged) {
     // The scroll box was resized (a taller composer, a window change). The scroll event this
     // produces moves scrollTop only because the scroll range changed, so it is not user intent:
     // keep the pinned state and, while following, re-anchor the bottom to the new height.
@@ -356,10 +788,17 @@ function onScroll(): void {
   if (pinned.value) {
     unseen.value = 0;
   }
-  if (node.scrollTop <= 32) {
-    if (props.loadEarlierEnabled && !props.loadingEarlier && !topRequested.value) {
-      topRequested.value = true;
-      emit("load-earlier");
+  lastAnchor = captureAnchor();
+  if (windowEnabled.value) measureRunTop();
+  guardFocus();
+  if (!suppressLoadEarlier) {
+    if (node.scrollTop <= 32) {
+      if (props.loadEarlierEnabled && !props.loadingEarlier && !topRequested.value) {
+        topRequested.value = true;
+        emit("load-earlier");
+      }
+    } else if (node.scrollTop > 64) {
+      topRequested.value = false;
     }
   } else if (node.scrollTop > 64) {
     topRequested.value = false;
@@ -371,13 +810,137 @@ function onNewMessages(): void {
   scrollToBottom();
 }
 
+function parseTranscriptGap(node: HTMLElement): void {
+  if (typeof getComputedStyle !== "function") return;
+  const inner = node.querySelector<HTMLElement>("#chat-messages") ?? node;
+  const style = getComputedStyle(inner);
+  const raw = style.rowGap.length > 0 ? style.rowGap : style.gap;
+  const parsed = Number.parseFloat(raw);
+  if (Number.isFinite(parsed) && parsed >= 0) {
+    transcriptGap.value = parsed;
+  }
+}
+
+function resetWindowState(): void {
+  windowEnabled.value = false;
+  measurementReady.value = false;
+  initialRestorePending.value = true;
+  revealIndex.value = null;
+  focusedIndex.value = null;
+  suppressLoadEarlier = false;
+  cancelMeasurementFrame();
+  pendingMeasurements.clear();
+  heightsByKey.clear();
+  runTopValue.value = 0;
+  lastAnchor = null;
+  rebuildRenderedHeights();
+}
+
+function onStructuralChange(): void {
+  const liveKeys = new Set<string>();
+  const liveDetails = new Set<string>();
+  for (const item of props.items) {
+    liveKeys.add(threadItemKey(item));
+    if (item.type === "message") {
+      for (const part of item.message.parts) liveDetails.add(part.id);
+    } else if (item.type === "work-group") {
+      liveDetails.add(item.group.id);
+      for (const part of item.group.parts) liveDetails.add(part.id);
+    } else if (item.type === "notice-group") {
+      liveDetails.add(item.group.id);
+    }
+  }
+  for (const key of Array.from(rowSetters.keys())) {
+    if (!liveKeys.has(key)) rowSetters.delete(key);
+  }
+  for (const [key, row] of Array.from(rowElements.entries())) {
+    if (!liveKeys.has(key)) {
+      rowObserver?.unobserve(row);
+      rowKeys.delete(row);
+      rowElements.delete(key);
+    }
+  }
+  for (const key of Array.from(heightsByKey.keys())) {
+    if (!liveKeys.has(key)) heightsByKey.delete(key);
+  }
+  transcriptMemory.value.pruneHeights(liveKeys);
+  transcriptMemory.value.pruneDetails(liveDetails);
+  rebuildRenderedHeights();
+}
+
+function sameItemKeys(left: readonly string[], right: readonly string[]): boolean {
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) return false;
+  }
+  return true;
+}
+
+function measuredContentHeight(): number {
+  let total = 0;
+  for (const item of props.items) {
+    const height = heightsByKey.get(threadItemKey(item));
+    if (height !== undefined && height > 0) total += height;
+  }
+  return total + transcriptGap.value * Math.max(0, props.items.length - 1);
+}
+
+function maybeActivate(options: { requireMeasurement?: boolean } = {}): void {
+  if (windowEnabled.value || activating) return;
+  // Without the row observer there is no measurement support, so keep the full render (D10).
+  if (rowObserver === null) return;
+  if (initialRestorePending.value) return;
+  if (props.items.length === 0) return;
+  const viewport = viewportHeightValue.value;
+  if (viewport <= 0) return;
+  const countLatch =
+    props.items.length > ACTIVATION_COUNT &&
+    (options.requireMeasurement !== true || measurementReady.value);
+  const heightLatch =
+    measurementReady.value &&
+    heightsByKey.size > 0 &&
+    measuredContentHeight() > ACTIVATION_VIEWPORTS * viewport;
+  if (!countLatch && !heightLatch) return;
+  activating = true;
+  void latchWindow().finally(() => {
+    activating = false;
+  });
+}
+
+async function latchWindow(): Promise<void> {
+  if (windowEnabled.value) return;
+  const anchor = captureAnchor();
+  lastAnchor = anchor;
+  const index = anchor?.key === undefined ? -1 : itemIndexByKey(anchor.key);
+  if (index >= 0) revealIndex.value = index;
+  measureRunTop();
+  windowEnabled.value = true;
+  guardFocus();
+  await nextTick();
+  if (anchor !== null) await restoreAnchor(anchor);
+  revealIndex.value = null;
+  measureRunTop();
+}
+
+function finishInitialRestore(): void {
+  if (!initialRestorePending.value) return;
+  initialRestorePending.value = false;
+  measureRunTop();
+  maybeActivate();
+}
+
 onMounted(() => {
   const node = element();
-  if (node === null || typeof ResizeObserver !== "function") {
-    return;
-  }
+  if (node === null) return;
+  parseTranscriptGap(node);
+  syncViewport(node);
+  if (typeof ResizeObserver !== "function") return;
   viewportObserver = new ResizeObserver(onViewportResize);
   viewportObserver.observe(node);
+  rowObserver = new ResizeObserver(onRowsResized);
+  for (const row of rowElements.values()) {
+    rowObserver.observe(row);
+  }
 });
 
 onMounted(async () => {
@@ -386,43 +949,58 @@ onMounted(async () => {
   if (memory !== null) {
     restorePending = memory;
     if (props.items.length > 0) {
-      applyRestore();
+      await applyRestore();
+      finishInitialRestore();
     }
     return;
   }
   if (props.items.length > 0) {
     scrollToBottom();
+    finishInitialRestore();
   }
 });
 
-// A session change saves the previous anchor and restores the target session's anchor (or bottom).
+// The session scope changes before the new DOM commits: swap the memory and reset local geometry so
+// the first render of the new session never uses the previous scope's heights or window state.
 watch(
-  () => props.sessionId,
+  transcriptMemoryKey,
+  (next) => {
+    transcriptMemory.value = createTranscriptMemory(next);
+    sessionSwitching = true;
+    resetWindowState();
+    seedHeightsFromMemory();
+  },
+  { flush: "pre" },
+);
+
+watch(
+  transcriptMemoryKey,
   async (next, previous) => {
-    if (previous !== undefined && previous !== next) {
-      persist(previous);
-    }
+    if (next === previous) return;
     pinned.value = false;
     unseen.value = 0;
     topRequested.value = false;
-    restorePending = readScrollMemory(memoryKey(next));
+    scrollTopValue.value = 0;
+    runTopValue.value = 0;
+    lastCount = props.items.length;
+    restorePending = readScrollMemory(next);
     await nextTick();
+    onStructuralChange();
+    lastItemKeys = props.items.map(threadItemKey);
+    seedHeightsFromMemory();
     if (props.items.length === 0) {
-      // The session can be selected before its message snapshot arrives. Without saved scroll
-      // memory, keep following the bottom so the first render lands on the newest content.
-      if (restorePending === null) {
-        pinned.value = true;
-      }
+      if (restorePending === null) pinned.value = true;
+      sessionSwitching = false;
       return;
     }
     if (restorePending !== null) {
-      applyRestore();
-      lastCount = props.items.length;
-      return;
+      await applyRestore();
+    } else {
+      pinned.value = true;
+      scrollToBottom();
     }
-    pinned.value = true;
-    scrollToBottom();
-    lastCount = props.items.length;
+    sessionSwitching = false;
+    finishInitialRestore();
   },
   { flush: "post" },
 );
@@ -434,8 +1012,24 @@ watch(
     const previousCount = lastCount;
     lastCount = count;
     await nextTick();
+    const nextKeys = props.items.map(threadItemKey);
+    const structural = count !== previousCount || !sameItemKeys(nextKeys, lastItemKeys);
+    lastItemKeys = nextKeys;
+    if (sessionSwitching) return;
+    if (structural) {
+      onStructuralChange();
+    }
     if (restorePending !== null) {
-      applyRestore();
+      await applyRestore();
+      finishInitialRestore();
+      return;
+    }
+    if (initialRestorePending.value) {
+      if (count > 0 && !props.loadingEarlier) {
+        pinned.value = true;
+        scrollToBottom();
+        finishInitialRestore();
+      }
       return;
     }
     if (props.loadingEarlier) {
@@ -457,17 +1051,38 @@ watch(
   { flush: "post" },
 );
 
+// A session that starts below the count threshold can grow past it. Require a measurement pass so
+// layout-less environments keep the deterministic full render.
+watch(
+  () => props.items.length,
+  async (next, previous) => {
+    if (next === previous) return;
+    await nextTick();
+    maybeActivate({ requireMeasurement: true });
+  },
+);
+
 watch(
   () => props.loadingEarlier,
-  (loading) => {
-    if (!loading) {
-      const node = element();
-      if (node !== null && node.scrollTop > 32) {
-        topRequested.value = false;
-      }
+  async (loading) => {
+    if (loading) return;
+    const anchor = lastAnchor;
+    if (anchor !== null) {
+      suppressLoadEarlier = true;
+      await nextTick();
+      await restoreAnchor(anchor);
+      measureRunTop();
+      suppressLoadEarlier = false;
+    }
+    const node = element();
+    if (node !== null && node.scrollTop > 32) {
+      topRequested.value = false;
     }
   },
 );
+
+watch(measurementReady, () => maybeActivate());
+watch(initialRestorePending, () => maybeActivate());
 
 watch(
   () => props.approvalCount ?? 0,
@@ -482,15 +1097,33 @@ watch(
 onBeforeUnmount(() => {
   viewportObserver?.disconnect();
   viewportObserver = null;
+  rowObserver?.disconnect();
+  rowObserver = null;
   cancelScheduledBottom();
+  cancelMeasurementFrame();
   persist();
 });
 
-defineExpose({ captureAnchor, restoreAnchor, scrollToBottom, onScroll, unseen });
+defineExpose({
+  captureAnchor,
+  restoreAnchor,
+  scrollToBottom,
+  onScroll,
+  unseen,
+  scrollTopValue,
+  viewportHeightValue,
+  runTopValue,
+});
 </script>
 
 <template>
-  <section class="chat-thread chat-thread--spa" aria-label="Conversation" data-chat-thread>
+  <section
+    class="chat-thread chat-thread--spa"
+    aria-label="Conversation"
+    data-chat-thread
+    :data-chat-loaded-count="loadedCount"
+    :data-chat-item-count="items.length"
+  >
     <div class="chat-thread__meta">
       <div class="chat-thread__identity">
         <span class="chat-session-title" data-chat-session-title :title="sessionTitleText">
@@ -604,13 +1237,23 @@ defineExpose({ captureAnchor, restoreAnchor, scrollToBottom, onScroll, unseen })
       :data-loading="loading ? 'true' : undefined"
       :aria-busy="loading ? 'true' : undefined"
     >
-      <div class="chat-thread__scroll" id="chat-scroll" ref="scroll" @scroll.passive="onScroll">
+      <div
+        class="chat-thread__scroll"
+        id="chat-scroll"
+        ref="scroll"
+        tabindex="-1"
+        @scroll.passive="onScroll"
+        @focusin="onFocusIn"
+        @focusout="onFocusOut"
+      >
         <div
           class="chat-thread__inner"
           :class="{ 'is-muted': loading }"
           id="chat-messages"
           role="log"
           aria-live="off"
+          :data-chat-window-start="windowRange.start"
+          :data-chat-window-end="windowRange.end"
         >
           <div v-if="loadEarlierEnabled || loadingEarlier" class="chat-history-row">
             <button
@@ -732,21 +1375,50 @@ defineExpose({ captureAnchor, restoreAnchor, scrollToBottom, onScroll, unseen })
             place.
           </p>
 
-          <template v-for="item in items" :key="threadItemKey(item)">
+          <div
+            v-if="topPad > 0"
+            class="chat-thread__spacer"
+            aria-hidden="true"
+            :style="{ height: `${topPad}px`, marginBlockEnd: `-${transcriptGap}px` }"
+          />
+          <template v-for="item in renderedItems" :key="threadItemKey(item)">
             <ChatMessage
               v-if="item.type === 'message'"
+              :ref="rowSetter(threadItemKey(item))"
               :record="item.message"
               :app-key="appKey"
               :question-view-for-part="questionViewForPart"
               :data-message-id="item.message.id"
+              :data-thread-key="threadItemKey(item)"
               @question-submit="(view, answers) => emit('question-submit', view, answers)"
               @question-reject="(view) => emit('question-reject', view)"
               @open-image="(attachment) => emit('open-image', attachment)"
             />
-            <ChatNoticeRow v-else-if="item.type === 'notice'" :notice="item.notice" />
-            <ChatWorkGroup v-else-if="item.type === 'work-group'" :group="item.group" />
-            <ChatNoticeGroupRow v-else-if="item.type === 'notice-group'" :group="item.group" />
+            <ChatNoticeRow
+              v-else-if="item.type === 'notice'"
+              :ref="rowSetter(threadItemKey(item))"
+              :notice="item.notice"
+              :data-thread-key="threadItemKey(item)"
+            />
+            <ChatWorkGroup
+              v-else-if="item.type === 'work-group'"
+              :ref="rowSetter(threadItemKey(item))"
+              :group="item.group"
+              :data-thread-key="threadItemKey(item)"
+            />
+            <ChatNoticeGroupRow
+              v-else-if="item.type === 'notice-group'"
+              :ref="rowSetter(threadItemKey(item))"
+              :group="item.group"
+              :data-thread-key="threadItemKey(item)"
+            />
           </template>
+          <div
+            v-if="bottomPad > 0"
+            class="chat-thread__spacer"
+            aria-hidden="true"
+            :style="{ height: `${bottomPad}px` }"
+          />
         </div>
         <div class="chat-thread__approvals">
           <slot name="approvals" />

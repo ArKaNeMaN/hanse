@@ -4,7 +4,7 @@
  * text-only summary/output body. Running output is coalesced to 100 ms so a fast stream cannot
  * rebuild the DOM per token.
  */
-import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
+import { computed, inject, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import {
   isHanseTool,
   normalizeToolName,
@@ -20,6 +20,10 @@ import {
   type ToolView,
   truncationNotice,
 } from "../../../assets/chat-diff.js";
+import {
+  TRANSCRIPT_DETAIL_SCOPE,
+  type TranscriptDetailScope,
+} from "../../chat/transcript-memory.js";
 import type { ChatMessagePartView } from "../../chat/types.js";
 import AppIcon from "../AppIcon.vue";
 import DiffView from "./DiffView.vue";
@@ -29,8 +33,8 @@ import WriteView from "./WriteView.vue";
 const TOOL_OUTPUT_THROTTLE_MS = 100;
 
 const props = defineProps<{ part: ChatMessagePartView }>();
+const scope = inject<TranscriptDetailScope | null>(TRANSCRIPT_DETAIL_SCOPE, null);
 
-const open = ref(false);
 const outputEl = ref<HTMLElement | null>(null);
 let throttleTimer: ReturnType<typeof setTimeout> | undefined;
 let lastOutputAt = 0;
@@ -71,6 +75,12 @@ const status = computed(() => {
   return typeof data.value.status === "string" ? data.value.status : "completed";
 });
 const running = computed(() => status.value === "running" || status.value === "pending");
+const open = ref(status.value === "error" || scope?.isOpen(props.part.id) === true);
+
+function setOpen(value: boolean): void {
+  open.value = value;
+  scope?.setOpen(props.part.id, value);
+}
 const output = computed(() => {
   if (running.value) {
     if (typeof metadata.value.output === "string" && metadata.value.output.length > 0) {
@@ -278,7 +288,7 @@ watch(
   status,
   (value, previous) => {
     if (value === "error" && previous !== "error") {
-      open.value = true;
+      setOpen(true);
     }
   },
   { immediate: true },
@@ -286,7 +296,7 @@ watch(
 
 function onToggle(event: Event): void {
   const details = event.target as HTMLDetailsElement | null;
-  open.value = details?.open === true;
+  setOpen(details?.open === true);
 }
 
 function todoStatus(statusValue: unknown): { icon: string; label: string } {
@@ -348,80 +358,82 @@ onBeforeUnmount(() => {
       </span>
     </summary>
 
-    <DiffView
-      v-if="bodyKind === 'view' && viewKind === 'diff'"
-      :view="allocated as ToolView"
-      :part-id="part.id"
-      :view-key="viewKey"
-      :open="open"
-    />
-    <DiffView
-      v-else-if="bodyKind === 'view' && viewKind === 'files'"
-      :view="allocated as ToolView"
-      :part-id="part.id"
-      :view-key="viewKey"
-      :open="open"
-    />
-    <ReadView
-      v-else-if="bodyKind === 'view' && viewKind === 'read'"
-      :view="allocated as ToolView"
-      :part-id="part.id"
-      :view-key="viewKey"
-      :open="open"
-    />
-    <WriteView
-      v-else-if="bodyKind === 'view' && viewKind === 'write'"
-      :view="allocated as ToolView"
-      :part-id="part.id"
-      :view-key="viewKey"
-      :open="open"
-    />
-    <ul v-else-if="bodyKind === 'todo'" class="tool-todo" data-tool-todos>
-      <li
-        v-for="(todo, index) in todos"
-        :key="index"
-        class="tool-todo__item"
-        :data-status="record(todo).status ?? 'unknown'"
-      >
-        <span class="tool-todo__status">
-          <AppIcon :name="todoStatus(record(todo).status).icon" />
-          {{ todoStatus(record(todo).status).label }}
-        </span>
-        <span class="tool-todo__content">{{
-          typeof record(todo).content === "string" ? record(todo).content : ""
-        }}</span>
-      </li>
-    </ul>
-    <pre
-      v-else-if="bodyKind === 'bash'"
-      ref="outputEl"
-      class="tool-call__output"
-      data-tool-output
-    >{{ shownOutput }}</pre>
-    <div v-else-if="bodyKind === 'structured'" class="tool-call__structured">
-      <div v-if="failure !== null" class="tool-error" data-tool-error>
-        <span class="tool-error__code mono">{{ failure.code || "error" }}</span>
-        <p v-if="failure.message.length > 0" class="tool-error__message">{{ failure.message }}</p>
+    <template v-if="open">
+      <DiffView
+        v-if="bodyKind === 'view' && viewKind === 'diff'"
+        :view="allocated as ToolView"
+        :part-id="part.id"
+        :view-key="viewKey"
+        :open="true"
+      />
+      <DiffView
+        v-else-if="bodyKind === 'view' && viewKind === 'files'"
+        :view="allocated as ToolView"
+        :part-id="part.id"
+        :view-key="viewKey"
+        :open="true"
+      />
+      <ReadView
+        v-else-if="bodyKind === 'view' && viewKind === 'read'"
+        :view="allocated as ToolView"
+        :part-id="part.id"
+        :view-key="viewKey"
+        :open="true"
+      />
+      <WriteView
+        v-else-if="bodyKind === 'view' && viewKind === 'write'"
+        :view="allocated as ToolView"
+        :part-id="part.id"
+        :view-key="viewKey"
+        :open="true"
+      />
+      <ul v-else-if="bodyKind === 'todo'" class="tool-todo" data-tool-todos>
+        <li
+          v-for="(todo, index) in todos"
+          :key="index"
+          class="tool-todo__item"
+          :data-status="record(todo).status ?? 'unknown'"
+        >
+          <span class="tool-todo__status">
+            <AppIcon :name="todoStatus(record(todo).status).icon" />
+            {{ todoStatus(record(todo).status).label }}
+          </span>
+          <span class="tool-todo__content">{{
+            typeof record(todo).content === "string" ? record(todo).content : ""
+          }}</span>
+        </li>
+      </ul>
+      <pre
+        v-else-if="bodyKind === 'bash'"
+        ref="outputEl"
+        class="tool-call__output"
+        data-tool-output
+      >{{ shownOutput }}</pre>
+      <div v-else-if="bodyKind === 'structured'" class="tool-call__structured">
+        <div v-if="failure !== null" class="tool-error" data-tool-error>
+          <span class="tool-error__code mono">{{ failure.code || "error" }}</span>
+          <p v-if="failure.message.length > 0" class="tool-error__message">{{ failure.message }}</p>
+        </div>
+        <template v-else>
+          <dl v-if="structuredEntries.length > 0" class="tool-kv">
+            <template v-for="[ label, value ] in structuredEntries" :key="label">
+              <dt>{{ label }}</dt>
+              <dd class="mono">{{ value === null ? "" : String(value) }}</dd>
+            </template>
+          </dl>
+          <pre
+            v-if="structuredJson.length > 0"
+            class="tool-code tool-code--json"
+          >{{ structuredJson }}</pre>
+        </template>
       </div>
-      <template v-else>
-        <dl v-if="structuredEntries.length > 0" class="tool-kv">
-          <template v-for="[ label, value ] in structuredEntries" :key="label">
-            <dt>{{ label }}</dt>
-            <dd class="mono">{{ value === null ? "" : String(value) }}</dd>
-          </template>
-        </dl>
-        <pre
-          v-if="structuredJson.length > 0"
-          class="tool-code tool-code--json"
-        >{{ structuredJson }}</pre>
-      </template>
-    </div>
-    <pre
-      v-else-if="bodyKind === 'pre'"
-      ref="outputEl"
-      class="tool-call__output"
-      data-tool-output
-    >{{ shownOutput }}</pre>
-    <p v-if="notice.length > 0" class="tool-call__truncated" data-tool-truncated>{{ notice }}</p>
+      <pre
+        v-else-if="bodyKind === 'pre'"
+        ref="outputEl"
+        class="tool-call__output"
+        data-tool-output
+      >{{ shownOutput }}</pre>
+      <p v-if="notice.length > 0" class="tool-call__truncated" data-tool-truncated>{{ notice }}</p>
+    </template>
   </details>
 </template>

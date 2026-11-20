@@ -2317,6 +2317,12 @@
     font-size: var(--text-chat);
   }
 
+  .chat-thread__spacer {
+    flex: none;
+    inline-size: 100%;
+    pointer-events: none;
+  }
+
   .chat-pane-head {
     display: flex;
     align-items: center;

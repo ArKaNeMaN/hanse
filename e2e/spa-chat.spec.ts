@@ -321,6 +321,9 @@ test("SPA keeps the newest rows visible while the composer grows at the bottom",
   }
   await input.fill("short again");
   await expect.poll(distanceFromBottom).toBeLessThanOrEqual(1);
+  // The fixture server keeps drafts across tests; clear the history draft for the next test.
+  await input.fill("");
+  await page.waitForTimeout(600);
 
   await page.waitForTimeout(400);
   expectNoPageErrors(errors);
@@ -631,6 +634,17 @@ test("SPA Stop after a rapid send keeps one accepted row and settles idle", asyn
   expectNoPageErrors(errors);
 });
 
+test("SPA does not load the Mermaid frame without a diagram", async ({ page }) => {
+  const frameRequests: string[] = [];
+  page.on("request", (request) => {
+    if (request.url().includes("mermaid-frame.html")) frameRequests.push(request.url());
+  });
+  await signIn(page, CHAT_PATH);
+  await expect(page.locator("#chat-shell")).toHaveCount(1);
+  await page.waitForTimeout(500);
+  expect(frameRequests).toEqual([]);
+});
+
 test("SPA redirects to login with next when auth expires mid-send", async ({ page }) => {
   await signIn(page, CHAT_PATH);
   await expect(page.locator("#chat-shell")).toHaveCount(1);
@@ -648,6 +662,10 @@ test("SPA feed renders markdown tables, reasoning, tools, bash, OMO, handoff, no
   page,
 }) => {
   const errors = collectPageErrors(page);
+  const canaryResponses: string[] = [];
+  page.on("response", (response) => {
+    if (response.url().includes("mermaid-canary.invalid")) canaryResponses.push(response.url());
+  });
   await installWorkerCounter(page);
   await signIn(page, `/chat?app=alpha&project=${PROJECT_ONE}&session=ses_e2erender`);
   await expect(page.locator("#chat-shell")).toHaveCount(1);
@@ -655,8 +673,30 @@ test("SPA feed renders markdown tables, reasoning, tools, bash, OMO, handoff, no
   const scroll = page.locator("#chat-scroll");
   await expect(scroll.locator("table")).toHaveCount(1);
   await expect(scroll.locator("table")).toContainText("alpha");
+
+  await expect(scroll.locator("img[data-mermaid-image]").first()).toBeVisible({ timeout: 30_000 });
+  expect(canaryResponses).toEqual([]);
+  const frame = page.locator('iframe[title="Mermaid renderer"]');
+  await expect(frame).toHaveCount(1);
+  await expect(frame).toHaveAttribute("sandbox", "allow-scripts");
+  expect(
+    await page.evaluate(
+      () =>
+        document.querySelector('iframe[title="Mermaid renderer"]')?.contentDocument === null,
+    ),
+  ).toBe(true);
+  const frameCache = await page.evaluate(
+    async () => (await fetch("/assets/ui/mermaid-frame.html")).headers.get("cache-control"),
+  );
+  expect(frameCache).toBe("no-store");
+  const renderGroup = scroll.locator(".chat-work-group").first();
+  await expect(renderGroup).toBeVisible({ timeout: 15_000 });
+  await renderGroup.locator("summary").first().click();
   await expect(scroll.locator(".chat-reasoning")).toHaveCount(1);
-  await expect(scroll.locator('[data-tool="bash"]')).toContainText("fixture tests passed");
+  const bashTool = scroll.locator('[data-tool="bash"]');
+  await expect(bashTool).toHaveCount(1);
+  await bashTool.locator("summary").click();
+  await expect(bashTool).toContainText("fixture tests passed");
   await expect(scroll.locator("[data-omo-card]")).toContainText("BACKGROUND TASK COMPLETED");
   await expect(scroll.locator('[data-handoff-card]:not([data-mode="thread"])')).toContainText(
     "Fixture handoff reply",
@@ -792,7 +832,12 @@ test("SPA streams text and tool output without replacing the feed DOM", async ({
       },
     },
   });
+  const streamGroup = page.locator(".chat-work-group").last();
+  await expect(streamGroup).toBeVisible({ timeout: 15_000 });
+  await streamGroup.locator("summary").first().click();
   const tool = page.locator(`[data-part-id="${toolPartID}"]`);
+  await expect(tool).toHaveCount(1);
+  await tool.locator("summary").click();
   await expect(tool).toContainText("first line", { timeout: 15_000 });
   await page.waitForTimeout(150);
 
@@ -907,15 +952,37 @@ async function workerStats(page: Page): Promise<{ constructed: number; terminate
   });
 }
 
-test("SPA loads a 500-message thread and records chunk transfer and heap", async ({
+test("SPA loads a 500-message thread, bounds the window, and lazily mounts tool bodies", async ({
   page,
   context,
 }) => {
   test.slow();
   const errors = collectPageErrors(page);
   await signIn(page, `/chat?app=alpha&project=${PROJECT_ONE}&session=ses_e2eperf`);
-  const messages = page.locator("#chat-scroll [data-message-id]");
-  await expect(messages.first()).toBeVisible({ timeout: 15_000 });
+  const thread = page.locator("[data-chat-thread]");
+  await expect(thread).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator("#chat-scroll [data-message-id]").first()).toBeVisible({
+    timeout: 15_000,
+  });
+
+  const loadedCount = async (): Promise<number> =>
+    Number((await thread.getAttribute("data-chat-loaded-count")) ?? "0");
+  const loadEarlier = page.locator("[data-chat-load-earlier]");
+
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    const count = await loadedCount();
+    if (count >= 500) break;
+    if ((await loadEarlier.count()) === 0) break;
+    if (await loadEarlier.isDisabled()) {
+      await page.waitForTimeout(100);
+      continue;
+    }
+    await loadEarlier.click();
+    await expect.poll(loadedCount, { timeout: 20_000 }).toBeGreaterThan(count);
+  }
+  await expect(thread).toHaveAttribute("data-chat-loaded-count", "500", { timeout: 30_000 });
+  const itemCount = Number((await thread.getAttribute("data-chat-item-count")) ?? "0");
+  expect(itemCount).toBeGreaterThanOrEqual(500);
 
   const chatResources = await page.evaluate(() => {
     const entries = performance
@@ -928,22 +995,48 @@ test("SPA loads a 500-message thread and records chunk transfer and heap", async
     };
   });
 
-  for (let pageIndex = 0; pageIndex < 20; pageIndex += 1) {
-    const count = await messages.count();
-    if (count >= 500) break;
-    await page.locator("#chat-scroll").evaluate((node) => {
-      node.scrollTop = 0;
-      node.dispatchEvent(new Event("scroll"));
-    });
-    await expect.poll(async () => messages.count(), { timeout: 15_000 }).toBeGreaterThan(count);
-  }
-  await expect(messages).toHaveCount(500, { timeout: 30_000 });
+  const scroller = page.locator("#chat-scroll");
+  await scroller.evaluate((node) => {
+    node.scrollTop = node.scrollHeight;
+    node.dispatchEvent(new Event("scroll"));
+  });
+  const windowStart = async (): Promise<number> =>
+    Number((await page.locator("#chat-messages").getAttribute("data-chat-window-start")) ?? "0");
+  await expect.poll(windowStart, { timeout: 20_000 }).toBeGreaterThan(0);
+
+  const renderedRows = page.locator("#chat-scroll [data-thread-key]");
+  await expect(renderedRows.first()).toBeVisible({ timeout: 15_000 });
+  const renderedCount = await renderedRows.count();
+  expect(renderedCount).toBeGreaterThan(0);
+  expect(renderedCount).toBeLessThan(250);
+
+  const group = page.locator("#chat-scroll .chat-work-group").last();
+  await expect(group).toBeVisible({ timeout: 15_000 });
+  await expect(group.locator(".chat-work-group__body")).toHaveCount(0);
+  await group.locator("summary").first().click();
+  await expect(group.locator(".chat-work-group__body")).toHaveCount(1);
+
+  const tool = group.locator('.tool-call[data-part-id="prt_e2e_perf_500_tool"]');
+  await expect(tool.locator("summary")).toHaveCount(1);
+  await expect(group.locator("[data-tool-output]")).toHaveCount(0);
+  await tool.locator("summary").click();
+  await expect(tool.locator("[data-tool-output]")).toContainText("perf-large-output-500", {
+    timeout: 15_000,
+  });
+  await tool.locator("summary").click();
+  await expect(tool.locator("[data-tool-output]")).toHaveCount(0);
+  await group.locator("summary").first().click();
+  await expect(group.locator(".chat-work-group__body")).toHaveCount(0);
 
   const cdp = await context.newCDPSession(page);
   await cdp.send("Performance.enable");
   const metrics = await cdp.send("Performance.getMetrics");
   const heap = metrics.metrics.find((metric) => metric.name === "JSHeapUsedSize")?.value ?? 0;
-  const detail = `chat chunk resources=${chatResources.count} transfer=${chatResources.transferBytes}B encoded=${chatResources.gzipBytes}B; 500-message JSHeapUsedSize=${Math.round(heap / 1024)}KiB`;
+  const windowRange = await page.locator("#chat-messages").evaluate((node) => ({
+    start: node.getAttribute("data-chat-window-start"),
+    end: node.getAttribute("data-chat-window-end"),
+  }));
+  const detail = `chat chunk resources=${chatResources.count} transfer=${chatResources.transferBytes}B encoded=${chatResources.gzipBytes}B; 500-message loaded=500 rendered=${renderedCount} window=${windowRange.start}..${windowRange.end} JSHeapUsedSize=${Math.round(heap / 1024)}KiB`;
   test.info().annotations.push({ type: "chat-perf", description: detail });
   console.log(`chat-perf: ${detail}`);
 
@@ -1002,9 +1095,11 @@ test("SPA chat keeps the composer full-width, answer rows full-width, and long t
   const token = `token-${"A".repeat(220)}`;
 
   for (const width of [1440, 390] as const) {
+    const previousStreams = await upstreamStreamCount(page).catch(() => 0);
     await page.setViewportSize({ width, height: 900 });
     await page.reload();
     await expect(page.locator("#chat-shell")).toHaveCount(1);
+    await waitForUpstreamStream(page, previousStreams);
     await control(page, {
       event: {
         type: "question.asked",

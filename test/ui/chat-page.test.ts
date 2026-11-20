@@ -142,6 +142,13 @@ describe("ChatPage read-only shell", () => {
       part: { id: "prt_tool", type: "tool", tool: "bash", state: { status: "running" } },
     });
     await flushPromises();
+    const groups = wrapper.findAll("details.chat-work-group");
+    expect(groups.length).toBeGreaterThan(0);
+    for (const group of groups) {
+      (group.element as HTMLDetailsElement).open = true;
+      await group.trigger("toggle");
+    }
+    await flushPromises();
     expect(wrapper.find('[data-tool="bash"]').exists()).toBe(true);
 
     source.emit({

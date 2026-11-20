@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /** One chat feed message: OMO/handoff cards, text, reasoning, tools, details, and unknown parts. */
-import { computed, ref } from "vue";
+import { computed, inject, ref } from "vue";
 import {
   type AttachmentView,
   agentInitials,
@@ -8,6 +8,10 @@ import {
   isHiddenSyntheticTextPart,
 } from "../../../assets/chat-core.js";
 import { isKnownPartType } from "../../chat/feed-store.js";
+import {
+  TRANSCRIPT_DETAIL_SCOPE,
+  type TranscriptDetailScope,
+} from "../../chat/transcript-memory.js";
 import type { ChatMessagePartView, ChatMessageView, InlineQuestionView } from "../../chat/types.js";
 import ChatAttachmentCard from "./ChatAttachmentCard.vue";
 import ChatQuestionCard from "./ChatQuestionCard.vue";
@@ -38,6 +42,8 @@ const emit = defineEmits<{
   "question-reject": [view: InlineQuestionView];
   "open-image": [attachment: AttachmentView];
 }>();
+
+const detailScope = inject<TranscriptDetailScope | null>(TRANSCRIPT_DETAIL_SCOPE, null);
 
 function questionView(part: ChatMessagePartView): InlineQuestionView | null {
   return props.questionViewForPart === undefined
@@ -141,9 +147,25 @@ function isUnknown(part: ChatMessagePartView): boolean {
   return !isKnownPartType(part.type) && !HIDDEN_PART_TYPES.has(part.type);
 }
 
-defineExpose({ detailsBody, isDetailOpen });
+function seedOpenDetails(): ReadonlySet<string> {
+  const seeded = new Set<string>();
+  if (detailScope === null) {
+    return seeded;
+  }
+  for (const part of props.record.parts) {
+    if (part.type !== "file" && part.type !== "subtask") {
+      continue;
+    }
+    if (detailScope.isOpen(part.id) === true) {
+      seeded.add(part.id);
+    }
+  }
+  return seeded;
+}
 
-const openDetails = ref<ReadonlySet<string>>(new Set<string>());
+const openDetails = ref<ReadonlySet<string>>(seedOpenDetails());
+
+defineExpose({ detailsBody, isDetailOpen });
 
 function isDetailOpen(id: string): boolean {
   return openDetails.value.has(id);
@@ -151,13 +173,15 @@ function isDetailOpen(id: string): boolean {
 
 function onDetailToggle(id: string, event: Event): void {
   const details = event.target as HTMLDetailsElement | null;
+  const value = details?.open === true;
   const next = new Set(openDetails.value);
-  if (details?.open === true) {
+  if (value) {
     next.add(id);
   } else {
     next.delete(id);
   }
   openDetails.value = next;
+  detailScope?.setOpen(id, value);
 }
 
 const optimisticLabel = computed(() => {
@@ -233,6 +257,7 @@ const optimisticLabel = computed(() => {
           class="tool-call chat-detail"
           :data-part-id="part.id"
           :data-part-type="part.type"
+          :open="isDetailOpen(part.id)"
           @toggle="onDetailToggle(part.id, $event)"
         >
           <summary>
@@ -241,7 +266,7 @@ const optimisticLabel = computed(() => {
               {{ detailsPreview(part) }}
             </span>
           </summary>
-          <pre class="chat-detail__text">{{ detailsBody(part) }}</pre>
+          <pre v-if="isDetailOpen(part.id)" class="chat-detail__text">{{ detailsBody(part) }}</pre>
         </details>
         <p
           v-else-if="isUnknown(part)"

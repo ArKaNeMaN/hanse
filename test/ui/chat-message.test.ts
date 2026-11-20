@@ -1,12 +1,21 @@
-import { mount } from "@vue/test-utils";
+import { type DOMWrapper, mount } from "@vue/test-utils";
 import { afterEach, describe, expect, it } from "vitest";
 import { nextTick } from "vue";
+import { createTranscriptMemory } from "../../ui/chat/transcript-memory.js";
 import ChatMessage from "../../ui/components/chat/ChatMessage.vue";
+import { detailProvide } from "./chat-detail-scope.js";
 import { message, part } from "./chat-render-support.js";
 
 afterEach(() => {
   document.body.innerHTML = "";
 });
+
+async function openDetail(details: DOMWrapper<Element>): Promise<void> {
+  const element = details.element as HTMLDetailsElement;
+  element.open = true;
+  await details.trigger("toggle");
+  await nextTick();
+}
 
 function render(parts: ReturnType<typeof part>[], extra: Record<string, unknown> = {}) {
   return mount(ChatMessage, {
@@ -31,6 +40,8 @@ describe("ChatMessage part surfaces", () => {
     expect(wrapper.find(".chat-text strong").text()).toBe("Bold");
     expect(wrapper.find(".chat-reasoning summary").text()).toContain("Thinking");
     expect(wrapper.find(".chat-reasoning summary .icon").exists()).toBe(true);
+    expect(wrapper.find(".chat-reasoning__text").exists()).toBe(false);
+    await openDetail(wrapper.find(".chat-reasoning"));
     expect(wrapper.find(".chat-reasoning__text").text()).toContain("I should inspect the output.");
     expect(wrapper.findAll('[data-part-id="p1"]')).toHaveLength(1);
     wrapper.unmount();
@@ -172,13 +183,21 @@ describe("ChatMessage part surfaces", () => {
     ]);
     await nextTick();
     expect(wrapper.find('[data-part-type="tool"]').text()).toContain("bash");
+    expect(wrapper.find("[data-tool-output]").exists()).toBe(false);
+    await openDetail(wrapper.find('[data-part-type="tool"]'));
     expect(wrapper.find('[data-part-type="tool"]').text()).toContain("tests passed");
     const patch = wrapper.find('[data-part-type="patch"]');
     expect(patch.exists()).toBe(true);
     expect(patch.isVisible()).toBe(false);
     expect(patch.text()).toBe("");
     expect(wrapper.find('[data-part-type="file"]').text()).toContain("src/file.ts");
+    expect(wrapper.findAll("pre.chat-detail__text")).toHaveLength(0);
+    await openDetail(wrapper.find('[data-part-type="file"]'));
+    expect(wrapper.find('[data-part-type="file"] pre').text()).toBe("No preview");
     expect(wrapper.find('[data-part-type="subtask"]').text()).toContain("Review the change");
+    expect(wrapper.find('[data-part-type="subtask"] pre').exists()).toBe(false);
+    await openDetail(wrapper.find('[data-part-type="subtask"]'));
+    expect(wrapper.find('[data-part-type="subtask"] pre').exists()).toBe(true);
     wrapper.unmount();
   });
 
@@ -192,6 +211,8 @@ describe("ChatMessage part surfaces", () => {
     ]);
     await nextTick();
     const detail = wrapper.find('[data-part-type="file"]');
+    expect(detail.find("pre").exists()).toBe(false);
+    await openDetail(detail);
     expect(detail.find("pre").text()).toBe("Inline content is not available.");
     expect(detail.text()).not.toContain("No output");
     wrapper.unmount();
@@ -206,8 +227,54 @@ describe("ChatMessage part surfaces", () => {
       }),
     ]);
     await nextTick();
+    const detail = wrapper.find('[data-part-type="file"]');
+    expect(detail.find("pre").exists()).toBe(false);
+    await openDetail(detail);
     expect(wrapper.find('[data-part-type="file"] pre').text()).toBe("No preview");
     wrapper.unmount();
+  });
+
+  it("remembers an open file detail across a remount", async () => {
+    const memory = createTranscriptMemory("scope");
+    const options = {
+      props: {
+        record: message({
+          id: "m1",
+          role: "assistant",
+          parts: [
+            part({
+              id: "file",
+              type: "file",
+              data: { filename: "src/file.ts", content: "export const value = 1;" },
+            }),
+            part({
+              id: "subtask",
+              type: "subtask",
+              data: { description: "Review the change", prompt: "Please review" },
+            }),
+          ],
+        }),
+      },
+      global: { provide: detailProvide(memory) },
+      attachTo: document.body,
+    } as const;
+
+    const wrapper = mount(ChatMessage, options);
+    await nextTick();
+    expect(wrapper.findAll("pre.chat-detail__text")).toHaveLength(0);
+
+    await openDetail(wrapper.find('[data-part-type="file"]'));
+    expect(wrapper.find('[data-part-type="file"] pre').text()).toBe("No preview");
+    wrapper.unmount();
+
+    const remounted = mount(ChatMessage, options);
+    await nextTick();
+    expect((remounted.find('[data-part-type="file"]').element as HTMLDetailsElement).open).toBe(
+      true,
+    );
+    expect(remounted.find('[data-part-type="file"] pre').text()).toBe("No preview");
+    expect(remounted.find('[data-part-type="subtask"] pre').exists()).toBe(false);
+    remounted.unmount();
   });
 
   it("keeps step/retry/compaction/snapshot/agent parts hidden and shows unknown types as text", async () => {

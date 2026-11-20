@@ -1,6 +1,7 @@
 import { flushPromises, mount } from "@vue/test-utils";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { nextTick, ref } from "vue";
+import { clearScrollMemory } from "../../ui/chat/scroll-memory.js";
 import type { ChatThreadItem } from "../../ui/chat/types.js";
 import ChatThread from "../../ui/components/chat/ChatThread.vue";
 import { message } from "./chat-render-support.js";
@@ -28,6 +29,7 @@ function props(value: readonly ChatThreadItem[], revision = 0) {
     empty: false,
     stopped: false,
     loadEarlierEnabled: false,
+    loadedMessageCount: value.length,
   };
 }
 
@@ -92,6 +94,7 @@ function stubResizeObserver(): {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  clearScrollMemory();
   document.body.innerHTML = "";
 });
 
@@ -115,6 +118,7 @@ describe("500-message scroll ownership", () => {
     wrapper.vm.scrollToBottom();
     expect(metrics.scrollTop).toBe(20_000);
     expect(wrapper.findAll("[data-message-id]")).toHaveLength(500);
+    expect(wrapper.attributes("data-chat-loaded-count")).toBe("500");
 
     metrics.scrollTop = 100;
     scroll.dispatchEvent(new Event("scroll"));
@@ -128,7 +132,7 @@ describe("500-message scroll ownership", () => {
       message: message({ id: "m500", role: "assistant", parts: [] }),
     };
     list.value = next;
-    await wrapper.setProps({ items: next, revision: 1 });
+    await wrapper.setProps({ items: next, revision: 1, loadedMessageCount: next.length });
     await flushPromises();
     expect(metrics.scrollTop).toBe(100);
     expect(wrapper.find("[data-chat-new-messages]").text()).toContain("New messages (1)");
@@ -137,6 +141,7 @@ describe("500-message scroll ownership", () => {
     expect(metrics.scrollTop).toBe(20_000);
     expect(wrapper.find("[data-chat-new-messages]").exists()).toBe(false);
     expect(wrapper.findAll("[data-message-id]")).toHaveLength(501);
+    expect(wrapper.attributes("data-chat-loaded-count")).toBe("501");
     wrapper.unmount();
   });
 

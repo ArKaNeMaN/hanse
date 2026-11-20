@@ -226,6 +226,9 @@ test("SPA renders live deltas, tool parts, status, and a resync warning", async 
   });
 
   await expect(page.getByText(/Live delta\./)).toBeVisible({ timeout: 15_000 });
+  const liveGroup = page.locator(".chat-work-group").last();
+  await expect(liveGroup).toBeVisible({ timeout: 15_000 });
+  await liveGroup.locator("summary").first().click();
   await expect(page.locator('[data-tool="e2e_tool"]')).toHaveCount(1);
   await expect(page.locator(".chat-runtime")).toContainText("Live");
 

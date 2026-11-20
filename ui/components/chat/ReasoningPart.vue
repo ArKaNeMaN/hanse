@@ -1,13 +1,28 @@
 <script setup lang="ts">
 /** Reasoning details with the legacy elapsed-time affordance and a text-only body. */
-import { computed, onBeforeUnmount, ref, watch } from "vue";
+import { computed, inject, onBeforeUnmount, ref, watch } from "vue";
 import { reasoningElapsedMs } from "../../../assets/chat-core.js";
+import {
+  TRANSCRIPT_DETAIL_SCOPE,
+  type TranscriptDetailScope,
+} from "../../chat/transcript-memory.js";
 import type { ChatMessagePartView } from "../../chat/types.js";
 import AppIcon from "../AppIcon.vue";
 
 const props = defineProps<{ part: ChatMessagePartView }>();
+const scope = inject<TranscriptDetailScope | null>(TRANSCRIPT_DETAIL_SCOPE, null);
+const open = ref(scope?.isOpen(props.part.id) === true);
 const now = ref(Date.now());
 let timer: ReturnType<typeof setInterval> | undefined;
+
+function setOpen(value: boolean): void {
+  open.value = value;
+  scope?.setOpen(props.part.id, value);
+}
+
+function onToggle(event: Event): void {
+  setOpen((event.target as HTMLDetailsElement).open === true);
+}
 
 function epochMs(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
@@ -53,12 +68,20 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <details class="tool-call chat-reasoning" :data-part-id="part.id" data-part-type="reasoning">
+  <details
+    class="tool-call chat-reasoning"
+    :data-part-id="part.id"
+    data-part-type="reasoning"
+    :open="open"
+    @toggle="onToggle"
+  >
     <summary>
       <AppIcon name="activity" />
       <span class="mono">Thinking</span>
       <span v-if="elapsed.length > 0" class="tool-call__elapsed mono">{{ elapsed }}</span>
     </summary>
-    <pre class="chat-reasoning__text">{{ part.text.length > 0 ? part.text : "Reasoning" }}</pre>
+    <pre v-if="open" class="chat-reasoning__text">{{
+      part.text.length > 0 ? part.text : "Reasoning"
+    }}</pre>
   </details>
 </template>

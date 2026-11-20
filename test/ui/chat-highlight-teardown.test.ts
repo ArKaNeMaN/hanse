@@ -1,4 +1,6 @@
+import { mount } from "@vue/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { nextTick } from "vue";
 import { allocateView, extractToolView, type ToolView } from "../../assets/chat-diff.js";
 import {
   disposeHighlightController,
@@ -6,6 +8,8 @@ import {
   mountToolView,
   setToolViewOpen,
 } from "../../assets/chat-highlight.js";
+import ToolPart from "../../ui/components/chat/ToolPart.vue";
+import { part } from "./chat-render-support.js";
 
 class TestWorker {
   static constructed = 0;
@@ -75,6 +79,47 @@ afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
   document.body.innerHTML = "";
+});
+
+describe("lazy tool body teardown", () => {
+  it("mounts the diff view only while open and unmounts it on collapse", async () => {
+    const editPart = part({
+      id: "diff-tool",
+      type: "tool",
+      status: "completed",
+      data: {
+        id: "diff-tool",
+        type: "tool",
+        tool: "edit",
+        state: {
+          status: "completed",
+          input: { filePath: "src/a.ts" },
+          metadata: {
+            filediff: {
+              file: "src/a.ts",
+              patch: "@@ -1 +1 @@\n-const a = 1;\n+const a = 2;",
+            },
+          },
+        },
+      },
+    });
+    const wrapper = mount(ToolPart, { props: { part: editPart } });
+    await nextTick();
+    expect(wrapper.find("[data-diff-view]").exists()).toBe(false);
+
+    const details = wrapper.find("details");
+    (details.element as HTMLDetailsElement).open = true;
+    await details.trigger("toggle");
+    await nextTick();
+    expect(wrapper.find("[data-diff-view]").exists()).toBe(true);
+
+    (details.element as HTMLDetailsElement).open = false;
+    await details.trigger("toggle");
+    await nextTick();
+    expect(wrapper.find("[data-diff-view]").exists()).toBe(false);
+    expect(getHighlightStats().disabled).toBe(false);
+    wrapper.unmount();
+  });
 });
 
 describe("disposeHighlightController", () => {

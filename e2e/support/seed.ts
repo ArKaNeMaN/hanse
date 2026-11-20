@@ -242,7 +242,7 @@ function renderMessages(): readonly FixtureMessage[] {
           sessionID: session,
           messageID: "msg_e2e_render_assistant",
           type: "text",
-          text: "## Render fixture\n\n| Name | Value |\n| --- | ---: |\n| alpha | 1 |\n| beta | 2 |\n\nAdversarial <script>window.__bad = true</script> stays text.",
+          text: "## Render fixture\n\n| Name | Value |\n| --- | ---: |\n| alpha | 1 |\n| beta | 2 |\n\nAdversarial <script>window.__bad = true</script> stays text.\n\n```mermaid\nflowchart LR\n  A-->B\n  classDef pwn fill:#f00\n  class A pwn\n```\n\n```mermaid\nflowchart LR\n  A@{ img: \"http://mermaid-canary.invalid/image.png\" }\n  B\n```",
         },
         {
           id: "prt_e2e_render_reasoning",
@@ -373,26 +373,65 @@ function renderMessages(): readonly FixtureMessage[] {
   ];
 }
 
+/** Deterministic ~16 KiB tool output for the long-thread fixture; keep the marker stable. */
+function perfLargeOutput(number: number): string {
+  const marker = `perf-large-output-${String(number).padStart(3, "0")}`;
+  return Array.from(
+    { length: 280 },
+    (_, index) => `${marker} deterministic fixture output line ${index}`,
+  ).join("\n");
+}
+
 function perfMessages(): readonly FixtureMessage[] {
   return Array.from({ length: 500 }, (_, index) => {
     const number = index + 1;
     const suffix = String(number).padStart(3, "0");
+    const messageID = `msg_e2e_perf_${suffix}`;
+    const parts: FixtureMessage["parts"] = [
+      {
+        id: `prt_e2e_perf_${suffix}`,
+        sessionID: E2E_CHAT_PERF_SESSION_ID,
+        messageID,
+        type: "text",
+        text: `Perf fixture message ${number}.`,
+      },
+    ];
+    // Every 25th assistant message carries a reasoning part and a large bash output so the tail
+    // window (message 500) and the paged history both exercise lazy detail bodies.
+    if (number % 25 === 0 && number % 2 === 0) {
+      const output = perfLargeOutput(number);
+      parts.push(
+        {
+          id: `prt_e2e_perf_${suffix}_reason`,
+          sessionID: E2E_CHAT_PERF_SESSION_ID,
+          messageID,
+          type: "reasoning",
+          text: `Perf fixture reasoning for message ${number}.`,
+        },
+        {
+          id: `prt_e2e_perf_${suffix}_tool`,
+          sessionID: E2E_CHAT_PERF_SESSION_ID,
+          messageID,
+          type: "tool",
+          callID: `call_e2e_perf_${suffix}`,
+          tool: "bash",
+          state: {
+            status: "completed",
+            input: { command: `perf-fixture ${number}` },
+            metadata: { output },
+            output,
+          },
+        },
+      );
+    }
     return {
       info: {
-        id: `msg_e2e_perf_${suffix}`,
+        id: messageID,
         sessionID: E2E_CHAT_PERF_SESSION_ID,
         role: number % 2 === 0 ? "assistant" : "user",
         time: { created: 1_760_000_300_000 + number },
       },
-      parts: [
-        {
-          id: `prt_e2e_perf_${suffix}`,
-          sessionID: E2E_CHAT_PERF_SESSION_ID,
-          messageID: `msg_e2e_perf_${suffix}`,
-          type: "text",
-          text: `Perf fixture message ${number}.`,
-        },
-      ],
+      parts,
     } satisfies FixtureMessage;
   });
 }

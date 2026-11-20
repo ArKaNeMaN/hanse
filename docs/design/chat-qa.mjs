@@ -660,6 +660,26 @@ async function waitForStableMessageGets(routeState, quietMs = 1000, timeout = 10
   }
 }
 
+/**
+ * Click every closed tool/work-group summary until none remain. The loop re-queries each pass
+ * because opening a work group mounts nested tool details that a count-then-click pass cannot see.
+ */
+async function expandAllToolDetails(page) {
+  const closed = page.locator("details.tool-call:not([open]) > summary");
+  const passCap = 200;
+  for (let pass = 0; pass < passCap; pass += 1) {
+    const remaining = await closed.count();
+    if (remaining === 0) return;
+    try {
+      await closed.first().click({ timeout: 2_000 });
+    } catch {
+      // The element detached between the count and the click; the next pass re-queries.
+    }
+    await wait(30);
+  }
+  throw new Error("tool disclosures did not all expand");
+}
+
 async function gotoChat(page, target, sessionId, waitUntil = "networkidle") {
   const query = new URLSearchParams({ app: APP, project: PROJECT_ID });
   if (sessionId) query.set("session", sessionId);
@@ -3055,10 +3075,7 @@ async function scenarioMain(browser, target) {
 
     const toolCount = await page.locator(".tool-call").count();
     check(toolCount >= 3, `tool disclosures rendered (${toolCount})`);
-    for (let index = 0; index < toolCount; index += 1) {
-      const summary = page.locator(".tool-call").nth(index).locator("summary");
-      if ((await summary.count()) > 0) await summary.first().click();
-    }
+    await expandAllToolDetails(page);
     await wait(300);
 
     const tools = await page.evaluate(() => {
@@ -4401,18 +4418,17 @@ async function scenarioDiffs(browser, target) {
         ),
       };
     });
-    check(closed.diffCount > 0 && closed.codeCount > 0, "diff and write skeletons render closed");
+    check(
+      closed.diffCount === 0 && closed.codeCount === 0,
+      "closed diffs and writes mount no body",
+    );
     check(closed.tokenCount === 0, `closed diffs have no token spans (${closed.tokenCount})`);
     check(
       closed.workerCreated === 0 && closed.tokenize === 0,
       `closed diffs schedule no worker work (${closed.workerCreated}/${closed.tokenize})`,
     );
 
-    const toolCount = await page.locator(".tool-call").count();
-    for (let index = 0; index < toolCount; index += 1) {
-      const summary = page.locator(".tool-call").nth(index).locator("summary");
-      if ((await summary.count()) > 0) await summary.first().click();
-    }
+    await expandAllToolDetails(page);
     await page.waitForFunction(
       () => {
         const nodes = Array.from(document.querySelectorAll(".tool-diff, .tool-code"));
@@ -4713,7 +4729,8 @@ async function scenarioDiffs(browser, target) {
         (value) =>
           value.includes("tool-diff__scroll") ||
           value.includes("tool-code__scroll") ||
-          value.includes("tool-diff__file-list"),
+          value.includes("tool-diff__file-list") ||
+          value.includes("chat-work-group__body"),
       ),
       `diff scrollers are the only horizontal scrollers (${layout1440.scrollers.join(" | ")})`,
     );
@@ -4790,7 +4807,8 @@ async function scenarioDiffs(browser, target) {
         (value) =>
           value.includes("tool-diff__scroll") ||
           value.includes("tool-code__scroll") ||
-          value.includes("tool-diff__file-list"),
+          value.includes("tool-diff__file-list") ||
+          value.includes("chat-work-group__body"),
       ),
       `diff scrollers remain the only horizontal scrollers at 390 (${layout390.scrollers.join(" | ")})`,
     );
@@ -4876,11 +4894,12 @@ async function scenarioRead(browser, target) {
   try {
     await installRoutes(page, { sessionId: THREADS.diffs, messages: fixture.messages });
     await gotoChat(page, target, THREADS.diffs);
+    const group = page.locator(".chat-work-group").last();
+    if ((await group.count()) > 0) await group.locator("summary").first().click();
+    await page.locator('.tool-call[data-part-id="prt_read"] summary').click();
     await page.waitForSelector('.tool-call[data-part-id="prt_read"] .tool-code', {
       state: "attached",
     });
-
-    await page.locator('.tool-call[data-part-id="prt_read"] summary').click();
     await page.waitForFunction(
       () => {
         const node = document.querySelector('[data-part-id="prt_read"] .tool-code');
@@ -5362,11 +5381,7 @@ async function scenarioDiffAdversarial(browser, target) {
     await waitForStableMessageGets(routeState);
     await wait(150);
 
-    const toolCount = await page.locator(".tool-call").count();
-    for (let index = 0; index < toolCount; index += 1) {
-      const summary = page.locator(".tool-call").nth(index).locator("summary");
-      if ((await summary.count()) > 0) await summary.first().click();
-    }
+    await expandAllToolDetails(page);
     const started = Date.now();
     await page.waitForFunction(
       () => {
@@ -5802,6 +5817,12 @@ async function scenarioReasoning(browser, target) {
       before.detailType === null || before.detailType === "reasoning",
       `the provisional part is reasoning, not text (${before.detailType})`,
     );
+
+    const reasoningGroup = page.locator(".chat-work-group").last();
+    if ((await reasoningGroup.count()) > 0) {
+      await reasoningGroup.locator("summary").first().click();
+      await wait(50);
+    }
 
     await emit(page, {
       type: "message.part.updated",
