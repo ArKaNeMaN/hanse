@@ -4,6 +4,7 @@ import { createApp } from "vue";
 import App from "./App.vue";
 import { alreadyReloaded, clearReloadGuard, markReloaded } from "./api.js";
 import { readBoot } from "./boot.js";
+import { installMermaidSandbox } from "./chat/mermaid-sandbox.js";
 import { installChrome } from "./composables/useChrome.js";
 import { router } from "./router.js";
 import { useChromeStore } from "./stores/chrome.js";
@@ -54,6 +55,8 @@ window.addEventListener("vite:preloadError", (event) => {
   }
   renderFallback("The page code could not be loaded.");
 });
+
+installMermaidSandbox();
 
 const boot = readBoot();
 if (boot === undefined) {

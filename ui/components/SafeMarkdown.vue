@@ -8,6 +8,7 @@
  */
 import { onMounted, ref, watch } from "vue";
 import { renderMarkdown } from "../../assets/markdown.js";
+import { useThemeRevision } from "../composables/theme-revision.js";
 
 const props = defineProps<{ text: string; class?: string }>();
 
@@ -19,11 +20,14 @@ function render(): void {
     return;
   }
   node.replaceChildren();
-  renderMarkdown(node, props.text);
+  renderMarkdown(node, props.text, { diagrams: true, diagramDelayMs: 200 });
 }
+
+const themeRevision = useThemeRevision();
 
 onMounted(render);
 watch(() => props.text, render);
+watch(themeRevision, render);
 </script>
 
 <template>

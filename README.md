@@ -49,6 +49,9 @@ and requirements) to each other through the coordinator - like independent teams
 - Integrated chat with agents: sessions, messages, SSE updates, tool-call/diff rendering,
   operator and agent images rendered large, and a native-dialog lightbox. Agents publish an image
   explicitly through the `show_image` MCP tool; tool attachments are never mirrored automatically.
+- Mermaid fences in chat, handoff, and skill Markdown render as inert images through a hidden
+  sandboxed iframe (`allow-scripts`, hashed CSP, no parent or network access); the main client bundle
+  does not import Mermaid.
 - Demo app previews: an agent exposes a service running in its app container at `/preview/...`, with
   an MCP tool, a chat tool-card link, and a conditional context-rail list (runner mode; same-origin
   demo risk accepted).
@@ -121,7 +124,7 @@ Only the coordinator publishes a port (`127.0.0.1:8787` by default). The IDE, pr
 terminals are proxied through it. Set `HANSE_BIND=0.0.0.0` only on a trusted LAN; terminate TLS in a
 reverse proxy for anything beyond that.
 
-Development without Docker needs Node.js >= 20.19.0 (CI and the images use Node 22) and npm.
+Development without Docker needs Node.js >= 22.12.0 (CI and the images use Node 22) and npm.
 
 The full deployment guide, including LAN/TLS exposure, backups, and upgrades, is in
 [`docs/deployment.md`](docs/deployment.md).
@@ -173,7 +176,7 @@ source builds, image publishing, and troubleshooting: [`docs/deployment.md`](doc
 
 ## Development
 
-Requires Node.js >= 20.19.0 (the image and CI use Node 22).
+Requires Node.js >= 22.12.0 (the image and CI use Node 22).
 
 ```bash
 npm install

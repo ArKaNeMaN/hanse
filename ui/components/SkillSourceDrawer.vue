@@ -12,6 +12,7 @@ import type {
 } from "../skill-sources-types.js";
 import type { PillSpec } from "../status.js";
 import AppIcon from "./AppIcon.vue";
+import SafeMarkdown from "./SafeMarkdown.vue";
 import StatusPill from "./StatusPill.vue";
 
 const props = defineProps<{
@@ -169,6 +170,10 @@ function emitAction(action: SkillSourceAction): void {
     return;
   }
   emit("action", action, current);
+}
+
+function isMarkdownPath(value: string): boolean {
+  return /\.(md|markdown)$/i.test(value);
 }
 
 function previewOf(key: string): {
@@ -675,12 +680,30 @@ function close(): void {
                               <template
                                 v-else-if="previewOf(fileKey(skill, file.path)).data !== null"
                               >
-                                <pre
+                                <template
                                   v-if="
                                     previewOf(fileKey(skill, file.path)).data?.encoding === 'text'
                                   "
-                                  class="skill-source-preview__text mono"
-                                >{{ previewOf(fileKey(skill, file.path)).data?.text }}</pre>
+                                >
+                                  <SafeMarkdown
+                                    v-if="isMarkdownPath(file.path)"
+                                    class="prose skill-prose"
+                                    :text="previewOf(fileKey(skill, file.path)).data?.text ?? ''"
+                                  />
+                                  <pre
+                                    v-else
+                                    class="skill-source-preview__text mono"
+                                  >{{ previewOf(fileKey(skill, file.path)).data?.text }}</pre>
+                                  <details
+                                    v-if="isMarkdownPath(file.path)"
+                                    class="skill-source-disclosure"
+                                  >
+                                    <summary>Source</summary>
+                                    <pre
+                                      class="skill-source-preview__text mono"
+                                    >{{ previewOf(fileKey(skill, file.path)).data?.text }}</pre>
+                                  </details>
+                                </template>
                                 <p v-else class="hint mono">
                                   Binary file ·
                                   {{

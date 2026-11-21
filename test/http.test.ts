@@ -901,6 +901,11 @@ describe("http API and assets", () => {
     mkdirSync(path.join(assets, "ui", "nested"), { recursive: true });
     writeFileSync(path.join(assets, "ui", "main-test.js"), "export const x = 1;\n", "utf8");
     writeFileSync(path.join(assets, "ui", "app-test.css"), ".x{color:red}\n", "utf8");
+    writeFileSync(
+      path.join(assets, "ui", "mermaid-frame.html"),
+      "<!doctype html><html></html>\n",
+      "utf8",
+    );
 
     const previous = process.env.HANSE_ASSETS;
     process.env.HANSE_ASSETS = assets;
@@ -922,6 +927,15 @@ describe("http API and assets", () => {
       });
       expect(style.status).toBe(200);
       expect(style.contentType).toContain("text/css");
+
+      const frame = handleRequest(deps(f), {
+        method: "GET",
+        path: "/assets/ui/mermaid-frame.html",
+        headers: {},
+      });
+      expect(frame.status).toBe(200);
+      expect(frame.contentType).toContain("text/html");
+      expect(frame.headers?.["cache-control"]).toBe("no-store");
 
       const missing = handleRequest(deps(f), {
         method: "GET",

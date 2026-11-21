@@ -12,6 +12,7 @@ import { ApiError, apiQuery } from "../api.js";
 import { absoluteTime, timeAgo } from "../format.js";
 import type { SkillDetailResponse, SkillsInventoryRowProps } from "../skills-types.js";
 import AppIcon from "./AppIcon.vue";
+import SafeMarkdown from "./SafeMarkdown.vue";
 import SmartLink from "./SmartLink.vue";
 
 const props = defineProps<{
@@ -252,9 +253,14 @@ onMounted(() => {
         <template v-else-if="view !== null">
           <section class="source-drawer__section" aria-labelledby="skill-preview-content-title">
             <h3 class="source-drawer__subtitle" id="skill-preview-content-title">Content</h3>
-            <pre class="skill-source-preview__text mono skill-preview-drawer__content">{{
-              view.values.content
-            }}</pre>
+            <SafeMarkdown
+              class="prose skill-prose skill-preview-drawer__content"
+              :text="view.values.content"
+            />
+            <details class="skill-source-disclosure">
+              <summary>Source</summary>
+              <pre class="skill-source-preview__text mono">{{ view.values.content }}</pre>
+            </details>
           </section>
 
           <section class="source-drawer__section" aria-labelledby="skill-preview-meta-title">

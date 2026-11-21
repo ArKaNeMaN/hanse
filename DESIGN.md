@@ -816,7 +816,10 @@ composer only when the reader is away from the bottom.
 `.chat-shell--workspace` is the three-pane grid. `.chat-scrim` is the drawer scrim; drawer state is
 `data-chat-sessions="open"` and `data-chat-context="open"` on the chat shell.
 - `.message__body` renders a safe markdown subset: paragraphs, headings (`h3`-`h5`, serif display),
-lists, blockquotes, fenced code, inline code, links, strong/em, and rules. The thread is
+lists, blockquotes, fenced code, inline code, links, strong/em, and rules. A ` ```mermaid ` fence is
+rendered by a hidden sandboxed iframe into an inert `data:image/svg+xml` image (`.message__diagram`):
+the frame has `sandbox="allow-scripts"` only, a hashed inline CSP, full Mermaid syntax inside the
+frame, and no parent or external network access; the parent never inserts SVG markup. The thread is
 `role="log" aria-live="polite"`. Tool and reasoning parts use `.tool-call` details; errors
 auto-open. OpenCode patch parts are hidden.
 
@@ -1200,7 +1203,7 @@ Enter submits the non-destructive default, dialog focus returns to its trigger.
 | Embedded IDE is not themed | `/ide/` | Third-party code-server surface; hanse must not restyle it. | Permanently out of scope; compatibility checked by eye. |
 | Legacy compatibility classes remain | `src/http/styles.css` | The daisyUI-era product pages have been replaced; the aliases remain as a low-risk compatibility shim for old cached markup and are no longer used by new pages. daisyUI is not imported. | Remove in a dedicated cleanup with visual regression. |
 | Chat renders every message in a session with no virtualization | `ui/pages/ChatPage.vue` | One operator and short handoff sessions do not justify a virtual list; the thread keeps the existing message list and scroll preservation. | Add windowing only for sessions large enough to jank. |
-| Chat markdown is a deliberate safe subset | `ui/components/chat/MarkdownBlock.vue` | Tables, images, embeds, and raw HTML are not rendered. This keeps untrusted agent output safe without an HTML sanitizer dependency. | Extend the DOM renderer; never switch to innerHTML. |
+| Chat markdown is a deliberate safe subset | `ui/components/chat/MarkdownBlock.vue` | Tables are rendered; author Markdown images, embeds, and raw HTML are not. Mermaid is the one inert-image exception: it renders inside the hidden sandboxed frame and the parent only creates a `data:image/svg+xml` `<img>`. Never switch the parent to innerHTML. | Extend the DOM renderer; keep the frame sandbox/CSP boundary. |
 | Chat session/message timestamps depend on opencode shapes | `ui/chat/*` | Relative/absolute times are derived from `session.time`, `session.updatedAt`, and `info.time.created` when present; missing times are omitted rather than fabricated. | Revisit if opencode changes its response schema. |
 | Showcase inline JS is excluded from Biome | `docs/design/showcase.html` | Static documentation harness with inline ES5 toggles, not product code. Product TypeScript and the capture script remain fully linted. | Remove the exclusion if the harness gains a build step. |
 | System display serif varies by OS | Global | DejaVu Serif on this Linux host; Iowan/Palatino/Georgia on macOS/Windows. No webfonts are permitted. | Accepted; the stack is documented and tested on the host. |

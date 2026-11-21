@@ -18,7 +18,8 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 # The build stage only runs tsc, Tailwind, and Vite; better-sqlite3 is compiled for the target in `deps`.
 RUN npm ci --ignore-scripts --no-audit --no-fund
-COPY tsconfig.json tsconfig.ui.json vite.config.ts ./
+COPY tsconfig.json tsconfig.ui.json vite.config.ts vite.mermaid-frame.config.ts ./
+COPY scripts/build-mermaid-frame.mjs ./scripts/build-mermaid-frame.mjs
 COPY src ./src
 COPY ui ./ui
 COPY assets ./assets
@@ -101,6 +102,7 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/assets ./assets
 COPY package.json LICENSE THIRD_PARTY_NOTICES.md ./
+COPY licenses ./licenses
 COPY deploy-contract.json ./deploy-contract.json
 COPY extensions ./extensions
 COPY shell/hanse-shell /usr/local/bin/hanse-shell
@@ -199,6 +201,7 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY package.json LICENSE THIRD_PARTY_NOTICES.md ./
+COPY licenses ./licenses
 COPY --from=opencode /usr/local/lib/node_modules/opencode-ai /usr/local/lib/node_modules/opencode-ai
 COPY --from=omo /opt/hanse/omo /opt/hanse/omo
 COPY --from=codegraph /opt/hanse/codegraph /opt/hanse/codegraph
@@ -309,7 +312,8 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/assets ./assets
-COPY package.json LICENSE ./
+COPY package.json LICENSE THIRD_PARTY_NOTICES.md ./
+COPY licenses ./licenses
 COPY --from=nodejs /usr/local/bin/node /usr/local/bin/node
 COPY --from=opencode /usr/local/lib/node_modules/opencode-ai /usr/local/lib/node_modules/opencode-ai
 COPY --from=omo /opt/hanse/omo /opt/hanse/omo
@@ -374,7 +378,8 @@ RUN apt-get update \
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
-COPY package.json LICENSE ./
+COPY package.json LICENSE THIRD_PARTY_NOTICES.md ./
+COPY licenses ./licenses
 
 RUN printf '%s\n' '#!/bin/sh' 'exec node /app/dist/index.js "$@"' > /usr/local/bin/hanse \
  && chmod 0755 /usr/local/bin/hanse \

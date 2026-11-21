@@ -126,8 +126,161 @@ function renderTable(container, table) {
   container.append(wrap);
 }
 
-export function renderMarkdown(container, text) {
+const MAX_DIAGRAM_CHARS = 32000;
+const MAX_DIAGRAM_LINES = 400;
+const MAX_DIAGRAMS_PER_CONTAINER = 8;
+const MAX_SVG_CHARS = 1048576;
+const MAX_DATA_URI_CHARS = 1572864;
+const DIAGRAM_NOTE_ERROR = "Diagram could not be rendered.";
+const DIAGRAM_NOTE_TOO_LARGE = "Diagram is too large to render.";
+const DIAGRAM_NOTE_TOO_MANY = "Too many diagrams in this message; showing source.";
+const DIAGRAM_NOTE_BUSY = "Diagram rendering is busy; showing source.";
+
+const diagramTimers = new WeakMap();
+let diagramRenderer = null;
+let diagramSequence = 0;
+
+/** Install (or clear, with `null`) the async renderer used for ```mermaid fences. */
+export function setDiagramRenderer(renderer) {
+  diagramRenderer = typeof renderer === "function" ? renderer : null;
+}
+
+export function hasDiagramRenderer() {
+  return diagramRenderer !== null;
+}
+
+/** Cheap pre-scan used by components before they load the sandbox client. */
+export function hasDiagramFence(text) {
+  return /^```[ \t]*mermaid[ \t]*$/im.test(String(text).replace(/\r\n?/g, "\n"));
+}
+
+/** Extract a leading `title:` from a Mermaid frontmatter block for the image alt text. */
+export function frontmatterTitle(text) {
+  const frontmatter = /^\s*---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(String(text));
+  if (frontmatter === null) return undefined;
+  const title = /^\s*title\s*:\s*(.+?)\s*$/m.exec(frontmatter[1]);
+  if (title === null) return undefined;
+  let value = title[1].trim();
+  if (
+    (value.startsWith('"') && value.endsWith('"')) ||
+    (value.startsWith("'") && value.endsWith("'"))
+  ) {
+    value = value.slice(1, -1).trim();
+  }
+  return value.length === 0 ? undefined : value.slice(0, 120);
+}
+
+function clearDiagramTimers(container) {
+  const timers = diagramTimers.get(container);
+  if (timers === undefined) return;
+  for (const timer of timers) clearTimeout(timer);
+  timers.clear();
+}
+
+function rememberDiagramTimer(container, timer) {
+  let timers = diagramTimers.get(container);
+  if (timers === undefined) {
+    timers = new Set();
+    diagramTimers.set(container, timers);
+  }
+  timers.add(timer);
+}
+
+function forgetDiagramTimer(container, timer) {
+  const timers = diagramTimers.get(container);
+  if (timers === undefined) return;
+  timers.delete(timer);
+  if (timers.size === 0) diagramTimers.delete(container);
+}
+
+function diagramNote(text) {
+  return element("p", "message__diagram-note", text);
+}
+
+function diagramSource(source) {
+  const details = element("details", "message__diagram-source");
+  const summary = element("summary", "", "Diagram source");
+  const pre = element("pre");
+  const code = element("code", "", source);
+  code.dataset.language = "mermaid";
+  pre.append(code);
+  details.append(summary, pre);
+  return details;
+}
+
+function svgSource(svg) {
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+}
+
+function scheduleDiagram(container, frame, source, pre, options) {
+  const delay = Math.max(0, Number(options.diagramDelayMs ?? 0));
+  const diagramId = frame.dataset.diagramId;
+  const isCancelled = () =>
+    !frame.isConnected || frame.dataset.diagramId !== diagramId;
+  const timer = setTimeout(async () => {
+    forgetDiagramTimer(container, timer);
+    if (isCancelled()) return;
+    let svg;
+    try {
+      svg = await diagramRenderer(source, isCancelled);
+    } catch {
+      if (isCancelled()) return;
+      frame.dataset.mermaid = "error";
+      frame.append(diagramNote(DIAGRAM_NOTE_ERROR));
+      return;
+    }
+    if (isCancelled()) return;
+    if (typeof svg !== "string" || svg.length === 0) {
+      frame.dataset.mermaid = "error";
+      frame.append(diagramNote(DIAGRAM_NOTE_ERROR));
+      return;
+    }
+    if (svg.length > MAX_SVG_CHARS) {
+      frame.dataset.mermaid = "too-large";
+      frame.append(diagramNote(DIAGRAM_NOTE_TOO_LARGE));
+      return;
+    }
+    let src;
+    try {
+      src = svgSource(svg);
+    } catch {
+      frame.dataset.mermaid = "error";
+      frame.append(diagramNote(DIAGRAM_NOTE_ERROR));
+      return;
+    }
+    if (src.length > MAX_DATA_URI_CHARS) {
+      frame.dataset.mermaid = "too-large";
+      frame.append(diagramNote(DIAGRAM_NOTE_TOO_LARGE));
+      return;
+    }
+    const image = element("img", "message__diagram-image");
+    image.setAttribute("data-mermaid-image", "");
+    image.alt = frontmatterTitle(source) ?? "Mermaid diagram";
+    const details = diagramSource(source);
+    let restored = false;
+    const restore = () => {
+      if (restored || isCancelled()) return;
+      restored = true;
+      frame.dataset.mermaid = "image-error";
+      frame.replaceChildren(pre, details, diagramNote(DIAGRAM_NOTE_ERROR));
+    };
+    image.addEventListener("error", restore, { once: true });
+    frame.dataset.mermaid = "ready";
+    frame.replaceChildren(image, details);
+    image.src = src;
+    if (typeof image.decode === "function") {
+      void image.decode().catch(restore);
+    }
+  }, delay);
+  rememberDiagramTimer(container, timer);
+}
+
+export function renderMarkdown(container, text, options = {}) {
   const lines = String(text).replace(/\r\n?/g, "\n").split("\n");
+  const diagrams = options.diagrams === true && diagramRenderer !== null;
+  let diagramCount = 0;
+  let tooManyNoted = false;
+  clearDiagramTimers(container);
   let index = 0;
   while (index < lines.length) {
     const line = lines[index];
@@ -144,8 +297,42 @@ export function renderMarkdown(container, text) {
         index += 1;
       }
       if (index < lines.length) index += 1;
+      const source = codeLines.join("\n");
+      if (diagrams && language.toLowerCase() === "mermaid") {
+        const pre = element("pre");
+        const code = element("code", "", source);
+        code.dataset.language = language;
+        pre.append(code);
+        if (source.length > MAX_DIAGRAM_CHARS || codeLines.length > MAX_DIAGRAM_LINES) {
+          const frame = element("div", "message__diagram");
+          frame.dataset.mermaid = "too-large";
+          frame.append(pre, diagramNote(DIAGRAM_NOTE_TOO_LARGE));
+          container.append(frame);
+          continue;
+        }
+        diagramCount += 1;
+        if (diagramCount > MAX_DIAGRAMS_PER_CONTAINER) {
+          const frame = element("div", "message__diagram");
+          frame.dataset.mermaid = "too-many";
+          frame.append(pre);
+          if (!tooManyNoted) {
+            frame.append(diagramNote(DIAGRAM_NOTE_TOO_MANY));
+            tooManyNoted = true;
+          }
+          container.append(frame);
+          continue;
+        }
+        const frame = element("div", "message__diagram");
+        frame.dataset.mermaid = "pending";
+        diagramSequence += 1;
+        frame.dataset.diagramId = String(diagramSequence);
+        frame.append(pre);
+        container.append(frame);
+        scheduleDiagram(container, frame, source, pre, options);
+        continue;
+      }
       const pre = element("pre");
-      const code = element("code", "", codeLines.join("\n"));
+      const code = element("code", "", source);
       if (language.length > 0) code.dataset.language = language;
       pre.append(code);
       container.append(pre);

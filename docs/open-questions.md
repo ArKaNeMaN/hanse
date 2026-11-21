@@ -1,5 +1,49 @@
 # Open questions
 
+> Stage: `0050-mermaid-sandbox` (variant B). Owner decisions were collected on 2026-11-20 after
+> variant A hit the 8-round design-review limit. There are no open items for this stage.
+
+## Stage `0050-mermaid-sandbox` - resolved owner decisions
+
+Variant A (inert image plus source-text guards) is superseded. The variant-A decisions that still
+hold: Mermaid 12.3.0 as a pinned npm `devDependency`; the Node floor is raised to `>=22.12.0`; all
+Markdown surfaces (chat/handoff cards, the handoff review dialog, the skill workspace preview, and
+the three read-only skill previews including external sources) render diagrams; the persistent agent
+instruction gains the Mermaid line and accepts the restart-required consequence.
+
+1. **Render mode** - one hidden, shared sandboxed iframe renders Mermaid and posts the SVG string
+   back; the parent displays it as an inert `data:image/svg+xml` `<img>`, exactly like variant A's
+   artifact. Not one visible iframe per diagram.
+2. **Syntax scope** - full Mermaid syntax is allowed inside the sandbox (`classDef`, `style`,
+   `linkStyle`, `@{...}`, URLs in labels). The sandbox plus CSP is the boundary; source-text guards
+   are removed. Only source/SVG size caps and timeouts remain.
+3. **Interaction** - the diagram is inert: no links, zoom, pan, or popups; the iframe sandbox has
+   `allow-scripts` only (no `allow-same-origin`, popups, top navigation, forms, downloads, or
+   modals). The collapsed source disclosure remains the copy/inspection path.
+
+> Stage `0050-mermaid-diagrams` (variant A) is historical: Oracle rounds 1-8 FAIL; the design doc is
+> kept at [`docs/design/mermaid-diagrams.md`](design/mermaid-diagrams.md) and marked superseded.
+
+> Stage: `0050-mermaid-diagrams`. Owner decisions were collected on 2026-11-20. There are no open
+> items for this stage. The owner authorized the full cycle (design, design review, owner questions,
+> plan, plan review, implementation, record, commit) and chose variant A.
+
+## Stage `0050-mermaid-diagrams` - resolved owner decisions
+
+1. **Dependency** - add Mermaid 12.3.0 as a pinned npm `devDependency` and load it lazily through a
+   Vite chunk; do not vendor a prebuilt file. The initial payload and pages without diagrams must not
+   download it.
+2. **Surfaces** - render Mermaid in all three shared-Markdown surfaces: chat/handoff cards, the
+   handoff review dialog, and the skill preview (including external skill sources). The inert-image
+   boundary and the caps are the mitigation, not a narrower surface.
+3. **Agent adoption** - add one line to the persistent agent rules saying a `mermaid` fence is
+   rendered as an image. The owner accepts that the rule-hash change marks every managed application
+   **Restart required** after the upgrade; no separate instruction file is created.
+4. **Node floor** - Mermaid 12.3.0 declares Node `>=22.12.0`. Raise the documented and CI floor to
+   `>=22.12.0` (package.json engines, README, AGENTS.md, current-state/deployment docs, and the CI
+   matrix leg) and keep the latest Mermaid line; do not pin Mermaid 11.17.x to preserve Node 20.19.
+   Images and `.nvmrc` already use Node 22.
+
 > Stage: `0049-skills-inventory-redesign`. Owner decisions were collected on 2026-11-19. There
 > are no open items for this stage. The owner authorized the full cycle without further decisions.
 

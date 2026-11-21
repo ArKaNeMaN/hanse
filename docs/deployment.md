@@ -739,7 +739,7 @@ docker build --target agent-default -t hanse-agent-default:dev .
 The build needs network access and several GB of disk. It compiles TypeScript, Tailwind, and the Vite
 client, installs production dependencies for the target architecture, then installs `opencode`, the
 OMO baseline, CodeGraph, Python, PHP, and the code-server IDE layer. Source development needs Node
-`>=20.19.0` (Vite 7); the runtime images use Node 22. PHP 8.3 and its extensions come from prebuilt
+`>=22.12.0` (Vite 7); the runtime images use Node 22. PHP 8.3 and its extensions come from prebuilt
 [`packages.sury.org`](https://packages.sury.org/php/) Debian packages rather than compiling
 extensions from source.
 

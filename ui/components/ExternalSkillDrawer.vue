@@ -10,6 +10,7 @@ import type {
 } from "../skill-sources-types.js";
 import type { SkillsInventoryRowProps } from "../skills-types.js";
 import AppIcon from "./AppIcon.vue";
+import SafeMarkdown from "./SafeMarkdown.vue";
 import SmartLink from "./SmartLink.vue";
 
 const props = defineProps<{
@@ -87,6 +88,10 @@ function when(iso: string | null): string {
 
 function whenTitle(iso: string | null): string | undefined {
   return iso === null ? undefined : absoluteTime(iso);
+}
+
+function isMarkdownPath(value: string): boolean {
+  return /\.(md|markdown)$/i.test(value);
 }
 
 function previewOf(key: string): {
@@ -309,13 +314,30 @@ function close(): void {
                       previewOf(`${skill.bucket}/${skill.name}/${file.path}`).data !== null
                     "
                   >
-                    <pre
+                    <template
                       v-if="
                         previewOf(`${skill.bucket}/${skill.name}/${file.path}`).data?.encoding ===
                         'text'
                       "
-                      class="skill-source-preview__text mono"
-                    >{{ previewOf(`${skill.bucket}/${skill.name}/${file.path}`).data?.text }}</pre>
+                    >
+                      <SafeMarkdown
+                        v-if="isMarkdownPath(file.path)"
+                        class="prose skill-prose"
+                        :text="
+                          previewOf(`${skill.bucket}/${skill.name}/${file.path}`).data?.text ?? ''
+                        "
+                      />
+                      <pre
+                        v-else
+                        class="skill-source-preview__text mono"
+                      >{{ previewOf(`${skill.bucket}/${skill.name}/${file.path}`).data?.text }}</pre>
+                      <details v-if="isMarkdownPath(file.path)" class="skill-source-disclosure">
+                        <summary>Source</summary>
+                        <pre
+                          class="skill-source-preview__text mono"
+                        >{{ previewOf(`${skill.bucket}/${skill.name}/${file.path}`).data?.text }}</pre>
+                      </details>
+                    </template>
                     <p v-else class="hint mono">
                       Binary file ·
                       {{

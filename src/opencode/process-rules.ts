@@ -4,7 +4,7 @@ import path from "node:path";
 import type { IsolatedEnv } from "./instance.js";
 
 /** Version of the persistent agent process-safety instruction. */
-export const PROCESS_RULES_VERSION = 2;
+export const PROCESS_RULES_VERSION = 3;
 
 /**
  * Persistent English instruction injected into every managed instance.
@@ -12,7 +12,9 @@ export const PROCESS_RULES_VERSION = 2;
  * It is a guardrail, not a sandbox: wrappers, scripts, and app-owned config can bypass it. The
  * content is deliberately constant so its hash can participate in the launch/settings hash.
  */
-export const PROCESS_RULE_TEXT = `# Agent process safety
+export const PROCESS_RULE_TEXT = `# Hanse agent rules
+
+## Process safety
 
 - Never signal or kill the opencode server/PID 1 or its process group.
 - Do not use \`pkill\`/\`killall\`/\`kill\`/\`kill -9\` against opencode, even to "test" it.
@@ -20,6 +22,10 @@ export const PROCESS_RULE_TEXT = `# Agent process safety
 - If the server appears stuck, report it to the operator instead of self-terminating.
 - The bash tool defaults to a five-minute timeout. For a command expected to run longer, pass an explicit \`timeout\` (up to one hour) instead of retrying blindly.
 - For unbounded or detached work, cap it in the shell, for example \`nohup timeout 3600 <command> ><log> 2>&1 &\`, then poll the log. Never leave a background process without a hard cap.
+
+## Chat rendering
+
+- To show a diagram, emit a fenced \`\`\`mermaid block (flowchart, sequence, class, state, or ER). Hanse renders it as an image in chat; use one when structure is clearer than prose, not for decoration.
 `;
 
 /** Stable lowercase hex SHA-256 of {@link PROCESS_RULE_TEXT}. */

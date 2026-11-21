@@ -7470,6 +7470,54 @@
     line-height: 1.45;
   }
 
+  .message__diagram {
+    display: grid;
+    gap: var(--space-2);
+    max-inline-size: 100%;
+    margin: 0 0 var(--space-3);
+  }
+
+  .message__diagram-image {
+    display: block;
+    max-inline-size: 100%;
+    block-size: auto;
+    margin-inline: auto;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: var(--surface-1);
+  }
+
+  .message__diagram-note {
+    margin: 0;
+    color: var(--text-3);
+    font-size: var(--text-caption);
+    line-height: 1.45;
+  }
+
+  .message__diagram-source,
+  .skill-source-disclosure {
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: var(--inset);
+  }
+
+  .message__diagram-source > summary,
+  .skill-source-disclosure > summary {
+    padding: var(--space-2) var(--space-3);
+    color: var(--text-3);
+    font-family: var(--font-mono);
+    font-size: var(--text-caption);
+    cursor: pointer;
+  }
+
+  .message__diagram-source pre,
+  .skill-source-disclosure pre {
+    max-inline-size: 100%;
+    margin: 0;
+    padding: var(--space-3);
+    overflow-x: auto;
+  }
+
   @media (min-width: 1024px) {
     .chat-thread__inner,
     .chat-history,

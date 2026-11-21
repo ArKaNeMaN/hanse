@@ -5,7 +5,7 @@
   "type": "module",
   "license": "MIT",
   "engines": {
-    "node": ">=20.19.0"
+    "node": ">=22.12.0"
   },
   "bin": {
     "hanse": "./dist/index.js"
@@ -15,9 +15,10 @@
   ],
   "scripts": {
     "dev": "tsx src/index.ts",
-    "build": "tsc && npm run build:css && npm run build:ui",
+    "build": "tsc && npm run build:css && npm run build:ui && npm run build:frame",
     "build:css": "npx @tailwindcss/cli -i src/http/styles.css -o assets/app.css --minify",
     "build:ui": "vite build",
+    "build:frame": "node scripts/build-mermaid-frame.mjs",
     "dev:ui": "vite",
     "dev:css": "npx @tailwindcss/cli -i src/http/styles.css -o assets/app.css --watch",
     "design:showcase": "python3 -m http.server 4173",
@@ -35,7 +36,8 @@
     "check:ui-dev": "node scripts/check-ui-dev.mjs",
     "deploy:request": "node scripts/deploy-request.mjs",
     "format": "biome format --write .",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "licenses:collect": "node scripts/collect-licenses.mjs"
   },
   "dependencies": {
     "@balena/dockerignore": "^1.0.2",
@@ -59,6 +61,7 @@
     "@vue/test-utils": "^2.5.1",
     "daisyui": "^5.7.50",
     "jsdom": "^26.1.0",
+    "mermaid": "12.3.0",
     "pinia": "^3.0.4",
     "tailwindcss": "^4.3.3",
     "tsx": "^4.19.0",

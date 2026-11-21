@@ -321,6 +321,7 @@ const UI_ASSET_TYPES: Record<string, string> = {
   ".map": "application/json; charset=utf-8",
   ".svg": "image/svg+xml",
   ".woff2": "font/woff2",
+  ".html": "text/html; charset=utf-8",
 };
 
 /**
@@ -343,7 +344,10 @@ function uiAsset(request: HttpRequest): HttpResponse | undefined {
       contentType:
         UI_ASSET_TYPES[path.extname(resolved).toLowerCase()] ?? "application/octet-stream",
       body: readFileSync(resolved, "utf8"),
-      headers: { "cache-control": "public, max-age=31536000, immutable" },
+      headers: {
+        "cache-control":
+          relative === "mermaid-frame.html" ? "no-store" : "public, max-age=31536000, immutable",
+      },
     };
   } catch {
     return json(404, { error: "not found" });

@@ -8,6 +8,7 @@
  */
 import { onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { renderMarkdown } from "../../../assets/markdown.js";
+import { useThemeRevision } from "../../composables/theme-revision.js";
 
 const MARKDOWN_THROTTLE_MS = 50;
 
@@ -31,7 +32,10 @@ function renderNow(): void {
     return;
   }
   node.replaceChildren();
-  renderMarkdown(node, props.text);
+  renderMarkdown(node, props.text, {
+    diagrams: props.sealed === true,
+    diagramDelayMs: 0,
+  });
   lastRenderedAt = Date.now();
 }
 
@@ -55,8 +59,11 @@ function scheduleRender(): void {
   }, MARKDOWN_THROTTLE_MS - elapsed);
 }
 
+const themeRevision = useThemeRevision();
+
 onMounted(renderNow);
 watch(() => props.text, scheduleRender);
+watch(themeRevision, renderNow);
 watch(
   () => props.sealed,
   (sealed) => {

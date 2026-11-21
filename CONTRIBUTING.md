@@ -4,7 +4,7 @@ Thanks for your interest in `hanse`.
 
 ## Development setup
 
-Requires Node.js >= 20.
+Requires Node.js >= 22.12.0.
 
 ```bash
 npm install

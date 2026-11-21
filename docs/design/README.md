@@ -1,5 +1,11 @@
 # Design docs
 
+- [Mermaid sandboxed renderer](./mermaid-sandbox.md) - variant B: one hidden sandboxed iframe
+  renders full Mermaid syntax and posts the SVG back; the parent shows an inert
+  `data:image/svg+xml` image, the frame is opaque-origin with a hashed inline IIFE and a strict CSP,
+  and the source-text guards are removed. Status: design review PASS WITH FIXES; implemented and verified (journal 0064).
+- [Mermaid diagrams (variant A, superseded)](./mermaid-diagrams.md) - the inert-image design with
+  source-text guards; Oracle rounds 1-8 FAIL. Superseded by the sandboxed renderer above.
 - [Skills inventory B2](./skills-inventory-redesign.md) - the card/list library grouped by definition
   scope, server-derived attention band and `filter=attention`, live search, persisted density,
   collapsible rail, shared target selector plus `GET /api/ui/targets`, and the read-only managed

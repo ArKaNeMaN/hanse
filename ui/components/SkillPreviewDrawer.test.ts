@@ -98,7 +98,7 @@ describe("SkillPreviewDrawer", () => {
     const { wrapper } = mountDrawer({ open: true });
     await flushPromises();
 
-    expect(wrapper.get("pre.skill-preview-drawer__content").text()).toContain(
+    expect(wrapper.get(".skill-preview-drawer__content").text()).toContain(
       "Synthetic content only.",
     );
     expect(wrapper.text()).toContain("MIT");

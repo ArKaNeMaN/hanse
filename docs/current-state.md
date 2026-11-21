@@ -14,7 +14,7 @@ coordinator. The product surface is one web UI (dashboard + chat + handoffs) plu
 ## Stack and repository
 
 - Repository: `github.com/ArKaNeMaN/hanse` (branch `main`). Local checkout: `dev/hanse`.
-- TypeScript, ESM, Node >= 20.19.0, npm.
+- TypeScript, ESM, Node >= 22.12.0, npm.
 - Build: `tsc`, Tailwind CSS (`npm run build:css` -> `assets/app.css`), and Vite
   (`npm run build:ui` -> `assets/ui/`). Tests: vitest (server + jsdom UI projects). Lint/format:
   Biome. Schemas: zod. YAML: `yaml`. Database: `better-sqlite3`.
@@ -373,7 +373,9 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   `/assets/vendor/xterm/addon-fit-0.11.0.js`,
   `/assets/vendor/xterm/addon-unicode11-0.9.0.js`,
   `/assets/vendor/xterm/addon-unicode-graphemes-0.4.0.js`, and `/assets/favicon.svg`. There is no
-  `app.js` or `app-content.js`.
+  `app.js` or `app-content.js`. The sandboxed Mermaid frame is served under the
+  `/assets/ui/` prefix as `mermaid-frame.html` (`text/html`, `no-store`), outside the fixed
+  `/assets/*` allowlist; the main client bundle does not import Mermaid.
 - Vue owns the shell (`ui/stores/shell.ts`, `ui/stores/theme.ts`,
   `ui/components/AppSidebar.vue`); no document loads `app.js` or `app-content.js`. The SPA chat
   workspace is `ui/pages/ChatPage.vue` plus its `ui/chat/*` adapters, `ui/stores/chat-*`, and
@@ -489,7 +491,9 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   `403/409/400` denied/existing/summary-required, while the legacy form path keeps its `303` +
   notice. Reply, cancel, policy, and deletion requests reuse the existing JSON handlers.
 - `#ui-fallback` stays hidden, then reveals after 4 s only if the client did not mount;
-  `vite:preloadError` reloads once and then renders the reload-only fallback. A `409
+  `vite:preloadError` reloads once and then renders the reload-only fallback. The Mermaid frame is a
+  separate document, so its load failure keeps the diagram source and does not trigger this reload
+  path. A `409
   ui_reload_required` uses the same one-shot reload guard, which is cleared after a successful boot.
 - All legacy page renderers, clients, assets, and rollback flags are deleted. Every route is always
   SPA; rollback is image-only with a UI-build check. `/login` is JS-required.
@@ -1841,7 +1845,8 @@ Host `HANSE_HOST_MOUNTS` is mounted at the same absolute path read-write in `han
 | `HANSE_IDE=0` | serve | do not spawn code-server in the coordinator |
 | `HANSE_IDE_HOST` / `HANSE_IDE_PORT` | serve | proxy target for `/ide` (default `127.0.0.1:8080`) |
 | `HANSE_IDE_BIN` | serve | code-server binary |
-| `HANSE_ASSETS` | serve | directory for `app.css`, the built client assets under `assets/ui/`, `chat-core.js`, `chat-diff.js`, `chat-highlight.js`, `chat-highlight-worker.js`, `markdown.js`, `vendor/prism/prism-1.30.0.min.js`, xterm vendor files, and `favicon.svg` |
+| `HANSE_ASSETS` | serve | directory for `app.css`, the built client assets under `assets/ui/`, `chat-core.js`, `chat-diff.js`, `chat-highlight.js`, `chat-highlight-worker.js`, `markdown.js`,
+  `mermaid-frame.html` (the sandboxed renderer), `vendor/prism/prism-1.30.0.min.js`, xterm vendor files, and `favicon.svg` |
 | `HANSE_UI_DEV_URL` | serve, dev | Vite dev origin (for example `http://127.0.0.1:5173`); the server emits `<url>/assets/ui/@vite/client` and `<url>/assets/ui/main.ts` instead of the built manifest |
 | `HANSE_DB` / `HANSE_PROJECT_ID` / `HANSE_APP_KEY` | `hanse mcp` | MCP server binding |
 | `HANSE_API_BASE` | extension | coordinator base URL (`http://hanse:8787`) |
@@ -2142,5 +2147,8 @@ Settings stage verification:
   the queue is not persisted/reorderable, and there is no client-side holding queue. OMO
   classification is client-only (no server persistence), and permissions always stay in the dock (no
   inline permission cards). Drawers close on Escape/scrim/close but do not trap focus. Markdown is a
-  deliberate subset: tables are supported, but there are no images, embeds, or raw HTML, and there is
-  no server-side markdown rendering.
+  deliberate subset: tables are supported; a ` ```mermaid ` fence renders as an inert
+  `data:image/svg+xml` image through a hidden sandboxed iframe (full Mermaid syntax is allowed inside
+  the frame, which has `sandbox="allow-scripts"`, a hashed CSP, no parent/network access, and a
+  no-store frame document); author Markdown images, embeds, and raw HTML are not rendered, and there
+  is no server-side markdown rendering.

@@ -242,7 +242,7 @@ function renderMessages(): readonly FixtureMessage[] {
           sessionID: session,
           messageID: "msg_e2e_render_assistant",
           type: "text",
-          text: "## Render fixture\n\n| Name | Value |\n| --- | ---: |\n| alpha | 1 |\n| beta | 2 |\n\nAdversarial <script>window.__bad = true</script> stays text.\n\n```mermaid\nflowchart LR\n  A-->B\n  classDef pwn fill:#f00\n  class A pwn\n```\n\n```mermaid\nflowchart LR\n  A@{ img: \"http://mermaid-canary.invalid/image.png\" }\n  B\n```",
+          text: '## Render fixture\n\n| Name | Value |\n| --- | ---: |\n| alpha | 1 |\n| beta | 2 |\n\nAdversarial <script>window.__bad = true</script> stays text.\n\n```mermaid\nflowchart LR\n  A-->B\n  classDef pwn fill:#f00\n  class A pwn\n```\n\n```mermaid\nflowchart LR\n  A@{ img: "http://mermaid-canary.invalid/image.png" }\n  B\n```',
         },
         {
           id: "prt_e2e_render_reasoning",

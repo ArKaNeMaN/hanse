@@ -682,11 +682,12 @@ test("SPA feed renders markdown tables, reasoning, tools, bash, OMO, handoff, no
   expect(
     await page.evaluate(
       () =>
-        document.querySelector('iframe[title="Mermaid renderer"]')?.contentDocument === null,
+        document.querySelector<HTMLIFrameElement>('iframe[title="Mermaid renderer"]')
+          ?.contentDocument === null,
     ),
   ).toBe(true);
-  const frameCache = await page.evaluate(
-    async () => (await fetch("/assets/ui/mermaid-frame.html")).headers.get("cache-control"),
+  const frameCache = await page.evaluate(async () =>
+    (await fetch("/assets/ui/mermaid-frame.html")).headers.get("cache-control"),
   );
   expect(frameCache).toBe("no-store");
   const renderGroup = scroll.locator(".chat-work-group").first();
@@ -753,7 +754,7 @@ test("SPA feed renders markdown tables, reasoning, tools, bash, OMO, handoff, no
   ).toContainText(/truncated at 64 KiB per file|truncated at the 128 KiB total limit/);
 
   await page.waitForTimeout(400);
-  expectNoPageErrors(errors);
+  expectNoPageErrors(errors.filter((error) => !error.includes("mermaid-canary.invalid")));
 });
 
 test("SPA streams text and tool output without replacing the feed DOM", async ({ page }) => {

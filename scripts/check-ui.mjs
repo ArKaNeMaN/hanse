@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -104,6 +105,42 @@ if (manifest !== null) {
     process.stdout.write(
       `check:ui chat chunk ${chat.file}: ${gzipBytes} B gzip (budget 256000 B)\n`,
     );
+  }
+}
+
+const framePath = path.join(root, "assets", "ui", "mermaid-frame.html");
+let frameHtml = null;
+try {
+  frameHtml = await readFile(framePath, "utf8");
+} catch {
+  fail(`${path.relative(root, framePath)} is missing; run "npm run build:frame" first`);
+}
+
+if (
+  manifest !== null &&
+  Object.keys(manifest).some((key) => key.includes("node_modules/mermaid"))
+) {
+  fail("the main UI manifest imports Mermaid; it must stay in the sandboxed frame only");
+}
+
+if (frameHtml !== null) {
+  const script = /<script>([\s\S]*)<\/script>/.exec(frameHtml);
+  const csp = /<meta http-equiv="Content-Security-Policy" content="([^"]*)">/.exec(frameHtml);
+  if (script === null || csp === null) {
+    fail("the Mermaid frame has no inline script or CSP meta");
+  } else {
+    const hash = createHash("sha256").update(script[1], "utf8").digest("base64");
+    if (!csp[1].includes(`script-src 'sha256-${hash}'`)) {
+      fail("the Mermaid frame CSP hash does not match its inline script");
+    }
+    if (/<script[^>]+src=/i.test(frameHtml) || /<link[\s>]/i.test(frameHtml)) {
+      fail("the Mermaid frame must not load external scripts or stylesheets");
+    }
+    const frameGzip = gzipSync(frameHtml).length;
+    if (frameGzip > 4 * 1024 * 1024) {
+      fail(`the Mermaid frame is ${frameGzip} B gzip; budget is 4194304 B`);
+    }
+    process.stdout.write(`check:ui mermaid frame ${frameGzip} B gzip\n`);
   }
 }
 

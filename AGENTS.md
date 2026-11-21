@@ -24,7 +24,7 @@ scope and limitations.
 
 ## Build and verify
 
-Requires Node.js >= 20.19.0.
+Requires Node.js >= 22.12.0.
 
 ```bash
 npm install
@@ -72,6 +72,9 @@ be restarted after the build to pick it up.
   static 500. Rollback is image-only with a UI-build check; all fixes land in Vue. `/api/ui/*` and SPA
   documents are cookie-only; documents load no legacy `app.js` or `app-content.js`.
 - Node-compatible only: do not use Bun or other runtime-specific APIs.
+- Mermaid diagrams render only in the hidden sandboxed frame (`assets/ui/mermaid-frame.html`,
+  `no-store`, hashed CSP); only `ui/mermaid-frame.ts` imports Mermaid. Never add Mermaid to the main
+  bundle or insert its SVG into the parent DOM.
 - JavaScript is required for the UI. Do not add no-JS fallbacks or duplicate server-rendered forms;
   a `<noscript>` notice is informational only.
 - `.hanse/project.yaml` and `.hanse/app.yaml` schemas (in `src/schema/`) are the source of truth;

@@ -207,5 +207,8 @@ export async function settle(page: Page): Promise<void> {
 }
 
 export function expectNoPageErrors(errors: string[]): void {
-  expect(errors, errors.join("\n")).toEqual([]);
+  // The Mermaid sandbox test deliberately points an image at a synthetic canary; the browser logs
+  // the CSP block, which is the expected control, not an unexpected page error.
+  const unexpected = errors.filter((error) => !error.includes("mermaid-canary.invalid"));
+  expect(unexpected, unexpected.join("\n")).toEqual([]);
 }
