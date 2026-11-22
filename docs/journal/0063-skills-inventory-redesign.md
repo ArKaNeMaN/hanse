@@ -62,7 +62,8 @@ rollout to Chat, Settings, SSH, and handoff dialogs; this stage only uses `scope
   failure passed on rerun and in the full green run; the seed's collision commit was amended
   after the first full run so `spa-app` still sees `fixture commit` as the last commit.
 - `SKILLS_QA_ONLY=inventory node docs/design/skills-qa.mjs` - PASS, **488 assertions**, 56
-  screenshots, 0 console/page errors. Visual review at 1600/1280/900/390 in dark and light; fixed
+  screenshots (local, git-ignored), 0 console/page errors. Visual review at 1600/1280/900/390 in
+  dark and light; fixed
   the mobile trigger/density squeeze and attention-name wrapping after the first pass.
   The QA harness's workspace scenarios still carry pre-SPA selectors and are out of this stage's
   inventory gate; that debt is explicit in the script header and is not claimed as a pass.

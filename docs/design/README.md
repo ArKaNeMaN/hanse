@@ -191,22 +191,23 @@ Query parameters:
 
 ## Evidence
 
-`node docs/design/capture.mjs` writes real Playwright Chromium screenshots to
-[`artifacts/`](./artifacts/):
+The design harnesses write Playwright screenshots and reports to `docs/design/artifacts/`, which is
+git-ignored. Evidence is generated locally, not stored in the repository; the run command is the
+source of truth:
 
-- `showcase-{390,768,1440}-{dark,light}.png`
-- `shell-{1440,390}-{dark,light}.png` and `shell-390-drawer-dark.png`
-- `focus-visible-1440-dark.png`
-- `dialog-1440-{dark,light}.png`, `toast-1440-{dark,light}.png`, `tooltip-1440-dark.png`
-- `git/` - Application page and git panel captures at 390/768/1440 plus deterministic state
-  captures (see [`artifacts/git/README.md`](./artifacts/git/README.md)).
-- `ux/` - UX polish captures for the application page, settings, and terminal at 390/768/1024/1440,
-  dark and light, plus `report.json` (see [`artifacts/ux/README.md`](./artifacts/ux/README.md)).
-- `skills/` - managed skill inventory, workspace, create, repair, inherited, and no-JavaScript
-  captures at 390/768/1024/1440, dark and light, plus `report.json` (see
-  [`artifacts/skills/README.md`](./artifacts/skills/README.md)).
-- `previews/` - deterministic app-preview chat states (empty, 1/3/8, tool card, close/error, 404/502,
-  long name, 390/1440, dark/light) plus `report.json`; run `node docs/design/preview-qa.mjs`.
+- `node docs/design/capture.mjs` - showcase, shell, focus/dialog/toast/tooltip, and git/ux/skills
+  captures.
+- `node docs/design/chat-qa.mjs` - deterministic chat scenarios and `report.json`.
+- `node docs/design/preview-qa.mjs` - app-preview states and `report.json`.
+- `node docs/design/skills-qa.mjs` - skill inventory/workspace scenarios and `report.json`;
+  `SKILLS_QA_ONLY=inventory` runs the B2 inventory/drawer surface alone.
+- `node docs/design/memory-qa.mjs`, `docs/design/attachments-qa.mjs`,
+  `docs/design/process-protection-qa.mjs`, `docs/design/settings-save-qa.mjs`,
+  `docs/design/ux-qa.mjs` - the remaining focused gates.
+
+Older design docs and journals link the artifact paths where evidence was produced. Those files are
+not tracked in the current tree; use the named harness to regenerate them. The workspace scenarios
+in `skills-qa.mjs` still carry pre-SPA selectors and are not part of the B2 inventory gate.
 
 ## Chat QA
 

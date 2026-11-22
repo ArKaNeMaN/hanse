@@ -11,6 +11,7 @@ assets/ui/
 .omo/
 .DS_Store
 docs/deploy/
+docs/design/artifacts/
 compose.override.yaml
 *.tgz
 
