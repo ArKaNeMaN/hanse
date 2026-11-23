@@ -1816,6 +1816,16 @@ watch(
   { immediate: true },
 );
 
+// The `/sessions` read fails with `agent_stopped` while the agent is stopped and does not retry, so
+// a recovery must reload it. Process state is authoritative and also covers starts initiated from
+// another surface; the stream may have paused after repeated 503s and needs a manual reconnect.
+watch(stopped, (isStopped, wasStopped) => {
+  if (!isStopped && wasStopped === true) {
+    chatStream.connect(true);
+    void sessionsQuery.refetch();
+  }
+});
+
 watch(
   () => chatUi.queueOpen,
   (open) => {

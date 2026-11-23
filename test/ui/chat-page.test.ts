@@ -692,6 +692,66 @@ describe("ChatPage read-only shell", () => {
     wrapper.unmount();
   });
 
+  it("reloads sessions when a stopped process transitions to running", async () => {
+    let running = false;
+    const { wrapper, fetchState } = await mountChat("/chat?app=alpha&project=p", {
+      process: {
+        state: "stopped",
+        phase: "stopped",
+        attemptId: null,
+        startedAt: null,
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        error: null,
+        lastEventId: 1,
+      },
+      custom: ({ method, url }) => {
+        if (method !== "GET" || !url.startsWith("/api/apps/alpha/sessions")) {
+          return undefined;
+        }
+        return running
+          ? { status: 200, body: { sessions: [{ id: "s1", title: "Session one" }] } }
+          : { status: 503, body: { error: "agent is stopped", code: "agent_stopped" } };
+      },
+    });
+    const sessionsReads = (): number =>
+      fetchState.requests.filter(
+        (request) => request.method === "GET" && request.url.startsWith("/api/apps/alpha/sessions"),
+      ).length;
+
+    expect(wrapper.find("[data-chat-stopped]").exists()).toBe(true);
+    expect(wrapper.find('[data-session-id="s1"]').exists()).toBe(false);
+    const readsBefore = sessionsReads();
+
+    running = true;
+    const source = processEventSource();
+    if (source === undefined) throw new Error("missing process source");
+    source.emit({ type: "stream.ready", seq: 0, streamID: "process-test" });
+    source.emit({
+      type: "process.transition",
+      seq: 1,
+      streamID: "process-test",
+      event: {
+        id: 2,
+        attemptId: "attempt-1",
+        seq: 2,
+        state: "running",
+        phase: "ready",
+        source: "operator",
+        reason: "start",
+        errorCode: null,
+        message: null,
+        createdAt: "2026-01-01T00:00:10.000Z",
+      },
+    });
+    await flushPromises();
+    await flushPromises();
+
+    expect(sessionsReads()).toBeGreaterThan(readsBefore);
+    expect(wrapper.find('[data-session-id="s1"]').exists()).toBe(true);
+    expect(wrapper.find("[data-chat-stopped]").exists()).toBe(false);
+    wrapper.unmount();
+  });
+
   it("shows the empty state when the session list is empty and preserves the query", async () => {
     const { wrapper, router } = await mountChat("/chat?app=alpha&project=p&session=keep", {
       sessions: [],
