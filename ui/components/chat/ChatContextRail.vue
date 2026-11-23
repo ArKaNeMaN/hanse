@@ -161,7 +161,12 @@ function requestRevoke(id: string): void {
             <AppIcon name="external" />Open IDE
           </a>
           <a class="btn btn-ghost btn-sm" :href="view.links.app">Application</a>
-          <a class="btn btn-ghost btn-sm" :href="view.links.settings">
+          <a
+            class="btn btn-ghost btn-sm"
+            :href="
+              view.pendingRestart ? `${view.links.settings}#settings-restart` : view.links.settings
+            "
+          >
             <AppIcon name="settings" />Settings
           </a>
         </div>

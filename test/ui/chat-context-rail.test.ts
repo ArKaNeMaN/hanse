@@ -87,6 +87,12 @@ describe("ChatContextRail", () => {
     expect(wrapper.find("[data-chat-context-detail]").text()).toContain("124,000 / 200,000 tokens");
     expect(wrapper.find("[data-chat-compact]").attributes("disabled")).toBeUndefined();
 
+    const appSettings = wrapper
+      .get('section[aria-labelledby="context-app-title"]')
+      .findAll("a")
+      .find((link) => link.text().includes("Settings"));
+    expect(appSettings?.attributes("href")).toBe("/projects/p/apps/alpha/settings");
+
     await wrapper.find("[data-chat-compact]").trigger("click");
     expect(wrapper.find("[data-chat-compact-confirm]").exists()).toBe(true);
     await wrapper.find("[data-chat-compact-apply]").trigger("click");
@@ -170,6 +176,13 @@ describe("ChatContextRail", () => {
     expect(handlers.closePreview).toHaveBeenCalledWith("demo");
 
     expect(wrapper.find("[data-chat-restart-pending]").exists()).toBe(true);
+    const appSettings = wrapper
+      .get('section[aria-labelledby="context-app-title"]')
+      .findAll("a")
+      .find((link) => link.text().includes("Settings"));
+    expect(appSettings?.attributes("href")).toBe(
+      "/projects/p/apps/alpha/settings#settings-restart",
+    );
     await wrapper.find("[data-chat-restart]").trigger("click");
     expect(handlers.restart).toHaveBeenCalledTimes(1);
 
