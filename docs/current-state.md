@@ -954,8 +954,8 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   badge always wins over the status. A stream gap or reconnect clears and refetches the status map,
   and the active row is reconciled from the `/turn` snapshot.
   Session lifecycle (list membership) is not realtime in this stage: child sessions appear on the
-  existing refresh triggers (boot, focus, visibility, selection, send, idle/reconnect). The
-  per-session agent status above is live via SSE.
+  existing refresh triggers (boot, focus, visibility, selection, send, idle/reconnect, and a process
+  transition back to `running`). The per-session agent status above is live via SSE.
 - Session switching is optimistic and cancelable: the rail, title, URL, and message skeleton switch
   immediately, the previous draft is flushed in the background, the in-flight message/history read is
   aborted, and a selection generation makes the last click win. The thread mutes its current content
@@ -1341,10 +1341,11 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   `.omo` layer).
 - Settings never auto-restart an agent. Running instances record the effective settings/auth/profile
   hash and `appliedProfile`; the app, chat, and settings surfaces show "Restart required" and a
-  restart action. The idle auto-update restarts only when the launch fingerprint is unchanged, so a
-  settings change is never applied silently. Chat prompts carry the effective `llm.model`, so
-  existing sessions switch model on the next message; OMO subagents use the profile and change only
-  after a restart.
+  restart action. The project application row and the chat context rail link the marker to
+  `#settings-restart`, which opens the pending-agent restart pane. The idle auto-update restarts only
+  when the launch fingerprint is unchanged, so a settings change is never applied silently. Chat
+  prompts carry the effective `llm.model`, so existing sessions switch model on the next message; OMO
+  subagents use the profile and change only after a restart.
 - CLI: `hanse web-mcp` runs the managed web tools MCP server (internal; spawned by opencode).
 - API: `GET/POST /api/settings`, `POST /api/settings/provider`,
   `GET/POST /api/settings/model-providers`, and
