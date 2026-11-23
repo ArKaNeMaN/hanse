@@ -38,7 +38,7 @@ const APP_ONE: ProjectApp = {
   chatHref: "/chat?app=alpha&project=project-one",
   settingsHref: "/projects/project-one/apps/alpha/settings",
   skillsHref: "/projects/project-one/apps/alpha/skills",
-  restartHref: "/projects/project-one/apps/alpha/settings",
+  restartHref: "/projects/project-one/apps/alpha/settings#settings-restart",
   ideHref: "/ide/?folder=alpha",
 };
 
@@ -324,6 +324,15 @@ describe("ProjectPage", () => {
     expect(wrapper.text()).toContain("beta");
     expect(wrapper.text()).toContain("Deletion incomplete");
     expect(wrapper.text()).toContain("Restart required");
+    const restartLink = wrapper
+      .findAll("a")
+      .find(
+        (link) =>
+          link.attributes("href") ===
+            "/projects/project-one/apps/alpha/settings#settings-restart" &&
+          link.text().includes("Restart required"),
+      );
+    expect(restartLink).toBeDefined();
 
     expect(wrapper.get("#project-handoffs-title").text()).toBe("Handoffs");
     expect(wrapper.text()).toContain("Ship the handoff");

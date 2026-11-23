@@ -185,6 +185,7 @@ describe("overview page props", () => {
       chatHref: "/chat?app=a&project=p",
       settingsHref: "/projects/p/apps/a/settings",
       skillsHref: "/projects/p/apps/a/skills",
+      restartHref: "/projects/p/apps/a/settings#settings-restart",
     });
     expect(props?.handoffs[0]).toMatchObject({
       id: "h-done",

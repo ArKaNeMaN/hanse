@@ -365,7 +365,7 @@ export function buildProjectProps(site: SiteModel, projectId: string): ProjectPr
       chatHref: app.deleting || project.deleting ? null : appChatHref(project, app.appKey),
       settingsHref: `${appBase}/settings`,
       skillsHref: `${appBase}/skills`,
-      restartHref: `${appBase}/settings`,
+      restartHref: `${appBase}/settings#settings-restart`,
       ideHref: ideFolderUrl(appDir(project, app)),
     };
   });
