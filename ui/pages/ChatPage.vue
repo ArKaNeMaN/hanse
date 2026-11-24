@@ -2537,6 +2537,21 @@ onBeforeUnmount(() => {
               @open-saved="chatUi.setContextOpen(true)"
             />
           </template>
+          <template #command-palette>
+            <ChatCommandPalette
+              :open="paletteOpen"
+              :filter="paletteFilter"
+              :commands="commandEntries"
+              :status="commandStatus"
+              :warning="commandWarning"
+              :shadowed="commandShadowed"
+              :confirm="commandConfirm"
+              :master="view?.app.master === true"
+              @select="selectCommand"
+              @close="closeCommands"
+              @confirm-result="resolveCommandConfirm"
+            />
+          </template>
           <template #composer>
             <ChatComposer
               ref="composerRef"
@@ -2614,19 +2629,6 @@ onBeforeUnmount(() => {
         @dismiss-policy="chatUi.dismissPolicyWarning"
       />
 
-      <ChatCommandPalette
-        :open="paletteOpen"
-        :filter="paletteFilter"
-        :commands="commandEntries"
-        :status="commandStatus"
-        :warning="commandWarning"
-        :shadowed="commandShadowed"
-        :confirm="commandConfirm"
-        :master="view?.app.master === true"
-        @select="selectCommand"
-        @close="closeCommands"
-        @confirm-result="resolveCommandConfirm"
-      />
       <ChatQueueDialog
         :open="chatUi.queueOpen"
         :rows="queueRows"

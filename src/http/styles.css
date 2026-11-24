@@ -11638,6 +11638,23 @@
   margin: 0;
 }
 
+.chat-thread > .command-confirm {
+  position: fixed;
+  z-index: var(--z-dialog);
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  inline-size: auto;
+  max-inline-size: none;
+  padding: var(--space-4);
+  background: var(--scrim);
+}
+
+.chat-thread > .command-confirm .dialog__frame {
+  inline-size: min(32.5rem, calc(100vw - var(--space-8)));
+}
+
 @keyframes hns-command-palette-in {
   from {
     opacity: 0;

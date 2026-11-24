@@ -54,6 +54,9 @@ describe("chat slash commands", () => {
     });
     await type(wrapper, "/e2e");
     expect(wrapper.find("[data-command-palette]").exists()).toBe(true);
+    expect(
+      wrapper.find("[data-command-palette]").element.parentElement?.matches("[data-chat-thread]"),
+    ).toBe(true);
     expect(wrapper.findAll("[data-command-name]")).toHaveLength(2);
     expect(wrapper.find('[data-command-name="e2e-command"]').exists()).toBe(true);
     expect(wrapper.find('[data-command-name="other-command"]').exists()).toBe(false);

@@ -1460,6 +1460,7 @@ defineExpose({
     </div>
     <slot name="session-notice" />
     <slot name="prompt-dock" />
+    <slot name="command-palette" />
     <slot name="composer" />
   </section>
 </template>
