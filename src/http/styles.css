@@ -11481,7 +11481,7 @@
   flex-direction: column;
   gap: var(--space-2);
   max-block-size: min(50dvh, 24rem);
-  padding: var(--space-2) var(--space-6) var(--space-3);
+  padding: var(--space-2) var(--space-6) var(--space-2);
   border-block-start: 1px solid var(--line);
   background: var(--surface-1);
   animation: hns-command-palette-in var(--dur-standard) var(--ease-standard);
@@ -11506,7 +11506,7 @@
 .command-palette__list {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: var(--space-2);
   min-block-size: 0;
   overflow: auto;
   overscroll-behavior: contain;
@@ -11528,10 +11528,10 @@
 
 .command-palette__row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: var(--space-1) var(--space-3);
-  align-items: center;
-  padding: var(--space-2) var(--space-3);
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 2px var(--space-3);
+  align-items: baseline;
+  padding: var(--space-1) var(--space-3);
   border-radius: var(--radius-sm);
   cursor: pointer;
 }
@@ -11557,16 +11557,20 @@
 }
 
 .command-palette__name {
-  color: var(--text-1);
+  color: var(--brass);
   font-family: var(--font-mono);
   font-size: var(--text-body);
-  overflow-wrap: anywhere;
+  white-space: nowrap;
 }
 
 .command-palette__desc {
+  min-inline-size: 0;
+  overflow: hidden;
   color: var(--text-2);
   font-size: var(--text-sm);
   line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .command-palette__hints {
@@ -11606,7 +11610,10 @@
 .command-palette__shell-note,
 .command-palette__reason {
   grid-column: 1 / -1;
+  overflow: hidden;
   font-size: var(--text-caption);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .command-palette__shell-note {

@@ -270,7 +270,11 @@ onBeforeUnmount(uninstall);
           @click="onListClick(entry)"
         >
           <span class="command-palette__name mono">/{{ entry.name }}</span>
-          <span v-if="entry.description !== undefined" class="command-palette__desc">
+          <span
+            v-if="entry.description !== undefined"
+            class="command-palette__desc"
+            :title="entry.description"
+          >
             {{ entry.description }}
           </span>
           <span v-if="isDisabled(entry)" class="command-palette__reason">
