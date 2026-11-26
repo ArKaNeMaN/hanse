@@ -1045,6 +1045,100 @@ test("SPA loads a 500-message thread, bounds the window, and lazily mounts tool 
   expectNoPageErrors(errors);
 });
 
+test("SPA keeps the reader anchored when a row below the fold changes height", async ({ page }) => {
+  test.slow();
+  const errors = collectPageErrors(page);
+  await signIn(page, `/chat?app=alpha&project=${PROJECT_ONE}&session=ses_e2escroll`);
+  const thread = page.locator("[data-chat-thread]");
+  await expect(thread).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator("#chat-scroll [data-message-id]").first()).toBeVisible({
+    timeout: 15_000,
+  });
+
+  const loadedCount = async (): Promise<number> =>
+    Number((await thread.getAttribute("data-chat-loaded-count")) ?? "0");
+  const loadEarlier = page.locator("[data-chat-load-earlier]");
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    const count = await loadedCount();
+    if (count >= 300) break;
+    if ((await loadEarlier.count()) === 0) break;
+    if (await loadEarlier.isDisabled()) {
+      await page.waitForTimeout(100);
+      continue;
+    }
+    await loadEarlier.click();
+    await expect.poll(loadedCount, { timeout: 20_000 }).toBeGreaterThan(count);
+  }
+  await expect(thread).toHaveAttribute("data-chat-loaded-count", "300", { timeout: 30_000 });
+
+  const outcome = await page.evaluate(async () => {
+    const sleep = (ms: number): Promise<void> =>
+      new Promise((resolve) => {
+        setTimeout(resolve, ms);
+      });
+    const scroll = document.querySelector<HTMLElement>("#chat-scroll");
+    const inner = document.querySelector<HTMLElement>("#chat-messages");
+    if (scroll === null || inner === null) throw new Error("missing chat scroller");
+
+    // Scrollbar jump into the middle: rows above the new window stay unmeasured and are replaced
+    // by estimated pads, the state the reader reaches after paging history and dragging down.
+    scroll.scrollTop = Math.round((scroll.scrollHeight - scroll.clientHeight) * 0.6);
+    scroll.dispatchEvent(new Event("scroll"));
+    await sleep(1200);
+
+    const rows = (): HTMLElement[] =>
+      Array.from(document.querySelectorAll<HTMLElement>("#chat-scroll [data-thread-key]"));
+    let probeRow: HTMLElement | undefined;
+    let growRow: HTMLElement | undefined;
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      const viewport = scroll.getBoundingClientRect();
+      const rendered = rows();
+      probeRow = rendered.find((row) => row.getBoundingClientRect().bottom > viewport.top);
+      growRow = rendered.filter((row) => row.getBoundingClientRect().top > viewport.top).at(-1);
+      if (probeRow !== undefined && growRow !== undefined && growRow !== probeRow) break;
+      scroll.scrollTop = Math.max(0, scroll.scrollTop - 300);
+      scroll.dispatchEvent(new Event("scroll"));
+      await sleep(200);
+    }
+    if (probeRow === undefined || growRow === undefined) {
+      const rendered = rows();
+      throw new Error(
+        `missing rendered rows: rendered=${rendered.length} start=${inner.dataset.chatWindowStart} end=${inner.dataset.chatWindowEnd}`,
+      );
+    }
+
+    const probeKey = probeRow.dataset.threadKey ?? "";
+    const startBefore = Number(inner.dataset.chatWindowStart ?? "-1");
+    const offsetBefore = probeRow.getBoundingClientRect().top - scroll.getBoundingClientRect().top;
+
+    // Simulate the async height growth that images, Mermaid diagrams, expanded tool bodies, and
+    // streamed markdown produce below the visible area.
+    const filler = document.createElement("div");
+    filler.style.height = "20000px";
+    growRow.appendChild(filler);
+
+    await sleep(1500);
+    const probe = document.querySelector<HTMLElement>(
+      `#chat-scroll [data-thread-key="${probeKey}"]`,
+    );
+    return {
+      startBefore,
+      startAfter: Number(inner.dataset.chatWindowStart ?? "-1"),
+      offsetBefore,
+      offsetAfter:
+        probe === null
+          ? null
+          : probe.getBoundingClientRect().top - scroll.getBoundingClientRect().top,
+    };
+  });
+
+  expect(outcome.offsetAfter).not.toBeNull();
+  expect(Math.abs((outcome.offsetAfter ?? 0) - outcome.offsetBefore)).toBeLessThanOrEqual(1.5);
+  expect(Math.abs(outcome.startAfter - outcome.startBefore)).toBeLessThanOrEqual(1);
+  await page.waitForTimeout(300);
+  expectNoPageErrors(errors);
+});
+
 test("SPA chat answers a question, replies to a permission, and revokes a saved grant", async ({
   page,
 }) => {

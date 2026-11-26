@@ -530,12 +530,48 @@ function flushMeasurements(): void {
     }
   }
   pendingMeasurements.clear();
-  if (changed) {
-    rebuildRenderedHeights();
+  if (!changed) {
+    maybeActivate();
+    return;
   }
+  // The new heights rebuild the whole model: the fallback average rescales the pads of every
+  // still-unmeasured hidden row at once, not just the rows we just measured. That shift is not
+  // covered by `correction` (which only sums mounted rows fully above the viewport), so the whole
+  // rendered run can move while scrollTop stays put and the reader is thrown up. Keep the first
+  // visible row's viewport offset as the invariant instead: the DOM already absorbed the measured
+  // rows' own deltas, so subtract them from the captured offset, then settle from post-render rects.
+  const anchored = windowEnabled.value && !pinned.value && node !== null;
+  const anchor = anchored ? captureAnchor() : null;
+  rebuildRenderedHeights();
   if (pinned.value) {
     scrollToBottom();
     maybeActivate();
+    return;
+  }
+  if (
+    anchored &&
+    anchor !== null &&
+    anchor.key !== undefined &&
+    anchor.key.length > 0 &&
+    anchor.visualOffset !== undefined
+  ) {
+    const target: ScrollAnchor = { ...anchor, visualOffset: anchor.visualOffset - correction };
+    // This is a layout correction, not navigation: the reader stays where they were, so the
+    // unseen counter and the load-earlier latch must keep their values across the settle.
+    const unseenBefore = unseen.value;
+    const topRequestedBefore = topRequested.value;
+    suppressLoadEarlier = true;
+    void (async () => {
+      await nextTick();
+      await restoreAnchor(target);
+      unseen.value = unseenBefore;
+      topRequested.value = topRequestedBefore;
+    })().finally(() => {
+      requestFrame(() => {
+        suppressLoadEarlier = false;
+      });
+      maybeActivate();
+    });
     return;
   }
   if (correction !== 0) {

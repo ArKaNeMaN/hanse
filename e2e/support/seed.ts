@@ -48,6 +48,41 @@ export const E2E_CHAT_GRANDCHILD_SESSION_ID = "ses_e2egrandchild";
 export const E2E_CHAT_HISTORY_SESSION_ID = "ses_e2ehistory";
 export const E2E_CHAT_RENDER_SESSION_ID = "ses_e2erender";
 export const E2E_CHAT_PERF_SESSION_ID = "ses_e2eperf";
+export const E2E_CHAT_SCROLL_SESSION_ID = "ses_e2escroll";
+
+/**
+ * Mostly short rows with a tall one every 25th message: the measured-height model must stay exact
+ * enough that an async height change below the viewport does not move the reader's position.
+ */
+function scrollMessages(): readonly FixtureMessage[] {
+  return Array.from({ length: 300 }, (_, index) => {
+    const number = index + 1;
+    const suffix = String(number).padStart(3, "0");
+    const messageID = `msg_e2e_scroll_${suffix}`;
+    const lines = number % 25 === 0 ? 120 : 2;
+    const text = Array.from(
+      { length: lines },
+      (_, line) => `Scroll fixture message ${number} line ${line} ${"word ".repeat(8)}`,
+    ).join("\n\n");
+    return {
+      info: {
+        id: messageID,
+        sessionID: E2E_CHAT_SCROLL_SESSION_ID,
+        role: number % 2 === 0 ? "assistant" : "user",
+        time: { created: 1_760_000_400_000 + number },
+      },
+      parts: [
+        {
+          id: `prt_e2e_scroll_${suffix}`,
+          sessionID: E2E_CHAT_SCROLL_SESSION_ID,
+          messageID,
+          type: "text",
+          text,
+        },
+      ],
+    } satisfies FixtureMessage;
+  });
+}
 
 function historyMessages(): readonly FixtureMessage[] {
   return Array.from({ length: 35 }, (_, index) => {
@@ -469,6 +504,11 @@ export const E2E_CHAT_SESSIONS: readonly FixtureSession[] = [
     title: "E2E perf session",
     time: { created: 1_760_000_300_000, updated: 1_760_000_300_500 },
   },
+  {
+    id: E2E_CHAT_SCROLL_SESSION_ID,
+    title: "E2E scroll session",
+    time: { created: 1_760_000_400_000, updated: 1_760_000_400_500 },
+  },
 ];
 export const E2E_CHAT_MESSAGES: Readonly<Record<string, readonly FixtureMessage[]>> = {
   [E2E_CHAT_SESSION_ID]: [
@@ -514,6 +554,7 @@ export const E2E_CHAT_MESSAGES: Readonly<Record<string, readonly FixtureMessage[
   [E2E_CHAT_HISTORY_SESSION_ID]: historyMessages(),
   [E2E_CHAT_RENDER_SESSION_ID]: renderMessages(),
   [E2E_CHAT_PERF_SESSION_ID]: perfMessages(),
+  [E2E_CHAT_SCROLL_SESSION_ID]: scrollMessages(),
 };
 
 export const PROJECT_ONE = "e2e-project-one";
