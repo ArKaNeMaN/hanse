@@ -2870,7 +2870,8 @@ export function toolStatusChip(status) {
  *   unsealedText?: boolean,
  *   queuedCount?: number,
  *   queuedTruncated?: boolean,
- *   settling?: boolean
+ *   settling?: boolean,
+ *   subagent?: string | null
  * }} [input]
  * @returns {string | null}
  */
@@ -2898,6 +2899,9 @@ export function generationLabel(input) {
     return `Thinking${suffix}`;
   }
   if (state.statusType === "idle" && state.settling !== true) {
+    if (typeof state.subagent === "string" && state.subagent.length > 0) {
+      return `${state.subagent}${suffix}`;
+    }
     return count > 0 ? `Ready${suffix}` : null;
   }
   return null;
@@ -3669,6 +3673,63 @@ export function collectSubtreeIds(tree, id) {
     }
   }
   return collected;
+}
+
+/**
+ * Active `busy`/`retry` descendants of a session, derived client-side from the session tree and the
+ * live per-session status map. The session itself is excluded; ordering follows upstream tree order.
+ *
+ * @param {SessionTree | null | undefined} tree
+ * @param {ReadonlyMap<string, { type?: string }> | null | undefined} statusBySession
+ * @param {unknown} sessionId
+ * @returns {{ count: number, firstId: string | null, firstTitle: string | null }}
+ */
+export function activeSubagents(tree, statusBySession, sessionId) {
+  const empty = { count: 0, firstId: null, firstTitle: null };
+  const ids = collectSubtreeIds(tree, sessionId);
+  if (ids.length <= 1) return empty;
+  const statuses =
+    statusBySession !== null &&
+    typeof statusBySession === "object" &&
+    typeof statusBySession.get === "function"
+      ? statusBySession
+      : null;
+  if (statuses === null) return empty;
+  const nodes = tree?.nodes instanceof Map ? tree.nodes : null;
+  let count = 0;
+  let firstId = null;
+  for (let index = 1; index < ids.length; index += 1) {
+    const id = ids[index];
+    const type = statuses.get(id)?.type;
+    if (type !== "busy" && type !== "retry") continue;
+    count += 1;
+    if (firstId === null) firstId = id;
+  }
+  if (firstId === null) return empty;
+  const title = nodes?.get(firstId)?.title;
+  const firstTitle =
+    typeof title === "string" && title.trim().length > 0 ? title.trim() : firstId.slice(0, 8);
+  return { count, firstId, firstTitle };
+}
+
+/**
+ * A single-line rail/thread label for active subagents, or `null` when there are none.
+ *
+ * @param {{ count?: number, firstTitle?: string | null } | null | undefined} summary
+ * @returns {string | null}
+ */
+export function subagentStatusLabel(summary) {
+  const count =
+    typeof summary?.count === "number" && Number.isFinite(summary.count)
+      ? Math.max(0, Math.floor(summary.count))
+      : 0;
+  if (count <= 0) return null;
+  const raw =
+    typeof summary.firstTitle === "string" && summary.firstTitle.trim().length > 0
+      ? summary.firstTitle.trim()
+      : "agent";
+  const title = raw.length > 32 ? `${raw.slice(0, 32)}…` : raw;
+  return `Subagent: ${title}${count > 1 ? ` +${count - 1}` : ""}`;
 }
 
 /* ------------------------------------------------------------------------------------------------

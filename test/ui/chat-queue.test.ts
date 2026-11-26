@@ -225,6 +225,36 @@ describe("chat queue and abort", () => {
     wrapper.unmount();
   });
 
+  it("shows the subagent label for an idle parent and drops it when the child idles", async () => {
+    const { wrapper } = await mountChat("/chat?app=alpha&project=p&session=s1", {
+      sessions: [
+        { id: "s1", title: "Parent session", status: { type: "idle" } },
+        { id: "child", title: "Child task", parentID: "s1", status: { type: "busy" } },
+      ],
+    });
+    const source = FakeEventSource.instances[0];
+    if (source === undefined) throw new Error("missing source");
+    source.open();
+    source.emit({ type: "stream.ready", seq: 0, streamID: "stream-queue" });
+    await flushPromises();
+
+    expect(wrapper.get("[data-chat-turn-label]").text()).toBe("Subagent: Child task");
+    expect(wrapper.get("[data-chat-generating-label]").text()).toBe("Subagent: Child task");
+
+    source.emit({
+      type: "session.status",
+      seq: 1,
+      streamID: "stream-queue",
+      sessionID: "child",
+      status: { type: "idle" },
+    });
+    await flushPromises();
+
+    expect(wrapper.find("[data-chat-turn-label]").exists()).toBe(false);
+    expect(wrapper.find("[data-chat-generating-label]").exists()).toBe(false);
+    wrapper.unmount();
+  });
+
   it("counts a queued prompt behind a busy multi-step turn", async () => {
     let turn = turnWith({ status: { type: "idle" } });
     const { wrapper } = await mountChat("/chat?app=alpha&project=p&session=s1", {

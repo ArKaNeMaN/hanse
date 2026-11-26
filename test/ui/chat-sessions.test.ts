@@ -191,6 +191,34 @@ describe("chat sessions rail", () => {
     wrapper.unmount();
   });
 
+  it("labels an idle parent with its active subagents but keeps own busy and waiting ahead", async () => {
+    const { wrapper, pinia } = await mountChat("/chat?app=alpha&project=p&session=root", {
+      sessions: [
+        { id: "root", title: "Root session", status: { type: "idle" } },
+        { id: "child1", title: "First child", parentID: "root", status: { type: "busy" } },
+        { id: "child2", title: "Second child", parentID: "root", status: { type: "retry" } },
+        { id: "busy", title: "Busy parent", status: { type: "busy" } },
+        { id: "busy-child", title: "Busy child", parentID: "busy", status: { type: "busy" } },
+      ],
+    });
+
+    expect(
+      wrapper.find('.session-item[data-session-id="root"] .session-item__status-text').text(),
+    ).toBe("Subagent: First child +1");
+    expect(
+      wrapper.find('.session-item[data-session-id="busy"] .session-item__status-text').text(),
+    ).toBe("Working");
+
+    const sessions = useChatSessionStore(pinia);
+    sessions.trackPromptPending("child1", "question:child1");
+    await wrapper.vm.$nextTick();
+
+    const root = wrapper.find('.session-item[data-session-id="root"]');
+    expect(root.find(".session-item__flag").text()).toContain("1 waiting");
+    expect(root.find(".session-item__status").exists()).toBe(false);
+    wrapper.unmount();
+  });
+
   it("keeps the waiting badge above a busy status", async () => {
     const { wrapper, pinia } = await mountChat("/chat?app=alpha&project=p&session=root", {
       sessions: [

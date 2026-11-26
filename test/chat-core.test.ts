@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  activeSubagents,
   agentInitials,
   ancestorIds,
   applySnapshot,
@@ -46,6 +47,7 @@ import {
   runtimeChip,
   sessionHasHistory,
   shouldResubscribe,
+  subagentStatusLabel,
   toolDisplayName,
   toolFailure,
   toolStatusChip,
@@ -2004,6 +2006,24 @@ describe("generationLabel", () => {
     expect(generationLabel({})).toBeNull();
   });
 
+  it("shows the subagent label only on an idle turn while active states still win", () => {
+    expect(generationLabel({ statusType: "idle", subagent: "Subagent: Child" })).toBe(
+      "Subagent: Child",
+    );
+    expect(
+      generationLabel({ statusType: "idle", subagent: "Subagent: Child", queuedCount: 2 }),
+    ).toBe("Subagent: Child · 2 queued");
+    expect(generationLabel({ statusType: "busy", subagent: "Subagent: Child" })).toBe("Thinking");
+    expect(
+      generationLabel({ statusType: "busy", unsealedText: true, subagent: "Subagent: Child" }),
+    ).toBe("Working");
+    expect(generationLabel({ statusType: "retry", subagent: "Subagent: Child" })).toBe("Retrying");
+    expect(
+      generationLabel({ statusType: "idle", subagent: "Subagent: Child", settling: true }),
+    ).toBeNull();
+    expect(generationLabel({ statusType: "idle", subagent: "" })).toBeNull();
+  });
+
   it("suppresses the idle queued row while settling", () => {
     expect(generationLabel({ statusType: "idle", queuedCount: 1, settling: true })).toBeNull();
     expect(generationLabel({ statusType: "busy", queuedCount: 1, settling: true })).toBe(
@@ -2546,6 +2566,106 @@ describe("collectSubtreeIds", () => {
   it("returns an empty array for an invalid id", () => {
     expect(collectSubtreeIds(tree, "")).toEqual([]);
     expect(collectSubtreeIds(tree, 42)).toEqual([]);
+  });
+});
+
+describe("activeSubagents", () => {
+  const tree = buildSessionTree([
+    { id: "root", title: "Root session" },
+    { id: "child1", parentID: "root", title: "First child" },
+    { id: "child2", parentID: "root", title: "Second child" },
+    { id: "grand", parentID: "child1", title: "Grandchild" },
+  ]);
+
+  it("excludes the session itself and returns nothing without active descendants", () => {
+    expect(activeSubagents(tree, new Map(), "root")).toEqual({
+      count: 0,
+      firstId: null,
+      firstTitle: null,
+    });
+    const idle = new Map([
+      ["root", { type: "busy" }],
+      ["child1", { type: "idle" }],
+    ]);
+    expect(activeSubagents(tree, idle, "root").count).toBe(0);
+  });
+
+  it("counts busy and retry descendants in depth-first tree order", () => {
+    const statuses = new Map([
+      ["grand", { type: "retry" }],
+      ["child2", { type: "busy" }],
+    ]);
+    expect(activeSubagents(tree, statuses, "root")).toEqual({
+      count: 2,
+      firstId: "grand",
+      firstTitle: "Grandchild",
+    });
+  });
+
+  it("finds nested active descendants beneath an active child", () => {
+    const statuses = new Map([
+      ["child1", { type: "busy" }],
+      ["grand", { type: "busy" }],
+    ]);
+    expect(activeSubagents(tree, statuses, "child1")).toEqual({
+      count: 1,
+      firstId: "grand",
+      firstTitle: "Grandchild",
+    });
+  });
+
+  it("falls back to the first eight characters when the title is missing or blank", () => {
+    const untitled = buildSessionTree([
+      { id: "root" },
+      { id: "abcdefghijklmnop", parentID: "root" },
+      { id: "blanktitle", parentID: "root", title: "   " },
+    ]);
+    const statuses = new Map([["abcdefghijklmnop", { type: "busy" }]]);
+    expect(activeSubagents(untitled, statuses, "root")).toEqual({
+      count: 1,
+      firstId: "abcdefghijklmnop",
+      firstTitle: "abcdefgh",
+    });
+  });
+
+  it("is defensive about a missing tree or status map", () => {
+    expect(activeSubagents(null, new Map(), "root")).toEqual({
+      count: 0,
+      firstId: null,
+      firstTitle: null,
+    });
+    expect(activeSubagents(tree, null, "root")).toEqual({
+      count: 0,
+      firstId: null,
+      firstTitle: null,
+    });
+    expect(activeSubagents(tree, undefined, "root").count).toBe(0);
+  });
+});
+
+describe("subagentStatusLabel", () => {
+  it("returns null when there are no active subagents", () => {
+    expect(subagentStatusLabel({ count: 0, firstTitle: "Child" })).toBeNull();
+    expect(subagentStatusLabel(null)).toBeNull();
+    expect(subagentStatusLabel(undefined)).toBeNull();
+  });
+
+  it("shows the first title and appends +N for the remaining active subagents", () => {
+    expect(subagentStatusLabel({ count: 1, firstTitle: "First child" })).toBe(
+      "Subagent: First child",
+    );
+    expect(subagentStatusLabel({ count: 3, firstTitle: "First child" })).toBe(
+      "Subagent: First child +2",
+    );
+  });
+
+  it("falls back to agent and truncates long titles with a single ellipsis", () => {
+    expect(subagentStatusLabel({ count: 1, firstTitle: null })).toBe("Subagent: agent");
+    const long = "x".repeat(40);
+    expect(subagentStatusLabel({ count: 1, firstTitle: long })).toBe(
+      `Subagent: ${"x".repeat(32)}…`,
+    );
+    expect(subagentStatusLabel({ count: 1, firstTitle: long }).length).toBe(43);
   });
 });
 

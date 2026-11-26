@@ -1,6 +1,10 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import type { SessionTree } from "../../../assets/chat-core.js";
+import {
+  activeSubagents,
+  type SessionTree,
+  subagentStatusLabel,
+} from "../../../assets/chat-core.js";
 import type { HanseSessionStatus } from "../../../src/opencode/events.js";
 import { type ChatSessionSummary, chatSessionLabel } from "../../stores/chat-session.js";
 import AppIcon from "../AppIcon.vue";
@@ -54,6 +58,9 @@ const statusText = computed(() => {
   if (ownStatus.value?.type === "retry") {
     return "Retrying";
   }
+  if (ownStatus.value === null || ownStatus.value.type === "idle") {
+    return subagentStatusLabel(activeSubagents(props.tree, props.statusBySession, props.nodeId));
+  }
   return null;
 });
 const isDeleting = computed(() => props.deleting.has(props.nodeId));
@@ -104,7 +111,7 @@ const depth = computed(() => Math.min(props.depth, 5));
           >
           <span v-else-if="statusText !== null" class="session-item__status">
             <span class="session-item__status-dot" aria-hidden="true"></span>
-            {{ statusText }}
+            <span class="session-item__status-text">{{ statusText }}</span>
           </span>
         </span>
       </button>

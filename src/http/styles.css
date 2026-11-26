@@ -4275,6 +4275,9 @@
   }
 
   .chat-turn-status__label {
+    min-inline-size: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
     white-space: nowrap;
   }
 
@@ -5782,11 +5785,20 @@
     display: inline-flex;
     align-items: center;
     gap: var(--space-1);
+    min-inline-size: 0;
+    max-inline-size: 100%;
     color: var(--text-2);
     font-family: var(--font-mono);
     font-size: var(--text-micro);
     letter-spacing: 0.04em;
     text-transform: uppercase;
+  }
+
+  .session-item__status-text {
+    min-inline-size: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .session-item__status-dot {

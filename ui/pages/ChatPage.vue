@@ -12,6 +12,7 @@ import {
 } from "../../assets/chat-commands.js";
 import {
   type AttachmentView,
+  activeSubagents,
   generationLabel,
   handoffBodyFromText,
   handoffNoteFromText,
@@ -22,6 +23,7 @@ import {
   normalizeAttachments,
   normalizeHandoffMeta,
   safeAttachmentUrl,
+  subagentStatusLabel,
 } from "../../assets/chat-core.js";
 import type {
   FeedMessageRecord,
@@ -1454,6 +1456,8 @@ let messageAbort: AbortController | undefined;
 let historyAbort: AbortController | undefined;
 let reconcileTimer: ReturnType<typeof setTimeout> | undefined;
 let noticeSequence = 0;
+const SESSION_DISCOVERY_REFETCH_MS = 5_000;
+let lastSessionDiscoveryRefetch = 0;
 
 function messagePath(sessionID: string, before?: string): string {
   const params = new URLSearchParams();
@@ -1760,6 +1764,17 @@ function handleEvent(event: InboundChatEvent): void {
   }
   if (event.type === "session.status") {
     composerNoteAgentStatus(event.sessionID, event.status?.type);
+    const statusSessionID = event.sessionID;
+    if (
+      typeof statusSessionID === "string" &&
+      !sessionStore.sessions.some((session) => session.id === statusSessionID)
+    ) {
+      const now = Date.now();
+      if (now - lastSessionDiscoveryRefetch >= SESSION_DISCOVERY_REFETCH_MS) {
+        lastSessionDiscoveryRefetch = now;
+        void sessionsQuery.refetch();
+      }
+    }
   }
   const result = reduceEvent(event, { sessionID: routeState.session.value });
   if (!result.accepted) {
@@ -2165,6 +2180,16 @@ function liveTurnParts(): {
   return { unsealedText, unsealedReasoning, runningTool };
 }
 
+const subagentLabel = computed(() => {
+  const sessionID = routeState.session.value;
+  if (sessionID === null) {
+    return null;
+  }
+  return subagentStatusLabel(
+    activeSubagents(sessionStore.tree, sessionStore.statusBySession, sessionID),
+  );
+});
+
 const generatingLabel = computed(() => {
   feed.revision;
   turn.turnRevision;
@@ -2182,6 +2207,7 @@ const generatingLabel = computed(() => {
     queuedCount: turn.displayCount(),
     queuedTruncated: turn.queuedTruncated,
     settling: turn.settling,
+    subagent: subagentLabel.value,
   });
 });
 

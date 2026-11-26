@@ -950,12 +950,17 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   the session folder) for its descendants, best effort under opencode's 100-session window. Titles
   wrap to two lines and the rail no longer shows the short session id.
   The rail also shows a live per-session agent status from the list snapshot plus the existing app
-  SSE: `Working` for `busy`, `Retrying` for `retry`, and nothing for `idle`/unknown. The waiting
-  badge always wins over the status. A stream gap or reconnect clears and refetches the status map,
-  and the active row is reconciled from the `/turn` snapshot.
+  SSE: `Working` for `busy`, `Retrying` for `retry`, and nothing for `idle`/unknown. An idle (or
+  statusless) session with active `busy`/`retry` descendants instead shows
+  `Subagent: <first subagent title> +N` (N = the other active subagents, omitted when zero), derived
+  client-side from the same session tree and live status map. The waiting badge always wins over the
+  status, and a row's own `busy`/`retry` still outranks a subagent label. A stream gap or reconnect
+  clears and refetches the status map, and the active row is reconciled from the `/turn` snapshot.
   Session lifecycle (list membership) is not realtime in this stage: child sessions appear on the
   existing refresh triggers (boot, focus, visibility, selection, send, idle/reconnect, and a process
-  transition back to `running`). The per-session agent status above is live via SSE.
+  transition back to `running`), plus a throttled `/sessions` refetch (about 5 s) when a
+  `session.status` event names a session the client does not know yet, so a fresh child can surface
+  its live status. The per-session agent status above is live via SSE.
 - Session switching is optimistic and cancelable: the rail, title, URL, and message skeleton switch
   immediately, the previous draft is flushed in the background, the in-flight message/history read is
   aborted, and a selection generation makes the last click win. The thread mutes its current content
@@ -1037,10 +1042,13 @@ failure, and `503` when no runner-backed deletion service is configured. A prese
   modal (`N+` when truncated). The active labels append `· N queued` using that display count.
 - Status is derived from the server turn snapshot plus the latest unsealed part: `Sending`,
   `Delivery unknown`, `Thinking`, `Working`, `Running <tool>`, `Retrying`, and `Ready · N queued`
-  (an idle turn with queued work); a bare `Ready` is never rendered in the row. Elapsed time freezes
-  while waiting and resets on idle. Inline questions in the feed gate the composer and show
-  `Waiting for you`; the top-bar/per-session counts include them. `Paused` stays in the connection
-  chip.
+  (an idle turn with queued work); a bare `Ready` is never rendered in the row. An idle session with
+  active `busy`/`retry` descendant sessions shows `Subagent: <first subagent title> +N` (N = the
+  other active subagents, omitted when zero) in both the meta-strip chip and the in-feed generation
+  row; it is a client-only derivation from the session tree and the live status map, with no API or
+  wire-status change, and `Waiting for you`/waiting still wins. Elapsed time freezes while waiting
+  and resets on idle. Inline questions in the feed gate the composer and show `Waiting for you`; the
+  top-bar/per-session counts include them. `Paused` stays in the connection chip.
 - Upstream `session.error` is projected with a 2000-char first-line message (stack traces are
   dropped) and deduplicated per attempt (`session.status: busy` resets the dedupe). The client inserts
   an `Agent error` card into the feed, marks the active and queued prompts `Failed`, drops them from

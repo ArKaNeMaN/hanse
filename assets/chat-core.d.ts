@@ -96,6 +96,22 @@ export function buildSessionTree(sessions: readonly unknown[]): SessionTree;
 export function firstRootId(tree: SessionTree | null | undefined): string | null;
 export function ancestorIds(tree: SessionTree | null | undefined, id: unknown): string[];
 export function collectSubtreeIds(tree: SessionTree | null | undefined, id: unknown): string[];
+
+export interface ActiveSubagentSummary {
+  count: number;
+  firstId: string | null;
+  firstTitle: string | null;
+}
+
+export function activeSubagents(
+  tree: SessionTree | null | undefined,
+  statusBySession: ReadonlyMap<string, { type?: string }> | null | undefined,
+  sessionId: unknown,
+): ActiveSubagentSummary;
+
+export function subagentStatusLabel(
+  summary: { count?: number; firstTitle?: string | null } | null | undefined,
+): string | null;
 export function classifyOmo(message: unknown): OmoSystemMeta | null;
 export function isAttachmentManifestPart(value: unknown): boolean;
 export function isResumeSyntheticPart(value: unknown): boolean;
@@ -268,6 +284,7 @@ export function generationLabel(input?: {
   queuedCount?: number;
   queuedTruncated?: boolean;
   settling?: boolean;
+  subagent?: string | null;
 }): string | null;
 
 export function formatTokenCount(value: number | null | undefined): string;
