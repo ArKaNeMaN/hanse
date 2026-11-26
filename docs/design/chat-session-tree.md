@@ -157,7 +157,7 @@ Each node renders as:
   raw session id, so unusual id characters cannot produce a broken `aria-controls` value.
 - Do not use `role="tree"`/`treeitem` without roving-tabindex and arrow-key behaviour; the
   disclosure pattern is the honest contract for this stage.
-- Depth is visual only. The renderer clamps the indent at five visual levels (10px per level) but
+- Depth is visual only. The renderer clamps the indent at five visual levels (18px per level) but
   continues to nest deeper data under the fifth level rather than dropping it.
 
 ### D4 - Expansion state lives outside the DOM and is part of the render signature (R3, R4)
@@ -275,8 +275,10 @@ add `max-inline-size: calc(100vw - 2rem)` so the wider rail never covers the who
 (`styles.css:6685`). Add a `title` attribute with the full session label to the session button (and
 title span), so a truncated title is readable on hover. Add `flex-wrap: wrap` and
 `min-inline-size: 0` to `.session-item__meta` (`styles.css:3522-3528`) so a parent waiting
-aggregate cannot overflow the 320px drawer. Indentation is 10px per visual level, clamped at five
-levels. A compact `agent` badge is **not** added; the owner chose the wider rail plus tooltip.
+aggregate cannot overflow the 320px drawer. Indentation is 18px per visual level, clamped at five
+levels; each expanded branch draws a 1px `--line-strong` guide at the parent chevron centre
+(`calc(var(--session-depth) * 18px + 12px)`). A compact `agent` badge is **not** added; the owner
+chose the wider rail plus tooltip.
 `17rem` is the largest widening that keeps both 1440 layout budgets: the feed/scroll ratio stays
 inside 0.78-0.82 and the feed/content ratio inside 0.85-0.89. An `18rem` rail pushes them to about
 84% and 91%, outside the established feed measure.

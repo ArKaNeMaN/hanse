@@ -806,7 +806,7 @@ is a compact link with a mono id, state pill, summary, and route.
   padding. No accent edge, no disclosure behavior, no port.
 - `.session-item`: full-width list button; title clamps to two lines with a full-title `title`
 attribute, the rail row omits the session short id, and the waiting flag stays in
-`.session-item__meta`; hover wash, active `--wash-2` plus a brass check and `aria-current`.
+`.session-item__meta`; hover wash, active `--wash-2` and `aria-current` (no extra glyph).
 - `.chat-thread__meta`: session title (uses the available header width, ellipsizing only when it
 must), mono short id, live status, message count, working indicator, and stream retry. `.chat-live`
 carries a status dot plus text (`Live`, `Reconnecting`, `Paused`, `Starting agent...`);
@@ -1180,7 +1180,8 @@ control. Never remove focus outlines.
 Enter submits the non-destructive default, dialog focus returns to its trigger.
 - Every form control has a visible `<label for>`; errors use `aria-invalid` + `aria-describedby`.
 - Status is color + glyph + text. Active nav is wash + glyph + `aria-current`. Selected rows use
-`aria-selected` + check glyph.
+`aria-selected` + check glyph. The chat session rail is the exception: the active session uses
+`aria-current` + `--wash-2`, without a glyph.
 - Icon-only controls have `aria-label`; decorative icons are `aria-hidden="true"`.
 - Motion respects `prefers-reduced-motion` (Section 6). No flashing, no auto-playing media.
 - Touch targets: all buttons, nav items, segmented items, and fields resolve to 44px at < 768.

@@ -3974,7 +3974,7 @@
     align-items: stretch;
     gap: var(--space-1);
     min-inline-size: 0;
-    padding-inline-start: calc(var(--session-depth, 0) * 10px);
+    padding-inline-start: calc(var(--session-depth, 0) * 18px);
     border-radius: var(--radius-sm);
   }
 
@@ -4014,6 +4014,7 @@
   }
 
   .session-children {
+    position: relative;
     display: flex;
     flex-direction: column;
     gap: var(--space-1);
@@ -4021,6 +4022,17 @@
     margin: 0;
     padding: 0;
     border: 0;
+  }
+
+  /* Indent guide: one hairline per nesting level, centred under the parent chevron. */
+  .session-children::before {
+    content: "";
+    position: absolute;
+    inset-block: 0;
+    inset-inline-start: calc(var(--session-depth, 0) * 18px + 12px);
+    inline-size: 1px;
+    background: var(--line-strong);
+    pointer-events: none;
   }
 
   .session-children[hidden] {
@@ -4087,10 +4099,6 @@
   .session-item.is-active {
     background: var(--wash-2);
     color: var(--text-1);
-  }
-
-  .session-item.is-active .icon {
-    color: var(--brass);
   }
 
   .session-item__top {

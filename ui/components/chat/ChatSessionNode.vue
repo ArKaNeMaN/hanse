@@ -99,7 +99,6 @@ const depth = computed(() => Math.min(props.depth, 5));
       >
         <span class="session-item__top">
           <span class="session-item__title">{{ label }}</span>
-          <AppIcon v-if="active" name="check" class-name="icon--sm" />
         </span>
         <span v-if="waiting > 0 || statusText !== null" class="session-item__meta">
           <span
