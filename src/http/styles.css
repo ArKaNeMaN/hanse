@@ -12928,6 +12928,7 @@
 
 .skill-preview-drawer__content {
   max-block-size: 28rem;
+  overflow: auto;
 }
 
 .skill-preview-drawer__actions {
