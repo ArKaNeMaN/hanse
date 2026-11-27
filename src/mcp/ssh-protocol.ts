@@ -34,17 +34,20 @@ export const SSH_TOOLS = [
   {
     name: "ssh_list_hosts",
     description:
-      "List the SSH hosts this application is allowlisted for. `allowed: true` means the host is usable; an empty list means this app may reach no host. `grant` is not an access flag: it is a temporary operator-approval grant used only when `requireApproval` is true. `grant: null` with `requireApproval: false` is normal - no approval is needed, so call ssh_exec/ssh_upload/ssh_download directly. `grant: null` with `requireApproval: true` means the next operation will request operator approval and may return `ssh_approval_pending`; wait for the operator, then retry the same call.",
+      "List the SSH hosts this application is allowlisted for. `allowed: true` means the host is usable; an empty list means this app may reach no host. `grant` is not an access flag: it is a temporary operator-approval grant used only when `requireApproval` is true. `grant: null` with `requireApproval: false` is normal - no approval is needed, so call ssh_exec/ssh_upload/ssh_download directly. `grant: null` with `requireApproval: true` means the next operation will request operator approval and may return `ssh_approval_pending`; wait for the operator, then retry the same call. Pass a host's `id` as `host_id` to the other SSH tools; `name` and `address` are informational only. `pendingApprovals` counts operator approval requests waiting for this host.",
     inputSchema: { type: "object", properties: {} },
   },
   {
     name: "ssh_exec",
     description:
-      "Run a command over SSH on an allowed host. Hosts come from ssh_list_hosts; never invent an address. May require operator approval; if the result is ssh_approval_pending, wait for the operator and retry the same call. Each call is one audited operation, and a host allows 120 operations per hour per application. Prefer one call that runs several commands (a small script, or cmd1 && cmd2) over many tiny calls, so the budget is not spent on round-trip overhead.",
+      "Run a command over SSH on an allowed host. `host_id` must be the opaque `id` value from ssh_list_hosts - not the host `name`, address, user, or port. May require operator approval; if the result is ssh_approval_pending, wait for the operator and retry the same call. Each call is one audited operation, and a host allows 120 operations per hour per application. Prefer one call that runs several commands (a small script, or cmd1 && cmd2) over many tiny calls, so the budget is not spent on round-trip overhead.",
     inputSchema: {
       type: "object",
       properties: {
-        host_id: { type: "string" },
+        host_id: {
+          type: "string",
+          description: "Opaque host `id` from ssh_list_hosts (not the host name or address).",
+        },
         command: { type: "string", maxLength: 16 * 1024 },
         timeout_sec: { type: "number" },
       },
@@ -54,13 +57,24 @@ export const SSH_TOOLS = [
   {
     name: "ssh_upload",
     description:
-      "Upload a regular file from the application directory over SFTP. Paths are confined; approval may be required. Counts as one operation toward the same 120-per-hour per-host limit, so prefer one archive plus a remote unpack over many small transfers.",
+      "Upload a regular file from the application directory over SFTP. `host_id` must be the `id` value from ssh_list_hosts (not the host name or address). `local_path` is relative to the application directory (or absolute inside it); `remote_path` must be an absolute POSIX path and stays inside the host's configured remote root when one is set. Files are capped at 50 MiB. Approval may be required. Counts as one operation toward the same 120-per-hour per-host limit, so prefer one archive plus a remote unpack over many small transfers.",
     inputSchema: {
       type: "object",
       properties: {
-        host_id: { type: "string" },
-        local_path: { type: "string" },
-        remote_path: { type: "string" },
+        host_id: {
+          type: "string",
+          description: "Opaque host `id` from ssh_list_hosts (not the host name or address).",
+        },
+        local_path: {
+          type: "string",
+          description:
+            "Source path relative to the application directory (or an absolute path inside it).",
+        },
+        remote_path: {
+          type: "string",
+          description:
+            "Absolute POSIX destination path; confined to the host's remote root when one is configured.",
+        },
       },
       required: ["host_id", "local_path", "remote_path"],
     },
@@ -68,13 +82,24 @@ export const SSH_TOOLS = [
   {
     name: "ssh_download",
     description:
-      "Download a regular remote file over SFTP into the application directory. Paths are confined; approval may be required. Counts as one operation toward the same 120-per-hour per-host limit, so prefer one archive over many small transfers.",
+      "Download a regular remote file over SFTP into the application directory. `host_id` must be the `id` value from ssh_list_hosts (not the host name or address). `remote_path` must be an absolute POSIX path and stays inside the host's configured remote root when one is set; `local_path` is relative to the application directory (or absolute inside it). Approval may be required. Counts as one operation toward the same 120-per-hour per-host limit, so prefer one archive over many small transfers.",
     inputSchema: {
       type: "object",
       properties: {
-        host_id: { type: "string" },
-        remote_path: { type: "string" },
-        local_path: { type: "string" },
+        host_id: {
+          type: "string",
+          description: "Opaque host `id` from ssh_list_hosts (not the host name or address).",
+        },
+        remote_path: {
+          type: "string",
+          description:
+            "Absolute POSIX source path; confined to the host's remote root when one is configured.",
+        },
+        local_path: {
+          type: "string",
+          description:
+            "Destination path relative to the application directory (or an absolute path inside it).",
+        },
       },
       required: ["host_id", "remote_path", "local_path"],
     },

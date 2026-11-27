@@ -142,16 +142,19 @@ export const MASTER_TOOLS = [
   {
     name: "get_settings",
     description:
-      "Read effective settings and their source scopes for global, project, or application scope. Never returns secret values.",
+      "Read effective settings and their source scopes. Scope is inferred: pass neither project_id nor app_key for global, project_id for a project, and project_id plus app_key for an application; there is no separate scope argument. Never returns secret values.",
     inputSchema: {
       type: "object",
-      properties: { project_id: { type: "string" }, app_key: { type: "string" } },
+      properties: {
+        project_id: { type: "string", description: "Project id; omit for global scope." },
+        app_key: { type: "string", description: "Application key; requires project_id." },
+      },
     },
   },
   {
     name: "set_setting",
     description:
-      "Write one non-secret setting. scope defaults to app when app_key is given, project when project_id is given, otherwise global.",
+      "Write one non-secret setting; value: null clears a clearable override instead of storing null. scope defaults to app when app_key is given, project when project_id is given, otherwise global.",
     inputSchema: {
       type: "object",
       properties: {
@@ -166,7 +169,8 @@ export const MASTER_TOOLS = [
   },
   {
     name: "inherit_setting",
-    description: "Remove a scoped setting so the wider scope applies again.",
+    description:
+      "Remove a scoped setting so the nearest wider scope applies again; for global scope this reverts to the built-in default.",
     inputSchema: {
       type: "object",
       properties: {
@@ -181,7 +185,7 @@ export const MASTER_TOOLS = [
   {
     name: "create_skill",
     description:
-      "Create an enabled agent skill bundle at global, project, or application scope. Global scope requires confirm_global after operator approval. A same-name skill at the same scope is rejected; a narrower same-name skill shadows a wider one. Creating a skill never restarts agents.",
+      "Create an enabled agent skill bundle at global, project, or application scope. Global scope requires confirm_global after operator approval. A same-name skill at the same scope is rejected; a narrower same-name skill shadows a wider one. Creating a skill never restarts agents; affected agents pick it up on their next restart.",
     inputSchema: {
       type: "object",
       properties: {
@@ -237,7 +241,7 @@ export const MASTER_TOOLS = [
   {
     name: "update_skill",
     description:
-      "Update an existing skill's description, body, license, compatibility, metadata, or references by id. Name, scope, target, and enabled are immutable.",
+      "Update an existing skill's description, body, license, compatibility, metadata, or references by id. Name, scope, target, and enabled are immutable. Changing a global skill requires confirm_global after operator approval.",
     inputSchema: {
       type: "object",
       properties: {
@@ -255,7 +259,10 @@ export const MASTER_TOOLS = [
             required: ["path", "content"],
           },
         },
-        confirm_global: { type: "boolean" },
+        confirm_global: {
+          type: "boolean",
+          description: "Required true for a global skill after the operator approves it.",
+        },
       },
       required: ["skill_id"],
     },
@@ -263,13 +270,16 @@ export const MASTER_TOOLS = [
   {
     name: "set_skill_enabled",
     description:
-      "Enable or disable one skill by id. A disabled skill is a tombstone, not a deletion.",
+      "Enable or disable one skill by id. A disabled skill is a tombstone, not a deletion. Changing a global skill requires confirm_global after operator approval.",
     inputSchema: {
       type: "object",
       properties: {
         skill_id: { type: "integer", minimum: 1 },
         enabled: { type: "boolean" },
-        confirm_global: { type: "boolean" },
+        confirm_global: {
+          type: "boolean",
+          description: "Required true for a global skill after the operator approves it.",
+        },
       },
       required: ["skill_id", "enabled"],
     },
@@ -277,7 +287,7 @@ export const MASTER_TOOLS = [
   {
     name: "override_skill",
     description:
-      "Copy an enabled source skill into a project or application target. Replacing an existing target row requires confirm_replace.",
+      "Copy an enabled source skill into a project or application target. Project scope requires project_id; application scope also requires app_key. Replacing an existing target row requires confirm_replace.",
     inputSchema: {
       type: "object",
       properties: {
@@ -293,7 +303,8 @@ export const MASTER_TOOLS = [
   },
   {
     name: "start_app",
-    description: "Start a stopped application agent. Starting a running agent reconnects.",
+    description:
+      "Start a stopped application agent. Starting a running agent reconnects. The master application cannot start itself.",
     inputSchema: {
       type: "object",
       properties: { project_id: { type: "string" }, app_key: { type: "string" } },
@@ -302,7 +313,8 @@ export const MASTER_TOOLS = [
   },
   {
     name: "restart_app",
-    description: "Restart a running application agent. A stopped agent is not started.",
+    description:
+      "Restart a running application agent. A stopped agent is not started. The master application cannot restart itself.",
     inputSchema: {
       type: "object",
       properties: { project_id: { type: "string" }, app_key: { type: "string" } },
@@ -337,7 +349,7 @@ export const MASTER_TOOLS = [
         path: {
           type: "string",
           description:
-            "Optional path relative to the project root (for example apps/gateway). Defaults to apps/<name-slug>. Do not prefix it with the project directory name; an absolute path inside the workspace is allowed only for a location outside the project.",
+            "Optional path relative to the project root (for example apps/gateway) or an absolute path inside the workspace. Relative paths resolve against the project root and must stay inside it (do not repeat the project directory name); absolute paths may point anywhere inside the workspace except the project root and workspace root. Defaults to apps/<name-slug>.",
         },
         remote: {
           type: "string",
@@ -349,7 +361,8 @@ export const MASTER_TOOLS = [
   },
   {
     name: "list_dir",
-    description: "List one workspace directory without following entries.",
+    description:
+      "List one workspace directory without following symlinks; defaults to the workspace root. Returns at most 500 entries and a truncated flag.",
     inputSchema: { type: "object", properties: { path: { type: "string" } } },
   },
   {

@@ -23,14 +23,14 @@ export const TOOLS = [
   {
     name: "request_sibling_change",
     description:
-      'Ask a sibling application to do work. Returns a handoff id immediately. The coordinator binds the request to this session, applies the project handoff policy, starts a fresh session on the target, and later delivers the target\'s reply back into this session as a new message. After this tool returns, end your turn: do NOT call handoff_status to wait, do NOT sleep or retry, and do NOT poll - the reply arrives on its own, and polling does not speed it up. Call list_apps first and pass application keys (the "appKey" field, for example "hanse-deploy") in "from" and "to" - never full application ids such as "<projectId>:<appKey>". "to" must be another application in the same project. To hand off to another project, pass its project id in "to_project" (from list_apps remoteApps[].projectId); a cross-project target is available only when the operator granted it.',
+      'Ask a sibling application to do work. Returns a handoff id immediately. The coordinator binds the request to this session, applies the project handoff policy, starts a fresh session on the target, and later delivers the target\'s reply back into this session as a new message. After this tool returns, end your turn: do NOT call handoff_status to wait, do NOT sleep or retry, and do NOT poll - the reply arrives on its own, and polling does not speed it up. Call list_apps first and pass the target application key (the "appKey" field, for example "hanse-deploy") in "to"; when the server is not bound to an application, also pass the sender key in "from" (an app-bound server ignores "from" and uses the bound application) - never full application ids such as "<projectId>:<appKey>". "to" must be another application in the same project. To hand off to another project, pass its project id in "to_project" (from list_apps remoteApps[].projectId); a cross-project target is available only when the operator granted it.',
     inputSchema: {
       type: "object",
       properties: {
         from: {
           type: "string",
           description:
-            'Application key of the sender (the "appKey" from list_apps, for example "hanse"). When this server is bound to an application, the coordinator uses the bound application. Never pass a full application id such as "<projectId>:<appKey>".',
+            'Application key of the sender (the "appKey" from list_apps, for example "hanse"). Required only when the server is not bound to an application; an app-bound server ignores it and uses the bound application. Never pass a full application id such as "<projectId>:<appKey>".',
         },
         to: {
           type: "string",
@@ -62,10 +62,10 @@ export const TOOLS = [
           enum: ["one_shot", "thread"],
           default: "one_shot",
           description:
-            'Use "thread" when the operator wants an ongoing discussion with another agent. Omit for a normal one-shot handoff. Thread start is the only approval point; later messages are autonomous.',
+            'Use "thread" when the operator wants an ongoing discussion with another agent. Omit for a normal one-shot handoff. If approval is required, it is asked once for the thread start; later messages are autonomous.',
         },
       },
-      required: ["from", "to", "summary", "spec"],
+      required: ["to", "summary", "spec"],
     },
   },
   {
@@ -109,7 +109,7 @@ export const TOOLS = [
   {
     name: "deliver_handoff",
     description:
-      "Record the result of a handoff that was dispatched to this application. For a one-shot handoff, call exactly once when the work is finished; the coordinator routes the result to the source session and resumes it automatically. For a thread, this is target-only: call once per source-authored message and pass reply_to = that message's handoff_messages.id; the thread stays in_progress. Do not wait for it or poll for it.",
+      "Record the result of a handoff that was dispatched to this application. For a one-shot handoff, call exactly once when the work is finished; the coordinator routes the result to the source session and resumes it automatically, unless the project reply policy requires operator approval - then the reply waits for the operator first. For a thread, this is target-only: call once per source-authored message and pass reply_to = that message's handoff_messages.id; the thread stays in_progress. Do not wait for it or poll for it.",
     inputSchema: {
       type: "object",
       properties: {
