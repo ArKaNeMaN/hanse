@@ -202,14 +202,14 @@ onMounted(() => {
 <template>
   <dialog
     ref="dialogEl"
-    class="dialog source-drawer skill-preview-drawer"
+    class="dialog source-drawer skill-preview-drawer source-drawer--sheet"
     aria-labelledby="skill-preview-drawer-title"
     @cancel.prevent="close"
     @keydown="onDialogKeydown"
     @close="onNativeClose"
     @click="onDialogClick"
   >
-    <div class="dialog__frame source-drawer__frame skill-preview-drawer__frame">
+    <div class="dialog__frame source-drawer__frame">
       <header class="source-drawer__head">
         <div class="source-drawer__identity">
           <p class="source-drawer__overline">Skill preview</p>

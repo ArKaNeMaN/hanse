@@ -11980,10 +11980,6 @@
   max-inline-size: min(720px, 92vw);
 }
 
-.external-skill-drawer {
-  max-inline-size: min(620px, 92vw);
-}
-
 .source-drawer__frame {
   gap: var(--space-4);
   min-block-size: 0;
@@ -12890,16 +12886,16 @@
   text-transform: uppercase;
 }
 
-/* Preview drawer ---------------------------------------------------- */
+/* Side sheets (skill preview and external skill) -------------------- */
 
-.skill-preview-drawer {
+.source-drawer--sheet {
   max-inline-size: min(640px, 100vw);
   block-size: 100dvh;
   max-block-size: 100dvh;
   margin: 0 0 0 auto;
 }
 
-.skill-preview-drawer__frame {
+.source-drawer--sheet .source-drawer__frame {
   block-size: 100%;
   max-block-size: 100dvh;
   padding: var(--space-6);
@@ -12971,7 +12967,7 @@
     order: -1;
   }
 
-  .skill-preview-drawer {
+  .source-drawer--sheet {
     inline-size: 100vw;
     max-inline-size: 100vw;
     block-size: 100dvh;
@@ -12979,7 +12975,7 @@
     margin: 0;
   }
 
-  .skill-preview-drawer__frame {
+  .source-drawer--sheet .source-drawer__frame {
     padding: var(--space-4);
     border: 0;
   }

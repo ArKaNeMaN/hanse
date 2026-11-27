@@ -1026,9 +1026,10 @@ token. Create/detail keep the existing settings-nav scope ladder.
   `.target-list` (role listbox); `.target-group` headings are presentational and `.target-option`
   rows are buttons with `aria-selected`. The trigger renders from page props, so a missing/loading
   catalog never blanks the current target.
-- **Preview drawer:** `.skill-preview-drawer` is a native right sheet with the shared
-  `.source-drawer` frame; it is full-screen below 768. It shows content, metadata, files, and the
-  full-skill/effective links; `data-skill-effective-link` lives only here, never on a row.
+- **Preview drawer:** `.skill-preview-drawer` is a native right sheet using the shared
+  `.source-drawer` frame and `.source-drawer--sheet` geometry; it is full-screen below 768. The
+  content block caps at 28rem and scrolls inside the sheet. It shows content, metadata, files, and
+  the full-skill/effective links; `data-skill-effective-link` lives only here, never on a row.
 - **Details:** `.skill-details` is a native `<details>` card; `.skill-fieldset` groups the identity,
   classification, discovery, and license fields; `.skill-details-grid` is one column and becomes
   two columns at >=1024. `.skill-metadata-row` is a wrapping key/value row. Every known field carries
@@ -1089,8 +1090,10 @@ new color, type, space, radius, shadow, or motion token.
   full-width menu row with a danger variant and a separating rule. No hover-only affordance.
 - **Inline check result:** `.skill-source-check` holds the "Update available / Up to date" line and
   its Sync action in the source cell.
-- **Source drawer:** `.source-drawer` is modal at min(720px, 92vw); `.external-skill-drawer` is
-  min(620px, 92vw); both become full width below 768. `.source-drawer__head`, `__identity`,
+- **Source drawer:** `.source-drawer` is modal at min(720px, 92vw). The external-skill drawer
+  (`.external-skill-drawer`) uses the same right side sheet as the preview drawer
+  (`.source-drawer--sheet`, min(640px, 100vw)); both skill sheets and the source modal become full
+  width below 768. `.source-drawer__head`, `__identity`,
   `__status`, `__body`, `__section`, `__subtitle`, `__credential`, and `__banner` carry the drawer
   anatomy. `.skill-source-summary` is a key/value grid; `.skill-source-file-list` and
   `.skill-source-preview` hold expandable file buttons and the bounded text `pre` (binary files show

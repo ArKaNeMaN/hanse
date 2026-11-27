@@ -188,7 +188,7 @@ function close(): void {
 <template>
   <dialog
     ref="dialogEl"
-    class="dialog source-drawer external-skill-drawer"
+    class="dialog source-drawer external-skill-drawer source-drawer--sheet"
     aria-labelledby="external-skill-drawer-title"
     @cancel.prevent="close"
   >
