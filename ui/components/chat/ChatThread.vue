@@ -239,6 +239,8 @@ let measureFrame: number | null = null;
 let viewportObserver: ResizeObserver | null = null;
 let rowObserver: ResizeObserver | null = null;
 let lastClientHeight: number | null = null;
+let lastClientWidth: number | null = null;
+let lastViewportBox: { width: number; height: number } | null = null;
 let suppressLoadEarlier = false;
 let activating = false;
 let sessionSwitching = false;
@@ -295,6 +297,8 @@ function setScrollTop(value: number): void {
 function syncViewport(node: HTMLElement): void {
   viewportHeightValue.value = node.clientHeight;
   lastClientHeight = node.clientHeight;
+  lastClientWidth = node.clientWidth;
+  lastViewportBox = { width: node.offsetWidth, height: node.offsetHeight };
 }
 
 function averageFallback(heights: readonly number[]): number {
@@ -801,8 +805,24 @@ function onFocusOut(event: FocusEvent): void {
 function onViewportResize(): void {
   const node = element();
   if (node === null) return;
+  // A classic scrollbar appearing or disappearing changes the client box but not the border box.
+  // That is a scrollbar toggle, not a layout resize: restoring the last anchor here can throw the
+  // reader up on desktop, and repeated toggles near the end of a long chat make the end
+  // unreachable. Keep the position; only the window needs the new client height.
+  const boxChanged =
+    lastViewportBox === null ||
+    node.offsetWidth !== lastViewportBox.width ||
+    node.offsetHeight !== lastViewportBox.height;
+  // A vertical scrollbar changes the client width and reflows the rows, so it still needs the
+  // anchor restore. A horizontal scrollbar changes only the client height; the content above the
+  // reader does not move, and restoring is what lets a classic-scrollbar toggle throw them up.
+  const widthChanged = lastClientWidth !== null && node.clientWidth !== lastClientWidth;
   syncViewport(node);
   if (restorePending !== null) return;
+  if (!boxChanged && !widthChanged) {
+    if (pinned.value) scrollToBottom();
+    return;
+  }
   if (!pinned.value) {
     if (windowEnabled.value && lastAnchor !== null) {
       void restoreAnchor(lastAnchor);

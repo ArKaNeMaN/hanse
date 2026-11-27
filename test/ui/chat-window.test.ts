@@ -61,6 +61,9 @@ interface LayoutState {
   clientHeight: number;
   scrollTop: number;
   heights: number[];
+  /** Border-box size; defaults to the client box so a plain client change reads as a resize. */
+  offsetHeight?: number;
+  offsetWidth?: number;
 }
 
 interface FakeObserver {
@@ -128,6 +131,14 @@ function installLayout(wrapper: ReturnType<typeof mount>, order: readonly string
   Object.defineProperty(scroll, "clientHeight", {
     configurable: true,
     get: () => state.clientHeight,
+  });
+  Object.defineProperty(scroll, "offsetHeight", {
+    configurable: true,
+    get: () => state.offsetHeight ?? state.clientHeight,
+  });
+  Object.defineProperty(scroll, "offsetWidth", {
+    configurable: true,
+    get: () => state.offsetWidth ?? 600,
   });
   Object.defineProperty(scroll, "scrollTop", {
     configurable: true,
@@ -421,6 +432,40 @@ describe("measured transcript window", () => {
     const after = Number(wrapper.find("#chat-messages").attributes("data-chat-window-start"));
     expect(after).toBeGreaterThan(before);
     expect(state.scrollTop).toBe(state.contentHeight);
+    wrapper.unmount();
+  });
+
+  it("keeps the reader put when a scrollbar changes only the client box", async () => {
+    const observers = installResizeObserver();
+    const frames = installFrames();
+    const list = items(500);
+    const wrapper = mount(ChatThread, {
+      props: props(list),
+      attachTo: document.body,
+    });
+    await flushPromises();
+    const state = installLayout(wrapper, keysOf(list));
+    await activate(wrapper, observers, frames);
+    stubRowRects(wrapper, keysOf(list), state);
+
+    const scroll = wrapper.find("#chat-scroll").element as HTMLElement;
+    state.scrollTop = 30_000;
+    scroll.dispatchEvent(new Event("scroll"));
+    await settle(frames);
+
+    // The client box changes because a classic scrollbar appeared. The scroll event that follows
+    // carries the height change and does not refresh `lastAnchor`; a subsequent viewport observer
+    // callback must not restore that stale anchor.
+    state.offsetHeight = VIEWPORT;
+    state.scrollTop = 31_000;
+    state.clientHeight = VIEWPORT - 20;
+    scroll.dispatchEvent(new Event("scroll"));
+    await settle(frames);
+    const before = state.scrollTop;
+    viewportObserverOf(observers, scroll).callback([], {} as ResizeObserver);
+    await settle(frames);
+
+    expect(state.scrollTop).toBe(before);
     wrapper.unmount();
   });
 
