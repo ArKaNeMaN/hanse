@@ -242,6 +242,10 @@ let lastClientHeight: number | null = null;
 let suppressLoadEarlier = false;
 let activating = false;
 let sessionSwitching = false;
+// Keys created by an item regrouping/re-key since they were last measured. Their first measurement
+// is already part of the frame the structural anchor was captured from, so it must not be folded
+// into the measurement delta correction.
+let pendingStructuralKeys: Set<string> = new Set();
 
 interface ScrollAnchor extends ChatScrollMemory {
   readonly messageID?: string;
@@ -515,11 +519,14 @@ function flushMeasurements(): void {
   let correction = 0;
   let changed = false;
   for (const [key, height] of pendingMeasurements) {
-    const baseline = heightsByKey.get(key) ?? lastFallbackHeight;
+    const cached = heightsByKey.get(key);
+    const baseline = cached ?? lastFallbackHeight;
+    const structural = cached === undefined && pendingStructuralKeys.has(key);
     heightsByKey.set(key, height);
     transcriptMemory.value.writeHeight(key, height);
+    if (cached === undefined) pendingStructuralKeys.delete(key);
     changed = true;
-    if (node !== null && scrollRect !== null && !pinned.value) {
+    if (!structural && node !== null && scrollRect !== null && !pinned.value) {
       const row = rowElements.get(key);
       if (row !== undefined) {
         const rect = row.getBoundingClientRect();
@@ -556,20 +563,7 @@ function flushMeasurements(): void {
     anchor.visualOffset !== undefined
   ) {
     const target: ScrollAnchor = { ...anchor, visualOffset: anchor.visualOffset - correction };
-    // This is a layout correction, not navigation: the reader stays where they were, so the
-    // unseen counter and the load-earlier latch must keep their values across the settle.
-    const unseenBefore = unseen.value;
-    const topRequestedBefore = topRequested.value;
-    suppressLoadEarlier = true;
-    void (async () => {
-      await nextTick();
-      await restoreAnchor(target);
-      unseen.value = unseenBefore;
-      topRequested.value = topRequestedBefore;
-    })().finally(() => {
-      requestFrame(() => {
-        suppressLoadEarlier = false;
-      });
+    void restoreLayoutAnchor(target).finally(() => {
       maybeActivate();
     });
     return;
@@ -690,6 +684,26 @@ async function restoreAnchor(anchor: ScrollAnchor | ChatScrollMemory | null): Pr
   guardFocus();
   measureRunTop();
   persist();
+}
+
+/**
+ * Restore a captured reader position after a model or slice rebuild. This is a layout correction,
+ * not navigation, so the unseen counter and the load-earlier latch keep their values.
+ */
+async function restoreLayoutAnchor(anchor: ScrollAnchor): Promise<void> {
+  const unseenBefore = unseen.value;
+  const topRequestedBefore = topRequested.value;
+  suppressLoadEarlier = true;
+  try {
+    await nextTick();
+    await restoreAnchor(anchor);
+    unseen.value = unseenBefore;
+    topRequested.value = topRequestedBefore;
+  } finally {
+    requestFrame(() => {
+      suppressLoadEarlier = false;
+    });
+  }
 }
 
 async function applyRestore(): Promise<void> {
@@ -866,6 +880,7 @@ function resetWindowState(): void {
   suppressLoadEarlier = false;
   cancelMeasurementFrame();
   pendingMeasurements.clear();
+  pendingStructuralKeys.clear();
   heightsByKey.clear();
   runTopValue.value = 0;
   lastAnchor = null;
@@ -1050,10 +1065,30 @@ watch(
     await nextTick();
     const nextKeys = props.items.map(threadItemKey);
     const structural = count !== previousCount || !sameItemKeys(nextKeys, lastItemKeys);
+    const previousKeys = new Set(lastItemKeys);
     lastItemKeys = nextKeys;
     if (sessionSwitching) return;
     if (structural) {
+      const liveKeys = new Set(nextKeys);
+      pendingStructuralKeys = new Set(
+        Array.from(pendingStructuralKeys).filter((key) => liveKeys.has(key)),
+      );
+      for (const key of nextKeys) {
+        if (previousKeys.has(key)) continue;
+        pendingStructuralKeys.add(key);
+      }
       onStructuralChange();
+      if (
+        windowEnabled.value &&
+        !pinned.value &&
+        !props.loadingEarlier &&
+        restorePending === null &&
+        lastAnchor !== null &&
+        lastAnchor.key !== undefined &&
+        lastAnchor.visualOffset !== undefined
+      ) {
+        await restoreLayoutAnchor(lastAnchor);
+      }
     }
     if (restorePending !== null) {
       await applyRestore();

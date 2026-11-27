@@ -1139,6 +1139,122 @@ test("SPA keeps the reader anchored when a row below the fold changes height", a
   expectNoPageErrors(errors);
 });
 
+test("SPA keeps the reader anchored when a part regroups a row above the fold", async ({
+  page,
+}) => {
+  test.slow();
+  const errors = collectPageErrors(page);
+  await signIn(page, `/chat?app=alpha&project=${PROJECT_ONE}&session=ses_e2escroll`);
+  const thread = page.locator("[data-chat-thread]");
+  await expect(thread).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator("#chat-scroll [data-message-id]").first()).toBeVisible({
+    timeout: 15_000,
+  });
+
+  const loadedCount = async (): Promise<number> =>
+    Number((await thread.getAttribute("data-chat-loaded-count")) ?? "0");
+  const loadEarlier = page.locator("[data-chat-load-earlier]");
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    const count = await loadedCount();
+    if (count >= 300) break;
+    if ((await loadEarlier.count()) === 0) break;
+    if (await loadEarlier.isDisabled()) {
+      await page.waitForTimeout(100);
+      continue;
+    }
+    await loadEarlier.click();
+    await expect.poll(loadedCount, { timeout: 20_000 }).toBeGreaterThan(count);
+  }
+  await expect(thread).toHaveAttribute("data-chat-loaded-count", "300", { timeout: 30_000 });
+
+  const target = await page.evaluate(async () => {
+    const sleep = (ms: number): Promise<void> =>
+      new Promise((resolve) => {
+        setTimeout(resolve, ms);
+      });
+    const scroll = document.querySelector<HTMLElement>("#chat-scroll");
+    const inner = document.querySelector<HTMLElement>("#chat-messages");
+    if (scroll === null || inner === null) throw new Error("missing chat scroller");
+
+    // A scrollbar jump leaves the rows above the window unmeasured, then the reader walks down.
+    scroll.scrollTop = Math.round((scroll.scrollHeight - scroll.clientHeight) * 0.6);
+    scroll.dispatchEvent(new Event("scroll"));
+    await sleep(1200);
+
+    const rows = (): HTMLElement[] =>
+      Array.from(document.querySelectorAll<HTMLElement>("#chat-scroll [data-thread-key]"));
+    let anchor: HTMLElement | undefined;
+    let assistantAbove: HTMLElement | undefined;
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      const viewport = scroll.getBoundingClientRect();
+      const rendered = rows();
+      anchor = rendered.find((row) => row.getBoundingClientRect().bottom > viewport.top);
+      assistantAbove = rendered
+        .filter((row) => row.getBoundingClientRect().bottom <= viewport.top)
+        .filter((row) => {
+          const number = Number((row.dataset.messageId ?? "").split("_").at(-1));
+          return Number.isFinite(number) && number % 2 === 0;
+        })
+        .at(-1);
+      if (anchor !== undefined && assistantAbove !== undefined) break;
+      scroll.scrollTop = Math.max(0, scroll.scrollTop - 250);
+      scroll.dispatchEvent(new Event("scroll"));
+      await sleep(200);
+    }
+    if (anchor === undefined || assistantAbove === undefined) {
+      throw new Error("missing rendered rows above the fold");
+    }
+    return {
+      anchorKey: anchor.dataset.threadKey ?? "",
+      anchorOffset: anchor.getBoundingClientRect().top - scroll.getBoundingClientRect().top,
+      startBefore: Number(inner.dataset.chatWindowStart ?? "-1"),
+      messageID: assistantAbove.dataset.messageId ?? "",
+    };
+  });
+
+  // A reasoning part turns the message row into a text slice plus a work group, so the rows above
+  // the fold re-key and the measured-height model is rebuilt while the reader is stationary.
+  await control(page, {
+    event: {
+      type: "message.part.updated",
+      properties: {
+        sessionID: "ses_e2escroll",
+        messageID: target.messageID,
+        part: {
+          id: "prt_e2e_scroll_regroup",
+          sessionID: "ses_e2escroll",
+          messageID: target.messageID,
+          type: "reasoning",
+          text: "Regroup the row above the fold.",
+        },
+      },
+    },
+  });
+  await page.waitForTimeout(1200);
+
+  const after = await page.evaluate((anchorKey) => {
+    const scroll = document.querySelector<HTMLElement>("#chat-scroll");
+    const inner = document.querySelector<HTMLElement>("#chat-messages");
+    const row = document.querySelector<HTMLElement>(
+      `#chat-scroll [data-thread-key="${anchorKey}"]`,
+    );
+    return {
+      mounted: row !== null,
+      offset:
+        row === null || scroll === null
+          ? null
+          : row.getBoundingClientRect().top - scroll.getBoundingClientRect().top,
+      start: Number(inner?.dataset.chatWindowStart ?? "-1"),
+    };
+  }, target.anchorKey);
+
+  expect(after.mounted).toBe(true);
+  expect(Math.abs((after.offset ?? 0) - target.anchorOffset)).toBeLessThanOrEqual(1.5);
+  expect(Math.abs(after.start - target.startBefore)).toBeLessThanOrEqual(2);
+  await page.waitForTimeout(300);
+  expectNoPageErrors(errors);
+});
+
 test("SPA chat answers a question, replies to a permission, and revokes a saved grant", async ({
   page,
 }) => {
