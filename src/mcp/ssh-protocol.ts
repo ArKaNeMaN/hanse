@@ -33,7 +33,8 @@ export const SHOW_IMAGE_TOOL = {
 export const SSH_TOOLS = [
   {
     name: "ssh_list_hosts",
-    description: "List SSH hosts that this application may use, with active grant status.",
+    description:
+      "List the SSH hosts this application is allowlisted for. `allowed: true` means the host is usable; an empty list means this app may reach no host. `grant` is not an access flag: it is a temporary operator-approval grant used only when `requireApproval` is true. `grant: null` with `requireApproval: false` is normal - no approval is needed, so call ssh_exec/ssh_upload/ssh_download directly. `grant: null` with `requireApproval: true` means the next operation will request operator approval and may return `ssh_approval_pending`; wait for the operator, then retry the same call.",
     inputSchema: { type: "object", properties: {} },
   },
   {
