@@ -456,6 +456,17 @@ function unregisterRow(key: string, node?: HTMLElement): void {
   const existing = rowElements.get(key);
   if (existing === undefined) return;
   if (node !== undefined && existing !== node) return;
+  // A row can grow after its last ResizeObserver delivery and unmount before the next one. Record
+  // the height it leaves with, so the pad that replaces it matches what the reader just saw instead
+  // of shrinking the transcript and clamping the scroll position.
+  const height = existing.getBoundingClientRect().height;
+  if (!sessionSwitching && Number.isFinite(height) && height >= 0.5) {
+    const cached = heightsByKey.get(key);
+    if (cached === undefined || Math.abs(cached - height) >= 0.5) {
+      pendingMeasurements.set(key, height);
+      scheduleMeasurementFrame();
+    }
+  }
   rowObserver?.unobserve(existing);
   rowKeys.delete(existing);
   rowElements.delete(key);

@@ -224,6 +224,26 @@ function spacerStyle(spacer: { element: Element } | undefined): CSSStyleDeclarat
   return (spacer.element as HTMLElement).style;
 }
 
+function domTotal(
+  wrapper: ReturnType<typeof mount>,
+  overrides: ReadonlyMap<string, number> = new Map(),
+): number {
+  const inner = wrapper.find("#chat-messages");
+  const spacers = inner.findAll(".chat-thread__spacer");
+  const topPad = spacers.length > 0 ? Number.parseFloat(spacerStyle(spacers[0]).height || "0") : 0;
+  const bottomPad =
+    spacers.length > 1 ? Number.parseFloat(spacerStyle(spacers[1]).height || "0") : 0;
+  const rows = inner.findAll("[data-thread-key]");
+  let rendered = 0;
+  for (const row of rows) {
+    const key = row.attributes("data-thread-key") ?? "";
+    rendered += overrides.get(key) ?? ROW_HEIGHT;
+  }
+  return (
+    topPad + rendered + GAP * Math.max(0, rows.length - 1) + (bottomPad > 0 ? GAP : 0) + bottomPad
+  );
+}
+
 function padIdentity(topPad: number, rangeCount: number, bottomPad: number): number {
   const boundaryGap = bottomPad > 0 ? GAP : 0;
   return (
@@ -466,6 +486,46 @@ describe("measured transcript window", () => {
     await settle(frames);
 
     expect(state.scrollTop).toBe(before);
+    wrapper.unmount();
+  });
+
+  it("records a leaving row's real height so the transcript does not shrink", async () => {
+    const observers = installResizeObserver();
+    const frames = installFrames();
+    const list = items(200);
+    const wrapper = mount(ChatThread, {
+      props: props(list),
+      attachTo: document.body,
+    });
+    await flushPromises();
+    const state = installLayout(wrapper, keysOf(list));
+    await activate(wrapper, observers, frames);
+    stubRowRects(wrapper, keysOf(list), state);
+
+    const scroll = wrapper.find("#chat-scroll").element as HTMLElement;
+    state.scrollTop = 3000;
+    scroll.dispatchEvent(new Event("scroll"));
+    await settle(frames);
+    stubRowRects(wrapper, keysOf(list), state);
+    const target = wrapper.findAll("#chat-messages [data-thread-key]")[0];
+    if (target === undefined) throw new Error("missing rendered row");
+    const targetKey = target.attributes("data-thread-key") ?? "";
+    // The row grew after its last ResizeObserver delivery and leaves the window before the next
+    // one; the pad that replaces it must carry the size the reader just saw.
+    const targetIndex = keysOf(list).indexOf(targetKey);
+    Object.defineProperty(target.element, "getBoundingClientRect", {
+      configurable: true,
+      value: () => rect(targetIndex * (ROW_HEIGHT + GAP) - state.scrollTop, 500),
+    });
+    const totalBefore = domTotal(wrapper, new Map([[targetKey, 500]]));
+
+    state.scrollTop += 4000;
+    scroll.dispatchEvent(new Event("scroll"));
+    await settle(frames);
+    stubRowRects(wrapper, keysOf(list), state);
+
+    expect(wrapper.find(`#chat-messages [data-thread-key="${targetKey}"]`).exists()).toBe(false);
+    expect(Math.abs(domTotal(wrapper) - totalBefore)).toBeLessThanOrEqual(2);
     wrapper.unmount();
   });
 
